@@ -15,7 +15,10 @@
 //! [`WireSession::request`]/[`WireSession::close_judged`]: one tagged
 //! reply per request frame, interleaved `part_closed` events skipped
 //! where they are legal, and a judged end where the reply stream must
-//! actually END after `closed`.
+//! actually END after `closed`. The P11/P12 probes ride the same
+//! substrate: the two-batch `write` builder is P11's induced
+//! violation, and [`refusal_shape`] is the frame judgment P6 and P12
+//! share across the wire's two directions.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -553,7 +556,7 @@ async fn p5_violations(probe: &mut WireProbe) -> Result<Vec<String>, String> {
 }
 
 /// The record batches one `arrow_ipc` payload carries.
-fn count_batches(bytes: &[u8]) -> Result<usize, String> {
+pub(crate) fn count_batches(bytes: &[u8]) -> Result<usize, String> {
     let reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
         .map_err(|error| error.to_string())?;
     let mut count = 0;
@@ -604,6 +607,14 @@ async fn p6_verdict(probe: &mut WireProbe) -> Result<(), String> {
             "the ErrorFrame was not terminal — {trailing} frame(s) followed it"
         ));
     }
+    refusal_shape(frame)
+}
+
+/// The refusal-shape judgment P6 and P12 share, either direction of
+/// the wire: the frame's classification must be a real enum value and
+/// its message bare cause text — never one of the four client
+/// renderings ([`CLIENT_RENDERINGS`]).
+pub(crate) fn refusal_shape(frame: &proto::ErrorFrame) -> Result<(), String> {
     match proto::Classification::try_from(frame.classification) {
         Ok(
             proto::Classification::Transient
@@ -846,6 +857,28 @@ pub(crate) fn write_request(table: &str) -> session_request::Request {
         let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut bytes, &batch.schema())
             .expect("an IPC stream writer opens over a Vec");
         writer.write(&batch).expect("the fixture batch writes");
+        writer.finish().expect("the IPC stream finishes");
+    }
+    session_request::Request::Write(proto::Write {
+        table: table.to_string(),
+        arrow_ipc: bytes,
+    })
+}
+
+/// A `write` frame for `table` whose arrow_ipc payload is ONE Arrow
+/// IPC stream carrying TWO record batches — the P11 induction (the
+/// write-direction twin of the P5 rogue's two-batch read frame; the
+/// sdk's own encoder writes exactly one batch by construction, so the
+/// violation needs the certifier to author it).
+pub(crate) fn two_batch_write_request(table: &str) -> session_request::Request {
+    let first = batch_of(&[1, 2]);
+    let second = batch_of(&[3]);
+    let mut bytes = Vec::new();
+    {
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut bytes, &first.schema())
+            .expect("an IPC stream writer opens over a Vec");
+        writer.write(&first).expect("the first batch writes");
+        writer.write(&second).expect("the second batch writes");
         writer.finish().expect("the IPC stream finishes");
     }
     session_request::Request::Write(proto::Write {

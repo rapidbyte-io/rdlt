@@ -4,15 +4,19 @@
 //! identity/skew and P7 the v0 state-format map, judged on a raw
 //! handshake below the adapters — [`crate::wire`]), the testkit's
 //! destination conformance clauses (D1–D6, D8) reused against the
-//! managed adapter, plus the two clauses that exist ONLY out of
+//! managed adapter, plus the clauses that exist ONLY out of
 //! process: P8, the one-session ceiling (a second concurrent
 //! `OpenSession` on the LIVE socket must refuse `FailedPrecondition` —
 //! the 038 frozen class), P9, close-on-abandonment (a session
 //! dropped without `Close` must be reclaimed: within
-//! [`RECLAIM_WINDOW`] a fresh session opens), and P10, the
+//! [`RECLAIM_WINDOW`] a fresh session opens), P10, the
 //! Backend-direct order book (the raw session choreography driven
 //! frame by frame WITHOUT the sdk `Session` — see [`probe_order_book`]
-//! for the four assertions). The P8/P9/P10 probes drive
+//! for the four assertions), P11, one Arrow batch per write frame (a
+//! two-batch `write` frame must be refused — [`probe_one_batch_write`]
+//! authors the violation), and P12, write-side error frames carrying
+//! bare cause text (P10's induction sites re-driven with the refusal
+//! frames READ — [`probe_error_frame_text`]). The session probes drive
 //! RAW wire sessions ([`crate::wire::open_wire_session`]) on their own
 //! dials of the live socket — wire moves the managed adapter
 //! deliberately never makes, and the seam that lets the rogue suite
@@ -57,8 +61,8 @@ use crate::target::{
 };
 use crate::wire::{
     self, WireOpenError, WireReply, WireSession, ensure_request, expect, meta_json_for, mismatch,
-    open_wire_session, publish_request, read_state_request, receipt_reply, replay_request,
-    write_request,
+    open_wire_session, publish_request, read_state_request, receipt_reply, refusal_shape,
+    replay_request, two_batch_write_request, write_request,
 };
 
 /// The D-clauses the reused testkit suite covers — its module doc's
@@ -68,7 +72,7 @@ pub(crate) const DEST_CLAUSES: [&str; 7] = ["D1", "D2", "D3", "D4", "D5", "D6", 
 /// The clauses that exist only out of process, probed on raw sessions
 /// over the live socket (module doc) — the tail of the destination's
 /// cascade set and reported one by one below.
-pub(crate) const SESSION_CLAUSES: [&str; 3] = ["P8", "P9", "P10"];
+pub(crate) const SESSION_CLAUSES: [&str; 5] = ["P8", "P9", "P10", "P11", "P12"];
 
 /// How long an abandoned session gets to be reclaimed before P9 fails —
 /// and how long the settling adapter's `open` retries the one-session
@@ -256,7 +260,9 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                 .to_string();
             report.skip("P8", why.clone());
             report.skip("P9", why.clone());
-            report.skip("P10", why);
+            report.skip("P10", why.clone());
+            report.skip("P11", why.clone());
+            report.skip("P12", why);
         }
         Some(socket) => {
             // P8 — the one-session ceiling: with a session held, a
@@ -278,6 +284,23 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
 
             // P10 — the Backend-direct order book.
             report_p10(&mut report, &socket).await;
+
+            // P11 — one Arrow batch per write frame, induced with a
+            // two-batch frame on its own session.
+            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_one_batch_write(&socket)).await {
+                Ok(Ok(())) => report.pass("P11"),
+                Ok(Err(why)) => report.fail("P11", why),
+                Err(_elapsed) => report.fail("P11", timed_out()),
+            }
+
+            // P12 — write-side error frames carry cause text, judged
+            // at P10's two induction sites re-driven on this clause's
+            // own sessions.
+            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_error_frame_text(&socket)).await {
+                Ok(Ok(())) => report.pass("P12"),
+                Ok(Err(why)) => report.fail("P12", why),
+                Err(_elapsed) => report.fail("P12", timed_out()),
+            }
         }
     }
 
@@ -599,6 +622,152 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
     session.close_judged().await
 }
 
+/// The P11 identities — a pipeline of this clause's own, away from the
+/// P10 order book's commits.
+const P11_PIPELINE: &str = "rdlt-certify-p11";
+/// P11's load id.
+const P11_LOAD: &str = "certify-p11";
+/// P11's table.
+const P11_TABLE: &str = "p11_one_batch";
+
+/// The P11 probe — one Arrow batch per write frame, the write
+/// direction's twin of P5's read-side rule, induced rather than
+/// observed (the certifier authors the violation): ensure a table,
+/// then send a `write` whose arrow_ipc payload is ONE IPC stream
+/// carrying TWO record batches. The refusal must arrive as a typed
+/// error frame — its SHAPE is P12's clause, not this one's — while
+/// `written` means every row after the first batch was at the
+/// connector's mercy, and fails. The sdk's serve half refuses a
+/// multi-batch frame itself, so first-party destinations pass with no
+/// connector code. The session is closed best-effort whatever the
+/// verdict: the refusal is answered in-stream, the session outlives it.
+async fn probe_one_batch_write(socket: &Path) -> Result<(), String> {
+    let mut session = settle_open_wire(socket, P11_PIPELINE, P11_LOAD)
+        .await
+        .map_err(|why| format!("could not open the one-batch session: {why}"))?;
+    let verdict = async {
+        expect(
+            session.request(ensure_request(P11_TABLE)).await?,
+            "ensure",
+            "ensured",
+        )?;
+        match session.request(two_batch_write_request(P11_TABLE)).await? {
+            WireReply::Error(_frame) => Ok(()),
+            other => {
+                let answer = match other {
+                    WireReply::Written => "ACCEPTED".to_string(),
+                    other => format!("answered `{}`", other.tag()),
+                };
+                Err(format!(
+                    "a two-batch `write` was {answer} — a write frame's arrow_ipc payload \
+                     must carry exactly one record batch, and a multi-batch frame must be \
+                     refused with a typed error frame"
+                ))
+            }
+        }
+    }
+    .await;
+    session.close().await;
+    verdict
+}
+
+/// The P12 identities — a pipeline of this clause's own.
+const P12_PIPELINE: &str = "rdlt-certify-p12";
+/// The one load id both P12 sessions commit and interrogate.
+const P12_LOAD: &str = "certify-p12";
+/// The one `(load, seq)` idempotency key the probe drives.
+const P12_SEQ: u64 = 1;
+/// P12's table.
+const P12_TABLE: &str = "p12_error_text";
+
+/// The P12 probe — write-side error frames carry cause text: P10's two
+/// induction sites (the out-of-order `write`, the already-receipted
+/// `publish`) re-driven on this clause's OWN sessions, with the
+/// refusal frames READ where P10 deliberately discards them — P10
+/// certifies that the refusals arrive, this clause certifies what they
+/// say. Each frame answers to [`refusal_shape`], the same judgment P6
+/// holds the read direction to: a real classification enum value, and
+/// a message that is bare cause text, never one of the four client
+/// renderings. A violation returns mid-session; the drop is the wire's
+/// abandonment signal and P9 already certified its reclaim.
+async fn probe_error_frame_text(socket: &Path) -> Result<(), String> {
+    let meta_json = meta_json_for(P12_PIPELINE, P12_LOAD, P12_SEQ);
+
+    // ——— Induction 1: the out-of-order `write` on a fresh session,
+    // its refusal frame judged.
+    let mut session = settle_open_wire(socket, P12_PIPELINE, P12_LOAD)
+        .await
+        .map_err(|why| format!("could not open the error-text session: {why}"))?;
+    match session.request(write_request(P12_TABLE)).await? {
+        WireReply::Error(frame) => refusal_shape(&frame)
+            .map_err(|why| format!("the out-of-order `write` refusal: {why}"))?,
+        other => {
+            return Err(format!(
+                "an out-of-order `write` was answered `{}` — the induced refusal never \
+                 arrived as an error frame, so its message could not be judged",
+                other.tag()
+            ));
+        }
+    }
+
+    // The canonical sequence commits the load, so induction 2 has a
+    // receipt to collide with (`replay` when an earlier certification
+    // of this target already committed it — the P10 posture).
+    expect(
+        session.request(ensure_request(P12_TABLE)).await?,
+        "ensure",
+        "ensured",
+    )?;
+    expect(
+        session.request(write_request(P12_TABLE)).await?,
+        "write",
+        "written",
+    )?;
+    match receipt_reply(&mut session, P12_LOAD, P12_SEQ).await? {
+        None => expect(
+            session.request(publish_request(&meta_json)).await?,
+            "publish",
+            "published",
+        )?,
+        Some(receipt) => expect(
+            session.request(replay_request(&meta_json, receipt)).await?,
+            "replay",
+            "replayed",
+        )?,
+    }
+    session.close().await;
+
+    // ——— Induction 2: the already-receipted `publish` on a fresh
+    // session. A refusal is one legal answer — its frame is the
+    // judged subject; the prior receipt is the other, and carries no
+    // frame to judge (the same-receipt equality is P10's clause).
+    let mut session = settle_open_wire(socket, P12_PIPELINE, P12_LOAD)
+        .await
+        .map_err(|why| format!("could not open the publish-induction session: {why}"))?;
+    let Some(existing) = receipt_reply(&mut session, P12_LOAD, P12_SEQ).await? else {
+        return Err(
+            "a fresh session's `existing_receipt` reported no receipt for a load an earlier \
+             session committed — the already-receipted `publish` induction cannot be driven"
+                .to_string(),
+        );
+    };
+    expect(
+        session
+            .request(replay_request(&meta_json, existing))
+            .await?,
+        "replay",
+        "replayed",
+    )?;
+    match session.request(publish_request(&meta_json)).await? {
+        WireReply::Error(frame) => refusal_shape(&frame)
+            .map_err(|why| format!("the already-receipted `publish` refusal: {why}"))?,
+        WireReply::Published(_receipt) => {}
+        other => return Err(mismatch("publish", &other, "published")),
+    }
+    session.close().await;
+    Ok(())
+}
+
 /// A receipt's JSON value, for the same-receipt judgment — `None` when
 /// the bytes do not decode (undecodable never equals anything).
 fn receipt_value(receipt_json: &[u8]) -> Option<Value> {
@@ -751,6 +920,71 @@ mod tests {
             "a `part_closed` reply arrived after `close` was answered — part events and \
              replies are legal only before the session's end"
         );
+    }
+
+    /// The P11/P12 control: the conformant order book passes BOTH
+    /// write-side clauses — the two-batch frame is refused with a
+    /// well-shaped error frame, and every induced refusal carries bare
+    /// cause text (the gated file cell is the real-connector twin).
+    #[tokio::test]
+    async fn a_conformant_order_book_passes_p11_and_p12() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::Conformant);
+        probe_one_batch_write(&socket)
+            .await
+            .expect("a conformant order book must pass P11");
+        probe_error_frame_text(&socket)
+            .await
+            .expect("a conformant order book must pass P12");
+    }
+
+    /// P11's designated rogue: a destination that answers `written` to
+    /// a write frame whose arrow_ipc payload carries TWO record batches
+    /// fails with the pinned evidence — and violates P11 ALONE (the
+    /// order book and the refusal texts hold, so the other session
+    /// clauses pass against the same rogue).
+    #[tokio::test]
+    async fn a_destination_accepting_a_two_batch_write_fails_p11() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::AcceptMultiBatchWrite);
+        let why = probe_one_batch_write(&socket)
+            .await
+            .expect_err("the two-batch write was accepted — P11 must fail");
+        assert_eq!(
+            why,
+            "a two-batch `write` was ACCEPTED — a write frame's arrow_ipc payload must carry \
+             exactly one record batch, and a multi-batch frame must be refused with a typed \
+             error frame"
+        );
+        probe_order_book(&socket)
+            .await
+            .expect("the rogue violates P11 alone — P10 must pass");
+        probe_error_frame_text(&socket)
+            .await
+            .expect("the rogue violates P11 alone — P12 must pass");
+    }
+
+    /// P12's designated rogue: a destination whose induced refusal
+    /// carries a client rendering in its message (`fatal destination
+    /// error: boom`) fails with the pinned evidence — and violates P12
+    /// ALONE (the refusal still ARRIVES as a typed error frame, so the
+    /// order book holds and the other session clauses pass).
+    #[tokio::test]
+    async fn a_client_rendering_in_a_session_refusal_fails_p12() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::RenderedRefusal);
+        let why = probe_error_frame_text(&socket)
+            .await
+            .expect_err("the refusal message carries a client rendering — P12 must fail");
+        assert_eq!(
+            why,
+            "the out-of-order `write` refusal: classification rendered inside the message — \
+             the frame carries cause text; classification travels as the enum (the message \
+             begins with `fatal destination error: `)"
+        );
+        probe_order_book(&socket)
+            .await
+            .expect("the rogue violates P12 alone — P10 must pass");
+        probe_one_batch_write(&socket)
+            .await
+            .expect("the rogue violates P12 alone — P11 must pass");
     }
 
     /// P10's third designated rogue: a destination that never answers

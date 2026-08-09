@@ -190,6 +190,22 @@ pub const CLAUSES: &[Clause] = &[
                      after close is answered.",
     },
     Clause {
+        id: "P11",
+        title: "one Arrow batch per write frame",
+        definition: "Every write frame's arrow_ipc payload must be one Arrow IPC stream \
+                     carrying exactly one record batch — a multi-batch write frame must be \
+                     refused with a typed error frame, never accepted. Induced with a \
+                     two-batch frame on the live socket.",
+    },
+    Clause {
+        id: "P12",
+        title: "write-side error frames carry cause text",
+        definition: "A session refusal must arrive as a typed error frame carrying a real \
+                     classification value and bare cause text — never a client-side rendering \
+                     baked into the message. Judged at the induced out-of-order write and \
+                     already-receipted publish refusals.",
+    },
+    Clause {
         id: "K-S1",
         title: "SIGKILL before the first read, then typed error not hang",
         definition: "The connector is SIGKILLed after the handshake, before any read is opened. \

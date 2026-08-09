@@ -3,7 +3,7 @@
 //! two-batch arrow frame, a client rendering inside a frame message, a
 //! second session accepted, a slot never reclaimed, an incomplete
 //! pre-handshake Spec reply, a read stream held open forever past its
-//! scripted frames), which is the
+//! scripted frames, a two-batch write accepted), which is the
 //! whole point: certification demands every clause be PROVEN able to
 //! fail, and only a server willing to violate the rules can prove it.
 //! The 039 idiom (rdlt-connector-client's rogue fixture) promoted into
@@ -438,6 +438,16 @@ pub(crate) enum OrderBookScript {
     /// Answers `written` to a write on a never-ensured table — the
     /// write-before-ensure refusal is missing.
     AcceptWriteBeforeEnsure,
+    /// Answers `written` to a write whose arrow_ipc payload carries
+    /// more than one record batch — the one-batch refusal is missing
+    /// (P11's designated rogue; the sdk's serve half refuses such a
+    /// frame itself, so a violation NEEDS a rogue).
+    AcceptMultiBatchWrite,
+    /// Scripts its induced write-before-ensure refusal with a client
+    /// rendering baked into the message (`fatal destination error: `) —
+    /// the frame carries a rendered classification where bare cause
+    /// text belongs (P12's designated rogue).
+    RenderedRefusal,
     /// Reports an existing receipt for every asked load, accepts
     /// `replay`, then ALSO accepts `publish` with a freshly minted
     /// receipt — the replay-vs-publish exclusivity is missing.
@@ -459,6 +469,14 @@ pub(crate) struct RogueOrderBook {
     /// The `(load_id, commit_seq)` pairs a `publish` committed, shared
     /// across sessions the way a real destination's receipt log is.
     published: Arc<Mutex<HashSet<(String, u64)>>>,
+}
+
+/// Does `bytes` decode as one Arrow IPC stream carrying MORE than one
+/// record batch? Undecodable bytes are not the multi-batch case — the
+/// conformant script refuses exactly the one violation P11 induces,
+/// judged by the same counter the P5/P11 probes read the wire with.
+fn multi_batch(bytes: &[u8]) -> bool {
+    matches!(crate::wire::count_batches(bytes), Ok(count) if count > 1)
 }
 
 /// One serialized `CommitReceipt` for `(load, seq)` — the rogue's
@@ -497,15 +515,26 @@ impl RogueOrderBook {
                 session_reply::Reply::Ensured(proto::Empty {})
             }
             Some(session_request::Request::Write(write)) => {
-                if matches!(self.script, OrderBookScript::AcceptWriteBeforeEnsure)
-                    || ensured.contains(&write.table)
+                if !matches!(self.script, OrderBookScript::AcceptWriteBeforeEnsure)
+                    && !ensured.contains(&write.table)
                 {
-                    session_reply::Reply::Written(proto::Empty {})
-                } else {
+                    // The rendered-refusal script violates the frame's
+                    // TEXT here, not the order book: the refusal still
+                    // arrives, carrying a client rendering.
+                    let message = match self.script {
+                        OrderBookScript::RenderedRefusal => "fatal destination error: boom",
+                        _ => "write before ensure_table",
+                    };
+                    session_reply::Reply::Error(error_frame(Classification::Fatal, message))
+                } else if !matches!(self.script, OrderBookScript::AcceptMultiBatchWrite)
+                    && multi_batch(&write.arrow_ipc)
+                {
                     session_reply::Reply::Error(error_frame(
                         Classification::Fatal,
-                        "write before ensure_table",
+                        "one record batch per write frame",
                     ))
+                } else {
+                    session_reply::Reply::Written(proto::Empty {})
                 }
             }
             Some(session_request::Request::ExistingReceipt(existing)) => {
