@@ -38,7 +38,7 @@ impl Source for AmnesiacSource {
 
 #[tokio::test]
 async fn source_ignoring_since_fails_s1_by_name() {
-    let failures = verify_source(&AmnesiacSource).await;
+    let failures = verify_source(&AmnesiacSource).await.failures;
     assert!(
         failures.iter().any(|f| f.clause == "S1"),
         "expected an S1 diagnostic, got: {failures:?}"
@@ -132,6 +132,9 @@ async fn destination_without_idempotent_commit_fails_d3_by_name() {
 /// Violates S2 (never checkpoints) AND S4 (errors on a closed channel).
 /// Pins the generation-1 defect this generation fixes: the S2 `continue`
 /// skipped the S4 check, so the second violation was never reported.
+/// The stream DECLARES a cursor deliberately — a declared cursor with
+/// no checkpoints is S2's violation, where an undeclared one is the
+/// snapshot door's honest skip (`test_conformance_snapshot.rs`).
 struct DoublyBrokenSource;
 
 #[async_trait]
@@ -141,7 +144,7 @@ impl Source for DoublyBrokenSource {
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
-        Ok(vec![StreamSpec::new("events")])
+        Ok(vec![StreamSpec::new("events").with_cursor_field("a")])
     }
 
     async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
@@ -156,7 +159,7 @@ impl Source for DoublyBrokenSource {
 
 #[tokio::test]
 async fn both_s2_and_s4_are_reported_independently() {
-    let failures = verify_source(&DoublyBrokenSource).await;
+    let failures = verify_source(&DoublyBrokenSource).await.failures;
     for clause in ["S2", "S4"] {
         assert!(
             failures.iter().any(|f| f.clause == clause),
@@ -267,7 +270,7 @@ impl Source for TeardownFailingSource {
 
 #[tokio::test]
 async fn a_source_that_fails_after_dropping_its_feed_is_not_certified() {
-    let failures = verify_source(&TeardownFailingSource).await;
+    let failures = verify_source(&TeardownFailingSource).await.failures;
     assert!(
         failures
             .iter()

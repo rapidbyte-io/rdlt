@@ -48,15 +48,30 @@ Exit codes:
 Every clause is timeout-bounded: a connector that stalls FAILS the
 clause — the certifier never hangs.
 
-### No `--probe` in v0
+### Destination read-back: `--probe-cmd`
 
 The destination read-back clauses (D1–D6, D8) and the kill matrix's
 convergence judgment count reader-visible rows, which the wire cannot
-do — that needs a per-destination table probe. The bin has no
-`--probe` yet, so those clauses render Skip with the reason; the
-library API (`certify_destination`, `kill_matrix_destination`)
-accepts a `TableProbe` and certifies them today. The bin gains
-`--probe` when a portable probe format exists.
+do — that needs a per-destination table probe. `--probe-cmd '<sh
+line>'` supplies one as a shell line: `{{table}}` is substituted (only
+table names matching `[A-Za-z0-9_]+` are ever spliced in), the line
+runs via `sh -c` with a bounded timeout, and its stdout must be one
+number — the reader-visible row count.
+
+```console
+$ rdlt-certify --role destination --config config.json \
+    --probe-cmd 'psql "$DSN" -Atc "SELECT count(*) FROM {{table}}"' \
+    io.example.warehouse
+```
+
+**The command line may carry credentials.** It is never echoed: no
+report line or failure message repeats it — a probe failure names what
+happened (a non-zero exit, unparseable stdout, a timeout) and fails
+the clause under evaluation. Without `--probe-cmd` the read-back
+clauses render Skip with the reason. The flag is destination-only:
+combining it with `--role source` is a usage error. The library API
+(`certify_destination`, `kill_matrix_destination`) takes a
+`TableProbe` directly.
 
 ## The clauses
 
@@ -65,7 +80,7 @@ The same vocabulary `--explain` prints, verbatim:
 | Id | Title | Definition |
 |----|-------|------------|
 | S1 | checkpoint resume law | For every checkpoint the source emits, one full read equals the rows covered by that checkpoint followed by a resumed read since it — resuming from any checkpoint loses nothing and repeats nothing. |
-| S2 | checkpoint coverage | A stream must checkpoint at least once during a read. A stream that never checkpoints cannot be certified for resume and fails by name. |
+| S2 | checkpoint coverage | A stream must checkpoint at least once during a read. A stream that never checkpoints cannot be certified for resume and fails by name — unless it declares no cursor field at all: an honestly-declared snapshot stream is skipped with the reason, never vacuously passed. |
 | S4 | prompt cancellation | When the record channel closes mid-read, the source stops promptly and returns Ok — never an error, never a hang. |
 | D1 | staging invisibility | Rows written into a load session but not yet committed are invisible to readers of the table. |
 | D2 | atomic state-with-data commit | A commit persists the pipeline's state document atomically with the data: reading state back afterward returns exactly the committed cursor. |

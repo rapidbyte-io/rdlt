@@ -44,7 +44,8 @@ use super::support::spawn::built_bin;
 /// Two cursor-incremental streams (BOTH cursored: a snapshot stream
 /// never checkpoints —
 /// `source/connector.rs` pins "every run is a full read by definition"
-/// — and S2 fails by name for any stream that cannot certify resume),
+/// — and while an undeclared cursor now skips S2 honestly, this cell
+/// wants S1 exercised for real, which needs actual checkpoints),
 /// with `batch_max_rows: 2` so the five-row stream cuts into three
 /// batches and the tracker emits >=2 intermediate checkpoints (one per
 /// batch whose watermark advanced), giving S1 real resume points to

@@ -25,8 +25,8 @@ use super::support::probe::JsonlDirProbe;
 /// K-clause — `src/destination.rs`'s `NO_PROBE_SKIP` spelling,
 /// byte-identical (that const is `pub(crate)`, so this pin restates it
 /// from outside).
-const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses need one; the library API accepts a \
-     TableProbe (the bin gains --probe when a portable probe format exists)";
+const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
+     (the library API takes a TableProbe directly)";
 
 /// Render entries the report way, for failure messages.
 fn render(entries: &[Entry]) -> String {

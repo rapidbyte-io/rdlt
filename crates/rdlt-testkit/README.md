@@ -23,6 +23,13 @@ state), **D3** (idempotent commits), **D4** (staging teardown), **D5**
 upserts, when declared) for destinations. A failure reads as
 "violates D3", not "test failed".
 
+`verify_source` also reports honest skips: a stream that declares no
+`cursor_field` and never checkpoints is a snapshot stream by its own
+declaration, so S2 is skipped with the reason rather than failed — or
+vacuously passed. Suites that expect every clause exercised fold skips
+back into failures with `expecting_no_skips()`; a stream that quietly
+stops declaring its cursor then stays loud.
+
 For a source that pushes Arrow batches, the S1 row comparison degrades to
 row counts — payload content is opaque to the harness.
 

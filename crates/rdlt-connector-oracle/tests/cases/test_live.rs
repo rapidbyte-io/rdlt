@@ -300,7 +300,7 @@ async fn the_source_is_conformant() {
         ])
         .await;
     let shell = fixture.shell(&[incremental("conf_stream", "CONF_T", "ID")]);
-    assert_conformant(verify_source(&shell).await);
+    assert_conformant(verify_source(&shell).await.expecting_no_skips());
     let _ = StreamName::new("conf_stream");
 }
 

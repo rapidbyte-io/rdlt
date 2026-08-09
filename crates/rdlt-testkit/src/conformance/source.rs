@@ -3,7 +3,10 @@
 //! - **S1** the resume law: for every checkpoint `c`,
 //!   `full_read == rows_covered_by(c) ++ read(since = c)`.
 //! - **S2** checkpoint coverage: a stream that never checkpoints cannot
-//!   be certified for resume and fails by name.
+//!   be certified for resume and fails by name — unless it declares no
+//!   `cursor_field` at all: an honestly-declared snapshot stream earns
+//!   an S2 skip with the reason instead, because its declaration said
+//!   up front that there is no resume to certify.
 //! - **S4** cancellation: a closed channel means stop-promptly-with-Ok,
 //!   never an error, never a hang.
 //!
@@ -14,7 +17,35 @@
 use rdlt_connector::{Cursor, PushPayload, ReadRequest, Source, StreamSpec, records_channel};
 use serde_json::Value;
 
-use super::ConformanceFailure;
+use super::{ConformanceFailure, ConformanceSkip};
+
+/// What one source-conformance run concluded: the violated clauses,
+/// and the clauses the suite could not exercise, each with its reason.
+/// Skips are honest non-verdicts — today only the S2 snapshot door
+/// mints one — distinct from both "held" and "violated".
+#[derive(Debug, Default)]
+pub struct SourceConformance {
+    /// Violated clauses, in discovery order.
+    pub failures: Vec<ConformanceFailure>,
+    /// Clauses the suite could not exercise, with reasons.
+    pub skips: Vec<ConformanceSkip>,
+}
+
+impl SourceConformance {
+    /// The strict fold for suites that expect EVERY clause exercised:
+    /// the failures, plus each skip promoted to a failure of its
+    /// clause. First-party cells assert through this so a stream that
+    /// quietly stops declaring its cursor cannot turn an S2 verdict
+    /// into a silent skip and stay green.
+    pub fn expecting_no_skips(self) -> Vec<ConformanceFailure> {
+        let mut failures = self.failures;
+        failures.extend(self.skips.into_iter().map(|skip| ConformanceFailure {
+            clause: skip.clause,
+            message: format!("not exercised: {}", skip.reason),
+        }));
+        failures
+    }
+}
 
 /// Byte budget for the harness's record channel — large enough that a
 /// well-behaved source never blocks on backpressure while being certified.
@@ -119,25 +150,28 @@ async fn read_all<S: Source>(
 /// Run the full source conformance suite (clauses S1/S2/S4 — see the
 /// module doc). The source must be deterministic (same data on every
 /// uncursored read) and should declare at least one stream with
-/// checkpoints — resume clauses cannot be certified without them.
+/// checkpoints — resume clauses cannot be certified without them (a
+/// stream declaring no `cursor_field` is the recorded exception: it
+/// skips S2 honestly rather than failing it).
 ///
 /// For a source that pushes Arrow batches, the S1 row comparison degrades
 /// to row COUNTS (payload content is opaque to the harness); JSON-pushing
 /// sources are certified on full row content.
-pub async fn verify_source<S: Source>(source: &S) -> Vec<ConformanceFailure> {
+pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
     let mut failures = Vec::new();
+    let mut skips = Vec::new();
     let fail = |clause, message: String| ConformanceFailure { clause, message };
 
     let streams = match source.streams().await {
         Ok(streams) => streams,
         Err(e) => {
             failures.push(fail("S1", format!("streams() failed: {e}")));
-            return failures;
+            return SourceConformance { failures, skips };
         }
     };
     if streams.is_empty() {
         failures.push(fail("S1", "source declares no streams".into()));
-        return failures;
+        return SourceConformance { failures, skips };
     }
 
     for spec in &streams {
@@ -154,14 +188,33 @@ pub async fn verify_source<S: Source>(source: &S) -> Vec<ConformanceFailure> {
             Ok(full) => {
                 let checkpoints = full.checkpoints();
                 if checkpoints.is_empty() {
-                    failures.push(fail(
-                        "S2",
-                        format!(
-                            "stream `{}` never checkpoints — resume (S1) cannot be certified \
-                             and every restart re-reads everything",
-                            spec.name
-                        ),
-                    ));
+                    // The snapshot door: the door turns on the
+                    // DECLARATION, not on the missing checkpoints — a
+                    // stream declaring no cursor field said up front it
+                    // cannot resume, and the read agreed, so there is
+                    // nothing to certify and nothing violated. A
+                    // declared cursor that never checkpoints is the
+                    // broken promise S2 exists to catch.
+                    if spec.cursor_field.is_none() {
+                        skips.push(ConformanceSkip {
+                            clause: "S2",
+                            reason: format!(
+                                "stream `{}` declares no cursor_field and never checkpoints — \
+                                 an honest snapshot stream: there is no resume to certify, and \
+                                 every run re-reads everything",
+                                spec.name
+                            ),
+                        });
+                    } else {
+                        failures.push(fail(
+                            "S2",
+                            format!(
+                                "stream `{}` never checkpoints — resume (S1) cannot be certified \
+                                 and every restart re-reads everything",
+                                spec.name
+                            ),
+                        ));
+                    }
                 }
 
                 // S1 + S2 as one law: for every checkpoint c,
@@ -222,5 +275,5 @@ pub async fn verify_source<S: Source>(source: &S) -> Vec<ConformanceFailure> {
         }
     }
 
-    failures
+    SourceConformance { failures, skips }
 }

@@ -132,9 +132,11 @@ pub async fn certify_source(target: &Target) -> Report {
 
     // S-reuse — the testkit's source conformance suite, verbatim,
     // against the managed adapter: the wire is certified by the SAME
-    // clauses an in-process connector answers to.
+    // clauses an in-process connector answers to. The suite's skips
+    // fold as Skip entries — an honestly-declared snapshot stream's S2
+    // renders with its reason, never as a vacuous Pass.
     match tokio::time::timeout(CLAUSE_TIMEOUT, verify_source(&managed)).await {
-        Ok(failures) => report.absorb(failures, &SOURCE_CLAUSES),
+        Ok(outcome) => report.absorb(outcome.failures, outcome.skips, &SOURCE_CLAUSES),
         Err(_elapsed) => {
             for clause in SOURCE_CLAUSES {
                 report.fail(clause, timed_out());

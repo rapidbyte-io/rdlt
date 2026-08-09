@@ -205,8 +205,20 @@ fn explain_covers_the_whole_vocabulary_with_exit_0() {
     }
 }
 
-/// `--kill-matrix` appends the K-clauses to the report. The bin has no
-/// --probe in v0, so the destination K-arms are honest Skips (read-back
+/// Write a file-destination config document rooted at `out_root`; hand
+/// back the config file's path.
+fn dest_config(dir: &Path, out_root: &Path) -> std::path::PathBuf {
+    let config = serde_json::json!({
+        "path": out_root.display().to_string(),
+        "format": "jsonl",
+    });
+    let path = dir.join("config.json");
+    std::fs::write(&path, config.to_string()).expect("the config file writes");
+    path
+}
+
+/// `--kill-matrix` appends the K-clauses to the report. Without
+/// `--probe-cmd` the destination K-arms are honest Skips (read-back
 /// convergence needs a probe) while the probe-independent session
 /// clauses still certify — skips do not refuse, exit 0.
 #[test]
@@ -214,12 +226,7 @@ fn the_kill_matrix_flag_appends_the_k_clauses() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out_root = dir.path().join("out");
     std::fs::create_dir(&out_root).expect("the output root creates");
-    let config = serde_json::json!({
-        "path": out_root.display().to_string(),
-        "format": "jsonl",
-    });
-    let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, config.to_string()).expect("the config file writes");
+    let config_path = dest_config(dir.path(), &out_root);
     let bin = built_bin("rdlt-connector-file");
 
     let output = certify(&[
@@ -245,4 +252,155 @@ fn the_kill_matrix_flag_appends_the_k_clauses() {
             "without a probe {clause} must Skip:\n{stdout}"
         );
     }
+}
+
+/// `--probe-cmd` wires a shell read-back into the D-clauses: the
+/// command is CALLED with `{{table}}` substituted — proven by the
+/// marker file the command itself appends, never by parsing the probe's
+/// echo out of certifier output — and the probed count drives the
+/// judgments (a constant 3 contradicts D1's staged-invisibility zero
+/// and D4's one visible row, so the run FAILS rather than skipping).
+/// No stream may echo the command line: it can carry credentials.
+#[test]
+fn probe_cmd_drives_the_read_back_clauses_and_is_never_echoed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_root = dir.path().join("out");
+    std::fs::create_dir(&out_root).expect("the output root creates");
+    let config_path = dest_config(dir.path(), &out_root);
+    let marker = dir.path().join("probe-marker");
+    let probe_line = format!("echo {{{{table}}}} >> {}; echo 3", marker.display());
+    let bin = built_bin("rdlt-connector-file");
+
+    let output = certify(&[
+        "--role",
+        "destination",
+        "--config",
+        config_path.to_str().expect("utf-8 path"),
+        "--probe-cmd",
+        &probe_line,
+        bin.to_str().expect("utf-8 path"),
+    ]);
+
+    let stdout = stdout_of(&output);
+    let stderr = stderr_of(&output);
+    let marker_text =
+        std::fs::read_to_string(&marker).expect("the probe command ran and wrote its marker");
+    assert!(
+        marker_text.contains("rdlt_conf_t"),
+        "{{{{table}}}} must be substituted into the probe line; marker held:\n{marker_text}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a constant-3 probe contradicts the clauses:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("FAIL D1"), "stdout:\n{stdout}");
+    assert!(
+        !stdout.contains("SKIP D1"),
+        "with a probe D1 must be judged, not skipped:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("found 3"),
+        "the probed 3 must reach the clause evidence (D4 names the count it found):\n{stdout}"
+    );
+    for text in [&stdout, &stderr] {
+        assert!(
+            !text.contains(&probe_line),
+            "no output may echo the probe command line:\n{text}"
+        );
+    }
+}
+
+/// A probe that cannot answer FAILS the read-back clause naming the
+/// probe — exit 1 — and the failure names the exit status, never the
+/// command line.
+#[test]
+fn a_failing_probe_cmd_fails_the_read_back_clause_naming_the_probe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_root = dir.path().join("out");
+    std::fs::create_dir(&out_root).expect("the output root creates");
+    let config_path = dest_config(dir.path(), &out_root);
+    let bin = built_bin("rdlt-connector-file");
+
+    let output = certify(&[
+        "--role",
+        "destination",
+        "--config",
+        config_path.to_str().expect("utf-8 path"),
+        "--probe-cmd",
+        "exit 1",
+        bin.to_str().expect("utf-8 path"),
+    ]);
+
+    let stdout = stdout_of(&output);
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains(
+            "FAIL D1 (staging invisibility): probe failed: the probe command \
+                         failed: exit status: 1"
+        ),
+        "the read-back clause must fail naming the probe's exit:\n{stdout}"
+    );
+    for text in [&stdout, &stderr] {
+        assert!(
+            !text.contains("exit 1"),
+            "no output may echo the probe command line:\n{text}"
+        );
+    }
+}
+
+/// Probe stdout that is not one u64 FAILS the clause naming the
+/// unparseable output — the output, never the command that produced it.
+#[test]
+fn an_unparseable_probe_count_fails_naming_the_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_root = dir.path().join("out");
+    std::fs::create_dir(&out_root).expect("the output root creates");
+    let config_path = dest_config(dir.path(), &out_root);
+    let bin = built_bin("rdlt-connector-file");
+
+    let output = certify(&[
+        "--role",
+        "destination",
+        "--config",
+        config_path.to_str().expect("utf-8 path"),
+        "--probe-cmd",
+        "echo notanumber",
+        bin.to_str().expect("utf-8 path"),
+    ]);
+
+    let stdout = stdout_of(&output);
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("the probe command printed `notanumber`, not one u64 row count"),
+        "the failure must name the unparseable output:\n{stdout}"
+    );
+    for text in [&stdout, &stderr] {
+        assert!(
+            !text.contains("echo notanumber"),
+            "no output may echo the probe command line:\n{text}"
+        );
+    }
+}
+
+/// `--probe-cmd` is a destination read-back seam: beside `--role
+/// source` it is a usage error — clap's exit 2, before any spawn — and
+/// the refusal names the flag without echoing its value.
+#[test]
+fn probe_cmd_with_role_source_is_a_usage_error() {
+    let output = certify(&["--role", "source", "--probe-cmd", "echo 3", "whatever"]);
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(2), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("--probe-cmd"),
+        "the usage error must name the flag:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("echo 3"),
+        "the usage error must not echo the probe command line:\n{stderr}"
+    );
+    assert!(output.stdout.is_empty(), "a usage error writes no report");
 }

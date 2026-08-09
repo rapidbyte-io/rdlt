@@ -26,7 +26,7 @@
 //!         MemoryBatch::new(vec![json!({"id": 4})]).with_checkpoint(3),
 //!     ],
 //! )]);
-//! assert_conformant(verify_source(&source).await);
+//! assert_conformant(verify_source(&source).await.expecting_no_skips());
 //! # });
 //! ```
 //!
@@ -47,8 +47,9 @@ pub mod gate;
 pub mod memory;
 
 pub use conformance::{
-    ConformanceFailure, assert_conformant, destination::ProbeError, destination::TableProbe,
-    destination::verify_destination, source::verify_source,
+    ConformanceFailure, ConformanceSkip, assert_conformant, destination::ProbeError,
+    destination::TableProbe, destination::verify_destination, source::SourceConformance,
+    source::verify_source,
 };
 pub use crash::{
     CrashDestination, FaultPoint, armed_crash_points, assert_registry_matches_sources,

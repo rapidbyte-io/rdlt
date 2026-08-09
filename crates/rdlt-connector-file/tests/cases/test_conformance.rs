@@ -46,5 +46,5 @@ async fn the_source_is_conformant_over_planted_files() {
     );
     let shell = rdlt_connector_file::source::Shell::new(jsonl_source(dir.path(), "data/*.jsonl"))
         .expect("valid");
-    assert_conformant(verify_source(&shell).await);
+    assert_conformant(verify_source(&shell).await.expecting_no_skips());
 }

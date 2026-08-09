@@ -19,7 +19,7 @@ async fn memory_source_is_conformant() {
             MemoryBatch::new(vec![json!({"a": 4})]).with_checkpoint(3),
         ],
     )]);
-    assert_conformant(verify_source(&source).await);
+    assert_conformant(verify_source(&source).await.expecting_no_skips());
 }
 
 struct MemoryProbe(MemoryDestination);

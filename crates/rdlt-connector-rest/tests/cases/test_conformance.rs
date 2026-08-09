@@ -178,7 +178,7 @@ async fn error_classification_matches_the_contract() {
 async fn rest_source_is_conformant() {
     let server = mock_api().await;
     let source = Shell::from_yaml(&config_yaml(&server.uri())).expect("config");
-    assert_conformant(verify_source(&source).await);
+    assert_conformant(verify_source(&source).await.expecting_no_skips());
 }
 
 /// Feature 014 US2 (T009): a 429 with Retry-After within the cap waits

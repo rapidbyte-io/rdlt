@@ -33,7 +33,7 @@ async fn a_framework_source_passes_the_conformance_kit() {
     let connector = Ticker::assemble(config).expect("assemble");
     let shell = source::shell(connector);
     assert_eq!(shell.spec().name, "ticker");
-    assert_conformant(verify_source(&shell).await);
+    assert_conformant(verify_source(&shell).await.expecting_no_skips());
 }
 
 /// The destination kit: fresh state, idempotent DDL, staging

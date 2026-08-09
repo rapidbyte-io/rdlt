@@ -87,8 +87,8 @@ const RECLAIM_POLL: Duration = Duration::from_millis(100);
 /// supplied — certification never silently narrows to a smaller
 /// passing set. Shared with the kill matrix's destination arms
 /// ([`crate::kill`]): their convergence assert is a read-back too.
-pub(crate) const NO_PROBE_SKIP: &str = "no table probe supplied — read-back clauses need one; the library API accepts a \
-     TableProbe (the bin gains --probe when a portable probe format exists)";
+pub(crate) const NO_PROBE_SKIP: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
+     (the library API takes a TableProbe directly)";
 
 /// The skip reason D8 carries for a destination that declares no merge
 /// capability — the suite asserts D8 only for merge-capable
@@ -227,9 +227,9 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             match tokio::time::timeout(CLAUSE_TIMEOUT, verify_destination(&managed, probe)).await {
                 Ok(failures) => {
                     if merge {
-                        report.absorb(failures, &DEST_CLAUSES);
+                        report.absorb(failures, Vec::new(), &DEST_CLAUSES);
                     } else {
-                        report.absorb(failures, &["D1", "D2", "D3", "D4", "D5", "D6"]);
+                        report.absorb(failures, Vec::new(), &["D1", "D2", "D3", "D4", "D5", "D6"]);
                         report.skip("D8", NO_MERGE_SKIP.to_string());
                     }
                 }

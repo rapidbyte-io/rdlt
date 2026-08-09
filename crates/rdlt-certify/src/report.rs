@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use rdlt_testkit::conformance::ConformanceFailure;
+use rdlt_testkit::conformance::{ConformanceFailure, ConformanceSkip};
 
 /// The certification bar's no-hang rule: every clause is bounded by this
 /// budget — a connector that stalls FAILS the clause, the certifier
@@ -62,7 +62,9 @@ pub const CLAUSES: &[Clause] = &[
         id: "S2",
         title: "checkpoint coverage",
         definition: "A stream must checkpoint at least once during a read. A stream that never \
-                     checkpoints cannot be certified for resume and fails by name.",
+                     checkpoints cannot be certified for resume and fails by name — unless it \
+                     declares no cursor field at all: an honestly-declared snapshot stream is \
+                     skipped with the reason, never vacuously passed.",
     },
     Clause {
         id: "S4",
@@ -383,23 +385,37 @@ impl Report {
 
     /// The S/D-reuse fold: map one conformance-suite run into clause
     /// entries. Every clause in `asserted` gets a verdict — each failure
-    /// naming it becomes a `Fail` at that clause's position, and an
-    /// asserted clause no failure mentions is a `Pass` (the suite ran
-    /// and found nothing against it). A failure naming a clause OUTSIDE
-    /// `asserted` is still folded in as a `Fail` — never dropped.
-    pub(crate) fn absorb(&mut self, failures: Vec<ConformanceFailure>, asserted: &[&'static str]) {
+    /// naming it becomes a `Fail` at that clause's position, each skip
+    /// naming it a `Skip` (the suite could not exercise it, and says
+    /// why), and an asserted clause neither mentions is a `Pass` (the
+    /// suite ran and found nothing against it). A failure or skip
+    /// naming a clause OUTSIDE `asserted` is still folded in — never
+    /// dropped.
+    pub(crate) fn absorb(
+        &mut self,
+        failures: Vec<ConformanceFailure>,
+        skips: Vec<ConformanceSkip>,
+        asserted: &[&'static str],
+    ) {
         for clause in asserted {
-            let mut violated = false;
+            let mut mentioned = false;
             for failure in failures.iter().filter(|f| f.clause == *clause) {
-                violated = true;
+                mentioned = true;
                 self.fail(clause, failure.message.clone());
             }
-            if !violated {
+            for skip in skips.iter().filter(|s| s.clause == *clause) {
+                mentioned = true;
+                self.skip(clause, skip.reason.clone());
+            }
+            if !mentioned {
                 self.pass(clause);
             }
         }
         for failure in failures.iter().filter(|f| !asserted.contains(&f.clause)) {
             self.fail(failure.clause, failure.message.clone());
+        }
+        for skip in skips.iter().filter(|s| !asserted.contains(&s.clause)) {
+            self.skip(skip.clause, skip.reason.clone());
         }
     }
 }
@@ -419,6 +435,13 @@ mod tests {
         }
     }
 
+    fn skip(clause: &'static str, reason: &str) -> ConformanceSkip {
+        ConformanceSkip {
+            clause,
+            reason: reason.to_string(),
+        }
+    }
+
     /// A failure maps to `Fail` at its asserted position; asserted
     /// clauses no failure mentions pass — here `entries[0]` is S1's
     /// `Fail` and S2/S4 follow as `Pass`.
@@ -427,6 +450,7 @@ mod tests {
         let mut report = Report::default();
         report.absorb(
             vec![failure("S1", "the resume law broke")],
+            vec![],
             &["S1", "S2", "S4"],
         );
         assert_eq!(
@@ -443,7 +467,7 @@ mod tests {
     #[test]
     fn absorb_of_no_failures_passes_every_asserted_clause() {
         let mut report = Report::default();
-        report.absorb(vec![], &["S1", "S2", "S4"]);
+        report.absorb(vec![], vec![], &["S1", "S2", "S4"]);
         assert_eq!(
             report.render_text(),
             "PASS S1 (checkpoint resume law)\n\
@@ -465,6 +489,7 @@ mod tests {
                 failure("S1", "stream `b`: content differs"),
                 failure("D3", "a clause this fold was not asked to assert"),
             ],
+            vec![],
             &["S1", "S2"],
         );
         assert_eq!(
@@ -475,6 +500,27 @@ mod tests {
              FAIL D3 (idempotent commit receipts): a clause this fold was not asked to \
              assert\n"
         );
+    }
+
+    /// A skip folds as `Skip` at its asserted position — never a
+    /// vacuous `Pass`, never dropped — and skips do not refuse: the
+    /// report still passes. The S2 snapshot door is the one minting
+    /// suite-level skips today.
+    #[test]
+    fn absorb_folds_skips_as_skip_entries() {
+        let mut report = Report::default();
+        report.absorb(
+            vec![],
+            vec![skip("S2", "stream `events` declares no cursor_field")],
+            &["S1", "S2", "S4"],
+        );
+        assert_eq!(
+            report.render_text(),
+            "PASS S1 (checkpoint resume law)\n\
+             SKIP S2 (checkpoint coverage): stream `events` declares no cursor_field\n\
+             PASS S4 (prompt cancellation)\n"
+        );
+        assert!(report.passed(), "a skip is not a failure");
     }
 
     /// The one timeout spelling, full-string — the certification bar's

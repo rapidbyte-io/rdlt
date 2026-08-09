@@ -10,4 +10,4 @@ pub mod destination;
 mod failure;
 pub mod source;
 
-pub use failure::{ConformanceFailure, assert_conformant};
+pub use failure::{ConformanceFailure, ConformanceSkip, assert_conformant};

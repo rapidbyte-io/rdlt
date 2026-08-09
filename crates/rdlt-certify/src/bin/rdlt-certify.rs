@@ -10,11 +10,15 @@
 //! resolution/spawn refusal (the runtime's frozen spelling verbatim on
 //! stderr), an unusable `--config`, or bad arguments (clap's default).
 //!
-//! v0 carries NO `--probe`: the destination read-back clauses and the
-//! kill matrix's convergence render Skip with the reason — the library
-//! API (`certify_destination`, `kill_matrix_destination`) takes a
-//! `TableProbe`; the bin gains `--probe` when a portable probe format
-//! exists.
+//! Destination read-back rides `--probe-cmd '<sh line>'`: the line
+//! runs via `sh -c` once per count with `{{table}}` substituted and
+//! must print one number — the reader-visible row count in that table.
+//! The command line may carry credentials, so it is NEVER echoed: no
+//! report line, refusal or probe-failure message repeats it. Without
+//! the flag the read-back clauses and the kill matrix's convergence
+//! render Skip with the reason; the library API
+//! (`certify_destination`, `kill_matrix_destination`) takes a
+//! `TableProbe` directly.
 //!
 //! The config document is read, parsed, and CARRIED — never printed:
 //! no path through this bin echoes config bytes onto either stream
@@ -24,12 +28,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{Parser, ValueEnum};
+use async_trait::async_trait;
+use clap::{CommandFactory as _, Parser, ValueEnum};
 use rdlt_certify::{
     CLAUSES, Target, certify_destination, certify_source, kill_matrix_destination,
     kill_matrix_source,
 };
+use rdlt_connector::core::TableName;
 use rdlt_runtime::{LocalBinaryConnectorProvider, ProviderError};
+use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 use serde_json::Value;
 
 /// Clause failures: the report on stdout names every one.
@@ -79,6 +86,13 @@ struct Args {
     #[arg(long)]
     kill_matrix: bool,
 
+    /// Shell line counting reader-visible rows in one destination
+    /// table: `{{table}}` is substituted, the line runs via `sh -c`,
+    /// and its stdout must be one number. Destinations only. May carry
+    /// credentials — it is never echoed by any report or failure text
+    #[arg(long, value_name = "SH_LINE")]
+    probe_cmd: Option<String>,
+
     /// Report format on stdout
     #[arg(long, value_enum, default_value = "text")]
     report: ReportFormat,
@@ -105,6 +119,19 @@ fn main() -> ExitCode {
         .target
         .expect("clap requires a target unless --explain");
 
+    // `--probe-cmd` is a destination read-back seam; beside `--role
+    // source` it is a usage error, spoken in clap's own voice (exit 2)
+    // WITHOUT echoing the command line the flag carries.
+    if args.probe_cmd.is_some() && matches!(role, CertifyRole::Source) {
+        Args::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--probe-cmd is a destination read-back probe and cannot be combined with \
+                 --role source",
+            )
+            .exit();
+    }
+
     let config = match load_config(args.config.as_deref()) {
         Ok(config) => config,
         Err(why) => {
@@ -113,12 +140,19 @@ fn main() -> ExitCode {
         }
     };
     let target = resolve(&named, config);
+    let probe = args.probe_cmd.map(|template| ShellProbe { template });
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a current-thread tokio runtime builds");
-    runtime.block_on(run(role, args.kill_matrix, args.report, &target))
+    runtime.block_on(run(
+        role,
+        args.kill_matrix,
+        args.report,
+        &target,
+        probe.as_ref().map(|shell| shell as &dyn TableProbe),
+    ))
 }
 
 /// The clause vocabulary, one block per clause — id, title, and the
@@ -165,14 +199,83 @@ fn resolve(named: &str, config: Value) -> Target {
     }
 }
 
+/// How long one probe command may run before its count fails.
+/// Deliberately inside the library's 30 s clause budget: a hanging
+/// probe fails naming ITSELF, before the clause it serves times out
+/// and the evidence blames the connector.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The `--probe-cmd` read-back: one shell line, run per count with
+/// `{{table}}` substituted. The template may carry credentials, so no
+/// error below ever repeats it — failures name what happened, never
+/// the command.
+struct ShellProbe {
+    /// The operator's shell line, `{{table}}` and all.
+    template: String,
+}
+
+#[async_trait]
+impl TableProbe for ShellProbe {
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
+        let name = table.as_str();
+        // The substitution guard: only `[A-Za-z0-9_]+` names are ever
+        // spliced into a shell line (every conformance-kit table name
+        // qualifies) — anything else is refused as a probe error, not
+        // handed to the shell and not silently passed.
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(ProbeError {
+                message: format!(
+                    "table name `{name}` is outside [A-Za-z0-9_]+ — refusing to substitute \
+                     it into the probe command"
+                ),
+            });
+        }
+        let line = self.template.replace("{{table}}", name);
+        let run = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(line)
+            .stdin(std::process::Stdio::null())
+            .output();
+        let output = match tokio::time::timeout(PROBE_TIMEOUT, run).await {
+            Err(_elapsed) => {
+                return Err(ProbeError {
+                    message: format!(
+                        "the probe command did not finish within {}s",
+                        PROBE_TIMEOUT.as_secs()
+                    ),
+                });
+            }
+            Ok(Err(error)) => {
+                return Err(ProbeError {
+                    message: format!("the probe command could not run: {error}"),
+                });
+            }
+            Ok(Ok(output)) => output,
+        };
+        if !output.status.success() {
+            return Err(ProbeError {
+                message: format!("the probe command failed: {}", output.status),
+            });
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let count = stdout.trim();
+        count.parse::<u64>().map_err(|_unparseable| ProbeError {
+            message: format!("the probe command printed `{count}`, not one u64 row count"),
+        })
+    }
+}
+
 /// Certification proper: pre-flight the target, run the role's
 /// certifier (plus the kill matrix when asked), render the one report
-/// to stdout, and speak the exit-code vocabulary.
+/// to stdout, and speak the exit-code vocabulary. `probe` is `Some`
+/// exactly when `--probe-cmd` was given — destination-only, enforced
+/// at argument time.
 async fn run(
     role: CertifyRole,
     kill_matrix: bool,
     format: ReportFormat,
     target: &Target,
+    probe: Option<&dyn TableProbe>,
 ) -> ExitCode {
     if let Some(refused) = preflight(target).await {
         eprintln!("{refused}");
@@ -181,12 +284,12 @@ async fn run(
 
     let mut report = match role {
         CertifyRole::Source => certify_source(target).await,
-        CertifyRole::Destination => certify_destination(target, None).await,
+        CertifyRole::Destination => certify_destination(target, probe).await,
     };
     if kill_matrix {
         let entries = match role {
             CertifyRole::Source => kill_matrix_source(target).await,
-            CertifyRole::Destination => kill_matrix_destination(target, None).await,
+            CertifyRole::Destination => kill_matrix_destination(target, probe).await,
         };
         report.entries.extend(entries);
     }
