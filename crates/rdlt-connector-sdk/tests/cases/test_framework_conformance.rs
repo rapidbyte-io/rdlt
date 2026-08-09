@@ -8,7 +8,7 @@ use rdlt_connector::{Destination, Source};
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::source::SourceConnector;
 use rdlt_connector_sdk::{destination, source};
-use rdlt_testkit::{TableProbe, assert_conformant, verify_destination, verify_source};
+use rdlt_testkit::{ProbeError, TableProbe, assert_conformant, verify_destination, verify_source};
 
 use super::example::{SharedStore, Sink, Ticker, TickerConfig, visible_rows};
 
@@ -19,8 +19,8 @@ struct StoreProbe {
 
 #[async_trait::async_trait]
 impl TableProbe for StoreProbe {
-    async fn count(&self, table: &TableName) -> u64 {
-        visible_rows(&self.store, table.as_str())
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
+        Ok(visible_rows(&self.store, table.as_str()))
     }
 }
 

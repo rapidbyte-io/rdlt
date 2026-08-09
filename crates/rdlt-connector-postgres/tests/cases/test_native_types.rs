@@ -129,7 +129,13 @@ async fn native_types_land_with_exact_values() {
         connection_string: connection_string.clone(),
         schema: "fid".into(),
     };
-    assert_eq!(probe.count(&TableName::new("fidelity")).await, 3);
+    assert_eq!(
+        probe
+            .count(&TableName::new("fidelity"))
+            .await
+            .expect("probe"),
+        3
+    );
 
     let client = common::connect(&connection_string).await;
 

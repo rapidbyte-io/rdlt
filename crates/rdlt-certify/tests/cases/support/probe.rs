@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use rdlt_connector::core::TableName;
-use rdlt_testkit::conformance::destination::TableProbe;
+use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 
 /// Counts reader-visible rows in a jsonl file destination rooted at
 /// `root`: parsed jsonl rows in `<root>/<table>/**`, staging and
@@ -19,8 +19,8 @@ pub(crate) struct JsonlDirProbe {
 
 #[async_trait]
 impl TableProbe for JsonlDirProbe {
-    async fn count(&self, table: &TableName) -> u64 {
-        visible_rows(&self.root.join(table.as_str()))
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
+        Ok(visible_rows(&self.root.join(table.as_str())))
     }
 }
 

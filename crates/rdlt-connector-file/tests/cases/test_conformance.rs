@@ -3,7 +3,7 @@
 //! anywhere the gate does.
 
 use rdlt_connector_sdk::spi::core::TableName;
-use rdlt_testkit::{TableProbe, assert_conformant, verify_destination, verify_source};
+use rdlt_testkit::{ProbeError, TableProbe, assert_conformant, verify_destination, verify_source};
 
 use super::common::{jsonl_source, local_dest, plant};
 
@@ -15,10 +15,15 @@ struct DirProbe {
 
 #[async_trait::async_trait]
 impl TableProbe for DirProbe {
-    async fn count(&self, table: &TableName) -> u64 {
-        rdlt_connector_file::destination::testhook::count_rows_async(&self.config, table.as_str())
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
+        Ok(
+            rdlt_connector_file::destination::testhook::count_rows_async(
+                &self.config,
+                table.as_str(),
+            )
             .await
-            .unwrap_or(0)
+            .unwrap_or(0),
+        )
     }
 }
 

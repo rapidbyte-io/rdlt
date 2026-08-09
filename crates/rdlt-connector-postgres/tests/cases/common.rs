@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use rdlt_connector_duckdb::destination::{Config, Shell, testhook};
 use rdlt_connector_postgres::source;
-use rdlt_testkit::TableProbe;
+use rdlt_testkit::{ProbeError, TableProbe};
 use tokio_postgres::Client;
 
 /// A raw client on `connection_string`, its connection task detached — the
@@ -104,7 +104,7 @@ pub struct Probe {
 
 #[async_trait]
 impl TableProbe for Probe {
-    async fn count(&self, table: &rdlt_connector_sdk::spi::TableName) -> u64 {
-        count(&self.connection_string, &self.schema, table.as_str()).await
+    async fn count(&self, table: &rdlt_connector_sdk::spi::TableName) -> Result<u64, ProbeError> {
+        Ok(count(&self.connection_string, &self.schema, table.as_str()).await)
     }
 }

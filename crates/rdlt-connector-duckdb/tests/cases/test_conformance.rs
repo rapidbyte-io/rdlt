@@ -9,7 +9,8 @@ use rdlt_connector_sdk::spi::StreamSpec;
 use rdlt_connector_sdk::spi::core::{TableName, WriteMode};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{
-    MemoryBatch, MemorySource, MemoryStream, TableProbe, assert_conformant, verify_destination,
+    MemoryBatch, MemorySource, MemoryStream, ProbeError, TableProbe, assert_conformant,
+    verify_destination,
 };
 use serde_json::json;
 
@@ -27,19 +28,27 @@ struct FileCount(std::path::PathBuf);
 
 #[async_trait]
 impl TableProbe for FileCount {
-    async fn count(&self, table: &TableName) -> u64 {
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
         let read_only = duckdb::Config::default()
             .access_mode(duckdb::AccessMode::ReadOnly)
             .expect("read-only config");
-        let Ok(conn) = duckdb::Connection::open_with_flags(&self.0, read_only) else {
-            return 0;
-        };
+        // A store the probe cannot even open is an oracle failure, not
+        // an empty table — reporting it as 0 would certify the kit's
+        // invisibility clauses vacuously.
+        let conn =
+            duckdb::Connection::open_with_flags(&self.0, read_only).map_err(|e| ProbeError {
+                message: format!("read-only open of the database file failed: {e}"),
+            })?;
         // The kit's table names pass through quoting to stay one rule.
+        // A failed query means the table does not exist yet, and a
+        // table never created holds 0 published rows — that zero is a
+        // fact (D1 probes before any table exists).
         let ident = format!("\"{}\"", table.as_str().replace('"', "\"\""));
-        conn.query_row(&format!("SELECT count(*) FROM {ident}"), [], |row| {
-            row.get::<_, u64>(0)
-        })
-        .unwrap_or(0)
+        Ok(conn
+            .query_row(&format!("SELECT count(*) FROM {ident}"), [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap_or(0))
     }
 }
 

@@ -47,7 +47,7 @@ pub mod gate;
 pub mod memory;
 
 pub use conformance::{
-    ConformanceFailure, assert_conformant, destination::TableProbe,
+    ConformanceFailure, assert_conformant, destination::ProbeError, destination::TableProbe,
     destination::verify_destination, source::verify_source,
 };
 pub use crash::{

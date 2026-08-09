@@ -4,7 +4,8 @@
 use async_trait::async_trait;
 use rdlt_testkit::conformance::{destination::verify_destination, source::verify_source};
 use rdlt_testkit::{
-    MemoryBatch, MemoryDestination, MemorySource, MemoryStream, TableProbe, assert_conformant,
+    MemoryBatch, MemoryDestination, MemorySource, MemoryStream, ProbeError, TableProbe,
+    assert_conformant,
 };
 use serde_json::json;
 
@@ -25,8 +26,8 @@ struct MemoryProbe(MemoryDestination);
 
 #[async_trait]
 impl TableProbe for MemoryProbe {
-    async fn count(&self, table: &rdlt_connector::TableName) -> u64 {
-        self.0.committed_rows(table.as_str()).len() as u64
+    async fn count(&self, table: &rdlt_connector::TableName) -> Result<u64, ProbeError> {
+        Ok(self.0.committed_rows(table.as_str()).len() as u64)
     }
 }
 

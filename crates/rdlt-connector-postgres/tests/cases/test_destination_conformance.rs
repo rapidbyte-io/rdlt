@@ -61,13 +61,15 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
     assert_eq!(
         probe
             .count(&rdlt_connector_sdk::spi::TableName::new("users"))
-            .await,
+            .await
+            .expect("probe"),
         2
     );
     assert_eq!(
         probe
             .count(&rdlt_connector_sdk::spi::TableName::new("users__tags"))
-            .await,
+            .await
+            .expect("probe"),
         2
     );
 
@@ -100,7 +102,8 @@ async fn flattened_nested_fields_land_and_merge_replaces_child_subtrees() {
     assert_eq!(
         probe
             .count(&rdlt_connector_sdk::spi::TableName::new("users"))
-            .await,
+            .await
+            .expect("probe"),
         2
     );
     let labels: Vec<String> = client

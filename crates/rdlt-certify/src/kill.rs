@@ -471,7 +471,10 @@ async fn converge(
         .map_err(|why| format!("the convergence run failed: {why}"))?;
 
     let expected = FIXTURE_IDS.len() as u64;
-    let found = probe.count(&TableName::new(&identity.table)).await;
+    let found = probe
+        .count(&TableName::new(&identity.table))
+        .await
+        .map_err(|e| format!("the convergence probe failed: {e}"))?;
     if found != expected {
         return Err(format!(
             "convergence failed: table `{}` holds {found} rows where the kill matrix wrote \

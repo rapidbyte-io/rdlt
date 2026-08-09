@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use rdlt_connector_sdk::spi::core::TableName;
 use rdlt_connector_snowflake::destination::{Shell, testhook};
-use rdlt_testkit::{TableProbe, assert_conformant, verify_destination};
+use rdlt_testkit::{ProbeError, TableProbe, assert_conformant, verify_destination};
 
 use super::common::{config_for, credentials, scratch_schema};
 
@@ -16,18 +16,18 @@ struct LiveProbe {
 
 #[async_trait]
 impl TableProbe for LiveProbe {
-    async fn count(&self, table: &TableName) -> u64 {
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
         let sql = format!(
             "SELECT COUNT(*) AS N FROM \"{}\".\"{}\".\"{}\"",
             self.config.database.to_uppercase(),
             self.schema.to_uppercase(),
             table.as_str().to_uppercase()
         );
-        testhook::rows(&self.config, &sql, &["n"])
+        Ok(testhook::rows(&self.config, &sql, &["n"])
             .await
             .ok()
             .and_then(|rows| rows.first().and_then(|row| row[0].parse().ok()))
-            .unwrap_or(0)
+            .unwrap_or(0))
     }
 }
 

@@ -41,9 +41,32 @@ use crate::fixtures;
 /// test.
 #[async_trait]
 pub trait TableProbe: Send + Sync {
-    /// Rows a reader of `table` would see right now.
-    async fn count(&self, table: &TableName) -> u64;
+    /// Rows a reader of `table` would see right now. An `Err` fails the
+    /// clause the suite is evaluating — never report a store you cannot
+    /// read as `Ok(0)`, which would certify invisibility clauses
+    /// vacuously. A table that genuinely has no published rows yet is
+    /// `Ok(0)`: that zero is a fact.
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError>;
 }
+
+/// A probe's own failure — the oracle could not answer, as opposed to
+/// answering "0 rows". The suite fails the clause under evaluation with
+/// this message, attributed to the probe, never to the connector.
+/// Message-only deliberately: a probe may shell out to reach its store,
+/// and this error must never carry a command line.
+#[derive(Debug)]
+pub struct ProbeError {
+    /// What went wrong, in the probe's own words.
+    pub message: String,
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ProbeError {}
 
 /// The suite's three-column logical fixture: two system columns and one
 /// value column, enough for every clause including merge identity.
@@ -114,10 +137,11 @@ pub async fn verify_destination<D: Destination>(
     let mut failures = Vec::new();
     let fail = |clause: &'static str, message: String| ConformanceFailure { clause, message };
 
-    // Run a fallible SPI step; on error, record the clause failure
-    // (message `"{prefix}: {error}"`) and return the failures gathered so
-    // far. The clause id and prefix are the diagnostic the connector
-    // author reads, so they are spelled out verbatim at each call site.
+    // Run a fallible step — an SPI call or a probe count; on error,
+    // record the clause failure (message `"{prefix}: {error}"`) and
+    // return the failures gathered so far. The clause id and prefix are
+    // the diagnostic the connector author reads, so they are spelled out
+    // verbatim at each call site.
     macro_rules! try_step {
         ($clause:expr, $prefix:expr, $step:expr $(,)?) => {
             match $step {
@@ -188,7 +212,8 @@ pub async fn verify_destination<D: Destination>(
             .write(&table, fixture_batch("conf-load-a", &["r1", "r2"], &[1, 2]))
             .await
     );
-    if probe.count(&table).await != 0 {
+    let staged_visible = try_step!("D1", "probe failed", probe.count(&table).await);
+    if staged_visible != 0 {
         failures.push(fail(
             "D1",
             "rows written but not committed are reader-visible (staging must be invisible)".into(),
@@ -222,7 +247,7 @@ pub async fn verify_destination<D: Destination>(
             .commit(commit_meta(&pipeline, &load_a, 1, Some(10)))
             .await
     );
-    let after_first_commit = probe.count(&table).await;
+    let after_first_commit = try_step!("D4", "probe failed", probe.count(&table).await);
     if after_first_commit != 1 {
         failures.push(fail(
             "D4",
@@ -249,7 +274,8 @@ pub async fn verify_destination<D: Destination>(
         }
         Err(e) => failures.push(fail("D3", format!("idempotent re-commit errored: {e}"))),
     }
-    if probe.count(&table).await != after_first_commit {
+    let after_recommit = try_step!("D3", "probe failed", probe.count(&table).await);
+    if after_recommit != after_first_commit {
         failures.push(fail("D3", "re-commit re-published data".into()));
     }
 
@@ -307,7 +333,7 @@ pub async fn verify_destination<D: Destination>(
         .await;
         match outcome {
             Ok(()) => {
-                let count = probe.count(&merge_table).await;
+                let count = try_step!("D8", "probe failed", probe.count(&merge_table).await);
                 if count != 2 {
                     failures.push(fail(
                         "D8",

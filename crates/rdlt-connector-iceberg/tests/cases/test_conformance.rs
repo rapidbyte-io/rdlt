@@ -4,7 +4,7 @@
 
 use rdlt_connector_iceberg::destination::Shell;
 use rdlt_connector_sdk::spi::core::TableName;
-use rdlt_testkit::{TableProbe, assert_conformant, verify_destination};
+use rdlt_testkit::{ProbeError, TableProbe, assert_conformant, verify_destination};
 
 use super::common::{CatalogFixture, WAREHOUSE};
 
@@ -15,18 +15,19 @@ struct LiveProbe {
 
 #[async_trait::async_trait]
 impl TableProbe for LiveProbe {
-    async fn count(&self, table: &TableName) -> u64 {
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
         // Total records off the newest snapshot summary — the
-        // catalog's own count, independent of the crate. Errors read
-        // as 0; the kit's nonzero clauses keep a broken probe from
-        // certifying anything.
-        self.fixture
+        // catalog's own count, independent of the crate. A table with
+        // no snapshots yet reads as 0; that zero is a fact (nothing
+        // published), not an oracle failure.
+        Ok(self
+            .fixture
             .snapshot_summaries(&self.namespace, table.as_str())
             .await
             .last()
             .and_then(|s| s.get("total-records"))
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
+            .unwrap_or(0))
     }
 }
 

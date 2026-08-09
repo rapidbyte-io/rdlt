@@ -8,7 +8,7 @@ use rdlt_connector::{
     SourceError, StateDoc, StreamSpec, TableName, TableSchema, WriteMode,
 };
 use rdlt_testkit::conformance::{destination::verify_destination, source::verify_source};
-use rdlt_testkit::{MemoryDestination, TableProbe};
+use rdlt_testkit::{MemoryDestination, ProbeError, TableProbe};
 use serde_json::json;
 
 /// Violates S1: ignores `since` and re-emits everything from the beginning.
@@ -111,8 +111,8 @@ struct Probe(MemoryDestination);
 
 #[async_trait]
 impl TableProbe for Probe {
-    async fn count(&self, table: &TableName) -> u64 {
-        self.0.committed_rows(table.as_str()).len() as u64
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
+        Ok(self.0.committed_rows(table.as_str()).len() as u64)
     }
 }
 
@@ -190,8 +190,8 @@ struct NoProbe;
 
 #[async_trait]
 impl TableProbe for NoProbe {
-    async fn count(&self, _table: &TableName) -> u64 {
-        0
+    async fn count(&self, _table: &TableName) -> Result<u64, ProbeError> {
+        Ok(0)
     }
 }
 
@@ -203,6 +203,33 @@ async fn an_open_failure_is_attributed_to_the_clause_it_sets_up() {
         (first.clause, first.message.starts_with("open failed: ")),
         ("D6", true),
         "the first open serves the D6 fresh-state check, not D4 teardown: {failures:?}"
+    );
+}
+
+/// A probe whose oracle is itself broken: every count errors. The kit
+/// must FAIL the clause under evaluation naming the probe's error — a
+/// probe error reading as "0 rows" would certify D1's staging
+/// invisibility vacuously, which is exactly the silent zero a fallible
+/// count exists to kill.
+struct BrokenProbe;
+
+#[async_trait]
+impl TableProbe for BrokenProbe {
+    async fn count(&self, _table: &TableName) -> Result<u64, ProbeError> {
+        Err(ProbeError {
+            message: "probe blew up".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
+    let failures = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.clause == "D1" && f.message.contains("probe blew up")),
+        "expected D1 to fail naming the probe error, got: {failures:?}"
     );
 }
 
