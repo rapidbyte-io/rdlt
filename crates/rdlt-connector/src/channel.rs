@@ -207,39 +207,72 @@ impl ByteSized for PushPayload {
     /// nothing, and must never be gated by the budget — a marker that
     /// could not enqueue would stall the commit it announces.
     ///
-    /// KNOWN OVER-COUNT ON THE ARROW ARM, measured and not yet fixed.
-    /// `RecordBatch::get_array_memory_size()` sums each buffer's
-    /// `Buffer::capacity()` — the whole underlying ALLOCATION, not the
-    /// length of the slice that buffer actually views. Arrow's IPC reader
-    /// allocates the entire message body as ONE buffer and hands every
-    /// column a zero-copy slice of it, so a batch decoded from IPC
-    /// reports roughly `n_buffers × body_len` instead of `body_len`. On
-    /// a 17-buffer batch that is ≈17× the batch's true footprint and
-    /// ≈12× what the in-process arm charges for the same rows (an
-    /// in-process batch built through `MutableBuffer`s over-reports only
-    /// ≈1.4×, from capacity doubling — the two comparators are different
-    /// and must not be conflated).
-    ///
-    /// Two consequences, both live today. A source whose batches arrive
-    /// over the connector wire spends its byte budget ~12× too fast, so
-    /// it runs a far narrower in-flight window than the operator
-    /// configured — throughput, never correctness. And any MB/s figure
-    /// derived from this expression publishes ~12× high; treat wire
-    /// overhead computed against it as an upper bound.
-    ///
-    /// A fix belongs here (nothing about it touches the frozen v0 wire —
-    /// the proto declares no byte-budget, credit or window field), but it
-    /// MUST BE MEASURED, not argued: widening the effective window also
-    /// raises resident buffers, and this house has twice measured an
-    /// allocation-removal that the counting argument predicted as a win
-    /// and the instrument recorded as a LOSS.
+    /// The Arrow arm meters the batch's buffer tree itself rather than
+    /// calling `RecordBatch::get_array_memory_size()`, because that
+    /// method sums each buffer's `capacity()` — the whole underlying
+    /// ALLOCATION, not the slice the buffer views. Arrow's IPC reader
+    /// allocates an entire message body as ONE buffer and hands every
+    /// column a zero-copy slice of it, so under capacity-summing a
+    /// decoded batch charges the body once PER BUFFER (measured ≈10-17×
+    /// its footprint), and a wire source burns its budget that many
+    /// times too fast. Summing slice LENGTHS instead makes a decoded
+    /// batch meter ≈ the body it decodes from.
     fn byte_size(&self) -> usize {
         match self {
             PushPayload::RawJson(bytes) => bytes.len(),
-            PushPayload::Arrow(batch) => batch.get_array_memory_size(),
+            PushPayload::Arrow(batch) => arrow_batch_footprint(batch),
             PushPayload::Checkpoint(_) => 0,
         }
     }
+}
+
+/// The bytes an Arrow batch holds: the summed lengths of the distinct
+/// buffer slices reachable from its columns (values, offsets, nulls, and
+/// nested child data, recursively).
+///
+/// Distinctness is by exact slice identity — start pointer plus length.
+/// Two disjoint slices of one allocation both count, because they hold
+/// different bytes; the identical slice reachable twice (one `Arc`'d
+/// array as two columns, a shared dictionary) counts once. Slices that
+/// overlap without coinciding double-charge the overlap — accepted: the
+/// budget's failure directions are asymmetric (over-counting narrows a
+/// healthy window, under-counting uncaps memory), so ties break toward
+/// counting. arrow 58 exposes no slice-footprint API, hence the walk.
+fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    batch
+        .columns()
+        .iter()
+        .map(|column| data_footprint(&column.to_data(), &mut seen))
+        .sum()
+}
+
+/// One node of the walk: this array's own buffers, then its children.
+fn data_footprint(
+    data: &arrow_data::ArrayData,
+    seen: &mut std::collections::HashSet<(usize, usize)>,
+) -> usize {
+    let mut count = |buffer_ptr: usize, buffer_len: usize| -> usize {
+        if seen.insert((buffer_ptr, buffer_len)) {
+            buffer_len
+        } else {
+            0
+        }
+    };
+    let mut total = 0;
+    for buffer in data.buffers() {
+        total += count(buffer.as_ptr() as usize, buffer.len());
+    }
+    if let Some(nulls) = data.nulls() {
+        let buffer = nulls.buffer();
+        total += count(buffer.as_ptr() as usize, buffer.len());
+    }
+    total
+        + data
+            .child_data()
+            .iter()
+            .map(|child| data_footprint(child, seen))
+            .sum::<usize>()
 }
 
 /// What arrived from a source, still holding its byte-budget permit; the
@@ -429,6 +462,130 @@ mod budget_tests {
             .send(Weighted(1))
             .await
             .expect("released by into_value");
+    }
+}
+
+#[cfg(test)]
+mod byte_size_tests {
+    //! The Arrow arm meters what a batch actually HOLDS. The hard case is
+    //! a batch decoded from an IPC stream: every column is a zero-copy
+    //! slice of the one message-body allocation, so any metric that sums
+    //! parent-allocation capacities charges that body once PER BUFFER.
+    use std::sync::Arc;
+
+    use arrow::ipc::reader::StreamReader;
+    use arrow::ipc::writer::StreamWriter;
+    use arrow_array::{ArrayRef, Int64Array, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::*;
+
+    const ROWS: usize = 4096;
+    const INT_COLUMNS: usize = 8;
+    const STRING_WIDTH: usize = 12;
+
+    /// Exactly the bytes the rows require: 8 per int64 cell, plus the
+    /// string payload. Offsets, nulls and padding sit on top of this, so
+    /// it is a hard LOWER bound on any honest footprint.
+    const ROW_PAYLOAD: usize = ROWS * INT_COLUMNS * 8 + ROWS * STRING_WIDTH;
+
+    /// Ten buffers (eight int64 values, string offsets, string values) so
+    /// a meter that charges the whole body allocation per buffer lands
+    /// near 10x — far outside every bound asserted here.
+    fn built_batch() -> RecordBatch {
+        let mut fields: Vec<Field> = (0..INT_COLUMNS)
+            .map(|i| Field::new(format!("n{i}"), DataType::Int64, false))
+            .collect();
+        fields.push(Field::new("s", DataType::Utf8, false));
+        let mut columns: Vec<ArrayRef> = (0..INT_COLUMNS)
+            .map(|i| {
+                Arc::new(Int64Array::from_iter_values(
+                    (0..ROWS as i64).map(|row| row + i as i64),
+                )) as ArrayRef
+            })
+            .collect();
+        columns.push(Arc::new(StringArray::from_iter_values(
+            (0..ROWS).map(|row| format!("row-{row:07}!")),
+        )));
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("a well-formed batch")
+    }
+
+    /// One IPC round trip: the stream bytes out, the first decoded batch
+    /// back. The stream length is the honest comparator — it carries the
+    /// whole message body the decoded batch's buffers are slices of.
+    fn ipc_round_trip(batch: &RecordBatch) -> (usize, RecordBatch) {
+        let mut stream = Vec::new();
+        let mut writer =
+            StreamWriter::try_new(&mut stream, &batch.schema()).expect("stream writer");
+        writer.write(batch).expect("write batch");
+        writer.finish().expect("finish stream");
+        drop(writer);
+        let stream_len = stream.len();
+        let mut reader =
+            StreamReader::try_new(std::io::Cursor::new(stream), None).expect("stream reader");
+        let decoded = reader
+            .next()
+            .expect("one batch in the stream")
+            .expect("decodes");
+        (stream_len, decoded)
+    }
+
+    #[test]
+    fn byte_size_of_an_ipc_decoded_batch_is_near_the_body_it_decodes_from() {
+        let (stream_len, decoded) = ipc_round_trip(&built_batch());
+        let metered = PushPayload::Arrow(decoded).byte_size();
+        assert!(
+            metered >= ROW_PAYLOAD,
+            "an honest footprint cannot undercut the raw row payload: \
+             metered {metered}, payload {ROW_PAYLOAD}"
+        );
+        assert!(
+            metered <= 2 * stream_len,
+            "a decoded batch holds slices of ONE body allocation; metering \
+             {metered} against a {stream_len}-byte stream means the body \
+             was charged once per buffer, not once"
+        );
+    }
+
+    #[test]
+    fn byte_size_of_a_builder_built_batch_stays_between_payload_and_double() {
+        let metered = PushPayload::Arrow(built_batch()).byte_size();
+        assert!(
+            metered >= ROW_PAYLOAD,
+            "the fix must not collapse an ordinary batch below its rows: \
+             metered {metered}, payload {ROW_PAYLOAD}"
+        );
+        assert!(
+            metered <= 2 * ROW_PAYLOAD,
+            "a batch built from exact-length buffers meters near its \
+             payload: metered {metered}, payload {ROW_PAYLOAD}"
+        );
+    }
+
+    #[test]
+    fn byte_size_counts_a_shared_column_once() {
+        // Two columns holding the SAME Arc'd array view the same bytes;
+        // charging the budget twice for one allocation would over-throttle
+        // exactly the way capacity-summing did.
+        let column: ArrayRef = Arc::new(Int64Array::from_iter_values(0..ROWS as i64));
+        let alone = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)])),
+            vec![Arc::clone(&column)],
+        )
+        .expect("one-column batch");
+        let shared = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Int64, false),
+            ])),
+            vec![Arc::clone(&column), column],
+        )
+        .expect("shared-column batch");
+        assert_eq!(
+            PushPayload::Arrow(shared).byte_size(),
+            PushPayload::Arrow(alone).byte_size(),
+            "the second column re-views bytes already counted"
+        );
     }
 }
 

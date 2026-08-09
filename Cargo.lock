@@ -4613,7 +4613,9 @@ dependencies = [
 name = "rdlt-connector"
 version = "0.3.0"
 dependencies = [
+ "arrow",
  "arrow-array",
+ "arrow-data",
  "arrow-schema",
  "async-trait",
  "bytes",
