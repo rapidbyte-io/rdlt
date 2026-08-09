@@ -132,25 +132,20 @@ pub enum SourceSpec {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DestSpec {
-    /// A DuckDB database file.
+    /// A DuckDB database file — the crate's full config vocabulary
+    /// inline (`path`, `memory_limit`, `merge_strategy`, per-table
+    /// `tables`, `extensions`, `settings`).
+    ///
+    /// The connector's own config type IS the document shape, embedded
+    /// rather than mirrored — same reasoning as the postgres, file,
+    /// iceberg, and snowflake blocks: a hand-mirrored struct fails
+    /// silently in one direction, leaving a field configurable from
+    /// the library and invisible from YAML with no error anywhere. The
+    /// mirror's fields were already the config's fields one for one,
+    /// so retiring it relaxes nothing — the parity pin in rdlt-cli's
+    /// spec_model suite holds the two parses equal.
     #[cfg(feature = "duckdb")]
-    Duckdb {
-        /// The database file. Created if absent.
-        path: PathBuf,
-        /// DuckDB's own `memory_limit` setting (`"4GB"`), passed through.
-        memory_limit: Option<String>,
-        /// The SAME destination-options vocabulary as postgres — shared
-        /// sqlcore types, one YAML shape.
-        merge_strategy: Option<crate::connector::duckdb::destination::MergeStrategy>,
-        /// Per-table option overrides, keyed by table name.
-        tables: Option<
-            std::collections::BTreeMap<String, crate::connector::duckdb::destination::TableOptions>,
-        >,
-        /// dlt-parity passthrough: extensions to LOAD and `SET` settings.
-        extensions: Option<Vec<String>>,
-        /// Raw `SET <key> = <value>` settings applied to the connection.
-        settings: Option<std::collections::BTreeMap<String, String>>,
-    },
+    Duckdb(Box<crate::connector::duckdb::destination::Config>),
     /// A PostgreSQL schema — the crate's full config vocabulary inline
     /// (`conn`, `dataset`, `tls`, `merge_strategy`, per-table `tables`).
     ///
@@ -561,25 +556,11 @@ async fn build_with<S: rdlt_connector::Source>(
 ) -> Result<Pipeline, SpecError> {
     match dest {
         #[cfg(feature = "duckdb")]
-        DestSpec::Duckdb {
-            path,
-            memory_limit,
-            merge_strategy,
-            tables,
-            extensions,
-            settings,
-        } => {
-            // The spec's fields ARE the connector document's fields;
+        DestSpec::Duckdb(config) => {
             // Shell::new runs the one validation gate and opens the
             // database (settings/extensions applied eagerly).
-            let mut config = crate::connector::duckdb::destination::Config::new(path);
-            config.memory_limit = memory_limit.clone();
-            config.merge_strategy = *merge_strategy;
-            config.tables = tables.clone();
-            config.extensions = extensions.clone();
-            config.settings = settings.clone();
-            let dest = crate::connector::duckdb::destination::Shell::new(config)
-                .map_err(|e| SpecError::resolve(format!("opening duckdb: {e}")))?;
+            let dest = crate::connector::duckdb::destination::Shell::new((**config).clone())
+                .map_err(|e| SpecError::resolve(format!("duckdb destination: {e}")))?;
             Ok(builder.destination(dest).build()?)
         }
         #[cfg(feature = "postgres-dest")]

@@ -156,31 +156,72 @@ destination:
         dedup_sort: {column: seq, order: desc}
 "#,
         );
-        let DestSpec::Duckdb {
-            merge_strategy,
-            tables,
-            extensions,
-            settings,
-            ..
-        } = &parsed.destination
-        else {
+        let DestSpec::Duckdb(config) = &parsed.destination else {
             panic!("duckdb dest");
         };
-        assert_eq!(extensions.as_deref(), Some(&["httpfs".to_string()][..]));
         assert_eq!(
-            settings
+            config.extensions.as_deref(),
+            Some(&["httpfs".to_string()][..])
+        );
+        assert_eq!(
+            config
+                .settings
                 .as_ref()
                 .and_then(|s| s.get("threads"))
                 .map(String::as_str),
             Some("4")
         );
         assert_eq!(
-            *merge_strategy,
+            config.merge_strategy,
             Some(rdlt::connector::duckdb::destination::MergeStrategy::Upsert)
         );
-        let events = tables.as_ref().expect("tables")["events"].clone();
+        let events = config.tables.as_ref().expect("tables")["events"].clone();
         assert_eq!(events.hard_delete.as_deref(), Some("deleted"));
         assert!(events.dedup_sort.is_some());
+    }
+
+    /// The duckdb destination block IS the connector's config document,
+    /// embedded rather than mirrored (042 Task 6, the D-041-6 shape):
+    /// a document with every key set parses through the Spec to the
+    /// SAME `Config` the document type parses directly — so a field
+    /// added to the connector's vocabulary is reachable from pipeline
+    /// YAML with zero facade code. No relaxation rides along: the
+    /// retired mirror's fields were the config's fields one for one,
+    /// every one already optional except `path`, which the document
+    /// requires too.
+    #[test]
+    fn duckdb_spec_embeds_the_connector_document() {
+        let block = r#"
+path: out.duckdb
+memory_limit: 1GB
+merge_strategy: upsert
+tables:
+  events: {hard_delete: deleted, dedup_sort: {column: seq, order: desc}}
+extensions: [httpfs]
+settings: {threads: "4"}
+"#;
+        let parsed = spec(
+            r#"
+pipeline: p
+source:
+  postgres: {config: src.yaml}
+destination:
+  duckdb:
+    path: out.duckdb
+    memory_limit: 1GB
+    merge_strategy: upsert
+    tables:
+      events: {hard_delete: deleted, dedup_sort: {column: seq, order: desc}}
+    extensions: [httpfs]
+    settings: {threads: "4"}
+"#,
+        );
+        let DestSpec::Duckdb(config) = parsed.destination else {
+            panic!("expected duckdb dest");
+        };
+        let direct: rdlt::connector::duckdb::destination::Config =
+            serde_yaml::from_str(block).expect("the document type parses the same keys directly");
+        assert_eq!(*config, direct, "the spec arm and the document diverge");
     }
 
     #[test]
@@ -420,7 +461,7 @@ destination:
             "pipeline: p\nsource:\n  postgres: {config: s.yaml}\n\
              destination:\n  duckdb: {path: out.db, memory_limit: \"1GB\"}\n",
         );
-        assert!(matches!(duck.destination, DestSpec::Duckdb { .. }));
+        assert!(matches!(duck.destination, DestSpec::Duckdb(_)));
         assert!(
             duck.workdir.is_none(),
             "workdir defaults downstream to .rdlt"

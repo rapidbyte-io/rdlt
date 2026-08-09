@@ -162,6 +162,7 @@ ifeq ($(TARGET),)
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
 	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
+	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
 	# The certifier bin rides the same discipline: behind `bin` +
 	# `required-features`, built here explicitly so a CLI that stops
 	# compiling fails the gate rather than rotting unseen.
@@ -201,6 +202,18 @@ ifeq ($(TARGET),)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_certify_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_kill_wire)'
+	# The duckdb bin's OWN spawn suite (042 Task 6), the first
+	# SINGLE-WRITER destination port: spawn smoke (identity, --version,
+	# exit 2 — including --role=source on a destination-only crate, plus
+	# the cross-process lock-conflict FATAL refusal, D-042-2), then
+	# certification (D1-D6 + D8 live + ALL TEN P-clauses incl. P11/P12,
+	# the first destination port certifying against them) and the
+	# destination kill matrix (K-D1..K-D6), all hermetic on tempdir
+	# database files — no container runtime, so these cells never skip;
+	# own line per the one-module-per-invocation rule.
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
 	# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
 	# cases drive the REAL file bin through the certification stack —
 	# source, destination, and the kill matrix (SIGKILL at every K
@@ -256,6 +269,7 @@ else ifeq ($(TARGET),unit)
 	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
 	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
+	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
 	cargo build -p rdlt-certify --features bin --bin rdlt-certify
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
@@ -266,6 +280,9 @@ else ifeq ($(TARGET),unit)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_certify_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_kill_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'

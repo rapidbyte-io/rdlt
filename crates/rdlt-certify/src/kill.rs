@@ -457,7 +457,7 @@ async fn converge(
     identity: &ArmIdentity,
     boundary: DestBoundary,
 ) -> Result<Outcome, String> {
-    let (_wire, socket) = spawn_destination(bin, target)
+    let (mut wire, socket) = spawn_destination(bin, target)
         .await
         .map_err(|why| format!("the convergence run failed: {why}"))?;
     let no_op = boundary == DestBoundary::PostClose;
@@ -466,15 +466,21 @@ async fn converge(
     } else {
         format!("{}-r", identity.pipeline)
     };
-    converge_session(&socket, &pipeline, identity, no_op)
+    let session = converge_session(&socket, &pipeline, identity, no_op)
         .await
-        .map_err(|why| format!("the convergence run failed: {why}"))?;
+        .map_err(|why| format!("the convergence run failed: {why}"));
+    let count = probe.count(&TableName::new(&identity.table)).await;
+    // Reap the convergence spawn BEFORE judging (042 Task 6): a
+    // single-writer destination (duckdb) holds its store's
+    // cross-process lock until this process is DEAD, and the next
+    // arm's spawn opens the same store — dropping the probe only SENDS
+    // the SIGKILL, so without the wait the next arm races the dying
+    // process for the lock.
+    wire.kill().await;
+    session?;
 
     let expected = FIXTURE_IDS.len() as u64;
-    let found = probe
-        .count(&TableName::new(&identity.table))
-        .await
-        .map_err(|e| format!("the convergence probe failed: {e}"))?;
+    let found = count.map_err(|e| format!("the convergence probe failed: {e}"))?;
     if found != expected {
         return Err(format!(
             "convergence failed: table `{}` holds {found} rows where the kill matrix wrote \

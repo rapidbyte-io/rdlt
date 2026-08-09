@@ -39,20 +39,19 @@ pub fn cdc_composition_warnings(spec: &Spec, config: &PostgresConfig) -> Vec<Str
             ),
             &|table| dest.tables.get(table).and_then(|t| t.hard_delete.clone()),
         ),
-        DestSpec::Duckdb {
-            merge_strategy,
-            tables,
-            ..
-        } => sql_destination_warnings(
+        DestSpec::Duckdb(dest) => sql_destination_warnings(
             &mut warnings,
             config,
             &cdc.flag_column,
             matches!(
-                merge_strategy,
+                dest.merge_strategy,
                 Some(rdlt::connector::postgres::destination::MergeStrategy::Upsert)
             ),
+            // `tables` stays `Option` on duckdb's config (postgres's is
+            // a plain map) — an absent map means no per-table options,
+            // so no hard_delete wiring.
             &|table| {
-                tables
+                dest.tables
                     .as_ref()
                     .and_then(|t| t.get(table))
                     .and_then(|t| t.hard_delete.clone())

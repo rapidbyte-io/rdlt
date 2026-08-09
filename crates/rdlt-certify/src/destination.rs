@@ -131,15 +131,18 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
 
     // Everything past P1 (whose probe already wrote its entry) runs
     // over a verified handshake; without one, every remaining clause
-    // fails with the one cause.
-    let downstream = || {
+    // fails with the one cause. `post_wire` is the same cascade AFTER
+    // the wire block has judged (or failed) P3/P7 on its own spawn —
+    // those two already carry their entries by then, and a cascade
+    // re-failing them would write a second verdict per clause.
+    let post_wire = || {
         GENERIC_CLAUSES
             .into_iter()
             .filter(|clause| *clause != "P1")
-            .chain(wire::DEST_WIRE_CLAUSES)
             .chain(DEST_CLAUSES)
             .chain(SESSION_CLAUSES)
     };
+    let downstream = || post_wire().chain(wire::DEST_WIRE_CLAUSES);
 
     let requirement = match resolved_requirement(&target.requirement, &spec) {
         Ok(requirement) => requirement,
@@ -150,6 +153,40 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             return report;
         }
     };
+
+    // The wire clauses — P3/P7 from one raw handshake — ride their OWN
+    // spawn, and that spawn runs BEFORE the managed adapter exists and
+    // is killed-and-REAPED before it spawns (042 Task 6): a
+    // single-writer destination (duckdb) holds an exclusive
+    // cross-process lock on its store from handshake to process death,
+    // so two live processes handshaking the same config cannot
+    // coexist — the second's open is refused by the store, failing
+    // clauses about the WIRE with a cause that is really the
+    // certifier's own process overlap. Sequencing the two spawns (the
+    // reap included — SIGKILL alone only SENDS the signal) is free for
+    // every multi-writer destination and is what makes single-writer
+    // ones certifiable at all.
+    match tokio::time::timeout(
+        CLAUSE_TIMEOUT,
+        wire::attach_for(&requirement, Role::Destination, &target.config),
+    )
+    .await
+    {
+        Ok(Ok(mut probe)) => {
+            wire::certify_destination_wire(&mut report, &mut probe, &requirement.id).await;
+            probe.kill().await;
+        }
+        Ok(Err(why)) => {
+            for clause in wire::DEST_WIRE_CLAUSES {
+                report.fail(clause, why.clone());
+            }
+        }
+        Err(_elapsed) => {
+            for clause in wire::DEST_WIRE_CLAUSES {
+                report.fail(clause, timed_out());
+            }
+        }
+    }
 
     // The certification subject: one managed destination, spawned
     // honestly through the provider (resolution is part of the bar).
@@ -166,13 +203,13 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
         Ok(Err(error)) => {
             let why =
                 format!("the provider could not spawn the connector as a destination: {error}");
-            for clause in downstream() {
+            for clause in post_wire() {
                 report.fail(clause, why.clone());
             }
             return report;
         }
         Err(_elapsed) => {
-            for clause in downstream() {
+            for clause in post_wire() {
                 report.fail(clause, timed_out());
             }
             return report;
@@ -190,31 +227,6 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // P4 — the pre-handshake Spec: name/version non-empty and a JSON
     // -object config schema, answered with no config at all.
     report_p4(&mut report, &spec);
-
-    // The wire clauses — P3/P7 from one raw handshake — ride their OWN
-    // spawn: the kit watches the actual handshake frame BELOW the
-    // adapters, and the managed adapter's process has already spent its
-    // one handshake.
-    match tokio::time::timeout(
-        CLAUSE_TIMEOUT,
-        wire::attach_for(&requirement, Role::Destination, &target.config),
-    )
-    .await
-    {
-        Ok(Ok(mut probe)) => {
-            wire::certify_destination_wire(&mut report, &mut probe, &requirement.id).await;
-        }
-        Ok(Err(why)) => {
-            for clause in wire::DEST_WIRE_CLAUSES {
-                report.fail(clause, why.clone());
-            }
-        }
-        Err(_elapsed) => {
-            for clause in wire::DEST_WIRE_CLAUSES {
-                report.fail(clause, timed_out());
-            }
-        }
-    }
 
     // D-reuse — the testkit's destination conformance suite, verbatim,
     // against the (settling) managed adapter: the wire is certified by

@@ -23,7 +23,11 @@ pub struct DuckDb {
 
 #[async_trait]
 impl DestinationConnector for DuckDb {
-    const NAME: &'static str = "duckdb";
+    // Reverse-DNS, not bare `duckdb` (042, the identity rule reaching
+    // this crate): NAME is what the wire handshake reports and the
+    // client strictly verifies (D-039-2), and D-039-1 derives the
+    // binary name `rdlt-connector-duckdb` from its last segment.
+    const NAME: &'static str = "io.rapidbyte.duckdb";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Config = Config;

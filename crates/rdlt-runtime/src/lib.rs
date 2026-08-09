@@ -37,4 +37,4 @@ mod requirement;
 pub use local::LocalBinaryConnectorProvider;
 pub use managed::{LifecycleGuard, ManagedDestination, ManagedSource};
 pub use provider::{ConnectorProvider, ProviderError};
-pub use requirement::{ClientError, ConnectorRequirement, HandshakeOutcome, Role};
+pub use requirement::{Classification, ClientError, ConnectorRequirement, HandshakeOutcome, Role};

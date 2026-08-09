@@ -130,9 +130,11 @@ impl Db {
             }
             // Transient here reaches the engine's retry budget only
             // through the SESSION path; through `assemble` it survives
-            // as rendered text in the ConfigError (pinned) — either
-            // way a locked or I/O-pressured file is the environment's
-            // problem, not a config defect to rewrite.
+            // as rendered text in the ConfigError (pinned). An
+            // I/O-pressured file is the environment's problem; a file
+            // another PROCESS holds is the operator's (D-042-2, the
+            // lock-family fatal in `classify`) — either way not a
+            // config defect to rewrite.
             let conn = Connection::open(path).map_err(classify)?;
             // Canonicalize AFTER the open — the open creates the file,
             // and only the canonical spelling makes two documents
@@ -187,9 +189,9 @@ impl Db {
 /// The classification rulebook. DuckDB's C API reports NO structured
 /// error category (the crate's probe pins `ErrorCode::Unknown`), so
 /// the transient key is a stable message prefix: `"IO Error"` covers
-/// file locks (another process holding the database) and resource
-/// pressure — both heal on retry, because the message text names the
-/// operating condition, not the operation. Everything else is fatal.
+/// resource pressure — which heals on retry, because the message text
+/// names the operating condition, not the operation. Everything else
+/// is fatal.
 ///
 /// A CARVE-OUT under that prefix (037 US6 / Task 19, S5) catches TWO
 /// sub-cases that are deterministic instead: a missing parent
@@ -217,15 +219,29 @@ impl Db {
 /// suffix list only from a new probe pin, never from reasoning about
 /// what `strerror` might say.
 ///
-/// The lock message is a DIFFERENT template —
-/// `"Could not set lock on file \"%s\": %s"` — and its `%s` is USUALLY
-/// `AdditionalProcessInfo` naming the PID holding the lock, not
-/// `strerror`; the source only falls back to `strerror(errno)` there
-/// if the diagnostic `fcntl(F_GETLK)` call itself fails. Either filling
-/// can in principle contain either suffix string, which is exactly why
-/// the carve does not key on the suffixes ALONE — it requires the
-/// open-template fragment `"Cannot open file"` too, which the lock
-/// template never renders.
+/// The lock-conflict family (D-042-2) is a SECOND fatal carve, its own
+/// template — `"Could not set lock on file \"%s\": %s"` — measured
+/// live from a second process's read-write open (042 Task 6; the spawn
+/// suite's cross-process cell re-measures it on every run):
+/// `IO Error: Could not set lock on file "…": Conflicting lock is held
+/// in <program> (PID …) by user …. See also
+/// https://duckdb.org/docs/stable/connect/concurrency`. FATAL, because
+/// a lock conflict is deterministic from inside one run: a second
+/// read-write open of a single-writer file is an operator error (two
+/// processes pointed at one database), and the holder keeps the lock
+/// for its whole life — a retry budget spent against it reports a
+/// false "still trying" where the honest answer is "share the one
+/// destination". The same measurement showed a READ-ONLY open from a
+/// second process is refused with the SAME message while a read-write
+/// holder lives, so no sub-case of the template heals on retry either.
+/// The template's `%s` tail is USUALLY `AdditionalProcessInfo` naming
+/// the PID holding the lock, not `strerror`; the source only falls
+/// back to `strerror(errno)` there if the diagnostic `fcntl(F_GETLK)`
+/// call itself fails. Either filling can in principle contain either
+/// open-carve suffix string, which is exactly why the open carve does
+/// not key on the suffixes ALONE — it requires the open-template
+/// fragment `"Cannot open file"` too, which the lock template never
+/// renders.
 ///
 /// Classification is UNIFORM across the whole load path (031 review
 /// S2/A3): the receipt probe, the load-committed probe, and
@@ -246,6 +262,16 @@ pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
         const MEASURED_SUFFIXES: &[&str] = &["No such file or directory", "Permission denied"];
         if message.contains(OPEN_TEMPLATE) && MEASURED_SUFFIXES.iter().any(|s| message.contains(s))
         {
+            return DestinationError::fatal(e.to_string());
+        }
+        // The lock-conflict family (D-042-2), measured not guessed
+        // (the fragment is the template's own head; the tail names the
+        // holding PID and varies): a second read-write open of a
+        // single-writer file is an operator error, and the holder
+        // keeps the lock for its whole life — never a heal-on-retry
+        // condition.
+        const LOCK_TEMPLATE: &str = "Could not set lock on file";
+        if message.contains(LOCK_TEMPLATE) {
             return DestinationError::fatal(e.to_string());
         }
         return DestinationError::transient(e.to_string());
@@ -342,15 +368,24 @@ mod tests {
         let failure = |message: &str| {
             duckdb::Error::DuckDBFailure(duckdb::ffi::Error::new(1), Some(message.to_owned()))
         };
+        // The lock-conflict family (D-042-2), pinned on the message
+        // MEASURED live from a second process's open (042 Task 6; the
+        // spawn suite's cross-process cell re-measures it forever):
+        // FATAL, because a second read-write open of a single-writer
+        // file is an operator error — the holder keeps the lock for
+        // its whole life, so no retry budget ever heals it.
         assert!(
             matches!(
                 classify(failure(
-                    "IO Error: Could not set lock on file \"x.duckdb\": \
-                                   Resource temporarily unavailable"
+                    "IO Error: Could not set lock on file \
+                     \"/var/tmp/rdlt-tests/lockprobe/x.duckdb\": Conflicting lock is held in \
+                     /var/home/netf/Repos/rapidbyte/rdlt/target/debug/examples/lock_probe \
+                     (PID 1093008) by user netf. See also \
+                     https://duckdb.org/docs/stable/connect/concurrency"
                 )),
-                DestinationError::Transient(_)
+                DestinationError::Fatal(_)
             ),
-            "a lock conflict rides the retry budget — the rulebook's whole point"
+            "a cross-process lock conflict is an operator error, never heal-on-retry"
         );
         assert!(
             matches!(
