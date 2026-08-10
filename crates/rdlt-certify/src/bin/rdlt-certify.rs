@@ -295,23 +295,32 @@ impl TableProbe for ShellProbe {
                 // The group kill: `kill -- -<pgid>` signals every
                 // process in sh's group, grandchildren included; std
                 // exposes no group-kill call, and /bin/kill with the
-                // NEGATIVE pgid is the portable spelling. The direct
-                // child is then AWAITED so it is dead, not dying, when
-                // the failure returns.
-                if let Some(pgid) = pgid {
-                    let _ = tokio::process::Command::new("kill")
-                        .args(["-KILL", "--", &format!("-{pgid}")])
-                        .status()
-                        .await;
-                }
+                // NEGATIVE pgid is the portable spelling. A kill spawn
+                // failure is NOT swallowed: the direct child still
+                // dies below either way, but the caller must know the
+                // grandchildren may have survived. The direct child is
+                // AWAITED so it is dead, not dying, on return, and the
+                // group is then POLLED to empty (signal 0 probes for
+                // survivors) within a small bounded window — beyond it
+                // the bounded residual is stated in the failure.
+                let group_note = match pgid {
+                    None => {
+                        Some("the probe's pid was unknown, so only the direct child was killed")
+                    }
+                    Some(pgid) => group_kill(pgid).await,
+                };
                 let _ = child.start_kill();
                 let _ = child.wait().await;
-                Err(ProbeError {
-                    message: format!(
-                        "the probe command did not finish within {}s",
-                        PROBE_TIMEOUT.as_secs()
-                    ),
-                })
+                let mut message = format!(
+                    "the probe command did not finish within {}s",
+                    PROBE_TIMEOUT.as_secs()
+                );
+                if let Some(note) = group_note {
+                    message.push_str(" (");
+                    message.push_str(note);
+                    message.push(')');
+                }
+                Err(ProbeError { message })
             }
             Ok(Err(error)) => {
                 let _ = child.start_kill();
@@ -334,6 +343,44 @@ impl TableProbe for ShellProbe {
             }
         }
     }
+}
+
+/// SIGKILL the probe's whole process group, then poll it to empty:
+/// `kill -0 -- -<pgid>` succeeds while ANY member survives, so the
+/// loop waits (bounded) for the grandchildren the signal reaches
+/// asynchronously — a store-holding grandchild must be dead, not
+/// dying, before the next clause opens the same store. Returns the
+/// degradation note for the failure message when the group could not
+/// be killed or drained — never a command echo, and never a silent
+/// swallow.
+async fn group_kill(pgid: u32) -> Option<&'static str> {
+    let target = format!("-{pgid}");
+    let signalled = tokio::process::Command::new("kill")
+        .args(["-KILL", "--", &target])
+        .status()
+        .await;
+    if !matches!(signalled, Ok(status) if status.success()) {
+        return Some(
+            "the group kill could not run — processes the probe line forked may have \
+             survived; only the direct child was killed",
+        );
+    }
+    for _ in 0..20 {
+        let survivors = tokio::process::Command::new("kill")
+            .args(["-0", "--", &target])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        match survivors {
+            Ok(status) if status.success() => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            // Probe failed to run, or no member answers signal 0: the
+            // group is gone.
+            _ => return None,
+        }
+    }
+    Some("the probe's process group still had survivors after the kill's 1s drain window")
 }
 
 /// Read the probe's stdout to EOF, then reap its exit status — split
