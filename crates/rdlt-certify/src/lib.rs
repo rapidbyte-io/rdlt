@@ -27,5 +27,5 @@ mod wire;
 pub use destination::certify_destination;
 pub use kill::{kill_matrix_destination, kill_matrix_source};
 pub use report::{CLAUSES, Clause, Entry, Report, Verdict, clause_title};
-pub use source::certify_source;
+pub use source::{SOURCE_CLAUSES, certify_source};
 pub use target::Target;

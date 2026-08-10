@@ -217,6 +217,69 @@ fn dest_config(dir: &Path, out_root: &Path) -> std::path::PathBuf {
     path
 }
 
+/// A source-suite skip is NOT certified evidence by default (round-3
+/// fix): a stream that never checkpoints and declares no cursor field
+/// earns an honest S2 skip — but a source that merely FORGOT resume
+/// looks identical, so the bin refuses (exit 1), stderr naming the
+/// skipped clause and the acknowledgment flag. With `--accept-skips`
+/// the operator owns that trade: exit 0, the skip still rendered.
+#[test]
+fn a_source_suite_skip_refuses_unless_acknowledged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A glob matching NOTHING: the stream reads no files, never
+    // checkpoints, and declares no cursor field — the snapshot shape.
+    let config = serde_json::json!({
+        "streams": [{
+            "name": "events",
+            "format": "jsonl",
+            "path": format!("{}/*.jsonl", dir.path().display()),
+        }]
+    });
+    let config_path = dir.path().join("config.json");
+    std::fs::write(&config_path, config.to_string()).expect("the config file writes");
+    let bin = built_bin("rdlt-connector-file");
+
+    let refused = certify(&[
+        "--role",
+        "source",
+        "--config",
+        config_path.to_str().expect("utf-8 path"),
+        bin.to_str().expect("utf-8 path"),
+    ]);
+    let stdout = stdout_of(&refused);
+    let stderr = stderr_of(&refused);
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "an unacknowledged source skip refuses\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("SKIP S2"), "the skip renders: {stdout}");
+    assert!(
+        stderr.contains("S2") && stderr.contains("--accept-skips"),
+        "the refusal names the skipped clause and the flag: {stderr}"
+    );
+
+    let accepted = certify(&[
+        "--role",
+        "source",
+        "--config",
+        config_path.to_str().expect("utf-8 path"),
+        "--accept-skips",
+        bin.to_str().expect("utf-8 path"),
+    ]);
+    let stdout = stdout_of(&accepted);
+    assert_eq!(
+        accepted.status.code(),
+        Some(0),
+        "the acknowledged skip passes\nstdout:\n{stdout}\nstderr:\n{}",
+        stderr_of(&accepted)
+    );
+    assert!(
+        stdout.contains("SKIP S2"),
+        "the skip still renders: {stdout}"
+    );
+}
+
 /// A probe template without `{{table}}` would count ONE fixed target
 /// for every clause — wrong verdicts in both directions with no error
 /// naming the real mistake — so it is a usage error at argument time
@@ -359,7 +422,7 @@ fn a_failing_probe_cmd_fails_the_read_back_clause_naming_the_probe() {
         "--config",
         config_path.to_str().expect("utf-8 path"),
         "--probe-cmd",
-        "exit 1",
+        ": {{table}}; exit 1",
         bin.to_str().expect("utf-8 path"),
     ]);
 
@@ -375,7 +438,7 @@ fn a_failing_probe_cmd_fails_the_read_back_clause_naming_the_probe() {
     );
     for text in [&stdout, &stderr] {
         assert!(
-            !text.contains("exit 1"),
+            !text.contains("; exit 1"),
             "no output may echo the probe command line:\n{text}"
         );
     }
@@ -397,7 +460,7 @@ fn an_unparseable_probe_count_fails_naming_the_output() {
         "--config",
         config_path.to_str().expect("utf-8 path"),
         "--probe-cmd",
-        "echo notanumber",
+        ": {{table}}; echo notanumber",
         bin.to_str().expect("utf-8 path"),
     ]);
 
@@ -410,7 +473,7 @@ fn an_unparseable_probe_count_fails_naming_the_output() {
     );
     for text in [&stdout, &stderr] {
         assert!(
-            !text.contains("echo notanumber"),
+            !text.contains("; echo notanumber"),
             "no output may echo the probe command line:\n{text}"
         );
     }

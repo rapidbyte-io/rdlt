@@ -22,8 +22,11 @@ use crate::target::{
 use crate::wire;
 
 /// The S-clauses the reused testkit suite asserts — its module doc's
-/// exact set.
-pub(crate) const SOURCE_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
+/// exact set. Public (re-exported at the crate root) because the
+/// certifier CLI's skip-acknowledgment gate keys on exactly this set:
+/// a skip among these clauses refuses certification unless the
+/// operator acknowledges it.
+pub const SOURCE_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 
 /// Certify `target` as a SOURCE connector. Never hangs and never
 /// panics on connector misbehavior: every clause's outcome — including
