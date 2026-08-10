@@ -167,50 +167,31 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // certifier's own process overlap. Sequencing the two spawns (the
     // reap included — SIGKILL alone only SENDS the signal) is free for
     // every multi-writer destination and is what makes single-writer
-    // ones certifiable at all. The attach rides its OWN tokio task so
-    // the timeout arm can keep that promise, and the spawned CHILD
-    // parks in a shared slot (round-3 fix): aborting the task only
-    // runs Drop, and kill_on_drop only SENDS the SIGKILL — the dying
-    // probe could still hold the store lock when the managed spawn
-    // below opens the same store. The timeout arm aborts, awaits the
-    // task, then claims whatever the slot still parks and awaits the
-    // child's DEATH; an attach that completed in the gap hands back
-    // the probe for the same full kill-and-reap.
+    // ones certifiable at all. The plain timeout-drop shape (round-5
+    // unification — the source block's, the dedicated task deleted):
+    // the spawned child and its advertised socket park in the shared
+    // slot for the attach's AND the probe's whole life, so dropping
+    // the timed-out future costs nothing the slot cannot recover —
+    // the timeout arm claims the slot and awaits the child's DEATH
+    // (and the socket's unlink) before the managed spawn below opens
+    // the same store. The wave-4 pins hold that guarantee.
     let slot = wire::ChildSlot::default();
-    let mut attach = {
-        let requirement = requirement.clone();
-        let config = target.config.clone();
-        let slot = slot.clone();
-        tokio::spawn(async move {
-            wire::attach_for(&requirement, Role::Destination, &config, &slot).await
-        })
-    };
-    match tokio::time::timeout(CLAUSE_TIMEOUT, &mut attach).await {
-        Ok(Ok(Ok(mut probe))) => {
+    match tokio::time::timeout(
+        CLAUSE_TIMEOUT,
+        wire::attach_for(&requirement, Role::Destination, &target.config, &slot),
+    )
+    .await
+    {
+        Ok(Ok(mut probe)) => {
             wire::certify_destination_wire(&mut report, &mut probe, &requirement.id).await;
             probe.kill().await;
         }
-        Ok(Ok(Err(why))) => {
-            for clause in wire::DEST_WIRE_CLAUSES {
-                report.fail(clause, why.clone());
-            }
-        }
-        Ok(Err(join_error)) => {
-            // The same tail as the timeout arm (round-4 fix): a task
-            // that panicked or was cancelled dropped the attach future
-            // mid-flight, and whatever it parked must be dead and
-            // unlinked before the managed spawn below.
-            wire::reap_parked(&slot).await;
-            let why = format!("the wire attach task failed: {join_error}");
+        Ok(Err(why)) => {
             for clause in wire::DEST_WIRE_CLAUSES {
                 report.fail(clause, why.clone());
             }
         }
         Err(_elapsed) => {
-            attach.abort();
-            if let Ok(Ok(mut probe)) = attach.await {
-                probe.kill().await;
-            }
             wire::reap_parked(&slot).await;
             for clause in wire::DEST_WIRE_CLAUSES {
                 report.fail(clause, timed_out());
