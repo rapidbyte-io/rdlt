@@ -45,6 +45,7 @@ pub mod crash;
 pub mod fixtures;
 pub mod gate;
 pub mod memory;
+pub mod spawn;
 
 pub use conformance::{
     ConformanceFailure, ConformanceSkip, assert_conformant, destination::DestinationConformance,
