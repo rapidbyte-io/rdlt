@@ -14,30 +14,12 @@
 //! `--version` prints the crate version; a serve error → one stderr
 //! line + exit 1.
 
-use clap::{Parser, ValueEnum};
 use rdlt_connector_rest::source::Rest;
 
-#[derive(Parser)]
-#[command(version, about = "rdlt rest connector — a protocol server (ADR 0001)")]
-struct Args {
-    /// Which half of the connector to serve on this process.
-    #[arg(long, value_enum)]
-    role: ServeRole,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum ServeRole {
-    Source,
-}
-
-#[tokio::main]
-async fn main() {
-    let args = Args::parse(); // clap: bad args → its stderr + exit 2
-    let outcome = match args.role {
-        ServeRole::Source => rdlt_connector_sdk::serve::source::source::<Rest>().await,
-    };
-    if let Err(error) = outcome {
-        eprintln!("rdlt-connector-rest: {error}");
-        std::process::exit(1);
+rdlt_connector_sdk::serve_main! {
+    bin: "rdlt-connector-rest",
+    about: "rdlt rest connector — a protocol server (ADR 0001)",
+    roles: {
+        Source => rdlt_connector_sdk::serve::source::source::<Rest>(),
     }
 }

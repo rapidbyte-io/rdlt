@@ -25,31 +25,14 @@
 //! `--version` prints the crate version; a missing client or a serve
 //! error → one stderr line + exit 1.
 
-use clap::{Parser, ValueEnum};
 use rdlt_connector_oracle::source::{Oracle, client_available};
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "rdlt oracle connector — a protocol server (ADR 0001)"
-)]
-struct Args {
-    /// Which half of the connector to serve on this process.
-    #[arg(long, value_enum)]
-    role: ServeRole,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum ServeRole {
-    Source,
-}
-
-#[tokio::main]
-async fn main() {
-    let args = Args::parse(); // clap: bad args → its stderr + exit 2
+/// The pre-handshake client probe (this bin's one insertion into the
+/// shared serve-main template): BEFORE any stdout byte — the handshake
+/// line has not printed, so the provider reads a refusal, not a
+/// malformed handshake.
+fn check_client() {
     if !client_available() {
-        // BEFORE any stdout byte: the handshake line has not printed,
-        // so the provider reads a refusal, not a malformed handshake.
         eprintln!(
             "rdlt-connector-oracle: no usable Oracle Client library — this connector wraps \
              ODPI-C, which dlopens libclntsh at RUNTIME (the build needed none); the library \
@@ -58,11 +41,13 @@ async fn main() {
         );
         std::process::exit(1);
     }
-    let outcome = match args.role {
-        ServeRole::Source => rdlt_connector_sdk::serve::source::source::<Oracle>().await,
-    };
-    if let Err(error) = outcome {
-        eprintln!("rdlt-connector-oracle: {error}");
-        std::process::exit(1);
+}
+
+rdlt_connector_sdk::serve_main! {
+    bin: "rdlt-connector-oracle",
+    about: "rdlt oracle connector — a protocol server (ADR 0001)",
+    preflight: check_client(),
+    roles: {
+        Source => rdlt_connector_sdk::serve::source::source::<Oracle>(),
     }
 }

@@ -60,3 +60,67 @@
 pub mod common;
 pub mod destination;
 pub mod source;
+
+/// The connector bin's WHOLE `main` — the template every served
+/// connector carried as a verbatim ~48-line copy (round-5 fix), stated
+/// once. The expansion is the behavior contract the spawn suites pin:
+/// missing/invalid args → clap's stderr + exit 2 (a role the crate
+/// does not list is an unrecognized VALUE — an arg error before any
+/// serve machinery); `--version` prints the crate version; a serve
+/// error → one stderr line, `<bin name>: <error>`, and exit 1.
+///
+/// The caller supplies its bin name, the clap `about` line, optionally
+/// a `preflight` expression (run after arg parsing, before any serve —
+/// oracle's client probe exits there with its own typed refusal), and
+/// one arm per served role mapping the `--role` value to a serve
+/// future:
+///
+/// ```ignore
+/// rdlt_connector_sdk::serve_main! {
+///     bin: "rdlt-connector-duckdb",
+///     about: "rdlt duckdb connector — a protocol server (ADR 0001)",
+///     roles: {
+///         Destination => rdlt_connector_sdk::serve::destination::destination::<DuckDb>(),
+///     }
+/// }
+/// ```
+///
+/// A macro rather than a generic fn deliberately: the role ENUM differs
+/// per crate (source-only, destination-only, both) and clap derives it,
+/// so the variants must exist as items in the bin crate.
+#[macro_export]
+macro_rules! serve_main {
+    (
+        bin: $bin:literal,
+        about: $about:literal,
+        $(preflight: $preflight:expr,)?
+        roles: { $($variant:ident => $serve:expr),+ $(,)? }
+    ) => {
+        #[derive(::clap::Parser)]
+        #[command(version, about = $about)]
+        struct Args {
+            /// Which half of the connector to serve on this process.
+            #[arg(long, value_enum)]
+            role: ServeRole,
+        }
+
+        #[derive(Clone, Copy, ::clap::ValueEnum)]
+        enum ServeRole {
+            $($variant,)+
+        }
+
+        #[::tokio::main]
+        async fn main() {
+            use ::clap::Parser as _;
+            let args = Args::parse(); // clap: bad args → its stderr + exit 2
+            $($preflight;)?
+            let outcome = match args.role {
+                $(ServeRole::$variant => $serve.await,)+
+            };
+            if let Err(error) = outcome {
+                eprintln!(concat!($bin, ": {}"), error);
+                ::std::process::exit(1);
+            }
+        }
+    };
+}

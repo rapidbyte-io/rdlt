@@ -13,35 +13,12 @@
 //! `--version` prints the crate version; a serve error → one stderr
 //! line + exit 1.
 
-use clap::{Parser, ValueEnum};
 use rdlt_connector_snowflake::destination::Snowflake;
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "rdlt snowflake connector (destination) — a protocol server (ADR 0001)"
-)]
-struct Args {
-    /// Which half of the connector to serve on this process.
-    #[arg(long, value_enum)]
-    role: ServeRole,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum ServeRole {
-    Destination,
-}
-
-#[tokio::main]
-async fn main() {
-    let args = Args::parse(); // clap: bad args → its stderr + exit 2
-    let outcome = match args.role {
-        ServeRole::Destination => {
-            rdlt_connector_sdk::serve::destination::destination::<Snowflake>().await
-        }
-    };
-    if let Err(error) = outcome {
-        eprintln!("rdlt-connector-snowflake: {error}");
-        std::process::exit(1);
+rdlt_connector_sdk::serve_main! {
+    bin: "rdlt-connector-snowflake",
+    about: "rdlt snowflake connector (destination) — a protocol server (ADR 0001)",
+    roles: {
+        Destination => rdlt_connector_sdk::serve::destination::destination::<Snowflake>(),
     }
 }
