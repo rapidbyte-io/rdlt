@@ -135,7 +135,8 @@ mod tests {
     /// meter both seams share.
     #[test]
     fn byte_size_of_an_ipc_decoded_batch_is_near_the_body_it_decodes_from() {
-        let (stream_len, decoded, row_payload) = ipc_round_trip();
+        let (stream_len, decoded, row_payload) =
+            rdlt_testkit::fixtures::ipc_fixture::ipc_round_trip();
         let metered = LoadItem::batch(TableName::new("t"), decoded).byte_size();
         assert!(
             metered >= row_payload,
@@ -154,62 +155,13 @@ mod tests {
     /// between its raw row payload and double it.
     #[test]
     fn byte_size_of_a_builder_built_batch_stays_between_payload_and_double() {
-        let (batch, row_payload) = wide_batch();
+        let (batch, row_payload) = rdlt_testkit::fixtures::ipc_fixture::wide_batch();
         let metered = LoadItem::batch(TableName::new("t"), batch).byte_size();
         assert!(
             metered >= row_payload && metered <= 2 * row_payload,
             "a batch built from exact-length buffers meters near its payload: \
              metered {metered}, payload {row_payload}"
         );
-    }
-
-    /// Five int64 columns plus one fixed-width string column (six buffers:
-    /// five values, string offsets + string values), and the exact bytes
-    /// its rows require — the lower bound any honest meter respects.
-    fn wide_batch() -> (RecordBatch, usize) {
-        use arrow::array::{ArrayRef, Int64Array, StringArray};
-        use arrow::datatypes::{DataType, Field, Schema};
-        const ROWS: usize = 2048;
-        const INTS: usize = 5;
-        const WIDTH: usize = 12;
-        let mut fields: Vec<Field> = (0..INTS)
-            .map(|i| Field::new(format!("n{i}"), DataType::Int64, false))
-            .collect();
-        fields.push(Field::new("s", DataType::Utf8, false));
-        let mut columns: Vec<ArrayRef> = (0..INTS)
-            .map(|i| {
-                Arc::new(Int64Array::from_iter_values(
-                    (0..ROWS as i64).map(|row| row + i as i64),
-                )) as ArrayRef
-            })
-            .collect();
-        columns.push(Arc::new(StringArray::from_iter_values(
-            (0..ROWS).map(|row| format!("row-{row:07}!")),
-        )));
-        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("batch");
-        (batch, ROWS * INTS * 8 + ROWS * WIDTH)
-    }
-
-    /// One IPC round trip of [`wide_batch`]: stream length (the honest
-    /// comparator — it carries the whole message body the decoded batch's
-    /// buffers are slices of), the decoded batch, and the row payload.
-    fn ipc_round_trip() -> (usize, RecordBatch, usize) {
-        let (batch, row_payload) = wide_batch();
-        let mut stream = Vec::new();
-        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut stream, &batch.schema())
-            .expect("stream writer");
-        writer.write(&batch).expect("write batch");
-        writer.finish().expect("finish stream");
-        drop(writer);
-        let stream_len = stream.len();
-        let mut reader =
-            arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(stream), None)
-                .expect("stream reader");
-        let decoded = reader
-            .next()
-            .expect("one batch in the stream")
-            .expect("decodes");
-        (stream_len, decoded, row_payload)
     }
 
     /// Markers carry no rows and must never be gated by the byte budget: a

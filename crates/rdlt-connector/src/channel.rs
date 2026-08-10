@@ -492,6 +492,12 @@ mod byte_size_tests {
     //! a batch decoded from an IPC stream: every column is a zero-copy
     //! slice of the one message-body allocation, so any metric that sums
     //! parent-allocation capacities charges that body once PER BUFFER.
+    //!
+    //! THE FIXTURE HERE IS A DELIBERATE PRIVATE TWIN of
+    //! `rdlt_testkit::fixtures::ipc_fixture` (round-5): every other
+    //! meter pin uses the shared one, but testkit depends on THIS crate,
+    //! so these unit tests cannot import it — keep the two in step by
+    //! hand if either changes.
     use std::sync::Arc;
 
     use arrow::ipc::reader::StreamReader;

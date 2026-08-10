@@ -783,35 +783,8 @@ mod tests {
     /// firing byte-based commit policies that many times early.
     #[tokio::test]
     async fn loader_byte_counters_meter_an_ipc_decoded_batch_by_footprint() {
-        use arrow::array::{ArrayRef, Int64Array, StringArray};
-        use arrow::datatypes::{DataType, Field, Schema};
-        use std::sync::Arc;
-        const ROWS: usize = 2048;
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new("n", DataType::Int64, false),
-                Field::new("s", DataType::Utf8, false),
-            ])),
-            vec![
-                Arc::new(Int64Array::from_iter_values(0..ROWS as i64)) as ArrayRef,
-                Arc::new(StringArray::from_iter_values(
-                    (0..ROWS).map(|row| format!("row-{row:07}!")),
-                )),
-            ],
-        )
-        .expect("batch");
-        let mut stream = Vec::new();
-        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut stream, &batch.schema())
-            .expect("stream writer");
-        writer.write(&batch).expect("write");
-        writer.finish().expect("finish");
-        drop(writer);
-        let stream_len = stream.len();
-        let decoded = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(stream), None)
-            .expect("reader")
-            .next()
-            .expect("one batch")
-            .expect("decodes");
+        let (stream_len, decoded, _row_payload) =
+            rdlt_testkit::fixtures::ipc_fixture::ipc_round_trip();
 
         let (mut loader, _commits) = recording_loader(CommitPolicy::every_checkpoints(10));
         for item in [
