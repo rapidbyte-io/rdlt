@@ -305,12 +305,12 @@ impl TableProbe for ShellProbe {
                 // the bounded residual is stated in the failure.
                 let group_note = match pgid {
                     None => {
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
                         Some("the probe's pid was unknown, so only the direct child was killed")
                     }
-                    Some(pgid) => group_kill(pgid).await,
+                    Some(pgid) => group_kill(pgid, &mut child).await,
                 };
-                let _ = child.start_kill();
-                let _ = child.wait().await;
                 let mut message = format!(
                     "the probe command did not finish within {}s",
                     PROBE_TIMEOUT.as_secs()
@@ -349,16 +349,24 @@ impl TableProbe for ShellProbe {
 /// `kill -0 -- -<pgid>` succeeds while ANY member survives, so the
 /// loop waits (bounded) for the grandchildren the signal reaches
 /// asynchronously — a store-holding grandchild must be dead, not
-/// dying, before the next clause opens the same store. Returns the
-/// degradation note for the failure message when the group could not
-/// be killed or drained — never a command echo, and never a silent
-/// swallow.
-async fn group_kill(pgid: u32) -> Option<&'static str> {
+/// dying, before the next clause opens the same store. The direct sh
+/// child is reaped BEFORE the poll (its zombie would answer signal 0
+/// forever otherwise), so the note names only GENUINE stragglers.
+/// Returns the degradation note for the failure message when the
+/// group could not be killed or drained — never a command echo, and
+/// never a silent swallow.
+async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'static str> {
     let target = format!("-{pgid}");
     let signalled = tokio::process::Command::new("kill")
         .args(["-KILL", "--", &target])
         .status()
         .await;
+    // The direct child is reaped FIRST either way (round-6 fix): a
+    // zombie still answers signal 0 as a group member, so a survivor
+    // poll before this reap could never observe an empty group and
+    // the drain always exhausted its window with a phantom note.
+    let _ = child.start_kill();
+    let _ = child.wait().await;
     if !matches!(signalled, Ok(status) if status.success()) {
         return Some(
             "the group kill could not run — processes the probe line forked may have \
