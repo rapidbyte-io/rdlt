@@ -12,7 +12,7 @@
 //! ever carries config bytes.
 
 use rdlt_runtime::{ConnectorProvider, LocalBinaryConnectorProvider, Role};
-use rdlt_testkit::conformance::{ConformanceFailure, source::verify_source};
+use rdlt_testkit::conformance::{Conformance, source::verify_source};
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
@@ -164,17 +164,29 @@ pub async fn certify_source(target: &Target, accept_skips: bool) -> Report {
             let (failures, skips) = if accept_skips {
                 (outcome.failures, outcome.skips)
             } else {
+                // The promotion IS the testkit's own strict fold
+                // (round-6 fix — this arm re-implemented it): only the
+                // skips ride the fold so genuine failures stay
+                // untouched, and each promoted entry gains the
+                // acknowledgment tail.
                 let mut failures = outcome.failures;
-                failures.extend(outcome.skips.into_iter().map(|skip| ConformanceFailure {
-                    clause: skip.clause,
-                    message: format!(
-                        "not exercised: {} — a skipped source clause is not certified \
-                         evidence (a source that never checkpoints looks identical to one \
-                         that forgot resume); acknowledge a snapshot source with \
-                         accept_skips (CLI: --accept-skips)",
-                        skip.reason
-                    ),
-                }));
+                failures.extend(
+                    Conformance {
+                        failures: Vec::new(),
+                        skips: outcome.skips,
+                    }
+                    .expecting_no_skips()
+                    .into_iter()
+                    .map(|mut failure| {
+                        failure.message.push_str(
+                            " — a skipped source clause is not certified evidence (a \
+                             source that never checkpoints looks identical to one that \
+                             forgot resume); acknowledge a snapshot source with \
+                             accept_skips (CLI: --accept-skips)",
+                        );
+                        failure
+                    }),
+                );
                 (failures, Vec::new())
             };
             report.absorb(failures, skips, &SOURCE_CLAUSES)
