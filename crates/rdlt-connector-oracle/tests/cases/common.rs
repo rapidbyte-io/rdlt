@@ -82,7 +82,7 @@ impl OracleFixture {
             eprintln!("SKIP: no container runtime socket — oracle live cells not run");
             return None;
         }
-        if !oracle_client_available() {
+        if !rdlt_connector_oracle::source::client_available() {
             eprintln!(
                 "SKIP: no Oracle Client library — this driver wraps ODPI-C and dlopens \
                  libclntsh at RUNTIME. Install Instant Client and put it on \
@@ -193,21 +193,6 @@ impl OracleFixture {
         })
         .await
         .expect("seed thread");
-    }
-}
-
-/// Is an Oracle Client library loadable?
-///
-/// ODPI-C compiles from vendored source, so the BUILD needs nothing —
-/// but the connection dlopens Oracle's client at runtime, and its
-/// absence must skip these cells rather than fail them (024's
-/// skip-not-fail rule). Probed by attempting a connection to an
-/// address nothing answers: a client-library failure is reported
-/// differently from a network one.
-pub fn oracle_client_available() -> bool {
-    match oracle::Connection::connect("x", "x", "//127.0.0.1:1/NOPE") {
-        Ok(_) => true,
-        Err(e) => !e.to_string().contains("DPI-1047"),
     }
 }
 

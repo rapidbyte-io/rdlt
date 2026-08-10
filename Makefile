@@ -164,6 +164,7 @@ ifeq ($(TARGET),)
 	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
 	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
 	cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
+	cargo build -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
 	# The certifier bin rides the same discipline: behind `bin` +
 	# `required-features`, built here explicitly so a CLI that stops
 	# compiling fails the gate rather than rotting unseen.
@@ -227,6 +228,22 @@ ifeq ($(TARGET),)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_certify_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_kill_wire)'
+	# The oracle bin's OWN spawn suite (042 Task 8), the port with the
+	# PRE-SPAWN CLIENT PROBE: the driver dlopens an Oracle Client at
+	# RUNTIME, so the bin probes BEFORE the handshake line and a missing
+	# client is a typed stderr refusal + exit 1 with stdout EMPTY —
+	# never an opaque spawn death. The spawn smoke pins BOTH probe arms
+	# (each skips, announced, where the other has the subject) plus
+	# identity/--version/exit 2; certification (S1/S2/S4 + P1-P7, twice
+	# in a row) and the source kill matrix (K-S1..K-S3) run against the
+	# live Oracle Free container with DOUBLE skip-not-fail — no
+	# container runtime AND no client each announce their own reason.
+	# The whole package rides the `oracle-live` nextest group (the ~75 s
+	# boots, bounded at 3); own line per the one-module-per-invocation
+	# rule.
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_spawned_bin)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_certify_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_kill_wire)'
 	# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
 	# cases drive the REAL file bin through the certification stack —
 	# source, destination, and the kill matrix (SIGKILL at every K
@@ -284,6 +301,7 @@ else ifeq ($(TARGET),unit)
 	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
 	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
 	cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
+	cargo build -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
 	cargo build -p rdlt-certify --features bin --bin rdlt-certify
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
@@ -300,6 +318,9 @@ else ifeq ($(TARGET),unit)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_certify_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_kill_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_spawned_bin)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_certify_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_kill_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'

@@ -147,6 +147,29 @@ impl Drop for Client {
     }
 }
 
+/// Is an Oracle Client library loadable in THIS process?
+///
+/// ODPI-C compiles from vendored source, so the BUILD needs nothing —
+/// but the first connection dlopens Oracle's client (libclntsh) at
+/// RUNTIME, and a process without one dies inside the driver with an
+/// error no caller upstream can type. Probed by attempting a
+/// connection to an address nothing answers: the driver reports a
+/// missing client (`DPI-1047`, from the dlopen layer — it carries no
+/// structured ORA code, so the token is matched in the rendered text)
+/// differently from a network failure, and any OTHER outcome means a
+/// client was found and loaded.
+///
+/// The connector binary calls this BEFORE the protocol handshake so a
+/// missing client is a typed refusal on stderr, never an opaque death
+/// mid-serve; test fixtures call it to skip live cells rather than
+/// fail them.
+pub fn client_available() -> bool {
+    match oracle::Connection::connect("x", "x", "//127.0.0.1:1/NOPE") {
+        Ok(_) => true,
+        Err(e) => !e.to_string().contains("DPI-1047"),
+    }
+}
+
 /// The classification rulebook, keyed on the STRUCTURED ORA code.
 ///
 /// Unknown codes default FATAL: retrying an undiagnosed failure hides

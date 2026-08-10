@@ -28,7 +28,11 @@ impl Oracle {
 
 #[async_trait]
 impl SourceConnector for Oracle {
-    const NAME: &'static str = "oracle";
+    // The connector id, reverse-DNS (039 T6): the strict-equality
+    // handshake verification and the runtime's last-segment binary
+    // discovery (`io.rapidbyte.oracle` → `rdlt-connector-oracle` on
+    // PATH) both derive from this one const.
+    const NAME: &'static str = "io.rapidbyte.oracle";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Config = Config;

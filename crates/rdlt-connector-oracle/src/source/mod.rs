@@ -8,6 +8,7 @@ pub mod cursor;
 mod read;
 mod schema;
 
+pub use client::client_available;
 pub use config::{Config, ConfigError, Stream, Tuning, config_schema};
 pub use connector::{FAIL_POINTS, Oracle};
 
