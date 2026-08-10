@@ -11,5 +11,10 @@ use std::path::PathBuf;
 /// [`rdlt_testkit::spawn::built_connector_bin`] for the guard and
 /// build semantics.
 pub(crate) fn built_bin() -> PathBuf {
-    rdlt_testkit::spawn::built_connector_bin(env!("CARGO_MANIFEST_DIR"), "rdlt-connector-postgres")
+    rdlt_testkit::spawn::built_connector_bin(
+        env!("CARGO_MANIFEST_DIR"),
+        // The package's own name, from cargo — a hardcoded literal
+        // could drift from the real crate name (round-6 fix).
+        env!("CARGO_PKG_NAME"),
+    )
 }
