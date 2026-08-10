@@ -39,11 +39,41 @@ pub(super) fn root_table(stream: &StreamName, rules: rdlt_core::naming::IdentRul
     TableName::new(normalize_ident(stream.as_str(), rules))
 }
 
+/// The mixed snapshot/cursored advisory: a stream declaring no
+/// `cursor_field` never checkpoints, so once it writes rows its root
+/// stays uncovered for the REST OF THE RUN (nothing but its own
+/// checkpoint removes it) and every mid-run commit trigger defers to
+/// the final commit — the loader's T7E coverage gate, correct and
+/// deliberate. Worth telling the operator at PLAN time, before a long
+/// run discovers it at the first deferred trigger: commit policies
+/// cannot bound staging/WAL growth in this shape. `Some(advisory)`
+/// exactly when the stream set mixes both kinds; pure so the pin
+/// beside it can hold the trigger condition without a subscriber.
+fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
+    let snapshot: Vec<&str> = streams
+        .iter()
+        .filter(|s| s.cursor_field.is_none())
+        .map(|s| s.name.as_str())
+        .collect();
+    if snapshot.is_empty() || snapshot.len() == streams.len() {
+        return None;
+    }
+    Some(format!(
+        "streams [{}] declare no cursor_field (snapshot streams) beside cursored streams: \
+         their rows are never covered by a checkpoint, so mid-run commits defer for the \
+         whole run and everything publishes in the final commit — byte/time/checkpoint \
+         commit policies cannot bound staging or WAL growth in this shape",
+        snapshot.join(", ")
+    ))
+}
+
 /// Build-time validation over the discovered streams: one owning stream per
 /// destination table (two streams writing one table would interleave
 /// unowned rows), Merge only where the destination supports it,
 /// and structured Merge only against a declared primary key. Fails before any
-/// session is opened.
+/// session is opened. Also the home of the plan-time mixed
+/// snapshot/cursored ADVISORY (a warning, never a refusal — the shape
+/// is legal and the deferral is correct).
 pub(super) fn validate_streams(
     config: &EngineConfig,
     streams: &[StreamSpec],
@@ -59,6 +89,10 @@ pub(super) fn validate_streams(
              to `.rdlt`) — without it a mid-publish failure re-appends committed rows",
             destination.spec().name
         )));
+    }
+
+    if let Some(advisory) = mixed_snapshot_advisory(streams) {
+        tracing::warn!("{advisory}");
     }
 
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
@@ -346,6 +380,29 @@ mod hint_validation_tests {
             destination.capabilities(),
             &destination,
         )
+    }
+
+    #[test]
+    fn the_mixed_snapshot_advisory_fires_exactly_on_the_mixed_shape() {
+        let snapshot = |name: &str| StreamSpec::new(name);
+        let cursored = |name: &str| StreamSpec::new(name).with_cursor_field("updated_at");
+
+        let advisory = mixed_snapshot_advisory(&[snapshot("orders"), cursored("events")])
+            .expect("the mixed shape earns the advisory");
+        assert!(
+            advisory.contains("[orders]") && advisory.contains("mid-run commits defer"),
+            "the advisory names the snapshot streams and the consequence: {advisory}"
+        );
+
+        assert!(
+            mixed_snapshot_advisory(&[cursored("a"), cursored("b")]).is_none(),
+            "all-cursored pipelines commit mid-run and need no warning"
+        );
+        assert!(
+            mixed_snapshot_advisory(&[snapshot("a"), snapshot("b")]).is_none(),
+            "an all-snapshot pipeline always published in one final commit — nothing changed"
+        );
+        assert!(mixed_snapshot_advisory(&[]).is_none());
     }
 
     #[test]

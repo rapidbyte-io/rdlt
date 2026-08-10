@@ -276,14 +276,37 @@ impl Loader {
                 // and only a COVERED one: with uncovered co-stream rows in the
                 // unit, the commit defers to a later checkpoint (the policy's
                 // counters keep accumulating, so the trigger holds until then).
-                // The deferral is the exactly-once trade taken deliberately:
-                // committing rows no cursor covers is unrecoverable
-                // duplication after a crash (restart-from-zero re-extraction
-                // re-delivers them — T7E), so the gate stays. What it must
-                // not be is SILENT: a co-stream that never checkpoints (a
-                // snapshot stream) suspends the mid-run commit cadence for
-                // the whole run, so the first deferred trigger warns the
-                // operator once, naming the blocking roots.
+                //
+                // THE DEFERRAL IS FORCED, not chosen — the proof, both legs:
+                //
+                // 1. Committing the whole unit here would publish rows whose
+                //    stream has NO checkpoint in the committed state. A crash
+                //    after that commit recovers to cursors that cannot advance
+                //    the uncovered stream, so re-extraction restarts it FROM
+                //    ZERO and re-delivers every row already published; an
+                //    append destination has nothing to dedup on, and for a
+                //    snapshot stream (no cursor exists at all) no future
+                //    checkpoint can ever repair it. Double-application is
+                //    permanent — T7E measured it live at the multi-table
+                //    crash sweep's `ice.receipt.visible` cell.
+                //
+                // 2. Committing a SUBSET (only the covered streams' rows)
+                //    is not available either: a commit publishes the whole
+                //    staged unit atomically with one state document — the
+                //    Backend/LoadSession `commit` and the frozen wire's
+                //    `publish` take no table subset, and staging is not
+                //    partitioned by stream. Splitting the unit per stream
+                //    would change the frozen connector contract, which this
+                //    gate must not do.
+                //
+                // So the trigger waits for coverage; a snapshot co-stream
+                // therefore suspends the mid-run cadence for the whole run
+                // (its root leaves `uncovered_roots` only at a commit, and
+                // mid-run commits need it gone first — only `finish`'s
+                // trailing commit breaks the cycle). That must not be
+                // SILENT: the first deferred trigger warns once, naming the
+                // blocking roots, and `runtime::validate` warns at plan time
+                // when the stream set mixes snapshot and cursored streams.
                 if self.policy_triggers() {
                     if self.uncovered_roots.is_empty() {
                         self.commit().await?;
