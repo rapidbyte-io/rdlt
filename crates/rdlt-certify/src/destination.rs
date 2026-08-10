@@ -196,6 +196,11 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             }
         }
         Ok(Err(join_error)) => {
+            // The same tail as the timeout arm (round-4 fix): a task
+            // that panicked or was cancelled dropped the attach future
+            // mid-flight, and whatever it parked must be dead and
+            // unlinked before the managed spawn below.
+            wire::reap_parked(&slot).await;
             let why = format!("the wire attach task failed: {join_error}");
             for clause in wire::DEST_WIRE_CLAUSES {
                 report.fail(clause, why.clone());
