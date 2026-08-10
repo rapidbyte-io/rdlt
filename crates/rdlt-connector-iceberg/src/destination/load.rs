@@ -5,11 +5,16 @@
 //! refusals (no overwrite transaction exists in the library, and
 //! emulating one would not be atomic). Exactly-once is snapshot-native
 //! and PER TABLE: publish stamps each table's snapshot with the commit
-//! identity and converges on replay by scanning history — which is why
-//! `existing_receipt` deliberately answers `None`: there is no
-//! load-level receipt store, a partially published commit is exactly
-//! the state publish knows how to converge from, and answering
-//! otherwise would claim an atomicity the catalog does not offer.
+//! identity and converges on replay by scanning history.
+//!
+//! `existing_receipt` answers from that SAME history — a pure read
+//! over the namespace's tables reconstructing the receipt from the
+//! summary properties every publish already persists; there is still
+//! no load-level receipt store, and a partially published commit
+//! remains exactly the state publish knows how to converge from. (029
+//! D7 deliberately returned `None` here; reversed by owner ruling in
+//! 042 because the wire contract's receipt choreography demands a
+//! durable load-level receipt.)
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -25,7 +30,7 @@ use rdlt_connector_sdk::spi::core::{
 use rdlt_connector_sdk::spi::{CommitMeta, CommitReceipt, DestinationError, RecordBatch};
 
 use super::client::{classify, fatal};
-use super::commit::{Identity, Plan, append_commit, commit_with_retry};
+use super::commit::{Identity, Plan, append_commit, commit_with_retry, load_committed};
 use super::config::Config;
 use super::partition;
 use super::schema::{self, compare_field};
@@ -525,14 +530,66 @@ impl Backend for Load {
 
     async fn existing_receipt(
         &mut self,
-        _load_id: &LoadId,
-        _commit_seq: u64,
+        load_id: &LoadId,
+        commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError> {
-        // Deliberately None — see the module doc: receipts are
-        // per-table snapshot properties, a partial publish is exactly
-        // what publish converges from, and no load-level receipt store
-        // exists to look one up in.
+        // 029 D7 deliberately returned None here; reversed by owner
+        // ruling in 042 because the wire contract's receipt
+        // choreography demands a durable load-level receipt. PURE
+        // READ: the snapshot summaries every publish stamps ARE the
+        // receipt — this scans the namespace's tables for the
+        // `(load_id, commit_seq)` identity and reconstructs the
+        // receipt from what is already durable; no new store, no
+        // commit-path change. LOAD-keyed, never scope-keyed
+        // (`load_committed`'s own rationale): a re-attempt reaching
+        // the store under a different pipeline scope must still see
+        // the committed attempt. Finding it in ANY table suffices —
+        // publish commits tables one by one and a PARTIAL publish must
+        // report the receipt, or the replay path would re-publish the
+        // finished tables (publish's per-table convergence completes
+        // the unfinished ones either way; the two mechanisms agree).
+        let idents = self
+            .catalog
+            .list_tables(&self.namespace)
+            .await
+            .map_err(|e| classify("listing tables for the receipt lookup", e))?;
+        for ident in idents {
+            if ident.name() == STATE_TABLE {
+                continue;
+            }
+            let table = self
+                .catalog
+                .load_table(&ident)
+                .await
+                .map_err(|e| classify(&format!("table `{}`", ident.name()), e))?;
+            if load_committed(&table, load_id.as_str(), commit_seq) {
+                return Ok(Some(CommitReceipt {
+                    load_id: load_id.clone(),
+                    commit_seq,
+                }));
+            }
+        }
         Ok(None)
+    }
+
+    async fn replay(
+        &mut self,
+        _meta: &CommitMeta,
+        _receipt: &CommitReceipt,
+    ) -> Result<(), DestinationError> {
+        // A redelivered window's staged rows must not linger for a
+        // later genuine publish to find (the sdk trait doc's staging
+        // hazard — measured live before this landed: they rode the
+        // next snapshot and doubled). Everything staged is in-memory
+        // parked files and open writers; both are discarded. A dropped
+        // writer's already-written data files are orphans no snapshot
+        // names — invisible, the same posture a failed publish leaves.
+        for state in self.tables.values_mut() {
+            state.pending_files.clear();
+            state.writer = None;
+            state.writer_opened_at = None;
+        }
+        Ok(())
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {

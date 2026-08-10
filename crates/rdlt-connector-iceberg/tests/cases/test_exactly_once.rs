@@ -303,3 +303,166 @@ async fn a_no_workdir_run_is_refused_before_any_catalog_connection() {
     let text = format!("{err}");
     assert!(text.contains("requires a workdir"), "{text}");
 }
+
+/// THE LOAD-LEVEL RECEIPT, live (042 — 029 D7 reversed by owner
+/// ruling): a committed load's receipt is found by a FRESH session
+/// through `existing_receipt`, reconstructed purely from the snapshot
+/// history the publish already stamped — no new store. Three postures
+/// in one fixture boot: the same pipeline (crash-recovery replay), a
+/// SIBLING pipeline with a different scope hash (the kill matrix's
+/// K-D5 convergence re-run rides `{pipeline}-r` — the receipt is
+/// LOAD-keyed, so the sibling finds it too), and a never-committed
+/// load staying an honest `None`.
+#[tokio::test]
+async fn a_committed_loads_receipt_is_found_by_a_fresh_session() {
+    use rdlt_connector_iceberg::destination::{Config, Iceberg};
+    use rdlt_connector_sdk::config::Document;
+    use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
+    use rdlt_connector_sdk::spi::OpenContext;
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "receipt_v2";
+    let config = Config::from_value(fixture.doc(namespace)).expect("valid");
+    let dest = Iceberg::assemble(config).expect("assembles");
+    let pipeline = PipelineId::new("ice-receipt-v2");
+    let load = LoadId::new("load-r1");
+
+    // Session 1 commits the load.
+    let mut first = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    first
+        .ensure_table(&schema_for("receipt_evts"), &WriteMode::Append)
+        .await
+        .expect("ensures");
+    first
+        .write(&"receipt_evts".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("writes");
+    first
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publishes");
+
+    // A FRESH session on the SAME pipeline finds the receipt.
+    let mut fresh = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    let receipt = fresh
+        .existing_receipt(&load, 1)
+        .await
+        .expect("the receipt scan answers")
+        .expect("the committed load's receipt is found across sessions");
+    assert_eq!(receipt.load_id, load);
+    assert_eq!(receipt.commit_seq, 1);
+
+    // The SIBLING pipeline (a different scope hash) finds it too — the
+    // receipt is keyed by load identity, never by pipeline scope.
+    let mut sibling = dest
+        .connect(&OpenContext::new(
+            PipelineId::new("ice-receipt-v2-r"),
+            load.clone(),
+        ))
+        .await
+        .expect("connects");
+    let from_sibling = sibling
+        .existing_receipt(&load, 1)
+        .await
+        .expect("the receipt scan answers")
+        .expect("the receipt is load-keyed: a sibling pipeline scope still finds it");
+    assert_eq!(from_sibling.load_id, load);
+
+    // A load nothing ever committed stays an honest None.
+    let absent = fresh
+        .existing_receipt(&LoadId::new("load-never-committed"), 1)
+        .await
+        .expect("the receipt scan answers");
+    assert!(absent.is_none(), "an uncommitted load has no receipt");
+}
+
+/// THE REPLAY DISCARD, live (042 — reachable for the first time now
+/// that `existing_receipt` answers): a fresh session redelivers an
+/// already-committed window's rows, `replay` is called, and the
+/// discarded rows must NOT ride the session's NEXT genuine publish —
+/// the staged-window hazard the sdk `Backend::replay` doc warns about.
+#[tokio::test]
+async fn a_replayed_windows_staged_rows_never_reach_the_next_publish() {
+    use rdlt_connector_iceberg::destination::{Config, Iceberg};
+    use rdlt_connector_sdk::config::Document;
+    use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
+    use rdlt_connector_sdk::spi::OpenContext;
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "replay_discard_v2";
+    let config = Config::from_value(fixture.doc(namespace)).expect("valid");
+    let dest = Iceberg::assemble(config).expect("assembles");
+    let pipeline = PipelineId::new("ice-replay-discard");
+    let load = LoadId::new("load-rd1");
+
+    // Session 1 commits window 1.
+    let mut first = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    first
+        .ensure_table(&schema_for("discard_evts"), &WriteMode::Append)
+        .await
+        .expect("ensures");
+    first
+        .write(&"discard_evts".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("writes");
+    let receipt = first
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publishes");
+
+    // Session 2 redelivers window 1's rows, replays, then publishes a
+    // GENUINE window 2 — only window 2's rows may land.
+    let mut second = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    second
+        .ensure_table(&schema_for("discard_evts"), &WriteMode::Append)
+        .await
+        .expect("ensures");
+    second
+        .write(&"discard_evts".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("stages the redelivery");
+    let meta = commit_meta_for(&pipeline, &load, 1);
+    second
+        .replay(&meta, &receipt)
+        .await
+        .expect("replay housekeeping");
+    second
+        .write(&"discard_evts".into(), batch_of(&[4, 5, 6]))
+        .await
+        .expect("stages window 2");
+    second
+        .publish(commit_meta_for(&pipeline, &load, 2))
+        .await
+        .expect("publishes window 2");
+
+    let summaries = fixture.snapshot_summaries(namespace, "discard_evts").await;
+    let total: u64 = summaries
+        .last()
+        .and_then(|s| s.get("total-records"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    assert_eq!(
+        total, 6,
+        "the replayed window's redelivered rows were discarded, not re-published: {summaries:?}"
+    );
+}

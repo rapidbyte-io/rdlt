@@ -298,6 +298,37 @@ impl CatalogFixture {
     }
 }
 
+/// The read-back oracle over the fixture: row counts off the newest
+/// snapshot summary — the catalog's own numbers, independent of the
+/// crate. Shared by the conformance cell and the wire
+/// certification/kill cells (042); the probe OWNS the fixture so the
+/// containers outlive every read.
+pub struct LiveProbe {
+    pub fixture: CatalogFixture,
+    pub namespace: String,
+}
+
+#[async_trait::async_trait]
+impl rdlt_testkit::TableProbe for LiveProbe {
+    async fn count(
+        &self,
+        table: &rdlt_connector_sdk::spi::core::TableName,
+    ) -> Result<u64, rdlt_testkit::ProbeError> {
+        // Total records off the newest snapshot summary — the
+        // catalog's own count, independent of the crate. A table with
+        // no snapshots yet reads as 0; that zero is a fact (nothing
+        // published), not an oracle failure.
+        Ok(self
+            .fixture
+            .snapshot_summaries(&self.namespace, table.as_str())
+            .await
+            .last()
+            .and_then(|s| s.get("total-records"))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
+    }
+}
+
 /// Bucket + catalog + grants through the ONE bootstrap tool the crate
 /// ships — a second Rust copy would drift from it. Host networking
 /// makes the client-side and Polaris-side S3 endpoints identical.

@@ -28,7 +28,11 @@ pub struct Iceberg {
 
 #[async_trait]
 impl DestinationConnector for Iceberg {
-    const NAME: &'static str = "iceberg";
+    // Reverse-DNS, not bare `iceberg` (042, the identity rule reaching
+    // this crate): NAME is what the wire handshake reports and the
+    // client strictly verifies (D-039-2), and D-039-1 derives the
+    // binary name `rdlt-connector-iceberg` from its last segment.
+    const NAME: &'static str = "io.rapidbyte.iceberg";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     type Config = Config;

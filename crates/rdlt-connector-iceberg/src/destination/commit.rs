@@ -61,6 +61,31 @@ impl Identity {
     }
 }
 
+/// Is `(load_id, commit_seq)` in this table's snapshot history under
+/// ANY pipeline scope? The LOAD-keyed twin of
+/// [`Identity::already_committed`], and deliberately looser: a load id
+/// names ONE load wherever it ran, so the receipt lookup
+/// (`existing_receipt`) matches it without the scope — a re-attempt
+/// that reaches the store under a different pipeline scope (an
+/// orchestrator-side re-scope; the certify kill matrix's convergence
+/// re-run is the measured case) must still see the committed attempt.
+/// Publish-side convergence keeps the full scope-matched identity
+/// above — the two mechanisms answer different questions and both
+/// stand. Durability caveat: same as `already_committed` — snapshot
+/// expiry removes the evidence.
+pub(super) fn load_committed(
+    table: &iceberg::table::Table,
+    load_id: &str,
+    commit_seq: u64,
+) -> bool {
+    let seq = commit_seq.to_string();
+    table.metadata().snapshots().any(|snapshot| {
+        let summary = &snapshot.summary().additional_properties;
+        summary.get(PROP_LOAD_ID).map(String::as_str) == Some(load_id)
+            && summary.get(PROP_COMMIT_SEQ) == Some(&seq)
+    })
+}
+
 /// What one attempt of [`commit_with_retry`] decided.
 pub(super) enum Plan {
     /// The desired state already holds — return the current table,

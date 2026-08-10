@@ -163,6 +163,7 @@ ifeq ($(TARGET),)
 	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
 	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
+	cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
 	# The certifier bin rides the same discipline: behind `bin` +
 	# `required-features`, built here explicitly so a CLI that stops
 	# compiling fails the gate rather than rotting unseen.
@@ -214,6 +215,18 @@ ifeq ($(TARGET),)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
+	# The iceberg bin's OWN spawn suite (042 Task 7), the first CATALOG
+	# destination port: spawn smoke (identity, --version, exit 2 —
+	# including --role=source on a destination-only crate; offline, never
+	# skips), then certification and the destination kill matrix
+	# (K-D1..K-D6, all six arms run live — D-042-3) against the
+	# Polaris/RUSTFS fixture. The two live cells are skip-not-fail
+	# without a container runtime and ride the `iceberg-live` nextest
+	# group by package filter; own line per the
+	# one-module-per-invocation rule.
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_spawned_bin)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_certify_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_kill_wire)'
 	# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
 	# cases drive the REAL file bin through the certification stack —
 	# source, destination, and the kill matrix (SIGKILL at every K
@@ -270,6 +283,7 @@ else ifeq ($(TARGET),unit)
 	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
 	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
+	cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
 	cargo build -p rdlt-certify --features bin --bin rdlt-certify
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
@@ -283,6 +297,9 @@ else ifeq ($(TARGET),unit)
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_spawned_bin)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_certify_wire)'
+	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_kill_wire)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
