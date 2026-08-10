@@ -7,12 +7,11 @@
 //! and PER TABLE: publish stamps each table's snapshot with the commit
 //! identity and converges on replay by scanning history.
 //!
-//! `existing_receipt` answers from that SAME history — a pure read
-//! over the session's own tables (namespace-wide only while the
-//! session has ensured none, the wire's receipt-before-ensure posture)
-//! reconstructing the receipt from the summary properties every
-//! publish already persists; there is still no load-level receipt
-//! store. A partially published commit remains
+//! `existing_receipt` answers from the `_rdlt_state` marker table's
+//! receipt properties — `rdlt.receipt.<load_id>`, stamped by publish
+//! and replay in the SAME property commit that persists the state
+//! document (see `state.rs`'s format notes) — one table read, no
+//! namespace enumeration. A partially published commit remains
 //! exactly what the convergence pass completes — `converge_tables`,
 //! shared by publish AND `replay`, since the framework returns the
 //! receipt instead of publishing once `existing_receipt` answers.
@@ -523,10 +522,13 @@ impl Load {
     /// receipt fast path) the re-attempt takes; both therefore write
     /// it, or the fast path would strand the cursor and the next run
     /// would re-ingest (042 fix round 1's second measured window).
-    /// `&mut self` deliberately: a shared borrow across the await
-    /// would demand `Load: Sync`, which the live parquet writers in
-    /// `tables` forbid.
-    async fn persist_state(&mut self, state: &StateDoc) -> Result<(), DestinationError> {
+    /// The load-level receipt rides the SAME property commit (round-2
+    /// fix wave) — both paths stamp it, replay included, which
+    /// refreshes its retention recency and merges the sequence high
+    /// water by MAX inside `write_state`. `&mut self` deliberately: a
+    /// shared borrow across the await would demand `Load: Sync`, which
+    /// the live parquet writers in `tables` forbid.
+    async fn persist_state(&mut self, meta: &CommitMeta) -> Result<(), DestinationError> {
         crash_point!(
             "ice.receipt.visible",
             Err(DestinationError::fatal(
@@ -534,8 +536,18 @@ impl Load {
             ))
         );
         let state_json =
-            serde_json::to_string(state).map_err(|e| fatal(format!("state doc: {e}")))?;
-        write_state(&self.catalog, &self.namespace, &self.scope, state_json).await
+            serde_json::to_string(&meta.state).map_err(|e| fatal(format!("state doc: {e}")))?;
+        write_state(
+            &self.catalog,
+            &self.namespace,
+            &self.scope,
+            state_json,
+            Some(state::ReceiptStamp {
+                load_id: meta.load_id.as_str(),
+                commit_seq: meta.commit_seq,
+            }),
+        )
+        .await
     }
 }
 
@@ -641,65 +653,30 @@ impl Backend for Load {
     ) -> Result<Option<CommitReceipt>, DestinationError> {
         // 029 D7 deliberately returned None here; reversed by owner
         // ruling in 042 because the wire contract's receipt
-        // choreography demands a durable load-level receipt. PURE
-        // READ: the snapshot summaries every publish stamps ARE the
-        // receipt — this scans tables for the `(load_id, commit_seq)`
-        // identity and reconstructs the receipt from what is already
-        // durable; no new store, no commit-path change. LOAD-keyed,
-        // never scope-keyed (`load_committed`'s own rationale): a
-        // re-attempt reaching the store under a different pipeline
-        // scope must still see the committed attempt. Finding it in
-        // ANY table suffices — publish commits tables one by one, so a
-        // PARTIAL publish reports the receipt and the framework routes
-        // the redelivery through `replay`, whose convergence pass then
-        // completes the unfinished tables (`converge_tables`; publish
-        // never runs on this path — sdk `Session::commit` returns the
-        // receipt instead).
-        //
-        // THE SCAN IS SCOPED to the tables this session knows — the
-        // same set `converge_tables` walks (042 fix wave): the receipt
-        // was stamped by an attempt of THIS load, and an attempt
-        // commits only tables its session ensured, so once THIS
-        // session has ensured its set the intersection with any prior
-        // attempt's commits is non-empty. What the scope buys: a
-        // foreign table in the namespace — broken, or merely one of
-        // thousands — can no longer block or slow this pipeline's
-        // receipt lookup, while a load failure on one of OUR tables
-        // stays the real error it is. A session that knows NO tables
-        // yet — the wire's receipt-before-ensure posture (the
-        // choreography allows the receipt query first; the certifier's
-        // P10 exclusivity pass and K-D6 no-op rerun drive exactly
-        // that) — still scans the namespace: there is no narrower
-        // honest answer, and answering None would deny a receipt that
-        // is durably there.
-        let idents: Vec<TableIdent> = if self.tables.is_empty() {
-            self.catalog
-                .list_tables(&self.namespace)
-                .await
-                .map_err(|e| classify("listing tables for the receipt lookup", e))?
-        } else {
-            self.tables
-                .values()
-                .map(|state| state.table.identifier().clone())
-                .collect()
-        };
-        for ident in idents {
-            if ident.name() == STATE_TABLE {
-                continue;
-            }
-            let table = self
-                .catalog
-                .load_table(&ident)
-                .await
-                .map_err(|e| classify(&format!("table `{}`", ident.name()), e))?;
-            if load_committed(&table, load_id.as_str(), commit_seq) {
-                return Ok(Some(CommitReceipt {
-                    load_id: load_id.clone(),
-                    commit_seq,
-                }));
-            }
+        // choreography demands a durable load-level receipt. THE
+        // RECEIPT'S HOME (round-2 fix wave, the ruling's write-side
+        // door): publish stamps `rdlt.receipt.<load_id>` onto the ONE
+        // `_rdlt_state` marker table in the SAME property commit that
+        // persists the state document — so this lookup reads exactly
+        // one table, never enumerating the namespace (a foreign broken
+        // table cannot fail it, a huge namespace cannot stall it) and
+        // never depending on which tables this session has ensured
+        // (the wire's receipt-before-ensure posture answers the same).
+        // LOAD-keyed, never scope-keyed: a re-attempt under a
+        // different pipeline scope (the kill matrix's sibling re-run)
+        // still finds it. Sequences are monotone per load, so the
+        // recorded high water answers membership; a crash BEFORE the
+        // property commit honestly answers None, the framework
+        // re-drives publish, and `converge_tables`' per-table history
+        // scan (unchanged) discards whatever the dead attempt already
+        // committed — K-D5's shape.
+        match state::read_receipt(&self.catalog, &self.namespace, load_id.as_str()).await? {
+            Some(high_water) if commit_seq <= high_water => Ok(Some(CommitReceipt {
+                load_id: load_id.clone(),
+                commit_seq,
+            })),
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     async fn replay(
@@ -728,7 +705,7 @@ impl Backend for Load {
         };
         self.converge_tables(&identity, Settled::LoadIdentity)
             .await?;
-        self.persist_state(&meta.state).await
+        self.persist_state(meta).await
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
@@ -743,7 +720,7 @@ impl Backend for Load {
         };
         self.converge_tables(&identity, Settled::ScopeIdentity)
             .await?;
-        self.persist_state(&meta.state).await?;
+        self.persist_state(&meta).await?;
         Ok(receipt)
     }
 

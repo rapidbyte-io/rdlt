@@ -167,7 +167,7 @@ pub mod testhook {
                      relocate to the legacy key"
                 ))
             })?;
-        state::write_state(&catalog, &namespace, &legacy_scope, raw).await?;
+        state::write_state(&catalog, &namespace, &legacy_scope, raw, None).await?;
         state::remove_state(&catalog, &namespace, &scope).await
     }
 }

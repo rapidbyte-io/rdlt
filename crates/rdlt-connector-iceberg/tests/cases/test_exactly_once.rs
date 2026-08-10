@@ -305,14 +305,16 @@ async fn a_no_workdir_run_is_refused_before_any_catalog_connection() {
 }
 
 /// THE LOAD-LEVEL RECEIPT, live (042 — 029 D7 reversed by owner
-/// ruling): a committed load's receipt is found by a FRESH session
-/// through `existing_receipt`, reconstructed purely from the snapshot
-/// history the publish already stamped — no new store. Three postures
-/// in one fixture boot: the same pipeline (crash-recovery replay), a
-/// SIBLING pipeline with a different scope hash (the kill matrix's
-/// K-D5 convergence re-run rides `{pipeline}-r` — the receipt is
-/// LOAD-keyed, so the sibling finds it too), and a never-committed
-/// load staying an honest `None`.
+/// ruling; the receipt's home moved in the round-2 fix wave): a
+/// committed load's receipt is found by a FRESH session through
+/// `existing_receipt`, read off the `_rdlt_state` marker table's
+/// `rdlt.receipt.<load_id>` property — stamped by publish in the same
+/// property commit as the state doc, one table read, no namespace
+/// enumeration. Three postures in one fixture boot: the same pipeline
+/// (crash-recovery replay), a SIBLING pipeline with a different scope
+/// hash (the kill matrix's K-D5 convergence re-run rides
+/// `{pipeline}-r` — the receipt is LOAD-keyed, so the sibling finds it
+/// too), and a never-committed load staying an honest `None`.
 #[tokio::test]
 async fn a_committed_loads_receipt_is_found_by_a_fresh_session() {
     use rdlt_connector_iceberg::destination::{Config, Iceberg};
@@ -467,16 +469,18 @@ async fn a_replayed_windows_staged_rows_never_reach_the_next_publish() {
     );
 }
 
-/// FIX ROUND 1, CRITICAL 1 (042 review): a PARTIAL multi-table publish
-/// must converge through the replay path without losing the unfinished
-/// tables. Session 1 commits `(load, 1)` for table A only — the residue
-/// a crash between per-table commits leaves (publish commits tables
-/// sequentially). The recovery redelivery ensures BOTH tables, stages
-/// both windows, finds A's stamp through `existing_receipt`, and
+/// FIX ROUND 1, CRITICAL 1 (042 review): a publish that committed only
+/// SOME of a redelivery's tables must converge through the replay path
+/// without losing the unfinished ones. Session 1 publishes `(load, 1)`
+/// with table A alone in its set — so the receipt exists while table B
+/// has no data. The recovery redelivery ensures BOTH tables, stages
+/// both windows, finds the receipt through `existing_receipt`, and
 /// `replay` must then land table B's window (A's discarded) — a replay
 /// that discards wholesale loses B forever, because the framework
 /// returns the receipt instead of publishing once `existing_receipt`
-/// answers.
+/// answers. (The receipt-less residue of a crash BETWEEN per-table
+/// commits converges through the re-driven publish instead — its
+/// per-table history scan discards what the dead attempt committed.)
 #[tokio::test]
 async fn a_partial_publish_converges_through_replay_without_losing_tables() {
     use rdlt_connector_iceberg::destination::{Config, Iceberg};
