@@ -4615,6 +4615,7 @@ version = "0.3.0"
 dependencies = [
  "arrow",
  "arrow-array",
+ "arrow-buffer",
  "arrow-data",
  "arrow-schema",
  "async-trait",

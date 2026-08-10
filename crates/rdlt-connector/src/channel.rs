@@ -268,25 +268,114 @@ pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
         .sum()
 }
 
-/// One node of the walk: this array's own buffers, then its children.
+/// One node of the walk: this array's own buffers (each trimmed to the
+/// byte range the node's `offset`/`len` actually VIEW — round-7 fix: a
+/// `RecordBatch::slice` chunk used to charge its parent's whole buffer,
+/// so n chunks metered ~n× the parent), then its children.
+///
+/// The viewed range is computed per layout where the arithmetic is
+/// cheap and exact — fixed-width values, boolean and validity bitmaps,
+/// offset buffers, and variable-width data through its offsets window —
+/// and falls back to the buffer's full length for the exotic layouts
+/// (unions, dictionaries, run-ends, views), which errs only in the
+/// OVER-count direction, the budget's safe side. A sliced List's child
+/// likewise meters its full extent (trimming it would need the offsets
+/// window applied to the child) — over-count again, accepted. Dedup
+/// keys on the exact viewed slice (start pointer + viewed length), so
+/// two chunks re-viewing one range still count it once per batch walk.
 fn data_footprint(
     data: &arrow_data::ArrayData,
     seen: &mut std::collections::HashSet<(usize, usize)>,
 ) -> usize {
-    let mut count = |buffer_ptr: usize, buffer_len: usize| -> usize {
-        if seen.insert((buffer_ptr, buffer_len)) {
-            buffer_len
+    use arrow_schema::DataType;
+
+    let mut count = |start: usize, viewed: usize| -> usize {
+        if viewed > 0 && seen.insert((start, viewed)) {
+            viewed
         } else {
             0
         }
     };
+    // The window `[start_byte, start_byte + viewed)` of `buffer` this
+    // node views, clamped into the buffer.
+    let mut count_window = |buffer: &arrow_buffer::Buffer, start_byte: usize, viewed: usize| {
+        let start_byte = start_byte.min(buffer.len());
+        let viewed = viewed.min(buffer.len() - start_byte);
+        count(buffer.as_ptr() as usize + start_byte, viewed)
+    };
+
+    let (offset, len) = (data.offset(), data.len());
+    // A bit window's byte span: from `first_bit`, `bits` wide.
+    let bit_window = |first_bit: usize, bits: usize| -> (usize, usize) {
+        let start = first_bit / 8;
+        let end = (first_bit + bits).div_ceil(8);
+        (start, end - start)
+    };
+    // The i32/i64 offsets window `[offset ..= offset + len]`, and the
+    // data-byte range those offsets span.
+    let offsets_i32 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
+        let values: &[i32] = buffer.typed_data();
+        let data_start = values[offset] as usize;
+        let data_len = (values[offset + len] - values[offset]) as usize;
+        (offset * 4, (len + 1) * 4, data_start, data_len)
+    };
+    let offsets_i64 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
+        let values: &[i64] = buffer.typed_data();
+        let data_start = values[offset] as usize;
+        let data_len = (values[offset + len] - values[offset]) as usize;
+        (offset * 8, (len + 1) * 8, data_start, data_len)
+    };
+
+    let buffers = data.buffers();
     let mut total = 0;
-    for buffer in data.buffers() {
-        total += count(buffer.as_ptr() as usize, buffer.len());
+    match data.data_type() {
+        DataType::Boolean => {
+            let (start, viewed) = bit_window(offset, len);
+            total += count_window(&buffers[0], start, viewed);
+        }
+        DataType::Utf8 | DataType::Binary => {
+            let (off_start, off_len, data_start, data_len) = offsets_i32(&buffers[0]);
+            total += count_window(&buffers[0], off_start, off_len);
+            total += count_window(&buffers[1], data_start, data_len);
+        }
+        DataType::LargeUtf8 | DataType::LargeBinary => {
+            let (off_start, off_len, data_start, data_len) = offsets_i64(&buffers[0]);
+            total += count_window(&buffers[0], off_start, off_len);
+            total += count_window(&buffers[1], data_start, data_len);
+        }
+        DataType::List(_) | DataType::Map(_, _) => {
+            let (off_start, off_len, _, _) = offsets_i32(&buffers[0]);
+            total += count_window(&buffers[0], off_start, off_len);
+        }
+        DataType::LargeList(_) => {
+            let (off_start, off_len, _, _) = offsets_i64(&buffers[0]);
+            total += count_window(&buffers[0], off_start, off_len);
+        }
+        DataType::FixedSizeBinary(width) => {
+            let width = *width as usize;
+            total += count_window(&buffers[0], offset * width, len * width);
+        }
+        // Structs and fixed-size lists carry no buffers of their own;
+        // their children recurse below.
+        DataType::Struct(_) | DataType::FixedSizeList(_, _) | DataType::Null => {}
+        other => match other.primitive_width() {
+            // Fixed-width values: exactly the viewed cells.
+            Some(width) => {
+                total += count_window(&buffers[0], offset * width, len * width);
+            }
+            // The documented fallback (unions, dictionaries, run-ends,
+            // views): full buffer lengths — over-counts a sliced view,
+            // never under.
+            None => {
+                for buffer in buffers {
+                    total += count_window(buffer, 0, buffer.len());
+                }
+            }
+        },
     }
     if let Some(nulls) = data.nulls() {
-        let buffer = nulls.buffer();
-        total += count(buffer.as_ptr() as usize, buffer.len());
+        let (start, viewed) = bit_window(nulls.offset(), nulls.len());
+        total += count_window(nulls.buffer(), start, viewed);
     }
     total
         + data
@@ -571,6 +660,34 @@ mod byte_size_tests {
             "a decoded batch holds slices of ONE body allocation; metering \
              {metered} against a {stream_len}-byte stream means the body \
              was charged once per buffer, not once"
+        );
+    }
+
+    /// THE SLICE PIN (round-7 fix): a batch cut into n chunks meters
+    /// ≈ the parent ONCE across the chunks — each chunk charges only
+    /// the byte range it views, so the sum tracks the parent (small
+    /// per-chunk overlap at offsets/validity boundaries allowed), and
+    /// never ~n× the parent as full-buffer accounting produced.
+    #[test]
+    fn slicing_a_batch_meters_the_parent_once_not_once_per_chunk() {
+        let batch = built_batch();
+        let whole = PushPayload::Arrow(batch.clone()).byte_size();
+        let chunks = 4;
+        let rows_per_chunk = ROWS / chunks;
+        let sum: usize = (0..chunks)
+            .map(|i| {
+                PushPayload::Arrow(batch.slice(i * rows_per_chunk, rows_per_chunk)).byte_size()
+            })
+            .sum();
+        assert!(
+            sum >= whole / 2,
+            "the chunks together must still account the parent's bytes: sum {sum}, whole {whole}"
+        );
+        assert!(
+            sum <= whole + whole / 4,
+            "n chunks must meter ≈ the parent once, never ~n×: sum {sum}, whole {whole} \
+             (full-buffer accounting would land near {})",
+            chunks * whole
         );
     }
 

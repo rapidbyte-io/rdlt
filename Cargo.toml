@@ -91,6 +91,7 @@ rdlt-certify = { path = "crates/rdlt-certify" }
 arrow = "58.3"
 arrow-schema = "58.3"
 arrow-array = "58.3"
+arrow-buffer = "58.3"
 arrow-data = "58.3"
 arrow-select = "58.3"
 arrow-cast = "58.3"
