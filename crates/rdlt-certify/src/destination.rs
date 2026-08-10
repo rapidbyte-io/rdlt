@@ -266,11 +266,13 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                     if merge {
                         report.absorb(outcome.failures, outcome.skips, &DEST_CLAUSES);
                     } else {
-                        report.absorb(
-                            outcome.failures,
-                            outcome.skips,
-                            &["D1", "D2", "D3", "D4", "D5", "D6"],
-                        );
+                        // DEST_CLAUSES minus D8, derived — the hand
+                        // copy is the drift the skip arm already shed.
+                        let without_d8: Vec<&'static str> = DEST_CLAUSES
+                            .into_iter()
+                            .filter(|clause| *clause != "D8")
+                            .collect();
+                        report.absorb(outcome.failures, outcome.skips, &without_d8);
                         report.skip("D8", NO_MERGE_SKIP.to_string());
                     }
                 }
