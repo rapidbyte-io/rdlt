@@ -13,9 +13,7 @@
 //! the 039 T6 convention every served connector follows: `bin-serve`
 //! gates a `[[bin]]` named after the crate.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// The workspace root: two levels above the calling crate's manifest —
 /// every `crates/<name>` member sits exactly there.
@@ -109,9 +107,14 @@ mod resolution_tests {
 /// workspace lookup to the caller's tree rather than wherever this
 /// crate's sources live.
 pub fn built_connector_bin(manifest_dir: &str, crate_name: &str) -> PathBuf {
-    static BUILT: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-    let mut built = BUILT.lock().expect("spawn-build registry lock");
-    if !built.contains(crate_name) {
+    // NO once-per-process guard, deliberately (round-7 honesty fix: a
+    // per-process registry sat here and guarded nothing — the gate's
+    // runner is nextest, whose process-per-test model gives every test
+    // its own process). The truth: in rebuild mode EVERY call invokes
+    // cargo, concurrent invocations are serialized by cargo's own
+    // target-directory lock, and a repeat build is an incremental
+    // no-op — correct, bounded, and honestly redundant.
+    {
         if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
             // Opt-in rebuild, deliberately (039): the gate line sets the
             // var, and a developer running this suite in a loop should
@@ -147,9 +150,7 @@ pub fn built_connector_bin(manifest_dir: &str, crate_name: &str) -> PathBuf {
                 "cargo build -p {crate_name} --features bin-serve failed"
             );
         }
-        built.insert(crate_name.to_owned());
     }
-    drop(built);
     let path = target_debug_dir(manifest_dir).join(crate_name);
     assert!(
         path.is_file(),
