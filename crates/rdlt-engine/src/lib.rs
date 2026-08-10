@@ -36,6 +36,7 @@
 //! [`fuzzing`] module, the bench/fuzz seam, which carries no semver guarantee.
 
 mod config;
+mod coverage;
 mod engine;
 mod load;
 mod runtime;

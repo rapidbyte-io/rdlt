@@ -3,9 +3,7 @@
 use std::collections::BTreeMap;
 
 use rdlt_connector::{Destination, DestinationCapabilities, StreamSpec};
-use rdlt_core::{
-    LogicalType, RdltError, StreamName, TableName, WriteMode, naming::normalize_ident,
-};
+use rdlt_core::{LogicalType, RdltError, StreamName, TableName, WriteMode};
 
 use crate::EngineConfig;
 
@@ -30,14 +28,11 @@ fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str)
     ))
 }
 
-/// The destination table a stream owns, by name normalization.
-///
-/// One decision with two consumers that must agree by construction: validation
-/// asserts the mapping is injective, and the run wiring builds each stream's
-/// shredder against the same mapping.
-pub(super) fn root_table(stream: &StreamName, rules: rdlt_core::naming::IdentRules) -> TableName {
-    TableName::new(normalize_ident(stream.as_str(), rules))
-}
+/// The destination table a stream owns — the crate's one attribution
+/// mapping ([`crate::coverage::root_table`]), re-exported here because
+/// validation is where the mapping is PROVEN injective before the run
+/// wiring, the loader, and the recovery scan all build on it.
+pub(super) use crate::coverage::root_table;
 
 /// The mixed snapshot/cursored advisory: a stream declaring no
 /// `cursor_field` never checkpoints, so once it writes rows its root

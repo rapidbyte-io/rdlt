@@ -166,7 +166,7 @@ fn commit_meta(
 /// clause sets against it — a clause added to the suite without a row
 /// here (or here without a check) must fail a pin, never silently
 /// narrow a report.
-pub const ASSERTED_CLAUSES: [&'static str; 7] = ["D6", "D1", "D5", "D4", "D2", "D3", "D8"];
+pub const ASSERTED_CLAUSES: [&str; 7] = ["D6", "D1", "D5", "D4", "D2", "D3", "D8"];
 
 /// Run the destination conformance suite (clauses D1–D6 and D8 — see the
 /// module doc). Uses tables prefixed `rdlt_conf_` — point it at a scratch

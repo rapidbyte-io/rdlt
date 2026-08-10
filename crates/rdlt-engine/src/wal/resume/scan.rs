@@ -215,8 +215,7 @@ fn filter_covered(
 
     let mut root_to_stream: BTreeMap<rdlt_core::TableName, rdlt_core::StreamName> = BTreeMap::new();
     for stream in last_checkpoint.keys() {
-        let root =
-            rdlt_core::TableName::new(rdlt_core::naming::normalize_ident(stream.as_str(), rules));
+        let root = crate::coverage::root_table(stream, rules);
         if root_to_stream
             .insert(root.clone(), stream.clone())
             .is_some()
@@ -231,29 +230,24 @@ fn filter_covered(
         }
     }
 
-    // A segment's root table, along the parent links its Deltas recorded.
-    // Name prefixes would NOT do: `child_table_name` re-normalizes, so a
-    // long child's name truncates to a hash suffix that need not contain its
-    // root. Bounded walk — more hops than known tables means a cycle, which
-    // no writer produces.
+    // A segment's root table, along the parent links its Deltas recorded —
+    // the shared bounded walk ([`crate::coverage::walk_to_root`], the same
+    // implementation the loader's commit gate resolves roots with). Name
+    // prefixes would NOT do: `child_table_name` re-normalizes, so a long
+    // child's name truncates to a hash suffix that need not contain its
+    // root. The scan's own refusals ride the walk's error channel: a table
+    // with no recorded schema breaks delta-before-first-batch, and an
+    // unterminated chain is a cycle no writer produces.
     let root_of = |table: &rdlt_core::TableName| -> Result<rdlt_core::TableName, String> {
-        let mut current = table.clone();
-        for _ in 0..=schemas.len() {
-            let Some((schema, _)) = schemas.get(&current) else {
-                return Err(format!(
-                    "segment table `{current}` has no schema delta anywhere in the manifest \
-                     (the writer records delta-before-first-batch), so its covering stream \
-                     is unknowable"
-                ));
-            };
-            match &schema.parent {
-                None => return Ok(current),
-                Some(link) => current = link.parent.clone(),
-            }
-        }
-        Err(format!(
-            "table `{table}`'s recorded parent chain does not terminate"
-        ))
+        crate::coverage::walk_to_root(table, schemas.len(), |current| match schemas.get(current) {
+            None => Err(format!(
+                "segment table `{current}` has no schema delta anywhere in the manifest \
+                 (the writer records delta-before-first-batch), so its covering stream \
+                 is unknowable"
+            )),
+            Some((schema, _)) => Ok(schema.parent.as_ref().map(|link| link.parent.clone())),
+        })?
+        .ok_or_else(|| format!("table `{table}`'s recorded parent chain does not terminate"))
     };
 
     let mut keep = vec![true; span.len()];

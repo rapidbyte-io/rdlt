@@ -128,17 +128,17 @@ impl Loader {
     }
 
     /// A written table's ROOT, along the parent links its Deltas recorded; a
-    /// table with no recorded parent is its own root. Bounded walk — more
-    /// hops than known links would mean a cycle, which no shred produces.
+    /// table with no recorded parent is its own root. The shared bounded
+    /// walk ([`crate::coverage::walk_to_root`] — the recovery scan's replay
+    /// filter walks the SAME implementation, which is what keeps the
+    /// coverage rule's two halves one rule); a cycle is unreachable from
+    /// any shred, so the walk's refusal degrades to the table itself.
     fn root_of(&self, table: &TableName) -> TableName {
-        let mut current = table;
-        for _ in 0..=self.parents.len() {
-            match self.parents.get(current) {
-                Some(parent) => current = parent,
-                None => break,
-            }
-        }
-        current.clone()
+        crate::coverage::walk_to_root(table, self.parents.len(), |current| {
+            Ok::<_, std::convert::Infallible>(self.parents.get(current).cloned())
+        })
+        .unwrap_or_else(|infallible| match infallible {})
+        .unwrap_or_else(|| table.clone())
     }
 
     fn emit(&self, event: rdlt_core::PipelineEvent) {
@@ -261,14 +261,13 @@ impl Loader {
             }
             LoadItem::Checkpoint { stream, cursor } => {
                 self.state.cursors.insert(stream.clone(), cursor.clone());
-                // The stream's root table is `normalize_ident(stream)` — the
-                // same mapping `runtime::validate`'s `root_table` builds the
-                // run on and proves injective across its streams.
-                self.uncovered_roots
-                    .remove(&TableName::new(rdlt_core::naming::normalize_ident(
-                        stream.as_str(),
-                        self.sink.capabilities.ident_rules,
-                    )));
+                // The stream's root table via the crate's ONE attribution
+                // mapping — the same call `runtime::validate` proves
+                // injective and the recovery scan joins checkpoints on.
+                self.uncovered_roots.remove(&crate::coverage::root_table(
+                    &stream,
+                    self.sink.capabilities.ident_rules,
+                ));
                 self.report.cursors.insert(stream, cursor);
                 self.checkpoints_since_commit += 1;
                 self.dirty = true;
