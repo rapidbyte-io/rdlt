@@ -33,8 +33,40 @@ use rdlt_connector::{
     },
 };
 
-use super::ConformanceFailure;
+use super::{ConformanceFailure, ConformanceSkip};
 use crate::fixtures;
+
+/// What one destination-conformance run concluded: the violated
+/// clauses, and the asserted clauses the suite never REACHED because an
+/// earlier step aborted the run — each carried as a skip whose reason
+/// names the aborting clause. The same shape as
+/// [`super::source::SourceConformance`], deliberately: a certifier
+/// folds both suites' skips through one path, and an aborted run can
+/// never render its unreached clauses as PASS (the 042 fix-wave docket
+/// item — `try_step`'s early return used to drop them silently).
+#[derive(Debug, Default)]
+pub struct DestinationConformance {
+    /// Violated clauses, in discovery order.
+    pub failures: Vec<ConformanceFailure>,
+    /// Asserted clauses the suite aborted before reaching, with the
+    /// aborting clause named in each reason.
+    pub skips: Vec<ConformanceSkip>,
+}
+
+impl DestinationConformance {
+    /// The strict fold for suites that expect EVERY clause exercised:
+    /// the failures, plus each unreached clause promoted to a failure
+    /// of its clause. First-party kits assert through this so an early
+    /// abort cannot turn asserted clauses into silent green.
+    pub fn expecting_no_skips(self) -> Vec<ConformanceFailure> {
+        let mut failures = self.failures;
+        failures.extend(self.skips.into_iter().map(|skip| ConformanceFailure {
+            clause: skip.clause,
+            message: format!("not exercised: {}", skip.reason),
+        }));
+        failures
+    }
+}
 
 /// The one capability the SPI cannot provide: counting reader-VISIBLE
 /// rows in a table (a warehouse query). Implement per destination under
@@ -129,239 +161,284 @@ fn commit_meta(
 
 /// Run the destination conformance suite (clauses D1–D6 and D8 — see the
 /// module doc). Uses tables prefixed `rdlt_conf_` — point it at a scratch
-/// dataset.
+/// dataset. An abort mid-suite (a failed SPI call or probe count) fails
+/// the clause it happened under AND reports every asserted clause whose
+/// checks never concluded as a skip naming the abort — never a silent
+/// pass.
 pub async fn verify_destination<D: Destination>(
     dest: &D,
     probe: &dyn TableProbe,
-) -> Vec<ConformanceFailure> {
+) -> DestinationConformance {
     let mut failures = Vec::new();
+    // Clauses whose checks all CONCLUDED (with whatever verdict) — what
+    // separates "the suite found nothing against it" from "the suite
+    // never got there" when an abort cuts the run short.
+    let mut concluded: Vec<&'static str> = Vec::new();
+    let mut aborted: Option<&'static str> = None;
     let fail = |clause: &'static str, message: String| ConformanceFailure { clause, message };
 
-    // Run a fallible step — an SPI call or a probe count; on error,
-    // record the clause failure (message `"{prefix}: {error}"`) and
-    // return the failures gathered so far. The clause id and prefix are
-    // the diagnostic the connector author reads, so they are spelled out
-    // verbatim at each call site.
-    macro_rules! try_step {
-        ($clause:expr, $prefix:expr, $step:expr $(,)?) => {
-            match $step {
-                Ok(value) => value,
-                Err(e) => {
-                    failures.push(fail($clause, format!("{}: {e}", $prefix)));
-                    return failures;
+    'suite: {
+        // Run a fallible step — an SPI call or a probe count; on error,
+        // record the clause failure (message `"{prefix}: {error}"`) and
+        // abort the suite. The clause id and prefix are the diagnostic
+        // the connector author reads, so they are spelled out verbatim
+        // at each call site.
+        macro_rules! try_step {
+            ($clause:expr, $prefix:expr, $step:expr $(,)?) => {
+                match $step {
+                    Ok(value) => value,
+                    Err(e) => {
+                        failures.push(fail($clause, format!("{}: {e}", $prefix)));
+                        aborted = Some($clause);
+                        break 'suite;
+                    }
                 }
-            }
-        };
-    }
+            };
+        }
 
-    let pipeline = PipelineId::new("rdlt-conformance");
-    let load_a = LoadId::new("conf-load-a");
-    let table = TableName::new("rdlt_conf_t");
-    let schema = fixture_schema("rdlt_conf_t");
+        let pipeline = PipelineId::new("rdlt-conformance");
+        let load_a = LoadId::new("conf-load-a");
+        let table = TableName::new("rdlt_conf_t");
+        let schema = fixture_schema("rdlt_conf_t");
 
-    // ---- D6: a fresh pipeline has no state ----
-    // Setup failures carry the clause they are setting up (here D6, below
-    // D1) — generation 1 labelled every open "D4" and sent an author whose
-    // open fails to investigate teardown semantics that were never
-    // reached.
-    let mut session = try_step!(
-        "D6",
-        "open failed",
-        dest.open(OpenContext::new(
-            PipelineId::new("rdlt-conf-fresh"),
-            load_a.clone()
-        ))
-        .await
-    );
-    match session
-        .read_state(&PipelineId::new("rdlt-conf-fresh"))
-        .await
-    {
-        Ok(None) => {}
-        Ok(Some(_)) => failures.push(fail(
+        // ---- D6: a fresh pipeline has no state ----
+        // Setup failures carry the clause they are setting up (here D6, below
+        // D1) — generation 1 labelled every open "D4" and sent an author whose
+        // open fails to investigate teardown semantics that were never
+        // reached.
+        let mut session = try_step!(
             "D6",
-            "read_state returned state for a never-committed pipeline".into(),
-        )),
-        Err(e) => failures.push(fail("D6", format!("read_state failed: {e}"))),
-    }
-    // Best-effort, unclaused — same reasoning as `session2`'s close at
-    // the very end of this function (037 US2 fix round 2, M3): the kit
-    // is a HOST, and a well-behaved host closes every session it opens,
-    // not only its last one.
-    let _ = session.close().await;
-
-    // ---- D1: staged writes are invisible before commit ----
-    let mut session1 = try_step!(
-        "D1",
-        "open failed",
-        dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
+            "open failed",
+            dest.open(OpenContext::new(
+                PipelineId::new("rdlt-conf-fresh"),
+                load_a.clone()
+            ))
             .await
-    );
-    // D5: ensure_table is idempotent.
-    for attempt in 0..2 {
+        );
+        match session
+            .read_state(&PipelineId::new("rdlt-conf-fresh"))
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some(_)) => failures.push(fail(
+                "D6",
+                "read_state returned state for a never-committed pipeline".into(),
+            )),
+            Err(e) => failures.push(fail("D6", format!("read_state failed: {e}"))),
+        }
+        concluded.push("D6");
+        // Best-effort, unclaused — same reasoning as `session2`'s close at
+        // the very end of this function (037 US2 fix round 2, M3): the kit
+        // is a HOST, and a well-behaved host closes every session it opens,
+        // not only its last one.
+        let _ = session.close().await;
+
+        // ---- D1: staged writes are invisible before commit ----
+        let mut session1 = try_step!(
+            "D1",
+            "open failed",
+            dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
+                .await
+        );
+        // D5: ensure_table is idempotent.
+        for attempt in 0..2 {
+            try_step!(
+                "D5",
+                format!("ensure_table attempt {attempt}"),
+                session1.ensure_table(&schema, &WriteMode::Append).await
+            );
+        }
+        concluded.push("D5");
+        try_step!(
+            "D1",
+            "write failed",
+            session1
+                .write(&table, fixture_batch("conf-load-a", &["r1", "r2"], &[1, 2]))
+                .await
+        );
+        let staged_visible = try_step!("D1", "probe failed", probe.count(&table).await);
+        if staged_visible != 0 {
+            failures.push(fail(
+                "D1",
+                "rows written but not committed are reader-visible (staging must be invisible)"
+                    .into(),
+            ));
+        }
+        concluded.push("D1");
+
+        // ---- D4: a new session tears down the previous session's staged data ----
+        drop(session1);
+        let mut session2 = try_step!(
+            "D4",
+            "re-open failed",
+            dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
+                .await
+        );
         try_step!(
             "D5",
-            format!("ensure_table attempt {attempt}"),
-            session1.ensure_table(&schema, &WriteMode::Append).await
+            "ensure_table on new session",
+            session2.ensure_table(&schema, &WriteMode::Append).await
         );
-    }
-    try_step!(
-        "D1",
-        "write failed",
-        session1
-            .write(&table, fixture_batch("conf-load-a", &["r1", "r2"], &[1, 2]))
-            .await
-    );
-    let staged_visible = try_step!("D1", "probe failed", probe.count(&table).await);
-    if staged_visible != 0 {
-        failures.push(fail(
-            "D1",
-            "rows written but not committed are reader-visible (staging must be invisible)".into(),
-        ));
-    }
+        try_step!(
+            "D4",
+            "write on new session",
+            session2
+                .write(&table, fixture_batch("conf-load-a", &["r3"], &[3]))
+                .await
+        );
+        let receipt1 = try_step!(
+            "D2",
+            "commit failed",
+            session2
+                .commit(commit_meta(&pipeline, &load_a, 1, Some(10)))
+                .await
+        );
+        let after_first_commit = try_step!("D4", "probe failed", probe.count(&table).await);
+        if after_first_commit != 1 {
+            failures.push(fail(
+                "D4",
+                format!(
+                    "expected exactly the new session's 1 row visible after commit, found \
+                 {after_first_commit} — orphaned staged data from the dead session leaked in"
+                ),
+            ));
+        }
+        concluded.push("D4");
 
-    // ---- D4: a new session tears down the previous session's staged data ----
-    drop(session1);
-    let mut session2 = try_step!(
-        "D4",
-        "re-open failed",
-        dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
-            .await
-    );
-    try_step!(
-        "D5",
-        "ensure_table on new session",
-        session2.ensure_table(&schema, &WriteMode::Append).await
-    );
-    try_step!(
-        "D4",
-        "write on new session",
-        session2
-            .write(&table, fixture_batch("conf-load-a", &["r3"], &[3]))
-            .await
-    );
-    let receipt1 = try_step!(
-        "D2",
-        "commit failed",
-        session2
+        // ---- D3: re-committing the same (load_id, commit_seq) is a no-op with
+        // the prior receipt ----
+        match session2
             .commit(commit_meta(&pipeline, &load_a, 1, Some(10)))
             .await
-    );
-    let after_first_commit = try_step!("D4", "probe failed", probe.count(&table).await);
-    if after_first_commit != 1 {
-        failures.push(fail(
-            "D4",
-            format!(
-                "expected exactly the new session's 1 row visible after commit, found \
-                 {after_first_commit} — orphaned staged data from the dead session leaked in"
-            ),
-        ));
-    }
-
-    // ---- D3: re-committing the same (load_id, commit_seq) is a no-op with
-    // the prior receipt ----
-    match session2
-        .commit(commit_meta(&pipeline, &load_a, 1, Some(10)))
-        .await
-    {
-        Ok(receipt2) => {
-            if receipt2 != receipt1 {
-                failures.push(fail(
-                    "D3",
-                    format!("re-commit returned a different receipt: {receipt2:?} vs {receipt1:?}"),
-                ));
-            }
-        }
-        Err(e) => failures.push(fail("D3", format!("idempotent re-commit errored: {e}"))),
-    }
-    let after_recommit = try_step!("D3", "probe failed", probe.count(&table).await);
-    if after_recommit != after_first_commit {
-        failures.push(fail("D3", "re-commit re-published data".into()));
-    }
-
-    // ---- D2: state persists atomically with the data ----
-    match session2.read_state(&pipeline).await {
-        Ok(Some(state)) => {
-            let cursor = state.cursors.get(&StreamName::new("conf_stream"));
-            if cursor != Some(&Cursor::new(10)) {
-                failures.push(fail(
-                    "D2",
-                    format!("committed cursor not returned by read_state (got {cursor:?})"),
-                ));
-            }
-        }
-        Ok(None) => failures.push(fail("D2", "state missing after successful commit".into())),
-        Err(e) => failures.push(fail("D2", format!("read_state failed: {e}"))),
-    }
-
-    // ---- D8: merge replaces by _rdlt_id (only when the capability is
-    // declared) ----
-    if dest.capabilities().merge {
-        let merge_table = TableName::new("rdlt_conf_merge");
-        let merge_schema = fixture_schema("rdlt_conf_merge");
-        let mode = WriteMode::Merge {
-            key: vec!["v".into()],
-        };
-        let outcome: Result<(), String> = async {
-            session2
-                .ensure_table(&merge_schema, &mode)
-                .await
-                .map_err(|e| e.to_string())?;
-            session2
-                .write(
-                    &merge_table,
-                    fixture_batch("conf-load-a", &["k1", "k2"], &[1, 2]),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            session2
-                .commit(commit_meta(&pipeline, &load_a, 2, None))
-                .await
-                .map_err(|e| e.to_string())?;
-            // Same _rdlt_id `k1` again with new content: must replace, not
-            // append.
-            session2
-                .write(&merge_table, fixture_batch("conf-load-b", &["k1"], &[99]))
-                .await
-                .map_err(|e| e.to_string())?;
-            session2
-                .commit(commit_meta(&pipeline, &load_a, 3, None))
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(())
-        }
-        .await;
-        match outcome {
-            Ok(()) => {
-                let count = try_step!("D8", "probe failed", probe.count(&merge_table).await);
-                if count != 2 {
+        {
+            Ok(receipt2) => {
+                if receipt2 != receipt1 {
                     failures.push(fail(
+                        "D3",
+                        format!(
+                            "re-commit returned a different receipt: {receipt2:?} vs {receipt1:?}"
+                        ),
+                    ));
+                }
+            }
+            Err(e) => failures.push(fail("D3", format!("idempotent re-commit errored: {e}"))),
+        }
+        let after_recommit = try_step!("D3", "probe failed", probe.count(&table).await);
+        if after_recommit != after_first_commit {
+            failures.push(fail("D3", "re-commit re-published data".into()));
+        }
+        concluded.push("D3");
+
+        // ---- D2: state persists atomically with the data ----
+        match session2.read_state(&pipeline).await {
+            Ok(Some(state)) => {
+                let cursor = state.cursors.get(&StreamName::new("conf_stream"));
+                if cursor != Some(&Cursor::new(10)) {
+                    failures.push(fail(
+                        "D2",
+                        format!("committed cursor not returned by read_state (got {cursor:?})"),
+                    ));
+                }
+            }
+            Ok(None) => failures.push(fail("D2", "state missing after successful commit".into())),
+            Err(e) => failures.push(fail("D2", format!("read_state failed: {e}"))),
+        }
+        concluded.push("D2");
+
+        // ---- D8: merge replaces by _rdlt_id (only when the capability is
+        // declared) ----
+        if dest.capabilities().merge {
+            let merge_table = TableName::new("rdlt_conf_merge");
+            let merge_schema = fixture_schema("rdlt_conf_merge");
+            let mode = WriteMode::Merge {
+                key: vec!["v".into()],
+            };
+            let outcome: Result<(), String> = async {
+                session2
+                    .ensure_table(&merge_schema, &mode)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                session2
+                    .write(
+                        &merge_table,
+                        fixture_batch("conf-load-a", &["k1", "k2"], &[1, 2]),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                session2
+                    .commit(commit_meta(&pipeline, &load_a, 2, None))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // Same _rdlt_id `k1` again with new content: must replace, not
+                // append.
+                session2
+                    .write(&merge_table, fixture_batch("conf-load-b", &["k1"], &[99]))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                session2
+                    .commit(commit_meta(&pipeline, &load_a, 3, None))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            .await;
+            match outcome {
+                Ok(()) => {
+                    let count = try_step!("D8", "probe failed", probe.count(&merge_table).await);
+                    if count != 2 {
+                        failures.push(fail(
                         "D8",
                         format!(
                             "merge on an existing _rdlt_id must upsert: expected 2 rows, found {count}"
                         ),
                     ));
+                    }
                 }
+                Err(e) => failures.push(fail("D8", format!("merge flow failed: {e}"))),
             }
-            Err(e) => failures.push(fail("D8", format!("merge flow failed: {e}"))),
+            concluded.push("D8");
         }
+
+        // The kit is itself a HOST: `session2` carried every commit from D2
+        // onward, and a well-behaved host closes a session that completed
+        // its last commit (037 US2 T7 fix round 1 — the SPI's `close`
+        // contract). Best-effort and unclaused deliberately: no clause here
+        // certifies `close` itself (a destination with nothing to release
+        // on close, which is most of them via the default impl, has
+        // nothing to fail), so a close error is not turned into a new
+        // failure the negative-test suite would need to account for — it
+        // would only ever surface a destination-specific bug the existing
+        // clauses cannot name anyway. What this closes is the resource
+        // leak: without it, every certified destination's LAST conformance
+        // session would stay open (a real cost for one that holds a
+        // session-scoped lock, like the file destination's lease) for the
+        // life of the process running this suite.
+        let _ = session2.close().await;
     }
 
-    // The kit is itself a HOST: `session2` carried every commit from D2
-    // onward, and a well-behaved host closes a session that completed
-    // its last commit (037 US2 T7 fix round 1 — the SPI's `close`
-    // contract). Best-effort and unclaused deliberately: no clause here
-    // certifies `close` itself (a destination with nothing to release
-    // on close, which is most of them via the default impl, has
-    // nothing to fail), so a close error is not turned into a new
-    // failure the negative-test suite would need to account for — it
-    // would only ever surface a destination-specific bug the existing
-    // clauses cannot name anyway. What this closes is the resource
-    // leak: without it, every certified destination's LAST conformance
-    // session would stay open (a real cost for one that holds a
-    // session-scoped lock, like the file destination's lease) for the
-    // life of the process running this suite.
-    let _ = session2.close().await;
-
-    failures
+    // The unreached tail: every asserted clause (D8 only when the
+    // destination declares merge — otherwise the suite never asserts
+    // it) that neither concluded nor already carries a failure becomes
+    // a skip naming the abort. `aborted == None` means the suite ran to
+    // its end and every clause has its real verdict.
+    let skips = match aborted {
+        None => Vec::new(),
+        Some(at) => {
+            let mut asserted = vec!["D6", "D1", "D5", "D4", "D2", "D3"];
+            if dest.capabilities().merge {
+                asserted.push("D8");
+            }
+            asserted
+                .into_iter()
+                .filter(|clause| {
+                    !concluded.contains(clause) && !failures.iter().any(|f| f.clause == *clause)
+                })
+                .map(|clause| ConformanceSkip {
+                    clause,
+                    reason: format!("not run — the suite aborted at {at} before reaching it"),
+                })
+                .collect()
+        }
+    };
+    DestinationConformance { failures, skips }
 }

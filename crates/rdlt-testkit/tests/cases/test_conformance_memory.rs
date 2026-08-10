@@ -35,5 +35,5 @@ impl TableProbe for MemoryProbe {
 async fn memory_destination_is_conformant() {
     let dest = MemoryDestination::new();
     let probe = MemoryProbe(dest.clone());
-    assert_conformant(verify_destination(&dest, &probe).await);
+    assert_conformant(verify_destination(&dest, &probe).await.expecting_no_skips());
 }

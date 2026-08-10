@@ -33,7 +33,7 @@ async fn the_destination_is_conformant_on_the_local_filesystem() {
     let config = local_dest(dir.path());
     let shell = rdlt_connector_file::destination::Shell::new(config.clone()).expect("valid");
     let probe = DirProbe { config };
-    assert_conformant(verify_destination(&shell, &probe).await);
+    assert_conformant(verify_destination(&shell, &probe).await.expecting_no_skips());
 }
 
 #[tokio::test]

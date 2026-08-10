@@ -47,9 +47,9 @@ pub mod gate;
 pub mod memory;
 
 pub use conformance::{
-    ConformanceFailure, ConformanceSkip, assert_conformant, destination::ProbeError,
-    destination::TableProbe, destination::verify_destination, source::SourceConformance,
-    source::verify_source,
+    ConformanceFailure, ConformanceSkip, assert_conformant, destination::DestinationConformance,
+    destination::ProbeError, destination::TableProbe, destination::verify_destination,
+    source::SourceConformance, source::verify_source,
 };
 pub use crash::{
     CrashDestination, FaultPoint, armed_crash_points, assert_registry_matches_sources,

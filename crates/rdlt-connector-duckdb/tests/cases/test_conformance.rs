@@ -57,7 +57,7 @@ async fn the_sdk_kit_certifies_the_shell() {
     let dir = tempfile::tempdir().expect("dir");
     let file = dir.path().join("kit.duckdb");
     let shell = Shell::new(Config::new(&file)).expect("valid");
-    assert_conformant(verify_destination(&shell, &FileCount(file)).await);
+    assert_conformant(verify_destination(&shell, &FileCount(file)).await.expecting_no_skips());
 }
 
 /// Nested JSON through the engine: structs stay struct-native (dot

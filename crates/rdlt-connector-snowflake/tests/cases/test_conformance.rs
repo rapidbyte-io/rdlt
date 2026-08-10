@@ -47,7 +47,7 @@ async fn the_destination_is_conformant_against_the_live_service() {
         schema: schema.clone(),
     };
 
-    assert_conformant(verify_destination(&shell, &probe).await);
+    assert_conformant(verify_destination(&shell, &probe).await.expecting_no_skips());
 
     // Scratch teardown, best effort.
     let _ = testhook::connect_and_run(

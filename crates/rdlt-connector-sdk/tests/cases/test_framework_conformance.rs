@@ -48,7 +48,11 @@ async fn a_framework_destination_passes_the_conformance_kit() {
     let shell = destination::shell(connector);
     assert_eq!(shell.spec().name, "sink");
     let probe = StoreProbe { store };
-    assert_conformant(verify_destination(&shell, &probe).await);
+    assert_conformant(
+        verify_destination(&shell, &probe)
+            .await
+            .expecting_no_skips(),
+    );
 }
 
 /// The framework's own refusal: a write to a table this session never

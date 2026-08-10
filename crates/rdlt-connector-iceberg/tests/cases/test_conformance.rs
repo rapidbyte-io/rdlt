@@ -18,5 +18,5 @@ async fn the_destination_is_conformant_against_the_live_fixture() {
         fixture,
         namespace: namespace.into(),
     };
-    assert_conformant(verify_destination(&shell, &probe).await);
+    assert_conformant(verify_destination(&shell, &probe).await.expecting_no_skips());
 }

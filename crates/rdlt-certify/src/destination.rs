@@ -230,18 +230,24 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
 
     // D-reuse — the testkit's destination conformance suite, verbatim,
     // against the (settling) managed adapter: the wire is certified by
-    // the SAME clauses an in-process connector answers to. D8 is
-    // asserted only when the connector declares merge — otherwise the
-    // suite never ran it, and the honest verdict is a Skip.
+    // the SAME clauses an in-process connector answers to. The suite's
+    // own skips (clauses an abort left unreached) fold through as SKIP
+    // entries — never a vacuous Pass. D8 is asserted only when the
+    // connector declares merge — otherwise the suite never ran it, and
+    // the honest verdict is a Skip.
     match probe {
         Some(probe) => {
             let merge = managed.capabilities().merge;
             match tokio::time::timeout(CLAUSE_TIMEOUT, verify_destination(&managed, probe)).await {
-                Ok(failures) => {
+                Ok(outcome) => {
                     if merge {
-                        report.absorb(failures, Vec::new(), &DEST_CLAUSES);
+                        report.absorb(outcome.failures, outcome.skips, &DEST_CLAUSES);
                     } else {
-                        report.absorb(failures, Vec::new(), &["D1", "D2", "D3", "D4", "D5", "D6"]);
+                        report.absorb(
+                            outcome.failures,
+                            outcome.skips,
+                            &["D1", "D2", "D3", "D4", "D5", "D6"],
+                        );
                         report.skip("D8", NO_MERGE_SKIP.to_string());
                     }
                 }

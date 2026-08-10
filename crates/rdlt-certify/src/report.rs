@@ -504,8 +504,9 @@ mod tests {
 
     /// A skip folds as `Skip` at its asserted position — never a
     /// vacuous `Pass`, never dropped — and skips do not refuse: the
-    /// report still passes. The S2 snapshot door is the one minting
-    /// suite-level skips today.
+    /// report still passes. The S2 snapshot door and the destination
+    /// suite's unreached-abort tail are the ones minting suite-level
+    /// skips today.
     #[test]
     fn absorb_folds_skips_as_skip_entries() {
         let mut report = Report::default();

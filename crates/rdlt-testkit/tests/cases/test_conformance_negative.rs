@@ -122,7 +122,7 @@ async fn destination_without_idempotent_commit_fails_d3_by_name() {
     let dest = ForgetfulDest {
         inner: inner.clone(),
     };
-    let failures = verify_destination(&dest, &Probe(inner)).await;
+    let failures = verify_destination(&dest, &Probe(inner)).await.failures;
     assert!(
         failures.iter().any(|f| f.clause == "D3"),
         "expected a D3 diagnostic, got: {failures:?}"
@@ -200,7 +200,7 @@ impl TableProbe for NoProbe {
 
 #[tokio::test]
 async fn an_open_failure_is_attributed_to_the_clause_it_sets_up() {
-    let failures = verify_destination(&Unopenable, &NoProbe).await;
+    let failures = verify_destination(&Unopenable, &NoProbe).await.failures;
     let first = failures.first().expect("an unopenable destination fails");
     assert_eq!(
         (first.clause, first.message.starts_with("open failed: ")),
@@ -227,12 +227,47 @@ impl TableProbe for BrokenProbe {
 
 #[tokio::test]
 async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
-    let failures = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
+    let failures = verify_destination(&MemoryDestination::new(), &BrokenProbe)
+        .await
+        .failures;
     assert!(
         failures
             .iter()
             .any(|f| f.clause == "D1" && f.message.contains("probe blew up")),
         "expected D1 to fail naming the probe error, got: {failures:?}"
+    );
+}
+
+/// The 042 fix-wave docket item: an abort mid-suite must leave every
+/// asserted-but-unreached clause with an honest non-verdict, never a
+/// silent pass. The broken probe aborts the run at D1's first count, so
+/// D4/D2/D3 (and D8 — the memory destination declares merge) were never
+/// exercised; each comes back as a skip naming the abort, and the strict
+/// fold promotes them to failures.
+#[tokio::test]
+async fn an_abort_reports_every_unreached_clause_as_a_skip_naming_the_abort() {
+    let outcome = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
+    for clause in ["D4", "D2", "D3", "D8"] {
+        assert!(
+            outcome.skips.iter().any(|s| s.clause == clause
+                && s.reason == "not run — the suite aborted at D1 before reaching it"),
+            "expected {clause} skipped as unreached, got: {outcome:?}"
+        );
+    }
+    // D6 and D5 concluded before the abort, and D1 carries the failure —
+    // none of them may double as skips.
+    for clause in ["D6", "D5", "D1"] {
+        assert!(
+            !outcome.skips.iter().any(|s| s.clause == clause),
+            "{clause} has a real verdict and must not also skip: {outcome:?}"
+        );
+    }
+    let strict = outcome.expecting_no_skips();
+    assert!(
+        strict
+            .iter()
+            .any(|f| f.clause == "D3" && f.message.starts_with("not exercised: ")),
+        "the strict fold promotes unreached clauses to failures: {strict:?}"
     );
 }
 
