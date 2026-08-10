@@ -265,6 +265,22 @@ EXPERIMENTAL markers, and making these rules binding —
    pinned by this workspace's tests; what is owed is a third party's
    measurement against them.
 
+   *(AMENDED 2026-08-10 — both owed clauses are CLOSED. The certifier
+   now carries them: P11 sends a deliberate two-batch `Write` frame on
+   the live session and demands a typed refusal — a destination that
+   accepts it, or answers anything but an error frame, fails the
+   clause by name; P12 reads the error frames the induced
+   out-of-order-`write` and already-receipted-`publish` refusals
+   answer with and holds them to the read half's standard — bare
+   cause text, classification travelling only as the enum. Both
+   clauses were proven able to fail against designated rogue
+   connectors, a census test pins that no freeze rule stated for both
+   directions is certified one-sided, and every in-gate destination
+   port — file, postgres, duckdb, iceberg — certifies against them
+   over the real wire. The text above stands as written: it records
+   what was owed when the freeze was taken, and the protocol README's
+   gap paragraphs now state the closed truth.)*
+
 The publish posture did NOT move with the freeze: the protocol,
 client, runtime and certifier crates remain `publish = false`, and
 the publish wave is separate, owner-scheduled work.
