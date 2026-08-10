@@ -215,11 +215,12 @@ fn filter_covered(
 
     let mut root_to_stream: BTreeMap<rdlt_core::TableName, rdlt_core::StreamName> = BTreeMap::new();
     for stream in last_checkpoint.keys() {
-        let root = rdlt_core::TableName::new(rdlt_core::naming::normalize_ident(
-            stream.as_str(),
-            rules,
-        ));
-        if root_to_stream.insert(root.clone(), stream.clone()).is_some() {
+        let root =
+            rdlt_core::TableName::new(rdlt_core::naming::normalize_ident(stream.as_str(), rules));
+        if root_to_stream
+            .insert(root.clone(), stream.clone())
+            .is_some()
+        {
             // The writer's stream validation refuses two streams on one root
             // table, so this join is ambiguous only when the manifest did not
             // come from a writer whose rules match ours.
@@ -519,9 +520,9 @@ mod per_stream_coverage_tests {
             unreachable!()
         };
         assert!(
-            span.records
-                .iter()
-                .any(|r| matches!(r, WalRecord::Checkpoint { stream, .. } if stream.as_str() == "orders")),
+            span.records.iter().any(
+                |r| matches!(r, WalRecord::Checkpoint { stream, .. } if stream.as_str() == "orders")
+            ),
             "the covering checkpoint itself must survive the filter"
         );
     }

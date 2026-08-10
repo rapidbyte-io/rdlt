@@ -597,10 +597,7 @@ mod tests {
 
     fn recording_loader(
         policy: CommitPolicy,
-    ) -> (
-        Loader,
-        std::sync::Arc<std::sync::Mutex<Vec<CommitMeta>>>,
-    ) {
+    ) -> (Loader, std::sync::Arc<std::sync::Mutex<Vec<CommitMeta>>>) {
         let commits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (events, _rx) = tokio::sync::broadcast::channel(16);
         let pipeline = PipelineId::new("p");
