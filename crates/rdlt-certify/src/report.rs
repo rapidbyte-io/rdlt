@@ -592,6 +592,81 @@ mod tests {
         }
     }
 
+    /// One wire-freeze rule the protocol README states for BOTH
+    /// directions, with the certifier clause covering each direction.
+    struct TwoDirectionRule {
+        /// The rule, spelled as the protocol README's rule-5 bullet
+        /// names it.
+        rule: &'static str,
+        /// The clause certifying the rule's read (source) direction.
+        read_clause: &'static str,
+        /// The clause certifying the rule's write (destination)
+        /// direction.
+        write_clause: &'static str,
+    }
+
+    /// The census of wire-freeze rules stated for both directions.
+    /// The refusal-shapes rule's `Status` half (P8) is single-sided
+    /// by design — the source service runs no session state machine —
+    /// so only its `ErrorFrame` half rides here.
+    const TWO_DIRECTION_FREEZE_RULES: &[TwoDirectionRule] = &[
+        TwoDirectionRule {
+            rule: "one Arrow batch per frame",
+            read_clause: "P5",
+            write_clause: "P11",
+        },
+        TwoDirectionRule {
+            rule: "the error-frame cause-text contract",
+            read_clause: "P6",
+            write_clause: "P12",
+        },
+        TwoDirectionRule {
+            rule: "the two refusal shapes",
+            read_clause: "P6",
+            write_clause: "P10",
+        },
+    ];
+
+    /// The wire freeze once carried two rules stated for both
+    /// directions but certified on the read direction only (P11 and
+    /// P12 were owed); closing them closed the set. This census holds
+    /// it closed: every two-direction freeze rule must keep a clause
+    /// in a source-direction clause set AND one in a
+    /// destination-direction clause set, asserted against the crate's
+    /// ACTUAL clause constants — never README prose — so a clause-set
+    /// edit that re-opens a one-sided gap fails here BY NAME.
+    #[test]
+    fn every_two_direction_freeze_rule_is_certified_on_both_sides() {
+        use std::collections::BTreeSet;
+
+        let read_direction: BTreeSet<&str> = crate::wire::SOURCE_WIRE_CLAUSES
+            .into_iter()
+            .chain(crate::source::SOURCE_CLAUSES)
+            .collect();
+        let write_direction: BTreeSet<&str> = crate::wire::DEST_WIRE_CLAUSES
+            .into_iter()
+            .chain(crate::destination::SESSION_CLAUSES)
+            .chain(crate::destination::DEST_CLAUSES)
+            .collect();
+
+        for rule in TWO_DIRECTION_FREEZE_RULES {
+            assert!(
+                read_direction.contains(rule.read_clause),
+                "the `{}` rule is certified one-sided: its read-direction clause {} sits in \
+                 no source-direction clause set",
+                rule.rule,
+                rule.read_clause
+            );
+            assert!(
+                write_direction.contains(rule.write_clause),
+                "the `{}` rule is certified one-sided: its write-direction clause {} sits in \
+                 no destination-direction clause set",
+                rule.rule,
+                rule.write_clause
+            );
+        }
+    }
+
     /// The vocabulary covers EXACTLY the ids the certify paths can emit
     /// — both directions: a clause the code reports but the table does
     /// not know would render (and `--explain`) without a title, and a
