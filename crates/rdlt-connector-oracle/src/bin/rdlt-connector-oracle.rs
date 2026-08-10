@@ -44,7 +44,6 @@ fn check_client() {
 }
 
 rdlt_connector_sdk::serve_main! {
-    bin: "rdlt-connector-oracle",
     about: "rdlt oracle connector — a protocol server (ADR 0001)",
     preflight: check_client(),
     roles: {

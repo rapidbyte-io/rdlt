@@ -69,7 +69,9 @@ pub mod source;
 /// serve machinery); `--version` prints the crate version; a serve
 /// error → one stderr line, `<bin name>: <error>`, and exit 1.
 ///
-/// The caller supplies its bin name, the clap `about` line, optionally
+/// The bin name is cargo's own (`env!("CARGO_PKG_NAME")` at the
+/// expansion site — a literal could drift); the caller supplies the
+/// clap `about` line, optionally
 /// a `preflight` expression (run after arg parsing, before any serve —
 /// oracle's client probe exits there with its own typed refusal), and
 /// one arm per served role mapping the `--role` value to a serve
@@ -77,7 +79,6 @@ pub mod source;
 ///
 /// ```ignore
 /// rdlt_connector_sdk::serve_main! {
-///     bin: "rdlt-connector-duckdb",
 ///     about: "rdlt duckdb connector — a protocol server (ADR 0001)",
 ///     roles: {
 ///         Destination => rdlt_connector_sdk::serve::destination::destination::<DuckDb>(),
@@ -91,7 +92,6 @@ pub mod source;
 #[macro_export]
 macro_rules! serve_main {
     (
-        bin: $bin:literal,
         about: $about:literal,
         $(preflight: $preflight:expr,)?
         roles: { $($variant:ident => $serve:expr),+ $(,)? }
@@ -118,7 +118,7 @@ macro_rules! serve_main {
                 $(ServeRole::$variant => $serve.await,)+
             };
             if let Err(error) = outcome {
-                eprintln!(concat!($bin, ": {}"), error);
+                eprintln!(concat!(env!("CARGO_PKG_NAME"), ": {}"), error);
                 ::std::process::exit(1);
             }
         }

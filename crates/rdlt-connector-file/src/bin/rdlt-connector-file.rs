@@ -13,7 +13,6 @@ use rdlt_connector_file::destination::File as FileDestination;
 use rdlt_connector_file::source::File as FileSource;
 
 rdlt_connector_sdk::serve_main! {
-    bin: "rdlt-connector-file",
     about: "rdlt file connector — a protocol server (ADR 0001)",
     roles: {
         Source => rdlt_connector_sdk::serve::source::source::<FileSource>(),

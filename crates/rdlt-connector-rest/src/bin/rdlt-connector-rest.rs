@@ -17,7 +17,6 @@
 use rdlt_connector_rest::source::Rest;
 
 rdlt_connector_sdk::serve_main! {
-    bin: "rdlt-connector-rest",
     about: "rdlt rest connector — a protocol server (ADR 0001)",
     roles: {
         Source => rdlt_connector_sdk::serve::source::source::<Rest>(),

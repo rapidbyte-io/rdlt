@@ -14,7 +14,6 @@ use rdlt_connector_postgres::destination::Postgres as PgDestination;
 use rdlt_connector_postgres::source::Postgres as PgSource;
 
 rdlt_connector_sdk::serve_main! {
-    bin: "rdlt-connector-postgres",
     about: "rdlt postgres connector — a protocol server (ADR 0001)",
     roles: {
         Source => rdlt_connector_sdk::serve::source::source::<PgSource>(),
