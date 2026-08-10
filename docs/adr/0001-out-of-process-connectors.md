@@ -315,6 +315,20 @@ live entirely in engine/SPI code that no wire byte describes. Should a
 measurement later show flow control insufficient on its own,
 `ReadCredit` is the additive addition the frozen rules already permit.
 
+*(AMENDED 2026-08-10 — the budget-metering half of that defect is
+FIXED, and the fix was MEASURED, not argued. Feature 042 replaced the
+capacity-sum in the engine's byte-budget meter with a slice-length
+walk that deduplicates shared allocations, and a second recorded
+benchmark session judged it on the ruled net-win criterion: every
+remote wall fell (−3.9% to −24.4%), CPU held within −8%/+5%, peak RSS
+moved a net −31 MB across the five twin pairs, and the dedup pair's
+wire overhead halved — the fix STANDS. What still stands of the
+paragraph above: the engine's REPORTING sites (the bytes and MB/s
+figures in run artifacts) still capacity-sum, so reported throughput
+on remote Arrow sources reads high until that bookkeeping fix lands;
+and the `ReadCredit` door is unchanged — flow control was never shown
+insufficient, and no wire byte moved.)*
+
 The sequencing rule below that gates the repo split on this freeze is
 therefore satisfied: independent connector versioning now has a
 standing contract to version against.

@@ -5,7 +5,7 @@
 //! library judges it: the role-generic protocol clauses (P1–P4), the
 //! wire clauses on raw frames below the adapters (P3/P5/P6/P7), the
 //! testkit's S- and D-clauses reused against the managed adapters, and
-//! the destination-only session clauses (P8/P9/P10).
+//! the destination-only session clauses (P8-P12).
 //!
 //! THE CDC EXCLUSION: the certification config carries NO `cdc:` block,
 //! deliberately. CDC's `create_if_missing` mints a replication slot the
@@ -115,7 +115,9 @@ async fn the_postgres_source_certifies_all_pass() {
 /// destination over the wire — D1–D6 plus D8 LIVE (the pg destination
 /// declares the merge capability, so D8 must be a real Pass, never the
 /// no-merge Skip the file destination records), the protocol clauses,
-/// and the session clauses P8/P9/P10 on raw dials of the live socket.
+/// and the session clauses P8-P12 on raw dials of the live socket
+/// (P11 refuses a deliberate two-batch write frame; P12 judges the
+/// induced refusals' error-frame text).
 /// The read-back probe is a SEPARATE connection into the scratch
 /// dataset — no in-flight-session hazard for its SQL.
 #[tokio::test(flavor = "multi_thread")]
@@ -143,6 +145,7 @@ async fn the_postgres_destination_certifies_all_pass_with_d8_live() {
     let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
     for clause in [
         "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
+        "P11", "P12",
     ] {
         assert!(
             clauses.contains(&clause),
