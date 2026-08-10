@@ -129,17 +129,29 @@ pub async fn kill_matrix_source(target: &Target) -> Vec<Entry> {
         SourceBoundary::AfterFirstFrame,
         SourceBoundary::AfterFirstCheckpoint,
     ]) {
-        let outcome = tokio::time::timeout(CLAUSE_TIMEOUT, source_arm(target, boundary)).await;
+        // The arm's spawn parks in this slot (round-4 fix): a
+        // CLAUSE_TIMEOUT firing mid-arm drops the arm future — and
+        // with it the probe — but the child stays claimable, so the
+        // timeout path awaits its DEATH before the next arm spawns.
+        let slot = crate::wire::ChildSlot::default();
+        let outcome =
+            tokio::time::timeout(CLAUSE_TIMEOUT, source_arm(target, boundary, &slot)).await;
+        if outcome.is_err() {
+            crate::wire::reap_parked(&slot).await;
+        }
         record(&mut report, clause, outcome);
     }
     report.entries
 }
 
 /// One source arm: spawn, drive to the boundary, SIGKILL, observe.
-async fn source_arm(target: &Target, boundary: SourceBoundary) -> Result<Outcome, String> {
+async fn source_arm(
+    target: &Target,
+    boundary: SourceBoundary,
+    slot: &crate::wire::ChildSlot,
+) -> Result<Outcome, String> {
     let bin = resolve_binary(&target.requirement)?;
-    let slot = crate::wire::ChildSlot::default();
-    let mut probe = WireProbe::attach(&bin, Role::Source, &target.config, READ_BUDGET_BYTES, &slot)
+    let mut probe = WireProbe::attach(&bin, Role::Source, &target.config, READ_BUDGET_BYTES, slot)
         .await
         .map_err(|why| format!("could not spawn the connector: {why}"))?;
     probe
@@ -289,11 +301,21 @@ pub async fn kill_matrix_destination(
         DestBoundary::PostPublish,
         DestBoundary::PostClose,
     ]) {
+        // The arm's spawns (boundary AND convergence — they never
+        // overlap, so one slot serves both) park here; a mid-arm
+        // CLAUSE_TIMEOUT claims and awaits the child's death before
+        // the next arm races it for a single-writer store lock
+        // (round-4 fix — the same discipline as every other spawn
+        // seam since 042 Task 6).
+        let slot = crate::wire::ChildSlot::default();
         let outcome = tokio::time::timeout(
             CLAUSE_TIMEOUT,
-            destination_arm(target, probe, clause, boundary),
+            destination_arm(target, probe, clause, boundary, &slot),
         )
         .await;
+        if outcome.is_err() {
+            crate::wire::reap_parked(&slot).await;
+        }
         record(&mut report, clause, outcome);
     }
     report.entries
@@ -306,10 +328,11 @@ async fn destination_arm(
     probe: &dyn TableProbe,
     clause: &str,
     boundary: DestBoundary,
+    slot: &crate::wire::ChildSlot,
 ) -> Result<Outcome, String> {
     let identity = ArmIdentity::for_clause(clause);
     let bin = resolve_binary(&target.requirement)?;
-    let (mut wire, socket) = spawn_destination(&bin, target).await?;
+    let (mut wire, socket) = spawn_destination(&bin, target, slot).await?;
 
     // Drive to the boundary; a failure on the way REAPS the spawn
     // before returning (the converge discipline, 042 Task 6): dropping
@@ -382,19 +405,22 @@ async fn destination_arm(
         }
     }
 
-    converge(target, probe, &bin, &identity, boundary).await
+    converge(target, probe, &bin, &identity, boundary, slot).await
 }
 
 /// Spawn the target's binary as a destination and handshake it; hand
 /// back the probe (whose drop reaps the child) and its live socket.
-async fn spawn_destination(bin: &Path, target: &Target) -> Result<(WireProbe, PathBuf), String> {
-    let slot = crate::wire::ChildSlot::default();
+async fn spawn_destination(
+    bin: &Path,
+    target: &Target,
+    slot: &crate::wire::ChildSlot,
+) -> Result<(WireProbe, PathBuf), String> {
     let mut wire = WireProbe::attach(
         bin,
         Role::Destination,
         &target.config,
         MAX_FRAME_BYTES as u64,
-        &slot,
+        slot,
     )
     .await
     .map_err(|why| format!("could not spawn the connector: {why}"))?;
@@ -473,8 +499,9 @@ async fn converge(
     bin: &Path,
     identity: &ArmIdentity,
     boundary: DestBoundary,
+    slot: &crate::wire::ChildSlot,
 ) -> Result<Outcome, String> {
-    let (mut wire, socket) = spawn_destination(bin, target)
+    let (mut wire, socket) = spawn_destination(bin, target, slot)
         .await
         .map_err(|why| format!("the convergence run failed: {why}"))?;
     let no_op = boundary == DestBoundary::PostClose;
