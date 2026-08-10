@@ -217,6 +217,19 @@ impl ByteSized for PushPayload {
     /// its footprint), and a wire source burns its budget that many
     /// times too fast. Summing slice LENGTHS instead makes a decoded
     /// batch meter ≈ the body it decodes from.
+    ///
+    /// THE OTHER DIRECTION IS THE ACCEPTED TRADE (D-042-4, judged by
+    /// measurement): a builder-built batch's buffers carry
+    /// capacity-doubling slack (`capacity ≈ 1.4x len` in the recorded
+    /// arithmetic, up to 2x worst case), and len-summing deliberately
+    /// does NOT count it — the budget is a THROUGHPUT WINDOW bound,
+    /// not a resident-set accountant. The T4 review named this
+    /// len-vs-resident caveat explicitly, and T11's recorded session
+    /// judged it on the benches' own measurement: peak RSS fell a net
+    /// −31 MB across the five remote twins with the builder slack
+    /// presented in the arithmetic. Do not "fix" this back toward
+    /// capacity-summing without a new RSS measurement that overturns
+    /// that record.
     fn byte_size(&self) -> usize {
         match self {
             PushPayload::RawJson(bytes) => bytes.len(),
