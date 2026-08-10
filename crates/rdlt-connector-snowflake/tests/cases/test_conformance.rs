@@ -23,11 +23,31 @@ impl TableProbe for LiveProbe {
             self.schema.to_uppercase(),
             table.as_str().to_uppercase()
         );
-        Ok(testhook::rows(&self.config, &sql, &["n"])
-            .await
-            .ok()
-            .and_then(|rows| rows.first().and_then(|row| row[0].parse().ok()))
-            .unwrap_or(0))
+        // Only ABSENCE reads as zero (D1 probes before the connector
+        // creates the table): the service's structured 002003 — object
+        // does not exist or not authorized — is the same code the merge
+        // diagnosis keys on. Any other failure is the oracle failing,
+        // never an empty table.
+        let rows = match testhook::rows(&self.config, &sql, &["n"]).await {
+            Ok(rows) => rows,
+            Err(e) if testhook::classify_live_error(&e).as_deref() == Some("002003") => {
+                return Ok(0);
+            }
+            Err(e) => {
+                return Err(ProbeError {
+                    message: format!("the count query failed: {e}"),
+                });
+            }
+        };
+        let count = rows
+            .first()
+            .map(|row| row[0].as_str())
+            .ok_or_else(|| ProbeError {
+                message: "the count query answered no rows".to_owned(),
+            })?;
+        count.parse().map_err(|_| ProbeError {
+            message: format!("the count query answered `{count}`, not one u64 row count"),
+        })
     }
 }
 
@@ -47,7 +67,11 @@ async fn the_destination_is_conformant_against_the_live_service() {
         schema: schema.clone(),
     };
 
-    assert_conformant(verify_destination(&shell, &probe).await.expecting_no_skips());
+    assert_conformant(
+        verify_destination(&shell, &probe)
+            .await
+            .expecting_no_skips(),
+    );
 
     // Scratch teardown, best effort.
     let _ = testhook::connect_and_run(

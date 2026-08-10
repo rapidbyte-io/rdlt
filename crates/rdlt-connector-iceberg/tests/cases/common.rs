@@ -316,16 +316,33 @@ impl rdlt_testkit::TableProbe for LiveProbe {
     ) -> Result<u64, rdlt_testkit::ProbeError> {
         // Total records off the newest snapshot summary — the
         // catalog's own count, independent of the crate. A table with
-        // no snapshots yet reads as 0; that zero is a fact (nothing
-        // published), not an oracle failure.
-        Ok(self
+        // no snapshots yet (or no table at all) reads as 0; that zero
+        // is a fact (nothing published), not an oracle failure. A
+        // PRESENT snapshot whose summary lacks `total-records` — or
+        // carries one that does not parse — is the oracle failing, and
+        // folding it into 0 would certify invisibility clauses
+        // vacuously (042 fix wave).
+        let summaries = self
             .fixture
             .snapshot_summaries(&self.namespace, table.as_str())
-            .await
-            .last()
-            .and_then(|s| s.get("total-records"))
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0))
+            .await;
+        let Some(newest) = summaries.last() else {
+            return Ok(0);
+        };
+        let total = newest
+            .get("total-records")
+            .ok_or_else(|| rdlt_testkit::ProbeError {
+                message: format!(
+                    "the newest snapshot of `{}` carries no total-records summary key",
+                    table.as_str()
+                ),
+            })?;
+        total.parse().map_err(|_| rdlt_testkit::ProbeError {
+            message: format!(
+                "the newest snapshot of `{}` reports total-records `{total}`, not one u64",
+                table.as_str()
+            ),
+        })
     }
 }
 
