@@ -33,12 +33,14 @@ use rdlt_runtime::{ConnectorRequirement, LocalBinaryConnectorProvider, Role};
 use super::support::spawn::built_bin;
 
 /// The refusal, byte-for-byte: the bin's one stderr line when no
-/// client is loadable, naming the library it failed to dlopen and the
+/// USABLE client is loadable (missing, broken, or an unsupported
+/// version — the whole DPI load family), naming the library and the
 /// install hint. Frozen — the operator-facing spelling of the whole
 /// probe.
-const REFUSAL: &str = "rdlt-connector-oracle: no Oracle Client library is loadable — this \
-     connector wraps ODPI-C, which dlopens libclntsh at RUNTIME (the build needed none). \
-     Install Oracle Instant Client and put its directory on LD_LIBRARY_PATH.\n";
+const REFUSAL: &str = "rdlt-connector-oracle: no usable Oracle Client library — this connector wraps \
+     ODPI-C, which dlopens libclntsh at RUNTIME (the build needed none); the library \
+     is missing, broken, or its version is unsupported. Install or update Oracle \
+     Instant Client and put its directory on LD_LIBRARY_PATH.\n";
 
 /// The source half answers the config-free `Spec` RPC through the
 /// provider (spawn → handshake line → dial → Spec; the provider owns

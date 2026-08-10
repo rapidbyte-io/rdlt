@@ -147,26 +147,39 @@ impl Drop for Client {
     }
 }
 
-/// Is an Oracle Client library loadable in THIS process?
+/// The ODPI-C load-time failure family: the driver could not load a
+/// USABLE Oracle Client library into this process. Verified against
+/// the vendored ODPI-C source (`odpi/src/dpiErrorMessages.h`):
+/// 1047 cannot locate the library, 1049 a symbol is missing from it
+/// (a broken or bitness-mismatched install), 1050 and 1079 the
+/// library is too old, 1072 its version is unsupported. POLARITY:
+/// any failure OUTSIDE this family — a network refusal, an ORA code,
+/// a call timeout — means a client WAS found and loaded, which is
+/// exactly what the probe asks.
+const DPI_CLIENT_LOAD_FAMILY: &[i32] = &[1047, 1049, 1050, 1072, 1079];
+
+/// Is a USABLE Oracle Client library loadable in THIS process?
 ///
 /// ODPI-C compiles from vendored source, so the BUILD needs nothing —
 /// but the first connection dlopens Oracle's client (libclntsh) at
-/// RUNTIME, and a process without one dies inside the driver with an
-/// error no caller upstream can type. Probed by attempting a
+/// RUNTIME, and a process without a usable one dies inside the driver
+/// with an error no caller upstream can type. Probed by attempting a
 /// connection to an address nothing answers: the driver reports a
-/// missing client (`DPI-1047`, from the dlopen layer — no ORA code
-/// exists there, so the crate exposes it through its own structured
-/// `Error::dpi_code` accessor) differently from a network failure, and
-/// any OTHER outcome means a client was found and loaded.
+/// load-time client failure ([`DPI_CLIENT_LOAD_FAMILY`], through the
+/// crate's structured `Error::dpi_code` accessor — no ORA code exists
+/// at that layer) differently from a network failure, and any OTHER
+/// outcome means a client was found and loaded.
 ///
-/// The connector binary calls this BEFORE the protocol handshake so a
-/// missing client is a typed refusal on stderr, never an opaque death
+/// The connector binary calls this BEFORE the protocol handshake so an
+/// unusable client is a typed refusal on stderr, never an opaque death
 /// mid-serve; test fixtures call it to skip live cells rather than
 /// fail them.
 pub fn client_available() -> bool {
     match oracle::Connection::connect("x", "x", "//127.0.0.1:1/NOPE") {
         Ok(_) => true,
-        Err(e) => e.dpi_code() != Some(1047),
+        Err(e) => !e
+            .dpi_code()
+            .is_some_and(|code| DPI_CLIENT_LOAD_FAMILY.contains(&code)),
     }
 }
 

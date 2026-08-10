@@ -51,9 +51,10 @@ async fn main() {
         // BEFORE any stdout byte: the handshake line has not printed,
         // so the provider reads a refusal, not a malformed handshake.
         eprintln!(
-            "rdlt-connector-oracle: no Oracle Client library is loadable — this connector \
-             wraps ODPI-C, which dlopens libclntsh at RUNTIME (the build needed none). \
-             Install Oracle Instant Client and put its directory on LD_LIBRARY_PATH."
+            "rdlt-connector-oracle: no usable Oracle Client library — this connector wraps \
+             ODPI-C, which dlopens libclntsh at RUNTIME (the build needed none); the library \
+             is missing, broken, or its version is unsupported. Install or update Oracle \
+             Instant Client and put its directory on LD_LIBRARY_PATH."
         );
         std::process::exit(1);
     }
