@@ -58,55 +58,21 @@ impl TableProbe for SnapshotCount {
             std::fs::copy(&wal, scratch.path().join("snapshot.duckdb.wal"))
                 .map_err(|e| oracle_failure(format!("copying the WAL failed: {e}")))?;
         }
-        let read_only = duckdb::Config::default()
-            .access_mode(duckdb::AccessMode::ReadOnly)
-            .map_err(|e| oracle_failure(format!("read-only config failed: {e}")))?;
-        let conn = duckdb::Connection::open_with_flags(&copy, read_only)
-            .map_err(|e| oracle_failure(format!("read-only open of the snapshot failed: {e}")))?;
-        // The kit's table names pass through quoting to stay one rule.
-        // Only ABSENCE reads as zero: the kit probes tables before the
-        // connector creates them (D1), and a table never created holds
-        // 0 published rows — that zero is a fact. duckdb's structured
-        // channel is degenerate (031: classification is message-prefix
-        // keyed), so absence is keyed on the measured `Catalog Error`
-        // class; any other failure is the oracle failing, never an
-        // empty table.
-        let ident = format!("\"{}\"", table.as_str().replace('"', "\"\""));
-        match conn.query_row(&format!("SELECT count(*) FROM {ident}"), [], |row| {
-            row.get::<_, u64>(0)
-        }) {
-            Ok(count) => Ok(count),
-            Err(e) if e.to_string().contains("Catalog Error") => Ok(0),
-            Err(e) => Err(oracle_failure(format!(
-                "counting `{}` in the snapshot failed: {e}",
-                table.as_str()
-            ))),
-        }
+        // The one absence-vs-failure rule, shared with the in-process
+        // FileCount ([`crate::cases::common::count_at`]).
+        crate::cases::common::count_at(&copy, table.as_str())
     }
 }
 
 /// The fail-open fold closed (042 fix wave): only ABSENCE reads as
-/// zero. The broken read is a view over a parquet file deleted after
-/// planting — `CREATE VIEW` binds eagerly, so a never-valid view cannot
-/// be planted, while a valid one whose file later vanishes fails at
-/// QUERY time (`IO Error`, measured) — exactly the query-arm failure
-/// the old `unwrap_or(0)` folded into an empty table.
+/// zero. The fixture is the shared broken-view plant
+/// ([`crate::cases::common::plant_broken_view_store`]) — the copy
+/// scaffolding above is this probe's own subject, the count rule is
+/// the shared one.
 #[tokio::test]
 async fn absence_counts_zero_but_a_broken_read_is_a_probe_error() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let file = dir.path().join("store.duckdb");
-    let parquet = dir.path().join("gone.parquet");
-    {
-        let conn = duckdb::Connection::open(&file).expect("open");
-        conn.execute_batch(&format!(
-            "CREATE TABLE present(v BIGINT); INSERT INTO present VALUES (1), (2); \
-             COPY (SELECT 1 AS v) TO '{path}' (FORMAT PARQUET); \
-             CREATE VIEW broken AS SELECT * FROM read_parquet('{path}');",
-            path = parquet.display()
-        ))
-        .expect("plant");
-    }
-    std::fs::remove_file(&parquet).expect("the parquet file vanishes");
+    let file = crate::cases::common::plant_broken_view_store(dir.path());
 
     let probe = SnapshotCount(file);
     assert_eq!(
@@ -128,7 +94,7 @@ async fn absence_counts_zero_but_a_broken_read_is_a_probe_error() {
         .await
         .expect_err("a genuine read failure must never read as an empty table");
     assert!(
-        err.message.contains("counting `broken`"),
+        err.message.contains("counting `broken` failed"),
         "the probe error names the failing count: {}",
         err.message
     );

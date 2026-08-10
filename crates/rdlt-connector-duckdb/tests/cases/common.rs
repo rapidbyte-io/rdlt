@@ -20,6 +20,56 @@ pub fn dest_in(dir: &std::path::Path) -> (Config, Shell) {
     (config, shell)
 }
 
+// ---------------------------------------------------------------- probing
+
+/// THE one absence-vs-failure count (round-3 fix — both probes call
+/// here, so the rule cannot fork): open `path` read-only and count
+/// `table`'s rows. Only ABSENCE reads as zero, keyed on the measured
+/// `Catalog Error` class (031: duckdb's structured channel is
+/// degenerate — classification is message-keyed); an unopenable store
+/// or any other query failure is the oracle failing, never an empty
+/// table. The kit's table names pass through quoting to stay one rule.
+pub fn count_at(path: &std::path::Path, table: &str) -> Result<u64, rdlt_testkit::ProbeError> {
+    let oracle_failure = |message: String| rdlt_testkit::ProbeError { message };
+    let read_only = duckdb::Config::default()
+        .access_mode(duckdb::AccessMode::ReadOnly)
+        .map_err(|e| oracle_failure(format!("read-only config failed: {e}")))?;
+    let conn = duckdb::Connection::open_with_flags(path, read_only)
+        .map_err(|e| oracle_failure(format!("read-only open of the database file failed: {e}")))?;
+    let ident = format!("\"{}\"", table.replace('"', "\"\""));
+    match conn.query_row(&format!("SELECT count(*) FROM {ident}"), [], |row| {
+        row.get::<_, u64>(0)
+    }) {
+        Ok(count) => Ok(count),
+        Err(e) if e.to_string().contains("Catalog Error") => Ok(0),
+        Err(e) => Err(oracle_failure(format!("counting `{table}` failed: {e}"))),
+    }
+}
+
+/// Plant the broken-read fixture both probe fail-open pins share: a
+/// store with a two-row `present` table and a `broken` view over a
+/// parquet file DELETED after planting — `CREATE VIEW` binds eagerly,
+/// so a never-valid view cannot be planted, while a valid one whose
+/// file later vanishes fails at QUERY time (`IO Error`, measured) —
+/// exactly the query-arm failure an absence fold would silently
+/// swallow. Returns the store file's path.
+pub fn plant_broken_view_store(dir: &std::path::Path) -> std::path::PathBuf {
+    let file = dir.join("store.duckdb");
+    let parquet = dir.join("gone.parquet");
+    {
+        let conn = duckdb::Connection::open(&file).expect("open");
+        conn.execute_batch(&format!(
+            "CREATE TABLE present(v BIGINT); INSERT INTO present VALUES (1), (2); \
+             COPY (SELECT 1 AS v) TO '{path}' (FORMAT PARQUET); \
+             CREATE VIEW broken AS SELECT * FROM read_parquet('{path}');",
+            path = parquet.display()
+        ))
+        .expect("plant");
+    }
+    std::fs::remove_file(&parquet).expect("the parquet file vanishes");
+    file
+}
+
 // ---------------------------------------------------------------- documents
 
 /// A Shell over `file` built from an options document (everything but
