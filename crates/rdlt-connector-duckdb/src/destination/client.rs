@@ -264,12 +264,31 @@ pub(crate) fn classify(e: duckdb::Error) -> DestinationError {
         {
             return DestinationError::fatal(e.to_string());
         }
-        // The lock-conflict family (D-042-2), measured not guessed
-        // (the fragment is the template's own head; the tail names the
-        // holding PID and varies): a second read-write open of a
-        // single-writer file is an operator error, and the holder
-        // keeps the lock for its whole life — never a heal-on-retry
-        // condition.
+        // The lock-conflict family is FATAL — the owner ruling
+        // D-042-2, its full weighing carried here so the trade is
+        // auditable in place:
+        //
+        // - MEASURED, not guessed: the fragment is the template's own
+        //   head (the tail names the holding PID and varies), and the
+        //   042 T6 probes measured that duckdb's cross-process lock
+        //   refuses even a READ-ONLY open while a read-write holder
+        //   lives — so a conflict means a live holder, full stop.
+        // - THE ASYMMETRY that decided it: a holder normally keeps the
+        //   lock for its whole life, and under a transient
+        //   classification the engine retries the WHOLE run five times
+        //   against a lock that will not clear — minutes of doomed
+        //   re-extraction ending in the same failure, with the real
+        //   cause (two writers configured onto one store) buried under
+        //   retry noise.
+        // - THE BRIEF-HOLDER CASE was weighed and DECLINED by the
+        //   owner: a holder in its final milliseconds of teardown (a
+        //   previous run exiting, an operator's CLI session closing)
+        //   would heal on retry, but distinguishing it from a durable
+        //   holder is not possible from the message, and trading a
+        //   loud immediate refusal for sometimes-heals means the
+        //   two-writers misconfiguration is discovered five retries
+        //   late. Orchestrators serialize runs; the refusal names the
+        //   conflict at first contact.
         const LOCK_TEMPLATE: &str = "Could not set lock on file";
         if message.contains(LOCK_TEMPLATE) {
             return DestinationError::fatal(e.to_string());

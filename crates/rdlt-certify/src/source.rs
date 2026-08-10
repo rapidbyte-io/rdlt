@@ -112,14 +112,21 @@ pub async fn certify_source(target: &Target) -> Report {
     // frames BELOW the adapters (a misbehaving server must not hide
     // behind our client's good manners), and the managed adapter's
     // process has already spent its one handshake.
+    // The child parks in a shared slot so the timeout arm can claim
+    // and REAP it (the destination block's round-3 discipline; a
+    // timed-out future only drops, and kill_on_drop only SENDS the
+    // signal — the abandoned connector process must not outlive the
+    // certification that spawned it).
+    let slot = wire::ChildSlot::default();
     match tokio::time::timeout(
         CLAUSE_TIMEOUT,
-        wire::attach_for(&requirement, Role::Source, &target.config),
+        wire::attach_for(&requirement, Role::Source, &target.config, &slot),
     )
     .await
     {
         Ok(Ok(mut probe)) => {
             wire::certify_source_wire(&mut report, &mut probe, &requirement.id).await;
+            probe.kill().await;
         }
         Ok(Err(why)) => {
             for clause in wire::SOURCE_WIRE_CLAUSES {
@@ -127,6 +134,7 @@ pub async fn certify_source(target: &Target) -> Report {
             }
         }
         Err(_elapsed) => {
+            wire::reap_parked(&slot).await;
             for clause in wire::SOURCE_WIRE_CLAUSES {
                 report.fail(clause, timed_out());
             }

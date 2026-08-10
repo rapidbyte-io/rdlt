@@ -138,7 +138,8 @@ pub async fn kill_matrix_source(target: &Target) -> Vec<Entry> {
 /// One source arm: spawn, drive to the boundary, SIGKILL, observe.
 async fn source_arm(target: &Target, boundary: SourceBoundary) -> Result<Outcome, String> {
     let bin = resolve_binary(&target.requirement)?;
-    let mut probe = WireProbe::attach(&bin, Role::Source, &target.config, READ_BUDGET_BYTES)
+    let slot = crate::wire::ChildSlot::default();
+    let mut probe = WireProbe::attach(&bin, Role::Source, &target.config, READ_BUDGET_BYTES, &slot)
         .await
         .map_err(|why| format!("could not spawn the connector: {why}"))?;
     probe
@@ -387,11 +388,13 @@ async fn destination_arm(
 /// Spawn the target's binary as a destination and handshake it; hand
 /// back the probe (whose drop reaps the child) and its live socket.
 async fn spawn_destination(bin: &Path, target: &Target) -> Result<(WireProbe, PathBuf), String> {
+    let slot = crate::wire::ChildSlot::default();
     let mut wire = WireProbe::attach(
         bin,
         Role::Destination,
         &target.config,
         MAX_FRAME_BYTES as u64,
+        &slot,
     )
     .await
     .map_err(|why| format!("could not spawn the connector: {why}"))?;

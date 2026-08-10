@@ -168,19 +168,22 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // reap included — SIGKILL alone only SENDS the signal) is free for
     // every multi-writer destination and is what makes single-writer
     // ones certifiable at all. The attach rides its OWN tokio task so
-    // the timeout arm can keep that promise: timing out a bare future
-    // drops it, which only SENDS kill_on_drop's SIGKILL — the dying
-    // probe could still race the managed spawn below for the store
-    // lock. With the task, the timeout arm aborts and AWAITS it (the
-    // child's drop has run when the await returns), and an attach that
-    // completed in the gap hands back the probe for the full
-    // kill-and-reap.
+    // the timeout arm can keep that promise, and the spawned CHILD
+    // parks in a shared slot (round-3 fix): aborting the task only
+    // runs Drop, and kill_on_drop only SENDS the SIGKILL — the dying
+    // probe could still hold the store lock when the managed spawn
+    // below opens the same store. The timeout arm aborts, awaits the
+    // task, then claims whatever the slot still parks and awaits the
+    // child's DEATH; an attach that completed in the gap hands back
+    // the probe for the same full kill-and-reap.
+    let slot = wire::ChildSlot::default();
     let mut attach = {
         let requirement = requirement.clone();
         let config = target.config.clone();
-        tokio::spawn(
-            async move { wire::attach_for(&requirement, Role::Destination, &config).await },
-        )
+        let slot = slot.clone();
+        tokio::spawn(async move {
+            wire::attach_for(&requirement, Role::Destination, &config, &slot).await
+        })
     };
     match tokio::time::timeout(CLAUSE_TIMEOUT, &mut attach).await {
         Ok(Ok(Ok(mut probe))) => {
@@ -203,6 +206,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             if let Ok(Ok(mut probe)) = attach.await {
                 probe.kill().await;
             }
+            wire::reap_parked(&slot).await;
             for clause in wire::DEST_WIRE_CLAUSES {
                 report.fail(clause, timed_out());
             }

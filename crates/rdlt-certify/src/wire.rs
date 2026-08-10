@@ -135,6 +135,30 @@ impl std::fmt::Display for Census {
     }
 }
 
+/// A shared parking slot for the child a wire attach spawns (round-3
+/// fix). The child lives HERE — not in the attach future — across the
+/// attach's awaits, so a caller that must abandon the attach (a
+/// timeout aborting the task) can still claim the child and await its
+/// DEATH: aborting a task only runs Drop, and `kill_on_drop` only
+/// SENDS the SIGKILL, so without the slot a dying single-writer
+/// connector could still hold its store lock when the next spawn
+/// opens the same store. Exactly one owner ever ends up responsible:
+/// the probe takes the child out on success (its `kill` reaps), the
+/// attach's own error paths reap before returning, and a cancelled
+/// attach leaves it parked for the caller.
+pub(crate) type ChildSlot = std::sync::Arc<std::sync::Mutex<Option<tokio::process::Child>>>;
+
+/// Claim and REAP whatever child `slot` still parks — the caller's
+/// move after abandoning an attach. A no-op when the attach completed
+/// (the probe took the child) or never spawned one.
+pub(crate) async fn reap_parked(slot: &ChildSlot) {
+    let child = slot.lock().expect("child slot lock").take();
+    if let Some(mut child) = child {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+}
+
 /// The child a [`WireProbe::attach`] spawned. Dropping it SIGKILLs the
 /// process (`kill_on_drop` was set at spawn) and unlinks the socket its
 /// handshake line advertised — no `LifecycleGuard` ever owned this
@@ -175,11 +199,16 @@ impl WireProbe {
     /// ceiling, and the kill matrix passes a deliberately SMALL budget
     /// so a read stream cannot be fully in flight before a mid-stream
     /// SIGKILL lands.
+    ///
+    /// The child parks in `slot` across every await (see [`ChildSlot`]);
+    /// each error path below reaps it before returning, so an `Err`
+    /// never leaves a live process behind.
     pub(crate) async fn attach(
         bin: &Path,
         role: Role,
         config: &Value,
         budget_bytes: u64,
+        slot: &ChildSlot,
     ) -> Result<Self, String> {
         let mut child = Command::new(bin)
             .arg(role_arg(role))
@@ -188,6 +217,8 @@ impl WireProbe {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .stdin(Stdio::null())
+            // The safety net under the slot: if the slot itself is
+            // dropped with the child parked, the drop still signals.
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("spawning `{}`: {error}", bin.display()))?;
@@ -196,38 +227,61 @@ impl WireProbe {
             .stdout
             .take()
             .expect("stdout was piped at spawn, so the child carries it");
+        *slot.lock().expect("child slot lock") = Some(child);
+
         let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
         let mut line = String::new();
         match tokio::time::timeout(LINE_TIMEOUT, reader.read_line(&mut line)).await {
             Err(_elapsed) => {
+                reap_parked(slot).await;
                 return Err(format!(
                     "wrote no handshake line within {}s — the first stdout line must be the \
                      handshake line",
                     LINE_TIMEOUT.as_secs()
                 ));
             }
-            Ok(Err(error)) => return Err(format!("reading the handshake line: {error}")),
+            Ok(Err(error)) => {
+                reap_parked(slot).await;
+                return Err(format!("reading the handshake line: {error}"));
+            }
             Ok(Ok(_bytes)) => {}
         }
-        let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
-            .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
-
-        // Owned BEFORE the dial (the local.rs order): a dial failure
-        // drops the guard, which kills the child AND unlinks the
-        // advertised socket — without it the error path left the
-        // socket file behind (kill_on_drop covers only the process).
-        let spawned = SpawnedConnector {
-            child,
-            socket: parsed.socket_path,
+        let parsed = match Line::parse(line.trim_end_matches(['\n', '\r'])) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                reap_parked(slot).await;
+                return Err(format!(
+                    "the first stdout line is not a handshake line: {error}"
+                ));
+            }
         };
-        let channel = dial(&spawned.socket, budget_bytes)
-            .await
-            .map_err(|error| format!("dialing the advertised socket: {error}"))?;
+
+        let channel = match dial(&parsed.socket_path, budget_bytes).await {
+            Ok(channel) => channel,
+            Err(error) => {
+                // Reap AND unlink: kill_on_drop covers only the
+                // process, and no `SpawnedConnector` owns the socket
+                // yet on this path.
+                reap_parked(slot).await;
+                let _ = std::fs::remove_file(&parsed.socket_path);
+                return Err(format!("dialing the advertised socket: {error}"));
+            }
+        };
+        // Success: the probe takes ownership; an EMPTY slot means the
+        // caller abandoned this attach and already claimed the child —
+        // honor the cancellation rather than resurrect a reaped pid.
+        let Some(child) = slot.lock().expect("child slot lock").take() else {
+            let _ = std::fs::remove_file(&parsed.socket_path);
+            return Err("the attach was abandoned by its caller".to_owned());
+        };
         Ok(Self {
             channel,
             role,
             config: config.clone(),
-            spawned: Some(spawned),
+            spawned: Some(SpawnedConnector {
+                child,
+                socket: parsed.socket_path,
+            }),
         })
     }
 
@@ -384,9 +438,10 @@ pub(crate) async fn attach_for(
     requirement: &ConnectorRequirement,
     role: Role,
     config: &Value,
+    slot: &ChildSlot,
 ) -> Result<WireProbe, String> {
     let bin = resolve_binary(requirement)?;
-    WireProbe::attach(&bin, role, config, MAX_FRAME_BYTES as u64).await
+    WireProbe::attach(&bin, role, config, MAX_FRAME_BYTES as u64, slot).await
 }
 
 /// The source wire clauses over one attached probe, in
