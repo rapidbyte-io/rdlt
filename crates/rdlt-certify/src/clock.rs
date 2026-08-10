@@ -45,20 +45,38 @@ impl ProbeClock {
     }
 }
 
-/// The probe wrapper that stops the clause clock while a count runs.
+/// The certifier's own bound on ONE probe count — what keeps the
+/// stop-clock from deleting the no-hang guarantee (round-6 fix): the
+/// clause clock stops while a count runs, so without this bound a
+/// never-returning probe would hang certification forever. Every probe
+/// the certifier drives — library-supplied and first-party alike — is
+/// bounded HERE, and a stalled count fails naming ITSELF, never the
+/// connector.
+const PROBE_BOUND: Duration = Duration::from_secs(30);
+
+/// The probe wrapper that stops the clause clock while a count runs —
+/// and bounds each count at [`PROBE_BOUND`], so the credited allowance
+/// is itself finite.
 pub(crate) struct StopClockProbe<'a> {
     inner: &'a dyn TableProbe,
     clock: ProbeClock,
+    bound: Duration,
 }
 
 impl<'a> StopClockProbe<'a> {
     /// Wrap `inner`; the returned clock feeds [`timeout_excluding_probe`].
     pub(crate) fn new(inner: &'a dyn TableProbe) -> (Self, ProbeClock) {
+        Self::with_bound(inner, PROBE_BOUND)
+    }
+
+    /// [`Self::new`] with an explicit per-count bound — the test seam.
+    pub(crate) fn with_bound(inner: &'a dyn TableProbe, bound: Duration) -> (Self, ProbeClock) {
         let clock = ProbeClock::default();
         (
             Self {
                 inner,
                 clock: clock.clone(),
+                bound,
             },
             clock,
         )
@@ -70,7 +88,16 @@ impl TableProbe for StopClockProbe<'_> {
     async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
         self.clock.0.lock().expect("probe clock lock").in_flight =
             Some(tokio::time::Instant::now());
-        let outcome = self.inner.count(table).await;
+        let outcome = match tokio::time::timeout(self.bound, self.inner.count(table)).await {
+            Ok(outcome) => outcome,
+            Err(_elapsed) => Err(ProbeError {
+                message: format!(
+                    "the table probe did not answer within {}s — a stalling probe fails \
+                     the clause it serves, never hangs the certifier",
+                    self.bound.as_secs()
+                ),
+            }),
+        };
         let mut state = self.clock.0.lock().expect("probe clock lock");
         if let Some(start) = state.in_flight.take() {
             state.accumulated += start.elapsed();
@@ -155,6 +182,38 @@ mod tests {
         })
         .await;
         assert_eq!(outcome.expect("probe time is excluded"), "done");
+    }
+
+    /// The no-hang bound restored (round-6 fix): a NEVER-returning
+    /// probe fails its count within [`PROBE_BOUND`]'s stand-in — the
+    /// clause proceeds with a probe failure naming the probe, and the
+    /// whole run stays bounded instead of hanging on a stopped clock.
+    #[tokio::test(start_paused = true)]
+    async fn a_never_returning_probe_fails_within_its_own_bound() {
+        struct HungProbe;
+
+        #[async_trait]
+        impl TableProbe for HungProbe {
+            async fn count(&self, _table: &TableName) -> Result<u64, ProbeError> {
+                std::future::pending().await
+            }
+        }
+
+        let hung = HungProbe;
+        let (probe, clock) = StopClockProbe::with_bound(&hung, Duration::from_secs(3));
+        let outcome = timeout_excluding_probe(Duration::from_secs(2), &clock, async {
+            probe
+                .count(&TableName::new("t"))
+                .await
+                .expect_err("the stalled count must fail, not hang")
+        })
+        .await;
+        let error = outcome.expect("the suite completes — bounded probe, bounded budget");
+        assert!(
+            error.message.contains("did not answer within 3s"),
+            "the failure names the probe's own bound: {}",
+            error.message
+        );
     }
 
     /// A genuinely hung SPI call still times out: nothing meters, so
