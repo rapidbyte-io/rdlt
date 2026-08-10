@@ -483,18 +483,22 @@ async fn converge(
     let session = converge_session(&socket, &pipeline, identity, no_op)
         .await
         .map_err(|why| format!("the convergence run failed: {why}"));
-    let count = probe.count(&TableName::new(&identity.table)).await;
-    // Reap the convergence spawn BEFORE judging (042 Task 6): a
-    // single-writer destination (duckdb) holds its store's
-    // cross-process lock until this process is DEAD, and the next
-    // arm's spawn opens the same store — dropping the probe only SENDS
-    // the SIGKILL, so without the wait the next arm races the dying
-    // process for the lock.
+    // Reap the convergence spawn BEFORE counting or judging (042 Task 6;
+    // the count moved after the reap in the round-2 fix wave): the data
+    // is committed and durable by now, and a single-writer destination
+    // (duckdb) holds its store's cross-process lock until this process
+    // is DEAD — dropping the probe only SENDS the SIGKILL. A read-back
+    // taken beside the live process (an operator's --probe-cmd opening
+    // the same store) is refused by that lock and false-fails every
+    // arm, and the next arm's spawn races the dying process for it.
     wire.kill().await;
     session?;
 
     let expected = FIXTURE_IDS.len() as u64;
-    let found = count.map_err(|e| format!("the convergence probe failed: {e}"))?;
+    let found = probe
+        .count(&TableName::new(&identity.table))
+        .await
+        .map_err(|e| format!("the convergence probe failed: {e}"))?;
     if found != expected {
         return Err(format!(
             "convergence failed: table `{}` holds {found} rows where the kill matrix wrote \
