@@ -12,9 +12,7 @@
 //! both derive from one const. No container and no credentials anywhere
 //! here: `Spec` is the bin's static identity, before any handshake.
 
-use std::process::Stdio;
-
-use rdlt_runtime::{ConnectorRequirement, LocalBinaryConnectorProvider, Role};
+use rdlt_runtime::Role;
 
 use super::support::spawn::built_bin;
 
@@ -24,67 +22,23 @@ use super::support::spawn::built_bin;
 /// id — the one `NAME` const, exact.
 #[tokio::test]
 async fn the_postgres_bin_answers_the_spec_rpc_for_both_roles() {
-    let bin = built_bin();
-    let provider = LocalBinaryConnectorProvider::new();
-    let requirement = ConnectorRequirement::new("io.rapidbyte.postgres").with_path(&bin);
-
     for role in [Role::Source, Role::Destination] {
-        let spec = provider
-            .spec_for_role(&requirement, role)
-            .await
-            .unwrap_or_else(|error| panic!("the {role:?} half answers the Spec RPC: {error}"));
-        assert_eq!(spec.name, "io.rapidbyte.postgres", "{role:?}");
-        // One workspace version everywhere, so this crate's own version
-        // IS the connector's.
-        assert_eq!(spec.version, env!("CARGO_PKG_VERSION"), "{role:?}");
-        assert!(
-            spec.config_schema.is_some(),
-            "the {role:?} half publishes a config schema"
-        );
+        rdlt_certify::assert_spec_identity(
+            &built_bin(),
+            role,
+            "io.rapidbyte.postgres",
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await;
     }
 }
 
-/// The pinned arg contract: no args → exit 2, an unrecognized role →
-/// exit 2 (clap's arg gate, before any serve machinery).
+/// The pinned arg contract, through the shared helper
+/// ([`rdlt_certify::assert_bin_arg_contract`]): no args and a bogus
+/// role are clap's exit 2, each unserved role is refused at the arg
+/// gate, and `--version`/`--help` behave with the crate version in the
+/// output.
 #[test]
-fn bad_args_exit_2() {
-    let bin = built_bin();
-
-    let no_args = std::process::Command::new(&bin)
-        .stderr(Stdio::null())
-        .output()
-        .expect("the bin runs");
-    assert_eq!(no_args.status.code(), Some(2), "no args");
-
-    let bad_role = std::process::Command::new(&bin)
-        .arg("--role=nonsense")
-        .stderr(Stdio::null())
-        .output()
-        .expect("the bin runs");
-    assert_eq!(bad_role.status.code(), Some(2), "--role=nonsense");
-}
-
-/// `--version` succeeds and its output contains the crate version;
-/// `--help` exits 0. The TEXT around the version is clap's, unasserted.
-#[test]
-fn version_and_help_behave() {
-    let bin = built_bin();
-
-    let version = std::process::Command::new(&bin)
-        .arg("--version")
-        .output()
-        .expect("the bin runs");
-    assert_eq!(version.status.code(), Some(0));
-    let stdout = String::from_utf8(version.stdout).expect("version output is UTF-8");
-    assert!(
-        stdout.contains(env!("CARGO_PKG_VERSION")),
-        "`--version` output {stdout:?} must contain the crate version"
-    );
-
-    let help = std::process::Command::new(&bin)
-        .arg("--help")
-        .stdout(Stdio::null())
-        .output()
-        .expect("the bin runs");
-    assert_eq!(help.status.code(), Some(0), "--help");
+fn the_arg_contract_holds() {
+    rdlt_certify::assert_bin_arg_contract(&built_bin(), &[], env!("CARGO_PKG_VERSION"));
 }

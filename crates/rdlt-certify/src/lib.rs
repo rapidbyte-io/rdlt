@@ -15,6 +15,7 @@
 //! The modules are private and the surface below is the one canonical
 //! path to every name.
 
+mod contract;
 mod destination;
 mod kill;
 mod report;
@@ -24,6 +25,7 @@ mod source;
 mod target;
 mod wire;
 
+pub use contract::{assert_bin_arg_contract, assert_spec_identity};
 pub use destination::certify_destination;
 pub use kill::{kill_matrix_destination, kill_matrix_source};
 pub use report::{

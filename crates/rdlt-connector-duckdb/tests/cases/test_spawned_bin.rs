@@ -19,8 +19,6 @@
 //! embedder sees a typed terminal error carrying duckdb's own lock
 //! diagnosis, never an infinite retry.
 
-use std::process::Stdio;
-
 use rdlt_runtime::{
     Classification, ClientError, ConnectorProvider, ConnectorRequirement,
     LocalBinaryConnectorProvider, ProviderError, Role,
@@ -35,80 +33,13 @@ use super::support::spawn::built_bin;
 /// reverse-DNS id — the one `NAME` const, exact.
 #[tokio::test]
 async fn the_duckdb_bin_answers_the_spec_rpc() {
-    let bin = built_bin();
-    let provider = LocalBinaryConnectorProvider::new();
-    let requirement = ConnectorRequirement::new("io.rapidbyte.duckdb").with_path(&bin);
-
-    let spec = provider
-        .spec_for_role(&requirement, Role::Destination)
-        .await
-        .unwrap_or_else(|error| panic!("the destination half answers the Spec RPC: {error}"));
-    assert_eq!(spec.name, "io.rapidbyte.duckdb");
-    // One workspace version everywhere, so this crate's own version
-    // IS the connector's.
-    assert_eq!(spec.version, env!("CARGO_PKG_VERSION"));
-    assert!(
-        spec.config_schema.is_some(),
-        "the bin publishes a config schema"
-    );
-}
-
-/// The pinned arg contract: no args → exit 2, an unrecognized role →
-/// exit 2, and — this crate being destination-only — `--role=source`
-/// is equally an unrecognized VALUE, refused by clap's arg gate before
-/// any serve machinery.
-#[test]
-fn bad_args_exit_2() {
-    let bin = built_bin();
-
-    let no_args = std::process::Command::new(&bin)
-        .stderr(Stdio::null())
-        .output()
-        .expect("the bin runs");
-    assert_eq!(no_args.status.code(), Some(2), "no args");
-
-    let bad_role = std::process::Command::new(&bin)
-        .arg("--role=nonsense")
-        .stderr(Stdio::null())
-        .output()
-        .expect("the bin runs");
-    assert_eq!(bad_role.status.code(), Some(2), "--role=nonsense");
-
-    let source_role = std::process::Command::new(&bin)
-        .arg("--role=source")
-        .stderr(Stdio::null())
-        .output()
-        .expect("the bin runs");
-    assert_eq!(
-        source_role.status.code(),
-        Some(2),
-        "--role=source on a destination-only crate"
-    );
-}
-
-/// `--version` succeeds and its output contains the crate version;
-/// `--help` exits 0. The TEXT around the version is clap's, unasserted.
-#[test]
-fn version_and_help_behave() {
-    let bin = built_bin();
-
-    let version = std::process::Command::new(&bin)
-        .arg("--version")
-        .output()
-        .expect("the bin runs");
-    assert_eq!(version.status.code(), Some(0));
-    let stdout = String::from_utf8(version.stdout).expect("version output is UTF-8");
-    assert!(
-        stdout.contains(env!("CARGO_PKG_VERSION")),
-        "`--version` output {stdout:?} must contain the crate version"
-    );
-
-    let help = std::process::Command::new(&bin)
-        .arg("--help")
-        .stdout(Stdio::null())
-        .output()
-        .expect("the bin runs");
-    assert_eq!(help.status.code(), Some(0), "--help");
+    rdlt_certify::assert_spec_identity(
+        &built_bin(),
+        Role::Destination,
+        "io.rapidbyte.duckdb",
+        env!("CARGO_PKG_VERSION"),
+    )
+    .await;
 }
 
 /// THE CROSS-PROCESS CELL (D-042-2, live): connector 1 handshakes and
@@ -156,4 +87,14 @@ async fn a_second_spawned_connector_on_a_held_file_is_refused_fatal() {
         other => panic!("expected a handshake refusal, got {other:?}"),
     }
     drop(first);
+}
+
+/// The pinned arg contract, through the shared helper
+/// ([`rdlt_certify::assert_bin_arg_contract`]): no args and a bogus
+/// role are clap's exit 2, each unserved role is refused at the arg
+/// gate, and `--version`/`--help` behave with the crate version in the
+/// output.
+#[test]
+fn the_arg_contract_holds() {
+    rdlt_certify::assert_bin_arg_contract(&built_bin(), &["source"], env!("CARGO_PKG_VERSION"));
 }
