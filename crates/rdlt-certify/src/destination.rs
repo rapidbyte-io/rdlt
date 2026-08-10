@@ -165,23 +165,42 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // certifier's own process overlap. Sequencing the two spawns (the
     // reap included — SIGKILL alone only SENDS the signal) is free for
     // every multi-writer destination and is what makes single-writer
-    // ones certifiable at all.
-    match tokio::time::timeout(
-        CLAUSE_TIMEOUT,
-        wire::attach_for(&requirement, Role::Destination, &target.config),
-    )
-    .await
-    {
-        Ok(Ok(mut probe)) => {
+    // ones certifiable at all. The attach rides its OWN tokio task so
+    // the timeout arm can keep that promise: timing out a bare future
+    // drops it, which only SENDS kill_on_drop's SIGKILL — the dying
+    // probe could still race the managed spawn below for the store
+    // lock. With the task, the timeout arm aborts and AWAITS it (the
+    // child's drop has run when the await returns), and an attach that
+    // completed in the gap hands back the probe for the full
+    // kill-and-reap.
+    let mut attach = {
+        let requirement = requirement.clone();
+        let config = target.config.clone();
+        tokio::spawn(
+            async move { wire::attach_for(&requirement, Role::Destination, &config).await },
+        )
+    };
+    match tokio::time::timeout(CLAUSE_TIMEOUT, &mut attach).await {
+        Ok(Ok(Ok(mut probe))) => {
             wire::certify_destination_wire(&mut report, &mut probe, &requirement.id).await;
             probe.kill().await;
         }
-        Ok(Err(why)) => {
+        Ok(Ok(Err(why))) => {
+            for clause in wire::DEST_WIRE_CLAUSES {
+                report.fail(clause, why.clone());
+            }
+        }
+        Ok(Err(join_error)) => {
+            let why = format!("the wire attach task failed: {join_error}");
             for clause in wire::DEST_WIRE_CLAUSES {
                 report.fail(clause, why.clone());
             }
         }
         Err(_elapsed) => {
+            attach.abort();
+            if let Ok(Ok(mut probe)) = attach.await {
+                probe.kill().await;
+            }
             for clause in wire::DEST_WIRE_CLAUSES {
                 report.fail(clause, timed_out());
             }

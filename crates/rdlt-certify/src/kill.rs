@@ -310,25 +310,39 @@ async fn destination_arm(
     let bin = resolve_binary(&target.requirement)?;
     let (mut wire, socket) = spawn_destination(&bin, target).await?;
 
-    let mut session = open_wire_session(&socket, &identity.pipeline, &identity.load)
-        .await
-        .map_err(|error| {
-            format!(
-                "could not open the session to kill: {}",
-                render_open_error(error)
-            )
-        })?;
-    drive_session(&mut session, &identity, boundary)
-        .await
-        .map_err(|why| format!("could not drive to the {clause} boundary: {why}"))?;
-    let session = if boundary == DestBoundary::PostClose {
-        session
-            .close_judged()
+    // Drive to the boundary; a failure on the way REAPS the spawn
+    // before returning (the converge discipline, 042 Task 6): dropping
+    // the probe only SENDS the SIGKILL, and on a single-writer store
+    // the dying process would race the next arm's spawn for the lock.
+    let staged = async {
+        let mut session = open_wire_session(&socket, &identity.pipeline, &identity.load)
+            .await
+            .map_err(|error| {
+                format!(
+                    "could not open the session to kill: {}",
+                    render_open_error(error)
+                )
+            })?;
+        drive_session(&mut session, &identity, boundary)
             .await
             .map_err(|why| format!("could not drive to the {clause} boundary: {why}"))?;
-        None
-    } else {
-        Some(session)
+        if boundary == DestBoundary::PostClose {
+            session
+                .close_judged()
+                .await
+                .map_err(|why| format!("could not drive to the {clause} boundary: {why}"))?;
+            Ok(None)
+        } else {
+            Ok(Some(session))
+        }
+    }
+    .await;
+    let session = match staged {
+        Ok(session) => session,
+        Err(why) => {
+            wire.kill().await;
+            return Err(why);
+        }
     };
 
     wire.kill().await;
