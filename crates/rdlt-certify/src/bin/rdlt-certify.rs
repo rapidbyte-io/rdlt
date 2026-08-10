@@ -31,8 +31,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use clap::{CommandFactory as _, Parser, ValueEnum};
 use rdlt_certify::{
-    CLAUSES, Report, SOURCE_CLAUSES, Target, Verdict, certify_destination, certify_source,
-    kill_matrix_destination, kill_matrix_source,
+    CLAUSES, Target, certify_destination, certify_source, kill_matrix_destination,
+    kill_matrix_source,
 };
 use rdlt_connector::core::TableName;
 use rdlt_runtime::{LocalBinaryConnectorProvider, ProviderError};
@@ -320,7 +320,7 @@ async fn run(
     }
 
     let mut report = match role {
-        CertifyRole::Source => certify_source(target).await,
+        CertifyRole::Source => certify_source(target, accept_skips).await,
         CertifyRole::Destination => certify_destination(target, probe).await,
     };
     if kill_matrix {
@@ -335,45 +335,11 @@ async fn run(
         ReportFormat::Text => print!("{}", report.render_text()),
         ReportFormat::Json => println!("{}", report.render_json()),
     }
-    if !report.passed() {
-        return ExitCode::from(EXIT_CLAUSE_FAILURES);
+    if report.passed() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_CLAUSE_FAILURES)
     }
-    // A SOURCE-suite skip is not certified evidence: S2's skip is
-    // reachable by DEFAULT (a stream that never declares a cursor and
-    // never checkpoints), so a source that merely forgot resume would
-    // otherwise certify exit 0. The skip still renders above — this
-    // gate decides only whether it refuses; the operator acknowledges
-    // the snapshot trade with --accept-skips.
-    let skipped = unaccepted_source_skips(&report, accept_skips);
-    if !skipped.is_empty() {
-        eprintln!(
-            "source clauses skipped: {} — a skip is not certified evidence (a source that \
-             never checkpoints looks identical to one that forgot resume); pass \
-             --accept-skips to acknowledge the source as a snapshot source",
-            skipped.join(", ")
-        );
-        return ExitCode::from(EXIT_CLAUSE_FAILURES);
-    }
-    ExitCode::SUCCESS
-}
-
-/// The skipped source-suite clauses the operator has not acknowledged —
-/// non-empty refuses certification. ONLY the S-clauses: kill-matrix
-/// skips (fixture sizing) and the destination's no-probe/no-merge skips
-/// carry reasons the operator already chose, and refusing them would
-/// break the report's deliberate skip-not-vacuous design.
-fn unaccepted_source_skips(report: &Report, accept_skips: bool) -> Vec<&'static str> {
-    if accept_skips {
-        return Vec::new();
-    }
-    report
-        .entries
-        .iter()
-        .filter(|entry| {
-            matches!(entry.verdict, Verdict::Skip(_)) && SOURCE_CLAUSES.contains(&entry.clause)
-        })
-        .map(|entry| entry.clause)
-        .collect()
 }
 
 /// The exit-2 gate: one Spec probe through the provider. A refusal
@@ -399,61 +365,5 @@ async fn preflight(target: &Target) -> Option<String> {
         // A good Spec, a served-wire error, or a stalled pre-flight:
         // certification judges it.
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod skip_gate_tests {
-    //! The skip-acknowledgment gate, pinned on constructed reports —
-    //! the CLI arm proves it end to end against the real file bin.
-
-    use super::*;
-    use rdlt_certify::Entry;
-
-    fn report_with(entries: Vec<Entry>) -> Report {
-        let mut report = Report::default();
-        report.entries = entries;
-        report
-    }
-
-    fn skip(clause: &'static str) -> Entry {
-        Entry {
-            clause,
-            verdict: Verdict::Skip("why".to_owned()),
-        }
-    }
-
-    fn pass(clause: &'static str) -> Entry {
-        Entry {
-            clause,
-            verdict: Verdict::Pass,
-        }
-    }
-
-    /// Only S-suite skips refuse — and only unacknowledged: the
-    /// kill matrix's fixture skips and the destination's probe skips
-    /// keep the report's skip-not-vacuous design.
-    #[test]
-    fn only_unacknowledged_source_suite_skips_refuse() {
-        let report = report_with(vec![
-            pass("S1"),
-            skip("S2"),
-            pass("S4"),
-            skip("K-S2"),
-            skip("D1"),
-        ]);
-        assert_eq!(
-            unaccepted_source_skips(&report, false),
-            vec!["S2"],
-            "S2's skip refuses; kill-matrix and destination skips never do"
-        );
-        assert!(
-            unaccepted_source_skips(&report, true).is_empty(),
-            "--accept-skips acknowledges the source-suite skips"
-        );
-        assert!(
-            unaccepted_source_skips(&report_with(vec![pass("S1"), pass("S2")]), false).is_empty(),
-            "an all-pass report has nothing to acknowledge"
-        );
     }
 }

@@ -247,16 +247,18 @@ fn a_source_suite_skip_refuses_unless_acknowledged() {
         bin.to_str().expect("utf-8 path"),
     ]);
     let stdout = stdout_of(&refused);
-    let stderr = stderr_of(&refused);
     assert_eq!(
         refused.status.code(),
         Some(1),
-        "an unacknowledged source skip refuses\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "an unacknowledged source skip refuses\nstdout:\n{stdout}\nstderr:\n{}",
+        stderr_of(&refused)
     );
-    assert!(stdout.contains("SKIP S2"), "the skip renders: {stdout}");
+    // The refusal is the LIBRARY's (round-4 fix): the unacknowledged
+    // skip folds as a FAIL entry naming the flag, so embedders gating
+    // on Report::passed share the exact guard this exit code speaks.
     assert!(
-        stderr.contains("S2") && stderr.contains("--accept-skips"),
-        "the refusal names the skipped clause and the flag: {stderr}"
+        stdout.contains("FAIL S2") && stdout.contains("--accept-skips"),
+        "the unacknowledged skip fails S2 naming the acknowledgment: {stdout}"
     );
 
     let accepted = certify(&[

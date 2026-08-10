@@ -12,7 +12,7 @@
 //! ever carries config bytes.
 
 use rdlt_runtime::{ConnectorProvider, LocalBinaryConnectorProvider, Role};
-use rdlt_testkit::conformance::source::verify_source;
+use rdlt_testkit::conformance::{ConformanceFailure, source::verify_source};
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
@@ -31,7 +31,16 @@ pub const SOURCE_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 /// Certify `target` as a SOURCE connector. Never hangs and never
 /// panics on connector misbehavior: every clause's outcome — including
 /// "the binary is not a connector at all" — is a report entry.
-pub async fn certify_source(target: &Target) -> Report {
+///
+/// `accept_skips` is the snapshot-source acknowledgment, STRICT by
+/// default (round-4 fix — the guard lives HERE, not only in the CLI):
+/// without it an S-suite skip folds as a FAILURE naming the
+/// acknowledgment, so a library caller gating on [`Report::passed`]
+/// refuses a source that never checkpoints exactly as the CLI does.
+/// `Report::passed` itself deliberately keeps treating `Skip` as
+/// passing — the destination's no-probe and no-merge skips are choices
+/// the operator already made.
+pub async fn certify_source(target: &Target, accept_skips: bool) -> Report {
     let mut report = Report::default();
 
     // P1 — the handshake-line discipline, probed on a direct spawn whose
@@ -143,11 +152,33 @@ pub async fn certify_source(target: &Target) -> Report {
 
     // S-reuse — the testkit's source conformance suite, verbatim,
     // against the managed adapter: the wire is certified by the SAME
-    // clauses an in-process connector answers to. The suite's skips
+    // clauses an in-process connector answers to. Acknowledged skips
     // fold as Skip entries — an honestly-declared snapshot stream's S2
-    // renders with its reason, never as a vacuous Pass.
+    // renders with its reason, never as a vacuous Pass; UNACKNOWLEDGED
+    // ones fold as failures naming the acknowledgment, so the report
+    // itself refuses (the S2 skip is reachable by DEFAULT-absent
+    // cursor_field — a source that merely forgot checkpointing must
+    // not certify).
     match tokio::time::timeout(CLAUSE_TIMEOUT, verify_source(&managed)).await {
-        Ok(outcome) => report.absorb(outcome.failures, outcome.skips, &SOURCE_CLAUSES),
+        Ok(outcome) => {
+            let (failures, skips) = if accept_skips {
+                (outcome.failures, outcome.skips)
+            } else {
+                let mut failures = outcome.failures;
+                failures.extend(outcome.skips.into_iter().map(|skip| ConformanceFailure {
+                    clause: skip.clause,
+                    message: format!(
+                        "not exercised: {} — a skipped source clause is not certified \
+                         evidence (a source that never checkpoints looks identical to one \
+                         that forgot resume); acknowledge a snapshot source with \
+                         accept_skips (CLI: --accept-skips)",
+                        skip.reason
+                    ),
+                }));
+                (failures, Vec::new())
+            };
+            report.absorb(failures, skips, &SOURCE_CLAUSES)
+        }
         Err(_elapsed) => {
             for clause in SOURCE_CLAUSES {
                 report.fail(clause, timed_out());

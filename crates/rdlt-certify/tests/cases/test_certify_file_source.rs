@@ -40,7 +40,8 @@ async fn the_file_source_certifies_all_pass() {
     });
 
     for attempt in 1..=2 {
-        let report = certify_source(&Target::resolve_path(bin.clone(), config.clone())).await;
+        let report =
+            certify_source(&Target::resolve_path(bin.clone(), config.clone()), false).await;
 
         let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
         for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
@@ -58,4 +59,54 @@ async fn the_file_source_certifies_all_pass() {
             report.render_text()
         );
     }
+}
+
+/// THE LIBRARY-LAYER GUARD (round-4 fix): an unacknowledged S-suite
+/// skip refuses at the REPORT, not only at the CLI — a library caller
+/// gating on `Report::passed` shares the guard. The snapshot shape is
+/// real: an empty glob reads no files, checkpoints never, and declares
+/// no cursor field. Acknowledged, the same run passes with the skip
+/// rendered honestly.
+#[tokio::test]
+async fn an_unacknowledged_source_skip_fails_the_report_itself() {
+    use rdlt_certify::Verdict;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = serde_json::json!({
+        "streams": [{
+            "name": "events",
+            "format": "jsonl",
+            "path": format!("{}/*.jsonl", dir.path().display()),
+        }]
+    });
+    let bin = built_bin("rdlt-connector-file");
+
+    let strict = certify_source(&Target::resolve_path(bin.clone(), config.clone()), false).await;
+    assert!(
+        !strict.passed(),
+        "an unacknowledged snapshot source must not pass:\n{}",
+        strict.render_text()
+    );
+    assert!(
+        strict.entries.iter().any(|entry| entry.clause == "S2"
+            && matches!(&entry.verdict, Verdict::Fail(why)
+                if why.contains("--accept-skips") && why.contains("not exercised"))),
+        "S2 fails naming the acknowledgment:\n{}",
+        strict.render_text()
+    );
+
+    let acknowledged = certify_source(&Target::resolve_path(bin, config), true).await;
+    assert!(
+        acknowledged.passed(),
+        "the acknowledged snapshot source passes:\n{}",
+        acknowledged.render_text()
+    );
+    assert!(
+        acknowledged
+            .entries
+            .iter()
+            .any(|entry| entry.clause == "S2" && matches!(entry.verdict, Verdict::Skip(_))),
+        "the acknowledged run renders the skip honestly:\n{}",
+        acknowledged.render_text()
+    );
 }

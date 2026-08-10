@@ -64,9 +64,9 @@ pub const CLAUSES: &[Clause] = &[
         definition: "A stream must checkpoint at least once during a read. A stream that never \
                      checkpoints cannot be certified for resume and fails by name — unless it \
                      declares no cursor field at all: an honestly-declared snapshot stream is \
-                     skipped with the reason, never vacuously passed. The certifier CLI \
-                     refuses a skipped source clause unless --accept-skips acknowledges the \
-                     snapshot trade.",
+                     skipped with the reason, never vacuously passed. Certification refuses a \
+                     skipped source clause unless the acknowledgment is given \
+                     (certify_source's accept_skips; the CLI's --accept-skips).",
     },
     Clause {
         id: "S4",
