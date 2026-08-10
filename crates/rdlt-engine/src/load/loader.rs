@@ -71,11 +71,13 @@ pub(crate) struct Loader {
     /// append destination has nothing to dedup on. Mid-run commits wait for
     /// this to drain (042 T7E — the loader half of per-stream coverage).
     uncovered_roots: std::collections::BTreeSet<TableName>,
-    /// How many times the deferral advisory fired. The warn site fires
-    /// only at 0, so the count is the exactly-once-per-run pin: a
-    /// blocked commit trigger is worth ONE operator warning, not one
-    /// per checkpoint.
-    deferred_commit_warnings: u32,
+    /// Whether the deferral advisory has fired — set exactly at the
+    /// warn site, so a blocked commit trigger is worth ONE operator
+    /// warning per run, not one per checkpoint.
+    warned_deferred_commit: bool,
+    /// Memoized table→root resolutions (`root_of`'s cache; see its doc
+    /// for why no invalidation exists).
+    root_cache: std::collections::BTreeMap<TableName, TableName>,
 }
 
 /// The two cadences the loader obeys, passed together because they
@@ -123,7 +125,8 @@ impl Loader {
             structured_merge_keys: std::collections::BTreeMap::new(),
             parents: std::collections::BTreeMap::new(),
             uncovered_roots: std::collections::BTreeSet::new(),
-            deferred_commit_warnings: 0,
+            warned_deferred_commit: false,
+            root_cache: std::collections::BTreeMap::new(),
         }
     }
 
@@ -133,12 +136,24 @@ impl Loader {
     /// filter walks the SAME implementation, which is what keeps the
     /// coverage rule's two halves one rule); a cycle is unreachable from
     /// any shred, so the walk's refusal degrades to the table itself.
-    fn root_of(&self, table: &TableName) -> TableName {
-        crate::coverage::walk_to_root(table, self.parents.len(), |current| {
+    ///
+    /// MEMOIZED per table (round-6): the walk ran per BATCH with per-hop
+    /// clones. No invalidation is needed — parent links are append-only
+    /// within a run and a table's own delta (link included) precedes its
+    /// first batch, so by the time a table is first resolved its chain
+    /// is complete, and no later delta ever re-parents a table that
+    /// already wrote.
+    fn root_of(&mut self, table: &TableName) -> TableName {
+        if let Some(root) = self.root_cache.get(table) {
+            return root.clone();
+        }
+        let root = crate::coverage::walk_to_root(table, self.parents.len(), |current| {
             Ok::<_, std::convert::Infallible>(self.parents.get(current).cloned())
         })
         .unwrap_or_else(|infallible| match infallible {})
-        .unwrap_or_else(|| table.clone())
+        .unwrap_or_else(|| table.clone());
+        self.root_cache.insert(table.clone(), root.clone());
+        root
     }
 
     fn emit(&self, event: rdlt_core::PipelineEvent) {
@@ -259,7 +274,8 @@ impl Loader {
                 self.counters.rows += rows;
                 self.counters.bytes += bytes;
                 self.bytes_since_commit += bytes;
-                self.uncovered_roots.insert(self.root_of(&table));
+                let root = self.root_of(&table);
+                self.uncovered_roots.insert(root);
                 self.dirty = true;
             }
             LoadItem::Checkpoint { stream, cursor } => {
@@ -312,8 +328,8 @@ impl Loader {
                 if self.policy_triggers() {
                     if self.uncovered_roots.is_empty() {
                         self.commit().await?;
-                    } else if self.deferred_commit_warnings == 0 {
-                        self.deferred_commit_warnings += 1;
+                    } else if !self.warned_deferred_commit {
+                        self.warned_deferred_commit = true;
                         let roots = self
                             .uncovered_roots
                             .iter()
@@ -827,8 +843,8 @@ mod tests {
         ] {
             loader.process(item).await.expect("process");
         }
-        assert_eq!(
-            loader.deferred_commit_warnings, 1,
+        assert!(
+            loader.warned_deferred_commit,
             "the first blocked trigger warns that mid-run commits are deferred"
         );
         // A second blocked trigger at the next covered-less boundary
@@ -836,9 +852,10 @@ mod tests {
         for item in [batch_item("events"), checkpoint_item("events")] {
             loader.process(item).await.expect("process");
         }
-        assert_eq!(
-            loader.deferred_commit_warnings, 1,
-            "later blocked triggers do not repeat the advisory"
+        assert!(
+            loader.warned_deferred_commit,
+            "the guard stays set — later blocked triggers do not repeat the advisory \
+             (the warn site fires only on the false→true transition)"
         );
         assert_eq!(
             commits.lock().expect("lock").len(),
@@ -864,8 +881,8 @@ mod tests {
             loader.process(item).await.expect("process");
         }
         assert_eq!(commits.lock().expect("lock").len(), 2);
-        assert_eq!(
-            loader.deferred_commit_warnings, 0,
+        assert!(
+            !loader.warned_deferred_commit,
             "an all-cursored run never sees the deferral advisory"
         );
     }
