@@ -306,11 +306,12 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             let why = "the provider returned no process guard, so the live socket cannot be \
                        re-dialed"
                 .to_string();
-            report.skip("P8", why.clone());
-            report.skip("P9", why.clone());
-            report.skip("P10", why.clone());
-            report.skip("P11", why.clone());
-            report.skip("P12", why);
+            // The one clause list ([`SESSION_CLAUSES`]) — this arm's
+            // hand copy had to grow when P11/P12 joined, which is
+            // exactly the drift a loop forecloses.
+            for clause in SESSION_CLAUSES {
+                report.skip(clause, why.clone());
+            }
         }
         Some(socket) => {
             // P8 — the one-session ceiling: with a session held, a
