@@ -162,18 +162,75 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
     // are dropped — re-extraction re-delivers them — and a span with no
     // checkpoint at all has nothing safely replayable.
     match (load_id, filter_covered(span, &schemas, rules)) {
-        (Some(load_id), Ok(Some(records))) => ScanOutcome::Recover(RecoverySpan {
-            load_id,
-            next_commit_seq: max_committed_seq + 1,
-            records,
-            schemas: schemas.into_values().collect(),
-        }),
+        (Some(load_id), Ok(Some(records))) => {
+            // REPLAY ENSURES ONLY WHAT IT WRITES (round-3 fix): the
+            // segment filter can drop every one of a table's segments
+            // (uncovered co-stream rows re-extract instead), and an
+            // ensure without rows is not harmless — a Replace stream's
+            // once-per-load truncation fires at the replay commit, so a
+            // zero-row replay would EMPTY the target and spend the
+            // load's one truncation delivering nothing. Both ensure
+            // feeds are pruned to the tables with surviving segments
+            // (plus their recorded ancestor chains — a child batch
+            // needs its parents ensured): the span's own Delta records
+            // and the accumulated schema list below. Attribution is
+            // unaffected — `filter_covered` already ran against the
+            // full pre-filter `schemas` map. Re-extraction re-ensures
+            // everything else live, delta-before-batch as always.
+            let live = live_tables(&records, &schemas);
+            let records = records
+                .into_iter()
+                .filter(|record| match record {
+                    WalRecord::Delta { schema, .. } => live.contains(&schema.table),
+                    _ => true,
+                })
+                .collect();
+            ScanOutcome::Recover(RecoverySpan {
+                load_id,
+                next_commit_seq: max_committed_seq + 1,
+                records,
+                schemas: schemas
+                    .into_iter()
+                    .filter_map(|(table, entry)| live.contains(&table).then_some(entry))
+                    .collect(),
+            })
+        }
         (Some(_), Err(reason)) => ScanOutcome::Damaged(reason),
         // A span with no checkpoint has nothing safely replayable — but the
         // manifest and its segments are on disk, so say so rather than reporting
         // an empty workdir.
         _ => ScanOutcome::Discard,
     }
+}
+
+/// The tables replay will actually WRITE: every surviving segment's
+/// table plus its recorded ancestors (the bounded walk `filter_covered`
+/// already proved terminates for every surviving segment). What this
+/// set gates: replay's ensure calls — see the pruning at the scan's
+/// Recover arm for why an ensure without rows is a hazard.
+fn live_tables(
+    records: &[WalRecord],
+    schemas: &std::collections::BTreeMap<
+        rdlt_core::TableName,
+        (rdlt_core::TableSchema, rdlt_core::WriteMode),
+    >,
+) -> std::collections::BTreeSet<rdlt_core::TableName> {
+    let mut live = std::collections::BTreeSet::new();
+    for record in records {
+        if let WalRecord::Segment { table, .. } = record {
+            let mut current = table.clone();
+            for _ in 0..=schemas.len() {
+                if !live.insert(current.clone()) {
+                    break; // this chain is already walked
+                }
+                match schemas.get(&current).and_then(|(s, _)| s.parent.as_ref()) {
+                    Some(link) => current = link.parent.clone(),
+                    None => break,
+                }
+            }
+        }
+    }
+    live
 }
 
 /// Keep the covered part of one uncommitted span: every Delta and Checkpoint,
@@ -452,6 +509,40 @@ mod per_stream_coverage_tests {
         }
     }
 
+    /// A delta whose stream writes in `mode` — the Replace-hazard pins
+    /// need the mode replay would ensure the table under.
+    fn delta_with_mode(table: &str, mode: WriteMode) -> WalRecord {
+        let WalRecord::Delta { delta, schema, .. } = delta(table, None) else {
+            unreachable!("delta() builds a Delta record");
+        };
+        WalRecord::Delta {
+            delta,
+            schema,
+            mode,
+        }
+    }
+
+    /// The tables the outcome's replay would ENSURE: the span's Delta
+    /// records plus the RecoverySpan's accumulated schema list — both
+    /// feed `apply_delta` in replay.rs, so both must agree.
+    fn ensured_tables(outcome: &ScanOutcome) -> Vec<String> {
+        let ScanOutcome::Recover(span) = outcome else {
+            panic!("expected Recover, got {outcome:?}");
+        };
+        let mut tables: Vec<String> = span
+            .schemas
+            .iter()
+            .map(|(schema, _)| schema.table.as_str().to_owned())
+            .chain(span.records.iter().filter_map(|r| match r {
+                WalRecord::Delta { schema, .. } => Some(schema.table.as_str().to_owned()),
+                _ => None,
+            }))
+            .collect();
+        tables.sort();
+        tables.dedup();
+        tables
+    }
+
     fn segment(table: &str, file: &str) -> WalRecord {
         WalRecord::Segment {
             table: TableName::new(table),
@@ -647,6 +738,88 @@ mod per_stream_coverage_tests {
              range is exactly what the source reported"
         );
         assert_eq!(span.next_commit_seq, 2, "after the committed prefix");
+    }
+
+    /// THE REPLACE HAZARD (round-3 fix): a table whose every span
+    /// segment was dropped as uncovered must NOT be ensured by replay.
+    /// Ensuring is not free — a Replace stream's once-per-load
+    /// truncation fires at the replay commit, and a replay
+    /// contributing ZERO rows for that table would empty the target
+    /// and spend the load's one truncation on nothing (if the resumed
+    /// source read then fails, the table stays empty). Re-extraction
+    /// re-ensures live, delta-before-batch. The covered co-stream's
+    /// checkpoint still replays.
+    #[test]
+    fn a_table_with_no_surviving_segments_is_not_ensured_by_replay() {
+        let outcome = scan_span(vec![
+            delta("orders", None),
+            segment("orders", "f0.arrow"),
+            checkpoint("orders"),
+            WalRecord::Committed { commit_seq: 1 },
+            delta_with_mode("events", WriteMode::Replace),
+            segment("events", "f1.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert_eq!(
+            replayed_files(&outcome),
+            Vec::<String>::new(),
+            "the uncovered events segment drops — re-extraction re-delivers it"
+        );
+        assert_eq!(
+            ensured_tables(&outcome),
+            Vec::<String>::new(),
+            "no table has surviving rows, so replay must ensure NOTHING — an ensured \
+             Replace table would be truncated by a zero-row replay commit"
+        );
+        let ScanOutcome::Recover(span) = &outcome else {
+            unreachable!()
+        };
+        assert!(
+            span.records.iter().any(
+                |r| matches!(r, WalRecord::Checkpoint { stream, .. } if stream.as_str() == "orders")
+            ),
+            "the covered checkpoint still replays"
+        );
+    }
+
+    /// The positive control: a table WITH a surviving covered segment
+    /// keeps both its span Delta and its schema entry — replay still
+    /// ensures what it will actually write — while the uncovered
+    /// co-stream's table is pruned from both.
+    #[test]
+    fn only_tables_with_surviving_segments_are_ensured() {
+        let outcome = scan_span(vec![
+            delta("events", None),
+            delta("orders", None),
+            segment("events", "f0.arrow"),
+            segment("orders", "f1.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert_eq!(replayed_files(&outcome), ["f1.arrow"]);
+        assert_eq!(
+            ensured_tables(&outcome),
+            ["orders"],
+            "the covered writer keeps its ensure; the dropped co-stream loses its"
+        );
+    }
+
+    /// A surviving CHILD segment keeps its whole recorded ancestor
+    /// chain ensured — a child batch cannot land in a session that
+    /// never ensured its parent.
+    #[test]
+    fn a_surviving_child_segment_keeps_its_ancestor_chain_ensured() {
+        let outcome = scan_span(vec![
+            delta("orders", None),
+            delta("itm_4f2a9c1b", Some("orders")),
+            segment("itm_4f2a9c1b", "f0.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert_eq!(replayed_files(&outcome), ["f0.arrow"]);
+        assert_eq!(
+            ensured_tables(&outcome),
+            ["itm_4f2a9c1b", "orders"],
+            "the child and its recorded root both stay ensured"
+        );
     }
 
     /// The shape attribution still cannot vouch for: an orphan segment
