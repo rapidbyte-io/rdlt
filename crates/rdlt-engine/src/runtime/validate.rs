@@ -53,7 +53,12 @@ fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
         .filter(|s| s.cursor_field.is_none())
         .map(|s| s.name.as_str())
         .collect();
-    if cursorless.is_empty() || cursorless.len() == streams.len() {
+    // Fires for ANY multi-stream pipeline with a cursor-less member
+    // (round-7 fix: the all-cursorless arm was suppressed, silencing
+    // the CDC-beside-snapshot shape whose commits defer all run); a
+    // single-stream pipeline stays silent — there is no co-stream to
+    // defer against.
+    if cursorless.is_empty() || streams.len() < 2 {
         return None;
     }
     Some(format!(
@@ -406,8 +411,13 @@ mod hint_validation_tests {
             "all-cursored pipelines commit mid-run and need no warning"
         );
         assert!(
-            mixed_snapshot_advisory(&[cursorless("a"), cursorless("b")]).is_none(),
-            "an all-cursor-less pipeline changes nothing mid-run either way — no warning"
+            mixed_snapshot_advisory(&[cursorless("a"), cursorless("b")]).is_some(),
+            "an all-cursor-less multi-stream pipeline warns too — a CDC stream beside a \
+             snapshot stream is exactly the shape whose commits defer all run (round-7 fix)"
+        );
+        assert!(
+            mixed_snapshot_advisory(&[cursorless("only")]).is_none(),
+            "a single stream has no co-stream to defer against"
         );
         assert!(mixed_snapshot_advisory(&[]).is_none());
     }
