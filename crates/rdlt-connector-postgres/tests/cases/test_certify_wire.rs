@@ -91,7 +91,7 @@ async fn the_postgres_source_certifies_all_pass() {
     let target = Target::resolve_path(built_bin(), small_config(&container.connection_string));
 
     for _attempt in 1..=2 {
-        let report = certify_source(&target).await;
+        let report = certify_source(&target, false).await;
 
         assert_certified_all_pass(
             &report,

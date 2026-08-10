@@ -467,6 +467,34 @@ pub fn assert_all_pass_in_order(entries: &[Entry], expected: &[&str]) {
     );
 }
 
+/// The Skip-diagnosing variant of [`assert_all_pass_in_order`] (round-4
+/// fix — three kill cells carried verbatim copies): on the live kill
+/// matrices a Skip means the FIXTURE failed the cell (the stream was
+/// swallowed whole before the kill, or the container never came up in
+/// a gated arm that must run), not that the connector did — so a Skip
+/// panics FIRST, naming the cell's own `fixture_advice`, separately
+/// from a genuine clause failure.
+#[track_caller]
+pub fn assert_all_pass_in_order_with_skip_advice(
+    entries: &[Entry],
+    expected: &[&str],
+    fixture_advice: &str,
+) {
+    let rendered = Report {
+        entries: entries.to_vec(),
+    };
+    for entry in entries {
+        if let Verdict::Skip(why) = &entry.verdict {
+            panic!(
+                "{} skipped — {fixture_advice}: {why}\n{}",
+                entry.clause,
+                rendered.render_text()
+            );
+        }
+    }
+    assert_all_pass_in_order(entries, expected);
+}
+
 #[cfg(test)]
 mod tests {
     //! `absorb` and the timeout spelling are `pub(crate)`, so their pins

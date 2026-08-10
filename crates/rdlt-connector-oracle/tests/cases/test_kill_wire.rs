@@ -21,7 +21,7 @@
 //! is what makes an under-sized fixture a FAILURE of this cell rather
 //! than a quiet narrowing of the matrix.
 
-use rdlt_certify::{Entry, Target, Verdict, kill_matrix_source};
+use rdlt_certify::{Target, assert_all_pass_in_order_with_skip_advice, kill_matrix_source};
 use serde_json::json;
 
 use super::common::{APP_USER, OracleFixture, PASSWORD};
@@ -61,43 +61,6 @@ async fn seed_source_fixture(fixture: &OracleFixture) {
         .await;
 }
 
-/// Render entries the report way, for failure messages.
-fn render(entries: &[Entry]) -> String {
-    let mut out = String::new();
-    for entry in entries {
-        out.push_str(&match &entry.verdict {
-            Verdict::Pass => format!("PASS {}\n", entry.clause),
-            Verdict::Fail(why) => format!("FAIL {}: {why}\n", entry.clause),
-            Verdict::Skip(why) => format!("SKIP {}: {why}\n", entry.clause),
-        });
-    }
-    out
-}
-
-/// Every arm must be a real Pass. A Skip gets its own diagnosis before
-/// the Pass sweep: on this matrix a Skip means the fixture failed the
-/// cell (the stream was swallowed whole before the kill), not that the
-/// connector did — name that separately from a genuine clause failure.
-#[track_caller]
-fn assert_all_pass(entries: &[Entry], fixture_advice: &str) {
-    for entry in entries {
-        if let Verdict::Skip(why) = &entry.verdict {
-            panic!(
-                "{} skipped — {fixture_advice}: {why}\n{}",
-                entry.clause,
-                render(entries)
-            );
-        }
-    }
-    assert!(
-        entries
-            .iter()
-            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-        "every kill arm must Pass:\n{}",
-        render(entries)
-    );
-}
-
 /// THE MATRIX: every boundary in K order, every arm a real Pass — the
 /// killed oracle bin's read wire fails typed within the kit's window,
 /// never hangs, and never "completes cleanly despite the kill" (the
@@ -112,14 +75,9 @@ async fn the_source_kill_matrix_passes_at_every_boundary() {
 
     let entries = kill_matrix_source(&target).await;
 
-    let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
-    assert_eq!(
-        clauses,
-        ["K-S1", "K-S2", "K-S3"],
-        "the K-vocabulary is fixed, in order"
-    );
-    assert_all_pass(
+    assert_all_pass_in_order_with_skip_advice(
         &entries,
+        &["K-S1", "K-S2", "K-S3"],
         "the large fixture must keep the read in flight at the SIGKILL, and a Skip here \
          means it no longer does (enlarge `k_rows` past the kit's read window)",
     );
