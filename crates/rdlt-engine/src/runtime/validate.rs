@@ -59,10 +59,12 @@ fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
     Some(format!(
         "streams [{}] declare no cursor_field beside cursored streams: they MAY be snapshot \
          streams (some cursor-less streams — CDC, for one — still checkpoint through their \
-         own mechanism). Any stream that never checkpoints defers mid-run commits for the \
-         whole run, and byte/time/checkpoint commit policies then cannot bound staging or \
-         WAL growth; the run-time deferral warning is the authoritative signal — it fires \
-         on what actually checkpoints",
+         own mechanism). Any multi-stream run defers individual commit triggers while a \
+         co-stream holds rows its own checkpoint has not covered — a transient overlap; a \
+         stream that NEVER checkpoints makes that deferral last the whole run, and \
+         byte/time/checkpoint commit policies then cannot bound staging or WAL growth. The \
+         run-time deferral warning is the authoritative signal — it fires on what actually \
+         checkpoints",
         cursorless.join(", ")
     ))
 }

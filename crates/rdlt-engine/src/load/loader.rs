@@ -319,9 +319,12 @@ impl Loader {
                             .join(", ");
                         tracing::warn!(
                             uncovered_roots = %roots,
-                            "mid-run commits are deferred: these tables hold rows whose own \
-                             streams have not checkpointed — the commit waits for their \
-                             checkpoints (for snapshot streams, until the run's end)"
+                            "mid-run commit deferred: these tables hold rows written since \
+                             their own streams' last checkpoints. The commit fires at the \
+                             next boundary where every written stream is covered — a \
+                             TRANSIENT overlap when the co-streams are cursored and keep \
+                             checkpointing; for a snapshot stream, which never checkpoints, \
+                             not before the run's end"
                         );
                     }
                 }
