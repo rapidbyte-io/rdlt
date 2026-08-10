@@ -247,10 +247,19 @@ impl CatalogFixture {
         })
     }
 
-    /// Raw table metadata straight off the catalog — the independent
-    /// oracle for spec/layout assertions.
-    pub async fn table_metadata(&self, namespace: &str, table: &str) -> serde_json::Value {
-        self.http
+    /// Raw table metadata with its HTTP status JUDGED (round-3 fix —
+    /// an error-status JSON body parses to "no snapshots" and must
+    /// never read as an empty table): `Ok(None)` for 404 (the table
+    /// does not exist — honest absence), `Ok(Some(body))` for a
+    /// success reply, `Err` naming the status for everything else (an
+    /// expired admin token's 401, a 500, ...).
+    pub async fn try_table_metadata(
+        &self,
+        namespace: &str,
+        table: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let response = self
+            .http
             .get(format!(
                 "{}/v1/{WAREHOUSE}/namespaces/{namespace}/tables/{table}",
                 self.catalog_uri
@@ -258,20 +267,44 @@ impl CatalogFixture {
             .bearer_auth(&self.admin_token)
             .send()
             .await
-            .expect("load table")
+            .map_err(|e| format!("the catalog metadata request for `{table}` failed: {e}"))?;
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(format!(
+                "the catalog answered {status} for table `{table}`'s metadata"
+            ));
+        }
+        response
             .json()
             .await
-            .expect("table json")
+            .map(Some)
+            .map_err(|e| format!("the catalog metadata body for `{table}` is not JSON: {e}"))
     }
 
-    /// Snapshot summaries oldest-first — the receipt oracle, reading
-    /// the catalog independently of the crate.
-    pub async fn snapshot_summaries(
+    /// Raw table metadata straight off the catalog — the independent
+    /// oracle for spec/layout assertions. Panics on any failure or
+    /// absence: assertion sites want the table to exist.
+    pub async fn table_metadata(&self, namespace: &str, table: &str) -> serde_json::Value {
+        self.try_table_metadata(namespace, table)
+            .await
+            .expect("load table")
+            .expect("the table exists")
+    }
+
+    /// Snapshot summaries oldest-first with failures SURFACED — the
+    /// receipt oracle behind [`LiveProbe`]: an absent table is honestly
+    /// no snapshots, any error-status reply is `Err`.
+    pub async fn try_snapshot_summaries(
         &self,
         namespace: &str,
         table: &str,
-    ) -> Vec<HashMap<String, String>> {
-        let response = self.table_metadata(namespace, table).await;
+    ) -> Result<Vec<HashMap<String, String>>, String> {
+        let Some(response) = self.try_table_metadata(namespace, table).await? else {
+            return Ok(Vec::new());
+        };
         let mut snapshots: Vec<(i64, HashMap<String, String>)> = response["metadata"]["snapshots"]
             .as_array()
             .map(|list| {
@@ -294,7 +327,19 @@ impl CatalogFixture {
             })
             .unwrap_or_default();
         snapshots.sort_by_key(|(ts, _)| *ts);
-        snapshots.into_iter().map(|(_, s)| s).collect()
+        Ok(snapshots.into_iter().map(|(_, s)| s).collect())
+    }
+
+    /// [`Self::try_snapshot_summaries`] for assertion sites: a genuine
+    /// catalog failure panics loudly instead of comparing as empty.
+    pub async fn snapshot_summaries(
+        &self,
+        namespace: &str,
+        table: &str,
+    ) -> Vec<HashMap<String, String>> {
+        self.try_snapshot_summaries(namespace, table)
+            .await
+            .expect("snapshot summaries")
     }
 }
 
@@ -316,16 +361,19 @@ impl rdlt_testkit::TableProbe for LiveProbe {
     ) -> Result<u64, rdlt_testkit::ProbeError> {
         // Total records off the newest snapshot summary — the
         // catalog's own count, independent of the crate. A table with
-        // no snapshots yet (or no table at all) reads as 0; that zero
-        // is a fact (nothing published), not an oracle failure. A
-        // PRESENT snapshot whose summary lacks `total-records` — or
-        // carries one that does not parse — is the oracle failing, and
-        // folding it into 0 would certify invisibility clauses
-        // vacuously (042 fix wave).
+        // no snapshots yet (or a 404 — no table at all) reads as 0;
+        // that zero is a fact (nothing published), not an oracle
+        // failure. Any OTHER catalog reply (an expired token's 401, a
+        // 500 — round-3 fix: an error-status JSON body parses to "no
+        // snapshots" and used to fold into 0), a missing
+        // `total-records` key, or an unparseable value is the oracle
+        // failing, and folding it into 0 would certify invisibility
+        // clauses vacuously.
         let summaries = self
             .fixture
-            .snapshot_summaries(&self.namespace, table.as_str())
-            .await;
+            .try_snapshot_summaries(&self.namespace, table.as_str())
+            .await
+            .map_err(|message| rdlt_testkit::ProbeError { message })?;
         let Some(newest) = summaries.last() else {
             return Ok(0);
         };
