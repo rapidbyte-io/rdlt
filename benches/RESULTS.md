@@ -13,6 +13,43 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
 
 **Policy log** (one entry per governance event; newest first):
 
+- **2026-08-10 — the second wire session: the byte-fix verdict is STANDS, and
+  four remote bars are minted (feature 042, D-042-4)**: the ten e2e cells and
+  their dlt arms re-recorded in one quiet-machine session (loadavg 0.15 at
+  start, every cell under the guard, none `forced`, all ten rowcount-verified)
+  with 042's byte-meter fix in the spawned binaries — the connector channel's
+  budget now counts an IPC batch's true slice footprint instead of its parent
+  allocations' capacity (≈17× over-charge), so the remote arms ran the
+  in-flight window the operator configured. **The verdict on the fix: it
+  STANDS.** Against the 041 session artifacts, every remote cell's wall fell
+  (−3.9% to −24.4%), CPU stayed within −8%/+5%, and peak RSS moved net DOWN
+  31 MB across the five (−59/+4/+55/−7/−24 MB) — the 019 D-13/D-21 risk (an
+  RSS regression outweighing the wall gain) did not materialize; the one RSS
+  rise (`s3jsonl-to-pg-200k-remote`, +55 MB) sits on the cell with the largest
+  wall win (−262 ms). The isolating figure is the twin-pair overhead:
+  `pg-to-pg-dedup-1m` +462.8 → +216.5 ms (halved). NOTE the fix repaired the
+  BUDGET meter only: the engine's reporting sites still capacity-sum, so the
+  artifact `bytes`/MB/s statistic on pg-source remote rows is unchanged and
+  still unreliable (caveat amended below). **Four remote bars are minted** —
+  two sessions now exist, which is the governance threshold one session did
+  not meet (018 BR8, constitution Principle VIII). Each MIRRORS its in-process
+  twin's value rather than hugging the higher remote floors, enforcing the
+  claim that matters: the wire does not cost the flagship bars.
+  `pg-to-pg-1m-remote` ≥ 4× (two-session floors 9.50×/10.13×),
+  `s3jsonl-to-pg-200k-remote` ≥ 40× (60.0×/78.4×),
+  `s3jsonl-to-s3parquet-200k-remote` ≥ 45× (52.3×/57.1×),
+  `pg-to-pg-dedup-1m-remote` ≥ 2× (2.42×/2.62×). `pg-to-s3parquet-1m-remote`
+  stays UNBARRED for its twin's reason — near-parity (1.75× both sessions) is
+  reported, not gated. **041's open session differential is re-read and
+  CONFIRMED as session-state sensitivity, not a code regression**: this
+  session the asymmetry ran the opposite direction — rdlt's in-process arms
+  moved −4.5% to −10.0% against their 041 values while dlt's moved −3.0% to
+  +5.3% — the same magnitude imbalance that 041 recorded as +9.1…+20.5% rdlt
+  vs +1.2…+4.5% dlt, now reverting. Sub-second CPU-bound walls swing with
+  machine state in a way 10–65 s Python/IO-dominated walls do not; the
+  specific mechanism (sustained-clock/turbo residency) remains plausible and
+  unproven, and no figure is corrected on its account.
+
 - **2026-08-07 — the wire measured against the bars; five remote twins added
   as SCOREBOARD, no bars minted (feature 041)**: each of the five e2e cells
   gained a `<cell>-remote` twin that runs the identical workload with the
@@ -117,31 +154,96 @@ Oracle cell. Every arm is rowcount-verified against the cell's DECLARED table
 set — a run that lands a table the cell did not declare fails before it is
 recorded, because its timing would cover work the competitor arm never did.
 
-The `-remote` rows carry no Target/Status: they are SCOREBOARD, and the bars in
-`bars.toml` bind the in-process cells only (see the 2026-08-07 policy entry).
+Four `-remote` rows carry bars since 2026-08-10 (two recorded sessions), each
+mirroring its in-process twin's value; `pg-to-s3parquet-1m-remote` stays
+scoreboard like its twin (see the 2026-08-10 policy entry).
 
 <!-- rdlt-bench:BEGIN matrix -->
 | Cell | rdlt median | vs baseline | Target | Status | rows/s | MB/s | peak RSS |
 |---|---|---|---|---|---|---|---|
-| pg-to-pg-1m | 896.9 ms (±3%) | **11.5×** (dlt: 10.32 s); 19.6× (dlt-pyarrow: 17.58 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 4× | PASS | 1114983 | 212.4 | 113 MB |
-| pg-to-s3parquet-1m | 899.8 ms (±9%) | **1.9×** (dlt: 1.69 s); 12.3× (dlt-pyarrow: 11.08 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | — | — | 1111403 | 211.7 | 138 MB |
-| s3jsonl-to-pg-200k | 697.9 ms (±3%) | **93.5×** (dlt: 65.23 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 40× | PASS | 859685 | 204.9 | 173 MB |
-| s3jsonl-to-s3parquet-200k | 1.00 s (±5%) | **59.1×** (dlt: 59.33 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 45× | PASS | 597184 | 142.3 | 206 MB |
-| pg-to-pg-dedup-1m | 4.89 s (±3%) | **2.7×** (dlt: 13.01 s); 4.3× (dlt-pyarrow: 20.90 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 2× | PASS | 204434 | 38.8 | 110 MB |
-| pg-to-pg-1m-remote | 1.09 s (±8%) | **9.5×** (dlt: 10.32 s); 16.2× (dlt-pyarrow: 17.61 s) | — | — | 920041 | 2118.0 | 282 MB |
-| pg-to-s3parquet-1m-remote | 1.02 s (±6%) | **1.7×** (dlt: 1.70 s); 10.8× (dlt-pyarrow: 11.05 s) | — | — | 976216 | 2247.3 | 308 MB |
-| s3jsonl-to-pg-200k-remote | 1.07 s (±63%) | **60.0×** (dlt: 64.48 s) | — | — | 558330 | 133.1 | 285 MB |
-| s3jsonl-to-s3parquet-200k-remote | 1.12 s (±7%) | **52.3×** (dlt: 58.53 s) | — | — | 536123 | 127.8 | 307 MB |
-| pg-to-pg-dedup-1m-remote | 5.35 s (±11%) | **2.4×** (dlt: 12.94 s); 3.9× (dlt-pyarrow: 20.94 s) | — | — | 186765 | 426.0 | 268 MB |
+| pg-to-pg-1m | 807.4 ms (±3%) | **12.7×** (dlt: 10.25 s); 21.3× (dlt-pyarrow: 17.17 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 4× | PASS | 1238535 | 235.9 | 107 MB |
+| pg-to-s3parquet-1m | 835.7 ms (±6%) | **2.0×** (dlt: 1.69 s); 13.0× (dlt-pyarrow: 10.83 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | — | — | 1196655 | 227.9 | 136 MB |
+| s3jsonl-to-pg-200k | 666.5 ms (±3%) | **95.1×** (dlt: 63.40 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 40× | PASS | 900201 | 214.6 | 179 MB |
+| s3jsonl-to-s3parquet-200k | 954.4 ms (±2%) | **65.5×** (dlt: 62.49 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 45× | PASS | 628638 | 149.8 | 181 MB |
+| pg-to-pg-dedup-1m | 4.60 s (±2%) | **2.7×** (dlt: 12.62 s); 4.4× (dlt-pyarrow: 20.25 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 2× | PASS | 217534 | 41.3 | 104 MB |
+| pg-to-pg-1m-remote | 1.00 s (±3%) | **10.1×** (dlt: 10.15 s); 17.4× (dlt-pyarrow: 17.42 s) | ≥ 4× | PASS | 997934 | 2297.3 | 222 MB |
+| pg-to-s3parquet-1m-remote | 952.9 ms (±3%) | **1.7×** (dlt: 1.67 s); 11.2× (dlt-pyarrow: 10.68 s) | — | — | 1049440 | 2415.8 | 311 MB |
+| s3jsonl-to-pg-200k-remote | 812.2 ms (±3%) | **78.4×** (dlt: 63.70 s) | ≥ 40× | PASS | 738745 | 176.1 | 341 MB |
+| s3jsonl-to-s3parquet-200k-remote | 1.08 s (±2%) | **57.1×** (dlt: 61.45 s) | ≥ 45× | PASS | 557783 | 133.0 | 301 MB |
+| pg-to-pg-dedup-1m-remote | 4.81 s (±3%) | **2.6×** (dlt: 12.62 s); 4.2× (dlt-pyarrow: 20.31 s) | ≥ 2× | PASS | 207749 | 473.8 | 243 MB |
 | oracle-to-pg-200k | 832.6 ms (±4%) | **4.1×** (dlt: 3.42 s); 54.6× (airbyte: 45.45 s) | — | — | 240205 | 46.9 | 60 MB |
 
-_Generated by `rdlt-bench report` from committed artifacts (recorded 2026-08-03, 2026-08-07; airbyte 2.1.1, dlt 1.29.0)._
+_Generated by `rdlt-bench report` from committed artifacts (recorded 2026-08-03, 2026-08-10; airbyte 2.1.1, dlt 1.29.0)._
 <!-- rdlt-bench:END matrix -->
+
+## The second wire session + the byte-fix verdict — recorded session 2026-08-10 (feature 042)
+
+Hand-written from the ten artifacts above (the generated matrix reports each
+cell alone; this pairs the twins and reads them against the 041 session).
+One continuous session, five twin-pair invocations, session start loadavg
+0.15, per-cell start loadavg 1.94–3.73 against a quiet threshold of 8.0,
+every arm rowcount-verified, none `forced`, no re-rolls. The Airbyte arm
+again recorded `Missing{abctl cluster unreachable}` on the five in-process
+cells — verbatim, the kind cluster stays down on this machine — so the
+session is 2-way like 041's.
+
+| Twin pair | in-process | remote | overhead | ratio vs dlt (in-proc → remote) | bar |
+|---|---|---|---|---|---|
+| pg-to-pg-1m | 807.4 ms | 1002.1 ms | +194.7 ms | 12.7× → **10.1×** | ≥ 4× **PASS** |
+| pg-to-s3parquet-1m | 835.7 ms | 952.9 ms | +117.2 ms | 2.0× → **1.7×** | none |
+| s3jsonl-to-pg-200k | 666.5 ms | 812.2 ms | +145.7 ms | 95.1× → **78.4×** | ≥ 40× **PASS** |
+| s3jsonl-to-s3parquet-200k | 954.4 ms | 1075.7 ms | +121.3 ms | 65.5× → **57.1×** | ≥ 45× **PASS** |
+| pg-to-pg-dedup-1m | 4597.0 ms | 4813.5 ms | +216.5 ms | 2.7× → **2.6×** | ≥ 2× **PASS** |
+
+**The byte-fix verdict (D-042-4): the fix STANDS.** This session is the
+measurement the 041 caveat demanded before restating anything: the spawned
+binaries carry the channel byte-meter fix (an IPC-decoded batch now charges
+its true slice footprint, not ≈17× of it), so the remote arms ran the
+configured in-flight window. Per remote cell against the 041 artifacts:
+
+| Remote cell | wall (041 → now) | CPU user_sys | peak RSS |
+|---|---|---|---|
+| pg-to-pg-1m-remote | 1086.9 → 1002.1 ms (−7.8%) | 1000 → 920 ms (−8.0%) | 282 → 223 MB (**−59 MB**) |
+| pg-to-s3parquet-1m-remote | 1024.4 → 952.9 ms (−7.0%) | 1050 → 1050 ms (0%) | 308 → 312 MB (+4 MB) |
+| s3jsonl-to-pg-200k-remote | 1074.6 → 812.2 ms (−24.4%) | 900 → 920 ms (+2.2%) | 286 → 341 MB (**+55 MB**) |
+| s3jsonl-to-s3parquet-200k-remote | 1119.1 → 1075.7 ms (−3.9%) | 960 → 1010 ms (+5.2%) | 308 → 301 MB (−7 MB) |
+| pg-to-pg-dedup-1m-remote | 5354.3 → 4813.5 ms (−10.1%) | 960 → 1010 ms (+5.2%) | 268 → 244 MB (−24 MB) |
+
+Every wall fell; CPU held within −8%/+5%; RSS moved net −31 MB across the
+five. The 019 D-13/D-21 failure shape — widening the window buys wall and
+pays more in resident memory — did not appear: the only RSS rise (+55 MB,
+`s3jsonl-to-pg-200k-remote`, whose postgres DESTINATION child decodes
+Arrow IPC and so was also over-charged before the fix) sits on the largest
+wall win in the table (−262 ms). Either direction of the criterion would
+have been a complete outcome; the measured one is a net win.
+
+Two honest confounds, stated rather than netted. First, the machine ran
+faster this session for BOTH modes — the in-process arms fell −4.5% to
+−10.0% against 041 with no code change on their hot path — so the raw remote
+wall deltas overstate the fix. The isolating figure is the twin-pair
+overhead, where session speed largely cancels: `pg-to-pg-dedup-1m` +462.8 →
++216.5 ms (halved) and `pg-to-s3parquet-1m` +124.6 → +117.2 ms, while
+`pg-to-pg-1m` sat flat (+190.0 → +194.7 ms) but dropped 59 MB of RSS and 8%
+CPU — the fix's win is real but lands differently per shape. Second,
+`s3jsonl-to-pg-200k-remote`'s −262 ms is mostly the 041 warm-up artifact
+clearing, not the fix: 041's median carried first-spawn warm-up (±63%
+spread, recorded not re-rolled); this session the same cell ran ±1.6%
+(797.5–823.0 ms), landing on 041's own steady-state tail (≈858 ms) — the
+warm-up shape did not recur.
+
+**What the fix did NOT change**: the artifact `bytes` statistic. The fix
+lives in the connector channel's budget meter; the engine's reporting sites
+(`load/loader.rs`, `load/item.rs`, `runtime/extract.rs`) still sum buffer
+capacity, so the pg-source remote rows still report the ≈12× figure
+(2,413,845,024 B) and their MB/s column remains unreliable — the 041 caveat
+below is amended, not retired. Closing the reporting site is bookkeeping,
+not behavior, and is left for its own change.
 
 ## The wire overhead — recorded session 2026-08-07 (feature 041)
 
-Hand-written from the ten artifacts above (the generated matrix reports each
-cell alone; this pairs the twins). Same machine, same session, same fixtures,
+Hand-written from the ten 041 artifacts (superseded in `benches/results/` by
+the 2026-08-10 session above; the figures here are the 041 session's own and
+remain the record it produced). Same machine, same session, same fixtures,
 quiet guard passed on every cell, all ten rowcount-verified, none `forced`.
 
 | Twin pair | in-process | remote | overhead | ×  | ratio vs dlt (in-proc → remote) | bar |
@@ -182,6 +284,11 @@ bandwidth-bound and are not. Corroborating but not decisive: the branch's
 non-bench diff carries no hot-path change — `rdlt-engine` is untouched, and the
 non-test changes are config-shape resolution in `pipeline_spec.rs`, a `NAME`
 const, and CDC spec plumbing.
+RE-READ 2026-08-10 (the second session): CONFIRMED as session-state
+sensitivity, not a regression — the same-magnitude asymmetry ran the
+OPPOSITE direction (rdlt in-process arms −4.5%…−10.0% against these values,
+dlt −3.0%…+5.3%), which a code regression cannot do. The mechanism stays
+unproven; see the 2026-08-10 policy entry.
 
 **Which way it cuts is the part that matters here: the ratios are DEFLATED.**
 Every remote ratio in this session was divided by an rdlt wall that was high
@@ -327,6 +434,10 @@ Stated so the numbers stay honest as the matrix fills:
   not to the cell. The **median as measured** (1074.6 ms → 60.0×) is what is
   recorded and what the verdict uses; the steady-state tail would read ≈75×,
   and quoting that instead would be picking the number. No re-roll was taken.
+  AMENDED 2026-08-10: the shape did not recur — the second session ran the
+  same cell at ±1.6% (797.5–823.0 ms, median 812.2), on 041's own
+  steady-state tail. The warm-up read was correct and is now bounded to that
+  one session.
 - **The twin pairs are NOT load-symmetric, and the asymmetry cuts AGAINST the
   wire — disclosed because the other two caveats both cut for it** (041
   session). Baseline-first ordering runs each in-process arm before its remote
@@ -378,6 +489,17 @@ Stated so the numbers stay honest as the matrix fills:
   **×1.49 to ×2.48** the in-process arm's, so the net is a measurement nobody
   has taken. No number
   here is restated on the strength of an unmeasured fix.
+  AMENDED 2026-08-10: the measurement was taken, and the budget half of this
+  caveat is RETIRED — 042's channel fix (commit `ae181184`) meters an
+  IPC-decoded batch by its true slice footprint, and the second recorded
+  session judged it STANDS (every remote wall down, net RSS down; see the
+  2026-08-10 section above). The "upper bound" hedge resolved as partly
+  right: the throttled window was real on the dedup pair (overhead halved)
+  and negligible on `pg-to-pg-1m`'s wall (flat overhead, but −59 MB RSS and
+  −8% CPU). The REPORTING half of this caveat still stands as written: the
+  engine's `bytes` statistic capacity-sums at its own sites, the pg-source
+  remote rows still print ≈12× figures, and their MB/s stays unreliable
+  until that bookkeeping site is closed.
 - **Cold start** lives on the instruments track, not the matrix: a one-row
   file → duckdb pipeline, ≤ 40 ms absolute (`benches/check-cold-start.sh`,
   run by `TARGET=iai make bench` and therefore `make check`).
@@ -394,36 +516,36 @@ invocation) — the latest two medians per pair and their delta.
 | oracle-to-pg-200k | dlt | 3.36 s | 3.61 s | -7.0% |
 | oracle-to-pg-200k | rdlt | 845.9 ms | 923.5 ms | -8.4% |
 | pg-to-pg-1m | airbyte | 60.44 s | 45.37 s | +33.2% |
-| pg-to-pg-1m | dlt | 10.32 s | 10.17 s | +1.5% |
-| pg-to-pg-1m | dlt-pyarrow | 17.58 s | 17.19 s | +2.3% |
-| pg-to-pg-1m | rdlt | 896.9 ms | 744.2 ms | +20.5% |
-| pg-to-pg-1m-remote | dlt | 10.32 s | — | — |
-| pg-to-pg-1m-remote | dlt-pyarrow | 17.61 s | — | — |
-| pg-to-pg-1m-remote | rdlt | 1.09 s | — | — |
+| pg-to-pg-1m | dlt | 10.25 s | 10.32 s | -0.7% |
+| pg-to-pg-1m | dlt-pyarrow | 17.17 s | 17.58 s | -2.3% |
+| pg-to-pg-1m | rdlt | 807.4 ms | 896.9 ms | -10.0% |
+| pg-to-pg-1m-remote | dlt | 10.15 s | 10.32 s | -1.7% |
+| pg-to-pg-1m-remote | dlt-pyarrow | 17.42 s | 17.61 s | -1.1% |
+| pg-to-pg-1m-remote | rdlt | 1.00 s | 1.09 s | -7.8% |
 | pg-to-pg-dedup-1m | airbyte | 45.38 s | 45.39 s | -0.0% |
-| pg-to-pg-dedup-1m | dlt | 13.01 s | 12.45 s | +4.5% |
-| pg-to-pg-dedup-1m | dlt-pyarrow | 20.90 s | 20.74 s | +0.8% |
-| pg-to-pg-dedup-1m | rdlt | 4.89 s | 4.37 s | +11.9% |
-| pg-to-pg-dedup-1m-remote | dlt | 12.94 s | — | — |
-| pg-to-pg-dedup-1m-remote | dlt-pyarrow | 20.94 s | — | — |
-| pg-to-pg-dedup-1m-remote | rdlt | 5.35 s | — | — |
+| pg-to-pg-dedup-1m | dlt | 12.62 s | 13.01 s | -3.0% |
+| pg-to-pg-dedup-1m | dlt-pyarrow | 20.25 s | 20.90 s | -3.1% |
+| pg-to-pg-dedup-1m | rdlt | 4.60 s | 4.89 s | -6.0% |
+| pg-to-pg-dedup-1m-remote | dlt | 12.62 s | 12.94 s | -2.4% |
+| pg-to-pg-dedup-1m-remote | dlt-pyarrow | 20.31 s | 20.94 s | -3.0% |
+| pg-to-pg-dedup-1m-remote | rdlt | 4.81 s | 5.35 s | -10.1% |
 | pg-to-s3parquet-1m | airbyte | 45.37 s | 45.39 s | -0.0% |
-| pg-to-s3parquet-1m | dlt | 1.69 s | 1.67 s | +1.2% |
-| pg-to-s3parquet-1m | dlt-pyarrow | 11.08 s | 10.80 s | +2.6% |
-| pg-to-s3parquet-1m | rdlt | 899.8 ms | 913.8 ms | -1.5% |
-| pg-to-s3parquet-1m-remote | dlt | 1.70 s | — | — |
-| pg-to-s3parquet-1m-remote | dlt-pyarrow | 11.05 s | — | — |
-| pg-to-s3parquet-1m-remote | rdlt | 1.02 s | — | — |
+| pg-to-s3parquet-1m | dlt | 1.69 s | 1.69 s | +0.1% |
+| pg-to-s3parquet-1m | dlt-pyarrow | 10.83 s | 11.08 s | -2.2% |
+| pg-to-s3parquet-1m | rdlt | 835.7 ms | 899.8 ms | -7.1% |
+| pg-to-s3parquet-1m-remote | dlt | 1.67 s | 1.70 s | -2.2% |
+| pg-to-s3parquet-1m-remote | dlt-pyarrow | 10.68 s | 11.05 s | -3.3% |
+| pg-to-s3parquet-1m-remote | rdlt | 952.9 ms | 1.02 s | -7.0% |
 | s3jsonl-to-pg-200k | airbyte | 45.38 s | 45.37 s | +0.0% |
-| s3jsonl-to-pg-200k | dlt | 65.23 s | 62.76 s | +3.9% |
-| s3jsonl-to-pg-200k | rdlt | 697.9 ms | 639.8 ms | +9.1% |
-| s3jsonl-to-pg-200k-remote | dlt | 64.48 s | — | — |
-| s3jsonl-to-pg-200k-remote | rdlt | 1.07 s | — | — |
+| s3jsonl-to-pg-200k | dlt | 63.40 s | 65.23 s | -2.8% |
+| s3jsonl-to-pg-200k | rdlt | 666.5 ms | 697.9 ms | -4.5% |
+| s3jsonl-to-pg-200k-remote | dlt | 63.70 s | 64.48 s | -1.2% |
+| s3jsonl-to-pg-200k-remote | rdlt | 812.2 ms | 1.07 s | -24.4% |
 | s3jsonl-to-s3parquet-200k | airbyte | 45.38 s | 45.37 s | +0.0% |
-| s3jsonl-to-s3parquet-200k | dlt | 59.33 s | 58.52 s | +1.4% |
-| s3jsonl-to-s3parquet-200k | rdlt | 1.00 s | 848.9 ms | +18.4% |
-| s3jsonl-to-s3parquet-200k-remote | dlt | 58.53 s | — | — |
-| s3jsonl-to-s3parquet-200k-remote | rdlt | 1.12 s | — | — |
+| s3jsonl-to-s3parquet-200k | dlt | 62.49 s | 59.33 s | +5.3% |
+| s3jsonl-to-s3parquet-200k | rdlt | 954.4 ms | 1.00 s | -5.0% |
+| s3jsonl-to-s3parquet-200k-remote | dlt | 61.45 s | 58.53 s | +5.0% |
+| s3jsonl-to-s3parquet-200k-remote | rdlt | 1.08 s | 1.12 s | -3.9% |
 | selftest-protocol | rdlt | 22.0 ms | 21.3 ms | +3.4% |
 <!-- rdlt-bench:END trends -->
 

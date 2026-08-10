@@ -101,3 +101,45 @@ kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 2.0
 policy = "RESULTS.md policy log 2026-07-25 (dedup cell correction): floor 2.5x (corrected session, single session)"
+
+# The four remote-twin bars, minted 2026-08-10 from TWO recorded sessions
+# (2026-08-07 / 2026-08-10) — the governance threshold a single session does
+# not meet (018 BR8, constitution Principle VIII). Each bar MIRRORS its
+# in-process twin's value rather than sitting just under the higher remote
+# floors, which states the claim being enforced: taking the connectors out of
+# process does not cost the flagship bars. Two-session remote floors, both
+# clearing every bar: pg-to-pg-1m-remote 9.50x -> 10.13x; s3jsonl-to-pg-200k
+# -remote 60.0x -> 78.4x; s3jsonl-to-s3parquet-200k-remote 52.3x -> 57.1x;
+# pg-to-pg-dedup-1m-remote 2.42x -> 2.62x. The narrowest margin is the
+# s3parquet twin's 52.3x against 45 (x1.16) — the same margin 041 recorded,
+# held again this session at 57.1x. `pg-to-s3parquet-1m-remote` stays
+# UNBARRED for its twin's reason: a near-parity cell (1.75x / 1.75x across
+# the two sessions) is reported, not gated.
+
+[[bar]]
+cell = "pg-to-pg-1m-remote"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 4.0
+policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 9.50x (2026-08-07), 10.13x (2026-08-10)"
+
+[[bar]]
+cell = "s3jsonl-to-pg-200k-remote"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 40.0
+policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 60.0x (2026-08-07, warm-up-inflated median), 78.4x (2026-08-10)"
+
+[[bar]]
+cell = "s3jsonl-to-s3parquet-200k-remote"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 45.0
+policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 52.3x (2026-08-07), 57.1x (2026-08-10)"
+
+[[bar]]
+cell = "pg-to-pg-dedup-1m-remote"
+kind = "ratio_vs"
+competitor = "dlt"
+min_ratio = 2.0
+policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 2.42x (2026-08-07), 2.62x (2026-08-10)"

@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "cell_id": "pg-to-s3parquet-1m",
-  "recorded_at": "2026-08-07",
+  "recorded_at": "2026-08-10",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
@@ -13,34 +13,34 @@
     },
     "dataset_hashes": {
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)",
-      "rustfs:/var/tmp/rdlt-tests/.tmpZcPmsn/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+      "rustfs:/var/tmp/rdlt-tests/.tmpzpovMq/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
     },
-    "loadavg_at_start": 2.13,
+    "loadavg_at_start": 1.98,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      895.680329,
-      945.385715,
-      899.7632530000001,
-      888.014608,
-      968.399043
+      823.06576,
+      835.662621,
+      830.7713669999999,
+      871.625832,
+      870.3167010000001
     ],
-    "median_ms": 899.7632530000001,
-    "p95_ms": 968.399043,
+    "median_ms": 835.662621,
+    "p95_ms": 871.625832,
     "rows": 1000000,
     "bytes": 199720864,
-    "rows_per_s": 1111403.4682632233,
-    "mb_per_s": 211.68752759373427,
+    "rows_per_s": 1196655.1750314557,
+    "mb_per_s": 227.9253058122192,
     "cpu": {
-      "mean_util": 0.6815372286566789,
-      "peak_util": 1.6666666666666667,
-      "user_sys_ms": 660,
+      "mean_util": 0.827285055167521,
+      "peak_util": 1.7741935483870968,
+      "user_sys_ms": 720,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 144916480,
+      "peak_bytes": 143290368,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "artifact_bytes": 79878755
@@ -53,49 +53,49 @@
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        1738.7123510015954,
-        1656.694844001322,
-        1692.3613239996484,
-        1687.7649019988894,
-        1701.7636420023337
+        1744.5487119985046,
+        1665.517818000808,
+        1706.2973319989396,
+        1693.8931949989635,
+        1682.9808840011538
       ],
-      "median_ms": 1692.3613239996484,
+      "median_ms": 1693.8931949989635,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.7716545173413525,
+        "mean_util": 1.813014099044985,
         "peak_util": null,
-        "user_sys_ms": 4578,
+        "user_sys_ms": 4544,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 522264576,
+        "peak_bytes": 521678848,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 1.8808962450477495,
-      "artifact_bytes": 73689666
+      "ratio_vs_rdlt": 2.0270060577460765,
+      "artifact_bytes": 73689663
     },
     "dlt-pyarrow": {
       "status": "ok",
       "runs_ms": [
-        11044.330231998174,
-        11077.304162001385,
-        11139.999174996774,
-        11092.346301000362,
-        11052.86360199898
+        10816.812315999414,
+        10887.595650001458,
+        10834.234526002549,
+        10893.526996998844,
+        10686.112352999771
       ],
-      "median_ms": 11077.304162001385,
+      "median_ms": 10834.234526002549,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.1276984396068643,
+        "mean_util": 1.138335571064582,
         "peak_util": null,
-        "user_sys_ms": 13729,
+        "user_sys_ms": 13186,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 516751360,
+        "peak_bytes": 515317760,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 12.311354264654975,
+      "ratio_vs_rdlt": 12.96484281304542,
       "artifact_bytes": 95733502
     }
   },

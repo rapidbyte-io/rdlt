@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "cell_id": "s3jsonl-to-s3parquet-200k-remote",
-  "recorded_at": "2026-08-07",
+  "recorded_at": "2026-08-10",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
@@ -10,34 +10,34 @@
       "dlt": "dlt 1.29.0"
     },
     "dataset_hashes": {
-      "rustfs:/var/tmp/rdlt-tests/.tmpUfxVzM/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
+      "rustfs:/var/tmp/rdlt-tests/.tmpmpz1Qw/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
     },
-    "loadavg_at_start": 1.6,
+    "loadavg_at_start": 2.52,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      1163.5352329999998,
-      1080.93849,
-      1119.8118100000002,
-      1112.8583780000001,
-      1119.1466050000001
+      1089.277033,
+      1088.431406,
+      1075.68668,
+      1069.3937019999998,
+      1066.866661
     ],
-    "median_ms": 1119.1466050000001,
-    "p95_ms": 1163.5352329999998,
+    "median_ms": 1075.68668,
+    "p95_ms": 1089.277033,
     "rows": 600000,
     "bytes": 149965184,
-    "rows_per_s": 536122.7897394194,
-    "mb_per_s": 127.79196550029965,
+    "rows_per_s": 557783.2385170001,
+    "mb_per_s": 132.95502026290546,
     "cpu": {
-      "mean_util": 0.8577964635830708,
-      "peak_util": 2.0,
-      "user_sys_ms": 960,
+      "mean_util": 0.9466974992482214,
+      "peak_util": 2.0338983050847457,
+      "user_sys_ms": 1010,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 322920448,
+      "peak_bytes": 315842560,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
@@ -45,25 +45,25 @@
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        59038.7904800009,
-        58530.8389899983,
-        59081.693553998775,
-        56428.57401500078,
-        58177.37090299852
+        61450.99707699774,
+        63247.16458400144,
+        62857.044480002514,
+        59410.11508600059,
+        59509.26045000233
       ],
-      "median_ms": 58530.8389899983,
+      "median_ms": 61450.99707699774,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.0308507870998052,
+        "mean_util": 1.036520277556424,
         "peak_util": null,
-        "user_sys_ms": 61042,
+        "user_sys_ms": 62360,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 256647168,
+        "peak_bytes": 257179648,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 52.29952780851111
+      "ratio_vs_rdlt": 57.127226932844174
     }
   },
   "verify": {
