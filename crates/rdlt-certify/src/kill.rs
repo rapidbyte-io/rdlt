@@ -136,9 +136,13 @@ pub async fn kill_matrix_source(target: &Target) -> Vec<Entry> {
         let slot = crate::wire::ChildSlot::default();
         let outcome =
             tokio::time::timeout(CLAUSE_TIMEOUT, source_arm(target, boundary, &slot)).await;
-        if outcome.is_err() {
-            crate::wire::reap_parked(&slot).await;
-        }
+        // Reap UNCONDITIONALLY (round-6 fix): a clause timeout dropped
+        // the arm, but an arm that returned Err on its own — a failed
+        // handshake, an unreachable boundary — also left its spawn
+        // merely parked. A clean arm already killed its probe, so the
+        // reap is a no-op there; every exit path now ends with the
+        // child dead and the socket unlinked before the next arm.
+        crate::wire::reap_parked(&slot).await;
         record(&mut report, clause, outcome);
     }
     report.entries
@@ -319,9 +323,12 @@ pub async fn kill_matrix_destination(
             destination_arm(target, &metered, clause, boundary, &slot),
         )
         .await;
-        if outcome.is_err() {
-            crate::wire::reap_parked(&slot).await;
-        }
+        // Reap UNCONDITIONALLY (round-6 fix — the source loop's twin):
+        // an arm's own Err return (spawn_destination's failed
+        // handshake, converge's failed re-spawn) left the child parked
+        // just like a timeout did; a clean arm's slot is already
+        // empty, so this is a no-op there.
+        crate::wire::reap_parked(&slot).await;
         record(&mut report, clause, outcome);
     }
     report.entries
