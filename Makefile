@@ -117,6 +117,133 @@ lint:
 	# on workspace-wide changes what compiles in seven others.
 	cargo clippy -p rdlt-connector-snowflake --all-targets --features failpoints -- -D warnings
 
+# THE SPAWN-SUITE MATRIX, stated once (round-4 fix: twelve-plus lines
+# were duplicated between the full gate and TARGET=unit, and a suite
+# added to one block could silently miss the other). Expanded in BOTH
+# gate blocks — the 024 both-blocks discipline stands, the spelling
+# lives here alone. One module per invocation throughout: nextest
+# fails only a FULLY empty selection, so an OR filter with a renamed
+# module beside a live one passes green (measured) — separate lines
+# make each module fail its own line.
+define spawn-suite-matrix
+# Same class once more, the connector BINARIES (039 T6): behind
+# `bin-serve` + `required-features`, so NO workspace command ever
+# compiles them — built here explicitly so a bin that stops
+# compiling fails the gate rather than rotting unseen (the
+# snowflake-crash-sweep lesson). Then rdlt-runtime's spawn-bins
+# suite drives the BUILT bins through the provider — the T6 smoke
+# (test_spawned_bins) plus the T8 headline e2e (test_e2e_file: a
+# full engine run over spawned connectors on both sides, and its
+# one crash arm); the env var tells the shared helper to (re)build
+# the bins itself, so the suite stays honest run alone. ONE module
+# per invocation: nextest fails only a FULLY empty selection, so an
+# OR filter with a renamed module beside a live one passes green
+# (measured) — separate lines make each module fail its own line.
+cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
+cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
+cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
+cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
+cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
+cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
+cargo build -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
+# The certifier bin rides the same discipline: behind `bin` +
+# `required-features`, built here explicitly so a CLI that stops
+# compiling fails the gate rather than rotting unseen.
+cargo build -p rdlt-certify --features bin --bin rdlt-certify
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
+# The postgres bin's OWN spawn suite (041) — the crate's gated cases
+# drive the built bin through the provider's Spec RPC (identity,
+# version, exit codes), same env-var discipline as the runtime lines.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_spawned_bin)'
+# CDC over the wire (041 Task 1): the spawned pg bin against a live
+# logical-replication container — snapshot, cursor JSON round-trip,
+# resumed change pass across two processes, slot persistence parity.
+# Skip-not-fail without a container runtime, own line per the
+# one-module-per-invocation rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_cdc_wire)'
+# The certification cells (041 Task 3): the spawned pg bin faces the
+# FULL clause suite over the wire against a live container, both
+# roles — S1/S2/S4 + P1-P7 (source, certified twice in a row) and
+# D1-D6 + D8 LIVE + P1-P10 (destination). Skip-not-fail without a
+# container runtime, own line per the one-module-per-invocation rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_certify_wire)'
+# The kill matrix (041 Task 4): the spawned pg bin SIGKILLed at
+# every K boundary against a live container — the first kill matrix
+# against a REAL database (the certify crate's own cell below is
+# hermetic on the file connector). Skip-not-fail without a container
+# runtime, own line per the one-module-per-invocation rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_kill_wire)'
+# The rest bin's OWN spawn suite (042 Task 5), the first SOURCE-ONLY
+# port: spawn smoke (identity, --version, exit 2 — including
+# --role=destination), then certification (S1/S2/S4 + P1-P7, twice
+# in a row) and the source kill matrix (K-S1..K-S3) over the real
+# wire against a LOCAL wiremock stub — NEVER the live PokeAPI (that
+# cell stays behind RDLT_NET and is never a kill subject). No
+# container runtime involved, so these cells never skip; own line
+# per the one-module-per-invocation rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_spawned_bin)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_certify_wire)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_kill_wire)'
+# The duckdb bin's OWN spawn suite (042 Task 6), the first
+# SINGLE-WRITER destination port: spawn smoke (identity, --version,
+# exit 2 — including --role=source on a destination-only crate, plus
+# the cross-process lock-conflict FATAL refusal, D-042-2), then
+# certification (D1-D6 + D8 live + ALL TEN P-clauses incl. P11/P12,
+# the first destination port certifying against them) and the
+# destination kill matrix (K-D1..K-D6), all hermetic on tempdir
+# database files — no container runtime, so these cells never skip;
+# own line per the one-module-per-invocation rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
+# The iceberg bin's OWN spawn suite (042 Task 7), the first CATALOG
+# destination port: spawn smoke (identity, --version, exit 2 —
+# including --role=source on a destination-only crate; offline, never
+# skips), then certification and the destination kill matrix
+# (K-D1..K-D6, all six arms run live — D-042-3) against the
+# Polaris/RUSTFS fixture. The two live cells are skip-not-fail
+# without a container runtime and ride the `iceberg-live` nextest
+# group by package filter; own line per the
+# one-module-per-invocation rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_spawned_bin)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_certify_wire)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_kill_wire)'
+# The oracle bin's OWN spawn suite (042 Task 8), the port with the
+# PRE-SPAWN CLIENT PROBE: the driver dlopens an Oracle Client at
+# RUNTIME, so the bin probes BEFORE the handshake line and a missing
+# client is a typed stderr refusal + exit 1 with stdout EMPTY —
+# never an opaque spawn death. The spawn smoke pins BOTH probe arms
+# (each skips, announced, where the other has the subject) plus
+# identity/--version/exit 2; certification (S1/S2/S4 + P1-P7, twice
+# in a row) and the source kill matrix (K-S1..K-S3) run against the
+# live Oracle Free container with DOUBLE skip-not-fail — no
+# container runtime AND no client each announce their own reason.
+# The whole package rides the `oracle-live` nextest group (the ~75 s
+# boots, bounded at 3); own line per the one-module-per-invocation
+# rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_spawned_bin)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_certify_wire)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_kill_wire)'
+# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
+# cases drive the REAL file bin through the certification stack —
+# source, destination, and the kill matrix (SIGKILL at every K
+# boundary, convergence by re-run) — behind `spawn-bins` +
+# RDLT_BUILD_CONNECTOR_BINS=1 exactly like the runtime lines above
+# (same bin, already built by the build line; the env var keeps the
+# suite honest run alone). ONE module per invocation, as everywhere
+# in this block. The crate's UNGATED tests (report pins, the
+# in-process rogue suites) carry no required-features, so the bare
+# workspace line at the top already runs them — no line here.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
+# The CLI suite additionally enables `bin`: it spawns the certifier
+# bin itself (cargo builds it for `CARGO_BIN_EXE_`), pinning the
+# stdout/stderr/exit-code contract end to end.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli)'
+endef
+
 test:
 ifeq ($(TARGET),)
 	cargo nextest run --workspace
@@ -145,122 +272,7 @@ ifeq ($(TARGET),)
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
-	# Same class once more, the connector BINARIES (039 T6): behind
-	# `bin-serve` + `required-features`, so NO workspace command ever
-	# compiles them — built here explicitly so a bin that stops
-	# compiling fails the gate rather than rotting unseen (the
-	# snowflake-crash-sweep lesson). Then rdlt-runtime's spawn-bins
-	# suite drives the BUILT bins through the provider — the T6 smoke
-	# (test_spawned_bins) plus the T8 headline e2e (test_e2e_file: a
-	# full engine run over spawned connectors on both sides, and its
-	# one crash arm); the env var tells the shared helper to (re)build
-	# the bins itself, so the suite stays honest run alone. ONE module
-	# per invocation: nextest fails only a FULLY empty selection, so an
-	# OR filter with a renamed module beside a live one passes green
-	# (measured) — separate lines make each module fail its own line.
-	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
-	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
-	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
-	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
-	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
-	cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
-	cargo build -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
-	# The certifier bin rides the same discipline: behind `bin` +
-	# `required-features`, built here explicitly so a CLI that stops
-	# compiling fails the gate rather than rotting unseen.
-	cargo build -p rdlt-certify --features bin --bin rdlt-certify
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
-	# The postgres bin's OWN spawn suite (041) — the crate's gated cases
-	# drive the built bin through the provider's Spec RPC (identity,
-	# version, exit codes), same env-var discipline as the runtime lines.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_spawned_bin)'
-	# CDC over the wire (041 Task 1): the spawned pg bin against a live
-	# logical-replication container — snapshot, cursor JSON round-trip,
-	# resumed change pass across two processes, slot persistence parity.
-	# Skip-not-fail without a container runtime, own line per the
-	# one-module-per-invocation rule.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_cdc_wire)'
-	# The certification cells (041 Task 3): the spawned pg bin faces the
-	# FULL clause suite over the wire against a live container, both
-	# roles — S1/S2/S4 + P1-P7 (source, certified twice in a row) and
-	# D1-D6 + D8 LIVE + P1-P10 (destination). Skip-not-fail without a
-	# container runtime, own line per the one-module-per-invocation rule.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_certify_wire)'
-	# The kill matrix (041 Task 4): the spawned pg bin SIGKILLed at
-	# every K boundary against a live container — the first kill matrix
-	# against a REAL database (the certify crate's own cell below is
-	# hermetic on the file connector). Skip-not-fail without a container
-	# runtime, own line per the one-module-per-invocation rule.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_kill_wire)'
-	# The rest bin's OWN spawn suite (042 Task 5), the first SOURCE-ONLY
-	# port: spawn smoke (identity, --version, exit 2 — including
-	# --role=destination), then certification (S1/S2/S4 + P1-P7, twice
-	# in a row) and the source kill matrix (K-S1..K-S3) over the real
-	# wire against a LOCAL wiremock stub — NEVER the live PokeAPI (that
-	# cell stays behind RDLT_NET and is never a kill subject). No
-	# container runtime involved, so these cells never skip; own line
-	# per the one-module-per-invocation rule.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_kill_wire)'
-	# The duckdb bin's OWN spawn suite (042 Task 6), the first
-	# SINGLE-WRITER destination port: spawn smoke (identity, --version,
-	# exit 2 — including --role=source on a destination-only crate, plus
-	# the cross-process lock-conflict FATAL refusal, D-042-2), then
-	# certification (D1-D6 + D8 live + ALL TEN P-clauses incl. P11/P12,
-	# the first destination port certifying against them) and the
-	# destination kill matrix (K-D1..K-D6), all hermetic on tempdir
-	# database files — no container runtime, so these cells never skip;
-	# own line per the one-module-per-invocation rule.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
-	# The iceberg bin's OWN spawn suite (042 Task 7), the first CATALOG
-	# destination port: spawn smoke (identity, --version, exit 2 —
-	# including --role=source on a destination-only crate; offline, never
-	# skips), then certification and the destination kill matrix
-	# (K-D1..K-D6, all six arms run live — D-042-3) against the
-	# Polaris/RUSTFS fixture. The two live cells are skip-not-fail
-	# without a container runtime and ride the `iceberg-live` nextest
-	# group by package filter; own line per the
-	# one-module-per-invocation rule.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_kill_wire)'
-	# The oracle bin's OWN spawn suite (042 Task 8), the port with the
-	# PRE-SPAWN CLIENT PROBE: the driver dlopens an Oracle Client at
-	# RUNTIME, so the bin probes BEFORE the handshake line and a missing
-	# client is a typed stderr refusal + exit 1 with stdout EMPTY —
-	# never an opaque spawn death. The spawn smoke pins BOTH probe arms
-	# (each skips, announced, where the other has the subject) plus
-	# identity/--version/exit 2; certification (S1/S2/S4 + P1-P7, twice
-	# in a row) and the source kill matrix (K-S1..K-S3) run against the
-	# live Oracle Free container with DOUBLE skip-not-fail — no
-	# container runtime AND no client each announce their own reason.
-	# The whole package rides the `oracle-live` nextest group (the ~75 s
-	# boots, bounded at 3); own line per the one-module-per-invocation
-	# rule.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_kill_wire)'
-	# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
-	# cases drive the REAL file bin through the certification stack —
-	# source, destination, and the kill matrix (SIGKILL at every K
-	# boundary, convergence by re-run) — behind `spawn-bins` +
-	# RDLT_BUILD_CONNECTOR_BINS=1 exactly like the runtime lines above
-	# (same bin, already built by the build line; the env var keeps the
-	# suite honest run alone). ONE module per invocation, as everywhere
-	# in this block. The crate's UNGATED tests (report pins, the
-	# in-process rogue suites) carry no required-features, so the bare
-	# workspace line at the top already runs them — no line here.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
-	# The CLI suite additionally enables `bin`: it spawns the certifier
-	# bin itself (cargo builds it for `CARGO_BIN_EXE_`), pinning the
-	# stdout/stderr/exit-code contract end to end.
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli)'
+	$(spawn-suite-matrix)
 	# The Python proof connector (040): ZERO Rust — the SAME certifier
 	# bin, the SAME clause vocabulary, against a pure-Python jsonl
 	# source over the real wire. One compound block so the skip guard
@@ -295,36 +307,7 @@ else ifeq ($(TARGET),unit)
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
 	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
-	cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
-	cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
-	cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
-	cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
-	cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
-	cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
-	cargo build -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
-	cargo build -p rdlt-certify --features bin --bin rdlt-certify
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_cdc_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-postgres --features fixtures,spawn-bins -E 'test(test_kill_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features spawn-bins -E 'test(test_kill_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-iceberg --features spawn-bins -E 'test(test_kill_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_spawned_bin)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_certify_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_kill_wire)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
-	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli)'
+	$(spawn-suite-matrix)
 	# The Python proof-connector certification — the same block as the
 	# full gate above (skip ONLY on absent python3; venv cached by
 	# requirements hash; stub drift and failed clauses FAIL).
