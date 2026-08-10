@@ -154,10 +154,10 @@ impl Drop for Client {
 /// RUNTIME, and a process without one dies inside the driver with an
 /// error no caller upstream can type. Probed by attempting a
 /// connection to an address nothing answers: the driver reports a
-/// missing client (`DPI-1047`, from the dlopen layer — it carries no
-/// structured ORA code, so the token is matched in the rendered text)
-/// differently from a network failure, and any OTHER outcome means a
-/// client was found and loaded.
+/// missing client (`DPI-1047`, from the dlopen layer — no ORA code
+/// exists there, so the crate exposes it through its own structured
+/// `Error::dpi_code` accessor) differently from a network failure, and
+/// any OTHER outcome means a client was found and loaded.
 ///
 /// The connector binary calls this BEFORE the protocol handshake so a
 /// missing client is a typed refusal on stderr, never an opaque death
@@ -166,7 +166,7 @@ impl Drop for Client {
 pub fn client_available() -> bool {
     match oracle::Connection::connect("x", "x", "//127.0.0.1:1/NOPE") {
         Ok(_) => true,
-        Err(e) => !e.to_string().contains("DPI-1047"),
+        Err(e) => e.dpi_code() != Some(1047),
     }
 }
 
