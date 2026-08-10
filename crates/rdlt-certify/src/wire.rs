@@ -135,42 +135,61 @@ impl std::fmt::Display for Census {
     }
 }
 
-/// A shared parking slot for the child a wire attach spawns (round-3
-/// fix). The child lives HERE — not in the attach future — across the
-/// attach's awaits, so a caller that must abandon the attach (a
-/// timeout aborting the task) can still claim the child and await its
-/// DEATH: aborting a task only runs Drop, and `kill_on_drop` only
-/// SENDS the SIGKILL, so without the slot a dying single-writer
-/// connector could still hold its store lock when the next spawn
-/// opens the same store. Exactly one owner ever ends up responsible:
-/// the probe takes the child out on success (its `kill` reaps), the
-/// attach's own error paths reap before returning, and a cancelled
-/// attach leaves it parked for the caller.
-pub(crate) type ChildSlot = std::sync::Arc<std::sync::Mutex<Option<tokio::process::Child>>>;
+/// What a wire attach parks for whoever must clean up after it (round-3
+/// fix; the socket joined in round 4): the spawned child, and — once
+/// the handshake line names it — the advertised socket's path. The
+/// child lives HERE for the probe's WHOLE life, not in any future, so
+/// a caller that must abandon the attach (a timeout aborting the task)
+/// or the arm holding a live probe (a whole-arm clause timeout) can
+/// still claim the child and await its DEATH: dropping a future only
+/// runs Drop, and `kill_on_drop` only SENDS the SIGKILL, so without
+/// the slot a dying single-writer connector could still hold its store
+/// lock when the next spawn opens the same store. The socket rides
+/// along because the old attach's guarantee — the advertised socket
+/// file is unlinked on EVERY abandonment path — must survive the slot:
+/// an abort landing mid-dial knows the path only through here.
+#[derive(Default)]
+pub(crate) struct Parked {
+    child: Option<tokio::process::Child>,
+    socket: Option<PathBuf>,
+}
 
-/// Claim and REAP whatever child `slot` still parks — the caller's
-/// move after abandoning an attach. A no-op when the attach completed
-/// (the probe took the child) or never spawned one.
+/// The shared handle to one attach's [`Parked`] state.
+pub(crate) type ChildSlot = std::sync::Arc<std::sync::Mutex<Parked>>;
+
+/// Claim and REAP whatever `slot` still parks — the caller's move after
+/// abandoning an attach or a live probe: the child is killed and
+/// AWAITED (dead, not dying, when this returns), the advertised socket
+/// unlinked. A no-op when a `kill` already reaped or nothing spawned.
 pub(crate) async fn reap_parked(slot: &ChildSlot) {
-    let child = slot.lock().expect("child slot lock").take();
+    let (child, socket) = {
+        let mut parked = slot.lock().expect("child slot lock");
+        (parked.child.take(), parked.socket.take())
+    };
     if let Some(mut child) = child {
         let _ = child.start_kill();
         let _ = child.wait().await;
     }
+    if let Some(socket) = socket {
+        let _ = std::fs::remove_file(&socket);
+    }
 }
 
-/// The child a [`WireProbe::attach`] spawned. Dropping it SIGKILLs the
-/// process (`kill_on_drop` was set at spawn) and unlinks the socket its
-/// handshake line advertised — no `LifecycleGuard` ever owned this
-/// spawn, so the cleanup lives here.
+/// The record of a [`WireProbe::attach`] spawn: the shared slot the
+/// child stays PARKED in (claimable by an abandoning caller — see
+/// [`Parked`]) and the advertised socket. Dropping this unlinks the
+/// socket; the child, if still parked and unclaimed, dies with the
+/// slot's last clone (`kill_on_drop`) or under the caller's
+/// [`reap_parked`].
 struct SpawnedConnector {
-    child: tokio::process::Child,
+    slot: ChildSlot,
     socket: PathBuf,
 }
 
 impl Drop for SpawnedConnector {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket);
+        self.slot.lock().expect("child slot lock").socket = None;
     }
 }
 
@@ -227,7 +246,7 @@ impl WireProbe {
             .stdout
             .take()
             .expect("stdout was piped at spawn, so the child carries it");
-        *slot.lock().expect("child slot lock") = Some(child);
+        slot.lock().expect("child slot lock").child = Some(child);
 
         let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
         let mut line = String::new();
@@ -255,31 +274,32 @@ impl WireProbe {
                 ));
             }
         };
+        // The socket joins the parked state the moment it is KNOWN —
+        // from here, every abandonment path (this fn's own errors, a
+        // caller's abort landing mid-dial) unlinks it via reap_parked.
+        slot.lock().expect("child slot lock").socket = Some(parsed.socket_path.clone());
 
         let channel = match dial(&parsed.socket_path, budget_bytes).await {
             Ok(channel) => channel,
             Err(error) => {
-                // Reap AND unlink: kill_on_drop covers only the
-                // process, and no `SpawnedConnector` owns the socket
-                // yet on this path.
                 reap_parked(slot).await;
-                let _ = std::fs::remove_file(&parsed.socket_path);
                 return Err(format!("dialing the advertised socket: {error}"));
             }
         };
-        // Success: the probe takes ownership; an EMPTY slot means the
-        // caller abandoned this attach and already claimed the child —
-        // honor the cancellation rather than resurrect a reaped pid.
-        let Some(child) = slot.lock().expect("child slot lock").take() else {
+        // Success: the child STAYS parked (a whole-arm timeout dropping
+        // this probe must still find it claimable); an already-empty
+        // slot means the caller abandoned this attach and reaped —
+        // honor the cancellation rather than resurrect a dead pid.
+        if slot.lock().expect("child slot lock").child.is_none() {
             let _ = std::fs::remove_file(&parsed.socket_path);
             return Err("the attach was abandoned by its caller".to_owned());
-        };
+        }
         Ok(Self {
             channel,
             role,
             config: config.clone(),
             spawned: Some(SpawnedConnector {
-                child,
+                slot: slot.clone(),
                 socket: parsed.socket_path,
             }),
         })
@@ -306,8 +326,13 @@ impl WireProbe {
             .spawned
             .as_mut()
             .expect("only spawned probes are killed — the kill matrix never test-attaches");
-        let _ = spawned.child.start_kill();
-        let _ = spawned.child.wait().await;
+        // The child lives in the shared slot for the probe's whole life
+        // (see [`Parked`]); an empty slot means an abandoning caller
+        // already claimed and reaped it — dying twice is a no-op.
+        let child = spawned.slot.lock().expect("child slot lock").child.take();
+        let Some(mut child) = child else { return };
+        let _ = child.start_kill();
+        let _ = child.wait().await;
     }
 
     /// Attach to an already-serving socket — the test seam the rogue
@@ -1421,5 +1446,91 @@ mod tests {
                 "the handshake was refused (FATAL): the config document is not mine",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod parked_tests {
+    //! The abandonment cleanups the slot carries (round-4 fix): a
+    //! caller that aborts an attach MID-DIAL must still be able to
+    //! unlink the advertised socket and await the child's death
+    //! through [`reap_parked`] — dropping the future alone only ran
+    //! Drop and only SENT the SIGKILL, and knew no socket path at all.
+
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A script fake: one valid handshake line naming `socket`, then
+    /// stay alive holding the pipes (`exec` so the pid the reap awaits
+    /// is the one holding them).
+    fn fake_connector(dir: &Path, socket: &Path) -> PathBuf {
+        let path = dir.join("fake-connector");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
+                socket.display()
+            ),
+        )
+        .expect("the fake script writes");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake script becomes executable");
+        path
+    }
+
+    /// Abort mid-dial: the advertised socket is bound but NEVER
+    /// accepted, so the h2 handshake pends forever and the abort lands
+    /// inside the dial. The abandoning caller's reap_parked must
+    /// unlink the socket file and leave nothing parked — the old
+    /// attach's every-abandonment-path unlink guarantee, restored on
+    /// the one path the round-3 slot lost.
+    #[tokio::test]
+    async fn an_attach_aborted_mid_dial_leaves_no_socket_file_or_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("held.sock");
+        let _listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let bin = fake_connector(dir.path(), &socket);
+
+        let slot = ChildSlot::default();
+        let task = {
+            let slot = slot.clone();
+            tokio::spawn(async move {
+                WireProbe::attach(
+                    &bin,
+                    Role::Source,
+                    &serde_json::json!({}),
+                    MAX_FRAME_BYTES as u64,
+                    &slot,
+                )
+                .await
+            })
+        };
+        // Wait until the attach has parsed the handshake line (the
+        // socket joins the parked state exactly then) — the abort must
+        // land inside the dial, not before the spawn.
+        for _ in 0..500 {
+            if slot.lock().expect("lock").socket.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            slot.lock().expect("lock").socket.is_some(),
+            "the attach must reach the dial within the polling window"
+        );
+        task.abort();
+        let _ = task.await;
+        reap_parked(&slot).await;
+
+        assert!(
+            !socket.exists(),
+            "the advertised socket file must be unlinked on abandonment"
+        );
+        let parked = slot.lock().expect("lock");
+        assert!(
+            parked.child.is_none() && parked.socket.is_none(),
+            "nothing stays parked after the reap"
+        );
     }
 }
