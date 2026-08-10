@@ -217,6 +217,37 @@ fn dest_config(dir: &Path, out_root: &Path) -> std::path::PathBuf {
     path
 }
 
+/// A probe template without `{{table}}` would count ONE fixed target
+/// for every clause — wrong verdicts in both directions with no error
+/// naming the real mistake — so it is a usage error at argument time
+/// (round-3 fix): exit 2, the message naming the placeholder, and the
+/// rest of the line never echoed (it may carry credentials).
+#[test]
+fn a_probe_cmd_without_the_placeholder_is_refused_at_argument_time() {
+    let output = certify(&[
+        "--role",
+        "destination",
+        "--probe-cmd",
+        "echo secret-credential-token; echo 3",
+        "does-not-matter",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a usage error speaks clap's exit code"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("{{table}}"),
+        "the refusal names the missing placeholder: {stderr}"
+    );
+    assert!(
+        !stderr.contains("secret-credential-token")
+            && !stdout_of(&output).contains("secret-credential-token"),
+        "no stream may echo the probe line"
+    );
+}
+
 /// `--kill-matrix` appends the K-clauses to the report. Without
 /// `--probe-cmd` the destination K-arms are honest Skips (read-back
 /// convergence needs a probe) while the probe-independent session

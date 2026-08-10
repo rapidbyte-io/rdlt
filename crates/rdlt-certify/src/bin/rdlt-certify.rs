@@ -132,6 +132,27 @@ fn main() -> ExitCode {
             .exit();
     }
 
+    // A template without the placeholder would count ONE fixed target
+    // for every clause — wrong verdicts in both directions (a merge
+    // count off the wrong table fails a conformant connector; a
+    // permanently-empty wrong table false-passes invisibility) with no
+    // error naming the real mistake. Refused at argument time; the
+    // message names ONLY the placeholder — the line may carry
+    // credentials and is never echoed.
+    if args
+        .probe_cmd
+        .as_deref()
+        .is_some_and(|template| !template.contains("{{table}}"))
+    {
+        Args::command()
+            .error(
+                clap::error::ErrorKind::ValueValidation,
+                "--probe-cmd must contain the `{{table}}` placeholder — the line runs once \
+                 per counted table with `{{table}}` substituted for the table name",
+            )
+            .exit();
+    }
+
     let config = match load_config(args.config.as_deref()) {
         Ok(config) => config,
         Err(why) => {
