@@ -582,11 +582,13 @@ mod byte_size_tests {
     //! slice of the one message-body allocation, so any metric that sums
     //! parent-allocation capacities charges that body once PER BUFFER.
     //!
-    //! THE FIXTURE HERE IS A DELIBERATE PRIVATE TWIN of
-    //! `rdlt_testkit::fixtures::ipc_fixture` (round-5): every other
-    //! meter pin uses the shared one, but testkit depends on THIS crate,
-    //! so these unit tests cannot import it — keep the two in step by
-    //! hand if either changes.
+    //! THE FIXTURE HERE IS THIS CRATE'S OWN (round-7 truthfulness fix:
+    //! an earlier comment claimed it mirrored
+    //! `rdlt_testkit::fixtures::ipc_fixture`, which had already
+    //! drifted). testkit depends on THIS crate, so these unit tests
+    //! cannot import the shared fixture; this one is shaped for the
+    //! channel pins alone — wider (more buffers) so capacity-summing
+    //! lands further outside every bound — and the two need not agree.
     use std::sync::Arc;
 
     use arrow::ipc::reader::StreamReader;
