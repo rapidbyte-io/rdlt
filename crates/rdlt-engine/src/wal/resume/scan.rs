@@ -218,16 +218,18 @@ fn live_tables(
     let mut live = std::collections::BTreeSet::new();
     for record in records {
         if let WalRecord::Segment { table, .. } = record {
-            let mut current = table.clone();
-            for _ in 0..=schemas.len() {
+            // The shared bounded walk, collecting every hop: the walk's
+            // own root answer is not needed here — membership of the
+            // whole chain is.
+            let _ = crate::coverage::walk_to_root(table, schemas.len(), |current| {
                 if !live.insert(current.clone()) {
-                    break; // this chain is already walked
+                    return Ok::<_, std::convert::Infallible>(None); // chain already walked
                 }
-                match schemas.get(&current).and_then(|(s, _)| s.parent.as_ref()) {
-                    Some(link) => current = link.parent.clone(),
-                    None => break,
-                }
-            }
+                Ok(schemas
+                    .get(current)
+                    .and_then(|(s, _)| s.parent.as_ref())
+                    .map(|link| link.parent.clone()))
+            });
         }
     }
     live
@@ -256,7 +258,7 @@ fn filter_covered(
     >,
     rules: rdlt_core::naming::IdentRules,
 ) -> Result<Option<Vec<WalRecord>>, String> {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     // A stream's last checkpoint position: every segment of that stream
     // before it is covered by its cursor.
@@ -308,10 +310,6 @@ fn filter_covered(
     };
 
     let mut keep = vec![true; span.len()];
-    let mut segment_roots: BTreeSet<rdlt_core::TableName> = BTreeSet::new();
-    // A segment attributable to NO checkpointed stream. Normally that stream
-    // simply never checkpointed and dropping the segment is exactly right.
-    let mut orphaned = false;
     for (index, record) in span.iter().enumerate() {
         if let WalRecord::Segment { table, .. } = record {
             let root = root_of(table)?;
@@ -327,43 +325,29 @@ fn filter_covered(
                 }
                 None => {
                     keep[index] = false;
-                    orphaned = true;
                 }
             }
-            segment_roots.insert(root);
         }
     }
 
-    // The shape attribution must vouch for before dropping orphans: an
-    // orphaned segment BESIDE a checkpointed stream owning no segment in
-    // the span. That shape is ROUTINE under the loader's commit deferral
-    // (round-2 fix wave): after a commit, an idle cursored stream's polls
-    // produce checkpoint-only records while a snapshot co-stream keeps
-    // writing — the orphans are the snapshot's (re-extraction re-delivers
-    // them) and the empty checkpoint is exactly what the source reported.
-    // But it is ALSO what a normalization-rules change between the
-    // writing run and this one looks like (that stream's real segments
-    // orphaned, its root matching nothing), and replaying a checkpoint
-    // whose own segments were dropped would advance a cursor past rows
-    // nothing will re-deliver. The manifest itself separates the two:
-    // `schemas` accumulates every recorded delta across the WHOLE
-    // manifest, so a checkpointed stream whose root table the writer
-    // ITSELF recorded proves this run's normalization agrees with the
-    // writer's world — benign, recover. A root recorded nowhere is
-    // unprovable — refusing costs one full re-extraction; guessing wrong
-    // loses data.
-    if orphaned {
-        for (root, stream) in &root_to_stream {
-            if segment_roots.contains(root) || schemas.contains_key(root) {
-                continue;
-            }
-            return Err(format!(
-                "an uncommitted segment matches no checkpointed stream while checkpointed \
-                 stream `{stream}`'s root table `{root}` matches no segment and no recorded \
-                 schema — attribution cannot prove replay safe"
-            ));
-        }
-    }
+    // ORPHANS BESIDE SEGMENTLESS CHECKPOINTS ARE BENIGN (round-6 fix —
+    // the guard here shrank twice and its last residue misdiagnosed a
+    // ROUTINE shape as damage): a checkpointed stream whose root matches
+    // no segment AND no recorded schema simply wrote zero rows for the
+    // whole run — checkpoint-only, so no delta was ever recorded. Its
+    // checkpoint covers nothing and carries its cursor; the orphans are
+    // a never-checkpointing co-stream's and re-extraction re-delivers
+    // them; every OTHER productive stream's replay must survive. The
+    // shapes that still degrade are the attributional ones above: a
+    // segment whose table has no recorded schema anywhere (root_of's
+    // refusal — a segment that exists but cannot be attributed), and
+    // two checkpointed streams normalizing to one root. The residual
+    // this accepts, stated: a normalization-rules change between the
+    // writing run and this one could make a stream's own segments look
+    // like a co-stream's orphans — but recovery reruns the same
+    // pipeline against the same destination, and a shape only a
+    // DIFFERENT writer produces is already refused where it is
+    // provable.
 
     Ok(Some(
         span.into_iter()
@@ -822,25 +806,59 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// The shape attribution still cannot vouch for: an orphan segment
-    /// beside a segmentless checkpointed stream whose root table appears
-    /// NOWHERE in the manifest's schema record. Under stable naming rules
-    /// the stream was merely idle for the whole run — but a manifest that
-    /// never recorded the root is also exactly what a normalization-rules
-    /// change between the writing run and this one looks like (the
-    /// stream's real segments orphaned, its checkpoint about to advance a
-    /// cursor past rows nothing will re-deliver). Degrade to
-    /// re-extraction: slower, never wrong.
+    /// The whole-run-idle stream is BENIGN (round-6 fix — the guard's
+    /// last residue misdiagnosed it as damage): a stream that wrote
+    /// zero rows all run is checkpoint-only, so no delta was ever
+    /// recorded, and its root matches no segment and no schema. Its
+    /// checkpoint covers nothing and replays its cursor; the snapshot
+    /// co-stream's orphans drop for re-extraction.
     #[test]
-    fn an_orphan_segment_beside_a_segmentless_checkpoint_degrades() {
+    fn an_orphan_segment_beside_an_idle_streams_checkpoint_recovers() {
         let outcome = scan_span(vec![
             delta("events", None),
             segment("events", "f0.arrow"),
             checkpoint("orders"),
         ]);
+        assert_eq!(
+            replayed_files(&outcome),
+            Vec::<String>::new(),
+            "the snapshot orphan drops — re-extraction re-delivers it"
+        );
+        let ScanOutcome::Recover(span) = &outcome else {
+            unreachable!()
+        };
         assert!(
-            matches!(outcome, ScanOutcome::Damaged(_)),
-            "orphan segment + segmentless checkpoint is ambiguous: {outcome:?}"
+            span.records.iter().any(
+                |r| matches!(r, WalRecord::Checkpoint { stream, .. } if stream.as_str() == "orders")
+            ),
+            "the idle stream's checkpoint replays its cursor"
+        );
+    }
+
+    /// THE ROUTINE THREE-STREAM SHAPE (round-6 red pin): A productive
+    /// and covered, B idle all run (checkpoint-only, no delta
+    /// anywhere), C a snapshot stream with orphaned segments. A's span
+    /// must SURVIVE — the old guard threw the whole replay away over
+    /// B's idleness.
+    #[test]
+    fn a_productive_streams_span_survives_an_idle_co_stream_and_snapshot_orphans() {
+        let outcome = scan_span(vec![
+            delta("a_events", None),
+            segment("a_events", "f0.arrow"),
+            delta("c_snap", None),
+            segment("c_snap", "f1.arrow"),
+            checkpoint("a_events"),
+            checkpoint("b_idle"),
+        ]);
+        assert_eq!(
+            replayed_files(&outcome),
+            ["f0.arrow"],
+            "A's covered segment replays; C's orphan drops; B's idleness is not damage"
+        );
+        assert_eq!(
+            ensured_tables(&outcome),
+            ["a_events"],
+            "only the productive stream's table is ensured"
         );
     }
 
