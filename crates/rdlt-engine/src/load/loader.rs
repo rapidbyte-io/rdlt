@@ -71,6 +71,11 @@ pub(crate) struct Loader {
     /// append destination has nothing to dedup on. Mid-run commits wait for
     /// this to drain (042 T7E — the loader half of per-stream coverage).
     uncovered_roots: std::collections::BTreeSet<TableName>,
+    /// How many times the deferral advisory fired. The warn site fires
+    /// only at 0, so the count is the exactly-once-per-run pin: a
+    /// blocked commit trigger is worth ONE operator warning, not one
+    /// per checkpoint.
+    deferred_commit_warnings: u32,
 }
 
 /// The two cadences the loader obeys, passed together because they
@@ -118,6 +123,7 @@ impl Loader {
             structured_merge_keys: std::collections::BTreeMap::new(),
             parents: std::collections::BTreeMap::new(),
             uncovered_roots: std::collections::BTreeSet::new(),
+            deferred_commit_warnings: 0,
         }
     }
 
@@ -266,8 +272,32 @@ impl Loader {
                 // and only a COVERED one: with uncovered co-stream rows in the
                 // unit, the commit defers to a later checkpoint (the policy's
                 // counters keep accumulating, so the trigger holds until then).
-                if self.policy_triggers() && self.uncovered_roots.is_empty() {
-                    self.commit().await?;
+                // The deferral is the exactly-once trade taken deliberately:
+                // committing rows no cursor covers is unrecoverable
+                // duplication after a crash (restart-from-zero re-extraction
+                // re-delivers them — T7E), so the gate stays. What it must
+                // not be is SILENT: a co-stream that never checkpoints (a
+                // snapshot stream) suspends the mid-run commit cadence for
+                // the whole run, so the first deferred trigger warns the
+                // operator once, naming the blocking roots.
+                if self.policy_triggers() {
+                    if self.uncovered_roots.is_empty() {
+                        self.commit().await?;
+                    } else if self.deferred_commit_warnings == 0 {
+                        self.deferred_commit_warnings += 1;
+                        let roots = self
+                            .uncovered_roots
+                            .iter()
+                            .map(|t| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        tracing::warn!(
+                            uncovered_roots = %roots,
+                            "mid-run commits are deferred: these tables hold rows whose own \
+                             streams have not checkpointed — the commit waits for their \
+                             checkpoints (for snapshot streams, until the run's end)"
+                        );
+                    }
                 }
             }
             LoadItem::Discarded {
@@ -706,6 +736,66 @@ mod tests {
             cursors.contains_key(&rdlt_core::StreamName::new("events"))
                 && cursors.contains_key(&rdlt_core::StreamName::new("orders")),
             "the deferred commit carries BOTH cursors: {cursors:?}"
+        );
+    }
+
+    /// The deferral is correct but must not be SILENT (042 fix wave): the
+    /// first policy trigger blocked by an uncovered co-stream sets the
+    /// one-time advisory — and only the first, so an operator gets one
+    /// warning per run, not one per checkpoint. Driven twice past the
+    /// blocked trigger to pin the guard.
+    #[tokio::test]
+    async fn a_blocked_trigger_warns_the_operator_exactly_once() {
+        let (mut loader, commits) = recording_loader(CommitPolicy::every_checkpoints(1));
+        for item in [
+            delta_item("events", None),
+            batch_item("events"),
+            delta_item("orders", None),
+            batch_item("orders"),
+            checkpoint_item("events"),
+        ] {
+            loader.process(item).await.expect("process");
+        }
+        assert_eq!(
+            loader.deferred_commit_warnings, 1,
+            "the first blocked trigger warns that mid-run commits are deferred"
+        );
+        // A second blocked trigger at the next covered-less boundary
+        // stays quiet: the condition, not each occurrence, is the news.
+        for item in [batch_item("events"), checkpoint_item("events")] {
+            loader.process(item).await.expect("process");
+        }
+        assert_eq!(
+            loader.deferred_commit_warnings, 1,
+            "later blocked triggers do not repeat the advisory"
+        );
+        assert_eq!(
+            commits.lock().expect("lock").len(),
+            0,
+            "the advisory never weakens the gate — the commit still waits"
+        );
+    }
+
+    /// The advisory NEVER fires in the all-cursored shape: when every
+    /// stream checkpoints before another writes, no trigger is ever
+    /// blocked and the cadence needs no warning.
+    #[tokio::test]
+    async fn covered_commits_never_warn() {
+        let (mut loader, commits) = recording_loader(CommitPolicy::every_checkpoints(1));
+        for item in [
+            delta_item("events", None),
+            batch_item("events"),
+            checkpoint_item("events"),
+            delta_item("orders", None),
+            batch_item("orders"),
+            checkpoint_item("orders"),
+        ] {
+            loader.process(item).await.expect("process");
+        }
+        assert_eq!(commits.lock().expect("lock").len(), 2);
+        assert_eq!(
+            loader.deferred_commit_warnings, 0,
+            "an all-cursored run never sees the deferral advisory"
         );
     }
 
