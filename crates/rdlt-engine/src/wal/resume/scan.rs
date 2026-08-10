@@ -289,6 +289,42 @@ fn filter_covered(
         }
     }
 
+    // THE RULES-DRIFT TRIPWIRE (round-7 fix): the join trusts that this
+    // run's normalization agrees with the writing run's, and the benign
+    // orphan disposition above removed the last guard on the DROP
+    // direction — but the wrong-KEEP direction is worse: under drifted
+    // rules a checkpointed stream's normalized root can land on ANOTHER
+    // trace's recorded table, covering rows its cursor never owned. The
+    // cheap invariant that catches it: if MORE THAN ONE recorded root
+    // table normalizes onto one checkpointed stream's root, the
+    // stream↔segment join is many-to-one and nothing distinguishes the
+    // stream's own trace from the stranger's — Damaged, re-extraction,
+    // safe. Benign runs never trip it: the writer's own validation
+    // keeps normalized roots injective, so at most the stream's own
+    // table matches. Child tables never collide in (their names carry
+    // the `__` separator and normalize to themselves).
+    for root in root_to_stream.keys() {
+        let colliding = schemas
+            .keys()
+            .filter(|table| {
+                schemas
+                    .get(*table)
+                    .is_some_and(|(schema, _)| schema.parent.is_none())
+                    && crate::coverage::root_table(
+                        &rdlt_core::StreamName::new(table.as_str()),
+                        rules,
+                    ) == *root
+            })
+            .count();
+        if colliding > 1 {
+            return Err(format!(
+                "{colliding} recorded root tables normalize onto checkpointed root `{root}` — \
+                 the stream-to-segment join is many-to-one (a normalization-rules drift \
+                 shape) and cannot prove replay safe"
+            ));
+        }
+    }
+
     // A segment's root table, along the parent links its Deltas recorded —
     // the shared bounded walk ([`crate::coverage::walk_to_root`], the same
     // implementation the loader's commit gate resolves roots with). Name
@@ -859,6 +895,28 @@ mod per_stream_coverage_tests {
             ensured_tables(&outcome),
             ["a_events"],
             "only the productive stream's table is ensured"
+        );
+    }
+
+    /// THE RULES-DRIFT TRIPWIRE (round-7 red pin): recorded tables
+    /// `EVENTS` and `events` both exist (a shape only a writer with
+    /// DIFFERENT normalization rules produces — ours lowercases), and
+    /// the checkpointed stream's normalized root lands on `events`.
+    /// Keeping under that join would let EVENTS' checkpoint cover the
+    /// stranger trace's rows — Damaged instead, naming the collision.
+    #[test]
+    fn two_recorded_roots_collapsing_onto_one_checkpointed_root_degrade() {
+        let outcome = scan_span(vec![
+            delta("EVENTS", None),
+            delta("events", None),
+            segment("EVENTS", "f0.arrow"),
+            segment("events", "f1.arrow"),
+            checkpoint("EVENTS"),
+        ]);
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason)
+                if reason.contains("many-to-one")),
+            "a many-to-one normalized join must degrade: {outcome:?}"
         );
     }
 
