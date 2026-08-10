@@ -16,7 +16,9 @@ use super::support::probe::JsonlDirProbe;
 
 /// The skip reason a probe-less run stamps on every D-clause.
 const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
-     (the library API takes a TableProbe directly)";
+     (the library API takes a TableProbe directly). Single-writer stores (duckdb) refuse \
+     every open beside the live connector, a read-only one included — probe a COPY: copy \
+     the store file plus its WAL sidecar, then count in the copy";
 
 /// The skip reason D8 carries when the destination declares no merge
 /// capability — the testkit asserts D8 only for merge-capable

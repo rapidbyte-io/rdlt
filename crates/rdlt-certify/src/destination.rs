@@ -88,7 +88,9 @@ const RECLAIM_POLL: Duration = Duration::from_millis(100);
 /// passing set. Shared with the kill matrix's destination arms
 /// ([`crate::kill`]): their convergence assert is a read-back too.
 pub(crate) const NO_PROBE_SKIP: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
-     (the library API takes a TableProbe directly)";
+     (the library API takes a TableProbe directly). Single-writer stores (duckdb) refuse \
+     every open beside the live connector, a read-only one included — probe a COPY: copy \
+     the store file plus its WAL sidecar, then count in the copy";
 
 /// The skip reason D8 carries for a destination that declares no merge
 /// capability — the suite asserts D8 only for merge-capable

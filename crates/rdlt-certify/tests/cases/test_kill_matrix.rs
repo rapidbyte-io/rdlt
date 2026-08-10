@@ -26,7 +26,9 @@ use super::support::probe::JsonlDirProbe;
 /// byte-identical (that const is `pub(crate)`, so this pin restates it
 /// from outside).
 const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
-     (the library API takes a TableProbe directly)";
+     (the library API takes a TableProbe directly). Single-writer stores (duckdb) refuse \
+     every open beside the live connector, a read-only one included — probe a COPY: copy \
+     the store file plus its WAL sidecar, then count in the copy";
 
 /// Render entries the report way, for failure messages.
 fn render(entries: &[Entry]) -> String {

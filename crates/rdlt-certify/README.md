@@ -73,9 +73,28 @@ report line or failure message repeats it — a probe failure names what
 happened (a non-zero exit, unparseable stdout, a timeout) and fails
 the clause under evaluation. Without `--probe-cmd` the read-back
 clauses render Skip with the reason. The flag is destination-only:
-combining it with `--role source` is a usage error. The library API
-(`certify_destination`, `kill_matrix_destination`) takes a
+combining it with `--role source` is a usage error, and a template
+without the `{{table}}` placeholder is refused at argument time. The
+library API (`certify_destination`, `kill_matrix_destination`) takes a
 `TableProbe` directly.
+
+**Single-writer stores need a copy-then-count probe.** A store that
+admits one writer (duckdb) refuses EVERY other open while the spawned
+connector holds it — a read-only open included — so a probe line that
+opens the live store fails and aborts the read-back clauses. Probe a
+COPY instead: copy the store file plus its WAL sidecar into a scratch
+directory and count in the copy, e.g.
+
+```console
+$ rdlt-certify --role destination --config config.json \
+    --probe-cmd 'cp store.duckdb "$T/s.duckdb"; cp store.duckdb.wal "$T/s.duckdb.wal" 2>/dev/null; \
+duckdb -readonly "$T/s.duckdb" -noheader -csv -c "SELECT count(*) FROM \"{{table}}\""' \
+    io.rapidbyte.duckdb
+```
+
+(with `T` a scratch directory). Every probe lands at a reply boundary
+where the connector is idle, so the copy is consistent — the same
+discipline this workspace's own duckdb suite uses.
 
 ## The clauses
 
