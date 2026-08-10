@@ -25,7 +25,11 @@ async fn postgres_destination_is_conformant() {
         connection_string: connection_string.clone(),
         schema: "raw".into(),
     };
-    assert_conformant(verify_destination(&destination, &probe).await.expecting_no_skips());
+    assert_conformant(
+        verify_destination(&destination, &probe)
+            .await
+            .expecting_no_skips(),
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
