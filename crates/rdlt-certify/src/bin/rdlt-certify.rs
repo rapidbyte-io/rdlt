@@ -231,10 +231,15 @@ impl TableProbe for ShellProbe {
             });
         }
         let line = self.template.replace("{{table}}", name);
+        // `kill_on_drop`: tokio only kills a child on drop when asked,
+        // so without it the timeout arm below — which drops the
+        // `output()` future — would leak the hung sh process for the
+        // rest of the certification run.
         let run = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(line)
             .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
             .output();
         let output = match tokio::time::timeout(PROBE_TIMEOUT, run).await {
             Err(_elapsed) => {
