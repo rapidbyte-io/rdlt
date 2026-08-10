@@ -33,40 +33,15 @@ use rdlt_connector::{
     },
 };
 
-use super::{ConformanceFailure, ConformanceSkip};
+use super::{Conformance, ConformanceFailure, ConformanceSkip};
 use crate::fixtures;
 
-/// What one destination-conformance run concluded: the violated
-/// clauses, and the asserted clauses the suite never REACHED because an
-/// earlier step aborted the run — each carried as a skip whose reason
-/// names the aborting clause. The same shape as
-/// [`super::source::SourceConformance`], deliberately: a certifier
-/// folds both suites' skips through one path, and an aborted run can
-/// never render its unreached clauses as PASS (the 042 fix-wave docket
-/// item — `try_step`'s early return used to drop them silently).
-#[derive(Debug, Default)]
-pub struct DestinationConformance {
-    /// Violated clauses, in discovery order.
-    pub failures: Vec<ConformanceFailure>,
-    /// Asserted clauses the suite aborted before reaching, with the
-    /// aborting clause named in each reason.
-    pub skips: Vec<ConformanceSkip>,
-}
-
-impl DestinationConformance {
-    /// The strict fold for suites that expect EVERY clause exercised:
-    /// the failures, plus each unreached clause promoted to a failure
-    /// of its clause. First-party kits assert through this so an early
-    /// abort cannot turn asserted clauses into silent green.
-    pub fn expecting_no_skips(self) -> Vec<ConformanceFailure> {
-        let mut failures = self.failures;
-        failures.extend(self.skips.into_iter().map(|skip| ConformanceFailure {
-            clause: skip.clause,
-            message: format!("not exercised: {}", skip.reason),
-        }));
-        failures
-    }
-}
+/// This suite's verdict shape — the shared [`Conformance`]
+/// (`failures` + `skips` + the strict `expecting_no_skips` fold),
+/// named for the suite that produced it. An aborted run's unreached
+/// clauses ride `skips` (never a silent pass — the wave-1 docket fix),
+/// with the aborting clause named in each reason.
+pub type DestinationConformance = Conformance;
 
 /// The one capability the SPI cannot provide: counting reader-VISIBLE
 /// rows in a table (a warehouse query). Implement per destination under

@@ -17,35 +17,13 @@
 use rdlt_connector::{Cursor, PushPayload, ReadRequest, Source, StreamSpec, records_channel};
 use serde_json::Value;
 
-use super::{ConformanceFailure, ConformanceSkip};
+use super::{Conformance, ConformanceFailure, ConformanceSkip};
 
-/// What one source-conformance run concluded: the violated clauses,
-/// and the clauses the suite could not exercise, each with its reason.
-/// Skips are honest non-verdicts — today only the S2 snapshot door
-/// mints one — distinct from both "held" and "violated".
-#[derive(Debug, Default)]
-pub struct SourceConformance {
-    /// Violated clauses, in discovery order.
-    pub failures: Vec<ConformanceFailure>,
-    /// Clauses the suite could not exercise, with reasons.
-    pub skips: Vec<ConformanceSkip>,
-}
-
-impl SourceConformance {
-    /// The strict fold for suites that expect EVERY clause exercised:
-    /// the failures, plus each skip promoted to a failure of its
-    /// clause. First-party cells assert through this so a stream that
-    /// quietly stops declaring its cursor cannot turn an S2 verdict
-    /// into a silent skip and stay green.
-    pub fn expecting_no_skips(self) -> Vec<ConformanceFailure> {
-        let mut failures = self.failures;
-        failures.extend(self.skips.into_iter().map(|skip| ConformanceFailure {
-            clause: skip.clause,
-            message: format!("not exercised: {}", skip.reason),
-        }));
-        failures
-    }
-}
+/// This suite's verdict shape — the shared [`Conformance`]
+/// (`failures` + `skips` + the strict `expecting_no_skips` fold),
+/// named for the suite that produced it. Today only the S2 snapshot
+/// door mints its skips.
+pub type SourceConformance = Conformance;
 
 /// Byte budget for the harness's record channel — large enough that a
 /// well-behaved source never blocks on backpressure while being certified.
