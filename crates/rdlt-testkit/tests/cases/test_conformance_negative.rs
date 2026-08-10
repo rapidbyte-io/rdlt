@@ -38,7 +38,7 @@ impl Source for AmnesiacSource {
 
 #[tokio::test]
 async fn source_ignoring_since_fails_s1_by_name() {
-    let failures = verify_source(&AmnesiacSource).await.failures;
+    let (failures, _skips) = verify_source(&AmnesiacSource).await.tolerating_skips();
     assert!(
         failures.iter().any(|f| f.clause == "S1"),
         "expected an S1 diagnostic, got: {failures:?}"
@@ -122,7 +122,9 @@ async fn destination_without_idempotent_commit_fails_d3_by_name() {
     let dest = ForgetfulDest {
         inner: inner.clone(),
     };
-    let failures = verify_destination(&dest, &Probe(inner)).await.failures;
+    let (failures, _skips) = verify_destination(&dest, &Probe(inner))
+        .await
+        .tolerating_skips();
     assert!(
         failures.iter().any(|f| f.clause == "D3"),
         "expected a D3 diagnostic, got: {failures:?}"
@@ -159,7 +161,7 @@ impl Source for DoublyBrokenSource {
 
 #[tokio::test]
 async fn both_s2_and_s4_are_reported_independently() {
-    let failures = verify_source(&DoublyBrokenSource).await.failures;
+    let (failures, _skips) = verify_source(&DoublyBrokenSource).await.tolerating_skips();
     for clause in ["S2", "S4"] {
         assert!(
             failures.iter().any(|f| f.clause == clause),
@@ -200,7 +202,9 @@ impl TableProbe for NoProbe {
 
 #[tokio::test]
 async fn an_open_failure_is_attributed_to_the_clause_it_sets_up() {
-    let failures = verify_destination(&Unopenable, &NoProbe).await.failures;
+    let (failures, _skips) = verify_destination(&Unopenable, &NoProbe)
+        .await
+        .tolerating_skips();
     let first = failures.first().expect("an unopenable destination fails");
     assert_eq!(
         (first.clause, first.message.starts_with("open failed: ")),
@@ -227,9 +231,9 @@ impl TableProbe for BrokenProbe {
 
 #[tokio::test]
 async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
-    let failures = verify_destination(&MemoryDestination::new(), &BrokenProbe)
+    let (failures, _skips) = verify_destination(&MemoryDestination::new(), &BrokenProbe)
         .await
-        .failures;
+        .tolerating_skips();
     assert!(
         failures
             .iter()
@@ -247,24 +251,26 @@ async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
 #[tokio::test]
 async fn an_abort_reports_every_unreached_clause_as_a_skip_naming_the_abort() {
     let outcome = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
+    let strict = outcome.expecting_no_skips();
+    let outcome = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
+    let (_failures, skips) = outcome.tolerating_skips();
     // D5 is among the unreached (round-7 correction): its clause spans
     // the new-session ensure too, which the D1 abort never reaches.
     for clause in ["D4", "D2", "D3", "D5", "D8"] {
         assert!(
-            outcome.skips.iter().any(|s| s.clause == clause
+            skips.iter().any(|s| s.clause == clause
                 && s.reason == "not run — the suite aborted at D1 before reaching it"),
-            "expected {clause} skipped as unreached, got: {outcome:?}"
+            "expected {clause} skipped as unreached, got: {skips:?}"
         );
     }
     // D6 concluded before the abort, and D1 carries the failure —
     // neither may double as a skip.
     for clause in ["D6", "D1"] {
         assert!(
-            !outcome.skips.iter().any(|s| s.clause == clause),
-            "{clause} has a real verdict and must not also skip: {outcome:?}"
+            !skips.iter().any(|s| s.clause == clause),
+            "{clause} has a real verdict and must not also skip: {skips:?}"
         );
     }
-    let strict = outcome.expecting_no_skips();
     assert!(
         strict
             .iter()
@@ -308,7 +314,7 @@ async fn an_abort_at_the_reopen_renders_d5_unreached_not_pass() {
         opens: std::sync::atomic::AtomicU32::new(0),
     };
     let outcome = verify_destination(&dest, &NoProbe).await;
-    let (failures, skips) = (outcome.failures, outcome.skips);
+    let (failures, skips) = outcome.tolerating_skips();
     assert!(
         failures
             .iter()
@@ -355,7 +361,9 @@ impl Source for TeardownFailingSource {
 
 #[tokio::test]
 async fn a_source_that_fails_after_dropping_its_feed_is_not_certified() {
-    let failures = verify_source(&TeardownFailingSource).await.failures;
+    let (failures, _skips) = verify_source(&TeardownFailingSource)
+        .await
+        .tolerating_skips();
     assert!(
         failures
             .iter()

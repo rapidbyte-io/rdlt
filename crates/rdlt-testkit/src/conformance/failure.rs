@@ -52,25 +52,48 @@ pub fn assert_conformant(failures: Vec<ConformanceFailure>) {
 /// caller reads the suite it certified.
 #[derive(Debug, Default)]
 pub struct Conformance {
-    /// Violated clauses, in discovery order.
-    pub failures: Vec<ConformanceFailure>,
+    /// Violated clauses, in discovery order. PRIVATE (round-7 fix):
+    /// reading failures alone silently bypassed the skip guard — a
+    /// caller must now either take the strict fold or acknowledge the
+    /// skips by name.
+    pub(crate) failures: Vec<ConformanceFailure>,
     /// Clauses the suite could not exercise — the source suite's S2
     /// snapshot door, the destination suite's unreached-abort tail —
     /// with reasons.
-    pub skips: Vec<ConformanceSkip>,
+    pub(crate) skips: Vec<ConformanceSkip>,
+}
+
+impl ConformanceSkip {
+    /// The one skip→failure promotion spelling — every strict fold
+    /// routes through here.
+    pub fn into_failure(self) -> ConformanceFailure {
+        ConformanceFailure {
+            clause: self.clause,
+            message: format!("not exercised: {}", self.reason),
+        }
+    }
 }
 
 impl Conformance {
-    /// The strict fold for suites that expect EVERY clause exercised:
-    /// the failures, plus each skip promoted to a failure of its
-    /// clause. First-party cells assert through this so a skip cannot
-    /// turn a verdict into silent green.
+    /// The strict fold, THE default consumption (round-7 fix): the
+    /// failures plus each skip promoted — a suite outcome read this
+    /// way can never certify a skipped clause silently green.
+    pub fn into_failures(self) -> Vec<ConformanceFailure> {
+        self.expecting_no_skips()
+    }
+
+    /// The strict fold under its assert-helper name; identical to
+    /// [`Self::into_failures`].
     pub fn expecting_no_skips(self) -> Vec<ConformanceFailure> {
         let mut failures = self.failures;
-        failures.extend(self.skips.into_iter().map(|skip| ConformanceFailure {
-            clause: skip.clause,
-            message: format!("not exercised: {}", skip.reason),
-        }));
+        failures.extend(self.skips.into_iter().map(ConformanceSkip::into_failure));
         failures
+    }
+
+    /// The explicit escape: the caller ACKNOWLEDGES the skips by
+    /// taking them separately — the only way to read failures without
+    /// the promotion.
+    pub fn tolerating_skips(self) -> (Vec<ConformanceFailure>, Vec<ConformanceSkip>) {
+        (self.failures, self.skips)
     }
 }

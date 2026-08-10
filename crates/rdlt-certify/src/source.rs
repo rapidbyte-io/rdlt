@@ -12,7 +12,7 @@
 //! ever carries config bytes.
 
 use rdlt_runtime::{ConnectorProvider, LocalBinaryConnectorProvider, Role};
-use rdlt_testkit::conformance::{Conformance, source::verify_source};
+use rdlt_testkit::conformance::source::verify_source;
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
@@ -161,32 +161,26 @@ pub async fn certify_source(target: &Target, accept_skips: bool) -> Report {
     // not certify).
     match tokio::time::timeout(CLAUSE_TIMEOUT, verify_source(&managed)).await {
         Ok(outcome) => {
+            // Both arms are EXPLICIT consumptions of the outcome
+            // (round-7: the fields went private so failures cannot be
+            // read past the skip guard): the acknowledgment takes the
+            // skips by name; strict promotes each through the
+            // testkit's one fold spelling plus the acknowledgment
+            // tail.
+            let (mut failures, skips) = outcome.tolerating_skips();
             let (failures, skips) = if accept_skips {
-                (outcome.failures, outcome.skips)
+                (failures, skips)
             } else {
-                // The promotion IS the testkit's own strict fold
-                // (round-6 fix — this arm re-implemented it): only the
-                // skips ride the fold so genuine failures stay
-                // untouched, and each promoted entry gains the
-                // acknowledgment tail.
-                let mut failures = outcome.failures;
-                failures.extend(
-                    Conformance {
-                        failures: Vec::new(),
-                        skips: outcome.skips,
-                    }
-                    .expecting_no_skips()
-                    .into_iter()
-                    .map(|mut failure| {
-                        failure.message.push_str(
-                            " — a skipped source clause is not certified evidence (a \
-                             source that never checkpoints looks identical to one that \
-                             forgot resume); acknowledge a snapshot source with \
-                             accept_skips (CLI: --accept-skips)",
-                        );
-                        failure
-                    }),
-                );
+                failures.extend(skips.into_iter().map(|skip| {
+                    let mut failure = skip.into_failure();
+                    failure.message.push_str(
+                        " — a skipped source clause is not certified evidence (a \
+                         source that never checkpoints looks identical to one that \
+                         forgot resume); acknowledge a snapshot source with \
+                         accept_skips (CLI: --accept-skips)",
+                    );
+                    failure
+                }));
                 (failures, Vec::new())
             };
             report.absorb(failures, skips, &SOURCE_CLAUSES)

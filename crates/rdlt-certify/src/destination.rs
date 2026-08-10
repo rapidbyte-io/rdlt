@@ -263,8 +263,12 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             .await
             {
                 Ok(outcome) => {
+                    // The report's absorb renders skips honestly, so
+                    // this caller ACKNOWLEDGES them by name (round-7:
+                    // the fields went private).
+                    let (failures, skips) = outcome.tolerating_skips();
                     if merge {
-                        report.absorb(outcome.failures, outcome.skips, &DEST_CLAUSES);
+                        report.absorb(failures, skips, &DEST_CLAUSES);
                     } else {
                         // DEST_CLAUSES minus D8, derived — the hand
                         // copy is the drift the skip arm already shed.
@@ -272,7 +276,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                             .into_iter()
                             .filter(|clause| *clause != "D8")
                             .collect();
-                        report.absorb(outcome.failures, outcome.skips, &without_d8);
+                        report.absorb(failures, skips, &without_d8);
                         report.skip("D8", NO_MERGE_SKIP.to_string());
                     }
                 }
