@@ -34,17 +34,38 @@ where
         .get(0)
 }
 
-/// Row count of `<dataset>.<table>`; a missing table counts as empty (the
-/// probe contract — recovery suites ask before the table exists).
-pub async fn count(connection_string: &str, dataset: &str, table: &str) -> u64 {
+/// Row count of `<dataset>.<table>`, distinguishing ABSENCE from failure
+/// (042 round-2 fix wave — the old fold read every query error as an
+/// empty table): a table or schema that does not exist yet answers 0
+/// (SQLSTATE 42P01 / 3F000 — the recovery suites ask before the table
+/// exists, and that zero is a fact); any other failure is an error
+/// naming the cause, never a silent zero.
+pub async fn try_count(connection_string: &str, dataset: &str, table: &str) -> Result<u64, String> {
+    use tokio_postgres::error::SqlState;
     let sql = format!(
         "SELECT count(*) FROM \"{dataset}\".\"{}\"",
         table.replace('"', "")
     );
     match connect(connection_string).await.query_one(&sql, &[]).await {
-        Ok(row) => row.get::<_, i64>(0) as u64,
-        Err(_) => 0,
+        Ok(row) => Ok(row.get::<_, i64>(0) as u64),
+        Err(e)
+            if matches!(
+                e.code(),
+                Some(&SqlState::UNDEFINED_TABLE) | Some(&SqlState::INVALID_SCHEMA_NAME)
+            ) =>
+        {
+            Ok(0)
+        }
+        Err(e) => Err(format!("count of \"{dataset}\".\"{table}\" failed: {e}")),
     }
+}
+
+/// [`try_count`] for assertion sites: a genuine failure panics loudly
+/// instead of comparing as zero.
+pub async fn count(connection_string: &str, dataset: &str, table: &str) -> u64 {
+    try_count(connection_string, dataset, table)
+        .await
+        .expect("count query")
 }
 
 /// A source from the bare `conn:` line plus whatever YAML the suite appends.
@@ -105,6 +126,10 @@ pub struct Probe {
 #[async_trait]
 impl TableProbe for Probe {
     async fn count(&self, table: &rdlt_connector_sdk::spi::TableName) -> Result<u64, ProbeError> {
-        Ok(count(&self.connection_string, &self.schema, table.as_str()).await)
+        // A failure is the oracle's, surfaced as such — folding it into
+        // 0 would certify invisibility clauses vacuously (042 round 2).
+        try_count(&self.connection_string, &self.schema, table.as_str())
+            .await
+            .map_err(|message| ProbeError { message })
     }
 }

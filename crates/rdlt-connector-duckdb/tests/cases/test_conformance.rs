@@ -40,16 +40,71 @@ impl TableProbe for FileCount {
                 message: format!("read-only open of the database file failed: {e}"),
             })?;
         // The kit's table names pass through quoting to stay one rule.
-        // A failed query means the table does not exist yet, and a
-        // table never created holds 0 published rows — that zero is a
-        // fact (D1 probes before any table exists).
+        // Only ABSENCE reads as zero (D1 probes before any table
+        // exists), keyed on the measured `Catalog Error` class — the
+        // same rule the spawned-bin SnapshotCount applies; any other
+        // query failure is the oracle failing, never an empty table.
         let ident = format!("\"{}\"", table.as_str().replace('"', "\"\""));
-        Ok(conn
-            .query_row(&format!("SELECT count(*) FROM {ident}"), [], |row| {
-                row.get::<_, u64>(0)
-            })
-            .unwrap_or(0))
+        match conn.query_row(&format!("SELECT count(*) FROM {ident}"), [], |row| {
+            row.get::<_, u64>(0)
+        }) {
+            Ok(count) => Ok(count),
+            Err(e) if e.to_string().contains("Catalog Error") => Ok(0),
+            Err(e) => Err(ProbeError {
+                message: format!("counting `{}` failed: {e}", table.as_str()),
+            }),
+        }
     }
+}
+
+/// The in-process probe's fail-open fold closed (042 round-2 fix wave —
+/// wave 1 closed the open() arm only): absence reads as zero, a genuine
+/// query failure is a probe error. The broken read is a view over a
+/// parquet file deleted after planting — `CREATE VIEW` binds eagerly, so
+/// a never-valid view cannot be planted, while a valid one whose file
+/// later vanishes fails at QUERY time (`IO Error`, measured) — exactly
+/// what the old `unwrap_or(0)` folded into an empty table.
+#[tokio::test]
+async fn file_count_absence_is_zero_but_a_broken_read_is_a_probe_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("store.duckdb");
+    let parquet = dir.path().join("gone.parquet");
+    {
+        let conn = duckdb::Connection::open(&file).expect("open");
+        conn.execute_batch(&format!(
+            "CREATE TABLE present(v BIGINT); INSERT INTO present VALUES (1), (2); \
+             COPY (SELECT 1 AS v) TO '{path}' (FORMAT PARQUET); \
+             CREATE VIEW broken AS SELECT * FROM read_parquet('{path}');",
+            path = parquet.display()
+        ))
+        .expect("plant");
+    }
+    std::fs::remove_file(&parquet).expect("the parquet file vanishes");
+
+    let probe = FileCount(file);
+    assert_eq!(
+        probe
+            .count(&TableName::new("present"))
+            .await
+            .expect("a present table counts"),
+        2
+    );
+    assert_eq!(
+        probe
+            .count(&TableName::new("never_created"))
+            .await
+            .expect("absence is a fact, not a failure"),
+        0
+    );
+    let err = probe
+        .count(&TableName::new("broken"))
+        .await
+        .expect_err("a genuine read failure must never read as an empty table");
+    assert!(
+        err.message.contains("counting `broken`"),
+        "the probe error names the failing count: {}",
+        err.message
+    );
 }
 
 #[tokio::test]
