@@ -247,16 +247,18 @@ async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
 #[tokio::test]
 async fn an_abort_reports_every_unreached_clause_as_a_skip_naming_the_abort() {
     let outcome = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
-    for clause in ["D4", "D2", "D3", "D8"] {
+    // D5 is among the unreached (round-7 correction): its clause spans
+    // the new-session ensure too, which the D1 abort never reaches.
+    for clause in ["D4", "D2", "D3", "D5", "D8"] {
         assert!(
             outcome.skips.iter().any(|s| s.clause == clause
                 && s.reason == "not run — the suite aborted at D1 before reaching it"),
             "expected {clause} skipped as unreached, got: {outcome:?}"
         );
     }
-    // D6 and D5 concluded before the abort, and D1 carries the failure —
-    // none of them may double as skips.
-    for clause in ["D6", "D5", "D1"] {
+    // D6 concluded before the abort, and D1 carries the failure —
+    // neither may double as a skip.
+    for clause in ["D6", "D1"] {
         assert!(
             !outcome.skips.iter().any(|s| s.clause == clause),
             "{clause} has a real verdict and must not also skip: {outcome:?}"
@@ -268,6 +270,54 @@ async fn an_abort_reports_every_unreached_clause_as_a_skip_naming_the_abort() {
             .iter()
             .any(|f| f.clause == "D3" && f.message.starts_with("not exercised: ")),
         "the strict fold promotes unreached clauses to failures: {strict:?}"
+    );
+}
+
+/// D5 spans two sites (round-7 fix): the first session's repeat-ensure
+/// loop and the NEW session's ensure. An abort at the D4 re-open lands
+/// between them, so D5 must render as unreached — not the full PASS the
+/// early conclusion minted.
+struct ThirdOpenFails {
+    inner: MemoryDestination,
+    opens: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait]
+impl Destination for ThirdOpenFails {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("third-open-fails", "0.0.0")
+    }
+
+    fn capabilities(&self) -> DestinationCapabilities {
+        self.inner.capabilities()
+    }
+
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
+        let n = self.opens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n >= 2 {
+            return Err(DestinationError::fatal("re-open refused"));
+        }
+        self.inner.open(ctx).await
+    }
+}
+
+#[tokio::test]
+async fn an_abort_at_the_reopen_renders_d5_unreached_not_pass() {
+    let dest = ThirdOpenFails {
+        inner: MemoryDestination::new(),
+        opens: std::sync::atomic::AtomicU32::new(0),
+    };
+    let outcome = verify_destination(&dest, &NoProbe).await;
+    let (failures, skips) = (outcome.failures, outcome.skips);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.clause == "D4" && f.message.starts_with("re-open failed: ")),
+        "the abort lands at D4's re-open: {failures:?}"
+    );
+    assert!(
+        skips.iter().any(|s| s.clause == "D5"),
+        "D5's second check never ran — it must render unreached, not PASS: {skips:?}"
     );
 }
 

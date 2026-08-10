@@ -232,7 +232,6 @@ pub async fn verify_destination<D: Destination>(
                 session1.ensure_table(&schema, &WriteMode::Append).await
             );
         }
-        concluded.push("D5");
         try_step!(
             "D1",
             "write failed",
@@ -263,6 +262,11 @@ pub async fn verify_destination<D: Destination>(
             "ensure_table on new session",
             session2.ensure_table(&schema, &WriteMode::Append).await
         );
+        // D5 concludes only HERE (round-7 fix): its clause spans the
+        // first session's repeat-ensure loop AND this new-session
+        // ensure, and an abort between the two used to render D5 a
+        // full PASS with one of its checks never run.
+        concluded.push("D5");
         try_step!(
             "D4",
             "write on new session",
