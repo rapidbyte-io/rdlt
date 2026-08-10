@@ -53,6 +53,21 @@ pub(crate) const STAGE_MSG_CAPACITY: usize = 256;
 
 static LOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// This process's random load-id component, drawn once from OS entropy
+/// (`RandomState` seeds each instance from the OS; hashing nothing
+/// through it yields its keys' 64 random bits — std-only). Cached: one
+/// process is one id space, and the millis/pid/seq prefix separates ids
+/// within it.
+fn process_entropy() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static ENTROPY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *ENTROPY.get_or_init(|| {
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    })
+}
+
 fn new_load_id() -> LoadId {
     // A wall clock before the Unix epoch yields no usable millis; fall back to 0.
     // The load id must be UNIQUE across every pipeline sharing a destination
@@ -60,14 +75,22 @@ fn new_load_id() -> LoadId {
     // `(load_id, commit_seq)` alone (iceberg's snapshot-history scan since 042;
     // file/postgres receipts likewise), so a collision would make one
     // pipeline's commit replay-mask another's. Not monotonic — the millis are a
-    // human-readable prefix; process-id + atomic sequence are the uniqueness
-    // source (per-host; two hosts sharing a store rely on pid+clock disjointness).
+    // human-readable prefix; process-id + atomic sequence keep one host's
+    // processes apart, and the per-process entropy suffix is the CROSS-HOST
+    // claim: two hosts sharing a store no longer rely on pid+clock
+    // disjointness (a recycled pid in the same millisecond would otherwise
+    // replay-mask a genuine publish). The id is opaque to every consumer —
+    // nothing parses this shape.
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let seq = LOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
-    LoadId::new(format!("{millis:x}-{:x}-{seq:x}", std::process::id()))
+    LoadId::new(format!(
+        "{millis:x}-{:x}-{seq:x}-{:x}",
+        std::process::id(),
+        process_entropy()
+    ))
 }
 
 /// Engine-owned retry ceiling for transient failures (source OR
@@ -370,6 +393,41 @@ async fn run_once(
     report.rows_per_sec_avg =
         (elapsed_secs > f64::EPSILON && total_rows > 0).then(|| total_rows as f64 / elapsed_secs);
     Ok(report)
+}
+
+#[cfg(test)]
+mod load_id_tests {
+    use super::*;
+
+    /// Consecutive ids differ (the sequence advances) and stay in the
+    /// hex-and-dash shape. The shape itself is OPAQUE — nothing in the
+    /// workspace parses a load id, and this pin documents the only
+    /// properties a consumer may lean on: distinctness, and characters
+    /// safe in paths and identifiers.
+    #[test]
+    fn consecutive_load_ids_differ_and_stay_hex_and_dash() {
+        let a = new_load_id();
+        let b = new_load_id();
+        assert_ne!(a, b, "the sequence component separates consecutive ids");
+        for id in [&a, &b] {
+            assert!(
+                id.as_str()
+                    .bytes()
+                    .all(|c| c.is_ascii_hexdigit() || c == b'-'),
+                "load id `{id}` strays outside hex-and-dash"
+            );
+        }
+    }
+
+    /// The entropy component is drawn once and cached: every id this
+    /// process mints carries the same suffix. (That two PROCESSES draw
+    /// different values is `RandomState`'s OS-entropy seeding — not
+    /// observable from one test process, so the claim tested is the
+    /// caching, and the cross-process claim rides the seed's contract.)
+    #[test]
+    fn the_entropy_component_is_cached_per_process() {
+        assert_eq!(process_entropy(), process_entropy());
+    }
 }
 
 #[cfg(test)]
