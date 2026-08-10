@@ -34,31 +34,36 @@ fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str)
 /// wiring, the loader, and the recovery scan all build on it.
 pub(super) use crate::coverage::root_table;
 
-/// The mixed snapshot/cursored advisory: a stream declaring no
-/// `cursor_field` never checkpoints, so once it writes rows its root
-/// stays uncovered for the REST OF THE RUN (nothing but its own
-/// checkpoint removes it) and every mid-run commit trigger defers to
-/// the final commit — the loader's T7E coverage gate, correct and
-/// deliberate. Worth telling the operator at PLAN time, before a long
-/// run discovers it at the first deferred trigger: commit policies
-/// cannot bound staging/WAL growth in this shape. `Some(advisory)`
-/// exactly when the stream set mixes both kinds; pure so the pin
-/// beside it can hold the trigger condition without a subscriber.
+/// The mixed cursor-less/cursored advisory — CONDITIONAL truth, by
+/// design (round-4 fix): a stream declaring no `cursor_field` MAY be a
+/// snapshot stream that never checkpoints, but it may equally
+/// checkpoint through another mechanism (postgres CDC streams declare
+/// no cursor field yet checkpoint via LSN), and the declaration alone
+/// cannot tell them apart at plan time. So the advisory says what is
+/// conditionally true — IF such a stream never checkpoints, mid-run
+/// commits defer for the whole run (the loader's T7E coverage gate) —
+/// and defers the verdict to the loader's own run-time warning, which
+/// fires on what actually checkpoints and is the authoritative signal.
+/// `Some(advisory)` exactly when the stream set mixes both kinds; pure
+/// so the pin beside it can hold the trigger condition without a
+/// subscriber.
 fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
-    let snapshot: Vec<&str> = streams
+    let cursorless: Vec<&str> = streams
         .iter()
         .filter(|s| s.cursor_field.is_none())
         .map(|s| s.name.as_str())
         .collect();
-    if snapshot.is_empty() || snapshot.len() == streams.len() {
+    if cursorless.is_empty() || cursorless.len() == streams.len() {
         return None;
     }
     Some(format!(
-        "streams [{}] declare no cursor_field (snapshot streams) beside cursored streams: \
-         their rows are never covered by a checkpoint, so mid-run commits defer for the \
-         whole run and everything publishes in the final commit — byte/time/checkpoint \
-         commit policies cannot bound staging or WAL growth in this shape",
-        snapshot.join(", ")
+        "streams [{}] declare no cursor_field beside cursored streams: they MAY be snapshot \
+         streams (some cursor-less streams — CDC, for one — still checkpoint through their \
+         own mechanism). Any stream that never checkpoints defers mid-run commits for the \
+         whole run, and byte/time/checkpoint commit policies then cannot bound staging or \
+         WAL growth; the run-time deferral warning is the authoritative signal — it fires \
+         on what actually checkpoints",
+        cursorless.join(", ")
     ))
 }
 
@@ -379,14 +384,19 @@ mod hint_validation_tests {
 
     #[test]
     fn the_mixed_snapshot_advisory_fires_exactly_on_the_mixed_shape() {
-        let snapshot = |name: &str| StreamSpec::new(name);
+        let cursorless = |name: &str| StreamSpec::new(name);
         let cursored = |name: &str| StreamSpec::new(name).with_cursor_field("updated_at");
 
-        let advisory = mixed_snapshot_advisory(&[snapshot("orders"), cursored("events")])
+        let advisory = mixed_snapshot_advisory(&[cursorless("orders"), cursored("events")])
             .expect("the mixed shape earns the advisory");
         assert!(
-            advisory.contains("[orders]") && advisory.contains("mid-run commits defer"),
-            "the advisory names the snapshot streams and the consequence: {advisory}"
+            advisory.contains("[orders]") && advisory.contains("MAY be snapshot"),
+            "the advisory names the cursor-less streams and stays CONDITIONAL — a \
+             cursor-less stream can checkpoint through its own mechanism (CDC): {advisory}"
+        );
+        assert!(
+            advisory.contains("run-time deferral warning is the authoritative signal"),
+            "the advisory defers the verdict to the truth-driven run-time warning: {advisory}"
         );
 
         assert!(
@@ -394,8 +404,8 @@ mod hint_validation_tests {
             "all-cursored pipelines commit mid-run and need no warning"
         );
         assert!(
-            mixed_snapshot_advisory(&[snapshot("a"), snapshot("b")]).is_none(),
-            "an all-snapshot pipeline always published in one final commit — nothing changed"
+            mixed_snapshot_advisory(&[cursorless("a"), cursorless("b")]).is_none(),
+            "an all-cursor-less pipeline changes nothing mid-run either way — no warning"
         );
         assert!(mixed_snapshot_advisory(&[]).is_none());
     }
