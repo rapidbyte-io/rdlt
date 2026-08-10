@@ -310,39 +310,23 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             // P8 — the one-session ceiling: with a session held, a
             // second `OpenSession` on a SECOND dial of the same socket
             // must refuse `FailedPrecondition` (the 038 frozen class).
-            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_one_session_ceiling(&socket)).await {
-                Ok(Ok(())) => report.pass("P8"),
-                Ok(Err(why)) => report.fail("P8", why),
-                Err(_elapsed) => report.fail("P8", timed_out()),
-            }
+            report_session_probe(&mut report, "P8", probe_one_session_ceiling(&socket)).await;
 
             // P9 — close-on-abandonment: a session dropped without
             // `Close` must be reclaimed within the window.
-            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_abandonment_reclaim(&socket)).await {
-                Ok(Ok(())) => report.pass("P9"),
-                Ok(Err(why)) => report.fail("P9", why),
-                Err(_elapsed) => report.fail("P9", timed_out()),
-            }
+            report_session_probe(&mut report, "P9", probe_abandonment_reclaim(&socket)).await;
 
             // P10 — the Backend-direct order book.
             report_p10(&mut report, &socket).await;
 
             // P11 — one Arrow batch per write frame, induced with a
             // two-batch frame on its own session.
-            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_one_batch_write(&socket)).await {
-                Ok(Ok(())) => report.pass("P11"),
-                Ok(Err(why)) => report.fail("P11", why),
-                Err(_elapsed) => report.fail("P11", timed_out()),
-            }
+            report_session_probe(&mut report, "P11", probe_one_batch_write(&socket)).await;
 
             // P12 — write-side error frames carry cause text, judged
             // at P10's two induction sites re-driven on this clause's
             // own sessions.
-            match tokio::time::timeout(CLAUSE_TIMEOUT, probe_error_frame_text(&socket)).await {
-                Ok(Ok(())) => report.pass("P12"),
-                Ok(Err(why)) => report.fail("P12", why),
-                Err(_elapsed) => report.fail("P12", timed_out()),
-            }
+            report_session_probe(&mut report, "P12", probe_error_frame_text(&socket)).await;
         }
     }
 
@@ -519,6 +503,20 @@ async fn probe_abandonment_reclaim(socket: &Path) -> Result<(), String> {
     }
 }
 
+/// Fold one session probe's outcome into its clause entry — the ONE
+/// timeout/pass/fail match all five session clauses share (round-6
+/// fix: P11/P12 had grown the copy count to five).
+async fn report_session_probe<F>(report: &mut Report, clause: &'static str, probe: F)
+where
+    F: std::future::Future<Output = Result<(), String>>,
+{
+    match tokio::time::timeout(CLAUSE_TIMEOUT, probe).await {
+        Ok(Ok(())) => report.pass(clause),
+        Ok(Err(why)) => report.fail(clause, why),
+        Err(_elapsed) => report.fail(clause, timed_out()),
+    }
+}
+
 /// The P10 identities — one pipeline of their own so the order-book
 /// probe's commits never collide with the D-suite's or P8/P9's.
 const P10_PIPELINE: &str = "rdlt-certify-p10";
@@ -533,11 +531,7 @@ const P10_TABLE: &str = "p10_order_book";
 /// rogue's arm) FAILS the clause with the one timeout spelling, the
 /// certifier outliving the hang.
 async fn report_p10(report: &mut Report, socket: &Path) {
-    match tokio::time::timeout(CLAUSE_TIMEOUT, probe_order_book(socket)).await {
-        Ok(Ok(())) => report.pass("P10"),
-        Ok(Err(why)) => report.fail("P10", why),
-        Err(_elapsed) => report.fail("P10", timed_out()),
-    }
+    report_session_probe(report, "P10", probe_order_book(socket)).await;
 }
 
 /// The P10 probe — the Backend-direct order book: the raw destination
