@@ -1,9 +1,12 @@
 //! The loader: drives one `LoadSession` through ensure → write → commit, owns the
 //! run's accounting (no silent failures), and applies the `CommitPolicy`.
 //!
-//! Commits happen ONLY at checkpoint boundaries (plus one final commit for trailing
-//! work): committing mid-span would publish rows the committed cursor doesn't cover,
-//! and a crash would then re-extract them as duplicates.
+//! Commits happen ONLY at COVERED checkpoint boundaries (plus one final commit
+//! for trailing work): a boundary where every stream with rows in the unit has
+//! a checkpoint of its own. Committing anything less would publish rows the
+//! committed cursors don't cover, and a crash would then re-extract them as
+//! duplicates — a checkpoint of ANOTHER stream covers nothing (042 T7E), so a
+//! trigger that fires there defers to a later, covered one.
 
 use std::time::Instant;
 
@@ -56,6 +59,18 @@ pub(crate) struct Loader {
     /// and whose schema carries NO per-row identity — their key columns must
     /// never be NULL (keys are identities; validated per batch).
     structured_merge_keys: std::collections::BTreeMap<TableName, Vec<String>>,
+    /// Child table → parent table, from the Delta records (delta precedes a
+    /// table's first batch, so the chain exists before it is walked). What
+    /// resolves a written table to the ROOT its stream owns — the names alone
+    /// cannot (`child_table_name` truncates and hash-suffixes long names).
+    parents: std::collections::BTreeMap<TableName, TableName>,
+    /// Root tables with rows written since their own stream's last
+    /// checkpoint. A commit issued while this is non-empty would publish
+    /// rows NO cursor covers: after a crash the recovered state cannot
+    /// advance those streams, re-extraction re-delivers the rows, and an
+    /// append destination has nothing to dedup on. Mid-run commits wait for
+    /// this to drain (042 T7E — the loader half of per-stream coverage).
+    uncovered_roots: std::collections::BTreeSet<TableName>,
 }
 
 /// The two cadences the loader obeys, passed together because they
@@ -101,7 +116,23 @@ impl Loader {
             wal,
             events,
             structured_merge_keys: std::collections::BTreeMap::new(),
+            parents: std::collections::BTreeMap::new(),
+            uncovered_roots: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// A written table's ROOT, along the parent links its Deltas recorded; a
+    /// table with no recorded parent is its own root. Bounded walk — more
+    /// hops than known links would mean a cycle, which no shred produces.
+    fn root_of(&self, table: &TableName) -> TableName {
+        let mut current = table;
+        for _ in 0..=self.parents.len() {
+            match self.parents.get(current) {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        current.clone()
     }
 
     fn emit(&self, event: rdlt_core::PipelineEvent) {
@@ -149,6 +180,10 @@ impl Loader {
                 {
                     self.structured_merge_keys
                         .insert(schema.table.clone(), key.clone());
+                }
+                if let Some(link) = &schema.parent {
+                    self.parents
+                        .insert(schema.table.clone(), link.parent.clone());
                 }
                 self.emit(rdlt_core::PipelineEvent::SchemaEvolved {
                     delta: delta.clone(),
@@ -211,15 +246,27 @@ impl Loader {
                 self.counters.rows += rows;
                 self.counters.bytes += bytes;
                 self.bytes_since_commit += bytes;
+                self.uncovered_roots.insert(self.root_of(&table));
                 self.dirty = true;
             }
             LoadItem::Checkpoint { stream, cursor } => {
                 self.state.cursors.insert(stream.clone(), cursor.clone());
+                // The stream's root table is `normalize_ident(stream)` — the
+                // same mapping `runtime::validate`'s `root_table` builds the
+                // run on and proves injective across its streams.
+                self.uncovered_roots
+                    .remove(&TableName::new(rdlt_core::naming::normalize_ident(
+                        stream.as_str(),
+                        self.sink.capabilities.ident_rules,
+                    )));
                 self.report.cursors.insert(stream, cursor);
                 self.checkpoints_since_commit += 1;
                 self.dirty = true;
-                // Commit decisions are made only here — a checkpoint boundary.
-                if self.policy_triggers() {
+                // Commit decisions are made only here — a checkpoint boundary —
+                // and only a COVERED one: with uncovered co-stream rows in the
+                // unit, the commit defers to a later checkpoint (the policy's
+                // counters keep accumulating, so the trigger holds until then).
+                if self.policy_triggers() && self.uncovered_roots.is_empty() {
                     self.commit().await?;
                 }
             }
@@ -429,6 +476,12 @@ impl Loader {
         self.bytes_since_commit = 0;
         self.last_commit_at = Instant::now();
         self.dirty = false;
+        // Mid-run commits only fire with this empty; `finish`'s trailing
+        // commit is the one path that commits through a non-empty set (rows
+        // of a stream that ended without checkpointing — full-refresh
+        // semantics, re-delivered by design). Either way the new unit
+        // starts with nothing owed.
+        self.uncovered_roots.clear();
         Ok(())
     }
 }
@@ -498,6 +551,201 @@ mod tests {
             None,
             events,
         )
+    }
+
+    /// Records every commit; accepts everything else. The per-stream coverage
+    /// pins below only need to observe WHEN a commit was issued and with what
+    /// state.
+    struct RecordingSession {
+        commits: std::sync::Arc<std::sync::Mutex<Vec<CommitMeta>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoadSession for RecordingSession {
+        async fn ensure_table(
+            &mut self,
+            _: &TableSchema,
+            _: &WriteMode,
+        ) -> Result<(), rdlt_connector::DestinationError> {
+            Ok(())
+        }
+        async fn write(
+            &mut self,
+            _: &TableName,
+            _: RecordBatch,
+        ) -> Result<(), rdlt_connector::DestinationError> {
+            Ok(())
+        }
+        async fn commit(
+            &mut self,
+            meta: CommitMeta,
+        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+            let receipt = rdlt_core::CommitReceipt {
+                load_id: meta.load_id.clone(),
+                commit_seq: meta.commit_seq,
+            };
+            self.commits.lock().expect("lock").push(meta);
+            Ok(receipt)
+        }
+        async fn read_state(
+            &mut self,
+            _: &PipelineId,
+        ) -> Result<Option<StateDoc>, rdlt_connector::DestinationError> {
+            Ok(None)
+        }
+    }
+
+    fn recording_loader(
+        policy: CommitPolicy,
+    ) -> (
+        Loader,
+        std::sync::Arc<std::sync::Mutex<Vec<CommitMeta>>>,
+    ) {
+        let commits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (events, _rx) = tokio::sync::broadcast::channel(16);
+        let pipeline = PipelineId::new("p");
+        let load_id = LoadId::new("l");
+        let loader = Loader::new(
+            Sink {
+                session: Box::new(RecordingSession {
+                    commits: std::sync::Arc::clone(&commits),
+                }),
+                capabilities: DestinationCapabilities::default(),
+            },
+            RunReport::new(pipeline.clone(), load_id.clone()),
+            StateDoc::new(pipeline, "test"),
+            load_id,
+            Policies {
+                commit: policy,
+                batch: rdlt_core::BatchPolicy::default(),
+            },
+            None,
+            events,
+        );
+        (loader, commits)
+    }
+
+    fn delta_item(table: &str, parent: Option<&str>) -> LoadItem {
+        let schema = TableSchema {
+            table: TableName::new(table),
+            parent: parent.map(|p| rdlt_core::ParentLink {
+                parent: TableName::new(p),
+                depth: 1,
+            }),
+            columns: vec![],
+        };
+        LoadItem::Delta {
+            delta: rdlt_core::SchemaDelta {
+                table: schema.table.clone(),
+                from: None,
+                to: schema.content_hash(),
+                changes: vec![],
+            },
+            schema,
+            mode: WriteMode::Append,
+        }
+    }
+
+    fn batch_item(table: &str) -> LoadItem {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        LoadItem::Batch {
+            table: TableName::new(table),
+            batch: RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+                vec![Arc::new(Int64Array::from(vec![1i64, 2]))],
+            )
+            .expect("batch"),
+        }
+    }
+
+    fn checkpoint_item(stream: &str) -> LoadItem {
+        LoadItem::Checkpoint {
+            stream: rdlt_core::StreamName::new(stream),
+            cursor: rdlt_core::Cursor::new(serde_json::json!(1)),
+        }
+    }
+
+    /// THE T7E loader half: this module's own header promises commits happen
+    /// only at boundaries whose cursors cover the published rows — but a
+    /// commit issued at `events`' checkpoint while `orders` has rows and no
+    /// checkpoint publishes rows NO cursor covers. Once such a commit lands
+    /// and the run dies, recovery cannot help: the recovered state has no
+    /// `orders` cursor, re-extraction re-delivers the rows, and an append
+    /// destination has nothing to dedup on (proven live — the multi-table
+    /// crash sweep's `ice.receipt.visible` cell). The commit must WAIT for
+    /// coverage.
+    #[tokio::test]
+    async fn a_commit_waits_for_every_written_streams_own_checkpoint() {
+        let (mut loader, commits) = recording_loader(CommitPolicy::every_checkpoints(1));
+        for item in [
+            delta_item("events", None),
+            batch_item("events"),
+            delta_item("orders", None),
+            batch_item("orders"),
+            checkpoint_item("events"),
+        ] {
+            loader.process(item).await.expect("process");
+        }
+        assert_eq!(
+            commits.lock().expect("lock").len(),
+            0,
+            "`orders` has rows no cursor covers — a commit here would re-extract \
+             them as duplicates after a crash"
+        );
+        loader
+            .process(checkpoint_item("orders"))
+            .await
+            .expect("process");
+        let committed = commits.lock().expect("lock");
+        assert_eq!(
+            committed.len(),
+            1,
+            "with every written stream covered, the deferred commit fires"
+        );
+        let cursors = &committed[0].state.cursors;
+        assert!(
+            cursors.contains_key(&rdlt_core::StreamName::new("events"))
+                && cursors.contains_key(&rdlt_core::StreamName::new("orders")),
+            "the deferred commit carries BOTH cursors: {cursors:?}"
+        );
+    }
+
+    /// The single-stream cadence is unchanged: a stream's own checkpoint
+    /// covers everything it wrote, so the commit fires right there.
+    #[tokio::test]
+    async fn a_single_stream_still_commits_at_its_own_checkpoint() {
+        let (mut loader, commits) = recording_loader(CommitPolicy::every_checkpoints(1));
+        for item in [
+            delta_item("events", None),
+            batch_item("events"),
+            checkpoint_item("events"),
+        ] {
+            loader.process(item).await.expect("process");
+        }
+        assert_eq!(commits.lock().expect("lock").len(), 1);
+    }
+
+    /// Coverage follows the recorded parent chain: a child table's rows are
+    /// covered by its ROOT stream's checkpoint, whatever the child is named
+    /// (`child_table_name` truncates and hash-suffixes long names).
+    #[tokio::test]
+    async fn a_child_tables_rows_are_covered_by_its_root_streams_checkpoint() {
+        let (mut loader, commits) = recording_loader(CommitPolicy::every_checkpoints(1));
+        for item in [
+            delta_item("orders", None),
+            delta_item("itm_4f2a9c1b", Some("orders")),
+            batch_item("itm_4f2a9c1b"),
+            checkpoint_item("orders"),
+        ] {
+            loader.process(item).await.expect("process");
+        }
+        assert_eq!(
+            commits.lock().expect("lock").len(),
+            1,
+            "the child's rows belong to `orders`' stream, whose checkpoint this is"
+        );
     }
 
     /// The time-based policy compares ELAPSED seconds against the threshold, so

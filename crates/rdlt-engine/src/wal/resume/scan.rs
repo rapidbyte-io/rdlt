@@ -56,15 +56,21 @@ pub(crate) enum ScanOutcome {
 
 /// Forward-scan the manifest. A torn FINAL line (crash mid-append) is truncated;
 /// damage anywhere else degrades to re-extraction.
+/// `rules` joins checkpoint streams to segment tables (see `filter_covered`)
+/// and must be the destination's — the same rules the writing run normalized
+/// its root tables with.
 /// Async wrapper: the scan reads the manifest line by line, which is blocking
 /// file I/O and belongs off an embedder's runtime for the same reason replay's
 /// decoding does.
-pub(crate) async fn scan_off_runtime(dir: &Path) -> ScanOutcome {
+pub(crate) async fn scan_off_runtime(
+    dir: &Path,
+    rules: rdlt_core::naming::IdentRules,
+) -> ScanOutcome {
     let dir = dir.to_path_buf();
-    off_runtime(move || scan(&dir)).await
+    off_runtime(move || scan(&dir, rules)).await
 }
 
-fn scan(dir: &Path) -> ScanOutcome {
+fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
     let path = dir.join("manifest.jsonl");
     let file = match File::open(&path) {
         Ok(f) => f,
@@ -145,29 +151,164 @@ fn scan(dir: &Path) -> ScanOutcome {
         }
     }
 
-    // CRITICAL: replay only up to the LAST checkpoint. Segments beyond it are not
-    // covered by any cursor — committing them would double-apply once the source
-    // re-extracts that range. The uncovered tail is discarded;
-    // re-extraction re-delivers it. A span with no checkpoint at all has nothing
-    // safely replayable.
-    let last_checkpoint = span
-        .iter()
-        .rposition(|r| matches!(r, WalRecord::Checkpoint { .. }));
-    match (load_id, last_checkpoint) {
-        (Some(load_id), Some(idx)) => {
-            span.truncate(idx + 1);
-            ScanOutcome::Recover(RecoverySpan {
-                load_id,
-                next_commit_seq: max_committed_seq + 1,
-                records: span,
-                schemas: schemas.into_values().collect(),
-            })
-        }
+    // CRITICAL: coverage is PER STREAM. A segment is replayable only if a
+    // checkpoint of ITS OWN stream appears after it in the span — that
+    // checkpoint's cursor is what makes re-extraction skip the segment's
+    // rows. Anything less specific double-applies: an earlier rule truncated
+    // positionally at the span's LAST checkpoint, which is equivalent only
+    // while one stream exists, and an interleaved co-stream segment with no
+    // checkpoint of its own was both replayed and then re-extracted (042
+    // T7E, proven live on the multi-table crash sweep). Uncovered segments
+    // are dropped — re-extraction re-delivers them — and a span with no
+    // checkpoint at all has nothing safely replayable.
+    match (load_id, filter_covered(span, &schemas, rules)) {
+        (Some(load_id), Ok(Some(records))) => ScanOutcome::Recover(RecoverySpan {
+            load_id,
+            next_commit_seq: max_committed_seq + 1,
+            records,
+            schemas: schemas.into_values().collect(),
+        }),
+        (Some(_), Err(reason)) => ScanOutcome::Damaged(reason),
         // A span with no checkpoint has nothing safely replayable — but the
         // manifest and its segments are on disk, so say so rather than reporting
         // an empty workdir.
         _ => ScanOutcome::Discard,
     }
+}
+
+/// Keep the covered part of one uncommitted span: every Delta and Checkpoint,
+/// and exactly the Segments a checkpoint of their OWN stream follows. Returns
+/// `Ok(None)` for a span with no checkpoint (nothing replayable), `Err` when
+/// segment↔stream attribution cannot prove replay safe — the caller degrades
+/// to cursor re-extraction, slower and never wrong.
+///
+/// The stream↔table join uses the mapping the writer itself used: a stream's
+/// root table IS `normalize_ident(stream, rules)` (`runtime::validate`'s
+/// `root_table`, whose stream validation also proves the mapping injective
+/// across a run's streams), and every child table's recorded Delta carries its
+/// parent link — so a segment resolves to its root along recorded parents, and
+/// the root to its stream by normalization. `rules` must be the same rules the
+/// writing run normalized with, which holds because recovery reruns the same
+/// pipeline against the same destination; the shapes a DIFFERENT writer could
+/// produce are refused below rather than guessed at.
+fn filter_covered(
+    span: Vec<WalRecord>,
+    schemas: &std::collections::BTreeMap<
+        rdlt_core::TableName,
+        (rdlt_core::TableSchema, rdlt_core::WriteMode),
+    >,
+    rules: rdlt_core::naming::IdentRules,
+) -> Result<Option<Vec<WalRecord>>, String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // A stream's last checkpoint position: every segment of that stream
+    // before it is covered by its cursor.
+    let mut last_checkpoint: BTreeMap<rdlt_core::StreamName, usize> = BTreeMap::new();
+    for (index, record) in span.iter().enumerate() {
+        if let WalRecord::Checkpoint { stream, .. } = record {
+            last_checkpoint.insert(stream.clone(), index);
+        }
+    }
+    if last_checkpoint.is_empty() {
+        return Ok(None);
+    }
+
+    let mut root_to_stream: BTreeMap<rdlt_core::TableName, rdlt_core::StreamName> = BTreeMap::new();
+    for stream in last_checkpoint.keys() {
+        let root = rdlt_core::TableName::new(rdlt_core::naming::normalize_ident(
+            stream.as_str(),
+            rules,
+        ));
+        if root_to_stream.insert(root.clone(), stream.clone()).is_some() {
+            // The writer's stream validation refuses two streams on one root
+            // table, so this join is ambiguous only when the manifest did not
+            // come from a writer whose rules match ours.
+            return Err(format!(
+                "checkpointed streams normalize to one root table `{root}` — \
+                 segment attribution is ambiguous"
+            ));
+        }
+    }
+
+    // A segment's root table, along the parent links its Deltas recorded.
+    // Name prefixes would NOT do: `child_table_name` re-normalizes, so a
+    // long child's name truncates to a hash suffix that need not contain its
+    // root. Bounded walk — more hops than known tables means a cycle, which
+    // no writer produces.
+    let root_of = |table: &rdlt_core::TableName| -> Result<rdlt_core::TableName, String> {
+        let mut current = table.clone();
+        for _ in 0..=schemas.len() {
+            let Some((schema, _)) = schemas.get(&current) else {
+                return Err(format!(
+                    "segment table `{current}` has no schema delta anywhere in the manifest \
+                     (the writer records delta-before-first-batch), so its covering stream \
+                     is unknowable"
+                ));
+            };
+            match &schema.parent {
+                None => return Ok(current),
+                Some(link) => current = link.parent.clone(),
+            }
+        }
+        Err(format!(
+            "table `{table}`'s recorded parent chain does not terminate"
+        ))
+    };
+
+    let mut keep = vec![true; span.len()];
+    let mut segment_roots: BTreeSet<rdlt_core::TableName> = BTreeSet::new();
+    // A segment attributable to NO checkpointed stream. Normally that stream
+    // simply never checkpointed and dropping the segment is exactly right.
+    let mut orphaned = false;
+    for (index, record) in span.iter().enumerate() {
+        if let WalRecord::Segment { table, .. } = record {
+            let root = root_of(table)?;
+            match root_to_stream.get(&root) {
+                Some(stream) => {
+                    // Covered iff this stream's LAST checkpoint follows the
+                    // segment; on the covered side the checkpoint's cursor
+                    // accounts for these rows, on the other side only
+                    // re-extraction does.
+                    if index >= last_checkpoint[stream] {
+                        keep[index] = false;
+                    }
+                }
+                None => {
+                    keep[index] = false;
+                    orphaned = true;
+                }
+            }
+            segment_roots.insert(root);
+        }
+    }
+
+    // The one shape attribution cannot vouch for: an orphaned segment BESIDE
+    // a checkpointed stream owning no segment at all. Under the same-writer
+    // invariant these are unrelated (a stream that never checkpointed next to
+    // a stream that checkpointed an empty range) — but it is also exactly
+    // what a normalization-rules change between the writing run and this one
+    // looks like (that stream's segments orphaned, its root matching
+    // nothing), and replaying a checkpoint whose own segments were dropped
+    // would advance a cursor past rows nothing will re-deliver. Refusing
+    // costs one full re-extraction; guessing wrong loses data.
+    if orphaned
+        && root_to_stream
+            .keys()
+            .any(|root| !segment_roots.contains(root))
+    {
+        return Err(
+            "an uncommitted segment matches no checkpointed stream while a checkpointed \
+             stream matches no segment — attribution cannot prove replay safe"
+                .to_owned(),
+        );
+    }
+
+    Ok(Some(
+        span.into_iter()
+            .zip(keep)
+            .filter_map(|(record, keep)| keep.then_some(record))
+            .collect(),
+    ))
 }
 
 #[cfg(test)]
@@ -226,7 +367,7 @@ mod tests {
                     pipeline: PipelineId::new("p"),
                 }],
             );
-            scan(dir.path())
+            scan(dir.path(), rdlt_core::naming::IdentRules::default())
         };
         let current = crate::wal::WAL_FORMAT_VERSION;
         assert!(
@@ -259,8 +400,245 @@ mod tests {
         )
         .expect("write manifest");
         assert!(
-            matches!(scan(dir.path()), ScanOutcome::Unsupported { found: 1, .. }),
+            matches!(
+                scan(dir.path(), rdlt_core::naming::IdentRules::default()),
+                ScanOutcome::Unsupported { found: 1, .. }
+            ),
             "an unversioned header is a v1 manifest"
+        );
+    }
+}
+
+#[cfg(test)]
+mod per_stream_coverage_tests {
+    //! The replay span is a PER-STREAM decision, not a positional one (042
+    //! T7E). A checkpoint covers only the segments of ITS OWN stream that
+    //! precede it: replaying anything else commits rows whose cursor never
+    //! advanced, and the run's own extraction then delivers them AGAIN —
+    //! the double-apply proven live on the multi-table crash sweep (3 of 4
+    //! control runs on main @ 4e151e0e). These tests pin the scan directly
+    //! on constructed manifests, so the race in the live trigger never
+    //! decides whether the property holds.
+
+    use super::*;
+    use rdlt_core::{
+        Cursor, LoadId, ParentLink, PipelineId, SchemaDelta, StreamName, TableName, TableSchema,
+        WriteMode, naming::IdentRules,
+    };
+
+    fn delta(table: &str, parent: Option<&str>) -> WalRecord {
+        let schema = TableSchema {
+            table: TableName::new(table),
+            parent: parent.map(|p| ParentLink {
+                parent: TableName::new(p),
+                depth: 1,
+            }),
+            columns: vec![],
+        };
+        WalRecord::Delta {
+            delta: SchemaDelta {
+                table: schema.table.clone(),
+                from: None,
+                to: schema.content_hash(),
+                changes: vec![],
+            },
+            schema,
+            mode: WriteMode::Append,
+        }
+    }
+
+    fn segment(table: &str, file: &str) -> WalRecord {
+        WalRecord::Segment {
+            table: TableName::new(table),
+            file: file.to_owned(),
+            rows: 2,
+        }
+    }
+
+    fn checkpoint(stream: &str) -> WalRecord {
+        WalRecord::Checkpoint {
+            stream: StreamName::new(stream),
+            cursor: Cursor::new(serde_json::json!(2)),
+        }
+    }
+
+    /// Scan a manifest of `records` under a current-version Run header.
+    fn scan_span(records: Vec<WalRecord>) -> ScanOutcome {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut all = vec![WalRecord::Run {
+            format_version: crate::wal::WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("p"),
+        }];
+        all.extend(records);
+        let mut out = String::new();
+        for record in &all {
+            out.push_str(&serde_json::to_string(record).expect("record json"));
+            out.push('\n');
+        }
+        std::fs::write(dir.path().join("manifest.jsonl"), out).expect("write manifest");
+        scan(dir.path(), IdentRules::default())
+    }
+
+    /// The segment files the outcome would replay, in span order.
+    fn replayed_files(outcome: &ScanOutcome) -> Vec<String> {
+        match outcome {
+            ScanOutcome::Recover(span) => span
+                .records
+                .iter()
+                .filter_map(|r| match r {
+                    WalRecord::Segment { file, .. } => Some(file.clone()),
+                    _ => None,
+                })
+                .collect(),
+            other => panic!("expected Recover, got {other:?}"),
+        }
+    }
+
+    /// THE T7E defect, deterministically: `events`' segment precedes
+    /// `orders`' checkpoint POSITIONALLY, but no `events` checkpoint exists —
+    /// so no cursor covers it and the run's own extraction will re-deliver
+    /// its rows. Replaying it too is the double-apply. It must be dropped;
+    /// `orders`' covered segment and checkpoint replay as before.
+    #[test]
+    fn an_uncovered_co_stream_segment_is_dropped_not_replayed() {
+        let outcome = scan_span(vec![
+            delta("events", None),
+            delta("orders", None),
+            segment("events", "f0.arrow"),
+            segment("orders", "f1.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert_eq!(
+            replayed_files(&outcome),
+            ["f1.arrow"],
+            "a segment with no checkpoint of its OWN stream after it is not covered \
+             by any cursor — replaying it double-applies once the source re-extracts"
+        );
+        let ScanOutcome::Recover(span) = &outcome else {
+            unreachable!()
+        };
+        assert!(
+            span.records
+                .iter()
+                .any(|r| matches!(r, WalRecord::Checkpoint { stream, .. } if stream.as_str() == "orders")),
+            "the covering checkpoint itself must survive the filter"
+        );
+    }
+
+    /// The old positional rule got THIS single-stream shape right, and it must
+    /// stay right: a segment after its own stream's last checkpoint is
+    /// uncovered and dropped.
+    #[test]
+    fn a_segment_after_its_own_streams_last_checkpoint_stays_dropped() {
+        let outcome = scan_span(vec![
+            delta("events", None),
+            segment("events", "f0.arrow"),
+            checkpoint("events"),
+            segment("events", "f1.arrow"),
+        ]);
+        assert_eq!(replayed_files(&outcome), ["f0.arrow"]);
+    }
+
+    /// Interleaved streams each replay exactly their covered prefix — no
+    /// positional truncation in either direction.
+    #[test]
+    fn interleaved_streams_each_replay_exactly_their_covered_prefix() {
+        let outcome = scan_span(vec![
+            delta("events", None),
+            delta("orders", None),
+            segment("events", "f0.arrow"),
+            segment("orders", "f1.arrow"),
+            checkpoint("events"),
+            segment("events", "f2.arrow"),
+            checkpoint("orders"),
+        ]);
+        // f0 precedes events' checkpoint, f1 precedes orders' — both covered.
+        // f2 follows events' LAST checkpoint: uncovered, even though orders'
+        // later checkpoint follows it positionally.
+        assert_eq!(replayed_files(&outcome), ["f0.arrow", "f1.arrow"]);
+    }
+
+    /// Attribution follows the RECORDED parent chain, not name prefixes: a
+    /// child table's name can be truncated and hash-suffixed by
+    /// `child_table_name`, so nothing about it need contain its root. The
+    /// Delta's `parent` link is the join the format actually carries.
+    #[test]
+    fn attribution_follows_the_recorded_parent_link_not_name_prefixes() {
+        let outcome = scan_span(vec![
+            delta("orders", None),
+            delta("itm_4f2a9c1b", Some("orders")),
+            segment("itm_4f2a9c1b", "f0.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert_eq!(
+            replayed_files(&outcome),
+            ["f0.arrow"],
+            "a child segment is covered by its ROOT stream's checkpoint via the parent link"
+        );
+    }
+
+    /// A checkpoint-only span still recovers: committing it advances cursors
+    /// over a range that produced no rows, which is exactly what the source
+    /// reported.
+    #[test]
+    fn a_checkpoint_only_span_still_recovers_the_cursor() {
+        let outcome = scan_span(vec![delta("orders", None), checkpoint("orders")]);
+        assert!(replayed_files(&outcome).is_empty());
+    }
+
+    /// A segment whose table has NO schema delta anywhere in the manifest
+    /// breaks the writer's delta-before-first-batch invariant — attribution
+    /// cannot say which stream covers it, so the span degrades to
+    /// re-extraction rather than guessing.
+    #[test]
+    fn a_segment_with_no_recorded_schema_degrades_to_re_extraction() {
+        let outcome = scan_span(vec![
+            delta("orders", None),
+            segment("orders", "f0.arrow"),
+            segment("ghost", "f1.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("ghost")),
+            "unattributable segment must degrade, naming the table: {outcome:?}"
+        );
+    }
+
+    /// The one shape attribution cannot vouch for: a segment matching NO
+    /// checkpointed stream beside a checkpointed stream matching NO segment.
+    /// Under stable naming rules the segment's stream simply never
+    /// checkpointed — but this is also exactly what a rules change between
+    /// the writing run and this one looks like, and replaying a checkpoint
+    /// whose own segments were dropped as orphans LOSES their rows. Degrade
+    /// to re-extraction: slower, never wrong.
+    #[test]
+    fn an_orphan_segment_beside_a_segmentless_checkpoint_degrades() {
+        let outcome = scan_span(vec![
+            delta("events", None),
+            segment("events", "f0.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(_)),
+            "orphan segment + segmentless checkpoint is ambiguous: {outcome:?}"
+        );
+    }
+
+    /// Two checkpointed streams normalizing to ONE root table cannot come
+    /// from the writer (`validate_streams` refuses the config), so seeing it
+    /// means the join cannot be trusted — degrade rather than attribute.
+    #[test]
+    fn two_streams_normalizing_to_one_root_degrade() {
+        let outcome = scan_span(vec![
+            delta("orders", None),
+            segment("orders", "f0.arrow"),
+            checkpoint("Orders"),
+            checkpoint("orders"),
+        ]);
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(_)),
+            "an ambiguous stream→root join must not guess: {outcome:?}"
         );
     }
 }
@@ -342,7 +720,7 @@ mod starvation_tests {
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let scanner = tokio::spawn(async move {
                 let _ = started_tx.send(());
-                scan_off_runtime(&path).await
+                scan_off_runtime(&path, rdlt_core::naming::IdentRules::default()).await
             });
             started_rx.await.expect("scan started");
             let before = ticks.load(Ordering::Relaxed);

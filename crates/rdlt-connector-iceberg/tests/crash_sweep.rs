@@ -22,21 +22,19 @@ use serde_json::json;
 const TOTAL_ROWS: u64 = 4;
 const ACTIONS: [&str; 3] = ["return", "panic", "1*off->return"];
 
-/// ONE stream, deliberately (042 fix round 1's measurement): a
-/// MULTI-stream sweep was built to drive the partial-publish shape
-/// through the engine and it exposed a PRE-EXISTING ENGINE defect
-/// instead — rdlt-engine's WAL recovery scan truncates the replay span
-/// POSITIONALLY at the last checkpoint record
-/// (wal/resume/scan.rs), so an interleaved co-stream's segment with no
-/// checkpoint of its OWN stream after it is both REPLAYED and then
-/// RE-EXTRACTED — double-apply, proven on main (3/4 control runs,
-/// identical duplicate-identity histories) with this connector's code
-/// untouched. Until the engine's scan is per-stream-coverage aware, any
-/// multi-stream crash sweep is a coin flip; the connector's own
-/// multi-table partial-publish convergence is pinned DETERMINISTICALLY
-/// by the backend-direct cells in
-/// `cases/test_exactly_once.rs` instead.
-const TABLES: [&str; 1] = ["events"];
+/// TWO streams (042 fix round 1, re-widened by T7E): publish commits
+/// tables SEQUENTIALLY, so a crash can land between two per-table
+/// commits — the `1*off->return` action stages exactly that partial
+/// shape (the first table's commit passes, the second's fires) — and
+/// recovery must converge the unfinished table, not lose its window
+/// behind the receipt fast path. The multi-stream shape ALSO exercises
+/// the engine's per-stream WAL replay coverage: an earlier positional
+/// scan replayed an interleaved co-stream segment that no checkpoint of
+/// its own stream covered, then re-extracted the same rows — the
+/// double-apply this sweep caught live (3/4 control runs on main @
+/// 4e151e0e) and rdlt-engine's `wal/resume/scan.rs` now pins
+/// deterministically.
+const TABLES: [&str; 2] = ["events", "orders"];
 
 fn source() -> MemorySource {
     MemorySource::new(

@@ -33,7 +33,7 @@ pub(super) async fn recover_wal(
     // committed and dropped before the run's own session is opened.
     let mut resumed_from = None;
     if let Some(wal_dir) = wal_dir {
-        match crate::wal::resume::scan_off_runtime(wal_dir).await {
+        match crate::wal::resume::scan_off_runtime(wal_dir, capabilities.ident_rules).await {
             crate::wal::resume::ScanOutcome::Nothing => {}
             // Nothing to replay, but something to clean: a crash before the
             // first checkpoint leaves a manifest and its segments behind, and a
