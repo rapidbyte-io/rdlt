@@ -225,7 +225,11 @@ impl Loader {
                     }
                 }
                 let rows = batch.num_rows() as u64;
-                let bytes = batch.get_array_memory_size() as u64;
+                // The footprint walk (the stage channel's meter, shared) —
+                // capacity-summing an IPC-decoded batch would inflate the
+                // report's bytes and fire byte commit policies ≈10-17x
+                // early on remote sources.
+                let bytes = rdlt_connector::channel::arrow_batch_footprint(&batch) as u64;
                 if self.batch_policy.accumulates() {
                     self.accumulate(&table, batch).await?;
                 } else {
@@ -328,7 +332,7 @@ impl Loader {
     /// evolution is exactly when they stop doing so.
     async fn accumulate(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), RdltError> {
         let rows = batch.num_rows() as u64;
-        let bytes = batch.get_array_memory_size() as u64;
+        let bytes = rdlt_connector::channel::arrow_batch_footprint(&batch) as u64;
         let schema_changed = self
             .pending
             .get(table)
@@ -736,6 +740,71 @@ mod tests {
             cursors.contains_key(&rdlt_core::StreamName::new("events"))
                 && cursors.contains_key(&rdlt_core::StreamName::new("orders")),
             "the deferred commit carries BOTH cursors: {cursors:?}"
+        );
+    }
+
+    /// The loader's own byte accounting (report totals, commit-policy
+    /// counters) meters an IPC-decoded batch near the ONE message body its
+    /// buffers slice — the same footprint rule the stage channel applies.
+    /// Capacity-summing here charged the body once per buffer (three
+    /// buffers in this shape, ≈3x), publishing inflated report bytes and
+    /// firing byte-based commit policies that many times early.
+    #[tokio::test]
+    async fn loader_byte_counters_meter_an_ipc_decoded_batch_by_footprint() {
+        use arrow::array::{ArrayRef, Int64Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        const ROWS: usize = 2048;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("n", DataType::Int64, false),
+                Field::new("s", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..ROWS as i64)) as ArrayRef,
+                Arc::new(StringArray::from_iter_values(
+                    (0..ROWS).map(|row| format!("row-{row:07}!")),
+                )),
+            ],
+        )
+        .expect("batch");
+        let mut stream = Vec::new();
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut stream, &batch.schema())
+            .expect("stream writer");
+        writer.write(&batch).expect("write");
+        writer.finish().expect("finish");
+        drop(writer);
+        let stream_len = stream.len();
+        let decoded = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(stream), None)
+            .expect("reader")
+            .next()
+            .expect("one batch")
+            .expect("decodes");
+
+        let (mut loader, _commits) = recording_loader(CommitPolicy::every_checkpoints(10));
+        for item in [
+            delta_item("events", None),
+            LoadItem::Batch {
+                table: TableName::new("events"),
+                batch: decoded,
+            },
+        ] {
+            loader.process(item).await.expect("process");
+        }
+        let metered = loader.bytes_since_commit;
+        assert!(
+            metered > 0 && metered <= 2 * stream_len as u64,
+            "the loader's byte counters must meter the decoded batch near its \
+             {stream_len}-byte body, not capacity-sum it: metered {metered}"
+        );
+        assert_eq!(
+            loader
+                .report
+                .tables
+                .get(&TableName::new("events"))
+                .map(|t| t.bytes),
+            Some(metered),
+            "the report's table bytes are the same meter"
         );
     }
 

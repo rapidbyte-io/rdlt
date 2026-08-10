@@ -1,6 +1,9 @@
 //! The unit of work flowing shred → load, and how the byte budget prices it.
 
-use rdlt_connector::{RecordBatch, channel::ByteSized};
+use rdlt_connector::{
+    RecordBatch,
+    channel::{ByteSized, arrow_batch_footprint},
+};
 use rdlt_core::{Cursor, SchemaDelta, StreamName, TableName, TableSchema, WriteMode};
 
 /// One unit of work flowing shred → load. Per-table order within the channel is the
@@ -27,9 +30,14 @@ pub(crate) enum LoadItem {
 }
 
 impl ByteSized for LoadItem {
+    // The footprint walk, not `get_array_memory_size`: a batch decoded
+    // from a remote connector's IPC stream passes through the engine
+    // unchanged, and capacity-summing charges its one message body once
+    // per buffer (≈10-17x) — collapsing the stage window to a fraction
+    // of what the operator configured.
     fn byte_size(&self) -> usize {
         match self {
-            LoadItem::Batch { batch, .. } => batch.get_array_memory_size(),
+            LoadItem::Batch { batch, .. } => arrow_batch_footprint(batch),
             LoadItem::Delta { .. } | LoadItem::Checkpoint { .. } | LoadItem::Discarded { .. } => 0,
         }
     }
@@ -66,7 +74,7 @@ mod tests {
     #[tokio::test]
     async fn byte_size_is_what_makes_backpressure_real() {
         let batch = batch_of(64);
-        let size = batch.get_array_memory_size();
+        let size = arrow_batch_footprint(&batch);
         assert!(size > 0, "a real batch occupies memory");
 
         let (tx, mut rx) = byte_channel::<LoadItem>(size, STAGE_MSG_CAPACITY);
@@ -109,6 +117,100 @@ mod tests {
         .await
         .expect("recv released the budget, so this send must complete")
         .expect("channel still open");
+    }
+
+    /// A batch decoded from an Arrow IPC stream (what a remote connector's
+    /// wire hands the engine, passed through unchanged) meters near the ONE
+    /// message body its buffers are slices of — never once per buffer.
+    /// Capacity-summing charges that body per buffer (≈6x here, with six
+    /// buffers), which collapsed the stage window and fired byte commit
+    /// policies early; the connector channel's footprint walk is the one
+    /// meter both seams share.
+    #[test]
+    fn byte_size_of_an_ipc_decoded_batch_is_near_the_body_it_decodes_from() {
+        let (stream_len, decoded, row_payload) = ipc_round_trip();
+        let metered = LoadItem::Batch {
+            table: TableName::new("t"),
+            batch: decoded,
+        }
+        .byte_size();
+        assert!(
+            metered >= row_payload,
+            "an honest footprint cannot undercut the raw row payload: \
+             metered {metered}, payload {row_payload}"
+        );
+        assert!(
+            metered <= 2 * stream_len,
+            "a decoded batch holds slices of ONE body allocation; metering \
+             {metered} against a {stream_len}-byte stream means the body was \
+             charged once per buffer, not once"
+        );
+    }
+
+    /// The same meter stays sane for an ordinary builder-built batch:
+    /// between its raw row payload and double it.
+    #[test]
+    fn byte_size_of_a_builder_built_batch_stays_between_payload_and_double() {
+        let (batch, row_payload) = wide_batch();
+        let metered = LoadItem::Batch {
+            table: TableName::new("t"),
+            batch,
+        }
+        .byte_size();
+        assert!(
+            metered >= row_payload && metered <= 2 * row_payload,
+            "a batch built from exact-length buffers meters near its payload: \
+             metered {metered}, payload {row_payload}"
+        );
+    }
+
+    /// Five int64 columns plus one fixed-width string column (six buffers:
+    /// five values, string offsets + string values), and the exact bytes
+    /// its rows require — the lower bound any honest meter respects.
+    fn wide_batch() -> (RecordBatch, usize) {
+        use arrow::array::{ArrayRef, Int64Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        const ROWS: usize = 2048;
+        const INTS: usize = 5;
+        const WIDTH: usize = 12;
+        let mut fields: Vec<Field> = (0..INTS)
+            .map(|i| Field::new(format!("n{i}"), DataType::Int64, false))
+            .collect();
+        fields.push(Field::new("s", DataType::Utf8, false));
+        let mut columns: Vec<ArrayRef> = (0..INTS)
+            .map(|i| {
+                Arc::new(Int64Array::from_iter_values(
+                    (0..ROWS as i64).map(|row| row + i as i64),
+                )) as ArrayRef
+            })
+            .collect();
+        columns.push(Arc::new(StringArray::from_iter_values(
+            (0..ROWS).map(|row| format!("row-{row:07}!")),
+        )));
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("batch");
+        (batch, ROWS * INTS * 8 + ROWS * WIDTH)
+    }
+
+    /// One IPC round trip of [`wide_batch`]: stream length (the honest
+    /// comparator — it carries the whole message body the decoded batch's
+    /// buffers are slices of), the decoded batch, and the row payload.
+    fn ipc_round_trip() -> (usize, RecordBatch, usize) {
+        let (batch, row_payload) = wide_batch();
+        let mut stream = Vec::new();
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut stream, &batch.schema())
+            .expect("stream writer");
+        writer.write(&batch).expect("write batch");
+        writer.finish().expect("finish stream");
+        drop(writer);
+        let stream_len = stream.len();
+        let mut reader =
+            arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(stream), None)
+                .expect("stream reader");
+        let decoded = reader
+            .next()
+            .expect("one batch in the stream")
+            .expect("decodes");
+        (stream_len, decoded, row_payload)
     }
 
     /// Markers carry no rows and must never be gated by the byte budget: a

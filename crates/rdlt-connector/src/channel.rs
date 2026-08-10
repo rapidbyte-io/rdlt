@@ -238,7 +238,15 @@ impl ByteSized for PushPayload {
 /// budget's failure directions are asymmetric (over-counting narrows a
 /// healthy window, under-counting uncaps memory), so ties break toward
 /// counting. arrow 58 exposes no slice-footprint API, hence the walk.
-fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
+///
+/// Public because this is the ONE byte meter for Arrow batches wherever
+/// a budget, commit policy, or report counts them: batches decoded from
+/// an IPC stream (a remote connector's wire) hold zero-copy slices of
+/// one message-body allocation, and `RecordBatch::get_array_memory_size`
+/// capacity-sums that body once per buffer (measured ≈10-17x the true
+/// footprint). A host metering batches by any other rule inflates its
+/// accounting by exactly that factor.
+pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
     let mut seen = std::collections::HashSet::new();
     batch
         .columns()

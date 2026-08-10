@@ -216,9 +216,13 @@ pub(super) async fn stream_task(
                          `structured`",
                     ));
                 }
+                // The footprint walk, not capacity-summing: this batch was
+                // decoded from the connector's IPC wire, and BatchRead /
+                // report read totals must meter what it holds, not ≈10-17x
+                // of it (the same rule the channel and the loader apply).
                 let (rows_read, payload_bytes) = (
                     batch.num_rows() as u64,
-                    batch.get_array_memory_size() as u64,
+                    rdlt_connector::channel::arrow_batch_footprint(&batch) as u64,
                 );
                 let _ = events.send(rdlt_core::PipelineEvent::BatchRead {
                     stream: stream_name.clone(),
