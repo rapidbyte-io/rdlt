@@ -19,7 +19,7 @@
 //! Skip-not-fail without a container runtime, like every container
 //! suite in this crate.
 
-use rdlt_certify::{Target, Verdict, certify_destination, certify_source};
+use rdlt_certify::{Target, assert_certified_all_pass, certify_destination, certify_source};
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 use serde_json::json;
 
@@ -90,23 +90,12 @@ async fn the_postgres_source_certifies_all_pass() {
     seed_source_fixture(&container).await;
     let target = Target::resolve_path(built_bin(), small_config(&container.connection_string));
 
-    for attempt in 1..=2 {
+    for _attempt in 1..=2 {
         let report = certify_source(&target).await;
 
-        let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-        for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
-            assert!(
-                clauses.contains(&clause),
-                "attempt {attempt}: clause {clause} has no entry — asserted set was {clauses:?}"
-            );
-        }
-        assert!(
-            report
-                .entries
-                .iter()
-                .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-            "attempt {attempt}: a conformant source must certify all-Pass:\n{}",
-            report.render_text()
+        assert_certified_all_pass(
+            &report,
+            &["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"],
         );
     }
 }
@@ -142,22 +131,11 @@ async fn the_postgres_destination_certifies_all_pass_with_d8_live() {
     let report =
         certify_destination(&Target::resolve_path(built_bin(), config), Some(&probe)).await;
 
-    let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-    for clause in [
-        "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
-        "P11", "P12",
-    ] {
-        assert!(
-            clauses.contains(&clause),
-            "clause {clause} has no entry — asserted set was {clauses:?}"
-        );
-    }
-    assert!(
-        report
-            .entries
-            .iter()
-            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-        "a conformant destination must certify all-Pass — D8 included (merge is declared):\n{}",
-        report.render_text()
+    assert_certified_all_pass(
+        &report,
+        &[
+            "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9",
+            "P10", "P11", "P12",
+        ],
     );
 }

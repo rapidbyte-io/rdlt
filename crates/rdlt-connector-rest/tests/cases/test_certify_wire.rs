@@ -17,7 +17,7 @@
 //! construction while this test holds the handle. No container
 //! runtime anywhere: this cell never skips.
 
-use rdlt_certify::{Target, Verdict, certify_source};
+use rdlt_certify::{Target, assert_certified_all_pass, certify_source};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -134,23 +134,12 @@ async fn the_rest_source_certifies_all_pass() {
     mount_small_stub(&server).await;
     let target = Target::resolve_path(built_bin(), small_config(&server.uri()));
 
-    for attempt in 1..=2 {
+    for _attempt in 1..=2 {
         let report = certify_source(&target).await;
 
-        let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-        for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
-            assert!(
-                clauses.contains(&clause),
-                "attempt {attempt}: clause {clause} has no entry — asserted set was {clauses:?}"
-            );
-        }
-        assert!(
-            report
-                .entries
-                .iter()
-                .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-            "attempt {attempt}: a conformant source must certify all-Pass:\n{}",
-            report.render_text()
+        assert_certified_all_pass(
+            &report,
+            &["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"],
         );
     }
 }

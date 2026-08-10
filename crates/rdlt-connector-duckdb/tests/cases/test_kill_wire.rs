@@ -18,24 +18,11 @@
 //! convergence spawn included) before the next arm opens the same
 //! file.
 
-use rdlt_certify::{Entry, Target, Verdict, kill_matrix_destination};
+use rdlt_certify::{Target, assert_all_pass_in_order, kill_matrix_destination};
 use serde_json::json;
 
 use super::support::probe::SnapshotCount;
 use super::support::spawn::built_bin;
-
-/// Render entries the report way, for failure messages.
-fn render(entries: &[Entry]) -> String {
-    let mut out = String::new();
-    for entry in entries {
-        out.push_str(&match &entry.verdict {
-            Verdict::Pass => format!("PASS {}\n", entry.clause),
-            Verdict::Fail(why) => format!("FAIL {}: {why}\n", entry.clause),
-            Verdict::Skip(why) => format!("SKIP {}: {why}\n", entry.clause),
-        });
-    }
-    out
-}
 
 /// THE DESTINATION HALF: every boundary in K order, every arm a real
 /// Pass — a probe is supplied and every boundary is reachable on this
@@ -50,17 +37,5 @@ async fn the_destination_kill_matrix_passes_at_every_boundary() {
     let entries =
         kill_matrix_destination(&Target::resolve_path(built_bin(), config), Some(&probe)).await;
 
-    let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
-    assert_eq!(
-        clauses,
-        ["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"],
-        "the K-vocabulary is fixed, in order"
-    );
-    assert!(
-        entries
-            .iter()
-            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-        "every kill arm must Pass:\n{}",
-        render(&entries)
-    );
+    assert_all_pass_in_order(&entries, &["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"]);
 }

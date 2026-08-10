@@ -20,7 +20,7 @@
 //! in between — two live processes on one single-writer file cannot
 //! coexist, which this cell is what proved.
 
-use rdlt_certify::{Target, Verdict, certify_destination};
+use rdlt_certify::{Target, assert_certified_all_pass, certify_destination};
 use serde_json::json;
 
 use super::support::probe::SnapshotCount;
@@ -42,22 +42,11 @@ async fn the_duckdb_destination_certifies_all_pass_with_d8_live() {
     let report =
         certify_destination(&Target::resolve_path(built_bin(), config), Some(&probe)).await;
 
-    let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-    for clause in [
-        "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
-        "P11", "P12",
-    ] {
-        assert!(
-            clauses.contains(&clause),
-            "clause {clause} has no entry — asserted set was {clauses:?}"
-        );
-    }
-    assert!(
-        report
-            .entries
-            .iter()
-            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-        "a conformant destination must certify all-Pass — D8 included (merge is declared):\n{}",
-        report.render_text()
+    assert_certified_all_pass(
+        &report,
+        &[
+            "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9",
+            "P10", "P11", "P12",
+        ],
     );
 }

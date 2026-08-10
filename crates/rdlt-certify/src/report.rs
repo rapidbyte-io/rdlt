@@ -422,6 +422,51 @@ impl Report {
     }
 }
 
+/// Assert-style certification verdict for first-party cells (round-3
+/// fix — the five connector certify cells asserted through hand-copied
+/// scaffolding, and a cell whose hand list lagged a vocabulary growth
+/// kept passing while silently not asserting the new clauses): every
+/// clause in `expected` has an entry, and EVERY entry is `Pass`.
+/// Panics with the rendered report otherwise.
+pub fn assert_certified_all_pass(report: &Report, expected: &[&str]) {
+    let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
+    for clause in expected {
+        assert!(
+            clauses.contains(clause),
+            "clause {clause} has no entry — asserted set was {clauses:?}"
+        );
+    }
+    assert!(
+        report
+            .entries
+            .iter()
+            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
+        "certification must be all-Pass:\n{}",
+        report.render_text()
+    );
+}
+
+/// The kill matrices' stronger shape: the clause sequence is EXACTLY
+/// `expected`, in order (the K-vocabulary is fixed), and every entry is
+/// `Pass`. Panics with the rendered entries otherwise.
+pub fn assert_all_pass_in_order(entries: &[Entry], expected: &[&str]) {
+    let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
+    assert_eq!(
+        clauses, expected,
+        "the clause vocabulary is fixed, in order"
+    );
+    let rendered = Report {
+        entries: entries.to_vec(),
+    };
+    assert!(
+        entries
+            .iter()
+            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
+        "every arm must Pass:\n{}",
+        rendered.render_text()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     //! `absorb` and the timeout spelling are `pub(crate)`, so their pins
