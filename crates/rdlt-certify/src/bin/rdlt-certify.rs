@@ -262,43 +262,93 @@ impl TableProbe for ShellProbe {
             });
         }
         let line = self.template.replace("{{table}}", name);
-        // `kill_on_drop`: tokio only kills a child on drop when asked,
-        // so without it the timeout arm below — which drops the
-        // `output()` future — would leak the hung sh process for the
-        // rest of the certification run.
-        let run = tokio::process::Command::new("sh")
+        // `process_group(0)` puts sh at the head of its OWN process
+        // group (pgid = its pid), so a timed-out probe can kill the
+        // WHOLE group: a piped or compound line forks grandchildren
+        // the direct SIGKILL misses — the real store-reader would
+        // survive the probe's own death and could keep a single-writer
+        // store open. `kill_on_drop` stays as the direct child's net.
+        let mut child = match tokio::process::Command::new("sh")
             .arg("-c")
             .arg(line)
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            // Discarded, as `output()` effectively did before: the
+            // probe's own stderr may repeat pieces of its command
+            // line, which no certifier stream may echo.
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
             .kill_on_drop(true)
-            .output();
-        let output = match tokio::time::timeout(PROBE_TIMEOUT, run).await {
-            Err(_elapsed) => {
-                return Err(ProbeError {
-                    message: format!(
-                        "the probe command did not finish within {}s",
-                        PROBE_TIMEOUT.as_secs()
-                    ),
-                });
-            }
-            Ok(Err(error)) => {
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
                 return Err(ProbeError {
                     message: format!("the probe command could not run: {error}"),
                 });
             }
-            Ok(Ok(output)) => output,
         };
-        if !output.status.success() {
-            return Err(ProbeError {
-                message: format!("the probe command failed: {}", output.status),
-            });
+        let pgid = child.id();
+        match tokio::time::timeout(PROBE_TIMEOUT, drain(&mut child)).await {
+            Err(_elapsed) => {
+                // The group kill: `kill -- -<pgid>` signals every
+                // process in sh's group, grandchildren included; std
+                // exposes no group-kill call, and /bin/kill with the
+                // NEGATIVE pgid is the portable spelling. The direct
+                // child is then AWAITED so it is dead, not dying, when
+                // the failure returns.
+                if let Some(pgid) = pgid {
+                    let _ = tokio::process::Command::new("kill")
+                        .args(["-KILL", "--", &format!("-{pgid}")])
+                        .status()
+                        .await;
+                }
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                Err(ProbeError {
+                    message: format!(
+                        "the probe command did not finish within {}s",
+                        PROBE_TIMEOUT.as_secs()
+                    ),
+                })
+            }
+            Ok(Err(error)) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                Err(ProbeError {
+                    message: format!("the probe command could not run: {error}"),
+                })
+            }
+            Ok(Ok((status, stdout))) => {
+                if !status.success() {
+                    return Err(ProbeError {
+                        message: format!("the probe command failed: {status}"),
+                    });
+                }
+                let stdout = String::from_utf8_lossy(&stdout);
+                let count = stdout.trim();
+                count.parse::<u64>().map_err(|_unparseable| ProbeError {
+                    message: format!("the probe command printed `{count}`, not one u64 row count"),
+                })
+            }
         }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let count = stdout.trim();
-        count.parse::<u64>().map_err(|_unparseable| ProbeError {
-            message: format!("the probe command printed `{count}`, not one u64 row count"),
-        })
     }
+}
+
+/// Read the probe's stdout to EOF, then reap its exit status — split
+/// from the timeout wrapper so the `Child` handle stays usable in the
+/// timeout arm (the group kill needs its pgid, and the post-kill wait
+/// needs the handle).
+async fn drain(
+    child: &mut tokio::process::Child,
+) -> std::io::Result<(std::process::ExitStatus, Vec<u8>)> {
+    use tokio::io::AsyncReadExt as _;
+    let mut stdout = Vec::new();
+    if let Some(pipe) = child.stdout.as_mut() {
+        pipe.read_to_end(&mut stdout).await?;
+    }
+    let status = child.wait().await?;
+    Ok((status, stdout))
 }
 
 /// Certification proper: pre-flight the target, run the role's
