@@ -4,8 +4,8 @@
 //! mechanics had to land five times or the suites diverged, one crate
 //! certifying a stale binary while another rebuilt).
 //!
-//! The mechanics: `CARGO_TARGET_DIR` honored the way rdlt-bench honors
-//! it for the CLI, the build itself guarded by
+//! The mechanics: `CARGO_TARGET_DIR` honored when absolute and refused
+//! when relative (see `target_debug_dir`), the build itself guarded by
 //! `RDLT_BUILD_CONNECTOR_BINS` (the Makefile's spawn-bins lines set
 //! it), and a missing bin failing LOUDLY with instructions rather than
 //! building behind the runner's back or quietly skipping — either would
@@ -27,20 +27,77 @@ fn workspace_root(manifest_dir: &str) -> PathBuf {
         .to_path_buf()
 }
 
-/// Where debug binaries land — `CARGO_TARGET_DIR` honored (absolute
-/// used as-is, relative resolved against the repo root, exactly as
-/// cargo treats it).
+/// Where debug binaries land — `CARGO_TARGET_DIR` honored for ABSOLUTE
+/// values, refused for relative ones (round-4 fix): cargo resolves a
+/// relative value against ITS OWN invocation cwd, and two cargos run
+/// here with different cwds — the test process that looks the binary
+/// up (the harness's cwd) and this scaffold's own `cargo build` (the
+/// workspace root) — so any single resolution would be a guess that
+/// makes the lookup and the build disagree about where the binary
+/// lives. Refusing with instructions is the truthful option.
 fn target_debug_dir(manifest_dir: &str) -> PathBuf {
-    match std::env::var_os("CARGO_TARGET_DIR") {
+    match debug_dir_from(
+        std::env::var_os("CARGO_TARGET_DIR").as_deref(),
+        manifest_dir,
+    ) {
+        Ok(dir) => dir,
+        Err(why) => panic!("{why}"),
+    }
+}
+
+/// The resolution rule itself, pure so its three arms pin offline.
+fn debug_dir_from(
+    target_dir: Option<&std::ffi::OsStr>,
+    manifest_dir: &str,
+) -> Result<PathBuf, String> {
+    match target_dir {
+        None => Ok(workspace_root(manifest_dir).join("target/debug")),
         Some(target) => {
             let target = PathBuf::from(target);
             if target.is_absolute() {
-                target.join("debug")
+                Ok(target.join("debug"))
             } else {
-                workspace_root(manifest_dir).join(target).join("debug")
+                Err(format!(
+                    "CARGO_TARGET_DIR `{}` is relative — cargo resolves it against each \
+                     invocation's OWN cwd, and the spawn scaffold's lookup and its cargo \
+                     build run from different directories, so no single resolution is \
+                     truthful; set an absolute CARGO_TARGET_DIR for the spawn suites",
+                    target.display()
+                ))
             }
         }
-        None => workspace_root(manifest_dir).join("target/debug"),
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    /// The three arms of the rule: unset falls back to the workspace's
+    /// own target/, absolute is honored as-is, relative is REFUSED
+    /// with instructions — never resolved by guess (the round-4 fix:
+    /// the old code resolved against the workspace root while cargo
+    /// resolves against the invocation cwd, so the lookup and the
+    /// build could disagree).
+    #[test]
+    fn relative_cargo_target_dir_is_refused_not_guessed() {
+        let manifest = "/repo/crates/some-crate";
+        assert_eq!(
+            debug_dir_from(None, manifest).expect("unset resolves"),
+            PathBuf::from("/repo/target/debug")
+        );
+        assert_eq!(
+            debug_dir_from(Some(std::ffi::OsStr::new("/abs/target")), manifest)
+                .expect("absolute resolves"),
+            PathBuf::from("/abs/target/debug")
+        );
+        let refusal = debug_dir_from(Some(std::ffi::OsStr::new("rel-target")), manifest)
+            .expect_err("relative must refuse");
+        assert!(
+            refusal.contains("`rel-target` is relative")
+                && refusal.contains("set an absolute CARGO_TARGET_DIR"),
+            "the refusal names the value and the fix: {refusal}"
+        );
     }
 }
 
