@@ -124,6 +124,22 @@ pub mod testhook {
         )
     }
 
+    /// TEST-ONLY: remove a pipeline's state property from the marker
+    /// table — simulating the `ice.receipt.visible` crash residue
+    /// (every table's data committed, the state write never reached
+    /// the catalog), so recovery cells can prove the replay path
+    /// re-persists it.
+    pub async fn remove_state(
+        config: &Config,
+        namespace: &[String],
+        pipeline: &str,
+    ) -> Result<(), DestinationError> {
+        let catalog = client::connect(config).await?;
+        let namespace = NamespaceIdent::from_vec(namespace.to_vec())
+            .map_err(|e| DestinationError::fatal(format!("namespace: {e}")))?;
+        state::remove_state(&catalog, &namespace, &scope_of(pipeline)).await
+    }
+
     /// TEST-ONLY: relocate a pipeline's state property from the
     /// current 32-hex scope key to the pre-037 12-hex legacy key, and
     /// remove it from the current key — simulating a warehouse whose

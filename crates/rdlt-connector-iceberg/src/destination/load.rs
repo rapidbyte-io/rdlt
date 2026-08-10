@@ -10,11 +10,13 @@
 //! `existing_receipt` answers from that SAME history — a pure read
 //! over the namespace's tables reconstructing the receipt from the
 //! summary properties every publish already persists; there is still
-//! no load-level receipt store, and a partially published commit
-//! remains exactly the state publish knows how to converge from. (029
-//! D7 deliberately returned `None` here; reversed by owner ruling in
-//! 042 because the wire contract's receipt choreography demands a
-//! durable load-level receipt.)
+//! no load-level receipt store. A partially published commit remains
+//! exactly what the convergence pass completes — `converge_tables`,
+//! shared by publish AND `replay`, since the framework returns the
+//! receipt instead of publishing once `existing_receipt` answers.
+//! (029 D7 deliberately returned `None` here; reversed by owner
+//! ruling in 042 because the wire contract's receipt choreography
+//! demands a durable load-level receipt.)
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -433,6 +435,108 @@ async fn reconcile(
     .await
 }
 
+/// Which settled check a convergence pass applies per table. Publish
+/// re-checks its own FULL scope-matched identity; replay is LOAD-keyed
+/// (`load_committed`'s rationale) — the receipt that routed the
+/// framework here may have been stamped under a different pipeline
+/// scope, and a scope-matched check would re-append what that scope
+/// already committed.
+enum Settled {
+    ScopeIdentity,
+    LoadIdentity,
+}
+
+impl Load {
+    /// ONE convergence pass over every staged table window — the
+    /// commit body publish and replay share (042 fix round 1): close
+    /// the window's writer, and per table either discard the files
+    /// (the settled check found the commit already in history) or
+    /// append them under `identity`. Publish and replay differ ONLY in
+    /// the settled check; sharing the body is what makes "the two
+    /// mechanisms agree" true rather than claimed — a replay reaching
+    /// a table the killed attempt never committed CONVERGES it, the
+    /// exact window a wholesale discard was measured to lose.
+    async fn converge_tables(
+        &mut self,
+        identity: &Identity,
+        settled: Settled,
+    ) -> Result<(), DestinationError> {
+        let listener = self.part_events.clone();
+        for (table_name, state) in self.tables.iter_mut() {
+            let context = format!("table `{}`", self.config.table_name(table_name.as_str()));
+            // `take` empties the parked files BEFORE the fallible
+            // commit below. Safe ONLY because a failed commit pass is
+            // never retried on this session — the engine restarts a
+            // whole run from committed state, with fresh TableState —
+            // so the emptied list is never consulted again. An
+            // in-process retry policy added later would silently drop
+            // these files; move the take after the commit first.
+            let mut files = std::mem::take(&mut state.pending_files);
+            if let Some(writer) = state.writer.take() {
+                let closed = writer.close(&context).await?;
+                Self::report_closed(
+                    &listener,
+                    table_name,
+                    &closed,
+                    rdlt_connector_sdk::spi::PartCloseReason::Commit,
+                );
+                files.extend(closed);
+                state.writer_opened_at = None;
+            }
+            if files.is_empty() {
+                // An empty window publishes no snapshot.
+                continue;
+            }
+            // Settled detection against FRESH metadata: an
+            // already-committed identity discards this window's files —
+            // orphaned and invisible, no snapshot names them — and
+            // publishes nothing for this table.
+            let fresh = self
+                .catalog
+                .load_table(state.table.identifier())
+                .await
+                .map_err(|e| classify(&context, e))?;
+            let done = match settled {
+                Settled::ScopeIdentity => identity.already_committed(&fresh),
+                Settled::LoadIdentity => {
+                    load_committed(&fresh, &identity.load_id, identity.commit_seq)
+                }
+            };
+            if done {
+                state.table = fresh;
+            } else {
+                state.table = append_commit(&self.catalog, fresh, files, identity).await?;
+            }
+            // The refresh may carry a concurrent writer's additive
+            // evolution: realign so the next window agrees with it.
+            state.arrow_target = arrow_target(&context, &state.table)?;
+        }
+        Ok(())
+    }
+
+    /// The commit tail publish and replay share: state LAST, after
+    /// every table's data commit — the per-table snapshot receipts
+    /// make a re-attempt converge even when the crash lands before
+    /// this write, WHICHEVER path (publish's re-run or replay's
+    /// receipt fast path) the re-attempt takes; both therefore write
+    /// it, or the fast path would strand the cursor and the next run
+    /// would re-ingest (042 fix round 1's second measured window).
+    /// `&mut self` deliberately: a shared borrow across the await
+    /// would demand `Load: Sync`, which the live parquet writers in
+    /// `tables` forbid.
+    async fn persist_state(&mut self, state: &StateDoc) -> Result<(), DestinationError> {
+        crash_point!(
+            "ice.receipt.visible",
+            Err(DestinationError::fatal(
+                "injected crash at ice.receipt.visible"
+            ))
+        );
+        let state_json =
+            serde_json::to_string(state).map_err(|e| fatal(format!("state doc: {e}")))?;
+        write_state(&self.catalog, &self.namespace, &self.scope, state_json).await
+    }
+}
+
 #[async_trait]
 impl Backend for Load {
     async fn ensure_table(
@@ -544,10 +648,12 @@ impl Backend for Load {
         // (`load_committed`'s own rationale): a re-attempt reaching
         // the store under a different pipeline scope must still see
         // the committed attempt. Finding it in ANY table suffices —
-        // publish commits tables one by one and a PARTIAL publish must
-        // report the receipt, or the replay path would re-publish the
-        // finished tables (publish's per-table convergence completes
-        // the unfinished ones either way; the two mechanisms agree).
+        // publish commits tables one by one, so a PARTIAL publish
+        // reports the receipt and the framework routes the redelivery
+        // through `replay`, whose convergence pass then completes the
+        // unfinished tables (`converge_tables`; publish never runs on
+        // this path — sdk `Session::commit` returns the receipt
+        // instead).
         let idents = self
             .catalog
             .list_tables(&self.namespace)
@@ -574,22 +680,31 @@ impl Backend for Load {
 
     async fn replay(
         &mut self,
-        _meta: &CommitMeta,
+        meta: &CommitMeta,
         _receipt: &CommitReceipt,
     ) -> Result<(), DestinationError> {
-        // A redelivered window's staged rows must not linger for a
-        // later genuine publish to find (the sdk trait doc's staging
-        // hazard — measured live before this landed: they rode the
-        // next snapshot and doubled). Everything staged is in-memory
-        // parked files and open writers; both are discarded. A dropped
-        // writer's already-written data files are orphans no snapshot
-        // names — invisible, the same posture a failed publish leaves.
-        for state in self.tables.values_mut() {
-            state.pending_files.clear();
-            state.writer = None;
-            state.writer_opened_at = None;
-        }
-        Ok(())
+        // CONVERGE, never discard wholesale (042 fix round 1 — both
+        // regressions were measured live before this landed): the
+        // receipt that routed the framework here proves the load's
+        // identity is in SOME table's history, not every table's —
+        // publish commits tables sequentially, so a crash between two
+        // per-table commits leaves the load partially published, and
+        // the framework returns the receipt INSTEAD of publishing once
+        // `existing_receipt` answers. This pass discards each
+        // already-committed table's redelivered window and LANDS the
+        // unfinished ones (load-keyed settled check: the prior
+        // attempt's stamp may carry a different pipeline scope), then
+        // persists the state doc — publish never runs on this path, so
+        // the write publish normally owns happens here or nowhere,
+        // and a stranded cursor re-ingests everything next run.
+        let identity = Identity {
+            scope: self.scope.clone(),
+            load_id: meta.load_id.as_str().to_owned(),
+            commit_seq: meta.commit_seq,
+        };
+        self.converge_tables(&identity, Settled::LoadIdentity)
+            .await?;
+        self.persist_state(&meta.state).await
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
@@ -602,62 +717,9 @@ impl Backend for Load {
             load_id: meta.load_id.as_str().to_owned(),
             commit_seq: meta.commit_seq,
         };
-        let listener = self.part_events.clone();
-        for (table_name, state) in self.tables.iter_mut() {
-            let context = format!("table `{}`", self.config.table_name(table_name.as_str()));
-            // `take` empties the parked files BEFORE the fallible
-            // commit below. Safe ONLY because a failed publish is
-            // never retried on this session — the engine restarts a
-            // whole run from committed state, with fresh TableState —
-            // so the emptied list is never consulted again. An
-            // in-process retry policy added later would silently drop
-            // these files; move the take after the commit first.
-            let mut files = std::mem::take(&mut state.pending_files);
-            if let Some(writer) = state.writer.take() {
-                let closed = writer.close(&context).await?;
-                Self::report_closed(
-                    &listener,
-                    table_name,
-                    &closed,
-                    rdlt_connector_sdk::spi::PartCloseReason::Commit,
-                );
-                files.extend(closed);
-                state.writer_opened_at = None;
-            }
-            if files.is_empty() {
-                // An empty window publishes no snapshot.
-                continue;
-            }
-            // Replay detection against FRESH metadata: a replayed
-            // identity discards this window's files — orphaned and
-            // invisible, no snapshot names them — and publishes
-            // nothing for this table.
-            let fresh = self
-                .catalog
-                .load_table(state.table.identifier())
-                .await
-                .map_err(|e| classify(&context, e))?;
-            if identity.already_committed(&fresh) {
-                state.table = fresh;
-            } else {
-                state.table = append_commit(&self.catalog, fresh, files, &identity).await?;
-            }
-            // The refresh may carry a concurrent writer's additive
-            // evolution: realign so the next window agrees with it.
-            state.arrow_target = arrow_target(&context, &state.table)?;
-        }
-        crash_point!(
-            "ice.receipt.visible",
-            Err(DestinationError::fatal(
-                "injected crash at ice.receipt.visible"
-            ))
-        );
-        // State LAST, after every table's data commit: the per-table
-        // snapshot receipts make replays converge even when the crash
-        // lands before this write.
-        let state_json =
-            serde_json::to_string(&meta.state).map_err(|e| fatal(format!("state doc: {e}")))?;
-        write_state(&self.catalog, &self.namespace, &self.scope, state_json).await?;
+        self.converge_tables(&identity, Settled::ScopeIdentity)
+            .await?;
+        self.persist_state(&meta.state).await?;
         Ok(receipt)
     }
 

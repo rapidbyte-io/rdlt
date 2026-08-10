@@ -466,3 +466,195 @@ async fn a_replayed_windows_staged_rows_never_reach_the_next_publish() {
         "the replayed window's redelivered rows were discarded, not re-published: {summaries:?}"
     );
 }
+
+/// FIX ROUND 1, CRITICAL 1 (042 review): a PARTIAL multi-table publish
+/// must converge through the replay path without losing the unfinished
+/// tables. Session 1 commits `(load, 1)` for table A only — the residue
+/// a crash between per-table commits leaves (publish commits tables
+/// sequentially). The recovery redelivery ensures BOTH tables, stages
+/// both windows, finds A's stamp through `existing_receipt`, and
+/// `replay` must then land table B's window (A's discarded) — a replay
+/// that discards wholesale loses B forever, because the framework
+/// returns the receipt instead of publishing once `existing_receipt`
+/// answers.
+#[tokio::test]
+async fn a_partial_publish_converges_through_replay_without_losing_tables() {
+    use rdlt_connector_iceberg::destination::{Config, Iceberg};
+    use rdlt_connector_sdk::config::Document;
+    use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
+    use rdlt_connector_sdk::spi::OpenContext;
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "partial_publish_v2";
+    let config = Config::from_value(fixture.doc(namespace)).expect("valid");
+    let dest = Iceberg::assemble(config).expect("assembles");
+    let pipeline = PipelineId::new("ice-partial-publish");
+    let load = LoadId::new("load-pp1");
+
+    // Session 1: table A's commit landed, table B's never did.
+    let mut first = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    first
+        .ensure_table(&schema_for("pp_table_a"), &WriteMode::Append)
+        .await
+        .expect("ensures A");
+    first
+        .write(&"pp_table_a".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("writes A");
+    let receipt = first
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publishes A's half");
+
+    // The recovery redelivery: both tables ensured and staged, the
+    // receipt found, replay must CONVERGE — not discard.
+    let mut recovery = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    for table in ["pp_table_a", "pp_table_b"] {
+        recovery
+            .ensure_table(&schema_for(table), &WriteMode::Append)
+            .await
+            .expect("ensures");
+        recovery
+            .write(&table.into(), batch_of(&[1, 2, 3]))
+            .await
+            .expect("stages the redelivery");
+    }
+    let found = recovery
+        .existing_receipt(&load, 1)
+        .await
+        .expect("the receipt scan answers")
+        .expect("A's stamp is found");
+    assert_eq!(found.load_id, load);
+    recovery
+        .replay(&commit_meta_for(&pipeline, &load, 1), &receipt)
+        .await
+        .expect("replay converges");
+
+    let count = |table: &'static str| {
+        let fixture = &fixture;
+        async move {
+            fixture
+                .snapshot_summaries(namespace, table)
+                .await
+                .last()
+                .and_then(|s| s.get("total-records"))
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        }
+    };
+    assert_eq!(
+        count("pp_table_a").await,
+        3,
+        "table A stays exact — its redelivered window is discarded"
+    );
+    assert_eq!(
+        count("pp_table_b").await,
+        3,
+        "table B's window LANDS — a wholesale-discard replay loses it forever"
+    );
+}
+
+/// FIX ROUND 1, CRITICAL 2 (042 review): the replay path must persist
+/// the state doc. Publish writes state LAST, so a crash at
+/// `ice.receipt.visible` leaves every table's data committed with NO
+/// state — healed, pre-receipt, by the redelivery's re-publish
+/// (Settled + write_state). The receipt fast path bypasses publish, so
+/// `replay` itself must write `meta.state` or the pipeline finishes
+/// with a stale/absent cursor and the NEXT run re-ingests under a
+/// fresh load id — cross-run duplication.
+#[tokio::test]
+async fn the_replay_path_persists_the_state_doc() {
+    use rdlt_connector_iceberg::destination::{Config, Iceberg, testhook};
+    use rdlt_connector_sdk::config::Document;
+    use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
+    use rdlt_connector_sdk::spi::OpenContext;
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "replay_state_v2";
+    let config = Config::from_value(fixture.doc(namespace)).expect("valid");
+    let dest = Iceberg::assemble(config).expect("assembles");
+    let pipeline = PipelineId::new("ice-replay-state");
+    let load = LoadId::new("load-rs1");
+
+    // Session 1 commits data AND state; the testhook then removes the
+    // state property — the exact residue of a crash at
+    // `ice.receipt.visible` (data committed, state write never ran).
+    let mut first = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    first
+        .ensure_table(&schema_for("rs_events"), &WriteMode::Append)
+        .await
+        .expect("ensures");
+    first
+        .write(&"rs_events".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("writes");
+    let receipt = first
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publishes");
+    testhook::remove_state(
+        &Config::from_value(fixture.doc(namespace)).expect("valid"),
+        &[namespace.to_owned()],
+        pipeline.as_str(),
+    )
+    .await
+    .expect("the crash residue is staged");
+
+    // Recovery: the receipt fast path runs — and must re-persist state.
+    let mut recovery = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    recovery
+        .ensure_table(&schema_for("rs_events"), &WriteMode::Append)
+        .await
+        .expect("ensures");
+    recovery
+        .write(&"rs_events".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("stages the redelivery");
+    recovery
+        .existing_receipt(&load, 1)
+        .await
+        .expect("the receipt scan answers")
+        .expect("the receipt is found");
+    recovery
+        .replay(&commit_meta_for(&pipeline, &load, 1), &receipt)
+        .await
+        .expect("replay converges");
+
+    let state = recovery
+        .read_state(&pipeline)
+        .await
+        .expect("state readable")
+        .expect("the replay path persisted the state doc — a bypassed write leaves the next run a stale cursor");
+    assert_eq!(state.pipeline, pipeline);
+    let total = fixture
+        .snapshot_summaries(namespace, "rs_events")
+        .await
+        .last()
+        .and_then(|s| s.get("total-records"))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    assert_eq!(
+        total, 3,
+        "the redelivered window was discarded, not re-landed"
+    );
+}

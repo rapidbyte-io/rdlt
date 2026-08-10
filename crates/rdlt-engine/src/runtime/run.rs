@@ -55,9 +55,13 @@ static LOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn new_load_id() -> LoadId {
     // A wall clock before the Unix epoch yields no usable millis; fall back to 0.
-    // The load id only needs to be UNIQUE within a pipeline, not monotonic, and
-    // the process-id + atomic sequence below already guarantee that — the millis
-    // are a human-readable prefix, not the uniqueness source.
+    // The load id must be UNIQUE across every pipeline sharing a destination
+    // store, not merely within one pipeline: destination receipt lookups key on
+    // `(load_id, commit_seq)` alone (iceberg's snapshot-history scan since 042;
+    // file/postgres receipts likewise), so a collision would make one
+    // pipeline's commit replay-mask another's. Not monotonic — the millis are a
+    // human-readable prefix; process-id + atomic sequence are the uniqueness
+    // source (per-host; two hosts sharing a store rely on pid+clock disjointness).
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
