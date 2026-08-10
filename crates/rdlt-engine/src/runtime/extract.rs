@@ -154,6 +154,7 @@ pub(super) async fn stream_task(
             }
         };
         let Some(push) = push else { break Ok(()) };
+        let push_bytes = push.bytes;
         match push.payload {
             PushPayload::RawJson(bytes) => {
                 let payload_bytes = bytes.len() as u64;
@@ -216,14 +217,11 @@ pub(super) async fn stream_task(
                          `structured`",
                     ));
                 }
-                // The footprint walk, not capacity-summing: this batch was
-                // decoded from the connector's IPC wire, and BatchRead /
-                // report read totals must meter what it holds, not ≈10-17x
-                // of it (the same rule the channel and the loader apply).
-                let (rows_read, payload_bytes) = (
-                    batch.num_rows() as u64,
-                    rdlt_connector::channel::arrow_batch_footprint(&batch) as u64,
-                );
+                // The number the channel already metered at push (the
+                // wave-5 carry pattern, read side — round-7 fix): no
+                // re-walk, and BatchRead / the report totals charge the
+                // identical figure the budget did.
+                let (rows_read, payload_bytes) = (batch.num_rows() as u64, push_bytes as u64);
                 let _ = events.send(rdlt_core::PipelineEvent::BatchRead {
                     stream: stream_name.clone(),
                     rows: rows_read,

@@ -56,6 +56,10 @@ pub trait ByteSized {
 #[derive(Debug)]
 pub struct Permitted<T> {
     value: T,
+    /// The value's metered footprint, captured ONCE at send — receivers
+    /// that report byte totals read this instead of re-walking the
+    /// value (round-7: the read-side twin of the LoadItem carry).
+    bytes: usize,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
@@ -70,10 +74,11 @@ impl<T> Permitted<T> {
         &self.value
     }
 
-    /// Split value from permit, for a receiver that re-wraps the value in
-    /// its own type while keeping the budget spent.
-    pub(crate) fn into_parts(self) -> (T, Option<tokio::sync::OwnedSemaphorePermit>) {
-        (self.value, self.permit)
+    /// Split value from permit (the metered footprint riding along),
+    /// for a receiver that re-wraps the value in its own type while
+    /// keeping the budget spent.
+    pub(crate) fn into_parts(self) -> (T, usize, Option<tokio::sync::OwnedSemaphorePermit>) {
+        (self.value, self.bytes, self.permit)
     }
 }
 
@@ -114,11 +119,8 @@ impl<T: ByteSized> ByteSender<T> {
     /// itself exceeds `u32::MAX` (semaphore permits are `u32`), where a
     /// saturated request is still the same drain-everything request.
     pub async fn send(&self, value: T) -> Result<(), ChannelClosed> {
-        let requested = value
-            .byte_size()
-            .min(self.budget_total)
-            .try_into()
-            .unwrap_or(u32::MAX);
+        let bytes = value.byte_size();
+        let requested = bytes.min(self.budget_total).try_into().unwrap_or(u32::MAX);
         // Zero-byte values skip the semaphore entirely: acquiring zero
         // permits would also succeed, but skipping states the intent —
         // markers are not budgeted, and must pass even on a zero budget.
@@ -133,7 +135,11 @@ impl<T: ByteSized> ByteSender<T> {
             None
         };
         self.messages
-            .send(Permitted { value, permit })
+            .send(Permitted {
+                value,
+                bytes,
+                permit,
+            })
             .await
             .map_err(|_| ChannelClosed)
     }
@@ -391,6 +397,10 @@ fn data_footprint(
 pub struct SourcePush {
     /// What was pushed.
     pub payload: PushPayload,
+    /// The payload's metered footprint — the number the byte budget
+    /// charged, computed once at push. A host reporting read totals
+    /// reads THIS rather than re-walking the payload.
+    pub bytes: usize,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
@@ -456,9 +466,10 @@ impl RecordsIn {
     /// [`SourcePush`], so the budget stays spent until the host drops it.
     pub async fn recv(&mut self) -> Option<SourcePush> {
         self.channel.recv().await.map(|permitted| {
-            let (payload, permit) = permitted.into_parts();
+            let (payload, bytes, permit) = permitted.into_parts();
             SourcePush {
                 payload,
+                bytes,
                 _permit: permit,
             }
         })
