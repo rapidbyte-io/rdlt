@@ -8,9 +8,11 @@
 //! identity and converges on replay by scanning history.
 //!
 //! `existing_receipt` answers from that SAME history — a pure read
-//! over the namespace's tables reconstructing the receipt from the
-//! summary properties every publish already persists; there is still
-//! no load-level receipt store. A partially published commit remains
+//! over the session's own tables (namespace-wide only while the
+//! session has ensured none, the wire's receipt-before-ensure posture)
+//! reconstructing the receipt from the summary properties every
+//! publish already persists; there is still no load-level receipt
+//! store. A partially published commit remains
 //! exactly what the convergence pass completes — `converge_tables`,
 //! shared by publish AND `replay`, since the framework returns the
 //! receipt instead of publishing once `existing_receipt` answers.
@@ -641,24 +643,46 @@ impl Backend for Load {
         // ruling in 042 because the wire contract's receipt
         // choreography demands a durable load-level receipt. PURE
         // READ: the snapshot summaries every publish stamps ARE the
-        // receipt — this scans the namespace's tables for the
-        // `(load_id, commit_seq)` identity and reconstructs the
-        // receipt from what is already durable; no new store, no
-        // commit-path change. LOAD-keyed, never scope-keyed
-        // (`load_committed`'s own rationale): a re-attempt reaching
-        // the store under a different pipeline scope must still see
-        // the committed attempt. Finding it in ANY table suffices —
-        // publish commits tables one by one, so a PARTIAL publish
-        // reports the receipt and the framework routes the redelivery
-        // through `replay`, whose convergence pass then completes the
-        // unfinished tables (`converge_tables`; publish never runs on
-        // this path — sdk `Session::commit` returns the receipt
-        // instead).
-        let idents = self
-            .catalog
-            .list_tables(&self.namespace)
-            .await
-            .map_err(|e| classify("listing tables for the receipt lookup", e))?;
+        // receipt — this scans tables for the `(load_id, commit_seq)`
+        // identity and reconstructs the receipt from what is already
+        // durable; no new store, no commit-path change. LOAD-keyed,
+        // never scope-keyed (`load_committed`'s own rationale): a
+        // re-attempt reaching the store under a different pipeline
+        // scope must still see the committed attempt. Finding it in
+        // ANY table suffices — publish commits tables one by one, so a
+        // PARTIAL publish reports the receipt and the framework routes
+        // the redelivery through `replay`, whose convergence pass then
+        // completes the unfinished tables (`converge_tables`; publish
+        // never runs on this path — sdk `Session::commit` returns the
+        // receipt instead).
+        //
+        // THE SCAN IS SCOPED to the tables this session knows — the
+        // same set `converge_tables` walks (042 fix wave): the receipt
+        // was stamped by an attempt of THIS load, and an attempt
+        // commits only tables its session ensured, so once THIS
+        // session has ensured its set the intersection with any prior
+        // attempt's commits is non-empty. What the scope buys: a
+        // foreign table in the namespace — broken, or merely one of
+        // thousands — can no longer block or slow this pipeline's
+        // receipt lookup, while a load failure on one of OUR tables
+        // stays the real error it is. A session that knows NO tables
+        // yet — the wire's receipt-before-ensure posture (the
+        // choreography allows the receipt query first; the certifier's
+        // P10 exclusivity pass and K-D6 no-op rerun drive exactly
+        // that) — still scans the namespace: there is no narrower
+        // honest answer, and answering None would deny a receipt that
+        // is durably there.
+        let idents: Vec<TableIdent> = if self.tables.is_empty() {
+            self.catalog
+                .list_tables(&self.namespace)
+                .await
+                .map_err(|e| classify("listing tables for the receipt lookup", e))?
+        } else {
+            self.tables
+                .values()
+                .map(|state| state.table.identifier().clone())
+                .collect()
+        };
         for ident in idents {
             if ident.name() == STATE_TABLE {
                 continue;
