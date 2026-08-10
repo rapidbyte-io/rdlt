@@ -283,25 +283,35 @@ fn filter_covered(
         }
     }
 
-    // The one shape attribution cannot vouch for: an orphaned segment BESIDE
-    // a checkpointed stream owning no segment at all. Under the same-writer
-    // invariant these are unrelated (a stream that never checkpointed next to
-    // a stream that checkpointed an empty range) — but it is also exactly
-    // what a normalization-rules change between the writing run and this one
-    // looks like (that stream's segments orphaned, its root matching
-    // nothing), and replaying a checkpoint whose own segments were dropped
-    // would advance a cursor past rows nothing will re-deliver. Refusing
-    // costs one full re-extraction; guessing wrong loses data.
-    if orphaned
-        && root_to_stream
-            .keys()
-            .any(|root| !segment_roots.contains(root))
-    {
-        return Err(
-            "an uncommitted segment matches no checkpointed stream while a checkpointed \
-             stream matches no segment — attribution cannot prove replay safe"
-                .to_owned(),
-        );
+    // The shape attribution must vouch for before dropping orphans: an
+    // orphaned segment BESIDE a checkpointed stream owning no segment in
+    // the span. That shape is ROUTINE under the loader's commit deferral
+    // (round-2 fix wave): after a commit, an idle cursored stream's polls
+    // produce checkpoint-only records while a snapshot co-stream keeps
+    // writing — the orphans are the snapshot's (re-extraction re-delivers
+    // them) and the empty checkpoint is exactly what the source reported.
+    // But it is ALSO what a normalization-rules change between the
+    // writing run and this one looks like (that stream's real segments
+    // orphaned, its root matching nothing), and replaying a checkpoint
+    // whose own segments were dropped would advance a cursor past rows
+    // nothing will re-deliver. The manifest itself separates the two:
+    // `schemas` accumulates every recorded delta across the WHOLE
+    // manifest, so a checkpointed stream whose root table the writer
+    // ITSELF recorded proves this run's normalization agrees with the
+    // writer's world — benign, recover. A root recorded nowhere is
+    // unprovable — refusing costs one full re-extraction; guessing wrong
+    // loses data.
+    if orphaned {
+        for (root, stream) in &root_to_stream {
+            if segment_roots.contains(root) || schemas.contains_key(root) {
+                continue;
+            }
+            return Err(format!(
+                "an uncommitted segment matches no checkpointed stream while checkpointed \
+                 stream `{stream}`'s root table `{root}` matches no segment and no recorded \
+                 schema — attribution cannot prove replay safe"
+            ));
+        }
     }
 
     Ok(Some(
@@ -606,13 +616,54 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// The one shape attribution cannot vouch for: a segment matching NO
-    /// checkpointed stream beside a checkpointed stream matching NO segment.
-    /// Under stable naming rules the segment's stream simply never
-    /// checkpointed — but this is also exactly what a rules change between
-    /// the writing run and this one looks like, and replaying a checkpoint
-    /// whose own segments were dropped as orphans LOSES their rows. Degrade
-    /// to re-extraction: slower, never wrong.
+    /// THE ROUTINE POST-COMMIT SHAPE the loader's deferral makes (round-2
+    /// fix wave): after a commit, an idle cursored stream checkpoints with
+    /// zero new segments while a snapshot co-stream (which never
+    /// checkpoints) keeps writing. The snapshot segments are orphans —
+    /// dropped, re-extraction re-delivers them — and the idle checkpoint
+    /// is benign; the join is PROVEN by the manifest itself: the
+    /// checkpointed stream's root table was recorded by the writer (its
+    /// earlier committed delta), so this run's normalization of the
+    /// stream agrees with the writer's world and the span RECOVERS
+    /// instead of degrading every such crash to full re-extraction.
+    #[test]
+    fn an_idle_checkpoint_beside_snapshot_orphans_recovers_when_its_root_is_recorded() {
+        let outcome = scan_span(vec![
+            delta("orders", None),
+            segment("orders", "f0.arrow"),
+            checkpoint("orders"),
+            WalRecord::Committed { commit_seq: 1 },
+            delta("events", None),
+            segment("events", "f1.arrow"),
+            checkpoint("orders"),
+        ]);
+        assert_eq!(
+            replayed_files(&outcome),
+            Vec::<String>::new(),
+            "the snapshot orphan drops (its rows re-extract); nothing else is staged"
+        );
+        let ScanOutcome::Recover(span) = &outcome else {
+            unreachable!()
+        };
+        assert!(
+            span.records.iter().any(
+                |r| matches!(r, WalRecord::Checkpoint { stream, .. } if stream.as_str() == "orders")
+            ),
+            "the idle stream's checkpoint replays — a cursor advance over a rowless \
+             range is exactly what the source reported"
+        );
+        assert_eq!(span.next_commit_seq, 2, "after the committed prefix");
+    }
+
+    /// The shape attribution still cannot vouch for: an orphan segment
+    /// beside a segmentless checkpointed stream whose root table appears
+    /// NOWHERE in the manifest's schema record. Under stable naming rules
+    /// the stream was merely idle for the whole run — but a manifest that
+    /// never recorded the root is also exactly what a normalization-rules
+    /// change between the writing run and this one looks like (the
+    /// stream's real segments orphaned, its checkpoint about to advance a
+    /// cursor past rows nothing will re-deliver). Degrade to
+    /// re-extraction: slower, never wrong.
     #[test]
     fn an_orphan_segment_beside_a_segmentless_checkpoint_degrades() {
         let outcome = scan_span(vec![
