@@ -249,7 +249,19 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     match probe {
         Some(probe) => {
             let merge = managed.capabilities().merge;
-            match tokio::time::timeout(CLAUSE_TIMEOUT, verify_destination(&managed, probe)).await {
+            // The clause budget bounds SPI traffic ALONE (round-5 fix):
+            // the probe clock stops while a count runs — each count
+            // carries its own probe budget and fails naming itself, so
+            // a slow-but-legal probe can no longer exhaust a suite
+            // budget that was never sized for it.
+            let (metered, probe_clock) = crate::clock::StopClockProbe::new(probe);
+            match crate::clock::timeout_excluding_probe(
+                CLAUSE_TIMEOUT,
+                &probe_clock,
+                verify_destination(&managed, &metered),
+            )
+            .await
+            {
                 Ok(outcome) => {
                     if merge {
                         report.absorb(outcome.failures, outcome.skips, &DEST_CLAUSES);

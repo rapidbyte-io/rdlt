@@ -231,9 +231,10 @@ fn resolve(named: &str, config: Value) -> Target {
 }
 
 /// How long one probe command may run before its count fails.
-/// Deliberately inside the library's 30 s clause budget: a hanging
-/// probe fails naming ITSELF, before the clause it serves times out
-/// and the evidence blames the connector.
+/// The probe's ONLY bound: the library stops the clause clock while a
+/// count runs (its budget covers SPI traffic alone), so a hanging
+/// probe fails naming ITSELF and can never exhaust a clause budget
+/// whose evidence would blame the connector.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The `--probe-cmd` read-back: one shell line, run per count with

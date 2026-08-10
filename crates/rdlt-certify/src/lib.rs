@@ -15,6 +15,7 @@
 //! The modules are private and the surface below is the one canonical
 //! path to every name.
 
+mod clock;
 mod contract;
 mod destination;
 mod kill;

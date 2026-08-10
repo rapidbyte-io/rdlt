@@ -308,9 +308,15 @@ pub async fn kill_matrix_destination(
         // (round-4 fix — the same discipline as every other spawn
         // seam since 042 Task 6).
         let slot = crate::wire::ChildSlot::default();
-        let outcome = tokio::time::timeout(
+        // The clause budget bounds wire traffic alone (round-5 fix):
+        // the convergence read-back's probe time is metered out of the
+        // deadline, exactly as in the D-suite — the probe's own budget
+        // is its only bound and its failures name itself.
+        let (metered, probe_clock) = crate::clock::StopClockProbe::new(probe);
+        let outcome = crate::clock::timeout_excluding_probe(
             CLAUSE_TIMEOUT,
-            destination_arm(target, probe, clause, boundary, &slot),
+            &probe_clock,
+            destination_arm(target, &metered, clause, boundary, &slot),
         )
         .await;
         if outcome.is_err() {
