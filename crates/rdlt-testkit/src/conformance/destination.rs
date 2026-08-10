@@ -159,6 +159,15 @@ fn commit_meta(
     }
 }
 
+/// Every clause [`verify_destination`] asserts, in the suite's own
+/// execution order (D8 last — asserted only when the destination
+/// declares the merge capability). THE one clause list: the abort tail
+/// derives its unreached set from it, and certifiers pin their own
+/// clause sets against it — a clause added to the suite without a row
+/// here (or here without a check) must fail a pin, never silently
+/// narrow a report.
+pub const ASSERTED_CLAUSES: [&'static str; 7] = ["D6", "D1", "D5", "D4", "D2", "D3", "D8"];
+
 /// Run the destination conformance suite (clauses D1–D6 and D8 — see the
 /// module doc). Uses tables prefixed `rdlt_conf_` — point it at a scratch
 /// dataset. An abort mid-suite (a failed SPI call or probe count) fails
@@ -424,12 +433,10 @@ pub async fn verify_destination<D: Destination>(
     let skips = match aborted {
         None => Vec::new(),
         Some(at) => {
-            let mut asserted = vec!["D6", "D1", "D5", "D4", "D2", "D3"];
-            if dest.capabilities().merge {
-                asserted.push("D8");
-            }
-            asserted
+            let merge = dest.capabilities().merge;
+            ASSERTED_CLAUSES
                 .into_iter()
+                .filter(|clause| *clause != "D8" || merge)
                 .filter(|clause| {
                     !concluded.contains(clause) && !failures.iter().any(|f| f.clause == *clause)
                 })

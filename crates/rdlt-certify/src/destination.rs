@@ -836,6 +836,21 @@ mod tests {
     use crate::report::Verdict;
     use crate::rogue::{self, OrderBookScript, SessionDiscipline};
 
+    /// `DEST_CLAUSES` keeps the report's render order, but its SET must
+    /// equal the testkit suite's own asserted set — a clause added to
+    /// the suite without a certify entry (or the other way round) would
+    /// silently narrow one side's report; the drift fails here by name
+    /// instead.
+    #[test]
+    fn dest_clauses_cover_exactly_the_testkit_suites_asserted_set() {
+        use std::collections::BTreeSet;
+        let report_side: BTreeSet<&str> = DEST_CLAUSES.into_iter().collect();
+        let suite_side: BTreeSet<&str> = rdlt_testkit::conformance::destination::ASSERTED_CLAUSES
+            .into_iter()
+            .collect();
+        assert_eq!(report_side, suite_side);
+    }
+
     /// P8's designated rogue: a destination that ACCEPTS a second
     /// concurrent session fails the clause with the pinned evidence.
     #[tokio::test]
