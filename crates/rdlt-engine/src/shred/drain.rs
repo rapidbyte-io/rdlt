@@ -255,10 +255,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                     values: misfits,
                 });
             }
-            items.push(LoadItem::Batch {
-                table: d.buffer.table.clone(),
-                batch,
-            });
+            items.push(LoadItem::batch(d.buffer.table.clone(), batch));
         }
     }
     Ok(items)

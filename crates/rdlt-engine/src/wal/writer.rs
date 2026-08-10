@@ -102,7 +102,7 @@ impl Wal {
                 stream: stream.clone(),
                 cursor: cursor.clone(),
             }),
-            LoadItem::Batch { table, batch } => {
+            LoadItem::Batch { table, batch, .. } => {
                 crash_point!(
                     "wal.segment.write",
                     Err(wal_err(
@@ -309,18 +309,12 @@ mod tests {
         )
         .expect("open wal");
 
-        wal.record(&LoadItem::Batch {
-            table: TableName::new("t"),
-            batch: batch_of(3),
-        })
-        .await
-        .expect("record first");
-        wal.record(&LoadItem::Batch {
-            table: TableName::new("t"),
-            batch: batch_of(5),
-        })
-        .await
-        .expect("record second");
+        wal.record(&LoadItem::batch(TableName::new("t"), batch_of(3)))
+            .await
+            .expect("record first");
+        wal.record(&LoadItem::batch(TableName::new("t"), batch_of(5)))
+            .await
+            .expect("record second");
 
         // Two distinct files, named in sequence.
         let first = dir.path().join("l-000000.arrow");

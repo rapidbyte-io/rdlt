@@ -18,6 +18,11 @@ pub(crate) enum LoadItem {
     Batch {
         table: TableName,
         batch: RecordBatch,
+        /// The batch's footprint, computed ONCE at construction
+        /// ([`LoadItem::batch`]) — the channel gate, the loader's
+        /// counters, and the accumulate threshold all read this number
+        /// (round-5 fix: the walk used to re-run at every seam).
+        bytes: usize,
     },
     /// A source checkpoint: rows pushed before this are complete up to `cursor`.
     Checkpoint { stream: StreamName, cursor: Cursor },
@@ -29,15 +34,26 @@ pub(crate) enum LoadItem {
     },
 }
 
+impl LoadItem {
+    /// A batch item carrying its footprint, computed once here — the
+    /// footprint walk (never `get_array_memory_size`: a batch decoded
+    /// from a remote connector's IPC stream passes through unchanged,
+    /// and capacity-summing charges its one message body once per
+    /// buffer, ≈10-17x, collapsing the stage window).
+    pub(crate) fn batch(table: TableName, batch: RecordBatch) -> Self {
+        let bytes = arrow_batch_footprint(&batch);
+        LoadItem::Batch {
+            table,
+            batch,
+            bytes,
+        }
+    }
+}
+
 impl ByteSized for LoadItem {
-    // The footprint walk, not `get_array_memory_size`: a batch decoded
-    // from a remote connector's IPC stream passes through the engine
-    // unchanged, and capacity-summing charges its one message body once
-    // per buffer (≈10-17x) — collapsing the stage window to a fraction
-    // of what the operator configured.
     fn byte_size(&self) -> usize {
         match self {
-            LoadItem::Batch { batch, .. } => arrow_batch_footprint(batch),
+            LoadItem::Batch { bytes, .. } => *bytes,
             LoadItem::Delta { .. } | LoadItem::Checkpoint { .. } | LoadItem::Discarded { .. } => 0,
         }
     }
@@ -78,21 +94,15 @@ mod tests {
         assert!(size > 0, "a real batch occupies memory");
 
         let (tx, mut rx) = byte_channel::<LoadItem>(size, STAGE_MSG_CAPACITY);
-        tx.send(LoadItem::Batch {
-            table: TableName::new("t"),
-            batch: batch.clone(),
-        })
-        .await
-        .expect("a batch at exactly the budget sends");
+        tx.send(LoadItem::batch(TableName::new("t"), batch.clone()))
+            .await
+            .expect("a batch at exactly the budget sends");
 
         // Budget exhausted: the next batch MUST park. Under `byte_size → 0` it
         // sails through; under `→ 1` it also sails through (1 of `size` used).
         let parked = tokio::time::timeout(
             Duration::from_millis(100),
-            tx.send(LoadItem::Batch {
-                table: TableName::new("t"),
-                batch: batch.clone(),
-            }),
+            tx.send(LoadItem::batch(TableName::new("t"), batch.clone())),
         )
         .await;
         assert!(
@@ -109,10 +119,7 @@ mod tests {
         assert!(matches!(received, LoadItem::Batch { .. }));
         tokio::time::timeout(
             Duration::from_secs(5),
-            tx.send(LoadItem::Batch {
-                table: TableName::new("t"),
-                batch,
-            }),
+            tx.send(LoadItem::batch(TableName::new("t"), batch)),
         )
         .await
         .expect("recv released the budget, so this send must complete")
@@ -129,11 +136,7 @@ mod tests {
     #[test]
     fn byte_size_of_an_ipc_decoded_batch_is_near_the_body_it_decodes_from() {
         let (stream_len, decoded, row_payload) = ipc_round_trip();
-        let metered = LoadItem::Batch {
-            table: TableName::new("t"),
-            batch: decoded,
-        }
-        .byte_size();
+        let metered = LoadItem::batch(TableName::new("t"), decoded).byte_size();
         assert!(
             metered >= row_payload,
             "an honest footprint cannot undercut the raw row payload: \
@@ -152,11 +155,7 @@ mod tests {
     #[test]
     fn byte_size_of_a_builder_built_batch_stays_between_payload_and_double() {
         let (batch, row_payload) = wide_batch();
-        let metered = LoadItem::Batch {
-            table: TableName::new("t"),
-            batch,
-        }
-        .byte_size();
+        let metered = LoadItem::batch(TableName::new("t"), batch).byte_size();
         assert!(
             metered >= row_payload && metered <= 2 * row_payload,
             "a batch built from exact-length buffers meters near its payload: \

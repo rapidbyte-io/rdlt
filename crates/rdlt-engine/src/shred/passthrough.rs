@@ -159,10 +159,7 @@ pub(crate) fn passthrough_items(
     }
     let out = RecordBatch::try_new(Arc::new(arrow_schema(current)), arrays)
         .map_err(|e| RdltError::internal(format!("passthrough batch assembly: {e}")))?;
-    items.push(LoadItem::Batch {
-        table: table.clone(),
-        batch: out,
-    });
+    items.push(LoadItem::batch(table.clone(), out));
     Ok(items)
 }
 

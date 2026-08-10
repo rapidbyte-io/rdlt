@@ -197,7 +197,11 @@ impl Loader {
                 self.report.schema_migrations.push(delta);
                 self.dirty = true;
             }
-            LoadItem::Batch { table, batch } => {
+            LoadItem::Batch {
+                table,
+                batch,
+                bytes,
+            } => {
                 // Keyed structured merge: merge keys are identities — a NULL
                 // key is a typed error, never a silent mis-merge.
                 //
@@ -225,13 +229,12 @@ impl Loader {
                     }
                 }
                 let rows = batch.num_rows() as u64;
-                // The footprint walk (the stage channel's meter, shared) —
-                // capacity-summing an IPC-decoded batch would inflate the
-                // report's bytes and fire byte commit policies ≈10-17x
-                // early on remote sources.
-                let bytes = rdlt_connector::channel::arrow_batch_footprint(&batch) as u64;
+                // The footprint travels ON the item, computed once at
+                // construction (round-5 fix) — the same number the
+                // stage channel already charged.
+                let bytes = bytes as u64;
                 if self.batch_policy.accumulates() {
-                    self.accumulate(&table, batch).await?;
+                    self.accumulate(&table, batch, bytes).await?;
                 } else {
                     apply::apply_batch(
                         &mut *self.sink.session,
@@ -355,9 +358,13 @@ impl Loader {
     /// A SCHEMA CHANGE forces the buffer out first: Arrow can only
     /// concatenate batches that share a schema, and mid-stream
     /// evolution is exactly when they stop doing so.
-    async fn accumulate(&mut self, table: &TableName, batch: RecordBatch) -> Result<(), RdltError> {
+    async fn accumulate(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+        bytes: u64,
+    ) -> Result<(), RdltError> {
         let rows = batch.num_rows() as u64;
-        let bytes = rdlt_connector::channel::arrow_batch_footprint(&batch) as u64;
         let schema_changed = self
             .pending
             .get(table)
@@ -706,14 +713,14 @@ mod tests {
         use arrow::array::Int64Array;
         use arrow::datatypes::{DataType, Field, Schema};
         use std::sync::Arc;
-        LoadItem::Batch {
-            table: TableName::new(table),
-            batch: RecordBatch::try_new(
+        LoadItem::batch(
+            TableName::new(table),
+            RecordBatch::try_new(
                 Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
                 vec![Arc::new(Int64Array::from(vec![1i64, 2]))],
             )
             .expect("batch"),
-        }
+        )
     }
 
     fn checkpoint_item(stream: &str) -> LoadItem {
@@ -809,10 +816,7 @@ mod tests {
         let (mut loader, _commits) = recording_loader(CommitPolicy::every_checkpoints(10));
         for item in [
             delta_item("events", None),
-            LoadItem::Batch {
-                table: TableName::new("events"),
-                batch: decoded,
-            },
+            LoadItem::batch(TableName::new("events"), decoded),
         ] {
             loader.process(item).await.expect("process");
         }
