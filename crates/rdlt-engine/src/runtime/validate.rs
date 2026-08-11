@@ -61,16 +61,32 @@ fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
     if cursorless.is_empty() || streams.len() < 2 {
         return None;
     }
+    // Each arm's opening sentence tells its own truth (round-8 fix:
+    // the all-cursorless arm borrowed the mixed arm's "beside cursored
+    // streams" — false when zero cursored streams exist); the deferral
+    // consequence after it is one shape for both.
+    let opening = if cursorless.len() == streams.len() {
+        format!(
+            "no stream in this pipeline declares a cursor_field ([{}]): each MAY be a \
+             snapshot stream (some cursor-less streams — CDC, for one — still checkpoint \
+             through their own mechanism).",
+            cursorless.join(", ")
+        )
+    } else {
+        format!(
+            "streams [{}] declare no cursor_field beside cursored streams: they MAY be \
+             snapshot streams (some cursor-less streams — CDC, for one — still checkpoint \
+             through their own mechanism).",
+            cursorless.join(", ")
+        )
+    };
     Some(format!(
-        "streams [{}] declare no cursor_field beside cursored streams: they MAY be snapshot \
-         streams (some cursor-less streams — CDC, for one — still checkpoint through their \
-         own mechanism). Any multi-stream run defers individual commit triggers while a \
+        "{opening} Any multi-stream run defers individual commit triggers while a \
          co-stream holds rows its own checkpoint has not covered — a transient overlap; a \
          stream that NEVER checkpoints makes that deferral last the whole run, and \
          byte/time/checkpoint commit policies then cannot bound staging or WAL growth. The \
          run-time deferral warning is the authoritative signal — it fires on what actually \
-         checkpoints",
-        cursorless.join(", ")
+         checkpoints"
     ))
 }
 
@@ -402,6 +418,11 @@ mod hint_validation_tests {
              cursor-less stream can checkpoint through its own mechanism (CDC): {advisory}"
         );
         assert!(
+            advisory.contains("beside cursored streams"),
+            "the mixed arm says which shape it saw — cursor-less members beside cursored \
+             ones: {advisory}"
+        );
+        assert!(
             advisory.contains("run-time deferral warning is the authoritative signal"),
             "the advisory defers the verdict to the truth-driven run-time warning: {advisory}"
         );
@@ -410,10 +431,21 @@ mod hint_validation_tests {
             mixed_snapshot_advisory(&[cursored("a"), cursored("b")]).is_none(),
             "all-cursored pipelines commit mid-run and need no warning"
         );
-        assert!(
-            mixed_snapshot_advisory(&[cursorless("a"), cursorless("b")]).is_some(),
+        let advisory = mixed_snapshot_advisory(&[cursorless("a"), cursorless("b")]).expect(
             "an all-cursor-less multi-stream pipeline warns too — a CDC stream beside a \
-             snapshot stream is exactly the shape whose commits defer all run (round-7 fix)"
+             snapshot stream is exactly the shape whose commits defer all run (round-7 fix)",
+        );
+        assert!(
+            advisory.contains("no stream in this pipeline declares a cursor_field ([a, b])"),
+            "the all-cursor-less arm tells its own truth (round-8 fix): {advisory}"
+        );
+        assert!(
+            !advisory.contains("beside cursored streams"),
+            "with zero cursored streams the advisory must not claim any exist: {advisory}"
+        );
+        assert!(
+            advisory.contains("run-time deferral warning is the authoritative signal"),
+            "both arms share the deferral consequence and the run-time handoff: {advisory}"
         );
         assert!(
             mixed_snapshot_advisory(&[cursorless("only")]).is_none(),
