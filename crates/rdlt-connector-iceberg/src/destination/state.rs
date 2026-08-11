@@ -89,23 +89,29 @@ pub(super) struct ReceiptStamp<'a> {
     pub(super) commit_seq: u64,
 }
 
-/// Decode one receipt property value: `(highest committed seq, stamp
-/// millis)`. `None` for bytes outside the recorded shape — the reader
-/// refuses them loudly, the pruner treats them as oldest.
-fn receipt_record(value: &str) -> Option<(u64, u64)> {
-    let value: serde_json::Value = serde_json::from_str(value).ok()?;
-    Some((
-        value.get("commit_seq")?.as_u64()?,
-        value.get("stamped_at_ms")?.as_u64()?,
-    ))
+/// One receipt property value, decoded ONCE (round-12 — two
+/// hand-rolled `Value`-navigating decoders each re-parsed the same
+/// bytes): the recorded shape from the format notes above. `scope`
+/// stays optional in the DECODER only so a value without one still
+/// yields its seq/stamp — the reader refuses such a value loudly and
+/// the pruner sweeps it as corrupt bookkeeping.
+#[derive(serde::Deserialize)]
+struct ReceiptRecord {
+    commit_seq: u64,
+    stamped_at_ms: u64,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
-/// The pipeline scope a receipt value records — the retention
-/// partition key. `None` for a value without a decodable scope, which
-/// the pruner sweeps as corrupt bookkeeping (no reader accepts it).
-fn receipt_scope(value: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(value).ok()?;
-    Some(value.get("scope")?.as_str()?.to_owned())
+/// Decode one receipt property value; `None` for bytes outside the
+/// recorded shape.
+fn receipt_entry(value: &str) -> Option<ReceiptRecord> {
+    serde_json::from_str(value).ok()
+}
+
+/// The reader's view: `(highest committed seq, stamp millis)`.
+fn receipt_record(value: &str) -> Option<(u64, u64)> {
+    receipt_entry(value).map(|record| (record.commit_seq, record.stamped_at_ms))
 }
 
 /// What one stamp does to the marker table's properties, PURE so the
@@ -136,15 +142,17 @@ fn receipt_delta(
     let mut own: Vec<(u64, &String)> = properties
         .iter()
         .filter(|(k, _)| k.starts_with(PROP_RECEIPT_PREFIX) && **k != key)
-        .filter_map(|(k, v)| match (receipt_record(v), receipt_scope(v)) {
-            // This scope's own receipt: a candidate, oldest stamps first.
-            (Some((_, ms)), Some(s)) if s == scope => Some((ms, k)),
-            // A foreign scope's receipt: NEVER a candidate.
-            (Some(_), Some(_)) => None,
-            // No decodable record or scope: corrupt bookkeeping —
-            // prunes ahead of anything real.
-            _ => Some((0, k)),
-        })
+        .filter_map(
+            |(k, v)| match receipt_entry(v).map(|r| (r.stamped_at_ms, r.scope)) {
+                // This scope's own receipt: a candidate, oldest stamps first.
+                Some((ms, Some(s))) if s == scope => Some((ms, k)),
+                // A foreign scope's receipt: NEVER a candidate.
+                Some((_, Some(_))) => None,
+                // No decodable record or scope: corrupt bookkeeping —
+                // prunes ahead of anything real.
+                _ => Some((0, k)),
+            },
+        )
         .collect();
     own.sort();
     let excess = (own.len() + 1).saturating_sub(RECEIPT_RETENTION);
@@ -443,13 +451,21 @@ mod tests {
         );
         assert_eq!(receipt_record(&value), Some((3, 77)));
         assert_eq!(
-            receipt_scope(&value).as_deref(),
+            receipt_entry(&value)
+                .and_then(|record| record.scope)
+                .as_deref(),
             Some("scope-a"),
             "the stamp records its scope — the retention partition key"
         );
-        assert_eq!(receipt_record("not json"), None);
-        assert_eq!(receipt_record("{\"commit_seq\":\"x\"}"), None);
-        assert_eq!(receipt_scope("{\"commit_seq\":1}"), None);
+        assert!(receipt_entry("not json").is_none());
+        assert!(receipt_entry("{\"commit_seq\":\"x\"}").is_none());
+        assert!(
+            receipt_entry("{\"commit_seq\":1,\"stamped_at_ms\":2}")
+                .expect("seq and stamp decode without a scope")
+                .scope
+                .is_none(),
+            "a scope-less value still yields its record — the pruner decides its fate"
+        );
     }
 
     /// The merge rule: a replayed EARLY window must never lower the
