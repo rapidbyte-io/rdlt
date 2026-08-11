@@ -263,7 +263,12 @@ enum DestBoundary {
 }
 
 /// One destination arm's identities — its own pipeline, load and table
-/// so no arm's commits, claims or rows can mask another's.
+/// so no arm's commits, claims or rows can mask another's, with the
+/// invocation's entropy in the LOAD and TABLE (round-13): loads meet
+/// durable load-keyed receipts and the convergence count expects the
+/// fixture rows EXACTLY, so a previous certification of the same
+/// warehouse would replay-mask the load and double the count. The
+/// pipeline stays deterministic — nothing durable keys on it alone.
 struct ArmIdentity {
     pipeline: String,
     load: String,
@@ -271,12 +276,12 @@ struct ArmIdentity {
 }
 
 impl ArmIdentity {
-    fn for_clause(clause: &str) -> Self {
+    fn for_clause(clause: &str, entropy: &str) -> Self {
         let slug = clause.to_lowercase();
         Self {
             pipeline: format!("rdlt-certify-{slug}"),
-            load: format!("certify-{slug}"),
-            table: slug.replace('-', "_"),
+            load: format!("certify-{slug}-{entropy}"),
+            table: format!("{}_{entropy}", slug.replace('-', "_")),
         }
     }
 }
@@ -297,6 +302,10 @@ pub async fn kill_matrix_destination(
         }
         return report.entries;
     };
+    // One entropy suffix for THIS invocation's arm identities
+    // (round-13, see `mint_run_entropy`): stable across an arm's kill
+    // and convergence re-run, fresh across invocations.
+    let entropy = crate::target::mint_run_entropy();
     for (clause, boundary) in DEST_KILL_CLAUSES.into_iter().zip([
         DestBoundary::PostOpen,
         DestBoundary::PostEnsure,
@@ -320,7 +329,7 @@ pub async fn kill_matrix_destination(
         let outcome = crate::clock::timeout_excluding_probe(
             CLAUSE_TIMEOUT,
             &probe_clock,
-            destination_arm(target, &metered, clause, boundary, &slot),
+            destination_arm(target, &metered, clause, boundary, &slot, &entropy),
         )
         .await;
         // Reap UNCONDITIONALLY (round-6 fix — the source loop's twin):
@@ -342,8 +351,9 @@ async fn destination_arm(
     clause: &str,
     boundary: DestBoundary,
     slot: &crate::wire::ChildSlot,
+    entropy: &str,
 ) -> Result<Outcome, String> {
-    let identity = ArmIdentity::for_clause(clause);
+    let identity = ArmIdentity::for_clause(clause, entropy);
     let bin = resolve_binary(&target.requirement)?;
     let (mut wire, socket) = spawn_destination(&bin, target, slot).await?;
 

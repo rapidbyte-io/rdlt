@@ -247,6 +247,35 @@ impl CatalogFixture {
         })
     }
 
+    /// Every table in `namespace`, straight off the catalog — the
+    /// real-work oracle for re-certification cells: fresh per-run
+    /// identities land in fresh tables, so growth here is work a
+    /// replay-masked run would not have done.
+    pub async fn tables_in(&self, namespace: &str) -> Vec<String> {
+        let body: serde_json::Value = self
+            .http
+            .get(format!(
+                "{}/v1/{WAREHOUSE}/namespaces/{namespace}/tables",
+                self.catalog_uri
+            ))
+            .bearer_auth(&self.admin_token)
+            .send()
+            .await
+            .expect("the catalog answers the table listing")
+            .json()
+            .await
+            .expect("the table listing is JSON");
+        body["identifiers"]
+            .as_array()
+            .map(|identifiers| {
+                identifiers
+                    .iter()
+                    .filter_map(|ident| ident["name"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Raw table metadata with its HTTP status JUDGED (round-3 fix —
     /// an error-status JSON body parses to "no snapshots" and must
     /// never read as an empty table): `Ok(None)` for 404 (the table

@@ -36,3 +36,44 @@ async fn the_destination_kill_matrix_passes_at_every_boundary() {
 
     assert_all_pass_in_order(&entries, &["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"]);
 }
+
+/// ROUND-13 ACCEPTANCE (certify load-id entropy): the kill matrix runs
+/// TWICE back-to-back against ONE warehouse and both invocations pass.
+/// Iceberg's receipts and settled checks are DURABLE and load-keyed,
+/// so before the entropy suffix the second invocation's deterministic
+/// load ids met the first's receipts: its publishes were replay-masked
+/// into no-ops and its convergence counts doubled — a vacuous or
+/// failing re-certification either way. Fresh per-invocation ids make
+/// the second run do REAL work in its own tables.
+#[tokio::test(flavor = "multi_thread")]
+async fn re_certifying_the_same_warehouse_does_real_work_both_times() {
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "kill_wire_twice";
+    let config = fixture.doc(namespace);
+    let probe = LiveProbe {
+        fixture,
+        namespace: namespace.into(),
+    };
+
+    let mut tables_after = Vec::new();
+    for _invocation in 1..=2 {
+        let entries = kill_matrix_destination(
+            &Target::resolve_path(built_bin(), config.clone()),
+            Some(&probe),
+        )
+        .await;
+        assert_all_pass_in_order(&entries, &["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"]);
+        tables_after.push(probe.fixture.tables_in(namespace).await.len());
+    }
+    // The real-work oracle: fresh per-invocation identities land in
+    // fresh tables. A replay-masked second invocation (the
+    // deterministic-id defect) adds NO tables — its publishes settle
+    // against the first invocation's durable receipts.
+    assert!(
+        tables_after[1] > tables_after[0],
+        "the second invocation must do real work in its own tables: \
+         {tables_after:?} tables after each invocation"
+    );
+}

@@ -158,9 +158,11 @@ async fn a_probe_less_destination_matrix_skips_with_the_reason() {
 
 /// THE VACUITY ARM: a probe rooted at the WRONG directory sees zero
 /// rows, so every convergence assert must FAIL — proof the count
-/// judgment can fail at all. K-D4's evidence is pinned full-string; the
-/// matrix ran against a real target whose re-runs genuinely landed
-/// rows, so a Pass here could only mean the assert never looked.
+/// judgment can fail at all. K-D4's evidence is pinned by both ends
+/// (round-13: the arm table carries the invocation's entropy suffix,
+/// so the middle is no longer a constant); the matrix ran against a
+/// real target whose re-runs genuinely landed rows, so a Pass here
+/// could only mean the assert never looked.
 #[tokio::test]
 async fn a_wrong_probe_fails_every_convergence_assert() {
     let out = tempfile::tempdir().expect("tempdir");
@@ -183,10 +185,13 @@ async fn a_wrong_probe_fails_every_convergence_assert() {
         .find(|entry| entry.clause == "K-D4")
         .expect("K-D4 has an entry");
     match &d4.verdict {
-        Verdict::Fail(why) => assert_eq!(
-            why,
-            "convergence failed: table `k_d4` holds 0 rows where the kill matrix wrote 3 — \
-             the re-run lost or duplicated rows"
+        Verdict::Fail(why) => assert!(
+            why.starts_with("convergence failed: table `k_d4_")
+                && why.ends_with(
+                    "holds 0 rows where the kill matrix wrote 3 — the re-run lost or \
+                     duplicated rows"
+                ),
+            "the K-D4 evidence names its entropy-suffixed table and the exact counts: {why}"
         ),
         other => panic!("K-D4 must Fail under the wrong probe, got {other:?}"),
     }

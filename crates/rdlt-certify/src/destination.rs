@@ -315,26 +315,48 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             }
         }
         Some(socket) => {
+            // One entropy suffix for this invocation's session loads
+            // (round-13, `mint_run_entropy`): the probes' publishes
+            // mint DURABLE receipts in real warehouses, and a
+            // deterministic load id would hand a re-certification the
+            // previous run's receipts.
+            let entropy = crate::target::mint_run_entropy();
             // P8 — the one-session ceiling: with a session held, a
             // second `OpenSession` on a SECOND dial of the same socket
             // must refuse `FailedPrecondition` (the 038 frozen class).
-            report_session_probe(&mut report, "P8", probe_one_session_ceiling(&socket)).await;
+            report_session_probe(
+                &mut report,
+                "P8",
+                probe_one_session_ceiling(&socket, &entropy),
+            )
+            .await;
 
             // P9 — close-on-abandonment: a session dropped without
             // `Close` must be reclaimed within the window.
-            report_session_probe(&mut report, "P9", probe_abandonment_reclaim(&socket)).await;
+            report_session_probe(
+                &mut report,
+                "P9",
+                probe_abandonment_reclaim(&socket, &entropy),
+            )
+            .await;
 
             // P10 — the Backend-direct order book.
-            report_p10(&mut report, &socket).await;
+            report_p10(&mut report, &socket, &entropy).await;
 
             // P11 — one Arrow batch per write frame, induced with a
             // two-batch frame on its own session.
-            report_session_probe(&mut report, "P11", probe_one_batch_write(&socket)).await;
+            report_session_probe(&mut report, "P11", probe_one_batch_write(&socket, &entropy))
+                .await;
 
             // P12 — write-side error frames carry cause text, judged
             // at P10's two induction sites re-driven on this clause's
             // own sessions.
-            report_session_probe(&mut report, "P12", probe_error_frame_text(&socket)).await;
+            report_session_probe(
+                &mut report,
+                "P12",
+                probe_error_frame_text(&socket, &entropy),
+            )
+            .await;
         }
     }
 
@@ -447,8 +469,8 @@ async fn settle_open_wire(
 /// transport-level `FailedPrecondition` status (the RPC never opens),
 /// anything else fails the clause. The held session is closed orderly
 /// afterward whatever P8 concluded.
-async fn probe_one_session_ceiling(socket: &Path) -> Result<(), String> {
-    let session = settle_open_wire(socket, "rdlt-certify-p8", "certify-p8")
+async fn probe_one_session_ceiling(socket: &Path, entropy: &str) -> Result<(), String> {
+    let session = settle_open_wire(socket, "rdlt-certify-p8", &format!("certify-p8-{entropy}"))
         .await
         .map_err(|why| format!("could not open the session that holds the slot: {why}"))?;
 
@@ -492,13 +514,23 @@ async fn probe_one_session_ceiling(socket: &Path) -> Result<(), String> {
 /// the slot was released and the abandoned session's staging claim
 /// (a lease, for destinations that hold one) reclaimed. The fresh
 /// session is closed orderly.
-async fn probe_abandonment_reclaim(socket: &Path) -> Result<(), String> {
-    let abandoned = settle_open_wire(socket, "rdlt-certify-p9", "certify-p9-abandoned")
-        .await
-        .map_err(|why| format!("could not open the session to abandon: {why}"))?;
+async fn probe_abandonment_reclaim(socket: &Path, entropy: &str) -> Result<(), String> {
+    let abandoned = settle_open_wire(
+        socket,
+        "rdlt-certify-p9",
+        &format!("certify-p9-abandoned-{entropy}"),
+    )
+    .await
+    .map_err(|why| format!("could not open the session to abandon: {why}"))?;
     drop(abandoned);
 
-    match settle_open_wire(socket, "rdlt-certify-p9", "certify-p9-fresh").await {
+    match settle_open_wire(
+        socket,
+        "rdlt-certify-p9",
+        &format!("certify-p9-fresh-{entropy}"),
+    )
+    .await
+    {
         Ok(fresh) => {
             fresh.close().await;
             Ok(())
@@ -528,8 +560,9 @@ where
 /// The P10 identities — one pipeline of their own so the order-book
 /// probe's commits never collide with the D-suite's or P8/P9's.
 const P10_PIPELINE: &str = "rdlt-certify-p10";
-/// The one load id both passes commit and interrogate.
-const P10_LOAD: &str = "certify-p10";
+/// The one load id both passes commit and interrogate — the
+/// invocation's entropy joins it in `probe_order_book` (round-13).
+const P10_LOAD_PREFIX: &str = "certify-p10";
 /// The one `(load, seq)` idempotency key the probe drives.
 const P10_SEQ: u64 = 1;
 /// The probe's table.
@@ -538,8 +571,8 @@ const P10_TABLE: &str = "p10_order_book";
 /// P10 under the clause budget — a probe that stalls (the hang-on-close
 /// rogue's arm) FAILS the clause with the one timeout spelling, the
 /// certifier outliving the hang.
-async fn report_p10(report: &mut Report, socket: &Path) {
-    report_session_probe(report, "P10", probe_order_book(socket)).await;
+async fn report_p10(report: &mut Report, socket: &Path, entropy: &str) {
+    report_session_probe(report, "P10", probe_order_book(socket, entropy)).await;
 }
 
 /// The P10 probe — the Backend-direct order book: the raw destination
@@ -563,13 +596,14 @@ async fn report_p10(report: &mut Report, socket: &Path) {
 /// - part-event legality: `part_closed` events are legal anywhere
 ///   before `close`'s answer and NOWHERE after it
 ///   ([`WireSession::close_judged`] holds the boundary).
-async fn probe_order_book(socket: &Path) -> Result<(), String> {
-    let meta_json = meta_json_for(P10_PIPELINE, P10_LOAD, P10_SEQ);
+async fn probe_order_book(socket: &Path, entropy: &str) -> Result<(), String> {
+    let p10_load = format!("{P10_LOAD_PREFIX}-{entropy}");
+    let meta_json = meta_json_for(P10_PIPELINE, &p10_load, P10_SEQ);
 
     // ——— Pass 1: the out-of-order probe, then the canonical sequence.
     // A violation returns mid-session; the drop is the wire's
     // abandonment signal and P9 already certified its reclaim.
-    let mut session = settle_open_wire(socket, P10_PIPELINE, P10_LOAD)
+    let mut session = settle_open_wire(socket, P10_PIPELINE, &p10_load)
         .await
         .map_err(|why| format!("could not open the order-book session: {why}"))?;
 
@@ -600,7 +634,7 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
         "written",
     )?;
 
-    match receipt_reply(&mut session, P10_LOAD, P10_SEQ).await? {
+    match receipt_reply(&mut session, &p10_load, P10_SEQ).await? {
         // A fresh load: `publish` is the legal continuation.
         None => expect(
             session.request(publish_request(&meta_json)).await?,
@@ -624,10 +658,10 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
 
     // ——— Pass 2: the exclusivity pass, a FRESH session on the same
     // load — the receipt must have outlived the session that minted it.
-    let mut session = settle_open_wire(socket, P10_PIPELINE, P10_LOAD)
+    let mut session = settle_open_wire(socket, P10_PIPELINE, &p10_load)
         .await
         .map_err(|why| format!("could not open the exclusivity session: {why}"))?;
-    let Some(existing) = receipt_reply(&mut session, P10_LOAD, P10_SEQ).await? else {
+    let Some(existing) = receipt_reply(&mut session, &p10_load, P10_SEQ).await? else {
         return Err(
             "a fresh session's `existing_receipt` reported no receipt for a load an earlier \
              session committed — the receipt must be durable across sessions"
@@ -670,7 +704,7 @@ async fn probe_order_book(socket: &Path) -> Result<(), String> {
 /// P10 order book's commits.
 const P11_PIPELINE: &str = "rdlt-certify-p11";
 /// P11's load id.
-const P11_LOAD: &str = "certify-p11";
+const P11_LOAD_PREFIX: &str = "certify-p11";
 /// P11's table.
 const P11_TABLE: &str = "p11_one_batch";
 
@@ -685,8 +719,9 @@ const P11_TABLE: &str = "p11_one_batch";
 /// multi-batch frame itself, so first-party destinations pass with no
 /// connector code. The session is closed best-effort whatever the
 /// verdict: the refusal is answered in-stream, the session outlives it.
-async fn probe_one_batch_write(socket: &Path) -> Result<(), String> {
-    let mut session = settle_open_wire(socket, P11_PIPELINE, P11_LOAD)
+async fn probe_one_batch_write(socket: &Path, entropy: &str) -> Result<(), String> {
+    let p11_load = format!("{P11_LOAD_PREFIX}-{entropy}");
+    let mut session = settle_open_wire(socket, P11_PIPELINE, &p11_load)
         .await
         .map_err(|why| format!("could not open the one-batch session: {why}"))?;
     let verdict = async {
@@ -718,7 +753,7 @@ async fn probe_one_batch_write(socket: &Path) -> Result<(), String> {
 /// The P12 identities — a pipeline of this clause's own.
 const P12_PIPELINE: &str = "rdlt-certify-p12";
 /// The one load id both P12 sessions commit and interrogate.
-const P12_LOAD: &str = "certify-p12";
+const P12_LOAD_PREFIX: &str = "certify-p12";
 /// The one `(load, seq)` idempotency key the probe drives.
 const P12_SEQ: u64 = 1;
 /// P12's table.
@@ -734,12 +769,13 @@ const P12_TABLE: &str = "p12_error_text";
 /// a message that is bare cause text, never one of the four client
 /// renderings. A violation returns mid-session; the drop is the wire's
 /// abandonment signal and P9 already certified its reclaim.
-async fn probe_error_frame_text(socket: &Path) -> Result<(), String> {
-    let meta_json = meta_json_for(P12_PIPELINE, P12_LOAD, P12_SEQ);
+async fn probe_error_frame_text(socket: &Path, entropy: &str) -> Result<(), String> {
+    let p12_load = format!("{P12_LOAD_PREFIX}-{entropy}");
+    let meta_json = meta_json_for(P12_PIPELINE, &p12_load, P12_SEQ);
 
     // ——— Induction 1: the out-of-order `write` on a fresh session,
     // its refusal frame judged.
-    let mut session = settle_open_wire(socket, P12_PIPELINE, P12_LOAD)
+    let mut session = settle_open_wire(socket, P12_PIPELINE, &p12_load)
         .await
         .map_err(|why| format!("could not open the error-text session: {why}"))?;
     match session.request(write_request(P12_TABLE)).await? {
@@ -767,7 +803,7 @@ async fn probe_error_frame_text(socket: &Path) -> Result<(), String> {
         "write",
         "written",
     )?;
-    match receipt_reply(&mut session, P12_LOAD, P12_SEQ).await? {
+    match receipt_reply(&mut session, &p12_load, P12_SEQ).await? {
         None => expect(
             session.request(publish_request(&meta_json)).await?,
             "publish",
@@ -785,10 +821,10 @@ async fn probe_error_frame_text(socket: &Path) -> Result<(), String> {
     // session. A refusal is one legal answer — its frame is the
     // judged subject; the prior receipt is the other, and carries no
     // frame to judge (the same-receipt equality is P10's clause).
-    let mut session = settle_open_wire(socket, P12_PIPELINE, P12_LOAD)
+    let mut session = settle_open_wire(socket, P12_PIPELINE, &p12_load)
         .await
         .map_err(|why| format!("could not open the publish-induction session: {why}"))?;
-    let Some(existing) = receipt_reply(&mut session, P12_LOAD, P12_SEQ).await? else {
+    let Some(existing) = receipt_reply(&mut session, &p12_load, P12_SEQ).await? else {
         return Err(
             "a fresh session's `existing_receipt` reported no receipt for a load an earlier \
              session committed — the already-receipted `publish` induction cannot be driven"
@@ -866,7 +902,7 @@ mod tests {
         let socket = dir.path().join("rogue.sock");
         let _serving = rogue::serve_destination(&socket, SessionDiscipline::AcceptEverySession);
 
-        let why = probe_one_session_ceiling(&socket)
+        let why = probe_one_session_ceiling(&socket, "pinned")
             .await
             .expect_err("a second session was accepted — P8 must fail");
         assert_eq!(
@@ -886,7 +922,7 @@ mod tests {
         let socket = dir.path().join("rogue.sock");
         let _serving = rogue::serve_destination(&socket, SessionDiscipline::NeverReclaim);
 
-        let why = probe_abandonment_reclaim(&socket)
+        let why = probe_abandonment_reclaim(&socket, "pinned")
             .await
             .expect_err("the slot was never reclaimed — P9 must fail");
         let pinned = "abandoned session was not reclaimed: a fresh session still refused 10s \
@@ -921,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn a_conformant_order_book_passes_p10() {
         let (_dir, socket) = order_book_rogue(OrderBookScript::Conformant);
-        probe_order_book(&socket)
+        probe_order_book(&socket, "pinned")
             .await
             .expect("a conformant order book must pass P10");
     }
@@ -933,7 +969,7 @@ mod tests {
     #[tokio::test]
     async fn a_destination_accepting_an_unordered_write_fails_p10() {
         let (_dir, socket) = order_book_rogue(OrderBookScript::AcceptWriteBeforeEnsure);
-        let why = probe_order_book(&socket)
+        let why = probe_order_book(&socket, "pinned")
             .await
             .expect_err("the unordered write was accepted — P10 must fail");
         assert_eq!(
@@ -952,15 +988,15 @@ mod tests {
     #[tokio::test]
     async fn a_destination_minting_a_fresh_receipt_on_a_replayed_load_fails_p10() {
         let (_dir, socket) = order_book_rogue(OrderBookScript::PublishOnReplay);
-        let why = probe_order_book(&socket)
+        let why = probe_order_book(&socket, "pinned")
             .await
             .expect_err("the publish minted a fresh receipt — P10 must fail");
         assert_eq!(
             why,
             "a `publish` for a load whose receipt already exists minted a NEW receipt — \
              after `existing_receipt` reports a receipt, `publish` must be refused or answer \
-             that same receipt (existing {\"load_id\":\"certify-p10\",\"commit_seq\":1}, \
-             published {\"load_id\":\"certify-p10\",\"commit_seq\":2})"
+             that same receipt (existing {\"load_id\":\"certify-p10-pinned\",\"commit_seq\":1}, \
+             published {\"load_id\":\"certify-p10-pinned\",\"commit_seq\":2})"
         );
     }
 
@@ -971,7 +1007,7 @@ mod tests {
     #[tokio::test]
     async fn a_part_event_after_the_close_reply_fails_p10() {
         let (_dir, socket) = order_book_rogue(OrderBookScript::PartEventAfterClose);
-        let why = probe_order_book(&socket)
+        let why = probe_order_book(&socket, "pinned")
             .await
             .expect_err("a part event crossed the close boundary — P10 must fail");
         assert_eq!(
@@ -988,10 +1024,10 @@ mod tests {
     #[tokio::test]
     async fn a_conformant_order_book_passes_p11_and_p12() {
         let (_dir, socket) = order_book_rogue(OrderBookScript::Conformant);
-        probe_one_batch_write(&socket)
+        probe_one_batch_write(&socket, "pinned")
             .await
             .expect("a conformant order book must pass P11");
-        probe_error_frame_text(&socket)
+        probe_error_frame_text(&socket, "pinned")
             .await
             .expect("a conformant order book must pass P12");
     }
@@ -1004,7 +1040,7 @@ mod tests {
     #[tokio::test]
     async fn a_destination_accepting_a_two_batch_write_fails_p11() {
         let (_dir, socket) = order_book_rogue(OrderBookScript::AcceptMultiBatchWrite);
-        let why = probe_one_batch_write(&socket)
+        let why = probe_one_batch_write(&socket, "pinned")
             .await
             .expect_err("the two-batch write was accepted — P11 must fail");
         assert_eq!(
@@ -1013,10 +1049,10 @@ mod tests {
              exactly one record batch, and a multi-batch frame must be refused with a typed \
              error frame"
         );
-        probe_order_book(&socket)
+        probe_order_book(&socket, "pinned")
             .await
             .expect("the rogue violates P11 alone — P10 must pass");
-        probe_error_frame_text(&socket)
+        probe_error_frame_text(&socket, "pinned")
             .await
             .expect("the rogue violates P11 alone — P12 must pass");
     }
@@ -1029,7 +1065,7 @@ mod tests {
     #[tokio::test]
     async fn a_client_rendering_in_a_session_refusal_fails_p12() {
         let (_dir, socket) = order_book_rogue(OrderBookScript::RenderedRefusal);
-        let why = probe_error_frame_text(&socket)
+        let why = probe_error_frame_text(&socket, "pinned")
             .await
             .expect_err("the refusal message carries a client rendering — P12 must fail");
         assert_eq!(
@@ -1038,10 +1074,10 @@ mod tests {
              the frame carries cause text; classification travels as the enum (the message \
              begins with `fatal destination error: `)"
         );
-        probe_order_book(&socket)
+        probe_order_book(&socket, "pinned")
             .await
             .expect("the rogue violates P12 alone — P10 must pass");
-        probe_one_batch_write(&socket)
+        probe_one_batch_write(&socket, "pinned")
             .await
             .expect("the rogue violates P12 alone — P11 must pass");
     }
@@ -1057,8 +1093,11 @@ mod tests {
         let (_dir, socket) = order_book_rogue(OrderBookScript::HangOnClose);
 
         let mut report = Report::default();
-        let outcome =
-            tokio::time::timeout(Duration::from_secs(45), report_p10(&mut report, &socket)).await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(45),
+            report_p10(&mut report, &socket, "pinned"),
+        )
+        .await;
         assert!(
             outcome.is_ok(),
             "the certifier must outlive the hang — CLAUSE_TIMEOUT never fired"

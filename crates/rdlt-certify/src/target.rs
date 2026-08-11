@@ -93,6 +93,23 @@ pub(crate) const MAX_LINE_BYTES: u64 = 64 * 1024;
 /// line; anything more within this window is a P1 violation.
 const SECOND_LINE_WINDOW: Duration = Duration::from_millis(500);
 
+/// One certification invocation's load-id entropy suffix (round-13):
+/// certify's loads meet DURABLE load-keyed receipts in real warehouses
+/// (docs/connector-authoring.md, "Load identity"), so a deterministic
+/// id would let a PREVIOUS certification's receipts replay-mask this
+/// one into a vacuous pass against the same warehouse. Minted once per
+/// certification entry call — the debuggable `certify-<slug>` prefix
+/// stays, the suffix isolates invocations, and WITHIN one invocation
+/// the ids are stable (the kill matrix's convergence re-run must reuse
+/// its arm's exact id).
+pub(crate) fn mint_run_entropy() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    rdlt_connector::core::naming::ident_hash(&format!("{}:{nanos}", std::process::id()), 12)
+}
+
 /// The bin contract's `--role=` argument for `role` — the ONE place the
 /// certifier spells the role words, matching the provider's own spawn
 /// contract.
