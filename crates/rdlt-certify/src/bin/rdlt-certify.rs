@@ -308,14 +308,7 @@ impl TableProbe for ShellProbe {
                 // signal-0 reading then reports possible residue —
                 // possible, because a recycled group id is
                 // indistinguishable from a survivor (see `group_kill`).
-                let group_note = match pgid {
-                    None => {
-                        let _ = child.start_kill();
-                        let _ = child.wait().await;
-                        Some("the probe's pid was unknown, so only the direct child was killed")
-                    }
-                    Some(pgid) => group_kill(pgid, &mut child).await,
-                };
+                let group_note = sweep_probe_exit(pgid, &mut child).await;
                 let mut message = format!(
                     "the probe command did not finish within {}s",
                     PROBE_TIMEOUT.as_secs()
@@ -328,20 +321,10 @@ impl TableProbe for ShellProbe {
                 Err(ProbeError { message })
             }
             Ok(Err(error)) => {
-                // Best-effort group kill on this exit too (round-11 —
-                // only the timeout path swept grandchildren, so a
-                // compound probe line's forks could outlive a count
-                // that failed or finished): the note is discarded,
-                // nothing here failed FOR that reason.
-                match pgid {
-                    Some(pgid) => {
-                        let _ = group_kill(pgid, &mut child).await;
-                    }
-                    None => {
-                        let _ = child.start_kill();
-                        let _ = child.wait().await;
-                    }
-                }
+                // Best-effort sweep on this exit too (round-11 — only
+                // the timeout path swept grandchildren): the note is
+                // discarded, nothing here failed FOR that reason.
+                let _ = sweep_probe_exit(pgid, &mut child).await;
                 Err(ProbeError {
                     message: format!("the probe command could not run: {error}"),
                 })
@@ -351,9 +334,7 @@ impl TableProbe for ShellProbe {
                 // direct sh child, but a fork it left behind holds
                 // whatever the probe line opened (a single-writer
                 // store, for one) into the next clause.
-                if let Some(pgid) = pgid {
-                    let _ = group_kill(pgid, &mut child).await;
-                }
+                let _ = sweep_probe_exit(pgid, &mut child).await;
                 if !status.success() {
                     return Err(ProbeError {
                         message: format!("the probe command failed: {status}"),
@@ -365,6 +346,26 @@ impl TableProbe for ShellProbe {
                     message: format!("the probe command printed `{count}`, not one u64 row count"),
                 })
             }
+        }
+    }
+}
+
+/// The one exit sweep every probe arm runs (round-12 — three arms
+/// hand-matched pgid with slight variation): SIGKILL the whole group
+/// when its id is known (grandchildren included), else kill and reap
+/// the direct child alone. Returns the degradation note the TIMEOUT
+/// arm folds into its failure message; the other arms discard it —
+/// nothing there failed for the sweep's reason.
+async fn sweep_probe_exit(
+    pgid: Option<u32>,
+    child: &mut tokio::process::Child,
+) -> Option<&'static str> {
+    match pgid {
+        Some(pgid) => group_kill(pgid, child).await,
+        None => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Some("the probe's pid was unknown, so only the direct child was killed")
         }
     }
 }
