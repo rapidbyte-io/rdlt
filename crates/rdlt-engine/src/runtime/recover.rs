@@ -22,7 +22,7 @@ pub(super) async fn recover_wal(
     capabilities: DestinationCapabilities,
     events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
     output_totals: &std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
-) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom), RdltError> {
+) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom, WalResidue), RdltError> {
     // Replay runs on its OWN session, opened under the CRASHED run's load id —
     // scanning therefore has to happen before any session exists. A session's
     // load id is not decoration: a destination that publishes straight into
@@ -32,14 +32,20 @@ pub(super) async fn recover_wal(
     // run had already filled. The recovery session is opened, drained,
     // committed and dropped before the run's own session is opened.
     let mut resumed_from = None;
+    let mut residue = WalResidue::None;
     if let Some(wal_dir) = wal_dir {
-        // Every resolved arm CLEARS, and the clear's failure REFUSES
-        // the run (round-12 — it was a silent best-effort): a span the
-        // scan just resolved must actually leave the disk, or the
-        // residue re-resolves next run — after a REPLAY that would
-        // re-commit the replayed span (idempotence absorbs it, but the
-        // run proceeds believing the workdir is clean), and `Wal::open`
-        // now refuses a surviving manifest outright.
+        // Every resolved arm CLEARS. The clear's failure REFUSES the
+        // run where the residue is a HAZARD (round-12; narrowed in
+        // round 13): after a Recover, surviving residue re-replays the
+        // span next run (idempotence absorbs it, but the run proceeds
+        // believing the workdir clean); after Damaged/Unsupported the
+        // residue re-degrades every following run. The DISCARD arm is
+        // different — its manifest holds nothing replayable (an
+        // already-committed span, or a crash before the first
+        // checkpoint), so the residue is RESOLVED state: main's
+        // best-effort tolerance returns there as a warning, and the
+        // one caller threads the tolerance to `Wal::open`, whose
+        // residue refusal stands for every OTHER path.
         let cleared = |dir: &Path| -> Result<(), RdltError> {
             crate::wal::clear(dir).map_err(|e| {
                 RdltError::wal(format!(
@@ -55,7 +61,17 @@ pub(super) async fn recover_wal(
             // first checkpoint leaves a manifest and its segments behind, and a
             // pipeline that keeps failing there would grow both without bound.
             // Not a warning — dying before the first checkpoint is ordinary.
-            crate::wal::resume::ScanOutcome::Discard => cleared(wal_dir)?,
+            crate::wal::resume::ScanOutcome::Discard => {
+                if let Err(e) = crate::wal::clear(wal_dir) {
+                    tracing::warn!(
+                        "clearing the resolved WAL directory `{}` failed: {e} — proceeding \
+                         (its manifest holds nothing replayable; the new run's records \
+                         append after it)",
+                        wal_dir.display()
+                    );
+                    residue = WalResidue::Resolved;
+                }
+            }
             crate::wal::resume::ScanOutcome::Recover(span) => {
                 resumed_from =
                     replay_span(destination, config, wal_dir, span, capabilities).await?;
@@ -95,7 +111,23 @@ pub(super) async fn recover_wal(
     let base_state = recovered
         .unwrap_or_else(|| StateDoc::new(config.pipeline.clone(), env!("CARGO_PKG_VERSION")));
 
-    Ok((session, base_state, resumed_from))
+    Ok((session, base_state, resumed_from, residue))
+}
+
+/// What recovery left in the WAL directory — [`crate::wal::Wal::open`]
+/// refuses a surviving manifest EXCEPT when recovery itself vouched
+/// for it (round-13): a Discard-class manifest that could not be
+/// cleared holds nothing replayable, so tolerating it is main's old
+/// best-effort posture, warned; every other surviving manifest stays
+/// the sequencing defect the refusal exists for.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum WalResidue {
+    /// The directory was cleared (or held nothing): a fresh open
+    /// expects it clean.
+    None,
+    /// A RESOLVED manifest survived a failed clear — tolerated for
+    /// this run only, with the warning already logged.
+    Resolved,
 }
 
 /// Read persisted state and reject a document this build cannot honour before

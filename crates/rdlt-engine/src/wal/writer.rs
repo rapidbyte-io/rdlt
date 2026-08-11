@@ -52,12 +52,18 @@ fn wal_err(context: &str, e: impl std::fmt::Display) -> RdltError {
 }
 
 impl Wal {
-    /// Open (creating if needed) the WAL for a new run and append its `Run` header.
+    /// Open (creating if needed) the WAL for a new run and append its
+    /// `Run` header. `tolerate_resolved_residue` is recovery's voucher
+    /// (round-13): true ONLY when the scan resolved the surviving
+    /// manifest as holding nothing replayable and its clear failed —
+    /// the new run's records then append after the resolved span, the
+    /// manifest format's own multi-Run shape.
     pub(crate) fn open(
         dir: PathBuf,
         pipeline: &PipelineId,
         load_id: &LoadId,
         rules: rdlt_core::naming::IdentRules,
+        tolerate_resolved_residue: bool,
     ) -> Result<Self, RdltError> {
         std::fs::create_dir_all(&dir).map_err(|e| wal_err("creating wal dir", e))?;
         // A fresh open expects a CLEAN directory (round-12): recovery
@@ -65,9 +71,9 @@ impl Wal {
         // surviving manifest here is unresolved residue — writing a
         // new Run header (and a fresh sidecar) over it would mask the
         // very drift gates the sidecar exists for. Refuse, naming the
-        // residue.
+        // residue — unless recovery vouched (see above).
         let manifest_path = dir.join("manifest.jsonl");
-        if manifest_path.exists() {
+        if manifest_path.exists() && !tolerate_resolved_residue {
             return Err(RdltError::wal(format!(
                 "a WAL manifest already exists at `{}` — a fresh run opens over a clean \
                  directory (recovery resolves and clears a prior span first), so \
@@ -352,12 +358,41 @@ mod tests {
             &PipelineId::new("p"),
             &LoadId::new("l"),
             rdlt_core::naming::IdentRules::default(),
+            false,
         )
         .expect_err("a surviving manifest must refuse the open");
         let text = error.to_string();
         assert!(
             text.contains("manifest already exists") && text.contains("refusing to write over it"),
             "the refusal names the residue: {text}"
+        );
+    }
+
+    /// Recovery's voucher (round-13): with `tolerate_resolved_residue`
+    /// the open proceeds over a surviving manifest — the Discard-class
+    /// shape whose clear failed — and the new Run header APPENDS after
+    /// the resolved span, the manifest format's own multi-Run shape.
+    #[test]
+    fn open_with_the_residue_voucher_appends_after_the_resolved_span() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stale =
+            "{\"rec\":\"run\",\"format_version\":2,\"load_id\":\"old\",\"pipeline\":\"p\"}\n";
+        std::fs::write(dir.path().join("manifest.jsonl"), stale).expect("residue");
+        Wal::open(
+            dir.path().to_path_buf(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+            true,
+        )
+        .expect("the vouched open proceeds over resolved residue");
+        let manifest =
+            std::fs::read_to_string(dir.path().join("manifest.jsonl")).expect("manifest");
+        let lines: Vec<&str> = manifest.lines().collect();
+        assert_eq!(lines.len(), 2, "{manifest}");
+        assert!(
+            lines[0].contains("\"old\"") && lines[1].contains("\"l\""),
+            "the new Run header appends AFTER the resolved span: {manifest}"
         );
     }
 
@@ -375,6 +410,7 @@ mod tests {
             &PipelineId::new("p"),
             &LoadId::new("l"),
             rdlt_core::naming::IdentRules::default(),
+            false,
         )
         .expect("open wal");
 

@@ -109,24 +109,41 @@ async fn a_wal_open_failure_after_session_recovery_still_closes_the_session() {
     );
 }
 
-/// Round-12: a WAL span the scan resolved must actually leave the
-/// disk, and a clear that CANNOT remove it refuses the run naming the
-/// directory — proceeding over unresolved residue would let the next
-/// crash re-resolve a span this run believed gone. The fixture plants
-/// a committed-looking manifest (the ordinary Discard shape) plus a
-/// write-protected subdirectory that makes `remove_dir_all` fail.
-#[tokio::test]
-async fn an_uncleanable_wal_directory_refuses_the_run_naming_the_clear_failure() {
+/// Plant an unclearable WAL directory: `manifest` and a matching
+/// default-rules sidecar, plus a write-protected subdirectory that
+/// makes `remove_dir_all` fail with EACCES. Returns the unlocker.
+fn plant_unclearable_wal(wal_dir: &Path, manifest: String) -> impl FnOnce() {
     use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(wal_dir).expect("wal dir");
+    std::fs::write(wal_dir.join("manifest.jsonl"), manifest).expect("manifest");
+    std::fs::write(
+        wal_dir.join("rules.json"),
+        serde_json::json!({"max_len": 63}).to_string(),
+    )
+    .expect("sidecar");
+    let locked = wal_dir.join("locked");
+    std::fs::create_dir(&locked).expect("locked dir");
+    std::fs::write(locked.join("pin"), b"residue").expect("pinned file");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
+        .expect("write-protect");
+    move || {
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("unlock for cleanup");
+    }
+}
 
+/// Round-12, narrowed in round 13 to the arms where residue is a
+/// HAZARD: a Damaged-class WAL (here: an unparseable rules sidecar)
+/// that cannot be cleared refuses the run naming the directory —
+/// proceeding would re-degrade every following run over the same
+/// residue.
+#[tokio::test]
+async fn an_uncleanable_damaged_wal_refuses_the_run_naming_the_clear_failure() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workdir = dir.path().join("work");
     let wal_dir = workdir.join("wal");
-    std::fs::create_dir_all(&wal_dir).expect("wal dir");
-    // A current-version header with no checkpoint: the scan's Discard
-    // arm, whose clear is the subject.
-    std::fs::write(
-        wal_dir.join("manifest.jsonl"),
+    let unlock = plant_unclearable_wal(
+        &wal_dir,
         format!(
             "{}\n",
             serde_json::json!({
@@ -136,25 +153,14 @@ async fn an_uncleanable_wal_directory_refuses_the_run_naming_the_clear_failure()
                 "pipeline": "wal-lifecycle",
             })
         ),
-    )
-    .expect("manifest");
-    std::fs::write(
-        wal_dir.join("rules.json"),
-        serde_json::json!({"max_len": 63}).to_string(),
-    )
-    .expect("sidecar");
-    // The immovable object: a file inside a directory the process may
-    // not write makes `remove_dir_all` fail with EACCES.
-    let locked = wal_dir.join("locked");
-    std::fs::create_dir(&locked).expect("locked dir");
-    std::fs::write(locked.join("pin"), b"residue").expect("pinned file");
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
-        .expect("write-protect");
+    );
+    // Damaged-class: the sidecar does not parse.
+    std::fs::write(wal_dir.join("rules.json"), b"not json").expect("corrupt sidecar");
 
     let error = Engine::new(config(&workdir), source(), MemoryDestination::new())
         .run()
         .await
-        .expect_err("the run must refuse over residue it cannot clear");
+        .expect_err("the run must refuse over damaged residue it cannot clear");
     let text = error.to_string();
     assert!(
         text.contains("clearing the WAL directory")
@@ -163,7 +169,42 @@ async fn an_uncleanable_wal_directory_refuses_the_run_naming_the_clear_failure()
         "the refusal names the clear failure and the directory: {text}"
     );
 
-    // Unlock so the tempdir can reap itself.
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
-        .expect("unlock for cleanup");
+    unlock();
+}
+
+/// Round-13: the DISCARD arm softens — its manifest holds nothing
+/// replayable (resolved state), so a failed clear WARNS and the run
+/// proceeds (main's old best-effort posture), the new run's records
+/// appending after the resolved span. Refusing here would wedge a
+/// healthy pipeline on a permissions accident.
+#[tokio::test]
+async fn an_uncleanable_discard_class_wal_still_runs_with_a_warning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workdir = dir.path().join("work");
+    let wal_dir = workdir.join("wal");
+    // A current-version header with no checkpoint: the Discard shape.
+    let unlock = plant_unclearable_wal(
+        &wal_dir,
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "rec": "run",
+                "format_version": 2,
+                "load_id": "stale",
+                "pipeline": "wal-lifecycle",
+            })
+        ),
+    );
+
+    let report = Engine::new(config(&workdir), source(), MemoryDestination::new())
+        .run()
+        .await
+        .expect("resolved residue must not wedge the run");
+    assert_eq!(report.total_rows(), 6, "the run did real work");
+    assert!(
+        wal_dir.join("locked").exists(),
+        "the unclearable residue is still there — tolerated, not silently gone"
+    );
+
+    unlock();
 }

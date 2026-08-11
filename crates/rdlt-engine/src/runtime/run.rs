@@ -213,7 +213,7 @@ async fn run_once(
     // is exact regardless of broadcast lag.
     let output_totals: Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>> =
         Arc::default();
-    let (mut session, base_state, resumed_from) = recover_wal(
+    let (mut session, base_state, resumed_from, residue) = recover_wal(
         destination.as_ref(),
         config,
         &load_id,
@@ -232,6 +232,10 @@ async fn run_once(
                 &config.pipeline,
                 &load_id,
                 capabilities.ident_rules,
+                // Recovery vouches for Discard-class residue it could
+                // not clear (round-13) — the manifest holds nothing
+                // replayable and the new run's records append after it.
+                residue == super::recover::WalResidue::Resolved,
             )
         })
         .transpose()
