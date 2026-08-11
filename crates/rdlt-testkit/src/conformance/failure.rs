@@ -77,13 +77,9 @@ impl ConformanceSkip {
 impl Conformance {
     /// The strict fold, THE default consumption (round-7 fix): the
     /// failures plus each skip promoted — a suite outcome read this
-    /// way can never certify a skipped clause silently green.
-    pub fn into_failures(self) -> Vec<ConformanceFailure> {
-        self.expecting_no_skips()
-    }
-
-    /// The strict fold under its assert-helper name; identical to
-    /// [`Self::into_failures`].
+    /// way can never certify a skipped clause silently green. (Its
+    /// `into_failures` twin died in round 9: zero callers, and a
+    /// second public name for one fold splits future call sites.)
     pub fn expecting_no_skips(self) -> Vec<ConformanceFailure> {
         let mut failures = self.failures;
         failures.extend(self.skips.into_iter().map(ConformanceSkip::into_failure));

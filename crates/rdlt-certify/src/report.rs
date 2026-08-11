@@ -427,23 +427,11 @@ impl Report {
 /// scaffolding, and a cell whose hand list lagged a vocabulary growth
 /// kept passing while silently not asserting the new clauses): every
 /// clause in `expected` has an entry, and EVERY entry is `Pass`.
-/// Panics with the rendered report otherwise.
+/// Panics with the rendered report otherwise. The no-skips face of
+/// [`assert_certified_all_pass_with_named_skips`] — one walk, two
+/// names, so the two contracts cannot drift apart.
 pub fn assert_certified_all_pass(report: &Report, expected: &[&str]) {
-    let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-    for clause in expected {
-        assert!(
-            clauses.contains(clause),
-            "clause {clause} has no entry — asserted set was {clauses:?}"
-        );
-    }
-    assert!(
-        report
-            .entries
-            .iter()
-            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-        "certification must be all-Pass:\n{}",
-        report.render_text()
-    );
+    assert_certified_all_pass_with_named_skips(report, expected, &[]);
 }
 
 /// [`assert_certified_all_pass`] with a named honest-skip allowance
