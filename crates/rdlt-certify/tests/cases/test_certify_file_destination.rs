@@ -8,7 +8,9 @@
 //! never silently narrows: the unexercisable D-clauses come out
 //! Skip-with-reason, never Pass and never Fail.
 
-use rdlt_certify::{Target, Verdict, certify_destination};
+use rdlt_certify::{
+    NO_MERGE_SKIP, Target, Verdict, assert_certified_all_pass_with_named_skips, certify_destination,
+};
 use serde_json::json;
 
 use super::support::bins::built_bin;
@@ -19,12 +21,6 @@ const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses nee
      (the library API takes a TableProbe directly). Single-writer stores (duckdb) refuse \
      every open beside the live connector, a read-only one included — probe a COPY: copy \
      the store file plus its WAL sidecar, then count in the copy";
-
-/// The skip reason D8 carries when the destination declares no merge
-/// capability — the testkit asserts D8 only for merge-capable
-/// destinations, and the file destination is not one.
-const NO_MERGE_REASON: &str = "the destination does not declare the merge capability — D8 certifies merge upsert and was \
-     not exercised";
 
 fn file_target(out_root: &std::path::Path) -> Target {
     let config = json!({
@@ -47,35 +43,13 @@ async fn the_file_destination_certifies_clean_with_a_probe() {
 
     let report = certify_destination(&file_target(out.path()), Some(&probe)).await;
 
-    let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-    for clause in [
-        "D1", "D2", "D3", "D4", "D5", "D6", "D8", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
-        "P11", "P12",
-    ] {
-        assert!(
-            clauses.contains(&clause),
-            "clause {clause} has no entry — asserted set was {clauses:?}"
-        );
-    }
-    for entry in &report.entries {
-        match (entry.clause, &entry.verdict) {
-            ("D8", Verdict::Skip(reason)) => assert_eq!(reason, NO_MERGE_REASON),
-            ("D8", other) => panic!(
-                "the file destination declares no merge capability, so D8 must be an honest \
-                 skip, not {other:?}"
-            ),
-            (_, Verdict::Pass) => {}
-            (clause, verdict) => panic!(
-                "a conformant destination must certify clean — {clause} came out \
-                 {verdict:?}:\n{}",
-                report.render_text()
-            ),
-        }
-    }
-    assert!(
-        report.passed(),
-        "no Fail entries:\n{}",
-        report.render_text()
+    assert_certified_all_pass_with_named_skips(
+        &report,
+        &[
+            "D1", "D2", "D3", "D4", "D5", "D6", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
+            "P11", "P12",
+        ],
+        &[("D8", NO_MERGE_SKIP)],
     );
 }
 

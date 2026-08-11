@@ -27,11 +27,12 @@ mod target;
 mod wire;
 
 pub use contract::{assert_bin_arg_contract, assert_spec_identity};
-pub use destination::certify_destination;
+pub use destination::{NO_MERGE_SKIP, certify_destination};
 pub use kill::{kill_matrix_destination, kill_matrix_source};
 pub use report::{
     CLAUSES, Clause, Entry, Report, Verdict, assert_all_pass_in_order,
-    assert_all_pass_in_order_with_skip_advice, assert_certified_all_pass, clause_title,
+    assert_all_pass_in_order_with_skip_advice, assert_certified_all_pass,
+    assert_certified_all_pass_with_named_skips, clause_title,
 };
 pub use source::{SOURCE_CLAUSES, certify_source};
 pub use target::Target;

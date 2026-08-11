@@ -95,8 +95,10 @@ pub(crate) const NO_PROBE_SKIP: &str = "no table probe supplied — read-back cl
 /// The skip reason D8 carries for a destination that declares no merge
 /// capability — the suite asserts D8 only for merge-capable
 /// destinations, so folding it into the asserted set would mint a
-/// `Pass` for a clause that never ran.
-const NO_MERGE_SKIP: &str = "the destination does not declare the merge capability — D8 certifies merge upsert and was \
+/// `Pass` for a clause that never ran. Public as the ONE spelling
+/// merge-less connectors' certify cells assert against (round-8 fix —
+/// two cells carried their own copies).
+pub const NO_MERGE_SKIP: &str = "the destination does not declare the merge capability — D8 certifies merge upsert and was \
      not exercised";
 
 /// Certify `target` as a DESTINATION connector. Never hangs and never

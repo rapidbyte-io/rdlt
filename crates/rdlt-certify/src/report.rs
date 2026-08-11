@@ -446,6 +446,53 @@ pub fn assert_certified_all_pass(report: &Report, expected: &[&str]) {
     );
 }
 
+/// [`assert_certified_all_pass`] with a named honest-skip allowance
+/// (round-8 fix — the D8 merge-false cells hand-rolled this walk in
+/// two suites, each carrying its own copy of the skip's reason
+/// spelling): every clause in `expected` and `skips` has an entry,
+/// every `(clause, reason)` in `skips` came out `Skip` carrying
+/// EXACTLY that reason — never `Pass`, which would mint a verdict for
+/// a clause that never ran — and every other entry is `Pass`. Panics
+/// with the rendered report otherwise.
+pub fn assert_certified_all_pass_with_named_skips(
+    report: &Report,
+    expected: &[&str],
+    skips: &[(&str, &str)],
+) {
+    let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
+    for clause in expected
+        .iter()
+        .chain(skips.iter().map(|(clause, _)| clause))
+    {
+        assert!(
+            clauses.contains(clause),
+            "clause {clause} has no entry — asserted set was {clauses:?}"
+        );
+    }
+    for entry in &report.entries {
+        match skips.iter().find(|(clause, _)| *clause == entry.clause) {
+            Some((clause, reason)) => match &entry.verdict {
+                Verdict::Skip(actual) => assert_eq!(
+                    actual, reason,
+                    "clause {clause} must skip with the named reason"
+                ),
+                other => panic!(
+                    "clause {clause} must be an honest skip, not {other:?}:\n{}",
+                    report.render_text()
+                ),
+            },
+            None => assert!(
+                matches!(entry.verdict, Verdict::Pass),
+                "certification must be all-Pass outside the named skips — {} came out \
+                 {:?}:\n{}",
+                entry.clause,
+                entry.verdict,
+                report.render_text()
+            ),
+        }
+    }
+}
+
 /// The kill matrices' stronger shape: the clause sequence is EXACTLY
 /// `expected`, in order (the K-vocabulary is fixed), and every entry is
 /// `Pass`. Panics with the rendered entries otherwise.
@@ -597,6 +644,41 @@ mod tests {
              PASS S4 (prompt cancellation)\n"
         );
         assert!(report.passed(), "a skip is not a failure");
+    }
+
+    /// The named-skip helper's teeth: the named clause must be a
+    /// `Skip` with EXACTLY the named reason — a `Pass` there (a
+    /// verdict minted for a clause that never ran) and a drifted
+    /// reason both refuse.
+    #[test]
+    fn the_named_skip_helper_demands_the_skip_and_its_exact_reason() {
+        let mut honest = Report::default();
+        honest.pass("D1");
+        honest.skip("D8", "not exercised".into());
+        assert_certified_all_pass_with_named_skips(&honest, &["D1"], &[("D8", "not exercised")]);
+
+        let mut minted = Report::default();
+        minted.pass("D1");
+        minted.pass("D8");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_certified_all_pass_with_named_skips(&minted, &["D1"], &[("D8", "not exercised")])
+        }));
+        assert!(
+            outcome.is_err(),
+            "a Pass where the named skip belongs must refuse"
+        );
+
+        let mut drifted = Report::default();
+        drifted.pass("D1");
+        drifted.skip("D8", "some other spelling".into());
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_certified_all_pass_with_named_skips(
+                &drifted,
+                &["D1"],
+                &[("D8", "not exercised")],
+            )
+        }));
+        assert!(outcome.is_err(), "a drifted skip reason must refuse");
     }
 
     /// The one timeout spelling, full-string — the certification bar's
