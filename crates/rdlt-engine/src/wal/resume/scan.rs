@@ -450,19 +450,20 @@ fn filter_covered(
     // keeps normalized roots injective, so at most the stream's own
     // table matches. Child tables never collide in (their names carry
     // the `__` separator and normalize to themselves).
+    // The parentless recorded tables normalize ONCE into a count map
+    // (round-11 hoist — the loop below re-normalized every schema
+    // table per checkpointed root and re-looked-up keys it was already
+    // iterating), then each checkpointed root reads its count.
+    let mut normalized_roots: BTreeMap<rdlt_core::TableName, usize> = BTreeMap::new();
+    for (table, (schema, _)) in schemas {
+        if schema.parent.is_none() {
+            let normalized =
+                crate::coverage::root_table(&rdlt_core::StreamName::new(table.as_str()), rules);
+            *normalized_roots.entry(normalized).or_insert(0) += 1;
+        }
+    }
     for root in root_to_stream.keys() {
-        let colliding = schemas
-            .keys()
-            .filter(|table| {
-                schemas
-                    .get(*table)
-                    .is_some_and(|(schema, _)| schema.parent.is_none())
-                    && crate::coverage::root_table(
-                        &rdlt_core::StreamName::new(table.as_str()),
-                        rules,
-                    ) == *root
-            })
-            .count();
+        let colliding = normalized_roots.get(root).copied().unwrap_or(0);
         if colliding > 1 {
             return Err(format!(
                 "{colliding} recorded root tables normalize onto checkpointed root `{root}` — \
