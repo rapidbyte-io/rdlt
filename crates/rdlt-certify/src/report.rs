@@ -481,6 +481,17 @@ pub fn assert_certified_all_pass_with_named_skips(
     }
 }
 
+/// Render a borrowed entry slice the way a report renders. Built ONLY
+/// on the panic paths (round-10 fix — the assert helpers cloned the
+/// whole entry list up front to have a rendering ready, paying the
+/// allocation on the all-pass path every gate run takes).
+fn render_entries(entries: &[Entry]) -> String {
+    Report {
+        entries: entries.to_vec(),
+    }
+    .render_text()
+}
+
 /// The kill matrices' stronger shape: the clause sequence is EXACTLY
 /// `expected`, in order (the K-vocabulary is fixed), and every entry is
 /// `Pass`. Panics with the rendered entries otherwise.
@@ -490,16 +501,12 @@ pub fn assert_all_pass_in_order(entries: &[Entry], expected: &[&str]) {
         clauses, expected,
         "the clause vocabulary is fixed, in order"
     );
-    let rendered = Report {
-        entries: entries.to_vec(),
-    };
-    assert!(
-        entries
-            .iter()
-            .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-        "every arm must Pass:\n{}",
-        rendered.render_text()
-    );
+    if !entries
+        .iter()
+        .all(|entry| matches!(entry.verdict, Verdict::Pass))
+    {
+        panic!("every arm must Pass:\n{}", render_entries(entries));
+    }
 }
 
 /// The Skip-diagnosing variant of [`assert_all_pass_in_order`] (round-4
@@ -515,15 +522,12 @@ pub fn assert_all_pass_in_order_with_skip_advice(
     expected: &[&str],
     fixture_advice: &str,
 ) {
-    let rendered = Report {
-        entries: entries.to_vec(),
-    };
     for entry in entries {
         if let Verdict::Skip(why) = &entry.verdict {
             panic!(
                 "{} skipped — {fixture_advice}: {why}\n{}",
                 entry.clause,
-                rendered.render_text()
+                render_entries(entries)
             );
         }
     }
