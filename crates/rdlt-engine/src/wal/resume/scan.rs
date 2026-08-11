@@ -169,7 +169,8 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
     // T7E, proven live on the multi-table crash sweep). Uncovered segments
     // are dropped — re-extraction re-delivers them — and a span with no
     // checkpoint at all has nothing safely replayable.
-    match (load_id, filter_covered(span, &schemas, rules)) {
+    let mut memo = ChainMemo::default();
+    match (load_id, filter_covered(span, &schemas, rules, &mut memo)) {
         (Some(load_id), Ok(Some(records))) => {
             // REPLAY ENSURES ONLY WHAT IT WRITES (round-3 fix): the
             // segment filter can drop every one of a table's segments
@@ -185,7 +186,7 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
             // unaffected — `filter_covered` already ran against the
             // full pre-filter `schemas` map. Re-extraction re-ensures
             // everything else live, delta-before-batch as always.
-            let live = live_tables(&records, &schemas);
+            let live = live_tables(&records, &schemas, &mut memo);
             let records = records
                 .into_iter()
                 .filter(|record| match record {
@@ -274,33 +275,92 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<Str
     }
 }
 
+/// The scan's half of the loader's round-6 memo (round-10 refactor —
+/// `filter_covered` re-walked parent chains per SEGMENT and
+/// `live_tables` then walked the same chains again): each table's
+/// recorded ancestor chain — the table itself first, its root last —
+/// is resolved through [`crate::coverage::walk_to_root`] ONCE per
+/// scan, and both consumers read it: the covered-filter takes the
+/// root, the live-set fold takes the whole chain. No invalidation for
+/// the loader's reason: the schemas map is complete before the first
+/// resolution. Attribution stays on the RECORDED parent links — name
+/// prefixes would NOT do: `child_table_name` re-normalizes, so a long
+/// child's name truncates to a hash suffix that need not contain its
+/// root.
+#[derive(Default)]
+struct ChainMemo {
+    chains: std::collections::BTreeMap<rdlt_core::TableName, Vec<rdlt_core::TableName>>,
+}
+
+impl ChainMemo {
+    /// `table`'s recorded chain, memoized. The scan's refusals ride the
+    /// walk's error channel: a table with no recorded schema breaks
+    /// delta-before-first-batch, and an unterminated chain is a cycle
+    /// no writer produces.
+    fn chain(
+        &mut self,
+        table: &rdlt_core::TableName,
+        schemas: &std::collections::BTreeMap<
+            rdlt_core::TableName,
+            (rdlt_core::TableSchema, rdlt_core::WriteMode),
+        >,
+    ) -> Result<&[rdlt_core::TableName], String> {
+        if !self.chains.contains_key(table) {
+            let mut path: Vec<rdlt_core::TableName> = Vec::new();
+            crate::coverage::walk_to_root(table, schemas.len(), |current| {
+                path.push(current.clone());
+                match schemas.get(current) {
+                    None => Err(format!(
+                        "segment table `{current}` has no schema delta anywhere in the manifest \
+                         (the writer records delta-before-first-batch), so its covering stream \
+                         is unknowable"
+                    )),
+                    Some((schema, _)) => Ok(schema.parent.as_ref().map(|link| link.parent.clone())),
+                }
+            })?
+            .ok_or_else(|| format!("table `{table}`'s recorded parent chain does not terminate"))?;
+            self.chains.insert(table.clone(), path);
+        }
+        Ok(self.chains.get(table).expect("resolved above"))
+    }
+
+    /// The chain's last hop — the root the covered-filter joins on.
+    fn root_of(
+        &mut self,
+        table: &rdlt_core::TableName,
+        schemas: &std::collections::BTreeMap<
+            rdlt_core::TableName,
+            (rdlt_core::TableSchema, rdlt_core::WriteMode),
+        >,
+    ) -> Result<rdlt_core::TableName, String> {
+        Ok(self
+            .chain(table, schemas)?
+            .last()
+            .expect("a chain holds at least its own table")
+            .clone())
+    }
+}
+
 /// The tables replay will actually WRITE: every surviving segment's
-/// table plus its recorded ancestors (the bounded walk `filter_covered`
-/// already proved terminates for every surviving segment). What this
-/// set gates: replay's ensure calls — see the pruning at the scan's
-/// Recover arm for why an ensure without rows is a hazard.
+/// table plus its recorded ancestors, read off the memo the
+/// covered-filter already filled (survivors are a subset of what it
+/// resolved, so these are cache reads). What this set gates: replay's
+/// ensure calls — see the pruning at the scan's Recover arm for why an
+/// ensure without rows is a hazard.
 fn live_tables(
     records: &[WalRecord],
     schemas: &std::collections::BTreeMap<
         rdlt_core::TableName,
         (rdlt_core::TableSchema, rdlt_core::WriteMode),
     >,
+    memo: &mut ChainMemo,
 ) -> std::collections::BTreeSet<rdlt_core::TableName> {
     let mut live = std::collections::BTreeSet::new();
     for record in records {
-        if let WalRecord::Segment { table, .. } = record {
-            // The shared bounded walk, collecting every hop: the walk's
-            // own root answer is not needed here — membership of the
-            // whole chain is.
-            let _ = crate::coverage::walk_to_root(table, schemas.len(), |current| {
-                if !live.insert(current.clone()) {
-                    return Ok::<_, std::convert::Infallible>(None); // chain already walked
-                }
-                Ok(schemas
-                    .get(current)
-                    .and_then(|(s, _)| s.parent.as_ref())
-                    .map(|link| link.parent.clone()))
-            });
+        if let WalRecord::Segment { table, .. } = record
+            && let Ok(chain) = memo.chain(table, schemas)
+        {
+            live.extend(chain.iter().cloned());
         }
     }
     live
@@ -329,6 +389,7 @@ fn filter_covered(
         (rdlt_core::TableSchema, rdlt_core::WriteMode),
     >,
     rules: rdlt_core::naming::IdentRules,
+    memo: &mut ChainMemo,
 ) -> Result<Option<Vec<WalRecord>>, String> {
     use std::collections::BTreeMap;
 
@@ -397,30 +458,14 @@ fn filter_covered(
         }
     }
 
-    // A segment's root table, along the parent links its Deltas recorded —
-    // the shared bounded walk ([`crate::coverage::walk_to_root`], the same
-    // implementation the loader's commit gate resolves roots with). Name
-    // prefixes would NOT do: `child_table_name` re-normalizes, so a long
-    // child's name truncates to a hash suffix that need not contain its
-    // root. The scan's own refusals ride the walk's error channel: a table
-    // with no recorded schema breaks delta-before-first-batch, and an
-    // unterminated chain is a cycle no writer produces.
-    let root_of = |table: &rdlt_core::TableName| -> Result<rdlt_core::TableName, String> {
-        crate::coverage::walk_to_root(table, schemas.len(), |current| match schemas.get(current) {
-            None => Err(format!(
-                "segment table `{current}` has no schema delta anywhere in the manifest \
-                 (the writer records delta-before-first-batch), so its covering stream \
-                 is unknowable"
-            )),
-            Some((schema, _)) => Ok(schema.parent.as_ref().map(|link| link.parent.clone())),
-        })?
-        .ok_or_else(|| format!("table `{table}`'s recorded parent chain does not terminate"))
-    };
-
+    // A segment's root table, along the parent links its Deltas
+    // recorded — [`ChainMemo`]'s walk, the same implementation the
+    // loader's commit gate resolves roots with, resolved once per
+    // table.
     let mut keep = vec![true; span.len()];
     for (index, record) in span.iter().enumerate() {
         if let WalRecord::Segment { table, .. } = record {
-            let root = root_of(table)?;
+            let root = memo.root_of(table, schemas)?;
             match root_to_stream.get(&root) {
                 Some(stream) => {
                     // Covered iff this stream's LAST checkpoint follows the
