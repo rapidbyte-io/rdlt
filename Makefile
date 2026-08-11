@@ -208,6 +208,14 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-rest --features 
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_spawned_bin)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_certify_wire)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(test_kill_wire)'
+# The support module's OWN pin (the shared count_at probe helper's
+# absence-vs-broken-read rule) lives at cases::support::probe, which
+# none of the three case-module filters above matches — without this
+# line it is compiled behind `spawn-bins` yet selected by NOTHING
+# (the 024 zero-coverage class). Own line per the
+# one-module-per-invocation rule; an empty selection (module renamed)
+# fails the line.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-duckdb --features spawn-bins -E 'test(support::probe)'
 # The iceberg bin's OWN spawn suite (042 Task 7), the first CATALOG
 # destination port: spawn smoke (identity, --version, exit 2 —
 # including --role=source on a destination-only crate; offline, never
