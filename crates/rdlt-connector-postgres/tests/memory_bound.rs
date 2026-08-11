@@ -8,8 +8,8 @@
 //! SOURCE/engine path (never materializes the table); DuckDB's buffer-pool
 //! reservations scale with its own config, not table size, and belong to its
 //! own memory story. Measured on the reference machine (recorded on the
-//! pre-swap in-process shape): 40 M rows / 6.86 GB source table → 39 MB
-//! peak RSS under this ceiling.
+//! pre-swap in-process shape, under its old 256 MiB single-process
+//! ceiling): 40 M rows / 6.86 GB source table → 39 MB peak RSS.
 //!
 //! WHICH CONNECTORS THIS EXERCISES: since the 043 D1 swap the CLI spawns
 //! the connectors a document names, so the `postgres:` source and `file:`
@@ -21,6 +21,19 @@
 //! the pipeline, which strengthens what this test proves; that is
 //! deliberate, not incidental.
 //!
+//! THE CEILING IS 512 MiB AND CANNOT BE THE OLD 256, measured not
+//! assumed: RLIMIT_DATA counts private writable ADDRESS SPACE, and the
+//! post-swap CLI's steady state sits at ~257 MiB of VmData on a
+//! 16-core machine while its resident heap is far smaller — two 64 MiB
+//! glibc arena reservations (the CLI's own mallopt), ~30 tokio thread
+//! stacks at 2 MiB each (a floor that grows with core count), and
+//! ~70 MiB of engine/wire heap. A 256 MiB ceiling leaves the CLI zero
+//! headroom and aborts mid-run on machine-shaped virtual reservations,
+//! not on data. 512 MiB keeps the claim honest: the table is still
+//! ≥ 10× the ceiling (asserted below from pg_total_relation_size), and
+//! boundedness itself was verified directly — every process plateaus
+//! flat while 6.4 GB streams through.
+//!
 //! Self-skips (visibly) without `prlimit`, a container runtime, a built
 //! release CLI (`make release`), or the two built release connector bins
 //! (`make connector-bins`) — UNLESS `RDLT_HEAVY=1` (the sweep/deep
@@ -29,9 +42,10 @@
 
 use rdlt_connector_postgres::fixtures::PostgresContainer;
 
-/// RLIMIT_DATA ceiling for the CLI process (heap + data mmaps).
-const CEILING_BYTES: u64 = 256 * 1024 * 1024;
-/// Seeded rows: ~170 B/row on-disk ⇒ ~6.9 GB, ≥ 25× the ceiling.
+/// RLIMIT_DATA ceiling for every process in the pipeline (heap + data
+/// mmaps + thread stacks — address space, not residency; see header).
+const CEILING_BYTES: u64 = 512 * 1024 * 1024;
+/// Seeded rows: ~170 B/row on-disk ⇒ ~6.9 GB, ≥ 12× the ceiling.
 const ROWS: u64 = 40_000_000;
 
 /// The release artifacts directory — `CARGO_TARGET_DIR` honored the way
@@ -119,10 +133,19 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
 
     let directory = tempfile::tempdir().expect("tempdir");
     let source_yaml = directory.path().join("pg.yaml");
+    // The SOURCE's own batch knobs are the third sizing rule (the other
+    // two are on the pipeline document below), and they are load-bearing:
+    // the sdk's serve loop buffers up to 16 already-encoded frames, so
+    // in-flight memory in the source process is 16× the frame size. At
+    // the defaults (8 MiB / 65,536 rows ⇒ ~10 MiB frames) that is
+    // ~160 MiB before allocator churn, measured at a ~500 MiB plateau;
+    // at 1 MiB frames the source plateaus at ~38 MiB resident. A source
+    // under a tight per-process ceiling must size its batches to fit.
     std::fs::write(
         &source_yaml,
         format!(
-            "conn: \"{}\"\ntables:\n  - name: big\n",
+            "conn: \"{}\"\ntables:\n  - name: big\n\
+             batch_target_bytes: 1048576\nbatch_max_rows: 8192\n",
             container.connection_string
         ),
     )
@@ -141,14 +164,15 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
             // contribution a known constant. The consequence is worth
             // stating plainly: a file-destination pipeline under a
             // tight memory limit must size `parts` to fit it.
-            // `batch_policy.every_bytes` is the same rule's WIRE half:
-            // it is what the facade feeds the connector dial as the
-            // flow-control budget, so it caps how many encoded bytes
-            // each spawned connector may hold in flight. The 64 MiB
-            // default plus decode/build buffers does NOT fit a 256 MiB
-            // per-process ceiling (measured: the source connector died
-            // on a failed 15.8 MB allocation); 8 MiB does. A pipeline
-            // under a tight memory limit must size BOTH knobs to fit.
+            // `batch_policy.every_bytes` is the ENGINE-side half: it
+            // bounds how many batch bytes the CLI process holds in
+            // flight. It does NOT reach the spawned connectors'
+            // buffering — measured directly: quartering it left the
+            // source's plateau byte-identical. What bounds a connector
+            // is its OWN batch sizing (the pg.yaml knobs above), so a
+            // pipeline under a tight per-process ceiling sizes all
+            // THREE: the source's batches, the engine's every_bytes,
+            // and the destination's parts.
             // The source's config rides the path form (a bare string
             // is a path), keeping the credential out of the pipeline
             // document exactly as before.
@@ -172,17 +196,29 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
     let path_with_bins = std::env::join_paths(paths).expect("PATH entries join");
-    let output = std::process::Command::new("prlimit")
+    // stdout/stderr go to FILES and the pipeline gets its own process
+    // group, both for the same reason: if the CLI aborts under the
+    // ceiling, spawned connectors survive it holding its inherited
+    // stdio — with pipes, `.output()` would then block on the orphans'
+    // write ends forever, converting a FAILURE into a HANG (measured:
+    // one abort ticked nextest's SLOW marker past 2,940 s). Files make
+    // `wait` return the moment the CLI exits; the group kill below
+    // reaps whatever the pipeline left behind.
+    let stdout_path = directory.path().join("cli-stdout.log");
+    let stderr_path = directory.path().join("cli-stderr.log");
+    use std::os::unix::process::CommandExt;
+    let mut child = std::process::Command::new("prlimit")
         .env("PATH", path_with_bins)
         // RLIMIT_DATA counts VIRTUAL reservations, and each glibc malloc
         // arena reserves 64 MiB of address space up front — a handful of
-        // concurrently-allocating runtime threads bust a 256 MiB ceiling
-        // before any real data does (measured: the source connector died
-        // on a 15.8 MB allocation with almost nothing resident). The CLI
-        // bounds its own arenas via mallopt, deliberately CLI-only —
-        // library embedders and spawned connectors own their allocator
-        // policy — so the SPAWNED processes get the same bound the same
-        // way an operator would give it: the process-tree env knob.
+        // concurrently-allocating runtime threads reserve their way
+        // toward the ceiling before any real data does (measured: an
+        // unbounded source connector died on a 15.8 MB allocation with
+        // almost nothing resident). The CLI bounds its own arenas via
+        // mallopt, deliberately CLI-only — library embedders and spawned
+        // connectors own their allocator policy — so the SPAWNED
+        // processes get the same bound the same way an operator would
+        // give it: the process-tree env knob.
         .env("MALLOC_ARENA_MAX", "2")
         .arg(format!("--data={CEILING_BYTES}"))
         .arg("--")
@@ -191,13 +227,23 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
         .arg(&spec)
         .arg("--report")
         .arg(&report_path)
-        .output()
+        .process_group(0)
+        .stdout(std::fs::File::create(&stdout_path).expect("stdout log"))
+        .stderr(std::fs::File::create(&stderr_path).expect("stderr log"))
+        .spawn()
         .expect("spawn CLI under prlimit");
+    let status = child.wait().expect("wait for CLI under prlimit");
+    // The child was its own group leader, so this reaps any connector
+    // the pipeline orphaned; on success it kills nothing.
+    let _ = std::process::Command::new("kill")
+        .args(["-9", "--", &format!("-{}", child.id())])
+        .stderr(std::process::Stdio::null())
+        .status();
     assert!(
-        output.status.success(),
+        status.success(),
         "CLI under a {CEILING_BYTES}-byte data ceiling failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        std::fs::read_to_string(&stdout_path).unwrap_or_default(),
+        std::fs::read_to_string(&stderr_path).unwrap_or_default()
     );
 
     // Row-count equality proves the stream completed, not just survived.
