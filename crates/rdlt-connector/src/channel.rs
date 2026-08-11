@@ -245,6 +245,44 @@ impl ByteSized for PushPayload {
     }
 }
 
+/// The i32/i64 offsets window `[offset ..= offset + len]` of a
+/// variable-width array's offsets buffer, and the data-byte range
+/// those offsets span — decoded from the buffer's RAW BYTES, never
+/// `typed_data` (round-13 fix: `typed_data` ASSERTS an exact
+/// length-multiple and alignment, so a merely-large-enough offsets
+/// buffer — 13 bytes for a 2-element array, legal by Arrow's minimum-
+/// size rule and reachable through IPC-built child data, which skips
+/// the validator — panicked the meter inside `send`). Only the exact
+/// window the array views is read: the first and last offsets come out
+/// of it as native-endian fixed-width chunks (what `typed_data` read,
+/// minus its asserts), and a buffer too short for even the window —
+/// the legal empty-offsets shape included (round-10) — falls back to
+/// charging `usize::MAX`, which [`data_footprint`]'s window counter
+/// clamps to each buffer's real length: over-count, the budget's safe
+/// side, NEVER a panic (the meter's contract; the subtraction
+/// saturates for the same reason).
+fn offsets_window(
+    buffer: &arrow_buffer::Buffer,
+    offset: usize,
+    len: usize,
+    width: usize,
+    decode: fn(&[u8]) -> usize,
+) -> (usize, usize, usize, usize) {
+    let start = offset * width;
+    let end = (offset + len + 1) * width;
+    match buffer.as_slice().get(start..end) {
+        // A successful get always holds >= one `width` chunk
+        // (end - start = (len + 1) * width).
+        Some(window) => (
+            start,
+            (len + 1) * width,
+            decode(&window[..width]),
+            decode(&window[window.len() - width..]).saturating_sub(decode(&window[..width])),
+        ),
+        None => (0, usize::MAX, 0, usize::MAX),
+    }
+}
+
 /// The bytes an Arrow batch holds: the summed lengths of the distinct
 /// buffer slices reachable from its columns (values, offsets, nulls, and
 /// nested child data, recursively).
@@ -317,39 +355,16 @@ fn data_footprint(
         let end = (first_bit + bits).div_ceil(8);
         (start, end - start)
     };
-    // The i32/i64 offsets window `[offset ..= offset + len]`, and the
-    // data-byte range those offsets span. Arrow permits an EMPTY
-    // offsets buffer for a zero-length variable-width array (arrow-data
-    // 58's own validation: "An empty list-like array can have 0
-    // offsets" — a shape foreign IPC writers like pyarrow produce), so
-    // the window reads are guarded (round-10 fix: `values[offset]` on
-    // that legal shape panicked inside the byte meter): no offsets,
-    // nothing viewed.
     let offsets_i32 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
-        let values: &[i32] = buffer.typed_data();
-        let (Some(&first), Some(&last)) = (values.get(offset), values.get(offset + len)) else {
-            return (0, 0, 0, 0);
-        };
-        (
-            offset * 4,
-            (len + 1) * 4,
-            first as usize,
-            (last - first) as usize,
-        )
+        offsets_window(buffer, offset, len, 4, |chunk| {
+            i32::from_ne_bytes(chunk.try_into().expect("a 4-byte chunk")) as usize
+        })
     };
     let offsets_i64 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
-        let values: &[i64] = buffer.typed_data();
-        let (Some(&first), Some(&last)) = (values.get(offset), values.get(offset + len)) else {
-            return (0, 0, 0, 0);
-        };
-        (
-            offset * 8,
-            (len + 1) * 8,
-            first as usize,
-            (last - first) as usize,
-        )
+        offsets_window(buffer, offset, len, 8, |chunk| {
+            i64::from_ne_bytes(chunk.try_into().expect("an 8-byte chunk")) as usize
+        })
     };
-
     let buffers = data.buffers();
     let mut total = 0;
     match data.data_type() {
@@ -769,6 +784,39 @@ mod byte_size_tests {
             data_footprint(&data, &mut seen),
             0,
             "no offsets, nothing viewed — the legal empty shape meters zero"
+        );
+    }
+
+    /// THE OVERSIZED-OFFSETS PIN (round-13 fix): Arrow sizes an
+    /// offsets buffer by MINIMUM (>= (len+1)*4), so a 13-byte buffer
+    /// for a 2-element array can reach the meter through IPC-built
+    /// child data (which skips the validator — arrow's own `try_new`
+    /// validation ASSERTS on this shape even before the meter would,
+    /// measured, which is why this pin drives the window fn directly).
+    /// `typed_data` panicked on it; the window read must answer the
+    /// true footprint, never panic.
+    #[test]
+    fn an_oversized_offsets_buffer_meters_without_panicking() {
+        let decode_i32 =
+            |chunk: &[u8]| i32::from_ne_bytes(chunk.try_into().expect("a 4-byte chunk")) as usize;
+        // [0, 1, 3] as native-endian i32 plus one trailing byte:
+        // 13 bytes, 4-aligned via the slice of a Vec<i32> allocation.
+        let backing = arrow_buffer::Buffer::from_vec(vec![0i32, 1, 3, 0]);
+        let oversized = backing.slice_with_length(0, 13);
+        assert_eq!(
+            offsets_window(&oversized, 0, 2, 4, decode_i32),
+            (0, 12, 0, 3),
+            "the exact window: 3 offsets x 4 bytes viewed, data bytes 0..3 spanned — \
+             the trailing byte beyond the window is never read, and nothing panics"
+        );
+
+        // The round-10 legal empty-offsets shape stays a non-panicking
+        // fallback: too short for even one offset, charge-everything
+        // (the caller clamps MAX to the real buffer lengths).
+        let empty = arrow_buffer::Buffer::from_vec(Vec::<i32>::new());
+        assert_eq!(
+            offsets_window(&empty, 0, 0, 4, decode_i32),
+            (0, usize::MAX, 0, usize::MAX)
         );
     }
 
