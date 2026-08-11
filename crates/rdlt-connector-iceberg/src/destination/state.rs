@@ -16,21 +16,28 @@
 //! - `rdlt.state.<scope>` → the pipeline's state document (JSON), one
 //!   per 32-hex pipeline scope. Since the beginning of this crate's
 //!   second generation.
-//! - `rdlt.receipt.<load_id>` → `{"commit_seq":N,"stamped_at_ms":M}`,
-//!   the load-level receipt (042 round-2 fix wave): `N` is the highest
-//!   commit sequence published for that load (sequences are monotone
-//!   per load, so membership is `seq <= N` — a replayed early window
+//! - `rdlt.receipt.<load_id>` →
+//!   `{"commit_seq":N,"stamped_at_ms":M,"scope":S}`, the load-level
+//!   receipt (042 round-2 fix wave): `N` is the highest commit
+//!   sequence published for that load (sequences are monotone per
+//!   load, so membership is `seq <= N` — a replayed early window
 //!   merges by MAX and can never lower it), `M` the service-agnostic
-//!   wall stamp retention orders by. Stamped in the SAME property
-//!   commit that persists the state document, so a crash leaves both
-//!   or neither; a missing receipt re-drives publish, whose per-table
-//!   history convergence discards already-committed windows.
-//!   RETENTION: at most [`RECEIPT_RETENTION`] load receipts are kept —
-//!   pruning at each stamp removes the OLDEST other loads' keys. A
-//!   receipt only matters while its load can still be re-attempted
-//!   (the engine retries a handful of times within one run), so the
-//!   most recent loads are the whole audience; unbounded growth would
-//!   bloat every table-metadata read instead.
+//!   wall stamp retention orders by, `S` the stamping pipeline's
+//!   32-hex scope retention PARTITIONS by. Stamped in the SAME
+//!   property commit that persists the state document, so a crash
+//!   leaves both or neither; a missing receipt re-drives publish,
+//!   whose per-table history convergence discards already-committed
+//!   windows.
+//!   RETENTION, per PIPELINE SCOPE (round-11 fix — a global
+//!   oldest-first prune let 8 foreign pipelines' loads evict a crashed
+//!   load's receipt from the shared marker table before its resume):
+//!   at most [`RECEIPT_RETENTION`] load receipts are kept per scope —
+//!   pruning at each stamp removes only the stamping scope's OLDEST
+//!   other keys (plus any receipt whose scope cannot be decoded:
+//!   corrupt bookkeeping no reader accepts). A receipt only matters
+//!   while its load can still be re-attempted, so the most recent
+//!   loads per pipeline are the whole audience; unbounded growth
+//!   would bloat every table-metadata read instead.
 
 use std::sync::Arc;
 
@@ -93,15 +100,29 @@ fn receipt_record(value: &str) -> Option<(u64, u64)> {
     ))
 }
 
+/// The pipeline scope a receipt value records — the retention
+/// partition key. `None` for a value without a decodable scope, which
+/// the pruner sweeps as corrupt bookkeeping (no reader accepts it).
+fn receipt_scope(value: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(value).ok()?;
+    Some(value.get("scope")?.as_str()?.to_owned())
+}
+
 /// What one stamp does to the marker table's properties, PURE so the
 /// merge and retention rules pin offline: the value to set under the
 /// load's own key (merging by MAX with any recorded seq — replaying an
 /// early window must never lower the high water), and the stale
-/// receipt keys to remove so at most [`RECEIPT_RETENTION`] loads
-/// remain (oldest others first; unparseable records prune first).
+/// receipt keys to remove so at most [`RECEIPT_RETENTION`] of THIS
+/// SCOPE's loads remain (round-11 fix — the prune was oldest-first
+/// across every pipeline sharing the marker table, so 8 foreign loads
+/// could evict a crashed load's receipt before its resume): only the
+/// stamping scope's own oldest keys prune, a FOREIGN scope's receipts
+/// are never candidates, and a receipt with no decodable scope prunes
+/// first as corrupt bookkeeping.
 fn receipt_delta(
     properties: &std::collections::HashMap<String, String>,
     stamp: &ReceiptStamp<'_>,
+    scope: &str,
     now_ms: u64,
 ) -> (String, Vec<String>) {
     let key = receipt_key(stamp.load_id);
@@ -109,16 +130,25 @@ fn receipt_delta(
     let seq = recorded
         .map(|(seq, _)| seq.max(stamp.commit_seq))
         .unwrap_or(stamp.commit_seq);
-    let value = serde_json::json!({"commit_seq": seq, "stamped_at_ms": now_ms}).to_string();
+    let value =
+        serde_json::json!({"commit_seq": seq, "stamped_at_ms": now_ms, "scope": scope}).to_string();
 
-    let mut others: Vec<(u64, &String)> = properties
+    let mut own: Vec<(u64, &String)> = properties
         .iter()
         .filter(|(k, _)| k.starts_with(PROP_RECEIPT_PREFIX) && **k != key)
-        .map(|(k, v)| (receipt_record(v).map(|(_, ms)| ms).unwrap_or(0), k))
+        .filter_map(|(k, v)| match (receipt_record(v), receipt_scope(v)) {
+            // This scope's own receipt: a candidate, oldest stamps first.
+            (Some((_, ms)), Some(s)) if s == scope => Some((ms, k)),
+            // A foreign scope's receipt: NEVER a candidate.
+            (Some(_), Some(_)) => None,
+            // No decodable record or scope: corrupt bookkeeping —
+            // prunes ahead of anything real.
+            _ => Some((0, k)),
+        })
         .collect();
-    others.sort();
-    let excess = (others.len() + 1).saturating_sub(RECEIPT_RETENTION);
-    let remove = others
+    own.sort();
+    let excess = (own.len() + 1).saturating_sub(RECEIPT_RETENTION);
+    let remove = own
         .into_iter()
         .take(excess)
         .map(|(_, k)| k.clone())
@@ -240,7 +270,7 @@ pub(super) async fn write_state(
             // actually landed.
             if let Some(stamp) = &receipt {
                 let (value, remove) =
-                    receipt_delta(current.metadata().properties(), stamp, now_ms());
+                    receipt_delta(current.metadata().properties(), stamp, scope, now_ms());
                 action = action.set(receipt_key(stamp.load_id), value);
                 for stale in remove {
                     action = action.remove(stale);
@@ -408,11 +438,18 @@ mod tests {
                 load_id: "load-a",
                 commit_seq: 3,
             },
+            "scope-a",
             77,
         );
         assert_eq!(receipt_record(&value), Some((3, 77)));
+        assert_eq!(
+            receipt_scope(&value).as_deref(),
+            Some("scope-a"),
+            "the stamp records its scope — the retention partition key"
+        );
         assert_eq!(receipt_record("not json"), None);
         assert_eq!(receipt_record("{\"commit_seq\":\"x\"}"), None);
+        assert_eq!(receipt_scope("{\"commit_seq\":1}"), None);
     }
 
     /// The merge rule: a replayed EARLY window must never lower the
@@ -431,6 +468,7 @@ mod tests {
                 load_id: "load-a",
                 commit_seq: 2,
             },
+            "scope-a",
             99,
         );
         assert_eq!(
@@ -441,16 +479,20 @@ mod tests {
         assert!(remove.is_empty(), "one load prunes nothing");
     }
 
-    /// Retention: at most [`RECEIPT_RETENTION`] loads remain after a
-    /// stamp — the OLDEST other loads' keys are removed first, with an
-    /// unparseable record treated as oldest of all.
+    /// Retention within ONE scope: at most [`RECEIPT_RETENTION`] of
+    /// the scope's loads remain after a stamp — the OLDEST own keys
+    /// are removed first, with an unparseable record treated as
+    /// oldest of all.
     #[test]
-    fn retention_removes_the_oldest_other_loads_first() {
+    fn retention_removes_the_oldest_own_scope_loads_first() {
         let mut properties = HashMap::new();
         for age in 0..RECEIPT_RETENTION as u64 {
             properties.insert(
                 receipt_key(&format!("load-{age}")),
-                format!("{{\"commit_seq\":1,\"stamped_at_ms\":{}}}", 100 + age),
+                format!(
+                    "{{\"commit_seq\":1,\"stamped_at_ms\":{},\"scope\":\"s1\"}}",
+                    100 + age
+                ),
             );
         }
         properties.insert(receipt_key("load-corrupt"), "not json".to_owned());
@@ -463,6 +505,7 @@ mod tests {
                 load_id: "load-new",
                 commit_seq: 1,
             },
+            "s1",
             1_000,
         );
         // 9 other receipts + the new one = 10; retention 8 removes two:
@@ -471,6 +514,64 @@ mod tests {
             remove,
             vec![receipt_key("load-corrupt"), receipt_key("load-0")]
         );
+    }
+
+    /// THE CROSS-PIPELINE EVICTION CLOSED (round-11 red pin): the
+    /// marker table is shared by every pipeline in the namespace, and
+    /// the old global oldest-first prune let 8 foreign loads evict a
+    /// crashed load's receipt before its resume — re-opening the
+    /// double-append window the receipt exists to close. A foreign
+    /// scope's receipts are never prune candidates now, however old.
+    #[test]
+    fn foreign_scope_receipts_never_evict_this_scopes_receipt() {
+        let mut properties = HashMap::new();
+        // The crashed load's receipt — OLDEST stamp on the table, and
+        // the only one under its scope.
+        properties.insert(
+            receipt_key("load-crashed"),
+            "{\"commit_seq\":1,\"stamped_at_ms\":1,\"scope\":\"mine\"}".to_owned(),
+        );
+        // Eight fresher loads from a busy foreign pipeline.
+        for age in 0..RECEIPT_RETENTION as u64 {
+            properties.insert(
+                receipt_key(&format!("foreign-{age}")),
+                format!(
+                    "{{\"commit_seq\":1,\"stamped_at_ms\":{},\"scope\":\"other\"}}",
+                    100 + age
+                ),
+            );
+        }
+
+        // The foreign pipeline's NINTH load stamps: it must prune its
+        // OWN oldest, never the crashed load's receipt.
+        let (_, remove) = receipt_delta(
+            &properties,
+            &ReceiptStamp {
+                load_id: "foreign-new",
+                commit_seq: 1,
+            },
+            "other",
+            1_000,
+        );
+        assert_eq!(
+            remove,
+            vec![receipt_key("foreign-0")],
+            "retention partitions by scope — the crashed load's receipt survives \
+             any number of foreign stamps"
+        );
+
+        // And the crashed scope's own next stamp prunes nothing: one
+        // receipt is far under its own budget.
+        let (_, remove) = receipt_delta(
+            &properties,
+            &ReceiptStamp {
+                load_id: "load-crashed",
+                commit_seq: 2,
+            },
+            "mine",
+            2_000,
+        );
+        assert!(remove.is_empty(), "{remove:?}");
     }
 
     /// The property-commit exhaustion is reachable, typed, and names
