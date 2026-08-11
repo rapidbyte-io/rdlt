@@ -34,4 +34,4 @@ contribution opens once the fork has been validated in real use here — that
 sequencing is deliberate and recorded in specs/023-snowflake-put/research.md.
 """
 
-unpublishable = ["rdlt", "rdlt-cli", "rdlt-connector-snowflake"]
+unpublishable = ["rdlt-connector-snowflake"]
