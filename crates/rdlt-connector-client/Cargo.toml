@@ -14,8 +14,8 @@ repository.workspace = true
 
 [dependencies]
 rdlt-connector = { workspace = true }
-# The sdk WITHOUT its `serve` feature: RemoteBackend implements the
-# sdk's destination `Backend`, and `open` boxes the SAME `Session<B>`
+# The sdk WITHOUT its `serve` feature: the wire `destination::Backend`
+# implements the sdk's backend trait, and `open` boxes the SAME `Session<B>`
 # generic the in-process path composes — the D3 choreography is reused
 # by identical type, never reimplemented against the wire.
 rdlt-connector-sdk = { workspace = true }
@@ -28,7 +28,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 # `arrow` (not the SPI's arrow-array re-export) for the IPC stream
-# reader: RemoteSource decodes each `arrow_ipc` read frame's
+# reader: `source::Source` decodes each `arrow_ipc` read frame's
 # exactly-one batch — the client seat of the proto's one-batch rule.
 arrow = { workspace = true }
 bytes = { workspace = true }

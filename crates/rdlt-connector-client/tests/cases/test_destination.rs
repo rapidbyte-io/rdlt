@@ -1,4 +1,4 @@
-//! `RemoteDestination`/`RemoteBackend` against the served echo
+//! The wire `Destination`/`Backend` against the served echo
 //! destination: the sdk's D3 exactly-once choreography running
 //! CLIENT-side over the wire — the same `Session<B>` type the
 //! in-process path composes, over a `Backend` whose every method is a
@@ -19,7 +19,7 @@ use rdlt_connector::{
     Destination as _, DestinationError, LoadSession, OpenContext, PartCloseReason, PartClosed,
     RecordBatch,
 };
-use rdlt_connector_client::{ConnectorRequirement, RemoteDestination};
+use rdlt_connector_client::{ConnectorRequirement, destination::Destination};
 use rdlt_connector_sdk::destination::Backend as _;
 use rdlt_connector_sdk::serve;
 
@@ -45,8 +45,8 @@ const BOUND: Duration = Duration::from_secs(10);
 
 /// Connect to a served echo destination with `config`, requiring the
 /// echo's own identity.
-async fn connect_echo(path: &std::path::Path, config: serde_json::Value) -> RemoteDestination {
-    RemoteDestination::connect(
+async fn connect_echo(path: &std::path::Path, config: serde_json::Value) -> Destination {
+    Destination::connect(
         path,
         ENGINE_BUDGET_BYTES,
         &config,
@@ -299,7 +299,7 @@ async fn a_refused_connect_maps_the_open_error() {
     );
 }
 
-/// The SERVER's write guard, reached through the raw `RemoteBackend`
+/// The SERVER's write guard, reached through the raw wire `Backend`
 /// (bypassing the client-side `Session`'s own guard, which would refuse
 /// identically and locally): the refusal crosses the wire as a typed
 /// fatal with the guard's frozen spelling — full-string — and the
@@ -412,7 +412,7 @@ async fn a_mid_stream_status_fails_the_in_flight_call_transport_fatal() {
             message: "rogue: induced mid-session failure".to_string(),
         },
     );
-    let remote = RemoteDestination::connect(
+    let remote = Destination::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -455,7 +455,7 @@ async fn capabilities_answer_from_the_handshake_cache_without_an_rpc() {
     let (_line, handle) = serve::destination::serve_on::<EchoDestination>(&path)
         .await
         .expect("bind");
-    let (remote, outcome) = RemoteDestination::connect(
+    let (remote, outcome) = Destination::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),

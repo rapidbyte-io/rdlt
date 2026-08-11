@@ -560,8 +560,8 @@ async fn handle_frame<C: DestinationConnector>(
             // — a REAL lookup, not a stub. The D3 choreography deciding
             // whether to follow this with `Replay` or `Publish` is NOT
             // this server's job: it lives in the CALLER's `Session<B>`
-            // (the client-side `Session<RemoteBackend>` 039 builds), the
-            // SAME generic type the in-process path composes. A foreign
+            // (the client crate's `Session` over its wire backend), the
+            // SAME generic type this sdk's shell composes. A foreign
             // client that gets the choreography wrong — e.g. double-
             // publishing one `(load_id, commit_seq)` — is caught by the
             // destination's own DURABLE receipt guard, not by this

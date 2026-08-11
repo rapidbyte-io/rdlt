@@ -361,8 +361,9 @@ design it referees, per the 023 probe-before-design-freeze pattern.)*
   the part-event payloads, `#[non_exhaustive]` hedges on
   OpenContext/ReadRequest, documented Send-only LoadSession and
   plaintext-secrets-over-UDS trust model).
-- 039: remote adapters (`RemoteSource`/`RemoteDestination`/
-  `RemoteLoadSession`) + `LocalBinaryConnectorProvider` +
+- 039: remote adapters (the client crate's SPI halves — landed
+  carrying a `Remote` name prefix, which 043 dropped once every
+  connector was spawned) + `LocalBinaryConnectorProvider` +
   CLI integration (`connector:` requirement in pipeline YAML;
   `schema`/`validate` ask a spawned connector). Reference port: the
   FILE connector (both halves, no external service, richest crash

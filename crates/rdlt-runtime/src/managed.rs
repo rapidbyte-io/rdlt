@@ -2,7 +2,7 @@
 //! back — and [`LifecycleGuard`], the owner of the spawned process.
 //!
 //! The managed types implement the SPI's `Source`/`Destination` by
-//! DELEGATION to the remote adapters, so `Engine::new` takes them
+//! DELEGATION to the client crate's wire adapters, so `Engine::new` takes them
 //! unchanged and the guard's lifetime rides the engine's `Arc`: as long
 //! as anything can still call the connector, the process it dials is
 //! provably alive, and when the last holder drops, the guard kills it
@@ -16,7 +16,7 @@ use rdlt_connector::{
     ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
     OpenContext, ReadRequest, Source, SourceError, StreamSpec,
 };
-use rdlt_connector_client::{HandshakeOutcome, RemoteDestination, RemoteSource};
+use rdlt_connector_client::{HandshakeOutcome, destination, source};
 use tokio::process::Child;
 
 /// Owns a spawned connector process and the socket path its handshake
@@ -71,12 +71,12 @@ impl Drop for LifecycleGuard {
     }
 }
 
-/// A provided source: the remote adapter, what the handshake
+/// A provided source: the wire adapter, what the handshake
 /// established about the connector, and the process guard. Implements
 /// [`Source`] by delegation — hand it to `Engine::new` as-is.
 #[derive(Debug)]
 pub struct ManagedSource {
-    adapter: RemoteSource,
+    adapter: source::Source,
     identity: String,
     resolved_version: String,
     negotiated_protocol: u32,
@@ -92,7 +92,7 @@ impl ManagedSource {
     /// `outcome`; `guard` is `None` for a provider whose connector's
     /// lifetime is managed elsewhere (a pool, an embedder's own child).
     pub fn new(
-        adapter: RemoteSource,
+        adapter: source::Source,
         identity: impl Into<String>,
         outcome: &HandshakeOutcome,
         guard: Option<LifecycleGuard>,
@@ -160,11 +160,11 @@ impl Source for ManagedSource {
     }
 }
 
-/// [`ManagedSource`]'s destination mirror: the remote adapter, the
+/// [`ManagedSource`]'s destination mirror: the wire adapter, the
 /// handshake's findings, the guard — a [`Destination`] by delegation.
 #[derive(Debug)]
 pub struct ManagedDestination {
-    adapter: RemoteDestination,
+    adapter: destination::Destination,
     identity: String,
     resolved_version: String,
     negotiated_protocol: u32,
@@ -176,7 +176,7 @@ impl ManagedDestination {
     /// Wrap a connected adapter — see [`ManagedSource::new`] for the
     /// field provenance.
     pub fn new(
-        adapter: RemoteDestination,
+        adapter: destination::Destination,
         identity: impl Into<String>,
         outcome: &HandshakeOutcome,
         guard: Option<LifecycleGuard>,

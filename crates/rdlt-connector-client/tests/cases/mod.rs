@@ -2,6 +2,6 @@
 
 pub mod support;
 
+mod test_destination;
 mod test_handshake;
-mod test_remote_destination;
-mod test_remote_source;
+mod test_source;

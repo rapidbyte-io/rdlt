@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rdlt_connector::ConnectorSpec;
-use rdlt_connector_client::{
-    ClientError, RemoteDestination, RemoteSource, Role, connector_client, dial,
-};
+use rdlt_connector_client::{ClientError, Role, connector_client, destination, dial, source};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
@@ -340,7 +338,7 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
         // failure below drops it, which kills the child AND unlinks
         // whatever the connector may already have bound.
         let guard = LifecycleGuard::new(child, line.socket_path.clone());
-        let (adapter, outcome) = RemoteSource::connect(
+        let (adapter, outcome) = source::Source::connect(
             &line.socket_path,
             self.engine_budget_bytes,
             config,
@@ -365,7 +363,7 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
             .spawn_and_read_line(&path, &binary, "destination", false)
             .await?;
         let guard = LifecycleGuard::new(child, line.socket_path.clone());
-        let (adapter, outcome) = RemoteDestination::connect(
+        let (adapter, outcome) = destination::Destination::connect(
             &line.socket_path,
             self.engine_budget_bytes,
             config,

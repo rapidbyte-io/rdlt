@@ -1,16 +1,19 @@
-//! [`RemoteDestination`] and [`RemoteBackend`] — the SPI write seam over
-//! the wire: an SPI [`Destination`] whose sessions run the sdk's D3
-//! exactly-once choreography CLIENT-side, over a [`Backend`] whose every
-//! method is a frame on the `OpenSession` bidi stream.
+//! [`Destination`] and [`Backend`] — the SPI write seam over the wire:
+//! an SPI [`rdlt_connector::Destination`] whose sessions run the sdk's
+//! D3 exactly-once choreography CLIENT-side, over a [`Backend`] whose
+//! every method is a frame on the `OpenSession` bidi stream.
 //!
 //! The layering is the whole design (038 T5 review, ADR D5): the wire
-//! mirrors [`Backend`] 1:1 (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/
+//! mirrors the sdk's backend seam
+//! ([`Backend`](rdlt_connector_sdk::destination::Backend)) 1:1
+//! (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/
 //! `Publish`/`ReadState`/`Close`, each frame one method), and the D3
 //! commit choreography (`existing_receipt` → `replay` → `publish`) is
-//! NOT reimplemented against the wire — [`RemoteDestination::open`]
-//! boxes the sdk's own [`Session`]`::new(RemoteBackend)`, the SAME
-//! generic type the in-process path composes, so the choreography runs
-//! here by identical code. The server does not referee that ordering
+//! NOT reimplemented against the wire —
+//! [`Destination::open`](rdlt_connector::Destination::open)
+//! boxes the sdk's own [`Session`]`::new(Backend)`, the SAME
+//! generic type the sdk's serving shell composes, so the choreography
+//! runs here by identical code. The server does not referee that ordering
 //! (the serve module doc's trust split); its [`WriteGuard`] refusals
 //! arrive as ordinary `ErrorFrame` replies and map to typed errors like
 //! any other classified failure.
@@ -28,7 +31,7 @@
 //!
 //! Abandonment (a session dropped without `close`): the sdk's
 //! [`Session`] adds no drop-time behavior of its own — dropping it
-//! drops the backend, and dropping a [`RemoteBackend`] drops the
+//! drops the backend, and dropping a [`Backend`] drops the
 //! request sender, which ends the RPC's request stream. That IS the
 //! wire's abandonment signal: the serving side observes the stream end
 //! and best-effort closes the real backend itself (its F2 cleanup).
@@ -42,11 +45,11 @@ use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
-    OpenContext, PartCloseReason, PartClosed, PartEventFn, RecordBatch,
+    ConnectorSpec, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
+    PartCloseReason, PartClosed, PartEventFn, RecordBatch,
 };
 use rdlt_connector_protocol::proto::{self, check_reply, session_reply, session_request};
-use rdlt_connector_sdk::destination::{Backend, Session};
+use rdlt_connector_sdk::destination::Session;
 use tokio::sync::mpsc;
 use tonic::Streaming;
 use tonic::transport::Channel;
@@ -59,29 +62,30 @@ use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
 /// waiting on its reply — the session is over, whoever ended it.
 const SESSION_ENDED: &str = "the connector session ended before replying";
 
-/// An SPI [`Destination`] over the wire: the dialed channel plus the
-/// handshake's cached spec AND capabilities — both answered
-/// synchronously, with no RPC left to make. Constructed only through
-/// [`RemoteDestination::connect`] — there is no way to hold one whose
+/// An SPI [`rdlt_connector::Destination`] over the wire: the dialed
+/// channel plus the handshake's cached spec AND capabilities — both
+/// answered synchronously, with no RPC left to make. Constructed only
+/// through [`Destination::connect`] — there is no way to hold one whose
 /// identity was not verified (D-039-2).
 #[derive(Debug)]
-pub struct RemoteDestination {
+pub struct Destination {
     channel: Channel,
     spec: ConnectorSpec,
     capabilities: DestinationCapabilities,
 }
 
-impl RemoteDestination {
+impl Destination {
     /// Dial `socket_path` (the engine budget paces the wire — see
     /// [`dial`]) and run the [`Role::Destination`] handshake, verifying
     /// the connector against `expected`. Returns the adapter AND the
-    /// full [`HandshakeOutcome`], mirroring `RemoteSource::connect`.
+    /// full [`HandshakeOutcome`], mirroring
+    /// [`Source::connect`](crate::source::Source::connect).
     pub async fn connect(
         socket_path: &Path,
         engine_budget_bytes: u64,
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
-    ) -> Result<(RemoteDestination, HandshakeOutcome), ClientError> {
+    ) -> Result<(Destination, HandshakeOutcome), ClientError> {
         let channel = dial(socket_path, engine_budget_bytes).await?;
         let outcome = handshake(&channel, Role::Destination, config, expected).await?;
         // The proto pins `capabilities_json` non-empty for destinations
@@ -92,7 +96,7 @@ impl RemoteDestination {
             ClientError::Protocol("the destination handshake carried no capabilities".to_string())
         })?;
         Ok((
-            RemoteDestination {
+            Destination {
                 channel,
                 spec: outcome.spec.clone(),
                 capabilities,
@@ -102,16 +106,14 @@ impl RemoteDestination {
     }
 
     /// Open the raw wire [`Backend`] directly — the lower layer
-    /// [`Destination::open`] composes [`Session`] on top of, mirroring
+    /// [`Destination::open`](rdlt_connector::Destination::open)
+    /// composes [`Session`] on top of, mirroring
     /// the sdk's `Shell::connect` split: nothing here enforces
     /// write-before-ensure or the D3 choreography (the SERVER's guard
     /// still polices frame order on its side of the trust boundary).
     /// Sends `Open{pipeline, load_id}` and awaits `Opened`; a refused
     /// connect arrives as the Open frame's `ErrorFrame` reply.
-    pub async fn open_backend(
-        &self,
-        context: &OpenContext,
-    ) -> Result<RemoteBackend, DestinationError> {
+    pub async fn open_backend(&self, context: &OpenContext) -> Result<Backend, DestinationError> {
         // Capacity 1 is enough by construction: the session is
         // request/reply paced — every send awaits its reply before the
         // next, so a slot is always free.
@@ -123,7 +125,7 @@ impl RemoteDestination {
             .map_err(transport_fatal)?
             .into_inner();
 
-        let mut backend = RemoteBackend {
+        let mut backend = Backend {
             requests,
             replies,
             part_events: context.part_events.clone(),
@@ -142,8 +144,9 @@ impl RemoteDestination {
 }
 
 #[async_trait]
-impl Destination for RemoteDestination {
-    /// The handshake's cached document — no RPC (see `RemoteSource::spec`).
+impl rdlt_connector::Destination for Destination {
+    /// The handshake's cached document — no RPC (see the source half's
+    /// `spec`, same cache rationale).
     fn spec(&self) -> ConnectorSpec {
         self.spec.clone()
     }
@@ -178,7 +181,7 @@ impl Destination for RemoteDestination {
 }
 
 /// A transport-level RPC failure at the SPI seam, classified FATAL —
-/// `RemoteSource`'s `transport_fatal` twin, same safe-loud rationale
+/// the source half's `transport_fatal` twin, same safe-loud rationale
 /// (and the same forward pointer: restarting a died connector is the
 /// provider layer's job, not this mapper's).
 fn transport_fatal(status: tonic::Status) -> DestinationError {
@@ -218,17 +221,18 @@ fn encode_one_batch(batch: &RecordBatch) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("closing an arrow ipc stream writer: {error}"))
 }
 
-/// The wire [`Backend`]: one bidi session, each method one frame and
-/// its tagged reply. The public face is the trait — construction goes
-/// through [`RemoteDestination::open_backend`] alone, so no backend
-/// exists whose `Open` the server did not accept.
+/// The wire backend: one bidi session, each method one frame and its
+/// tagged reply. The public face is the sdk's
+/// [`Backend`](rdlt_connector_sdk::destination::Backend) trait —
+/// construction goes through [`Destination::open_backend`] alone, so no
+/// backend exists whose `Open` the server did not accept.
 ///
 /// An `ErrorFrame` reply maps back through `dest_error_from_frame` and
 /// the session stays usable (matching serve semantics — the refusal
 /// was a reply, not a stream end); the stream ending mid-await is the
 /// frozen `SESSION_ENDED` fatal; a transport `Status` is fatal
 /// safe-loud with the transport named.
-pub struct RemoteBackend {
+pub struct Backend {
     requests: mpsc::Sender<proto::SessionRequest>,
     replies: Streaming<proto::SessionReply>,
     /// The SPI telemetry seam, carried across the wire: interleaved
@@ -236,15 +240,15 @@ pub struct RemoteBackend {
     part_events: Option<PartEventFn>,
 }
 
-impl std::fmt::Debug for RemoteBackend {
+impl std::fmt::Debug for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RemoteBackend")
+        f.debug_struct("Backend")
             .field("part_events", &self.part_events.is_some())
             .finish_non_exhaustive()
     }
 }
 
-impl RemoteBackend {
+impl Backend {
     /// Forward one wire part event into the SPI callback. An unknown
     /// reason spelling (a NEWER server's variant this build does not
     /// know) skips the event rather than panicking or inventing a
@@ -306,7 +310,7 @@ impl RemoteBackend {
 }
 
 #[async_trait]
-impl Backend for RemoteBackend {
+impl rdlt_connector_sdk::destination::Backend for Backend {
     async fn ensure_table(
         &mut self,
         schema: &TableSchema,

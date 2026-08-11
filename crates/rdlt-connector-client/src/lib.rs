@@ -7,13 +7,13 @@
 //! provider resolved (D-039-2) and decodes its self-description, and
 //! the error module maps wire [`proto::ErrorFrame`]s back to the SPI's
 //! own classifications so the engine's retry machinery never learns the
-//! wire exists. [`RemoteSource`] is those seams composed into the SPI's
-//! read half — a `Source` whose every method is an RPC;
-//! [`RemoteDestination`] is its write-side twin, boxing the sdk's own
-//! `Session` over a [`RemoteBackend`] so the D3 exactly-once
-//! choreography runs client-side by identical type; `rdlt-runtime`
-//! re-exports [`ConnectorRequirement`] (the client verifies, the
-//! runtime resolves).
+//! wire exists. [`source::Source`] is those seams composed into the
+//! SPI's read half — a `Source` whose every method is an RPC;
+//! [`destination::Destination`] is its write-side twin, boxing the
+//! sdk's own `Session` over a [`destination::Backend`] so the D3
+//! exactly-once choreography runs client-side by identical type;
+//! `rdlt-runtime` re-exports [`ConnectorRequirement`] (the client
+//! verifies, the runtime resolves).
 //!
 //! The wire this crate speaks is FROZEN (2026-08-07; ADR 0001 D8's
 //! amendment): field numbers never move, evolution is additive only,
@@ -24,22 +24,23 @@
 //! that posture is a separate, owner-scheduled decision and did not
 //! move with the freeze.
 //!
-//! The modules are private and the surface below is the one canonical
-//! path to every name — the flat interface Tasks 3-5 consume.
+//! Every name has exactly one canonical path: the adapter types live
+//! at their modules — [`source::Source`], [`destination::Destination`],
+//! [`destination::Backend`] — with no crate-root aliases, and the
+//! wiring seams below (dial, error mapping, handshake) re-export flat
+//! from private modules.
 //!
 //! [`proto::ErrorFrame`]: rdlt_connector_protocol::proto::ErrorFrame
 
-mod destination;
+pub mod destination;
 mod dial;
 mod error;
 mod handshake;
-mod source;
+pub mod source;
 
-pub use destination::{RemoteBackend, RemoteDestination};
 pub use dial::{connector_client, destination_client, dial, source_client};
 pub use error::{Classification, ClientError};
 pub use handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
-pub use source::RemoteSource;
 
 // `error::source_error_from_frame`/`error::dest_error_from_frame` stay
 // crate-internal at their defining paths — the adapters reach them as

@@ -1,7 +1,8 @@
-//! [`RemoteSource`] — the SPI read seam over the wire: an SPI
-//! [`Source`] whose every method is an RPC against a served connector,
-//! so an engine (or any embedder holding a `dyn Source`) drives an
-//! out-of-process connector without learning the wire exists.
+//! [`Source`] — the SPI read seam over the wire: an SPI
+//! [`rdlt_connector::Source`] whose every method is an RPC against a
+//! served connector, so an engine (or any embedder holding a `dyn
+//! Source`) drives a spawned connector without learning the wire
+//! exists.
 //!
 //! The mapping is one-to-one and stateless past the handshake:
 //! `spec()` answers from the handshake's cached document (no RPC),
@@ -15,7 +16,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use bytes::Bytes;
 use rdlt_connector::core::Cursor;
-use rdlt_connector::{ConnectorSpec, ReadRequest, RecordBatch, Source, SourceError, StreamSpec};
+use rdlt_connector::{ConnectorSpec, ReadRequest, RecordBatch, SourceError, StreamSpec};
 use rdlt_connector_protocol::proto::{self, check_reply, read_frame, streams_reply};
 use tonic::transport::Channel;
 
@@ -23,17 +24,17 @@ use crate::dial::{connector_client, dial, source_client};
 use crate::error::{ClientError, source_error_from_frame};
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
 
-/// An SPI [`Source`] over the wire: the dialed channel plus the
-/// handshake's cached spec. Constructed only through
-/// [`RemoteSource::connect`] — there is no way to hold one whose
-/// identity was not verified (D-039-2).
+/// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
+/// plus the handshake's cached spec. Constructed only through
+/// [`Source::connect`] — there is no way to hold one whose identity was
+/// not verified (D-039-2).
 #[derive(Debug)]
-pub struct RemoteSource {
+pub struct Source {
     channel: Channel,
     spec: ConnectorSpec,
 }
 
-impl RemoteSource {
+impl Source {
     /// Dial `socket_path` (the engine budget paces the wire — see
     /// [`dial`]) and run the [`Role::Source`] handshake, verifying the
     /// connector against `expected`. Returns the adapter AND the full
@@ -45,11 +46,11 @@ impl RemoteSource {
         engine_budget_bytes: u64,
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
-    ) -> Result<(RemoteSource, HandshakeOutcome), ClientError> {
+    ) -> Result<(Source, HandshakeOutcome), ClientError> {
         let channel = dial(socket_path, engine_budget_bytes).await?;
         let outcome = handshake(&channel, Role::Source, config, expected).await?;
         Ok((
-            RemoteSource {
+            Source {
                 channel,
                 spec: outcome.spec.clone(),
             },
@@ -109,9 +110,9 @@ fn decode_one_batch(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
 }
 
 #[async_trait]
-impl Source for RemoteSource {
+impl rdlt_connector::Source for Source {
     /// The handshake's cached document — no RPC: the spec was verified
-    /// and decoded once at [`RemoteSource::connect`], and a connector's
+    /// and decoded once at [`Source::connect`], and a connector's
     /// self-description does not change mid-session.
     fn spec(&self) -> ConnectorSpec {
         self.spec.clone()

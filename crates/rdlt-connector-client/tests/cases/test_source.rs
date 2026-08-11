@@ -1,4 +1,4 @@
-//! `RemoteSource` against served counterparts: the sdk-served echo for
+//! The wire `Source` against served counterparts: the sdk-served echo for
 //! the honest paths, and the rogue for frames the sdk can never emit
 //! (the one-batch violation, the unbudgeted blast the pacing
 //! observation needs).
@@ -11,7 +11,7 @@ use std::time::Duration;
 use rdlt_connector::{
     PushPayload, ReadRequest, RecordBatch, Source as _, SourceError, StreamSpec, records_channel,
 };
-use rdlt_connector_client::{ConnectorRequirement, RemoteSource};
+use rdlt_connector_client::{ConnectorRequirement, source::Source};
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::serve;
 
@@ -41,8 +41,8 @@ const BOUND: Duration = Duration::from_secs(10);
 async fn connect_echo(
     path: &std::path::Path,
     config: serde_json::Value,
-) -> (RemoteSource, rdlt_connector_client::HandshakeOutcome) {
-    RemoteSource::connect(
+) -> (Source, rdlt_connector_client::HandshakeOutcome) {
+    Source::connect(
         path,
         ENGINE_BUDGET_BYTES,
         &config,
@@ -185,7 +185,7 @@ async fn a_full_read_forwards_frames_in_order() {
 }
 
 /// The terminal-error round-trip pin: a served fatal read failure,
-/// mapped back through `RemoteSource`, renders the classification frame
+/// mapped back through the wire `Source`, renders the classification frame
 /// EXACTLY ONCE — full-string, so a second frame (the 026 double-frame
 /// class, end to end over the wire) cannot hide in a substring match.
 #[tokio::test]
@@ -261,7 +261,7 @@ async fn an_arrow_frame_forwards_as_exactly_one_batch() {
             std::slice::from_ref(&sent),
         )]),
     );
-    let (remote, _) = RemoteSource::connect(
+    let (remote, _) = Source::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -300,7 +300,7 @@ async fn a_two_batch_frame_is_refused_at_the_client_seat() {
         &path,
         ReadScript::Frames(vec![arrow_frame(&schema, &[first, second])]),
     );
-    let (remote, _) = RemoteSource::connect(
+    let (remote, _) = Source::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -342,7 +342,7 @@ async fn a_malformed_checkpoint_is_refused_typed() {
             )),
         }]),
     );
-    let (remote, _) = RemoteSource::connect(
+    let (remote, _) = Source::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -401,7 +401,7 @@ async fn a_tiny_window_bounds_an_unread_blast() {
     );
     // Budget 1: dial floors it to h2's 64 KiB minimum — the tiniest
     // window the clamp can legally advertise.
-    let (remote, _) = RemoteSource::connect(
+    let (remote, _) = Source::connect(
         &path,
         1,
         &serde_json::json!({}),
