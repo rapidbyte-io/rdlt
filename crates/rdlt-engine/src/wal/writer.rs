@@ -27,6 +27,14 @@ pub(crate) fn dir_in(workdir: &Path) -> PathBuf {
     workdir.join("wal")
 }
 
+/// The rules sidecar beside the manifest: the writer's `IdentRules`,
+/// serialized verbatim. Recovery's stream↔segment join normalizes under
+/// the resuming run's rules, and that join is only sound when they are
+/// the WRITING run's rules — the sidecar is what proves it. A NEW
+/// workdir file, not a record in the frozen WAL v2 stream, so no format
+/// bump; reclaimed with the directory by [`clear`].
+pub(crate) const RULES_SIDECAR: &str = "rules.json";
+
 #[derive(Debug)]
 pub(crate) struct Wal {
     dir: PathBuf,
@@ -49,8 +57,18 @@ impl Wal {
         dir: PathBuf,
         pipeline: &PipelineId,
         load_id: &LoadId,
+        rules: rdlt_core::naming::IdentRules,
     ) -> Result<Self, RdltError> {
         std::fs::create_dir_all(&dir).map_err(|e| wal_err("creating wal dir", e))?;
+        // The rules sidecar goes down BEFORE the manifest is created, so
+        // a manifest can never exist without it: recovery treats a
+        // sidecar-less manifest as damage (nothing pre-042 is deployed,
+        // so there is no older writer to be compatible with). See
+        // [`RULES_SIDECAR`] for why the rules must be recorded at all.
+        let sidecar =
+            serde_json::to_vec(&rules).map_err(|e| wal_err("encoding rules sidecar", e))?;
+        std::fs::write(dir.join(RULES_SIDECAR), sidecar)
+            .map_err(|e| wal_err("writing rules sidecar", e))?;
         let manifest = OpenOptions::new()
             .create(true)
             .append(true)
@@ -306,8 +324,19 @@ mod tests {
             dir.path().to_path_buf(),
             &PipelineId::new("p"),
             &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
         )
         .expect("open wal");
+
+        // The rules sidecar is on disk before anything else — the
+        // recovery scan refuses a manifest without it.
+        let sidecar = std::fs::read_to_string(dir.path().join(RULES_SIDECAR))
+            .expect("the sidecar exists beside the manifest");
+        assert_eq!(
+            serde_json::from_str::<rdlt_core::naming::IdentRules>(&sidecar).expect("parses"),
+            rdlt_core::naming::IdentRules::default(),
+            "the sidecar round-trips the writer's rules verbatim"
+        );
 
         wal.record(&LoadItem::batch(TableName::new("t"), batch_of(3)))
             .await

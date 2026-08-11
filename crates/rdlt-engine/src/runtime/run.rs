@@ -226,7 +226,14 @@ async fn run_once(
 
     let wal = match wal_dir
         .as_ref()
-        .map(|dir| crate::wal::Wal::open(dir.clone(), &config.pipeline, &load_id))
+        .map(|dir| {
+            crate::wal::Wal::open(
+                dir.clone(),
+                &config.pipeline,
+                &load_id,
+                capabilities.ident_rules,
+            )
+        })
         .transpose()
     {
         Ok(wal) => wal,

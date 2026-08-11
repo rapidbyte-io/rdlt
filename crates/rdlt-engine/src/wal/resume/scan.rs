@@ -151,6 +151,14 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
         }
     }
 
+    // THE RULES SIDECAR GATE (round-9 fix) sits below the record fold so a
+    // different-version manifest still reports `Unsupported` by SHAPE, and
+    // above everything that attributes segments to streams — the join is
+    // not consulted until it is proven to run under the writer's rules.
+    if let Some(reason) = sidecar_drift(dir, rules) {
+        return ScanOutcome::Damaged(reason);
+    }
+
     // CRITICAL: coverage is PER STREAM. A segment is replayable only if a
     // checkpoint of ITS OWN stream appears after it in the span — that
     // checkpoint's cursor is what makes re-extraction skip the segment's
@@ -203,6 +211,50 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
     }
 }
 
+/// The rules-drift REFUSAL (round-9 fix — this closed the residual the
+/// round-6 comment in `filter_covered` recorded): the stream↔segment
+/// join normalizes under `rules`, and it is sound only when they are
+/// THE WRITING RUN'S rules. Under changed rules a checkpointed stream's
+/// normalized root can stop matching its own recorded segments' root,
+/// so its COVERED segments read as a co-stream's benign orphans —
+/// dropped from replay while the checkpoint's cursor still commits:
+/// silent loss in the one-to-zero direction the round-7 many-to-one
+/// tripwire cannot see. The writer records its rules verbatim beside
+/// the manifest ([`crate::wal::Wal::open`], before the manifest is
+/// created, so a manifest can never exist without them); a mismatch, an
+/// unreadable sidecar, or no sidecar at all — a shape no 042+ writer
+/// produces, and nothing pre-042 is deployed, so no compat arm exists —
+/// refuses the whole span. `Some(reason)` means Damaged: the caller
+/// clears the WAL and re-extracts from last COMMITTED state, so no
+/// cursor from the refused span ever commits.
+fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<String> {
+    let path = dir.join(crate::wal::RULES_SIDECAR);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) => {
+            return Some(format!(
+                "the manifest has no readable `{}` sidecar ({e}) — the writing run's \
+                 identifier-normalization rules are unknown, so segment attribution \
+                 cannot be proven",
+                crate::wal::RULES_SIDECAR
+            ));
+        }
+    };
+    match serde_json::from_str::<rdlt_core::naming::IdentRules>(&text) {
+        Ok(recorded) if recorded == rules => None,
+        Ok(recorded) => Some(format!(
+            "the WAL was written under identifier-normalization rules {recorded:?} but this \
+             run's destination normalizes under {rules:?} — a rules change between the crash \
+             and this resume could drop a checkpointed stream's own covered segments while \
+             committing its cursor"
+        )),
+        Err(e) => Some(format!(
+            "the `{}` sidecar does not parse as identifier-normalization rules ({e})",
+            crate::wal::RULES_SIDECAR
+        )),
+    }
+}
+
 /// The tables replay will actually WRITE: every surviving segment's
 /// table plus its recorded ancestors (the bounded walk `filter_covered`
 /// already proved terminates for every surviving segment). What this
@@ -247,8 +299,9 @@ fn live_tables(
 /// across a run's streams), and every child table's recorded Delta carries its
 /// parent link — so a segment resolves to its root along recorded parents, and
 /// the root to its stream by normalization. `rules` must be the same rules the
-/// writing run normalized with, which holds because recovery reruns the same
-/// pipeline against the same destination; the shapes a DIFFERENT writer could
+/// writing run normalized with — ENFORCED upstream by the rules sidecar gate
+/// ([`sidecar_drift`], round-9): a manifest whose recorded rules differ never
+/// reaches this join; the residual shapes a matching-rules writer still cannot
 /// produce are refused below rather than guessed at.
 fn filter_covered(
     span: Vec<WalRecord>,
@@ -378,12 +431,11 @@ fn filter_covered(
     // segment whose table has no recorded schema anywhere (root_of's
     // refusal — a segment that exists but cannot be attributed), and
     // two checkpointed streams normalizing to one root. The residual
-    // this accepts, stated: a normalization-rules change between the
-    // writing run and this one could make a stream's own segments look
-    // like a co-stream's orphans — but recovery reruns the same
-    // pipeline against the same destination, and a shape only a
-    // DIFFERENT writer produces is already refused where it is
-    // provable.
+    // this once accepted — a normalization-rules change between the
+    // writing run and this one making a stream's own segments look
+    // like a co-stream's orphans — is CLOSED (round-9): the rules
+    // sidecar gate upstream refuses any span whose recorded rules
+    // differ from this run's before the join is consulted at all.
 
     Ok(Some(
         span.into_iter()
@@ -405,6 +457,13 @@ mod tests {
             out.push('\n');
         }
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+        // The sidecar every 042+ writer leaves beside its manifest —
+        // the fixtures here model a matching-rules writer.
+        std::fs::write(
+            dir.join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+        )
+        .expect("write sidecar");
     }
 
     /// Mutation-report closure: the on-disk Run header must SERIALIZE the
@@ -578,9 +637,9 @@ mod per_stream_coverage_tests {
         }
     }
 
-    /// Scan a manifest of `records` under a current-version Run header.
-    fn scan_span(records: Vec<WalRecord>) -> ScanOutcome {
-        let dir = tempfile::tempdir().expect("tempdir");
+    /// Write a manifest of `records` under a current-version Run
+    /// header, with the writer's rules sidecar beside it.
+    fn write_span(dir: &std::path::Path, records: Vec<WalRecord>, writer_rules: IdentRules) {
         let mut all = vec![WalRecord::Run {
             format_version: crate::wal::WAL_FORMAT_VERSION,
             load_id: LoadId::new("l"),
@@ -592,7 +651,19 @@ mod per_stream_coverage_tests {
             out.push_str(&serde_json::to_string(record).expect("record json"));
             out.push('\n');
         }
-        std::fs::write(dir.path().join("manifest.jsonl"), out).expect("write manifest");
+        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+        std::fs::write(
+            dir.join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&writer_rules).expect("rules json"),
+        )
+        .expect("write sidecar");
+    }
+
+    /// Scan a manifest of `records` — writer and scanner under the SAME
+    /// (default) rules, the benign shape every pre-round-9 pin holds on.
+    fn scan_span(records: Vec<WalRecord>) -> ScanOutcome {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_span(dir.path(), records, IdentRules::default());
         scan(dir.path(), IdentRules::default())
     }
 
@@ -920,6 +991,61 @@ mod per_stream_coverage_tests {
         );
     }
 
+    /// THE RULES-CHANGE REFUSAL (round-9 red pin — the loss this
+    /// closes ran SILENT): a crashed span whose writer recorded
+    /// different ident rules must refuse as Damaged NAMING the rules
+    /// change, before any attribution. Without the gate, this exact
+    /// shape (`events` covered by its own checkpoint, rules changed
+    /// between crash and resume) could drop the stream's own covered
+    /// segments as a co-stream's orphans while still committing its
+    /// cursor — rows the cursor claims as delivered, never replayed
+    /// and never re-extracted.
+    #[test]
+    fn a_crashed_span_resumed_under_changed_rules_degrades_naming_the_rules_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_span(
+            dir.path(),
+            vec![
+                delta("events", None),
+                segment("events", "f0.arrow"),
+                checkpoint("events"),
+            ],
+            IdentRules::default(),
+        );
+        let outcome = scan(dir.path(), IdentRules { max_len: 30 });
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason)
+                if reason.contains("identifier-normalization rules")
+                    && reason.contains("rules change")),
+            "a rules change between crash and resume must refuse, naming itself: {outcome:?}"
+        );
+    }
+
+    /// A manifest with NO rules sidecar beside it refuses the same way:
+    /// no 042+ writer produces the shape (the sidecar is written before
+    /// the manifest is created), so the writer's rules are unknowable
+    /// and attribution cannot be proven.
+    #[test]
+    fn a_manifest_without_the_rules_sidecar_degrades() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_span(
+            dir.path(),
+            vec![
+                delta("events", None),
+                segment("events", "f0.arrow"),
+                checkpoint("events"),
+            ],
+            IdentRules::default(),
+        );
+        std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
+        let outcome = scan(dir.path(), IdentRules::default());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason)
+                if reason.contains("no readable `rules.json` sidecar")),
+            "a sidecar-less manifest must refuse, naming the missing file: {outcome:?}"
+        );
+    }
+
     /// Two checkpointed streams normalizing to ONE root table cannot come
     /// from the writer (`validate_streams` refuses the config), so seeing it
     /// means the join cannot be trusted — degrade rather than attribute.
@@ -982,6 +1108,11 @@ mod starvation_tests {
             out.push('\n');
         }
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+        std::fs::write(
+            dir.join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+        )
+        .expect("write sidecar");
     }
 
     #[test]

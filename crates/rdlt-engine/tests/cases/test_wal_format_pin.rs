@@ -139,6 +139,17 @@ fn committed_load_ids(dest: &MemoryDestination) -> Vec<String> {
 fn stage_fixture(workdir: &Path, rewrite_header: impl FnOnce(&mut serde_json::Value)) {
     let wal_dir = workdir.join("wal");
     copy_wal(&fixture_dir(), &wal_dir);
+    // Every 042+ writer leaves its ident-rules sidecar beside the
+    // manifest, and recovery refuses a manifest without one — the
+    // sidecar is a workdir file, not part of the frozen v2 stream this
+    // fixture pins, so it is staged here rather than committed with the
+    // fixture. The committed fixture predates the sidecar; a future
+    // RDLT_REPIN capture will carry its own.
+    std::fs::write(
+        wal_dir.join("rules.json"),
+        serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+    )
+    .expect("write rules sidecar");
     let manifest_path = wal_dir.join("manifest.jsonl");
     let manifest = std::fs::read_to_string(&manifest_path).expect("read fixture manifest");
     let mut lines: Vec<String> = manifest.lines().map(str::to_owned).collect();
