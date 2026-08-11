@@ -329,6 +329,12 @@ on remote Arrow sources reads high until that bookkeeping fix lands;
 and the `ReadCredit` door is unchanged — flow control was never shown
 insufficient, and no wire byte moved.)*
 
+*(AMENDED 2026-08-11 — the reporting half above ALSO closed on this
+branch during the post-freeze review loop: report totals and every
+other engine byte site (06b2bc2a), then the read side's `BatchRead`
+(40b87a6d), ride the same footprint walk, so no engine site
+capacity-sums any more.)*
+
 The sequencing rule below that gates the repo split on this freeze is
 therefore satisfied: independent connector versioning now has a
 standing contract to version against.
