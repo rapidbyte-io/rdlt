@@ -464,11 +464,12 @@ async fn spec_for_role_refuses_a_discovered_binary_with_the_wrong_identity() {
 }
 
 /// The CLI door on `spec_for_role` (040 T9): `rdlt schema <file-bin>
-/// --role destination` prints the DESTINATION schema, byte-identical
-/// to the compiled `file-dest` spelling's output (one crate, one
-/// schema, two tiers) and different from the flagless output — which
-/// itself stays 039's source-first probe, byte-identical to
-/// `--role source`.
+/// --role destination` prints the DESTINATION schema, different from
+/// the flagless output — which itself stays 039's source-first probe,
+/// byte-identical to `--role source`. ONE tier since the 043 D1 swap:
+/// every spelling spawns, so there is no compiled output to compare
+/// against — the two halves answering differently over the same bin
+/// is the whole claim.
 #[test]
 fn the_cli_schema_role_flag_selects_the_destination_half() {
     let cli = built_cli();
@@ -486,13 +487,7 @@ fn the_cli_schema_role_flag_selects_the_destination_half() {
     let flagless = run(&["schema", &bin]);
     let source = run(&["schema", &bin, "--role", "source"]);
     let destination = run(&["schema", &bin, "--role", "destination"]);
-    let compiled_destination = run(&["schema", "file-dest"]);
 
-    assert_eq!(
-        destination, compiled_destination,
-        "--role destination prints the file destination's schema, byte-identical \
-         to the compiled `file-dest` spelling's"
-    );
     assert_ne!(
         destination, flagless,
         "the destination schema differs from the source-first flagless output"
