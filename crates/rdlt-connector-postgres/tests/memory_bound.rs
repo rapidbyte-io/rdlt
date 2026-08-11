@@ -109,6 +109,11 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
     }
 
     let Some(container) = PostgresContainer::start().await else {
+        assert!(
+            !heavy,
+            "RDLT_HEAVY=1 but no container runtime is available — install and start \
+             Docker or Podman; this test must RUN in the deep job, not skip"
+        );
         return;
     };
     container
