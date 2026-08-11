@@ -295,49 +295,73 @@ impl TableProbe for ShellProbe {
             }
         };
         let pgid = child.id();
-        match tokio::time::timeout(PROBE_TIMEOUT, drain(&mut child)).await {
+        // `drain_output` deliberately does NOT reap (round-13): the
+        // sweep on every arm below runs while the direct sh child is
+        // still unreaped — zombie included — so the group id is
+        // ANCHORED and the group SIGKILL can never land on a recycled
+        // group (measured: a zombie-only group still answers `kill
+        // -0`, and its id cannot be reused until the reap; a pre-kill
+        // reading therefore cannot distinguish "only the zombie" from
+        // "grandchildren exist", so the ORDERING is the safety, not a
+        // conditional). `sweep_probe_exit` signals, reaps, then takes
+        // the one post-reap reading; its degradation note is surfaced
+        // on EVERY arm — a fork the probe line left behind holds
+        // whatever it opened (a single-writer store, for one) into the
+        // next clause, so silence would blame the connector.
+        match tokio::time::timeout(PROBE_TIMEOUT, drain_output(&mut child)).await {
             Err(_elapsed) => {
-                // The group kill: `kill -- -<pgid>` signals every
-                // process in sh's group, grandchildren included; std
-                // exposes no group-kill call, and /bin/kill with the
-                // NEGATIVE pgid is the portable spelling. A kill spawn
-                // failure is NOT swallowed: the direct child still
-                // dies below either way, but the caller must know the
-                // grandchildren may have survived. The direct child is
-                // AWAITED so it is dead, not dying, on return, and one
-                // signal-0 reading then reports possible residue —
-                // possible, because a recycled group id is
-                // indistinguishable from a survivor (see `group_kill`).
                 let group_note = sweep_probe_exit(pgid, &mut child).await;
-                let mut message = format!(
+                let message = format!(
                     "the probe command did not finish within {}s",
                     PROBE_TIMEOUT.as_secs()
                 );
-                if let Some(note) = group_note {
-                    message.push_str(" (");
-                    message.push_str(note);
-                    message.push(')');
-                }
-                Err(ProbeError { message })
-            }
-            Ok(Err(error)) => {
-                // Best-effort sweep on this exit too (round-11 — only
-                // the timeout path swept grandchildren): the note is
-                // discarded, nothing here failed FOR that reason.
-                let _ = sweep_probe_exit(pgid, &mut child).await;
                 Err(ProbeError {
-                    message: format!("the probe command could not run: {error}"),
+                    message: with_note(message, group_note),
                 })
             }
-            Ok(Ok((status, stdout))) => {
-                // Same sweep on the normal exit — `drain` reaped the
-                // direct sh child, but a fork it left behind holds
-                // whatever the probe line opened (a single-writer
-                // store, for one) into the next clause.
-                let _ = sweep_probe_exit(pgid, &mut child).await;
+            Ok(Err(error)) => {
+                let group_note = sweep_probe_exit(pgid, &mut child).await;
+                Err(ProbeError {
+                    message: with_note(
+                        format!("the probe command could not run: {error}"),
+                        group_note,
+                    ),
+                })
+            }
+            Ok(Ok(stdout)) => {
+                let group_note = sweep_probe_exit(pgid, &mut child).await;
+                let status = match child.wait().await {
+                    Ok(status) => status,
+                    Err(error) => {
+                        return Err(ProbeError {
+                            message: with_note(
+                                format!("the probe command could not run: {error}"),
+                                group_note,
+                            ),
+                        });
+                    }
+                };
                 if !status.success() {
                     return Err(ProbeError {
-                        message: format!("the probe command failed: {status}"),
+                        message: with_note(
+                            format!("the probe command failed: {status}"),
+                            group_note,
+                        ),
+                    });
+                }
+                // A degraded sweep FAILS the count even though the
+                // command succeeded (round-13 honesty): the count's
+                // evidence is only as clean as the store it read, and
+                // possible residue holds that store into the next
+                // clause — the failure names the probe, never the
+                // connector.
+                if let Some(note) = group_note {
+                    return Err(ProbeError {
+                        message: format!(
+                            "the probe command completed but its process sweep degraded \
+                             ({note}) — residue could hold the destination into the next \
+                             clause"
+                        ),
                     });
                 }
                 let stdout = String::from_utf8_lossy(&stdout);
@@ -359,12 +383,25 @@ impl TableProbe for ShellProbe {
     }
 }
 
-/// The one exit sweep every probe arm runs (round-12 — three arms
-/// hand-matched pgid with slight variation): SIGKILL the whole group
-/// when its id is known (grandchildren included), else kill and reap
-/// the direct child alone. Returns the degradation note the TIMEOUT
-/// arm folds into its failure message; the other arms discard it —
-/// nothing there failed for the sweep's reason.
+/// Append a sweep degradation note to a probe failure message — the
+/// one spelling every arm folds it in with.
+fn with_note(mut message: String, note: Option<&'static str>) -> String {
+    if let Some(note) = note {
+        message.push_str(" (");
+        message.push_str(note);
+        message.push(')');
+    }
+    message
+}
+
+/// The one exit sweep every probe arm runs (round-12; round-13 moved
+/// it BEFORE the reap on every arm and surfaced its note on all of
+/// them): SIGKILL the whole group when its id is known (grandchildren
+/// included — safe because the caller has not reaped the direct child
+/// yet, so the id is anchored), else kill and reap the direct child
+/// alone. The returned degradation note joins every arm's failure
+/// message, and on an otherwise-successful count it fails the count
+/// naming the probe.
 async fn sweep_probe_exit(
     pgid: Option<u32>,
     child: &mut tokio::process::Child,
@@ -423,20 +460,18 @@ async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'st
     }
 }
 
-/// Read the probe's stdout to EOF, then reap its exit status — split
-/// from the timeout wrapper so the `Child` handle stays usable in the
-/// timeout arm (the group kill needs its pgid, and the post-kill wait
-/// needs the handle).
-async fn drain(
-    child: &mut tokio::process::Child,
-) -> std::io::Result<(std::process::ExitStatus, Vec<u8>)> {
+/// Read the probe's stdout to EOF WITHOUT reaping (round-13 — the
+/// reap lived here, freeing the group id before the Ok arms swept, so
+/// their SIGKILL could land on a recycled group): the reap belongs to
+/// the arms, AFTER their sweep, while the unreaped child still anchors
+/// the group id.
+async fn drain_output(child: &mut tokio::process::Child) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt as _;
     let mut stdout = Vec::new();
     if let Some(pipe) = child.stdout.as_mut() {
         pipe.read_to_end(&mut stdout).await?;
     }
-    let status = child.wait().await?;
-    Ok((status, stdout))
+    Ok(stdout)
 }
 
 /// Certification proper: pre-flight the target, run the role's
