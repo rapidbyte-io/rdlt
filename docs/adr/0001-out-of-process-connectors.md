@@ -48,6 +48,40 @@ sdk (the connector-authoring framework, used inside connector
 binaries). What dies: connectors as library dependencies of the
 facade/CLI.
 
+*(AMENDED 2026-08-12 — D1 IS EXECUTED. Feature 043 removed the
+facade/CLI's in-process connector wiring on its own atomic branch,
+per the merge policy below: the facade's per-connector cargo
+features and optional dependencies, its `pub mod connector`
+re-exports and typed config embeds, all ten in-process build arms,
+the CLI's compiled `rdlt schema` tier and its CDC advisory system —
+gone without aliases or migration arms. The rich YAML spellings
+were deliberately KEPT (owner ruling): `postgres:` and its siblings
+stay the user-facing vocabulary, desugaring through one table to a
+connector reference carrying the hardcoded reverse-DNS id and
+resolving to a spawned binary via the provider — the config is an
+opaque document validated by the connector's own gate at the
+handshake. The remote numbers are now the benchmark identity,
+exactly as this decision said in advance: the spawned twins took
+over the base cell ids with their minted bars at unchanged values,
+the retired in-process cells and bars are dated history, and the
+cold-start bar (≤40 ms, unchanged) was re-derived end-to-end
+INCLUDING two connector spawn+handshakes inside the measured wall —
+27.1 ms median (repeated in-gate at 29.6/27.7 ms), which supersedes
+the "engine-only" phrasing under Consequences below. What survived
+is exactly what this decision promised: the SPI traits, the sdk
+inside every connector binary, the engine, and all seven connector
+crates as spawned binaries; what died is connectors as library
+dependencies of the facade/CLI. One material consequence surfaced
+en route, recorded here because the Context above names the old
+shape: the snowflake fork-pinned dependency now binds ONLY
+`rdlt-connector-snowflake` — `rdlt` and `rdlt-cli` no longer
+resolve the fork at all, so the publish blocker 023 recorded
+narrows to the one connector crate. Housekeeping, dated here
+because the edit itself was in-place: 043's rename sweep reworded
+the 039 roadmap line below — the adapters SHIPPED under
+`Remote`-prefixed plan-time names and were de-prefixed at 043 once
+every connector was spawned.)*
+
 **D2 — The engine's ignorance is preserved.** The engine continues to
 accept already-constructed `Source`/`Destination` objects (true
 today) and never learns about connector registries, artifact
