@@ -37,37 +37,14 @@ impl TableProbe for FileCount {
 
 /// The in-process probe's fail-open fold closed (042 round-2 fix wave —
 /// wave 1 closed the open() arm only): absence reads as zero, a genuine
-/// query failure is a probe error. The fixture is the shared
-/// broken-view plant ([`super::common::plant_broken_view_store`]).
+/// query failure is a probe error. Plant and asserts are the shared pin
+/// body ([`super::common::assert_probe_counts_absence_but_fails_broken_reads`]).
 #[tokio::test]
 async fn file_count_absence_is_zero_but_a_broken_read_is_a_probe_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = super::common::plant_broken_view_store(dir.path());
 
-    let probe = FileCount(file);
-    assert_eq!(
-        probe
-            .count(&TableName::new("present"))
-            .await
-            .expect("a present table counts"),
-        2
-    );
-    assert_eq!(
-        probe
-            .count(&TableName::new("never_created"))
-            .await
-            .expect("absence is a fact, not a failure"),
-        0
-    );
-    let err = probe
-        .count(&TableName::new("broken"))
-        .await
-        .expect_err("a genuine read failure must never read as an empty table");
-    assert!(
-        err.message.contains("counting `broken`"),
-        "the probe error names the failing count: {}",
-        err.message
-    );
+    super::common::assert_probe_counts_absence_but_fails_broken_reads(&FileCount(file)).await;
 }
 
 #[tokio::test]

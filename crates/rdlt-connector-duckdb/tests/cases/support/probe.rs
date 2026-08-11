@@ -65,37 +65,14 @@ impl TableProbe for SnapshotCount {
 }
 
 /// The fail-open fold closed (042 fix wave): only ABSENCE reads as
-/// zero. The fixture is the shared broken-view plant
-/// ([`crate::cases::common::plant_broken_view_store`]) — the copy
-/// scaffolding above is this probe's own subject, the count rule is
-/// the shared one.
+/// zero. The copy scaffolding above is this probe's own subject; plant
+/// and asserts are the shared pin body
+/// ([`crate::cases::common::assert_probe_counts_absence_but_fails_broken_reads`]).
 #[tokio::test]
 async fn absence_counts_zero_but_a_broken_read_is_a_probe_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = crate::cases::common::plant_broken_view_store(dir.path());
 
-    let probe = SnapshotCount(file);
-    assert_eq!(
-        probe
-            .count(&TableName::new("present"))
-            .await
-            .expect("a present table counts"),
-        2
-    );
-    assert_eq!(
-        probe
-            .count(&TableName::new("never_created"))
-            .await
-            .expect("absence is a fact, not a failure"),
-        0
-    );
-    let err = probe
-        .count(&TableName::new("broken"))
-        .await
-        .expect_err("a genuine read failure must never read as an empty table");
-    assert!(
-        err.message.contains("counting `broken` failed"),
-        "the probe error names the failing count: {}",
-        err.message
-    );
+    crate::cases::common::assert_probe_counts_absence_but_fails_broken_reads(&SnapshotCount(file))
+        .await;
 }

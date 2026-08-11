@@ -9,7 +9,8 @@ use arrow_schema::{Field, Schema};
 use async_trait::async_trait;
 use rdlt_connector_duckdb::destination::{self, Config, Shell};
 use rdlt_connector_sdk::spi::{
-    ConnectorSpec, Cursor, ReadRequest, RecordBatch, Source, SourceError, StreamSpec, WriteMode,
+    ConnectorSpec, Cursor, ReadRequest, RecordBatch, Source, SourceError, StreamSpec, TableName,
+    WriteMode,
 };
 use rdlt_engine::{Engine, EngineConfig, RdltError, RunReport};
 
@@ -68,6 +69,41 @@ pub fn plant_broken_view_store(dir: &std::path::Path) -> std::path::PathBuf {
     }
     std::fs::remove_file(&parquet).expect("the parquet file vanishes");
     file
+}
+
+/// THE one fail-open pin body (round-8 fix — both probe suites carried
+/// this plant-and-assert sequence verbatim, and their error-message
+/// asserts had already drifted apart): against the broken-view store
+/// ([`plant_broken_view_store`]), `probe` counts the present table,
+/// reads absence as zero, and surfaces the broken view's read failure
+/// as a probe ERROR spelled the way [`count_at`] renders it — never an
+/// empty table.
+pub async fn assert_probe_counts_absence_but_fails_broken_reads(
+    probe: &dyn rdlt_testkit::TableProbe,
+) {
+    assert_eq!(
+        probe
+            .count(&TableName::new("present"))
+            .await
+            .expect("a present table counts"),
+        2
+    );
+    assert_eq!(
+        probe
+            .count(&TableName::new("never_created"))
+            .await
+            .expect("absence is a fact, not a failure"),
+        0
+    );
+    let err = probe
+        .count(&TableName::new("broken"))
+        .await
+        .expect_err("a genuine read failure must never read as an empty table");
+    assert!(
+        err.message.contains("counting `broken` failed"),
+        "the probe error names the failing count, `count_at`'s spelling: {}",
+        err.message
+    );
 }
 
 // ---------------------------------------------------------------- documents
