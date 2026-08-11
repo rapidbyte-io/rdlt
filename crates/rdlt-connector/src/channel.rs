@@ -318,18 +318,36 @@ fn data_footprint(
         (start, end - start)
     };
     // The i32/i64 offsets window `[offset ..= offset + len]`, and the
-    // data-byte range those offsets span.
+    // data-byte range those offsets span. Arrow permits an EMPTY
+    // offsets buffer for a zero-length variable-width array (arrow-data
+    // 58's own validation: "An empty list-like array can have 0
+    // offsets" — a shape foreign IPC writers like pyarrow produce), so
+    // the window reads are guarded (round-10 fix: `values[offset]` on
+    // that legal shape panicked inside the byte meter): no offsets,
+    // nothing viewed.
     let offsets_i32 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
         let values: &[i32] = buffer.typed_data();
-        let data_start = values[offset] as usize;
-        let data_len = (values[offset + len] - values[offset]) as usize;
-        (offset * 4, (len + 1) * 4, data_start, data_len)
+        let (Some(&first), Some(&last)) = (values.get(offset), values.get(offset + len)) else {
+            return (0, 0, 0, 0);
+        };
+        (
+            offset * 4,
+            (len + 1) * 4,
+            first as usize,
+            (last - first) as usize,
+        )
     };
     let offsets_i64 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
         let values: &[i64] = buffer.typed_data();
-        let data_start = values[offset] as usize;
-        let data_len = (values[offset + len] - values[offset]) as usize;
-        (offset * 8, (len + 1) * 8, data_start, data_len)
+        let (Some(&first), Some(&last)) = (values.get(offset), values.get(offset + len)) else {
+            return (0, 0, 0, 0);
+        };
+        (
+            offset * 8,
+            (len + 1) * 8,
+            first as usize,
+            (last - first) as usize,
+        )
     };
 
     let buffers = data.buffers();
@@ -716,6 +734,41 @@ mod byte_size_tests {
             metered <= 2 * ROW_PAYLOAD,
             "a batch built from exact-length buffers meters near its \
              payload: metered {metered}, payload {ROW_PAYLOAD}"
+        );
+    }
+
+    /// THE EMPTY-OFFSETS PIN (round-10 fix): Arrow permits a
+    /// zero-length variable-width array to carry an EMPTY offsets
+    /// buffer — arrow-data 58's own validation allows 0 offsets
+    /// ("An empty list-like array can have 0 offsets") — and the
+    /// unguarded window read (`values[offset]`) panicked on it inside
+    /// the byte meter. The walk is driven on the RAW `ArrayData` here,
+    /// deliberately: arrow-array 58's typed wrappers happen to
+    /// normalize the empty buffer to a single `0` on construction
+    /// (measured — `make_array` + `to_data` yields a 4-byte offsets
+    /// buffer), so a batch-level fixture cannot carry the shape today,
+    /// but the meter walks `child_data` trees and validated foreign
+    /// constructions where nothing promises that normalization.
+    #[test]
+    fn an_empty_offsets_buffer_meters_zero_instead_of_panicking() {
+        let data = arrow_data::ArrayData::try_new(
+            DataType::Utf8,
+            0,
+            None,
+            0,
+            vec![
+                arrow_buffer::Buffer::from_vec(Vec::<i32>::new()),
+                arrow_buffer::Buffer::from_vec(Vec::<u8>::new()),
+            ],
+            vec![],
+        )
+        .expect("arrow validates an empty offsets buffer as legal for an empty array");
+        assert_eq!(data.buffers()[0].len(), 0, "the raw shape under test");
+        let mut seen = std::collections::HashSet::new();
+        assert_eq!(
+            data_footprint(&data, &mut seen),
+            0,
+            "no offsets, nothing viewed — the legal empty shape meters zero"
         );
     }
 
