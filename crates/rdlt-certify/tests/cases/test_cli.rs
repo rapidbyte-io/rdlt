@@ -220,9 +220,12 @@ fn dest_config(dir: &Path, out_root: &Path) -> std::path::PathBuf {
 /// A source-suite skip is NOT certified evidence by default (round-3
 /// fix): a stream that never checkpoints and declares no cursor field
 /// earns an honest S2 skip — but a source that merely FORGOT resume
-/// looks identical, so the bin refuses (exit 1), stderr naming the
-/// skipped clause and the acknowledgment flag. With `--accept-skips`
-/// the operator owns that trade: exit 0, the skip still rendered.
+/// looks identical, so the bin refuses (exit 1), the report naming the
+/// skipped clause and the acknowledgment. The acknowledgment takes
+/// STREAM NAMES (round-12 — a blanket flag accepted for one genuine
+/// snapshot stream also folded a regressed co-stream green): naming
+/// the wrong stream still refuses; naming the skipping stream is the
+/// operator owning the trade — exit 0, the skip still rendered.
 #[test]
 fn a_source_suite_skip_refuses_unless_acknowledged() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -257,8 +260,25 @@ fn a_source_suite_skip_refuses_unless_acknowledged() {
     // skip folds as a FAIL entry naming the flag, so embedders gating
     // on Report::passed share the exact guard this exit code speaks.
     assert!(
-        stdout.contains("FAIL S2") && stdout.contains("--accept-skips"),
-        "the unacknowledged skip fails S2 naming the acknowledgment: {stdout}"
+        stdout.contains("FAIL S2") && stdout.contains("--accept-skips events"),
+        "the unacknowledged skip fails S2 naming the stream's own acknowledgment: {stdout}"
+    );
+
+    // Naming a DIFFERENT stream acknowledges nothing: still exit 1.
+    let wrong_name = certify(&[
+        "--role",
+        "source",
+        "--config",
+        config_path.to_str().expect("utf-8 path"),
+        "--accept-skips",
+        "not-events",
+        bin.to_str().expect("utf-8 path"),
+    ]);
+    assert_eq!(
+        wrong_name.status.code(),
+        Some(1),
+        "a wrong-name acknowledgment must not certify\nstdout:\n{}",
+        stdout_of(&wrong_name)
     );
 
     let accepted = certify(&[
@@ -267,6 +287,7 @@ fn a_source_suite_skip_refuses_unless_acknowledged() {
         "--config",
         config_path.to_str().expect("utf-8 path"),
         "--accept-skips",
+        "events",
         bin.to_str().expect("utf-8 path"),
     ]);
     let stdout = stdout_of(&accepted);

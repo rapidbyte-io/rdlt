@@ -97,14 +97,16 @@ struct Args {
     #[arg(long, value_enum, default_value = "text")]
     report: ReportFormat,
 
-    /// Accept skipped SOURCE-suite clauses as acknowledged: an honest
-    /// snapshot source (no cursor field, never checkpoints) skips S2,
-    /// but a source that merely FORGOT resume looks identical — so
-    /// without this flag any S1/S2/S4 skip fails certification. Kill
-    /// matrix skips (fixture sizing) and destination probe skips are
-    /// unaffected
-    #[arg(long)]
-    accept_skips: bool,
+    /// Acknowledge skipped SOURCE-suite clauses for the NAMED streams
+    /// (comma-separated): an honest snapshot source (no cursor field,
+    /// never checkpoints) skips S2, but a source that merely FORGOT
+    /// resume looks identical — so any S1/S2/S4 skip whose stream is
+    /// not named here fails certification. Naming is the
+    /// acknowledgment: a blanket form would fold a regressed stream
+    /// green beside a genuine snapshot one. Kill matrix skips (fixture
+    /// sizing) and destination probe skips are unaffected
+    #[arg(long, value_name = "STREAM[,STREAM]", value_delimiter = ',')]
+    accept_skips: Vec<String>,
 
     /// Print every clause id, title and definition, then exit
     #[arg(long)]
@@ -180,7 +182,7 @@ fn main() -> ExitCode {
         role,
         args.kill_matrix,
         args.report,
-        args.accept_skips,
+        &args.accept_skips,
         &target,
         probe.as_ref().map(|shell| shell as &dyn TableProbe),
     ))
@@ -436,7 +438,7 @@ async fn run(
     role: CertifyRole,
     kill_matrix: bool,
     format: ReportFormat,
-    accept_skips: bool,
+    accept_skips: &[String],
     target: &Target,
     probe: Option<&dyn TableProbe>,
 ) -> ExitCode {
@@ -446,7 +448,10 @@ async fn run(
     }
 
     let mut report = match role {
-        CertifyRole::Source => certify_source(target, accept_skips).await,
+        CertifyRole::Source => {
+            let streams: Vec<&str> = accept_skips.iter().map(String::as_str).collect();
+            certify_source(target, &streams).await
+        }
         CertifyRole::Destination => certify_destination(target, probe).await,
     };
     if kill_matrix {

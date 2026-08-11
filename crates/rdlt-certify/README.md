@@ -41,10 +41,12 @@ Exit codes:
   failures — with one deliberate exception, enforced in the LIBRARY so
   embedders gating on `Report::passed` share it: an unacknowledged
   skipped SOURCE clause (S1/S2/S4) folds as a failure and refuses with
-  exit 1 unless `--accept-skips` (the library's `accept_skips`)
-  acknowledges it, because a source that never checkpoints looks
-  identical to one that merely forgot resume; kill-matrix and
-  destination probe skips never refuse);
+  exit 1 unless its stream is named in `--accept-skips
+  <stream[,stream]>` (the library's `accept_skips` stream list),
+  because a source that never checkpoints looks identical to one that
+  merely forgot resume — and a blanket acknowledgment would fold a
+  regressed co-stream green beside a genuine snapshot one; kill-matrix
+  and destination probe skips never refuse);
 - **1** — at least one clause failed; the report lists each failure;
 - **2** — the run was refused before certification could judge
   anything: the target did not resolve or spawn (the runtime's own
@@ -105,7 +107,7 @@ The same vocabulary `--explain` prints, verbatim:
 | Id | Title | Definition |
 |----|-------|------------|
 | S1 | checkpoint resume law | For every checkpoint the source emits, one full read equals the rows covered by that checkpoint followed by a resumed read since it — resuming from any checkpoint loses nothing and repeats nothing. |
-| S2 | checkpoint coverage | A stream must checkpoint at least once during a read. A stream that never checkpoints cannot be certified for resume and fails by name — unless it declares no cursor field at all: an honestly-declared snapshot stream is skipped with the reason, never vacuously passed. Certification refuses a skipped source clause unless the acknowledgment is given (certify_source's accept_skips; the CLI's --accept-skips). |
+| S2 | checkpoint coverage | A stream must checkpoint at least once during a read. A stream that never checkpoints cannot be certified for resume and fails by name — unless it declares no cursor field at all: an honestly-declared snapshot stream is skipped with the reason, never vacuously passed. Certification refuses a skipped source clause unless its stream is acknowledged by name (certify_source's accept_skips stream list; the CLI's --accept-skips <stream[,stream]>). |
 | S4 | prompt cancellation | When the record channel closes mid-read, the source stops promptly and returns Ok — never an error, never a hang. |
 | D1 | staging invisibility | Rows written into a load session but not yet committed are invisible to readers of the table. |
 | D2 | atomic state-with-data commit | A commit persists the pipeline's state document atomically with the data: reading state back afterward returns exactly the committed cursor. |

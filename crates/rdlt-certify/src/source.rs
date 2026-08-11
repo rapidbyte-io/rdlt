@@ -13,6 +13,7 @@
 
 use rdlt_runtime::{ConnectorProvider, LocalBinaryConnectorProvider, Role};
 use rdlt_testkit::conformance::source::verify_source;
+use rdlt_testkit::conformance::{ConformanceFailure, ConformanceSkip};
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
@@ -25,22 +26,25 @@ use crate::wire;
 /// exact set. Public (re-exported at the crate root) because the
 /// certifier CLI's skip-acknowledgment gate keys on exactly this set:
 /// a skip among these clauses refuses certification unless the
-/// operator acknowledges it.
+/// operator acknowledges its stream by name.
 pub const SOURCE_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 
 /// Certify `target` as a SOURCE connector. Never hangs and never
 /// panics on connector misbehavior: every clause's outcome — including
 /// "the binary is not a connector at all" — is a report entry.
 ///
-/// `accept_skips` is the snapshot-source acknowledgment, STRICT by
-/// default (round-4 fix — the guard lives HERE, not only in the CLI):
-/// without it an S-suite skip folds as a FAILURE naming the
-/// acknowledgment, so a library caller gating on [`Report::passed`]
+/// `accept_skips` is the snapshot-source acknowledgment, BY STREAM
+/// NAME and strict by default (round-4 put the guard HERE, not only in
+/// the CLI; round-12 made it name-scoped — a blanket acknowledgment
+/// accepted for one genuine snapshot stream also folded a REGRESSED
+/// co-stream green): an S-suite skip folds as a FAILURE naming its
+/// stream and the acknowledgment unless that stream is named in
+/// `accept_skips`, so a library caller gating on [`Report::passed`]
 /// refuses a source that never checkpoints exactly as the CLI does.
 /// `Report::passed` itself deliberately keeps treating `Skip` as
 /// passing — the destination's no-probe and no-merge skips are choices
 /// the operator already made.
-pub async fn certify_source(target: &Target, accept_skips: bool) -> Report {
+pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     let mut report = Report::default();
 
     // P1 — the handshake-line discipline, probed on a direct spawn whose
@@ -168,22 +172,9 @@ pub async fn certify_source(target: &Target, accept_skips: bool) -> Report {
             // testkit's one fold spelling plus the acknowledgment
             // tail.
             let (mut failures, skips) = outcome.tolerating_skips();
-            let (failures, skips) = if accept_skips {
-                (failures, skips)
-            } else {
-                failures.extend(skips.into_iter().map(|skip| {
-                    let mut failure = skip.into_failure();
-                    failure.message.push_str(
-                        " — a skipped source clause is not certified evidence (a \
-                         source that never checkpoints looks identical to one that \
-                         forgot resume); acknowledge a snapshot source with \
-                         accept_skips (CLI: --accept-skips)",
-                    );
-                    failure
-                }));
-                (failures, Vec::new())
-            };
-            report.absorb(failures, skips, &SOURCE_CLAUSES)
+            let (promoted, acknowledged) = fold_acknowledged(skips, accept_skips);
+            failures.extend(promoted);
+            report.absorb(failures, acknowledged, &SOURCE_CLAUSES)
         }
         Err(_elapsed) => {
             for clause in SOURCE_CLAUSES {
@@ -193,4 +184,99 @@ pub async fn certify_source(target: &Target, accept_skips: bool) -> Report {
     }
 
     report
+}
+
+/// The stream an S-suite skip's reason names — the acknowledgment
+/// matches on it. Every suite skip reason opens ``stream `<name>` ...``,
+/// so the name is the first backtick-quoted token.
+fn skip_stream(reason: &str) -> Option<&str> {
+    reason.split('`').nth(1)
+}
+
+/// Fold the S-suite's skips through the NAME-scoped acknowledgment
+/// (round-12 — the acknowledgment was a blanket bool, so accepting a
+/// genuine snapshot stream also folded a REGRESSED co-stream green):
+/// a skip whose named stream is acknowledged stays an honest Skip;
+/// every other skip promotes to a failure naming its stream and the
+/// name-taking acknowledgment.
+fn fold_acknowledged(
+    skips: Vec<ConformanceSkip>,
+    accept_skips: &[&str],
+) -> (Vec<ConformanceFailure>, Vec<ConformanceSkip>) {
+    let (acknowledged, promoted): (Vec<_>, Vec<_>) = skips.into_iter().partition(|skip| {
+        skip_stream(&skip.reason).is_some_and(|stream| accept_skips.contains(&stream))
+    });
+    let failures = promoted
+        .into_iter()
+        .map(|skip| {
+            let stream = skip_stream(&skip.reason).unwrap_or("<unnamed>").to_owned();
+            let mut failure = skip.into_failure();
+            failure.message.push_str(&format!(
+                " — a skipped source clause is not certified evidence (a source that \
+                 never checkpoints looks identical to one that forgot resume); \
+                 acknowledge a snapshot stream BY NAME with accept_skips \
+                 (CLI: --accept-skips {stream})"
+            ));
+            failure
+        })
+        .collect();
+    (failures, acknowledged)
+}
+
+#[cfg(test)]
+mod acknowledgment_tests {
+    //! The name-scoped gate, pinned pure (round-12 red pin): two
+    //! cursor-less streams, ONE acknowledged — the other must still
+    //! fail by name, because a blanket acknowledgment is exactly how a
+    //! regressed CDC stream certifies green beside a genuine snapshot
+    //! stream.
+
+    use super::*;
+
+    fn s2_skip(stream: &str) -> ConformanceSkip {
+        ConformanceSkip {
+            clause: "S2",
+            reason: format!(
+                "stream `{stream}` declares no cursor_field and never checkpoints — an \
+                 honest snapshot stream: there is no resume to certify, and every run \
+                 re-reads everything"
+            ),
+        }
+    }
+
+    #[test]
+    fn the_skip_reason_names_its_stream_between_the_first_backticks() {
+        assert_eq!(skip_stream(&s2_skip("orders").reason), Some("orders"));
+        assert_eq!(skip_stream("no backticks at all"), None);
+    }
+
+    #[test]
+    fn an_unacknowledged_co_stream_still_fails_by_name() {
+        let (failures, acknowledged) = fold_acknowledged(
+            vec![s2_skip("snapshot_ok"), s2_skip("cdc_regressed")],
+            &["snapshot_ok"],
+        );
+        assert_eq!(acknowledged.len(), 1, "{acknowledged:?}");
+        assert!(
+            skip_stream(&acknowledged[0].reason) == Some("snapshot_ok"),
+            "the named stream's skip stays an honest skip: {acknowledged:?}"
+        );
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].message.contains("`cdc_regressed`")
+                && failures[0].message.contains("--accept-skips cdc_regressed")
+                && failures[0].message.starts_with("not exercised: "),
+            "the unacknowledged stream fails BY NAME, spelling out its own \
+             acknowledgment: {}",
+            failures[0].message
+        );
+    }
+
+    #[test]
+    fn naming_every_stream_accepts_every_skip() {
+        let (failures, acknowledged) =
+            fold_acknowledged(vec![s2_skip("a"), s2_skip("b")], &["a", "b"]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(acknowledged.len(), 2, "both skips render honestly");
+    }
 }

@@ -65,8 +65,9 @@ pub const CLAUSES: &[Clause] = &[
                      checkpoints cannot be certified for resume and fails by name — unless it \
                      declares no cursor field at all: an honestly-declared snapshot stream is \
                      skipped with the reason, never vacuously passed. Certification refuses a \
-                     skipped source clause unless the acknowledgment is given \
-                     (certify_source's accept_skips; the CLI's --accept-skips).",
+                     skipped source clause unless its stream is acknowledged by name \
+                     (certify_source's accept_skips stream list; the CLI's \
+                     --accept-skips <stream[,stream]>).",
     },
     Clause {
         id: "S4",

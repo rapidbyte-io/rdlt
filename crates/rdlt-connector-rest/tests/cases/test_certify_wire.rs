@@ -135,7 +135,7 @@ async fn the_rest_source_certifies_all_pass() {
     let target = Target::resolve_path(built_bin(), small_config(&server.uri()));
 
     for _attempt in 1..=2 {
-        let report = certify_source(&target, false).await;
+        let report = certify_source(&target, &[]).await;
 
         assert_certified_all_pass(
             &report,

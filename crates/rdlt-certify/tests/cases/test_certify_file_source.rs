@@ -40,8 +40,7 @@ async fn the_file_source_certifies_all_pass() {
     });
 
     for attempt in 1..=2 {
-        let report =
-            certify_source(&Target::resolve_path(bin.clone(), config.clone()), false).await;
+        let report = certify_source(&Target::resolve_path(bin.clone(), config.clone()), &[]).await;
 
         let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
         for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
@@ -81,7 +80,7 @@ async fn an_unacknowledged_source_skip_fails_the_report_itself() {
     });
     let bin = built_bin("rdlt-connector-file");
 
-    let strict = certify_source(&Target::resolve_path(bin.clone(), config.clone()), false).await;
+    let strict = certify_source(&Target::resolve_path(bin.clone(), config.clone()), &[]).await;
     assert!(
         !strict.passed(),
         "an unacknowledged snapshot source must not pass:\n{}",
@@ -90,12 +89,25 @@ async fn an_unacknowledged_source_skip_fails_the_report_itself() {
     assert!(
         strict.entries.iter().any(|entry| entry.clause == "S2"
             && matches!(&entry.verdict, Verdict::Fail(why)
-                if why.contains("--accept-skips") && why.contains("not exercised"))),
-        "S2 fails naming the acknowledgment:\n{}",
+                if why.contains("--accept-skips events") && why.contains("not exercised"))),
+        "S2 fails naming the stream's own acknowledgment:\n{}",
         strict.render_text()
     );
 
-    let acknowledged = certify_source(&Target::resolve_path(bin, config), true).await;
+    // The acknowledgment is BY NAME (round-12): naming some OTHER
+    // stream acknowledges nothing here.
+    let wrong_name = certify_source(
+        &Target::resolve_path(bin.clone(), config.clone()),
+        &["not-events"],
+    )
+    .await;
+    assert!(
+        !wrong_name.passed(),
+        "acknowledging a stream this source does not skip must not certify it:\n{}",
+        wrong_name.render_text()
+    );
+
+    let acknowledged = certify_source(&Target::resolve_path(bin, config), &["events"]).await;
     assert!(
         acknowledged.passed(),
         "the acknowledged snapshot source passes:\n{}",
