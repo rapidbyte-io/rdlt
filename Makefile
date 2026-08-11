@@ -136,19 +136,30 @@ define spawn-suite-matrix
 # full engine run over spawned connectors on both sides, and its
 # one crash arm); the env var tells the shared helper to (re)build
 # the bins itself, so the suite stays honest run alone. ONE module
-# per invocation: nextest fails only a FULLY empty selection, so an
-# OR filter with a renamed module beside a live one passes green
-# (measured) — separate lines make each module fail its own line.
-cargo build -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
-cargo build -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
-cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
-cargo build -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
-cargo build -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
-cargo build -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
-cargo build -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
+# per invocation applies to the NEXTEST lines below (empty-selection
+# semantics), not to builds: the seven bin-serve bins batch into ONE
+# cargo invocation (round-10 — eight sequential invocations paid
+# resolution, the target-dir lock and process startup eight times per
+# gate block). The BARE `--features bin-serve` spelling is deliberate
+# and measured: cargo applies it to every selected package (each
+# defines the feature; one that dropped it would fail the line), while
+# the package-prefixed `rdlt-connector-postgres/bin-serve` form does
+# NOT register for the one crate whose workspace dependency entry pins
+# `default-features = false` — its bin then fails required-features. A
+# build failure still names its package.
+cargo build \
+  -p rdlt-connector-file -p rdlt-connector-snowflake -p rdlt-connector-postgres \
+  -p rdlt-connector-rest -p rdlt-connector-duckdb -p rdlt-connector-iceberg \
+  -p rdlt-connector-oracle \
+  --features bin-serve \
+  --bin rdlt-connector-file --bin rdlt-connector-snowflake --bin rdlt-connector-postgres \
+  --bin rdlt-connector-rest --bin rdlt-connector-duckdb --bin rdlt-connector-iceberg \
+  --bin rdlt-connector-oracle
 # The certifier bin rides the same discipline: behind `bin` +
 # `required-features`, built here explicitly so a CLI that stops
-# compiling fails the gate rather than rotting unseen.
+# compiling fails the gate rather than rotting unseen. Its OWN
+# invocation — a different feature set (`bin`) does not batch with
+# the bin-serve group.
 cargo build -p rdlt-certify --features bin --bin rdlt-certify
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
