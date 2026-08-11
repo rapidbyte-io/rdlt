@@ -61,10 +61,11 @@ impl Wal {
     ) -> Result<Self, RdltError> {
         std::fs::create_dir_all(&dir).map_err(|e| wal_err("creating wal dir", e))?;
         // The rules sidecar goes down BEFORE the manifest is created, so
-        // a manifest can never exist without it: recovery treats a
-        // sidecar-less manifest as damage (nothing pre-042 is deployed,
-        // so there is no older writer to be compatible with). See
-        // [`RULES_SIDECAR`] for why the rules must be recorded at all.
+        // no 042+ manifest ever exists without it; recovery refuses a
+        // RECORDED mismatch and treats absence as a pre-042 writer's
+        // residue (warn + proceed under this run's rules — the
+        // pre-sidecar behavior). See [`RULES_SIDECAR`] for why the
+        // rules must be recorded at all.
         let sidecar =
             serde_json::to_vec(&rules).map_err(|e| wal_err("encoding rules sidecar", e))?;
         std::fs::write(dir.join(RULES_SIDECAR), sidecar)
