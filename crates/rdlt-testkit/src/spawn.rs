@@ -67,6 +67,65 @@ fn debug_dir_from(
     }
 }
 
+/// The path to `crate_name`'s built connector bin, building it first
+/// (once per crate per test process) when `RDLT_BUILD_CONNECTOR_BINS`
+/// is set — the Makefile line sets it. Without the env var a missing
+/// bin fails with instructions, never silently. `manifest_dir` is the
+/// CALLING crate's `env!("CARGO_MANIFEST_DIR")`, which anchors the
+/// workspace lookup to the caller's tree rather than wherever this
+/// crate's sources live.
+pub fn built_connector_bin(manifest_dir: &str, crate_name: &str) -> PathBuf {
+    // NO once-per-process guard, deliberately (round-7 honesty fix: a
+    // per-process registry sat here and guarded nothing — the gate's
+    // runner is nextest, whose process-per-test model gives every test
+    // its own process). The truth: in rebuild mode EVERY call invokes
+    // cargo, concurrent invocations are serialized by cargo's own
+    // target-directory lock, and a repeat build is an incremental
+    // no-op — correct, bounded, and honestly redundant.
+    if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
+        // Opt-in rebuild, deliberately (039): the gate line sets the
+        // var, and a developer running this suite in a loop should
+        // not pay a cargo invocation per run. The residue is that a
+        // STALE bin certifies green here, so say so out loud —
+        // silence is what would make an hours-old binary look like
+        // evidence about the current tree.
+        eprintln!(
+            "note: RDLT_BUILD_CONNECTOR_BINS is unset — spawning the \
+             {crate_name} binary already on disk WITHOUT rebuilding. \
+             Whatever this suite certifies is that binary, not necessarily the \
+             current source. The Makefile's spawn-bins lines set the var."
+        );
+    } else {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = std::process::Command::new(&cargo)
+            .current_dir(workspace_root(manifest_dir))
+            .args([
+                "build",
+                "-p",
+                crate_name,
+                "--features",
+                "bin-serve",
+                "--bin",
+                crate_name,
+            ])
+            .status()
+            .unwrap_or_else(|error| panic!("cargo build -p {crate_name} did not spawn: {error}"));
+        assert!(
+            status.success(),
+            "cargo build -p {crate_name} --features bin-serve failed"
+        );
+    }
+    let path = target_debug_dir(manifest_dir).join(crate_name);
+    assert!(
+        path.is_file(),
+        "connector binary `{}` is not built — run the Makefile's spawn-bins \
+         line (it sets RDLT_BUILD_CONNECTOR_BINS=1) or `cargo build -p \
+         {crate_name} --features bin-serve` first",
+        path.display()
+    );
+    path
+}
+
 #[cfg(test)]
 mod resolution_tests {
     use super::*;
@@ -97,67 +156,4 @@ mod resolution_tests {
             "the refusal names the value and the fix: {refusal}"
         );
     }
-}
-
-/// The path to `crate_name`'s built connector bin, building it first
-/// (once per crate per test process) when `RDLT_BUILD_CONNECTOR_BINS`
-/// is set — the Makefile line sets it. Without the env var a missing
-/// bin fails with instructions, never silently. `manifest_dir` is the
-/// CALLING crate's `env!("CARGO_MANIFEST_DIR")`, which anchors the
-/// workspace lookup to the caller's tree rather than wherever this
-/// crate's sources live.
-pub fn built_connector_bin(manifest_dir: &str, crate_name: &str) -> PathBuf {
-    // NO once-per-process guard, deliberately (round-7 honesty fix: a
-    // per-process registry sat here and guarded nothing — the gate's
-    // runner is nextest, whose process-per-test model gives every test
-    // its own process). The truth: in rebuild mode EVERY call invokes
-    // cargo, concurrent invocations are serialized by cargo's own
-    // target-directory lock, and a repeat build is an incremental
-    // no-op — correct, bounded, and honestly redundant.
-    {
-        if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
-            // Opt-in rebuild, deliberately (039): the gate line sets the
-            // var, and a developer running this suite in a loop should
-            // not pay a cargo invocation per run. The residue is that a
-            // STALE bin certifies green here, so say so out loud —
-            // silence is what would make an hours-old binary look like
-            // evidence about the current tree.
-            eprintln!(
-                "note: RDLT_BUILD_CONNECTOR_BINS is unset — spawning the \
-                 {crate_name} binary already on disk WITHOUT rebuilding. \
-                 Whatever this suite certifies is that binary, not necessarily the \
-                 current source. The Makefile's spawn-bins lines set the var."
-            );
-        } else {
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let status = std::process::Command::new(&cargo)
-                .current_dir(workspace_root(manifest_dir))
-                .args([
-                    "build",
-                    "-p",
-                    crate_name,
-                    "--features",
-                    "bin-serve",
-                    "--bin",
-                    crate_name,
-                ])
-                .status()
-                .unwrap_or_else(|error| {
-                    panic!("cargo build -p {crate_name} did not spawn: {error}")
-                });
-            assert!(
-                status.success(),
-                "cargo build -p {crate_name} --features bin-serve failed"
-            );
-        }
-    }
-    let path = target_debug_dir(manifest_dir).join(crate_name);
-    assert!(
-        path.is_file(),
-        "connector binary `{}` is not built — run the Makefile's spawn-bins \
-         line (it sets RDLT_BUILD_CONNECTOR_BINS=1) or `cargo build -p \
-         {crate_name} --features bin-serve` first",
-        path.display()
-    );
-    path
 }
