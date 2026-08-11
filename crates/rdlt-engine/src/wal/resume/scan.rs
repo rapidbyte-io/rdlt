@@ -243,12 +243,7 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<Str
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!(
-                "the WAL manifest has no `{}` sidecar — a pre-042 writer left it, so the \
-                 writing run's identifier-normalization rules are unverifiable; proceeding \
-                 under this run's rules (the pre-sidecar behavior)",
-                crate::wal::RULES_SIDECAR
-            );
+            tracing::warn!("{}", absence_warning());
             return None;
         }
         Err(e) => {
@@ -339,6 +334,25 @@ impl ChainMemo {
             .expect("a chain holds at least its own table")
             .clone())
     }
+}
+
+/// The absence warning's one spelling, composed in a function so its
+/// content pins (round-11: the warning now NAMES the residual the
+/// proceed accepts — a one-to-one rules drift is undetectable without
+/// the sidecar, and the operator who changed the destination or a
+/// rules-affecting option owns the safe exit). The mechanism ages out
+/// as sidecars appear: every 042+ run writes one, so only pre-042
+/// residue ever reaches this arm.
+fn absence_warning() -> String {
+    format!(
+        "the WAL manifest has no `{}` sidecar — a pre-042 writer left it, so the writing \
+         run's identifier-normalization rules are unverifiable; proceeding under this \
+         run's rules (the pre-sidecar behavior). If the destination or any rules-affecting \
+         option changed since the crash, discard the workdir instead: re-extraction from \
+         committed state is exactly-once-safe, while a one-to-one rules drift in this \
+         join cannot be detected without the sidecar",
+        crate::wal::RULES_SIDECAR
+    )
 }
 
 /// The tables replay will actually WRITE: every surviving segment's
@@ -1113,6 +1127,23 @@ mod per_stream_coverage_tests {
             replayed_files(&outcome),
             ["f0.arrow"],
             "a pre-042 WAL (no sidecar) must replay, not discard: {outcome:?}"
+        );
+    }
+
+    /// The absence warning names the residual it accepts (round-11):
+    /// the proceed is only safe when the rules did NOT change, and the
+    /// operator who changed the destination or a rules-affecting
+    /// option must hear the safe exit — discard the workdir,
+    /// re-extraction is exactly-once-safe — because a one-to-one
+    /// drift in the join is undetectable without the sidecar.
+    #[test]
+    fn the_absence_warning_names_the_undetectable_drift_and_the_safe_exit() {
+        let warning = absence_warning();
+        assert!(
+            warning.contains("discard the workdir instead")
+                && warning.contains("re-extraction from committed state is exactly-once-safe")
+                && warning.contains("cannot be detected without the sidecar"),
+            "the warning must carry the residual and the operator's safe exit: {warning}"
         );
     }
 
