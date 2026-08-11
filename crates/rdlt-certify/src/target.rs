@@ -209,9 +209,12 @@ pub(crate) fn report_p4(report: &mut Report, spec: &Result<rdlt_connector::Conne
 /// stdout line under the provider's own cap and timeout, parse it as a
 /// handshake line, then listen [`SECOND_LINE_WINDOW`] for any further
 /// stdout byte — one is a violation (stdout is the machine channel;
-/// logs belong on stderr). The probe process is killed either way, and
-/// the socket its line advertised is unlinked best-effort (no guard
-/// ever owned it).
+/// logs belong on stderr). EVERY exit — failure paths included (round-9
+/// fix: the early errors returned with only `kill_on_drop`'s SIGKILL
+/// sent, leaving a dying-not-dead child whose store lock could refuse
+/// the immediately-following wire spawn on a single-writer destination)
+/// — kills AND REAPS the probe process, and unlinks any socket its line
+/// advertised (no guard ever owned it).
 pub(crate) async fn probe_handshake_line(target: &Target, role: Role) -> Result<(), String> {
     let path = resolve_binary(&target.requirement)?;
     let mut child = Command::new(&path)
@@ -231,43 +234,54 @@ pub(crate) async fn probe_handshake_line(target: &Target, role: Role) -> Result<
         .take()
         .expect("stdout was piped at spawn, so the child carries it");
     let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
-    let mut line = String::new();
-    match tokio::time::timeout(LINE_TIMEOUT, reader.read_line(&mut line)).await {
-        Err(_elapsed) => {
+
+    // The probe body runs in a block so every path — pass and fail —
+    // funnels through the one kill-and-reap exit below.
+    let mut advertised_socket: Option<std::path::PathBuf> = None;
+    let verdict: Result<(), String> = async {
+        let mut line = String::new();
+        match tokio::time::timeout(LINE_TIMEOUT, reader.read_line(&mut line)).await {
+            Err(_elapsed) => {
+                return Err(format!(
+                    "wrote no handshake line within {}s — the first stdout line must be the \
+                     handshake line",
+                    LINE_TIMEOUT.as_secs()
+                ));
+            }
+            Ok(Err(error)) => return Err(format!("reading the handshake line: {error}")),
+            Ok(Ok(_bytes)) => {}
+        }
+        if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE_BYTES {
             return Err(format!(
-                "wrote no handshake line within {}s — the first stdout line must be the \
-                 handshake line",
-                LINE_TIMEOUT.as_secs()
+                "wrote {MAX_LINE_BYTES} bytes of stdout without completing a handshake line"
             ));
         }
-        Ok(Err(error)) => return Err(format!("reading the handshake line: {error}")),
-        Ok(Ok(_bytes)) => {}
-    }
-    if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE_BYTES {
-        return Err(format!(
-            "wrote {MAX_LINE_BYTES} bytes of stdout without completing a handshake line"
-        ));
-    }
-    let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
-        .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
+        let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
+            .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
+        advertised_socket = Some(parsed.socket_path);
 
-    // The second-line poll: silence (or EOF — nothing more CAN be
-    // spoken) passes; any byte fails.
-    let mut byte = [0u8; 1];
-    let verdict = match tokio::time::timeout(SECOND_LINE_WINDOW, reader.read(&mut byte)).await {
-        Err(/* window elapsed in silence */ _) | Ok(Ok(0)) => Ok(()),
-        Ok(Ok(_more)) => Err(
-            "stdout spoke after the handshake line — stdout is the machine channel and \
-             carries EXACTLY one line; logs belong on stderr"
-                .to_string(),
-        ),
-        Ok(Err(error)) => Err(format!("reading stdout after the handshake line: {error}")),
-    };
+        // The second-line poll: silence (or EOF — nothing more CAN be
+        // spoken) passes; any byte fails.
+        let mut byte = [0u8; 1];
+        match tokio::time::timeout(SECOND_LINE_WINDOW, reader.read(&mut byte)).await {
+            Err(/* window elapsed in silence */ _) | Ok(Ok(0)) => Ok(()),
+            Ok(Ok(_more)) => Err(
+                "stdout spoke after the handshake line — stdout is the machine channel and \
+                 carries EXACTLY one line; logs belong on stderr"
+                    .to_string(),
+            ),
+            Ok(Err(error)) => Err(format!("reading stdout after the handshake line: {error}")),
+        }
+    }
+    .await;
 
-    // Kill the probe and reclaim the socket its line advertised — no
-    // LifecycleGuard ever owned this child, so the cleanup is manual.
+    // Kill the probe — awaited, so it is dead and reaped, not dying,
+    // when the caller's next spawn opens the same store — and reclaim
+    // any socket its line advertised.
     let _ = child.kill().await;
-    let _ = std::fs::remove_file(&parsed.socket_path);
+    if let Some(socket) = advertised_socket {
+        let _ = std::fs::remove_file(&socket);
+    }
     verdict
 }
 
@@ -462,6 +476,50 @@ mod tests {
     }
 
     /// The negative pin for the manual `Debug`: a marker planted inside
+    /// Round-9 fix: an EARLY P1 failure (here the fastest one — an
+    /// unparseable first line) must kill AND REAP the probe child
+    /// before returning. `kill_on_drop` only SENDS SIGKILL, and a
+    /// dying-not-dead child of the single-writer class still holds its
+    /// store lock while the immediately-following wire spawn opens the
+    /// same store. Reaped means no zombie: the child's `/proc` entry is
+    /// gone the moment the probe returns.
+    #[tokio::test]
+    async fn a_failed_handshake_probe_reaps_its_child_before_returning() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("pid");
+        let script = dir.path().join("garbage-liner");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > {}\necho 'not a handshake line'\nexec sleep 30\n",
+                pidfile.display()
+            ),
+        )
+        .expect("the script writes");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("the script becomes executable");
+
+        let target = Target::resolve_path(script, serde_json::json!({}));
+        let error = probe_handshake_line(&target, Role::Source)
+            .await
+            .expect_err("a garbage first line fails P1");
+        assert!(
+            error.contains("not a handshake line"),
+            "the failure names the parse refusal: {error}"
+        );
+
+        let pid = std::fs::read_to_string(&pidfile)
+            .expect("the script wrote its pid before its first line")
+            .trim()
+            .to_owned();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the probe child (pid {pid}) must be dead AND reaped when the probe returns — \
+             a zombie or a dying process still holds single-writer store locks"
+        );
+    }
+
     /// the config document never reaches the rendered output — the
     /// document is elided, not filtered.
     #[test]
