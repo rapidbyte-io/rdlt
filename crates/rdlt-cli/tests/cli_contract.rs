@@ -88,6 +88,23 @@ fn schema_maps_a_short_name_through_the_desugar_table() {
             && stderr.contains("no binary `rdlt-connector-duckdb`"),
         "the short name resolved to its table id before discovery: {stderr}"
     );
+
+    std::fs::write(dir.path().join("file"), "not a connector binary")
+        .expect("the shadowing file writes");
+    let out = rdlt()
+        .current_dir(dir.path())
+        .env("PATH", dir.path())
+        .args(["schema", "file"])
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(out.stdout.is_empty(), "no machine output on refusal");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("connector `io.rapidbyte.file`")
+            && stderr.contains("no binary `rdlt-connector-file`"),
+        "the short name wins over a same-named working-directory file: {stderr}"
+    );
 }
 
 /// An unrecognized `schema` value that names no existing file is

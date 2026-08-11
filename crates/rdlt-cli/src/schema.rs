@@ -28,24 +28,25 @@ pub(crate) async fn print(connector: &str, role: Option<SchemaRole>) -> Result<(
 }
 
 /// Resolve the spelling and ask the spawned connector for its schema.
-/// A value naming an existing file is an explicit binary path; a short
-/// name maps through the desugar table to its reverse-DNS id; anything
-/// else is used as an id verbatim. No handshake, no config: the schema
-/// is the connector's static identity. Without `--role` the provider
-/// probes source-first (039's behavior); with it, exactly the named
-/// half is asked and a single-role binary refusing that half is a
-/// refusal, never a silent retry as the other.
+/// A short name maps through the desugar table to its reverse-DNS id; a
+/// value outside that table naming an existing file is an explicit
+/// binary path; anything else is used as an id verbatim. No handshake,
+/// no config: the schema is the connector's static identity. Without
+/// `--role` the provider probes source-first (039's behavior); with it,
+/// exactly the named half is asked and a single-role binary refusing
+/// that half is a refusal, never a silent retry as the other.
 async fn spawned_schema(
     value: &str,
     role: Option<SchemaRole>,
 ) -> Result<serde_json::Value, CliError> {
     let provider = rdlt::runtime::LocalBinaryConnectorProvider::new();
     let path = std::path::Path::new(value);
-    let requirement = if path.is_file() {
+    let requirement = if let Some(id) = rdlt::pipeline_spec::connector_id(value) {
+        rdlt::runtime::ConnectorRequirement::new(id)
+    } else if path.is_file() {
         rdlt::runtime::ConnectorRequirement::new(value).with_path(path)
     } else {
-        let id = rdlt::pipeline_spec::connector_id(value).unwrap_or(value);
-        rdlt::runtime::ConnectorRequirement::new(id)
+        rdlt::runtime::ConnectorRequirement::new(value)
     };
     let spec = match role {
         None => provider.spec(&requirement).await,
