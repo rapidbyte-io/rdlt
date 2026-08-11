@@ -468,7 +468,10 @@ fn a_failing_probe_cmd_fails_the_read_back_clause_naming_the_probe() {
 }
 
 /// Probe stdout that is not one u64 FAILS the clause naming the
-/// unparseable output — the output, never the command that produced it.
+/// PROBLEM — never the bytes (round-12: the arm echoed the output
+/// verbatim, and a usage-printing wrapper would leak the
+/// credential-bearing probe line into the report), and never the
+/// command that produced it.
 #[test]
 fn an_unparseable_probe_count_fails_naming_the_output() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -491,13 +494,13 @@ fn an_unparseable_probe_count_fails_naming_the_output() {
     let stderr = stderr_of(&output);
     assert_eq!(output.status.code(), Some(1), "stdout:\n{stdout}");
     assert!(
-        stdout.contains("the probe command printed `notanumber`, not one u64 row count"),
-        "the failure must name the unparseable output:\n{stdout}"
+        stdout.contains("the probe command printed output that is not one u64 row count"),
+        "the failure must name the problem:\n{stdout}"
     );
     for text in [&stdout, &stderr] {
         assert!(
-            !text.contains("; echo notanumber"),
-            "no output may echo the probe command line:\n{text}"
+            !text.contains("notanumber"),
+            "no output may echo the probe's stdout or its command line:\n{text}"
         );
     }
 }

@@ -342,8 +342,17 @@ impl TableProbe for ShellProbe {
                 }
                 let stdout = String::from_utf8_lossy(&stdout);
                 let count = stdout.trim();
+                // The output is NEVER embedded (round-12 — this arm
+                // echoed it verbatim, and a usage-printing wrapper
+                // leaks the credential-bearing probe line into the
+                // report): the byte count locates the problem without
+                // repeating the bytes.
                 count.parse::<u64>().map_err(|_unparseable| ProbeError {
-                    message: format!("the probe command printed `{count}`, not one u64 row count"),
+                    message: format!(
+                        "the probe command printed output that is not one u64 row count \
+                         ({} bytes)",
+                        count.len()
+                    ),
                 })
             }
         }
