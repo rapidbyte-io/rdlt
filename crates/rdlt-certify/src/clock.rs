@@ -19,12 +19,19 @@ use async_trait::async_trait;
 use rdlt_connector::core::TableName;
 use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 
-/// The shared meter: completed probe time plus the start of any count
-/// currently in flight.
+/// The shared meter: closed probe windows plus the start of the window
+/// currently open. Overlap-safe (round-8 fix — a single in-flight slot
+/// let a second concurrent count overwrite the first's start, and the
+/// first exit then consumed the later stamp while the second exit
+/// found nothing: real probe time dropped from the meter): counts are
+/// metered as a UNION WINDOW — the first count entering stamps the
+/// window's start, each exit decrements, and only the LAST exit closes
+/// the window into `accumulated`.
 #[derive(Default)]
 struct ClockState {
     accumulated: Duration,
-    in_flight: Option<tokio::time::Instant>,
+    active_counts: usize,
+    window_start: Option<tokio::time::Instant>,
 }
 
 /// The handle both sides share — the wrapped probe writes it, the
@@ -33,15 +40,37 @@ struct ClockState {
 pub(crate) struct ProbeClock(Arc<Mutex<ClockState>>);
 
 impl ProbeClock {
-    /// Everything the probe has spent so far, the in-flight count's
+    /// Everything the probe has spent so far, the open window's
     /// elapsed included — what the deadline extends by.
     fn spent(&self) -> Duration {
         let state = self.0.lock().expect("probe clock lock");
         state.accumulated
             + state
-                .in_flight
+                .window_start
                 .map(|start| start.elapsed())
                 .unwrap_or_default()
+    }
+
+    /// A count is starting: open the union window if this is the first
+    /// count in flight.
+    fn enter(&self) {
+        let mut state = self.0.lock().expect("probe clock lock");
+        if state.active_counts == 0 {
+            state.window_start = Some(tokio::time::Instant::now());
+        }
+        state.active_counts += 1;
+    }
+
+    /// A count finished: the last one out closes the window into the
+    /// accumulator.
+    fn exit(&self) {
+        let mut state = self.0.lock().expect("probe clock lock");
+        state.active_counts -= 1;
+        if state.active_counts == 0
+            && let Some(start) = state.window_start.take()
+        {
+            state.accumulated += start.elapsed();
+        }
     }
 }
 
@@ -86,8 +115,7 @@ impl<'a> StopClockProbe<'a> {
 #[async_trait]
 impl TableProbe for StopClockProbe<'_> {
     async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
-        self.clock.0.lock().expect("probe clock lock").in_flight =
-            Some(tokio::time::Instant::now());
+        self.clock.enter();
         let outcome = match tokio::time::timeout(self.bound, self.inner.count(table)).await {
             Ok(outcome) => outcome,
             Err(_elapsed) => Err(ProbeError {
@@ -98,10 +126,7 @@ impl TableProbe for StopClockProbe<'_> {
                 ),
             }),
         };
-        let mut state = self.clock.0.lock().expect("probe clock lock");
-        if let Some(start) = state.in_flight.take() {
-            state.accumulated += start.elapsed();
-        }
+        self.clock.exit();
         outcome
     }
 }
@@ -213,6 +238,30 @@ mod tests {
             error.message.contains("did not answer within 3s"),
             "the failure names the probe's own bound: {}",
             error.message
+        );
+    }
+
+    /// Overlapping counts credit the UNION window (round-8 fix): count
+    /// A runs 0s→9s, count B 3s→12s, so the union is the full 12s. The
+    /// old single in-flight slot let B's enter overwrite A's start and
+    /// A's exit consume the later stamp — crediting a 6s fragment and
+    /// spending 6s of real probe time from the clause budget.
+    #[tokio::test(start_paused = true)]
+    async fn overlapping_counts_credit_the_union_window() {
+        let sleepy = SleepyProbe(Duration::from_secs(9));
+        let (probe, clock) = StopClockProbe::new(&sleepy);
+        let table_a = TableName::new("a");
+        let staggered = async {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            probe.count(&TableName::new("b")).await
+        };
+        let (first, second) = tokio::join!(probe.count(&table_a), staggered);
+        first.expect("count a");
+        second.expect("count b");
+        assert_eq!(
+            clock.spent(),
+            Duration::from_secs(12),
+            "the meter credits the union window (0s→12s), not a fragment of it"
         );
     }
 
