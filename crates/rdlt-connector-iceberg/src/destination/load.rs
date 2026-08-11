@@ -488,12 +488,12 @@ impl Load {
             // honestly finds no receipt and re-drives publish — whose
             // scope-matched check missed the dead scope's snapshot and
             // appended the window a SECOND time. A load-id match IS
-            // the same load regardless of scope: 042+ load ids carry
-            // enough entropy that two loads never share one — the same
-            // argument that made `existing_receipt` load-keyed, with
-            // `load_committed`'s warehouse-sharing caveat. A scope
-            // match implies a load match, so the load-keyed check
-            // SUBSUMES the old scope-matched one.
+            // the same load regardless of scope: load-id uniqueness
+            // across every pipeline sharing a destination is the house
+            // contract (docs/connector-authoring.md, "Load identity" —
+            // sqlcore's shared receipt lookup rests on the same key).
+            // A scope match implies a load match, so the load-keyed
+            // check SUBSUMES the old scope-matched one.
             let fresh = self
                 .catalog
                 .load_table(state.table.identifier())

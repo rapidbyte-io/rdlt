@@ -134,6 +134,23 @@ defense in depth. The postgres destination is the reference for a
 transactional backend; the sdk's example connector
 (`rdlt-connector-sdk/tests/cases/example.rs`) for the minimal one.
 
+### Load identity
+
+Load ids MUST be globally unique across every pipeline that shares a
+destination — that uniqueness is the contract the whole idempotence
+dance keys on. Every shipped destination's receipt and convergence
+lookup keys on load identity ALONE, never the pipeline: the shared
+sqlcore receipt table asks `WHERE load_id AND commit_seq` with no
+pipeline column (postgres, duckdb ride it), and iceberg's snapshot
+convergence matches `(load_id, commit_seq)` across pipeline scopes —
+so a re-attempt that reaches the store under a different pipeline
+scope (an orchestrator re-scope, the certify kill matrix's sibling
+re-run) still converges instead of duplicating. The engine's
+entropy-bearing load ids guarantee the uniqueness; an embedder that
+mints its own load ids owns the same guarantee — a deterministic or
+reused id (`load-1` from two orchestrators) would read one pipeline's
+commit as another's replay, silently.
+
 ## Certification — "certified = passes conformance"
 
 The kits are the contract:

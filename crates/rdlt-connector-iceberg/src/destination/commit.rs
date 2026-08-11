@@ -69,12 +69,11 @@ impl Identity {
 /// that reaches the store under a different pipeline scope (an
 /// orchestrator-side re-scope; the certify kill matrix's convergence
 /// re-run is the measured case) must still see the committed attempt.
-/// Publish-side convergence keeps the full scope-matched identity
-/// above — the two mechanisms answer different questions and both
-/// stand. Cross-pipeline correctness of the scope-less match rests on
-/// 042+ load-id entropy — an engine minting weaker (guessable or
-/// reused) load ids must not share a warehouse with this connector, or
-/// its colliding id would read here as an already-committed load.
+/// Cross-pipeline correctness of the scope-less match rests on the
+/// house load-identity contract (docs/connector-authoring.md, "Load
+/// identity"): load ids are globally unique across every pipeline
+/// sharing a destination, so an id minted outside that guarantee
+/// would read here as an already-committed load.
 /// Durability caveat: same as `already_committed` — snapshot
 /// expiry removes the evidence.
 pub(super) fn load_committed(
