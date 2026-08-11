@@ -52,19 +52,32 @@ impl ProbeClock {
     }
 
     /// A count is starting: open the union window if this is the first
-    /// count in flight.
-    fn enter(&self) {
+    /// count in flight. The returned guard closes it on Drop — RAII,
+    /// not a paired exit call, deliberately (round-10 fix): a count
+    /// future dropped mid-flight (an outer select or timeout) would
+    /// skip any paired exit, leaving the window open forever, the
+    /// allowance growing with wall clock, and the deadline the clock
+    /// feeds extending indefinitely — the module's own no-hang
+    /// guarantee defeated by convention where construction closes the
+    /// class.
+    fn enter(&self) -> WindowGuard {
         let mut state = self.0.lock().expect("probe clock lock");
         if state.active_counts == 0 {
             state.window_start = Some(tokio::time::Instant::now());
         }
         state.active_counts += 1;
+        WindowGuard(self.clone())
     }
+}
 
-    /// A count finished: the last one out closes the window into the
-    /// accumulator.
-    fn exit(&self) {
-        let mut state = self.0.lock().expect("probe clock lock");
+/// The open-window token one in-flight count holds; dropping it — on
+/// return AND on cancellation — is the exit: the last one out closes
+/// the union window into the accumulator.
+struct WindowGuard(ProbeClock);
+
+impl Drop for WindowGuard {
+    fn drop(&mut self) {
+        let mut state = self.0.0.lock().expect("probe clock lock");
         state.active_counts -= 1;
         if state.active_counts == 0
             && let Some(start) = state.window_start.take()
@@ -115,8 +128,8 @@ impl<'a> StopClockProbe<'a> {
 #[async_trait]
 impl TableProbe for StopClockProbe<'_> {
     async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
-        self.clock.enter();
-        let outcome = match tokio::time::timeout(self.bound, self.inner.count(table)).await {
+        let _window = self.clock.enter();
+        match tokio::time::timeout(self.bound, self.inner.count(table)).await {
             Ok(outcome) => outcome,
             Err(_elapsed) => Err(ProbeError {
                 message: format!(
@@ -125,9 +138,7 @@ impl TableProbe for StopClockProbe<'_> {
                     self.bound.as_secs()
                 ),
             }),
-        };
-        self.clock.exit();
-        outcome
+        }
     }
 }
 
@@ -262,6 +273,31 @@ mod tests {
             clock.spent(),
             Duration::from_secs(12),
             "the meter credits the union window (0s→12s), not a fragment of it"
+        );
+    }
+
+    /// Cancel-safety (round-10 fix): a count future dropped MID-FLIGHT
+    /// still closes its window — the RAII guard's Drop is the exit, so
+    /// the clock stays consistent and the allowance stops growing at
+    /// the cancellation instant instead of tracking wall clock
+    /// forever.
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_count_still_closes_its_window() {
+        let sleepy = SleepyProbe(Duration::from_secs(9));
+        let (probe, clock) = StopClockProbe::new(&sleepy);
+        let table = TableName::new("t");
+        // Cancel the count 1s in: the outer timeout drops the count
+        // future mid-sleep, exactly the shape a paired exit call never
+        // reaches.
+        let cancelled = tokio::time::timeout(Duration::from_secs(1), probe.count(&table)).await;
+        assert!(cancelled.is_err(), "the count was cancelled mid-flight");
+        let at_cancellation = clock.spent();
+        tokio::time::sleep(Duration::from_secs(50)).await;
+        assert_eq!(
+            clock.spent(),
+            at_cancellation,
+            "the cancelled count's window is CLOSED — the allowance must not keep \
+             growing with wall clock"
         );
     }
 
