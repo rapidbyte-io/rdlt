@@ -436,32 +436,20 @@ async fn reconcile(
     .await
 }
 
-/// Which settled check a convergence pass applies per table. Publish
-/// re-checks its own FULL scope-matched identity; replay is LOAD-keyed
-/// (`load_committed`'s rationale) — the receipt that routed the
-/// framework here may have been stamped under a different pipeline
-/// scope, and a scope-matched check would re-append what that scope
-/// already committed.
-enum Settled {
-    ScopeIdentity,
-    LoadIdentity,
-}
-
 impl Load {
     /// ONE convergence pass over every staged table window — the
     /// commit body publish and replay share (042 fix round 1): close
     /// the window's writer, and per table either discard the files
     /// (the settled check found the commit already in history) or
-    /// append them under `identity`. Publish and replay differ ONLY in
-    /// the settled check; sharing the body is what makes "the two
-    /// mechanisms agree" true rather than claimed — a replay reaching
-    /// a table the killed attempt never committed CONVERGES it, the
-    /// exact window a wholesale discard was measured to lose.
-    async fn converge_tables(
-        &mut self,
-        identity: &Identity,
-        settled: Settled,
-    ) -> Result<(), DestinationError> {
+    /// append them under `identity`. Publish and replay run the SAME
+    /// load-keyed settled check (round-10 — they briefly differed:
+    /// publish re-checked its full scope-matched identity, see the
+    /// check below for the window that opened); sharing the body is
+    /// what makes "the two mechanisms agree" true rather than claimed
+    /// — a replay reaching a table the killed attempt never committed
+    /// CONVERGES it, the exact window a wholesale discard was
+    /// measured to lose.
+    async fn converge_tables(&mut self, identity: &Identity) -> Result<(), DestinationError> {
         let listener = self.part_events.clone();
         for (table_name, state) in self.tables.iter_mut() {
             let context = format!("table `{}`", self.config.table_name(table_name.as_str()));
@@ -491,18 +479,27 @@ impl Load {
             // Settled detection against FRESH metadata: an
             // already-committed identity discards this window's files —
             // orphaned and invisible, no snapshot names them — and
-            // publishes nothing for this table.
+            // publishes nothing for this table. LOAD-keyed for publish
+            // AND replay (round-10 fix): a crash BETWEEN a table's
+            // append_commit and the receipt stamp leaves the snapshot
+            // committed under the DYING attempt's pipeline scope with
+            // no receipt, so a sibling-scope re-drive (the kill
+            // matrix's `-r` re-run, or any orchestrator re-scope)
+            // honestly finds no receipt and re-drives publish — whose
+            // scope-matched check missed the dead scope's snapshot and
+            // appended the window a SECOND time. A load-id match IS
+            // the same load regardless of scope: 042+ load ids carry
+            // enough entropy that two loads never share one — the same
+            // argument that made `existing_receipt` load-keyed, with
+            // `load_committed`'s warehouse-sharing caveat. A scope
+            // match implies a load match, so the load-keyed check
+            // SUBSUMES the old scope-matched one.
             let fresh = self
                 .catalog
                 .load_table(state.table.identifier())
                 .await
                 .map_err(|e| classify(&context, e))?;
-            let done = match settled {
-                Settled::ScopeIdentity => identity.already_committed(&fresh),
-                Settled::LoadIdentity => {
-                    load_committed(&fresh, &identity.load_id, identity.commit_seq)
-                }
-            };
+            let done = load_committed(&fresh, &identity.load_id, identity.commit_seq);
             if done {
                 state.table = fresh;
             } else {
@@ -703,8 +700,7 @@ impl Backend for Load {
             load_id: meta.load_id.as_str().to_owned(),
             commit_seq: meta.commit_seq,
         };
-        self.converge_tables(&identity, Settled::LoadIdentity)
-            .await?;
+        self.converge_tables(&identity).await?;
         self.persist_state(meta).await
     }
 
@@ -718,8 +714,7 @@ impl Backend for Load {
             load_id: meta.load_id.as_str().to_owned(),
             commit_seq: meta.commit_seq,
         };
-        self.converge_tables(&identity, Settled::ScopeIdentity)
-            .await?;
+        self.converge_tables(&identity).await?;
         self.persist_state(&meta).await?;
         Ok(receipt)
     }

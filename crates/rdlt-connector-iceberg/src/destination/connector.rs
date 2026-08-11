@@ -140,6 +140,23 @@ pub mod testhook {
         state::remove_state(&catalog, &namespace, &scope_of(pipeline)).await
     }
 
+    /// TEST-ONLY: remove one load's receipt property from the marker
+    /// table — with [`remove_state`], the exact residue of a crash
+    /// BETWEEN a table's `append_commit` and the receipt stamp (data
+    /// committed under the dying attempt's scope, neither receipt nor
+    /// state written), so recovery cells can prove a sibling-scope
+    /// re-drive converges instead of duplicating.
+    pub async fn remove_receipt(
+        config: &Config,
+        namespace: &[String],
+        load_id: &str,
+    ) -> Result<(), DestinationError> {
+        let catalog = client::connect(config).await?;
+        let namespace = NamespaceIdent::from_vec(namespace.to_vec())
+            .map_err(|e| DestinationError::fatal(format!("namespace: {e}")))?;
+        state::remove_receipt(&catalog, &namespace, load_id).await
+    }
+
     /// TEST-ONLY: relocate a pipeline's state property from the
     /// current 32-hex scope key to the pre-037 12-hex legacy key, and
     /// remove it from the current key — simulating a warehouse whose

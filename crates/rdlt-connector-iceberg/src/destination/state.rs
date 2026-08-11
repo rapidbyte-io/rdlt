@@ -286,6 +286,40 @@ pub(super) async fn read_state_doc(
 /// legacy key (`testhook::move_state_to_legacy_key`) without leaving
 /// BOTH the current and legacy properties behind — which would mask
 /// the very refusal gate under test.
+/// TEST-ONLY (behind the testhook): remove one load's receipt property
+/// — the missing half of the mid-publish crash residue `remove_state`
+/// stages (a crash between a table's `append_commit` and the receipt
+/// stamp leaves data committed with NEITHER receipt NOR state).
+pub(super) async fn remove_receipt(
+    catalog: &Arc<dyn Catalog>,
+    namespace: &NamespaceIdent,
+    load_id: &str,
+) -> Result<(), DestinationError> {
+    let ident = TableIdent::new(namespace.clone(), STATE_TABLE.to_owned());
+    let context = format!("state table `{ident}`");
+    let table = catalog
+        .load_table(&ident)
+        .await
+        .map_err(|e| classify(&context, e))?;
+    let key = receipt_key(load_id);
+    commit_with_retry(
+        catalog,
+        &ident,
+        &context,
+        "property commit",
+        load_id,
+        table,
+        |current| {
+            let tx = Transaction::new(current);
+            let action = tx.update_table_properties().remove(key.clone());
+            let tx = action.apply(tx).map_err(|e| classify(&context, e))?;
+            Ok(Plan::Commit(Box::new(tx)))
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
 pub(super) async fn remove_state(
     catalog: &Arc<dyn Catalog>,
     namespace: &NamespaceIdent,

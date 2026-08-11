@@ -568,6 +568,103 @@ async fn a_partial_publish_converges_through_replay_without_losing_tables() {
     );
 }
 
+/// ROUND-10 FIX (the sibling mid-publish window): a crash BETWEEN a
+/// table's `append_commit` and the receipt stamp leaves the snapshot
+/// committed under the DYING attempt's pipeline scope with NO receipt.
+/// A re-drive under a SIBLING scope (the kill matrix's `-r` re-run, or
+/// any orchestrator re-scope) honestly finds no receipt and re-drives
+/// publish — whose settled check was SCOPE-matched, so it missed the
+/// dead scope's snapshot and appended the redelivered window a second
+/// time: duplicate rows in the warehouse. The check is LOAD-keyed now:
+/// a 042+ load id is entropy-unique, so a load-id match IS the same
+/// load whatever scope stamped it.
+#[tokio::test]
+async fn a_sibling_scope_re_drive_converges_a_mid_publish_crash_without_duplicating() {
+    use rdlt_connector_iceberg::destination::{Config, Iceberg, testhook};
+    use rdlt_connector_sdk::config::Document;
+    use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
+    use rdlt_connector_sdk::spi::OpenContext;
+    use rdlt_connector_sdk::spi::core::{LoadId, PipelineId};
+    use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+
+    let Some(fixture) = CatalogFixture::start().await else {
+        return;
+    };
+    let namespace = "sibling_window_v2";
+    let config = Config::from_value(fixture.doc(namespace)).expect("valid");
+    let dest = Iceberg::assemble(config).expect("assembles");
+    let pipeline = PipelineId::new("ice-sibling-window");
+    let load = LoadId::new("load-sw1");
+
+    // Session 1 (scope X): the table's snapshot commits; the testhooks
+    // then strip receipt AND state — the exact residue of a crash
+    // between `append_commit` and the receipt stamp.
+    let mut first = dest
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connects");
+    first
+        .ensure_table(&schema_for("sw_events"), &WriteMode::Append)
+        .await
+        .expect("ensures");
+    first
+        .write(&"sw_events".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("writes");
+    first
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publishes");
+    let cfg = Config::from_value(fixture.doc(namespace)).expect("valid");
+    testhook::remove_state(&cfg, &[namespace.to_owned()], pipeline.as_str())
+        .await
+        .expect("the state half of the residue is staged");
+    testhook::remove_receipt(&cfg, &[namespace.to_owned()], load.as_str())
+        .await
+        .expect("the receipt half of the residue is staged");
+
+    // The sibling-scope re-drive: same load, no receipt to find, so
+    // the framework re-drives publish.
+    let sibling = PipelineId::new("ice-sibling-window-r");
+    let mut redrive = dest
+        .connect(&OpenContext::new(sibling.clone(), load.clone()))
+        .await
+        .expect("connects");
+    redrive
+        .ensure_table(&schema_for("sw_events"), &WriteMode::Append)
+        .await
+        .expect("ensures");
+    redrive
+        .write(&"sw_events".into(), batch_of(&[1, 2, 3]))
+        .await
+        .expect("stages the redelivery");
+    assert!(
+        redrive
+            .existing_receipt(&load, 1)
+            .await
+            .expect("the receipt scan answers")
+            .is_none(),
+        "the crash window left no receipt — publish is re-driven, not replayed"
+    );
+    redrive
+        .publish(commit_meta_for(&sibling, &load, 1))
+        .await
+        .expect("the re-driven publish settles");
+
+    let total = fixture
+        .snapshot_summaries(namespace, "sw_events")
+        .await
+        .last()
+        .and_then(|s| s.get("total-records"))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    assert_eq!(
+        total, 3,
+        "the dead attempt's snapshot is recognized by LOAD id across scopes — the \
+         redelivered window is discarded, never appended a second time"
+    );
+}
+
 /// FIX ROUND 1, CRITICAL 2 (042 review): the replay path must persist
 /// the state doc. Publish writes state LAST, so a crash at
 /// `ice.receipt.visible` leaves every table's data committed with NO
