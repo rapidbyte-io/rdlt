@@ -139,11 +139,15 @@ fn committed_load_ids(dest: &MemoryDestination) -> Vec<String> {
 fn stage_fixture(workdir: &Path, rewrite_header: impl FnOnce(&mut serde_json::Value)) {
     let wal_dir = workdir.join("wal");
     copy_wal(&fixture_dir(), &wal_dir);
-    // The committed fixture carries NO rules sidecar — exactly the
-    // residue a pre-sidecar (main-era) writer leaves — and recovery
-    // must replay it under this run's rules with a warning, never
-    // discard it (round-10 absence arm). Staging nothing here is the
-    // pin: a future RDLT_REPIN capture will carry its own sidecar.
+    // Recovery refuses a manifest without its rules sidecar. The
+    // sidecar is a workdir file, not part of the frozen v2 stream this
+    // fixture pins, so it is staged here rather than committed with
+    // the fixture; a future RDLT_REPIN capture carries its own.
+    std::fs::write(
+        wal_dir.join("rules.json"),
+        serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+    )
+    .expect("write rules sidecar");
     let manifest_path = wal_dir.join("manifest.jsonl");
     let manifest = std::fs::read_to_string(&manifest_path).expect("read fixture manifest");
     let mut lines: Vec<String> = manifest.lines().map(str::to_owned).collect();

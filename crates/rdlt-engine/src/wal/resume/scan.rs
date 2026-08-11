@@ -222,35 +222,23 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
 /// silent loss in the one-to-zero direction the round-7 many-to-one
 /// tripwire cannot see. The writer records its rules verbatim beside
 /// the manifest ([`crate::wal::Wal::open`], before the manifest is
-/// created, so no 042+ manifest exists without them); a RECORDED
-/// mismatch, or a sidecar that cannot parse, refuses the whole span —
-/// `Some(reason)` means Damaged: the caller clears the WAL and
-/// re-extracts from last COMMITTED state, so no cursor from the
-/// refused span ever commits.
-///
-/// ABSENCE warns and proceeds instead (round-10 fix — round 9 refused
-/// it on the premise that nothing pre-042 exists, which is wrong for
-/// LOCAL MAIN: pre-042 writers never wrote a sidecar, and discarding
-/// their healthy WAL re-opens exactly the N2 duplication the WAL
-/// mandate exists to prevent — a durable-identity destination's
-/// partially-published snapshots key on the CRASHED load's id, so a
-/// fresh-id re-extraction appends its rows a second time). The rules
-/// are then UNVERIFIABLE, and the warning says so: the scan proceeds
-/// under this run's rules, which is precisely the pre-sidecar
-/// behavior, no worse and no better.
+/// created, so no manifest this engine writes ever exists without
+/// them); a RECORDED mismatch, an unreadable or unparseable sidecar,
+/// or NO sidecar at all — a manifest without its rules sidecar is not
+/// a recognized workdir state (owner ruling, round 11: this engine is
+/// greenfield and carries no compat arm for writers that never
+/// existed) — refuses the whole span. `Some(reason)` means Damaged:
+/// the caller clears the WAL and re-extracts from last COMMITTED
+/// state, so no cursor from the refused span ever commits.
 fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<String> {
     let path = dir.join(crate::wal::RULES_SIDECAR);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!("{}", absence_warning());
-            return None;
-        }
         Err(e) => {
             return Some(format!(
-                "the `{}` sidecar exists but cannot be read ({e}) — the writing run's \
-                 identifier-normalization rules are unknown, so segment attribution \
-                 cannot be proven",
+                "the manifest has no readable `{}` sidecar ({e}) — a WAL without its \
+                 recorded identifier-normalization rules is not a recognized workdir \
+                 state, so segment attribution cannot be proven",
                 crate::wal::RULES_SIDECAR
             ));
         }
@@ -334,25 +322,6 @@ impl ChainMemo {
             .expect("a chain holds at least its own table")
             .clone())
     }
-}
-
-/// The absence warning's one spelling, composed in a function so its
-/// content pins (round-11: the warning now NAMES the residual the
-/// proceed accepts — a one-to-one rules drift is undetectable without
-/// the sidecar, and the operator who changed the destination or a
-/// rules-affecting option owns the safe exit). The mechanism ages out
-/// as sidecars appear: every 042+ run writes one, so only pre-042
-/// residue ever reaches this arm.
-fn absence_warning() -> String {
-    format!(
-        "the WAL manifest has no `{}` sidecar — a pre-042 writer left it, so the writing \
-         run's identifier-normalization rules are unverifiable; proceeding under this \
-         run's rules (the pre-sidecar behavior). If the destination or any rules-affecting \
-         option changed since the crash, discard the workdir instead: re-extraction from \
-         committed state is exactly-once-safe, while a one-to-one rules drift in this \
-         join cannot be detected without the sidecar",
-        crate::wal::RULES_SIDECAR
-    )
 }
 
 /// The tables replay will actually WRITE: every surviving segment's
@@ -514,10 +483,8 @@ fn filter_covered(
     // writing run and this one making a stream's own segments look
     // like a co-stream's orphans — is CLOSED (round-9): the rules
     // sidecar gate upstream refuses any span whose recorded rules
-    // differ from this run's before the join is consulted at all. (A
-    // pre-042 span with NO recorded rules proceeds with a warning —
-    // the pre-sidecar posture, accepted so a healthy main-era WAL is
-    // replayed rather than discarded into N2 duplication.)
+    // differ from this run's (or are missing entirely) before the
+    // join is consulted at all.
 
     Ok(Some(
         span.into_iter()
@@ -1103,15 +1070,14 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// A manifest with NO rules sidecar is a PRE-042 writer's residue
-    /// (round-10 correction — round 9 refused it as damage, which
-    /// would DISCARD a healthy main-era WAL and re-open the N2
-    /// duplication window for durable-identity destinations): the
-    /// rules are unverifiable, so the scan warns and proceeds under
-    /// this run's rules — the pre-sidecar behavior, and the span
-    /// replays.
+    /// A manifest with NO rules sidecar refuses the same way (owner
+    /// ruling, round 11 — this engine is greenfield, no writer without
+    /// the sidecar ever existed, so absence is not a compat case but
+    /// an unrecognized workdir state): every manifest this engine
+    /// writes gets its sidecar before the manifest is created, and
+    /// attribution cannot be proven without the recorded rules.
     #[test]
-    fn a_manifest_without_the_rules_sidecar_warns_and_proceeds() {
+    fn a_manifest_without_the_rules_sidecar_degrades() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_span(
             dir.path(),
@@ -1124,33 +1090,18 @@ mod per_stream_coverage_tests {
         );
         std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
         let outcome = scan(dir.path(), IdentRules::default());
-        assert_eq!(
-            replayed_files(&outcome),
-            ["f0.arrow"],
-            "a pre-042 WAL (no sidecar) must replay, not discard: {outcome:?}"
-        );
-    }
-
-    /// The absence warning names the residual it accepts (round-11):
-    /// the proceed is only safe when the rules did NOT change, and the
-    /// operator who changed the destination or a rules-affecting
-    /// option must hear the safe exit — discard the workdir,
-    /// re-extraction is exactly-once-safe — because a one-to-one
-    /// drift in the join is undetectable without the sidecar.
-    #[test]
-    fn the_absence_warning_names_the_undetectable_drift_and_the_safe_exit() {
-        let warning = absence_warning();
         assert!(
-            warning.contains("discard the workdir instead")
-                && warning.contains("re-extraction from committed state is exactly-once-safe")
-                && warning.contains("cannot be detected without the sidecar"),
-            "the warning must carry the residual and the operator's safe exit: {warning}"
+            matches!(outcome, ScanOutcome::Damaged(ref reason)
+                if reason.contains("no readable `rules.json` sidecar")
+                    && reason.contains("not a recognized workdir state")),
+            "a sidecar-less manifest must refuse, naming the missing file and the \
+             unrecognized state: {outcome:?}"
         );
     }
 
-    /// A sidecar that EXISTS but does not parse is not the pre-042
-    /// shape — something wrote it and it cannot be trusted, so the
-    /// span refuses as Damaged like a recorded mismatch.
+    /// A sidecar that EXISTS but does not parse — something wrote it
+    /// and it cannot be trusted, so the span refuses as Damaged like
+    /// a recorded mismatch.
     #[test]
     fn an_unparseable_rules_sidecar_degrades() {
         let dir = tempfile::tempdir().expect("tempdir");
