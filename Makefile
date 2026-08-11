@@ -78,16 +78,22 @@ build:
 release:
 	cargo build --release -p rdlt-cli
 
-# The connector BINARIES the `-remote` benchmark cells spawn over the wire.
-# `release` builds the CLI alone, so without this the five remote twins'
-# `connector: path: {{bins}}/…` overrides point at a file the matrix never
-# built and the run dies MID-SESSION, after the fixtures are up. Release
-# unconditionally, matching what `{{bins}}` resolves to (rdlt-bench
-# paths.rs): a measured cell must spawn the shipped shape, and a debug bin
-# beside the release engine would measure the wire's overhead wrong.
+# The connector BINARIES the benchmarks spawn over the wire. `release`
+# builds the CLI alone, so without this the cells' `connector: path:
+# {{bins}}/…` overrides (postgres, file) point at a file the matrix never
+# built and the run dies MID-SESSION, after the fixtures are up; the
+# rich-spelling specs (the oracle cell, the dedup load-1 prepare, the
+# cold-start pipeline) resolve their bins off the same directory via the
+# runner's PATH arrangement, which is why oracle and duckdb are built here
+# too. Release unconditionally, matching what `{{bins}}` resolves to
+# (rdlt-bench paths.rs): a measured cell must spawn the shipped shape, and a
+# debug bin beside the release engine would measure the wire's overhead
+# wrong.
 connector-bins:
 	cargo build --release -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	cargo build --release -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
+	cargo build --release -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
+	cargo build --release -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
 
 # The shipped artifact: release plus symbol stripping. Separate from `release`
 # so day-to-day builds keep their symbols for profiling and backtraces.
@@ -498,21 +504,24 @@ else ifeq ($(TARGET),cold)
 	# Cold start is a WALL-CLOCK measurement: it needs hyperfine and a quiet
 	# machine, neither of which a shared CI runner provides. It rides `make
 	# check` locally and the recorded measurement session, never the CI perf
-	# gate — where it silently required a tool no workflow installs.
+	# gate — where it silently required a tool no workflow installs. The
+	# measured pipeline spawns the file and duckdb bins, so they are built
+	# alongside the CLI.
 	$(MAKE) release
+	$(MAKE) connector-bins
 	benches/check-cold-start.sh
 else ifeq ($(TARGET),setup)
 	benches/bench-setup.sh
 else ifeq ($(TARGET),e2e)
 	$(MAKE) release
-	# The matrix includes the `-remote` cells, which spawn connector bins the
-	# CLI build does not produce — build them here, not as a manual preflight.
+	# Every cell spawns connector bins the CLI build does not produce —
+	# build them here, not as a manual preflight.
 	$(MAKE) connector-bins
 	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'
 	cargo run -q -p rdlt-bench -- run
 else ifeq ($(TARGET),matrix)
 	$(MAKE) release
-	# Same as e2e: the `-remote` cells spawn bins `release` never builds.
+	# Same as e2e: the cells spawn bins `release` never builds.
 	$(MAKE) connector-bins
 	sh -c 'E=$$(command -v podman || command -v docker); "$$E" build -q -t rdlt-baseline benches/competitors/dlt/'
 	cargo run -q -p rdlt-bench -- run
@@ -525,10 +534,9 @@ else
 	# The harness errors loudly when nothing matches (typos stay visible);
 	# `cargo run -p rdlt-bench -- list` shows the matrix.
 	$(MAKE) release
-	# Unconditionally, exactly as `release` above: this arm cannot inspect the
-	# filter, and a `-remote` cell named here would otherwise seed its whole
-	# fixture (up to 1M rows) before dying at spawn on an absent binary. The
-	# build is a sub-second no-op once warm.
+	# Unconditionally, exactly as `release` above: a cell named here would
+	# otherwise seed its whole fixture (up to 1M rows) before dying at spawn
+	# on an absent binary. The build is a sub-second no-op once warm.
 	$(MAKE) connector-bins
 	cargo run -q -p rdlt-bench -- run --filter '$(TARGET)'
 endif

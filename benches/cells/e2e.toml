@@ -1,13 +1,20 @@
 # The five-cell e2e matrix (feature 018, data-model §1). One flat file — the
 # retired importance/taxonomy vocabulary is gone (the loader rejects it). Each
-# cell is a three-way-comparable end-to-end pipeline: source data → product →
-# destination, same seeded data
-# and same destination server/store for every arm. `note` is the cell's claim,
-# rendered as the matrix caption; `verify` pins destination row count = expected
-# on every arm (FR-015). Competitors run their fastest honest configuration
-# (dlt: connectorx for pg extraction — variant `dlt`; pyarrow retained as
-# recorded context on pg-source cells — variant `dlt-pyarrow`). All competitor
-# arms reach the host fixtures over `network = "host"` at their fixed ports.
+# cell is a comparable end-to-end pipeline: source data → product →
+# destination, same seeded data and same destination server/store for every
+# arm. The rdlt arm spawns its connectors as separate release binaries over
+# the connector protocol (`connector:` refs; the bins come from `{{bins}}` =
+# <target>/release, unconditionally — a measured cell spawns the shipped
+# shape, same convention as `{{cli}}`; build them with `make connector-bins`,
+# absent bins fail loud). `note` is the cell's claim, rendered as the matrix
+# caption; `verify` pins destination row count = expected on every arm
+# (FR-015). Competitors run their fastest honest configuration (dlt:
+# connectorx for pg extraction — variant `dlt`; pyarrow retained as recorded
+# context on pg-source cells — variant `dlt-pyarrow`). All competitor arms
+# reach the host fixtures over `network = "host"` at their fixed ports.
+# Airbyte arms retired 2026-08-11 with the D1 swap (RESULTS.md policy log) —
+# they were floor-dominated context (~45–60 s job wall regardless of dataset)
+# and never carried a bar; the Oracle cell keeps its own.
 
 # ---------------------------------------------------------------------------
 # pg-to-pg-1m — Postgres → Postgres, 1M rows, full replace.
@@ -16,7 +23,7 @@
 id = "pg-to-pg-1m"
 fixtures = ["pg"]
 pipeline = "cells/pipelines/pg-to-pg.yaml"
-note = "Postgres → Postgres, 1M×12 rows, full replace — the everyday relational table copy."
+note = "Postgres → Postgres, 1M×12 rows, full replace — the everyday relational table copy, connectors spawned over the connector protocol."
 [cell.verify]
 events = 1_000_000
 [[cell.competitor]]
@@ -27,11 +34,6 @@ network = "host"
 variant = "dlt-pyarrow"
 args = ["pipeline_pg_pg.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "pyarrow", "events"]
 network = "host"
-# Airbyte: driver.py drives the pre-created connection (setup.py). Args are the
-# cell id (keys state.json) + expected rows. Full-refresh overwrite.
-[[cell.competitor]]
-variant = "airbyte"
-args = ["pg-to-pg-1m", "1000000"]
 
 # ---------------------------------------------------------------------------
 # pg-to-s3parquet-1m — Postgres → Parquet on S3, 1M rows, full replace.
@@ -40,7 +42,7 @@ args = ["pg-to-pg-1m", "1000000"]
 id = "pg-to-s3parquet-1m"
 fixtures = ["pg", "rustfs"]
 pipeline = "cells/pipelines/pg-to-s3parquet.yaml"
-note = "Postgres → Parquet on S3, 1M×12 rows, full replace — relational extract to a lake."
+note = "Postgres → Parquet on S3, 1M×12 rows, full replace — relational extract to a lake, connectors spawned over the connector protocol."
 # Bytes each arm LEFT BEHIND, next to how long it took. Without this the cell
 # compared a compressed artifact against an uncompressed one and reported it as
 # parity. Untimed, run after the timed runs, and recorded as ABSENT (never
@@ -63,12 +65,6 @@ variant = "dlt-pyarrow"
 args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt-pyarrow"]
 network = "host"
 artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt-pyarrow/ rdlt-bench rdlt-bench-secret"
-# Airbyte: pg source -> S3 (parquet) destination at lake/airbyte/. Driver cleans
-# the lake prefix per run (the fixture reset does not).
-[[cell.competitor]]
-variant = "airbyte"
-args = ["pg-to-s3parquet-1m", "1000000"]
-artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake airbyte/ rdlt-bench rdlt-bench-secret"
 
 # ---------------------------------------------------------------------------
 # s3jsonl-to-pg-200k — nested JSONL on S3 → Postgres, 200k records, replace.
@@ -77,7 +73,7 @@ artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.
 id = "s3jsonl-to-pg-200k"
 fixtures = ["rustfs", "pg"]
 pipeline = "cells/pipelines/s3jsonl-to-pg.yaml"
-note = "Nested JSONL on S3 → Postgres, 200k records, full replace — semi-structured ingestion with child-table shredding."
+note = "Nested JSONL on S3 → Postgres, 200k records, full replace — semi-structured ingestion with child-table shredding, connectors spawned over the connector protocol."
 # The shred lands a child table too; declaring both is what makes the arm
 # comparable with a competitor that moves only what it claims.
 [cell.verify]
@@ -87,10 +83,6 @@ events__tags = 400_000
 variant = "dlt"
 args = ["pipeline_s3jsonl_pg.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt"]
 network = "host"
-# Airbyte: S3 (jsonl) source -> pg destination dest_airbyte.public.events.
-[[cell.competitor]]
-variant = "airbyte"
-args = ["s3jsonl-to-pg-200k", "200000"]
 
 # ---------------------------------------------------------------------------
 # s3jsonl-to-s3parquet-200k — nested JSONL on S3 → Parquet on S3, 200k records.
@@ -99,7 +91,7 @@ args = ["s3jsonl-to-pg-200k", "200000"]
 id = "s3jsonl-to-s3parquet-200k"
 fixtures = ["rustfs"]
 pipeline = "cells/pipelines/s3jsonl-to-s3parquet.yaml"
-note = "Nested JSONL on S3 → Parquet on S3, 200k records, full replace — lake file-format conversion."
+note = "Nested JSONL on S3 → Parquet on S3, 200k records, full replace — lake file-format conversion, connectors spawned over the connector protocol."
 [cell.verify]
 events = 200_000
 events__tags = 400_000
@@ -107,10 +99,6 @@ events__tags = 400_000
 variant = "dlt"
 args = ["pipeline_s3jsonl_s3parquet.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "lake", "dlt"]
 network = "host"
-# Airbyte: S3 (jsonl) source -> S3 (parquet) destination at lake/airbyte/.
-[[cell.competitor]]
-variant = "airbyte"
-args = ["s3jsonl-to-s3parquet-200k", "200000"]
 
 # ---------------------------------------------------------------------------
 # pg-to-pg-dedup-1m — Postgres → Postgres, keep-in-sync by id (LOAD 2 measured).
@@ -123,126 +111,7 @@ id = "pg-to-pg-dedup-1m"
 fixtures = ["pg"]
 pipeline = "cells/pipelines/pg-to-pg-dedup.yaml"
 prepare_sh = "cd {{workdir}} && {{cli}} run {{benches}}/cells/pipelines/pg-to-pg-dedup-load1.yaml"
-note = "Postgres → Postgres, 1M rows, keep-in-sync by id — LOAD 2 measured: full re-delivery with 50% of rows changed, deduped by id. All three products run the same full-redelivery-plus-dedup regime; Airbyte's cheaper incremental regime is deliberately not benched (no dlt counterpart, research D-08)."
-[cell.verify]
-events_merged = 1_000_000
-[[cell.competitor]]
-variant = "dlt"
-args = ["pipeline_pg_pg_dedup.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "connectorx", "events", "events_v2"]
-network = "host"
-[[cell.competitor]]
-variant = "dlt-pyarrow"
-args = ["pipeline_pg_pg_dedup.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "pyarrow", "events", "events_v2"]
-network = "host"
-# Airbyte: closest supported dedup shape — a single incremental+dedup stream on
-# events_v2 (PK id), connection STATE wiped per run so every run re-reads all
-# 1M rows and dedups by id -> 1M. Airbyte cannot merge two distinct source
-# tables (events -> events_v2) into one dest table via one connection, so it
-# does not model the load1/load2 split; same full-redelivery-plus-dedup regime
-# and final rowcount. Deviation documented in the module README.
-[[cell.competitor]]
-variant = "airbyte"
-args = ["pg-to-pg-dedup-1m", "1000000"]
-
-# ===========================================================================
-# THE WIRE TWINS (041) — five `connector:`-spec twins of the cells above,
-# same seeded work per twin, with the rdlt arm's connectors SPAWNED as
-# processes over the connector protocol instead of compiled in. What they
-# measure is the wire's whole cost at e2e grain, for the freeze verdict.
-# SCOREBOARD, no bars (a bar needs a recorded session first — constitution
-# v1.1.0). The dlt arms are copied from each twin so a session records
-# same-machine, same-session ratios; Airbyte is deliberately absent — its
-# job wall clock is floor-dominated (~45-60 s regardless of dataset) and
-# adds nothing to a wire-overhead verdict. The connector bins come from
-# `{{bins}}` (<target>/release, unconditionally — a measured cell spawns
-# the shipped shape, same convention as `{{cli}}`; build them with
-# `cargo build --release --features bin-serve`, absent bins fail loud).
-# ===========================================================================
-
-# ---------------------------------------------------------------------------
-# pg-to-pg-1m-remote — the wire twin of pg-to-pg-1m.
-# ---------------------------------------------------------------------------
-[[cell]]
-id = "pg-to-pg-1m-remote"
-fixtures = ["pg"]
-pipeline = "cells/pipelines/pg-to-pg-remote.yaml"
-note = "The wire twin of pg-to-pg-1m: same work, spawned connectors — Postgres → Postgres, 1M×12 rows, full replace over the connector protocol."
-[cell.verify]
-events = 1_000_000
-[[cell.competitor]]
-variant = "dlt"
-args = ["pipeline_pg_pg.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "connectorx", "events"]
-network = "host"
-[[cell.competitor]]
-variant = "dlt-pyarrow"
-args = ["pipeline_pg_pg.py", "{{conn}}", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt", "pyarrow", "events"]
-network = "host"
-
-# ---------------------------------------------------------------------------
-# pg-to-s3parquet-1m-remote — the wire twin of pg-to-s3parquet-1m.
-# ---------------------------------------------------------------------------
-[[cell]]
-id = "pg-to-s3parquet-1m-remote"
-fixtures = ["pg", "rustfs"]
-pipeline = "cells/pipelines/pg-to-s3parquet-remote.yaml"
-note = "The wire twin of pg-to-s3parquet-1m: same work, spawned connectors — Postgres → Parquet on S3, 1M×12 rows, full replace over the connector protocol."
-artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake rdlt/ rdlt-bench rdlt-bench-secret"
-[cell.verify]
-events = 1_000_000
-[[cell.competitor]]
-variant = "dlt"
-args = ["pipeline_pg_s3parquet.py", "{{conn}}", "connectorx", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
-network = "host"
-artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt/ rdlt-bench rdlt-bench-secret"
-[[cell.competitor]]
-variant = "dlt-pyarrow"
-args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt-pyarrow"]
-network = "host"
-artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt-pyarrow/ rdlt-bench rdlt-bench-secret"
-
-# ---------------------------------------------------------------------------
-# s3jsonl-to-pg-200k-remote — the wire twin of s3jsonl-to-pg-200k.
-# ---------------------------------------------------------------------------
-[[cell]]
-id = "s3jsonl-to-pg-200k-remote"
-fixtures = ["rustfs", "pg"]
-pipeline = "cells/pipelines/s3jsonl-to-pg-remote.yaml"
-note = "The wire twin of s3jsonl-to-pg-200k: same work, spawned connectors — nested JSONL on S3 → Postgres, 200k records, full replace with child-table shredding over the connector protocol."
-[cell.verify]
-events = 200_000
-events__tags = 400_000
-[[cell.competitor]]
-variant = "dlt"
-args = ["pipeline_s3jsonl_pg.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "postgresql://postgres:postgres@127.0.0.1:5439/dest_dlt"]
-network = "host"
-
-# ---------------------------------------------------------------------------
-# s3jsonl-to-s3parquet-200k-remote — the wire twin of s3jsonl-to-s3parquet-200k.
-# ---------------------------------------------------------------------------
-[[cell]]
-id = "s3jsonl-to-s3parquet-200k-remote"
-fixtures = ["rustfs"]
-pipeline = "cells/pipelines/s3jsonl-to-s3parquet-remote.yaml"
-note = "The wire twin of s3jsonl-to-s3parquet-200k: same work, spawned connectors — nested JSONL on S3 → Parquet on S3, 200k records, full replace over the connector protocol."
-[cell.verify]
-events = 200_000
-events__tags = 400_000
-[[cell.competitor]]
-variant = "dlt"
-args = ["pipeline_s3jsonl_s3parquet.py", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "raw", "landed/*.jsonl", "lake", "dlt"]
-network = "host"
-
-# ---------------------------------------------------------------------------
-# pg-to-pg-dedup-1m-remote — the wire twin of pg-to-pg-dedup-1m. LOAD 1 stays
-# the untimed in-process prepare (setup is not the measurement); the measured
-# LOAD 2 re-delivers the 50%-changed rows over spawned connectors.
-# ---------------------------------------------------------------------------
-[[cell]]
-id = "pg-to-pg-dedup-1m-remote"
-fixtures = ["pg"]
-pipeline = "cells/pipelines/pg-to-pg-dedup-remote.yaml"
-prepare_sh = "cd {{workdir}} && {{cli}} run {{benches}}/cells/pipelines/pg-to-pg-dedup-load1.yaml"
-note = "The wire twin of pg-to-pg-dedup-1m: same work, spawned connectors — Postgres → Postgres keep-in-sync by id, LOAD 2 measured (full re-delivery, 50% changed, deduped) over the connector protocol."
+note = "Postgres → Postgres, 1M rows, keep-in-sync by id — LOAD 2 measured: full re-delivery with 50% of rows changed, deduped by id, connectors spawned over the connector protocol. Both products run the same full-redelivery-plus-dedup regime (research D-08)."
 [cell.verify]
 events_merged = 1_000_000
 [[cell.competitor]]

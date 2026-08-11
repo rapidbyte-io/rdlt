@@ -1,27 +1,31 @@
-# 018 e2e matrix cell pg-to-pg-dedup-1m — the MEASURED load (LOAD 2 only,
-# research D-08). A query stream named `events_merged` reads the 50%-changed
-# `events_v2` and merges by id into the SAME destination table `events_merged`
-# that LOAD 1 populated (LOAD 1 runs untimed via the cell's prepare_sh against
-# pg-to-pg-dedup-load1.yaml). Full re-delivery + dedup by id. The stream name
-# is deliberately no physical table's name: a query stream may not share a
-# name with any table reflected from the source schema.
+# e2e matrix cell pg-to-pg-dedup-1m: the measured LOAD 2 — a query stream
+# re-delivering the 50%-changed events_v2, merged by id into the
+# events_merged table LOAD 1 populated. Both sides are `connector:` refs.
+# LOAD 1 is the cell's untimed prepare_sh against the load-1 spec — setup is
+# not the measurement.
 pipeline: bench-pg-to-pg-dedup
 workdir: {{workdir}}/.rdlt
 write_mode:
   merge:
     key: [id]
 source:
-  postgres:
-    conn: "{{conn}}"
-    # Deliver ONLY the declared query stream: an absent `tables` would add
-    # every table in the schema alongside it.
-    tables: []
-    queries:
-      - name: events_merged
-        sql: "SELECT * FROM events_v2"
-        primary_key: [id]
+  connector:
+    id: io.rapidbyte.postgres
+    path: {{bins}}/rdlt-connector-postgres
+    config:
+      conn: "{{conn}}"
+      # Deliver ONLY the declared query stream: an absent `tables` would add
+      # every table in the schema alongside it.
+      tables: []
+      queries:
+        - name: events_merged
+          sql: "SELECT * FROM events_v2"
+          primary_key: [id]
 destination:
-  postgres:
-    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
-    dataset: bench
-    merge_strategy: upsert
+  connector:
+    id: io.rapidbyte.postgres
+    path: {{bins}}/rdlt-connector-postgres
+    config:
+      conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+      dataset: bench
+      merge_strategy: upsert

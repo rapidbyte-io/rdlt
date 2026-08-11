@@ -7,69 +7,64 @@
     "kernel": "7.0.12-201.fc44.x86_64",
     "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
     "competitor_pins": {
-      "airbyte": "airbyte 2.1.1",
       "dlt": "dlt 1.29.0"
     },
     "dataset_hashes": {
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)",
       "rustfs:/var/tmp/rdlt-tests/.tmp5eQxYn/rows.jsonl": "34e4e3d045b4f35e9c8ac8f1c8bba9af3711c341b21f2a8e72c58a401b27b747"
     },
-    "loadavg_at_start": 2.11,
+    "loadavg_at_start": 2.22,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      659.400286,
-      669.601974,
-      666.517481,
-      676.335395,
-      659.952968
+      797.545212,
+      808.5217409999999,
+      823.015919,
+      821.249946,
+      812.18786
     ],
-    "median_ms": 666.517481,
-    "p95_ms": 676.335395,
+    "median_ms": 812.18786,
+    "p95_ms": 823.015919,
     "rows": 600000,
     "bytes": 149965184,
-    "rows_per_s": 900201.4457292232,
-    "mb_per_s": 214.57493376072082,
+    "rows_per_s": 738745.3439651266,
+    "mb_per_s": 176.08973413606245,
     "cpu": {
-      "mean_util": 1.0303764555537236,
-      "peak_util": 1.6666666666666667,
-      "user_sys_ms": 680,
+      "mean_util": 1.1327428607465273,
+      "peak_util": 1.9672131147540983,
+      "user_sys_ms": 920,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 187977728,
+      "peak_bytes": 357888000,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
   "competitors": {
-    "airbyte": {
-      "status": "missing",
-      "reason": "prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)"
-    },
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        63858.55473399715,
-        63400.68835099737,
-        63258.5968530002,
-        63601.96747200098,
-        63048.655176000466
+        63696.668697997666,
+        62741.4330290012,
+        62969.76448499845,
+        64826.685709998856,
+        65353.27131400118
       ],
-      "median_ms": 63400.68835099737,
+      "median_ms": 63696.668697997666,
       "self_timed": true,
       "cpu": {
-        "mean_util": 0.9716398856940144,
+        "mean_util": 0.9692426237262532,
         "peak_util": null,
-        "user_sys_ms": 61892,
+        "user_sys_ms": 64168,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 334303232,
+        "peak_bytes": 328601600,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 95.12231885632625
+      "ratio_vs_rdlt": 78.42602904455832
     }
   },
   "verify": {

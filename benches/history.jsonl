@@ -192,3 +192,4 @@
 {"ts":"2026-08-10","cell":"pg-to-pg-dedup-1m-remote","variant":"rdlt","median_ms":4813.503092999999,"rows":1000000}
 {"ts":"2026-08-10","cell":"pg-to-pg-dedup-1m-remote","variant":"dlt","median_ms":12624.475534998057,"rows":1000000}
 {"ts":"2026-08-10","cell":"pg-to-pg-dedup-1m-remote","variant":"dlt-pyarrow","median_ms":20312.86927400288,"rows":1000000}
+{"ts":"2026-08-11","cell":"2026-08-11-d1-swap","variant":"note","median_ms":0.0,"note":"The D1 swap (ADR 0001): the spawned-connector recordings are the benchmark identity. From this date the base cell ids (pg-to-pg-1m, pg-to-s3parquet-1m, s3jsonl-to-pg-200k, s3jsonl-to-s3parquet-200k, pg-to-pg-dedup-1m) name what the <id>-remote lines above recorded; base-id lines at or before 2026-08-10 belong to the retired in-process cells, and their airbyte arms retired with them. No figure is changed by the re-keying."}

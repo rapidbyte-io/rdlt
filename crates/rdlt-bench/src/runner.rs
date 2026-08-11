@@ -18,7 +18,7 @@ use crate::{BenchError, Result};
 /// Every `{{key}}` a cell's PIPELINE template may reference — the ONE
 /// place the render vocabulary is written down.
 ///
-/// `tests/remote_cells.rs` renders the five `-remote` templates exactly
+/// `tests/remote_cells.rs` renders the five cell templates exactly
 /// as a live run would, and it builds its stand-in map from THIS slice
 /// rather than a second hand-written list. The hand-written copy it used
 /// to carry made the test agree with itself: a key renamed here left the
@@ -123,8 +123,9 @@ fn render_spec(
 /// `<name>`.
 ///
 /// Scoped by construction — a template that never mentions `{{bins}}`
-/// (every non-`-remote` cell) yields an empty set, so the precondition
-/// built on this is invisible to them. A `{{bins}}` used as a bare
+/// (a rich-spelling spec resolves its bins off PATH instead) yields an
+/// empty set, so the precondition
+/// built on this is invisible to it. A `{{bins}}` used as a bare
 /// directory, with no `/<name>` after it, also yields nothing: there is
 /// no binary to name, so there is nothing to check.
 fn required_connector_bins(template: &str) -> BTreeSet<&str> {
@@ -169,9 +170,11 @@ pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
             paths.cli.display()
         )));
     }
-    // The same question for the connector binaries a `-remote` cell's
-    // template names. Reads the template — render_spec reads it again
-    // per run, which is cheap and keeps that function's one job intact.
+    // The same question for the connector binaries a cell's template
+    // names via `{{bins}}`. Reads the template — render_spec reads it
+    // again per run, which is cheap and keeps that function's one job
+    // intact. (A rich-spelling template names no binary, so a bin it
+    // resolves off PATH at spawn time is not checked here.)
     if let Some(template) = &cell.pipeline {
         let path = paths.benches.join(template);
         let raw = std::fs::read_to_string(&path).map_err(|e| {
@@ -199,14 +202,33 @@ pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+/// The PATH the measured CLI (and any prepare-run CLI) sees: the
+/// connector-binary directory prepended to the harness's own PATH.
+///
+/// A rich-spelling pipeline (`postgres:`, `oracle:`, …) carries no
+/// `path:` override — the CLI resolves its connector ids by a PATH walk
+/// for `rdlt-connector-<name>` — so the harness points that walk at the
+/// same `<target>/release` directory `{{bins}}` names. Without this, a
+/// cell like `oracle-to-pg-200k` (or the dedup cell's load-1 prepare)
+/// dies at spawn on whatever connectors the operator happens to have
+/// installed, instead of measuring the bins this tree built.
+fn path_with_bins(paths: &Paths) -> std::ffi::OsString {
+    let mut entries = vec![paths.bins.clone()];
+    if let Some(path) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(entries).expect("paths.bins joins the process's own PATH entries")
+}
+
 /// Run the cell's untimed `prepare_sh` (seed refresh, state wipe) if declared.
-fn run_prepare(cell: &Cell, subs: &BTreeMap<String, String>) -> Result<()> {
+fn run_prepare(cell: &Cell, subs: &BTreeMap<String, String>, paths: &Paths) -> Result<()> {
     let Some(prepare) = &cell.prepare_sh else {
         return Ok(());
     };
     let script = substitute(prepare, subs);
     let status = std::process::Command::new("sh")
         .args(["-c", &script])
+        .env("PATH", path_with_bins(paths))
         .status()?;
     if !status.success() {
         return Err(BenchError(format!("cell `{}`: prepare_sh failed", cell.id)));
@@ -338,13 +360,14 @@ fn run_once_subprocess(
 
     let report_path = run_dir.join("report.json");
     let spec_path = render_spec(cell, &mut subs, paths, run_dir)?;
-    run_prepare(cell, &subs)?;
+    run_prepare(cell, &subs, paths)?;
     let argv = measured_argv(cell, &subs, paths, spec_path.as_ref(), &report_path);
 
     let capture_stdout = cell.timing != Timing::Wall;
     let started = Instant::now();
     let child = std::process::Command::new(&argv[0])
         .args(&argv[1..])
+        .env("PATH", path_with_bins(paths))
         .current_dir(run_dir)
         .stdout(if capture_stdout {
             std::process::Stdio::piped()
@@ -576,8 +599,8 @@ pub fn run_cell(
     put(&mut subs, "repo", paths.repo.display().to_string());
     put(&mut subs, "benches", paths.benches.display().to_string());
     put(&mut subs, "cli", paths.cli.display().to_string());
-    // The connector-binary directory (`<target>/release`) for the `-remote`
-    // cells' `connector: path:` overrides — release unconditionally, like
+    // The connector-binary directory (`<target>/release`) for the cells'
+    // `connector: path:` overrides — release unconditionally, like
     // `cli` above: an absent release bin fails LOUD at spawn, whereas a
     // debug fallback would measure an unoptimized connector silently.
     put(&mut subs, "bins", paths.bins.display().to_string());
@@ -651,9 +674,9 @@ mod tests {
     use super::*;
 
     /// The `{{bins}}` precondition's scope, both directions: a
-    /// `-remote`-shaped template names its binaries, and an ordinary one
-    /// names none — which is what keeps the precondition invisible to
-    /// every non-remote cell.
+    /// `connector:`-shaped template names its binaries, and a
+    /// rich-spelling one names none — which is what keeps the
+    /// precondition invisible to it (its bins resolve off PATH).
     #[test]
     fn connector_bins_are_read_off_the_template_and_only_off_remote_ones() {
         let remote = "source:\n  connector:\n    path: {{bins}}/rdlt-connector-postgres\n\

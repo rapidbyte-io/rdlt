@@ -1,16 +1,25 @@
-# 018 e2e matrix cell pg-to-pg-1m: postgres source (src.events, 1M×12) →
-# postgres destination (dest_rdlt), full replace. `{{conn}}` is the pg fixture's
-# src-database connection (primary fixture); the destination is addressed by its
-# database name on the same server (fixed port 5439).
+# e2e matrix cell pg-to-pg-1m: src.events, 1M×12 → dest_rdlt, full replace.
+# Both sides are `connector:` refs — the engine spawns the postgres bin twice
+# and every batch crosses the connector protocol.
+# `{{bins}}` is the harness's `<target>/release` — a measured cell spawns
+# the SHIPPED shape, same convention as `{{cli}}`; build the bins with
+# `cargo build --release --features bin-serve` first (absent bins fail loud
+# at spawn, never fall back to debug).
 pipeline: bench-pg-to-pg
 workdir: {{workdir}}/.rdlt
 write_mode: replace
 source:
-  postgres:
-    conn: "{{conn}}"
-    tables:
-      - name: events
+  connector:
+    id: io.rapidbyte.postgres
+    path: {{bins}}/rdlt-connector-postgres
+    config:
+      conn: "{{conn}}"
+      tables:
+        - name: events
 destination:
-  postgres:
-    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
-    dataset: bench
+  connector:
+    id: io.rapidbyte.postgres
+    path: {{bins}}/rdlt-connector-postgres
+    config:
+      conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+      dataset: bench

@@ -1,10 +1,14 @@
 # Benchmark results
 
-Three-way end-to-end matrix: **rdlt vs dlt vs Airbyte**, same seeded source,
-same destination instance, same quiet machine — each cell measured baseline-first
-and reported. Every number in the Matrix and Trends sections is generated from
-committed artifacts (`TARGET=report make bench`); nothing is quoted without its
-competitor column.
+End-to-end matrix: **rdlt vs dlt**, same seeded source, same destination
+instance, same quiet machine — each cell measured baseline-first and
+reported, with rdlt's connectors spawned as separate release binaries over
+the connector protocol (the only architecture that exists — ADR 0001 D1).
+Airbyte remains as recorded context on the Oracle cell; its arms on the five
+e2e cells retired 2026-08-11 (policy log below). Every number in the Matrix
+and Trends sections is generated from committed artifacts
+(`TARGET=report make bench`); nothing is quoted without its competitor
+column.
 
 **Pin policy**: each competitor variant carries a version pin
 (`benches/competitors/*/variants.toml`); a pin bump re-measures every cell
@@ -12,6 +16,38 @@ before any multiple is quoted (bump ⇒ re-measure). Coverage, semver, and
 classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
 
 **Policy log** (one entry per governance event; newest first):
+
+- **2026-08-11 — the D1 swap: the spawned-connector recordings ARE the
+  benchmark identity (feature 043, ADR 0001 D1)**: the in-process build tier
+  is deleted — every rdlt pipeline now spawns its connectors as separate
+  release binaries over the connector protocol — so the matrix stops naming
+  two modes. The five `<cell>-remote` cells take the BASE ids (`pg-to-pg-1m`,
+  `pg-to-s3parquet-1m`, `s3jsonl-to-pg-200k`, `s3jsonl-to-s3parquet-200k`,
+  `pg-to-pg-dedup-1m`): cell blocks, committed artifacts and bars are
+  re-keyed with every value, floor and policy citation UNCHANGED — no figure
+  is restated, the 2026-08-10 recordings simply own the ids of the only
+  architecture that exists. The five in-process cell blocks and their four
+  bars retired with the deleted tier; each retired bar carried the SAME value
+  as its re-keyed successor (the 2026-08-10 minting deliberately mirrored
+  them), so the enforced floors are unmoved. The **Airbyte arms retired**
+  with the in-process cells — they were context (floor-dominated ~45–60 s
+  job wall regardless of dataset), never bars; the Oracle cell keeps its
+  Airbyte arm. `history.jsonl` keeps every line under its recorded name,
+  with a dated note entry marking the seam: base-id lines at or before
+  2026-08-10 belong to the retired in-process cells, and the `-remote` lines
+  are this identity's recordings. The hand-written session records and
+  caveats below keep naming `-remote` ids — they are the record of the
+  sessions that measured under those names. **Cold start re-derived
+  spawn-inclusive**: the one-row file → duckdb instruments check now spawns
+  both connector bins (two spawn+handshakes inside the measured wall),
+  median **27.1 ms** (mean 27.2 ± 0.7 ms, range 25.8–28.8 ms, 20 runs,
+  loadavg 0.87) on the swapped tree against the UNCHANGED 40 ms bar
+  (`benches/check-cold-start.sh`). One survivor spelling was repaired to get
+  there: the cold and oracle pipelines carried the retired
+  `source: <name>: {config: <path>}` sub-key form, which the spawned
+  connectors' own document gates refuse (`unknown field \`config\``) — both
+  now use the path form (`source: file: <path>`). Text change, same
+  documents; nothing about the protocol moved.
 
 - **2026-08-10 — the second wire session: the byte-fix verdict is STANDS, and
   four remote bars are minted (feature 042, D-042-4)**: the ten e2e cells and
@@ -148,29 +184,25 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
 
 ## Matrix
 
-The five e2e cells, three-way, plus their five `-remote` wire twins (same work,
-connectors spawned as separate processes over the connector protocol) and the
-Oracle cell. Every arm is rowcount-verified against the cell's DECLARED table
-set — a run that lands a table the cell did not declare fails before it is
-recorded, because its timing would cover work the competitor arm never did.
+The five e2e cells — rdlt's connectors spawned as separate release binaries
+over the connector protocol — plus the Oracle cell. Every arm is
+rowcount-verified against the cell's DECLARED table set — a run that lands a
+table the cell did not declare fails before it is recorded, because its
+timing would cover work the competitor arm never did.
 
-Four `-remote` rows carry bars since 2026-08-10 (two recorded sessions), each
-mirroring its in-process twin's value; `pg-to-s3parquet-1m-remote` stays
-scoreboard like its twin (see the 2026-08-10 policy entry).
+Four cells carry bars (minted 2026-08-10 from two recorded sessions,
+re-keyed 2026-08-11 to the base ids with values and floors unchanged);
+`pg-to-s3parquet-1m` stays scoreboard — near-parity is reported, not gated
+(see the 2026-08-10 and 2026-08-11 policy entries).
 
 <!-- rdlt-bench:BEGIN matrix -->
 | Cell | rdlt median | vs baseline | Target | Status | rows/s | MB/s | peak RSS |
 |---|---|---|---|---|---|---|---|
-| pg-to-pg-1m | 807.4 ms (±3%) | **12.7×** (dlt: 10.25 s); 21.3× (dlt-pyarrow: 17.17 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 4× | PASS | 1238535 | 235.9 | 107 MB |
-| pg-to-s3parquet-1m | 835.7 ms (±6%) | **2.0×** (dlt: 1.69 s); 13.0× (dlt-pyarrow: 10.83 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | — | — | 1196655 | 227.9 | 136 MB |
-| s3jsonl-to-pg-200k | 666.5 ms (±3%) | **95.1×** (dlt: 63.40 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 40× | PASS | 900201 | 214.6 | 179 MB |
-| s3jsonl-to-s3parquet-200k | 954.4 ms (±2%) | **65.5×** (dlt: 62.49 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 45× | PASS | 628638 | 149.8 | 181 MB |
-| pg-to-pg-dedup-1m | 4.60 s (±2%) | **2.7×** (dlt: 12.62 s); 4.4× (dlt-pyarrow: 20.25 s); airbyte: MISSING (prerequisite failed for `airbyte`: abctl cluster unreachable (kubectl get ns airbyte-abctl)) | ≥ 2× | PASS | 217534 | 41.3 | 104 MB |
-| pg-to-pg-1m-remote | 1.00 s (±3%) | **10.1×** (dlt: 10.15 s); 17.4× (dlt-pyarrow: 17.42 s) | ≥ 4× | PASS | 997934 | 2297.3 | 222 MB |
-| pg-to-s3parquet-1m-remote | 952.9 ms (±3%) | **1.7×** (dlt: 1.67 s); 11.2× (dlt-pyarrow: 10.68 s) | — | — | 1049440 | 2415.8 | 311 MB |
-| s3jsonl-to-pg-200k-remote | 812.2 ms (±3%) | **78.4×** (dlt: 63.70 s) | ≥ 40× | PASS | 738745 | 176.1 | 341 MB |
-| s3jsonl-to-s3parquet-200k-remote | 1.08 s (±2%) | **57.1×** (dlt: 61.45 s) | ≥ 45× | PASS | 557783 | 133.0 | 301 MB |
-| pg-to-pg-dedup-1m-remote | 4.81 s (±3%) | **2.6×** (dlt: 12.62 s); 4.2× (dlt-pyarrow: 20.31 s) | ≥ 2× | PASS | 207749 | 473.8 | 243 MB |
+| pg-to-pg-1m | 1.00 s (±3%) | **10.1×** (dlt: 10.15 s); 17.4× (dlt-pyarrow: 17.42 s) | ≥ 4× | PASS | 997934 | 2297.3 | 222 MB |
+| pg-to-s3parquet-1m | 952.9 ms (±3%) | **1.7×** (dlt: 1.67 s); 11.2× (dlt-pyarrow: 10.68 s) | — | — | 1049440 | 2415.8 | 311 MB |
+| s3jsonl-to-pg-200k | 812.2 ms (±3%) | **78.4×** (dlt: 63.70 s) | ≥ 40× | PASS | 738745 | 176.1 | 341 MB |
+| s3jsonl-to-s3parquet-200k | 1.08 s (±2%) | **57.1×** (dlt: 61.45 s) | ≥ 45× | PASS | 557783 | 133.0 | 301 MB |
+| pg-to-pg-dedup-1m | 4.81 s (±3%) | **2.6×** (dlt: 12.62 s); 4.2× (dlt-pyarrow: 20.31 s) | ≥ 2× | PASS | 207749 | 473.8 | 243 MB |
 | oracle-to-pg-200k | 832.6 ms (±4%) | **4.1×** (dlt: 3.42 s); 54.6× (airbyte: 45.45 s) | — | — | 240205 | 46.9 | 60 MB |
 
 _Generated by `rdlt-bench report` from committed artifacts (recorded 2026-08-03, 2026-08-10; airbyte 2.1.1, dlt 1.29.0)._
@@ -342,13 +374,12 @@ rule applies to this as to any counting argument: guilty until measured
 
 Stated so the numbers stay honest as the matrix fills:
 
-- **Per-product timing boundaries** (what each column measures): rdlt and dlt
-  are single-process pipelines timed by the harness wall clock around the
-  release CLI / the baseline's own self-timed `seconds` line — the number is
-  the pipeline, nothing else. On the `-remote` cells rdlt is a process TREE
-  rather than one process (see the twins caveat below); the boundary is
-  unchanged — the harness still wraps the release CLI, which now also pays for
-  its children. Airbyte's headline `seconds` is the **job wall**
+- **Per-product timing boundaries** (what each column measures): rdlt is a
+  process TREE — the release CLI plus the connector binaries it spawns —
+  timed by the harness wall clock around the CLI, which pays for its
+  children; dlt is a single-process pipeline timed by its own self-timed
+  `seconds` line. The number is the pipeline, nothing else (see the
+  connector-spawn caveat below). Airbyte's headline `seconds` is the **job wall**
   (orchestration, connector-pod scheduling, and platform overhead included, and
   labeled as such); its attempt time rides `extra.sync_s` as recorded context.
   The three columns are comparable as "how long to move this data with this
@@ -366,9 +397,10 @@ Stated so the numbers stay honest as the matrix fills:
   first (loadavg below 0.25×cores). A forced run on a loaded machine is stamped
   `forced: true` in its artifact — the number is context, not evidence.
 - **Dedup cell regime**: the `pg-to-pg-dedup-1m` cell measures LOAD 2 only
-  (full re-delivery + dedup by `id`); all three products run the full-redelivery
-  regime, so Airbyte's cheaper incremental mode is deliberately not benched
-  (no dlt counterpart). The cell's note renders as the matrix caption. Its
+  (full re-delivery + dedup by `id`); both products run the full-redelivery
+  regime (Airbyte's arm retired 2026-08-11 with the in-process cells; its
+  cheaper incremental mode was deliberately never benched — no dlt
+  counterpart). The cell's note renders as the matrix caption. Its
   source declares `tables: []` so only the query stream is delivered — without
   that, schema discovery adds every table in `public` on top, which is what the
   superseded 0.8× figure was measuring (see the policy log).
@@ -410,21 +442,20 @@ Stated so the numbers stay honest as the matrix fills:
   matrix runs two-way. Substituting a 21c container for that arm alone is
   refused: it would give one arm a different source server and break the
   same-conditions rule the whole matrix rests on.
-- **The `-remote` twins — what the number covers** (041): the twin runs the
-  same pipeline with `connector:` refs, so the harness wall clock now also
+- **The connector spawn — what the number covers** (041, recorded on the
+  `-remote` ids; since 2026-08-11 these are the matrix's e2e rows): the
+  pipeline runs with `connector:` refs, so the harness wall clock also
   covers spawning each connector binary, its handshake, config validation in
   the child, and every batch crossing a unix socket. The bins come from
   `<target>/release` unconditionally — a measured cell spawns the shipped
   shape, never a debug build. `peak RSS` and `CPU` are process-TREE samples,
-  so the children are inside them: the remote rows' RSS is the whole
-  constellation (**×1.49 to ×2.48** the in-process row across the five pairs —
+  so the children are inside them: the rows' RSS is the whole
+  constellation (**×1.49 to ×2.48** what the retired in-process recordings
+  showed across the five pairs —
   ×2.48 / ×2.23 / ×1.65 / ×1.49 / ×2.44 in matrix order), not a regression in
   the engine.
-  The competitor arms are byte-identical to the twin's — dlt is not spawned
-  differently — so the ratio column compares like with like. Airbyte is
-  deliberately NOT an arm on the remote cells: its job wall is
-  floor-dominated (~45–60 s regardless of dataset) and contributes nothing to
-  a wire-overhead verdict.
+  The competitor arms are byte-identical across the re-keying — dlt is not
+  spawned differently — so the ratio column compares like with like.
 - **`s3jsonl-to-pg-200k-remote` spread is warm-up, and it is recorded rather
   than re-rolled** (041 session): its five runs were 1435.5 / 1532.4 / 1074.6 /
   860.0 / 858.2 ms — ±63%, by far the widest in the session, with the cost
@@ -500,9 +531,16 @@ Stated so the numbers stay honest as the matrix fills:
   engine's `bytes` statistic capacity-sums at its own sites, the pg-source
   remote rows still print ≈12× figures, and their MB/s stays unreliable
   until that bookkeeping site is closed.
+  AMENDED 2026-08-11 (the D1 swap): those recordings now render under the
+  base ids, so read the standing warning against the matrix as printed —
+  the MB/s column on the pg-source rows (`pg-to-pg-1m`,
+  `pg-to-s3parquet-1m`, `pg-to-pg-dedup-1m`) is unreliable until the
+  engine's reporting sites are closed; the file-source rows are unaffected.
 - **Cold start** lives on the instruments track, not the matrix: a one-row
-  file → duckdb pipeline, ≤ 40 ms absolute (`benches/check-cold-start.sh`,
-  run by `TARGET=iai make bench` and therefore `make check`).
+  file → duckdb pipeline that spawns both connector bins (two
+  spawn+handshakes inside the measured wall since the D1 swap, 2026-08-11),
+  ≤ 40 ms absolute (`benches/check-cold-start.sh`,
+  run by `TARGET=cold make bench` and therefore `make check`).
 
 ## Trends
 
@@ -512,6 +550,7 @@ invocation) — the latest two medians per pair and their delta.
 <!-- rdlt-bench:BEGIN trends -->
 | Cell | Variant | Latest | Previous | Δ |
 |---|---|---|---|---|
+| 2026-08-11-d1-swap | note | 0.0 ms | — | — |
 | oracle-to-pg-200k | airbyte | 45.45 s | — | — |
 | oracle-to-pg-200k | dlt | 3.36 s | 3.61 s | -7.0% |
 | oracle-to-pg-200k | rdlt | 845.9 ms | 923.5 ms | -8.4% |

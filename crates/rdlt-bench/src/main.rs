@@ -145,7 +145,7 @@ fn run_one_cell(
 ) -> rdlt_bench::Result<artifact::Artifact> {
     eprintln!("== {} ({} runs) ==", cell.id, cell.runs);
     // What must already be on disk — the release CLI, and the connector
-    // binaries a `-remote` cell's template names — asked FIRST, before a
+    // binaries a cell's template names via `{{bins}}` — asked FIRST, before a
     // single container starts or a single row is generated. Everything
     // below this line is expensive and none of it is recoverable: the
     // fixture seed alone reaches 1M rows, and the competitor baselines

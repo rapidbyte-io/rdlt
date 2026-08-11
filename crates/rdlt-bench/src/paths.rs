@@ -15,8 +15,10 @@ pub struct Paths {
     pub results: PathBuf,
     pub cli: PathBuf,
     /// Where the connector BINARIES land (`<target>/release`) — the
-    /// `{{bins}}` substitution the `-remote` cells' pipeline templates
-    /// point their `connector: path:` overrides at. Release
+    /// `{{bins}}` substitution the cells' pipeline templates
+    /// point their `connector: path:` overrides at, and the directory
+    /// the runner prepends to the measured CLI's PATH so rich-spelling
+    /// specs resolve the same bins. Release
     /// UNCONDITIONALLY, the harness convention `cli` already follows: a
     /// measured cell must spawn the shipped shape, and an absent
     /// release bin fails LOUD at spawn — a debug (or prefer-what's-

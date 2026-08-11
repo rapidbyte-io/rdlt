@@ -100,7 +100,7 @@ hash = ["{{data}}/rows.jsonl"]
 # `conn`). generate_sh therefore also writes the oracle source document the
 # cell's pipeline references as `{{data}}/oracle.yaml` — the same shape the
 # rustfs fixture uses for `files.yaml`, and the form the facade's
-# `source: oracle: {config: …}` arm takes. The container name is deterministic
+# `source: oracle: <path>` path form takes. The container name is deterministic
 # (rdlt-bench-<id>), which is what lets the seed script exec into it.
 #
 # Startup is the slowest thing in the matrix (15-40 s typical, longer on a cold

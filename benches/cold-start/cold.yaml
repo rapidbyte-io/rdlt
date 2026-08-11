@@ -3,9 +3,12 @@
 # check-cold-start.sh harness fills @FILES@ and @WORK@ per run and asserts the
 # release binary starts this pipeline in <= 40 ms median. file -> duckdb keeps
 # the original protocol (the recorded 24.2 ms floor was measured this way).
+# Since the D1 swap (043) these rich spellings SPAWN the file and duckdb
+# connector bins (resolved off PATH — the script prepends the release dir), so
+# the measured median includes two spawn+handshakes and the wire.
 pipeline: cold-start
 workdir: @WORK@/.rdlt-cold
 source:
-  file: {config: @FILES@}
+  file: @FILES@
 destination:
   duckdb: {path: @WORK@/cold.duckdb}

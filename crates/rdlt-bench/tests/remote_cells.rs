@@ -1,4 +1,6 @@
-//! 041 Task 6: the five `-remote` pipeline templates are LIVE documents,
+//! The five e2e cell pipeline templates (connector-spawning documents,
+//! born as 041's `-remote` twins and owning the base cell ids since the
+//! 043 D1 swap) are LIVE documents,
 //! not dead files that fail only in the recorded session. Each one is
 //! rendered exactly as the runner renders it (the same `substitute` over
 //! the same keys the runner provides), then pushed through the REAL
@@ -11,7 +13,7 @@
 //!   3. the OPAQUE `config:` block — which the Spec parse deliberately
 //!      does not validate — is pushed through the named connector's own
 //!      `Document` gate (`from_value`), so a config key that drifted
-//!      from the in-process twin's vocabulary is caught HERE, not at
+//!      from the connector's vocabulary is caught HERE, not at
 //!      the handshake in the by-hand session.
 //!
 //! The cell registry side (ids, verify, competitor arms) is load-checked
@@ -26,30 +28,30 @@ use rdlt::sdk::config::Document;
 use rdlt_bench::runner::PIPELINE_SUBSTITUTION_KEYS;
 use rdlt_bench::template::substitute;
 
-/// The five wire twins and the connector each side must name.
+/// The five cell pipelines and the connector each side must name.
 const REMOTE_PIPELINES: &[(&str, &str, &str)] = &[
     (
-        "pg-to-pg-remote.yaml",
+        "pg-to-pg.yaml",
         "io.rapidbyte.postgres",
         "io.rapidbyte.postgres",
     ),
     (
-        "pg-to-pg-dedup-remote.yaml",
+        "pg-to-pg-dedup.yaml",
         "io.rapidbyte.postgres",
         "io.rapidbyte.postgres",
     ),
     (
-        "pg-to-s3parquet-remote.yaml",
+        "pg-to-s3parquet.yaml",
         "io.rapidbyte.postgres",
         "io.rapidbyte.file",
     ),
     (
-        "s3jsonl-to-pg-remote.yaml",
+        "s3jsonl-to-pg.yaml",
         "io.rapidbyte.file",
         "io.rapidbyte.postgres",
     ),
     (
-        "s3jsonl-to-s3parquet-remote.yaml",
+        "s3jsonl-to-s3parquet.yaml",
         "io.rapidbyte.file",
         "io.rapidbyte.file",
     ),

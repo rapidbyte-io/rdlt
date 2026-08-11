@@ -1,20 +1,36 @@
-# 018 e2e matrix cell s3jsonl-to-s3parquet-200k: nested jsonl on the RUSTFS
-# `raw` bucket → parquet files on the `lake` bucket under the per-product prefix
-# `rdlt`, full replace. Single fixture rustfs: `{{data}}/files.yaml` is the
-# generated file-source config; source and destination share the one store.
+# e2e matrix cell s3jsonl-to-s3parquet-200k: nested jsonl on the RUSTFS
+# `raw` bucket → parquet on the `lake` bucket under the `rdlt` prefix, full
+# replace. BOTH sides are spawned as the file bin — two processes over one
+# store. Source config is the fixture-generated files.yaml spelled inline
+# (see s3jsonl-to-pg.yaml).
 pipeline: bench-s3jsonl-to-s3parquet
 workdir: {{workdir}}/.rdlt
 write_mode: replace
 source:
-  file:
-    config: {{data}}/files.yaml
+  connector:
+    id: io.rapidbyte.file
+    path: {{bins}}/rdlt-connector-file
+    config:
+      streams:
+        - name: events
+          format: jsonl
+          path: "landed/*.jsonl"
+          location:
+            s3:
+              endpoint: "http://127.0.0.1:19110"
+              bucket: raw
+              access_key: rdlt-bench
+              secret_key: rdlt-bench-secret
 destination:
-  file:
-    path: rdlt
-    format: parquet
-    location:
-      s3:
-        endpoint: "http://127.0.0.1:19110"
-        bucket: lake
-        access_key: rdlt-bench
-        secret_key: rdlt-bench-secret
+  connector:
+    id: io.rapidbyte.file
+    path: {{bins}}/rdlt-connector-file
+    config:
+      path: rdlt
+      format: parquet
+      location:
+        s3:
+          endpoint: "http://127.0.0.1:19110"
+          bucket: lake
+          access_key: rdlt-bench
+          secret_key: rdlt-bench-secret

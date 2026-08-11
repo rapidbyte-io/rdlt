@@ -2,15 +2,27 @@
 # Cold-start embeddability check (instruments track). Relocated from the retired
 # `cold-start` benchmark cell (archive commit 40841ab): the recorded hyperfine
 # protocol, now a standalone gate rather than a matrix row. Asserts the release
-# binary starts a one-row file -> duckdb pipeline in <= 40 ms median (floor
-# 23.6 ms x 1.5). Exits non-zero on breach.
+# binary starts a one-row file -> duckdb pipeline in <= 40 ms median. Exits
+# non-zero on breach.
+#
+# RE-DERIVED 2026-08-11 (the D1 swap, 043): the CLI now SPAWNS its connectors,
+# so the measured pipeline covers the engine start PLUS two connector
+# spawn+handshakes (file source, duckdb destination) and every batch crossing
+# the connector protocol — end-to-end including spawn is what "cold start"
+# means from here on. The 40 ms bar is UNCHANGED and deliberately so: the
+# embeddability claim survives the architecture. Measured on the swapped
+# tree, quiet machine (loadavg 0.87): 27.1 ms median (mean 27.2 ms +/- 0.7 ms,
+# range 25.8-28.8 ms, 20 runs) — inside the band the in-process protocol
+# recorded, consistent with 041's 1.81 ms spawn->handshake measurement
+# (two spawns are ~3.6 ms).
 #
 # QUIET MACHINE REQUIRED: startup latency is dominated by page-cache and
 # scheduler state; a loaded machine inflates the median. Run it like the rest
 # of the instruments track — nothing else competing for the CPU.
 #
-# This script builds nothing: it expects target/release/rdlt to exist already
-# (run `make release`). hyperfine and python3 are prerequisites.
+# This script builds nothing: it expects target/release/rdlt AND the file and
+# duckdb connector bins to exist already (run `make release` and
+# `make connector-bins`). hyperfine and python3 are prerequisites.
 set -eu
 
 BENCHES_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -18,13 +30,26 @@ REPO_ROOT=$(cd "$BENCHES_DIR/.." && pwd)
 # Honour CARGO_TARGET_DIR: a contributor who redirects cargo's output (a
 # shared target dir, a faster disk) otherwise gets "release binary missing"
 # immediately after a successful `make release`.
-CLI="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/rdlt"
+RELEASE_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release"
+CLI="$RELEASE_DIR/rdlt"
 BAR_MS=40
 
 if [ ! -x "$CLI" ]; then
     echo "cold-start: release binary missing at $CLI — run \`make release\` first" >&2
     exit 1
 fi
+# The pipeline's rich `file:`/`duckdb:` spellings resolve their connector
+# bins off PATH, so point discovery at the same release dir the CLI came
+# from — the measurement must spawn the shipped shape, never whatever
+# happens to be installed.
+for bin in rdlt-connector-file rdlt-connector-duckdb; do
+    if [ ! -x "$RELEASE_DIR/$bin" ]; then
+        echo "cold-start: $bin missing at $RELEASE_DIR/$bin — run \`make connector-bins\` first" >&2
+        exit 1
+    fi
+done
+PATH="$RELEASE_DIR:$PATH"
+export PATH
 if ! command -v hyperfine >/dev/null 2>&1; then
     echo "cold-start: hyperfine not installed (instruments-track prerequisite)" >&2
     exit 1

@@ -1,15 +1,33 @@
-# 018 e2e matrix cell s3jsonl-to-pg-200k: nested jsonl on the RUSTFS `raw`
-# bucket → postgres destination (dest_rdlt), full replace. Fixtures
-# [rustfs, pg]: rustfs is primary ({{data}}/files.yaml is the generated
-# file-source config); the postgres destination is addressed by its database
-# name on the same server (fixed port 5439).
+# e2e matrix cell s3jsonl-to-pg-200k: nested jsonl on the RUSTFS `raw`
+# bucket → dest_rdlt, full replace, child-table shred. The source is spawned
+# as the file bin and the destination as the postgres bin.
+#
+# A `connector:` config is the connector's own document INLINE (no path form
+# crosses the wire), so the fixture-generated files.yaml keys are spelled
+# here verbatim — they are fixed by the rustfs fixture's generate_sh,
+# endpoint and credentials included.
 pipeline: bench-s3jsonl-to-pg
 workdir: {{workdir}}/.rdlt
 write_mode: replace
 source:
-  file:
-    config: {{data}}/files.yaml
+  connector:
+    id: io.rapidbyte.file
+    path: {{bins}}/rdlt-connector-file
+    config:
+      streams:
+        - name: events
+          format: jsonl
+          path: "landed/*.jsonl"
+          location:
+            s3:
+              endpoint: "http://127.0.0.1:19110"
+              bucket: raw
+              access_key: rdlt-bench
+              secret_key: rdlt-bench-secret
 destination:
-  postgres:
-    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
-    dataset: bench
+  connector:
+    id: io.rapidbyte.postgres
+    path: {{bins}}/rdlt-connector-postgres
+    config:
+      conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+      dataset: bench

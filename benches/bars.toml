@@ -12,133 +12,53 @@
 # their final values and the archive commit (40841ab). The cold-start absolute
 # check now lives on the instruments track (benches/check-cold-start.sh).
 
-# Bars re-derived 2026-07-25 from the post-019 recorded three-way session
-# (15/15 arms, rowcount-verified; artifacts in benches/results/). One bar per
-# cell, each set below its recorded floor.
+# 2026-08-11 — the D1 swap (ADR 0001): the spawned-connector recordings are
+# the benchmark identity. The four bars below were minted 2026-08-10 from TWO
+# recorded sessions (2026-08-07 / 2026-08-10) under the ids
+# `<cell>-remote`; with the swap they are re-keyed to the base ids they now
+# govern — values, floors and policy citations UNCHANGED. The four bars that
+# previously bound these ids (minted 2026-07-25 from the in-process
+# recordings) retired with their cells; each carried the SAME value, because
+# the 2026-08-10 minting deliberately MIRRORED the in-process values rather
+# than hugging the higher spawned-mode floors — the claim enforced is that
+# running the connectors as separate processes does not cost the flagship
+# bars. Their derivation history (including the s3parquet bar's
+# held-at-45-not-tightened record and its falsified "can only rise" claim,
+# amended 2026-08-07) lives in the RESULTS.md policy log and in this file's
+# git history.
 #
-# FOUR cells carry a bar: pg-to-pg-1m (13.2× recorded), s3jsonl-to-pg-200k
-# (95.0×), s3jsonl-to-s3parquet-200k (63.6×), and pg-to-pg-dedup-1m (2.6×).
-#
-# pg-to-s3parquet-1m carries NO bar — deliberately. It moved from parity to
-# 1.7× once 019 made the parquet arms like-for-like, and one session on a
-# newly-comparable cell is not a basis for a bar. The matrix reports it.
-#
-# The dedup cell's earlier "0.9× behind" standing is superseded and was never
-# real: the cell delivered 3M rows against the competitor's 1M until 019 US1
-# corrected it.
+# Two-session floors behind each bar, both sessions clearing every bar:
+# pg-to-pg-1m 9.50x -> 10.13x; s3jsonl-to-pg-200k 60.0x -> 78.4x;
+# s3jsonl-to-s3parquet-200k 52.3x -> 57.1x; pg-to-pg-dedup-1m 2.42x ->
+# 2.62x. The narrowest margin is the s3parquet cell's 52.3x against 45
+# (x1.16) — the same margin 041 recorded, held again 2026-08-10 at 57.1x.
+# `pg-to-s3parquet-1m` stays UNBARRED: a near-parity cell (1.75x / 1.75x
+# across the two sessions) is reported, not gated — the same rule that kept
+# it unbarred before the swap.
 
 [[bar]]
 cell = "pg-to-pg-1m"
 kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 4.0
-policy = "RESULTS.md policy log 2026-07-25 (bars): floor 5.3x (this session), 4.6x (2-way session same day)"
+policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 9.50x (2026-08-07), 10.13x (2026-08-10)"
 
 [[bar]]
 cell = "s3jsonl-to-pg-200k"
 kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 40.0
-policy = "RESULTS.md policy log 2026-07-25 (bars): floor 55.3x (this session), 54.9x (2-way session same day)"
+policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 60.0x (2026-08-07, warm-up-inflated median), 78.4x (2026-08-10)"
 
 [[bar]]
 cell = "s3jsonl-to-s3parquet-200k"
 kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 45.0
-policy = "RESULTS.md policy log 2026-07-25 (bars): floors 60.1x, 61.1x, and 63.6x (the post-019 session). CONFIRMED by that session — see the note below."
-
-# Why this bar is held rather than re-derived (feature 019 US7, T078).
-#
-# rdlt's arm on this cell now writes snappy-compressed parquet; dlt's arm
-# always did. That changes what the ratio MEANS more than what it is: the two
-# arms were previously timed doing different amounts of work, with rdlt writing
-# roughly four times the bytes, and the comparison flattered whichever side
-# skipped the compression. It no longer does.
-#
-# The bar itself is not at risk, and the direction is the opposite of what was
-# expected. Measured on this cell, interleaved, medians of 7, the ONLY variable
-# being the compression change:
-#
-#     wall   0.97 -> 0.92 s  (-5.2%)
-#     CPU    0.77 -> 0.81 s  (+5.2%)
-#     RSS     213 ->   208 MB
-#
-# Compression costs CPU, as expected. But the bytes it saves are bytes not
-# pushed to the object store, and on this cell that saving is larger than the
-# encode — so rdlt's WALL, which is what the ratio divides, went DOWN. A ratio
-# floor of 60.1x can only rise.
-#
-# CONFIRMED by the post-019 recorded session: 63.6x, ABOVE the 60.1x floor the
-# bar was derived from. The isolated A/B above predicted the direction and the
-# session bore it out.
-#
-# The bar STAYS at 45.0 rather than tightening toward 63.6x. Two reasons, both
-# policy rather than caution: a bar sits below its cited floor by design, and
-# this cell's spread in the confirming session was +/-20% — the widest of the
-# five. A tighter bar wants a second session at that spread, not one.
-#
-# AMENDED 2026-08-07 (feature 041 session): "can only rise" was too strong and
-# this cell's own artifact falsified it — the in-process arm recorded 59.06x,
-# BELOW the 60.1x floor the sentence says cannot be gone below. The reasoning
-# was sound about its one variable and wrong about scope: it held everything
-# but the compression change constant, and a ratio also moves with
-# session-to-session machine state. rdlt's ~1.0 s wall on this cell is CPU- and
-# bandwidth-bound while dlt's ~59 s wall is Python/IO-dominated, so the two arms
-# do NOT move together across sessions (RESULTS.md records the same differential
-# on all five cells). Read the sentence above as "the compression change alone
-# cannot lower the ratio". THE BAR IS UNAFFECTED: 45.0 is what binds, and the
-# 041 session cleared it in-process (59.06x) and remote (52.3x).
-
-# Set 2026-07-25 after the cell's scope was corrected (feature 019 US1): the
-# source now delivers only its declared query stream, so the cell measures the
-# 1M rows it claims instead of 3M. The superseded 0.8x "loss" is withdrawn in
-# the policy log. This bar rests on ONE recorded session, unlike the three
-# above; a second session may tighten it.
-[[bar]]
-cell = "pg-to-pg-dedup-1m"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 2.0
-policy = "RESULTS.md policy log 2026-07-25 (dedup cell correction): floor 2.5x (corrected session, single session)"
-
-# The four remote-twin bars, minted 2026-08-10 from TWO recorded sessions
-# (2026-08-07 / 2026-08-10) — the governance threshold a single session does
-# not meet (018 BR8, constitution Principle VIII). Each bar MIRRORS its
-# in-process twin's value rather than sitting just under the higher remote
-# floors, which states the claim being enforced: taking the connectors out of
-# process does not cost the flagship bars. Two-session remote floors, both
-# clearing every bar: pg-to-pg-1m-remote 9.50x -> 10.13x; s3jsonl-to-pg-200k
-# -remote 60.0x -> 78.4x; s3jsonl-to-s3parquet-200k-remote 52.3x -> 57.1x;
-# pg-to-pg-dedup-1m-remote 2.42x -> 2.62x. The narrowest margin is the
-# s3parquet twin's 52.3x against 45 (x1.16) — the same margin 041 recorded,
-# held again this session at 57.1x. `pg-to-s3parquet-1m-remote` stays
-# UNBARRED for its twin's reason: a near-parity cell (1.75x / 1.75x across
-# the two sessions) is reported, not gated.
-
-[[bar]]
-cell = "pg-to-pg-1m-remote"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 4.0
-policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 9.50x (2026-08-07), 10.13x (2026-08-10)"
-
-[[bar]]
-cell = "s3jsonl-to-pg-200k-remote"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 40.0
-policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 60.0x (2026-08-07, warm-up-inflated median), 78.4x (2026-08-10)"
-
-[[bar]]
-cell = "s3jsonl-to-s3parquet-200k-remote"
-kind = "ratio_vs"
-competitor = "dlt"
-min_ratio = 45.0
 policy = "RESULTS.md policy log 2026-08-10 (remote bars): two-session floors 52.3x (2026-08-07), 57.1x (2026-08-10)"
 
 [[bar]]
-cell = "pg-to-pg-dedup-1m-remote"
+cell = "pg-to-pg-dedup-1m"
 kind = "ratio_vs"
 competitor = "dlt"
 min_ratio = 2.0
