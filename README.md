@@ -22,8 +22,8 @@ catalogs of connectors — belongs to products built on top, not here.
 use rdlt::prelude::*;
 
 let report = Pipeline::builder("orders")
-    .source(source)          // any rdlt source connector
-    .destination(dest)       // any rdlt destination connector
+    .source(source)          // any SPI Source — e.g. a spawned connector
+    .destination(dest)       // any SPI Destination
     .write_mode(WriteMode::Append)
     .workdir(".rdlt")        // enables the WAL + crash recovery
     .build()?
@@ -31,9 +31,14 @@ let report = Pipeline::builder("orders")
     .await?;
 ```
 
-Connectors live behind cargo features on the `rdlt` facade crate
-(`rest`, `postgres`, `oracle`, `duckdb`, `file`, `parquet`,
-`iceberg`, `snowflake`).
+Connectors are separate binaries, spawned per run and supervised over
+a local socket — none are compiled into the engine. A pipeline names
+one by its rich spelling (`postgres:`, `rest:`, `oracle:`, `duckdb:`,
+`file:`, `iceberg:`, `snowflake:`) or by its reverse-DNS id
+(`io.rapidbyte.postgres`); either way the id's last segment resolves
+to a `rdlt-connector-<segment>` binary on PATH, and `path:` names an
+out-of-tree binary explicitly. In-tree, `make connector-bins` builds
+them all.
 
 ## Use it from the CLI
 
@@ -43,7 +48,9 @@ capability beyond parsing it:
 ```sh
 rdlt run pipeline.yaml        # live progress on a terminal, plain lines in CI
 rdlt validate pipeline.yaml   # the run's gates, without the run
-rdlt schema postgres-source   # a connector's config JSON Schema
+rdlt schema postgres          # a connector's config JSON Schema — a short
+                              # name, a reverse-DNS id, or a binary path;
+                              # the connector is spawned and asked
 ```
 
 On a terminal, `run` draws a live display — per-stream rows read and
@@ -71,15 +78,10 @@ rdlt run examples/pokemon-to-jsonl/pipeline.yaml
 
 ### Parquet output is compressed
 
-Parquet destinations write **snappy-compressed** files. Earlier versions wrote
-uncompressed ones, so the same data now produces much smaller files — on a
-1M-row extract, roughly a quarter of the bytes.
-
-This is a change to the files rdlt writes, not to what they contain: every
-parquet reader handles snappy, and nothing about the data or its schema
-changes. It is called out because the file sizes will visibly drop.
-
-To restore the previous behaviour, or to choose something else:
+Parquet destinations write **snappy-compressed** files by default — on a
+1M-row extract, roughly a quarter of the bytes of uncompressed output,
+and every parquet reader handles snappy. To choose another codec, or
+none:
 
 ```yaml
 destination:

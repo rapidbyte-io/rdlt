@@ -12,7 +12,7 @@
 //! its socket unlinks when the last holder lets go.
 //!
 //! [`ManagedSource`]/[`ManagedDestination`] are what a provider hands
-//! back: the remote adapter plus what the handshake established
+//! back: the wire adapter plus what the handshake established
 //! (identity, resolved version, negotiated protocol,
 //! state-format versions) plus the guard — and they IMPLEMENT the
 //! SPI's `Source`/`Destination` by delegation, so `Engine::new` takes

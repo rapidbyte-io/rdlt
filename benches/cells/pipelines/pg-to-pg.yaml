@@ -3,8 +3,8 @@
 # and every batch crosses the connector protocol.
 # `{{bins}}` is the harness's `<target>/release` — a measured cell spawns
 # the SHIPPED shape, same convention as `{{cli}}`; build the bins with
-# `cargo build --release --features bin-serve` first (absent bins fail loud
-# at spawn, never fall back to debug).
+# `make connector-bins` first (absent bins fail loud at spawn, never
+# fall back to debug).
 pipeline: bench-pg-to-pg
 workdir: {{workdir}}/.rdlt
 write_mode: replace

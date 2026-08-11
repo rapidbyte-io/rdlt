@@ -7,8 +7,10 @@ vocabulary, `session` turns a connection string into a live connection, and
 one type rulebook serves every decode, parse, literal, and encode — so the
 two halves cannot drift apart.
 
-`rdlt::connector::postgres` and the CLI's `postgres:` blocks resolve to this
-crate. It is the second-generation rewrite of the original
+A pipeline's `postgres:` blocks resolve to this crate's binary —
+`rdlt-connector-postgres`, built with `--features bin-serve`
+(`make connector-bins` in-tree) and spawned per run by the host.
+It is the second-generation rewrite of the original
 `rdlt-connector-postgres`, which it replaced wholesale: behavior,
 configuration vocabulary, type mapping, and operational semantics are
 identical to the original; what changed is the Rust API — module paths, type

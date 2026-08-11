@@ -26,8 +26,17 @@ Configuration errors surface at `build()`, not halfway through a load.
 
 Connectors are separate binaries, spawned per run and supervised over a
 local socket — none are compiled into this crate. A pipeline document
-names one either by its rich spelling (`postgres:`, `duckdb:`, `file:`,
-`rest:`, `oracle:`, `iceberg:`, `snowflake:`) or explicitly:
+names one by its rich spelling (`postgres:`, `duckdb:`, `file:`,
+`rest:`, `oracle:`, `iceberg:`, `snowflake:`):
+
+```yaml
+source:
+  postgres:
+    conn: "host=127.0.0.1 dbname=shop"
+    tables: [{ name: orders }]
+```
+
+or explicitly, which is what the rich form desugars to:
 
 ```yaml
 source:
@@ -39,7 +48,10 @@ source:
 Both forms resolve identically: the id's last segment names the binary
 (`rdlt-connector-postgres` on PATH, or `path:` overrides), the config
 document crosses the wire opaquely, and the connector's own gate
-validates it — refusals arrive in the connector's own wording.
+validates it — refusals arrive in the connector's own wording. The
+config is given inline (as above) or as a path string
+(`config: ./creds.yaml`) pointing at a YAML/JSON document of the same
+shape — never both at once.
 
 ## What it guarantees
 

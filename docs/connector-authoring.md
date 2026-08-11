@@ -72,11 +72,11 @@ verifies it by strict equality against the requirement's id; discovery
 resolves the id's **last segment** to the binary name on PATH
 (`io.rapidbyte.postgres` → `rdlt-connector-postgres`); and the `Spec`
 RPC answers it as the connector's static identity. A dotless `NAME`
-stays self-consistent for a connector that only ever runs in-process —
-the last-segment convention degenerates to the whole name — but going
-out-of-process later then makes the rename an identity change, so spell
-it reverse-DNS from the start. Both halves of a dual-role connector
-report the SAME id.
+would still resolve — the last-segment convention degenerates to the
+whole name — but the id is the connector's public identity, verified
+by strict equality on every handshake, so a later rename is an
+identity change: spell it reverse-DNS from the start. Both halves of a
+dual-role connector report the SAME id.
 
 The sdk's shell provides the whole SPI. Export the canonical face as a
 type alias and the SPI arrives in one call:

@@ -1,6 +1,6 @@
 # rdlt-connector
 
-The in-process connector SPI, second generation: the PROTOCOL layer of
+The connector SPI, second generation: the Rust trait contract of
 rdlt's connector SDK. `Source`/`Destination`/`LoadSession` traits, the
 byte-budgeted record channel, the capability declaration, the classified
 error taxonomy, and the shared config vocabulary (`Secret`, `PemSource`,

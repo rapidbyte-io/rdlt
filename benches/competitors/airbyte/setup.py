@@ -13,14 +13,13 @@ connection ids + per-cell destination-verify recipe the driver reads).
 state.json is gitignored.
 
 Fixtures: it targets the same endpoints the bench fixtures publish — postgres
-on :5439 (databases `src` + `dest_airbyte`, user postgres), RUSTFS on :19110
-(buckets `raw` + `lake`), and Oracle 23ai Free on :15210 (service FREEPDB1,
-schema RDLT). Connector PODS reach them at 169.254.1.2 (pasta host mapping);
-this host-side script reaches them at 127.0.0.1. If the fixtures are not up
-when setup runs, bring them up first (the harness owns them) — setup does not
-seed 1M rows itself; discover needs only the schema. For a standalone smoke
-run, seed a tiny schema-identical postgres on :5439 (see README) and pass AB_*
-overrides if your throwaway differs.
+on :5439 (database `dest_airbyte`, user postgres) and Oracle 23ai Free on
+:15210 (service FREEPDB1, schema RDLT). Connector PODS reach them at
+169.254.1.2 (pasta host mapping); this host-side script reaches them at
+127.0.0.1. If the fixtures are not up when setup runs, bring them up first
+(the harness owns them) — setup does not seed rows itself; discover needs
+only the schema. Pass AB_* overrides if a standalone throwaway fixture
+differs.
 
 Each cell is built independently; a connector that fails (e.g. an S3 image that
 will not pull) records its reason in state.json and the driver reports that arm
@@ -40,37 +39,18 @@ POD_HOST = os.environ.get("AB_POD_HOST", ab.POD_HOST_IP)   # pods -> host
 PG_PORT = os.environ.get("AB_PG_PORT", "5439")
 PG_USER = os.environ.get("AB_PG_USER", "postgres")
 PG_PASS = os.environ.get("AB_PG_PASS", "postgres")
-SRC_DB = os.environ.get("AB_SRC_DB", "src")
 DEST_DB = os.environ.get("AB_DEST_DB", "dest_airbyte")
-S3_ENDPOINT = os.environ.get("AB_S3_ENDPOINT", f"http://{POD_HOST}:19110")
-S3_KEY = os.environ.get("AB_S3_KEY", "rdlt-bench")
-S3_SECRET = os.environ.get("AB_S3_SECRET", "rdlt-bench-secret")
-S3_RAW_BUCKET = os.environ.get("AB_S3_RAW", "raw")
-S3_LAKE_BUCKET = os.environ.get("AB_S3_LAKE", "lake")
 ORACLE_PORT = os.environ.get("AB_ORACLE_PORT", "15210")
 ORACLE_USER = os.environ.get("AB_ORACLE_USER", "RDLT")
 ORACLE_PASS = os.environ.get("AB_ORACLE_PASS", "rdlt-bench")
 ORACLE_SERVICE = os.environ.get("AB_ORACLE_SERVICE", "FREEPDB1")
 # The pg fixture container name (driver counts rows via `podman exec` into it).
 PG_CONTAINER = os.environ.get("AB_PG_CONTAINER", "rdlt-bench-pg")
-# Host-side view of the endpoints (this script + the driver's verification).
-PG_HOST_LOCAL = os.environ.get("AB_PG_HOST_LOCAL", "127.0.0.1")
-S3_ENDPOINT_LOCAL = os.environ.get("AB_S3_ENDPOINT_LOCAL", "http://127.0.0.1:19110")
 
 NAME_PREFIX = "rb-ab-"
 
 
 # --- connector config builders (field names pinned from the live specs) ---
-
-def pg_source_config(db):
-    return {
-        "sourceType": "postgres", "host": POD_HOST, "port": int(PG_PORT),
-        "database": db, "username": PG_USER, "password": PG_PASS,
-        "schemas": ["public"], "ssl_mode": {"mode": "disable"},
-        "replication_method": {"method": "Standard"},
-        "tunnel_method": {"tunnel_method": "NO_TUNNEL"},
-    }
-
 
 def pg_destination_config(db):
     return {
@@ -116,29 +96,6 @@ def oracle_source_config():
     }
 
 
-def s3_source_config(stream_name, glob):
-    return {
-        "sourceType": "s3", "bucket": S3_RAW_BUCKET, "endpoint": S3_ENDPOINT,
-        "region_name": "us-east-1",
-        "aws_access_key_id": S3_KEY, "aws_secret_access_key": S3_SECRET,
-        "streams": [{
-            "name": stream_name, "globs": [glob],
-            "format": {"filetype": "jsonl"},
-            "validation_policy": "Emit Record",
-        }],
-    }
-
-
-def s3_destination_config(path):
-    return {
-        "destinationType": "s3", "s3_bucket_name": S3_LAKE_BUCKET,
-        "s3_bucket_path": path, "s3_bucket_region": "us-east-1",
-        "s3_endpoint": S3_ENDPOINT, "access_key_id": S3_KEY,
-        "secret_access_key": S3_SECRET,
-        "format": {"format_type": "Parquet"},
-    }
-
-
 # --- the cells, declaratively --------------------------------------------
 # stream = the source stream Airbyte selects; sync_mode per regime; verify =
 # how the driver independently checks the landed rowcount.
@@ -148,56 +105,7 @@ def pg_verify(table, expected):
             "schema": "public", "table": table, "expected": expected}
 
 
-def s3_verify(path, expected):
-    return {"kind": "s3", "endpoint": S3_ENDPOINT_LOCAL, "key": S3_KEY,
-            "secret": S3_SECRET, "bucket": S3_LAKE_BUCKET,
-            "prefix": path + "/", "expected": expected}
-
-
 CELLS = [
-    {
-        "id": "pg-to-pg-1m",
-        "source": ("pg", SRC_DB), "destination": ("pg", DEST_DB),
-        "stream": "events", "sync_mode": "full_refresh_overwrite",
-        "verify": pg_verify("events", 1_000_000),
-    },
-    {
-        "id": "pg-to-s3parquet-1m",
-        "source": ("pg", SRC_DB),
-        "destination": ("s3", "airbyte/pg-to-s3parquet-1m"),
-        "stream": "events", "sync_mode": "full_refresh_overwrite",
-        "verify": s3_verify("airbyte/pg-to-s3parquet-1m", 1_000_000),
-    },
-    {
-        "id": "s3jsonl-to-pg-200k",
-        "source": ("s3", ("events", "landed/*.jsonl")),
-        "destination": ("pg", DEST_DB),
-        "stream": "events", "sync_mode": "full_refresh_overwrite",
-        "verify": pg_verify("events", 200_000),
-    },
-    {
-        "id": "s3jsonl-to-s3parquet-200k",
-        "source": ("s3", ("events", "landed/*.jsonl")),
-        "destination": ("s3", "airbyte/s3jsonl-to-s3parquet-200k"),
-        "stream": "events", "sync_mode": "full_refresh_overwrite",
-        "verify": s3_verify("airbyte/s3jsonl-to-s3parquet-200k", 200_000),
-    },
-    {
-        # Dedup: full re-delivery deduped by id. Airbyte cannot merge two
-        # distinct source tables (events -> events_v2) into one dest table via
-        # one connection, so it benches the closest supported shape: a single
-        # incremental+dedup stream on events_v2 (PK id, cursor id) with the
-        # connection STATE wiped before each timed run, so every run re-reads
-        # all 1M rows and dedups by id -> 1M final rows. Same regime words as
-        # the cell note ("full-redelivery-plus-dedup"); deviation documented in
-        # README. reset_state_before_run drives the driver's per-run wipe.
-        "id": "pg-to-pg-dedup-1m",
-        "source": ("pg", SRC_DB), "destination": ("pg", DEST_DB),
-        "stream": "events_v2", "sync_mode": "incremental_deduped_history",
-        "primary_key": [["id"]], "cursor_field": ["id"],
-        "reset_state_before_run": True,
-        "verify": pg_verify("events_v2", 1_000_000),
-    },
     {
         # 032: Oracle 23ai Free -> postgres, full replace. The stream name is
         # the Oracle table as the connector discovers it (Oracle folds
@@ -330,17 +238,9 @@ def build_source(token, ws, cell, cache):
     key = ("src", kind, str(arg))
     if key in cache:
         return cache[key], token
-    if kind == "pg":
-        sid, token = create_source(token, ws, NAME_PREFIX + "src-pg-" + arg,
-                                   pg_source_config(arg))
-    elif kind == "oracle":
-        sid, token = create_source(token, ws, NAME_PREFIX + "src-oracle",
-                                   oracle_source_config())
-    else:
-        stream_name, glob = arg
-        sid, token = create_source(
-            token, ws, NAME_PREFIX + "src-s3-" + stream_name,
-            s3_source_config(stream_name, glob))
+    assert kind == "oracle", f"unknown source kind {kind}"
+    sid, token = create_source(token, ws, NAME_PREFIX + "src-oracle",
+                               oracle_source_config())
     # Cache BEFORE discover so a discover failure does not leak a duplicate
     # source on the next cell — the same source (and its cached catalog) is
     # reused across sibling cells and across a re-run's cleanup.
@@ -354,13 +254,9 @@ def build_destination(token, ws, cell, cache):
     key = ("dst", kind, str(arg))
     if key in cache:
         return cache[key], token
-    if kind == "pg":
-        did, token = create_destination(token, ws, NAME_PREFIX + "dst-pg-" + arg,
-                                        pg_destination_config(arg))
-    else:
-        did, token = create_destination(
-            token, ws, NAME_PREFIX + "dst-s3-" + cell["id"],
-            s3_destination_config(arg))
+    assert kind == "pg", f"unknown destination kind {kind}"
+    did, token = create_destination(token, ws, NAME_PREFIX + "dst-pg-" + arg,
+                                    pg_destination_config(arg))
     cache[key] = did
     return did, token
 

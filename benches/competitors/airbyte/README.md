@@ -1,9 +1,10 @@
 # Airbyte competitor module (feature 018)
 
-Airbyte is the third arm of the three-way e2e matrix (rdlt / dlt / Airbyte).
-Unlike dlt — a self-timed container the harness runs directly — Airbyte is a
-long-lived **cluster**, so this module is a `kind = driver` variant: a
-host-side `driver.py` drives pre-created connections against an already-running
+Airbyte is a competitor arm of the e2e matrix — today on the oracle cell
+(`oracle-to-pg-200k`, `benches/cells/oracle.toml`). Unlike dlt — a
+self-timed container the harness runs directly — Airbyte is a long-lived
+**cluster**, so this module is a `kind = driver` variant: a host-side
+`driver.py` drives pre-created connections against an already-running
 `abctl` cluster and prints the same summary JSON line as every other arm.
 
 Everything here was pinned by the feasibility probes in
@@ -38,11 +39,11 @@ harness runs the driver on system `python3`.
    ```
 
    That verb (`benches/bench-setup.sh`) builds the dlt image, brings up the
-   two fixture containers with the harness seeds, runs this module's
+   fixture containers with the harness seeds, runs this module's
    `setup.py` against them, and tears the fixtures down. To run `setup.py`
-   directly instead, the bench postgres (`:5439`, databases `src` +
-   `dest_airbyte`) and RUSTFS (`:19110`, buckets `raw` + `lake`) fixtures
-   must already be up — Airbyte's discover reads the source schemas.
+   directly instead, the bench postgres (`:5439`, database `dest_airbyte`)
+   and Oracle (`:15210`, service FREEPDB1) fixtures must already be up —
+   Airbyte's discover reads the source schemas.
 
    Setup re-applies the two runtime deltas (below), creates a source /
    destination / connection per cell (discovering each source's catalog first
@@ -80,20 +81,13 @@ Both are idempotent; setup refreshes them every run.
   **not** comparable to dlt/rdlt per-process `ru_maxrss` and is **never
   barred** — it is context only. The module reports it plainly as what it is.
 - **Rowcount verification**: postgres destinations are counted exactly
-  (`SELECT count(*)` via `podman exec` into the fixture container); S3/parquet
-  destinations are verified as Airbyte's emitted `rowsSynced == expected` plus
-  at least one object present under the output prefix (a stdlib-only parquet
-  row re-count is impractical).
+  (`SELECT count(*)` via `podman exec` into the fixture container).
 
 ## Per-run reset & clean-dest recipe (`spike/05`)
 
 The harness resets fixtures before every driver invocation. For postgres
-destinations that reset drops and recreates the `dest_airbyte` schemas, so the
-destination starts empty. The **lake output prefix is not covered** by the
-fixture reset, so for S3-destination cells the driver deletes every object
-under `lake/airbyte/<cell>/` before the timed run. For the dedup cell the
-driver additionally wipes the Airbyte connection **state** (a `reset` job,
-untimed) so every run performs a full 1M re-read.
+destinations that reset drops and recreates the `dest_airbyte` schemas, so
+the destination starts empty (the driver verifies it, defensively).
 
 ## Warmup rule
 
@@ -102,19 +96,6 @@ image (minutes). The driver does **not** special-case this — instead, **T023
 (the recorded session) runs one untimed warmup sync per cell before the
 measured runs**, so all recorded runs are warm-image. Do the same for any ad
 hoc measurement: discard the first (cold) run.
-
-## Dedup cell deviation (honest note)
-
-`pg-to-pg-dedup-1m` for rdlt/dlt does LOAD 1 (`events`) then a timed LOAD 2
-(the 50%-changed `events_v2`) merged by id. Airbyte cannot merge two distinct
-source tables into one destination table through a single connection, so its
-arm benches the closest supported shape: a single `incremental_deduped_history`
-stream on `events_v2` (primary key `id`), with the connection state wiped
-before each timed run so every run re-reads all 1M rows and dedups by id into
-the final table (1M rows). This is the same *full-redelivery-plus-dedup*
-regime and final rowcount the cell note states; it does not reproduce the
-merge-over-a-prior-load sequence. Consistent with research D-08 (Airbyte's
-cheaper native incremental regime is deliberately out of scope).
 
 ## Missing, not fabricated
 

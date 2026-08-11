@@ -8,8 +8,10 @@ LIBRARY: named-API connectors (a Google-Search-Console-style wrapper) are
 built from the same public pieces, inheriting the client, the paginators,
 and the whole test discipline instead of re-implementing HTTP.
 
-`rdlt::connector::rest` and the CLI's `rest:` blocks resolve to this
-crate. It is the second-generation rewrite of the original
+A pipeline's `rest:` blocks resolve to this crate's binary —
+`rdlt-connector-rest`, built with `--features bin-serve`
+(`make connector-bins` in-tree) and spawned per run by the host.
+It is the second-generation rewrite of the original
 `rdlt-connector-rest`, which it replaced wholesale: behavior, the config
 document vocabulary, error classification, and operational semantics are
 identical to the original; what changed is the Rust API — module paths,

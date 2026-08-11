@@ -78,22 +78,22 @@ build:
 release:
 	cargo build --release -p rdlt-cli
 
-# The connector BINARIES the benchmarks spawn over the wire. `release`
-# builds the CLI alone, so without this the cells' `connector: path:
-# {{bins}}/…` overrides (postgres, file) point at a file the matrix never
-# built and the run dies MID-SESSION, after the fixtures are up; the
-# rich-spelling specs (the oracle cell, the dedup load-1 prepare, the
-# cold-start pipeline) resolve their bins off the same directory via the
-# runner's PATH arrangement, which is why oracle and duckdb are built here
-# too. Release unconditionally, matching what `{{bins}}` resolves to
-# (rdlt-bench paths.rs): a measured cell must spawn the shipped shape, and a
-# debug bin beside the release engine would measure the wire's overhead
-# wrong.
+# Every connector BINARY, release — what a pipeline's rich spellings and
+# `connector:` ids resolve to on PATH (`rdlt-connector-<segment>`), and the
+# install verb the READMEs point at. `release` builds the CLI alone, so
+# without this a run dies loud at spawn. The benchmarks lean on the same
+# target: the cells' `connector: path: {{bins}}/…` overrides and the
+# rich-spelling specs resolve bins off `<target>/release` (rdlt-bench
+# paths.rs), and a measured cell must spawn the shipped shape — a debug bin
+# beside the release engine would measure the wire's overhead wrong.
 connector-bins:
 	cargo build --release -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
 	cargo build --release -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
 	cargo build --release -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
 	cargo build --release -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
+	cargo build --release -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
+	cargo build --release -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
+	cargo build --release -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
 
 # The shipped artifact: release plus symbol stripping. Separate from `release`
 # so day-to-day builds keep their symbols for profiling and backtraces.

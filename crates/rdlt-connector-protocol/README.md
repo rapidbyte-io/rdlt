@@ -330,8 +330,9 @@ service does not sequence commit frames for you.** Driving
 `ExistingReceipt` → `Replay-or-Publish` in the right order, and never
 sending `Publish` twice for one `(load_id, commit_seq)` without asking
 `ExistingReceipt` first, is the CALLER's job — the same job the sdk's
-in-process `Session<B>` type already does for an embedder, and the
-SAME generic 039's remote adapter reuses rather than reimplements.
+own `Session<B>` type does for a caller holding the shell directly,
+and the SAME generic 039's wire adapter reuses rather than
+reimplements.
 A foreign client that gets this wrong is not refereed by this server.
 **The only thing that actually saves exactly-once here is the
 destination's OWN durable receipt guard inside `Backend::publish`** —

@@ -36,8 +36,33 @@ compose_providers = ["/home/you/.local/bin/podman-compose"]
 ```
 
 Paths in the pipeline files are relative to the repository root, so
-run them from there. If you have not built the CLI yet:
-`cargo build --release -p rdlt-cli` (binary at `target/release/rdlt`).
+run them from there.
+
+## Installing the binaries
+
+Connectors are separate binaries the CLI spawns per run, so two builds
+are needed once, then the build directory goes on PATH:
+
+```sh
+cargo build --release -p rdlt-cli   # the CLI: target/release/rdlt
+make connector-bins                 # every rdlt-connector-* binary
+export PATH="$PWD/target/release:$PATH"
+```
+
+A pipeline's `postgres:`/`file:`/… block resolves to the binary named
+`rdlt-connector-<name>` on PATH — that convention is the whole
+discovery mechanism. A single connector can also be built by crate
+(`cargo build --release -p rdlt-connector-postgres --features
+bin-serve`), and a binary that lives off PATH is named explicitly with
+`path:` in the pipeline's `connector:` form:
+
+```yaml
+source:
+  connector:
+    id: io.rapidbyte.postgres
+    path: /opt/rdlt/bin/rdlt-connector-postgres
+    config: { conn: "host=..." }
+```
 
 ## The full configuration, enforced
 
@@ -349,8 +374,7 @@ a time: without it, 14 destination writes of 100 rows; with
 write granularity are separate decisions — and neither is FILE
 granularity, which `parts` owns: the shipped example batches 400 rows
 per write and still produces two files, each spanning writes.
-Omitting `batch_policy` hands each source batch straight through,
-which is what happened before this existed.
+Omitting `batch_policy` hands each source batch straight through.
 
 ### Durability: `commit_policy`
 
