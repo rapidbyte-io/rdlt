@@ -33,21 +33,37 @@ pub(super) async fn recover_wal(
     // committed and dropped before the run's own session is opened.
     let mut resumed_from = None;
     if let Some(wal_dir) = wal_dir {
+        // Every resolved arm CLEARS, and the clear's failure REFUSES
+        // the run (round-12 — it was a silent best-effort): a span the
+        // scan just resolved must actually leave the disk, or the
+        // residue re-resolves next run — after a REPLAY that would
+        // re-commit the replayed span (idempotence absorbs it, but the
+        // run proceeds believing the workdir is clean), and `Wal::open`
+        // now refuses a surviving manifest outright.
+        let cleared = |dir: &Path| -> Result<(), RdltError> {
+            crate::wal::clear(dir).map_err(|e| {
+                RdltError::wal(format!(
+                    "clearing the WAL directory `{}` failed: {e} — refusing to run over \
+                     unresolved residue",
+                    dir.display()
+                ))
+            })
+        };
         match crate::wal::resume::scan_off_runtime(wal_dir, capabilities.ident_rules).await {
             crate::wal::resume::ScanOutcome::Nothing => {}
             // Nothing to replay, but something to clean: a crash before the
             // first checkpoint leaves a manifest and its segments behind, and a
             // pipeline that keeps failing there would grow both without bound.
             // Not a warning — dying before the first checkpoint is ordinary.
-            crate::wal::resume::ScanOutcome::Discard => crate::wal::clear(wal_dir),
+            crate::wal::resume::ScanOutcome::Discard => cleared(wal_dir)?,
             crate::wal::resume::ScanOutcome::Recover(span) => {
                 resumed_from =
                     replay_span(destination, config, wal_dir, span, capabilities).await?;
-                crate::wal::clear(wal_dir);
+                cleared(wal_dir)?;
             }
             crate::wal::resume::ScanOutcome::Damaged(reason) => {
                 tracing::warn!(%reason, "WAL manifest damaged; re-extracting from cursors");
-                crate::wal::clear(wal_dir);
+                cleared(wal_dir)?;
             }
             crate::wal::resume::ScanOutcome::Unsupported { found, supported } => {
                 tracing::warn!(
@@ -56,7 +72,7 @@ pub(super) async fn recover_wal(
                     "WAL was written in a different format version; re-extracting from \
                      cursors (slower, never wrong)"
                 );
-                crate::wal::clear(wal_dir);
+                cleared(wal_dir)?;
             }
         }
     }

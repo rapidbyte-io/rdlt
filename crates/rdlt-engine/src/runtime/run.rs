@@ -375,9 +375,13 @@ async fn run_once(
     heartbeat.abort();
     let mut report = drained?;
 
-    // Clean finish: nothing left to replay.
+    // Clean finish: nothing left to replay. Best-effort deliberately
+    // (round-12, where recovery's clear became load-bearing): every
+    // commit is already acknowledged, so failing the run over cleanup
+    // would trade a real success for an error — a surviving committed
+    // manifest resolves as an ordinary Discard on the next run's scan.
     if let Some(dir) = &wal_dir {
-        crate::wal::clear(dir);
+        let _ = crate::wal::clear(dir);
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;

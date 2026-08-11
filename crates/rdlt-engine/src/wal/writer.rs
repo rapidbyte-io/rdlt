@@ -60,6 +60,22 @@ impl Wal {
         rules: rdlt_core::naming::IdentRules,
     ) -> Result<Self, RdltError> {
         std::fs::create_dir_all(&dir).map_err(|e| wal_err("creating wal dir", e))?;
+        // A fresh open expects a CLEAN directory (round-12): recovery
+        // resolves and clears any prior span before this runs, so a
+        // surviving manifest here is unresolved residue — writing a
+        // new Run header (and a fresh sidecar) over it would mask the
+        // very drift gates the sidecar exists for. Refuse, naming the
+        // residue.
+        let manifest_path = dir.join("manifest.jsonl");
+        if manifest_path.exists() {
+            return Err(RdltError::wal(format!(
+                "a WAL manifest already exists at `{}` — a fresh run opens over a clean \
+                 directory (recovery resolves and clears a prior span first), so \
+                 surviving residue means the previous span was never resolved; refusing \
+                 to write over it",
+                manifest_path.display()
+            )));
+        }
         // The rules sidecar goes down BEFORE the manifest is created,
         // so a manifest can never exist without it: recovery refuses a
         // sidecar-less manifest as an unrecognized workdir state, the
@@ -276,9 +292,20 @@ pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Rdlt
     Ok(())
 }
 
-/// Remove the whole WAL directory (clean finish, or fresh start after full recovery).
-pub(crate) fn clear(dir: &Path) {
-    let _ = std::fs::remove_dir_all(dir);
+/// Remove the whole WAL directory (clean finish, or fresh start after
+/// full recovery). An already-absent directory is a clean result; any
+/// other failure surfaces (round-12 — the remove was a silent
+/// best-effort, so recovery could "resolve" a span it never actually
+/// cleared and proceed over the residue): RECOVERY propagates it and
+/// refuses the run, while the clean-finish caller stays best-effort —
+/// failing a fully committed run over cleanup would trade a real
+/// success for an error, and the residue resolves as an ordinary
+/// committed-manifest Discard on the next run's scan.
+pub(crate) fn clear(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -309,6 +336,29 @@ mod tests {
         reader
             .map(|b| b.expect("decode batch").num_rows())
             .sum::<usize>()
+    }
+
+    /// Round-12: a fresh open expects a CLEAN directory — recovery
+    /// resolves and clears any prior span first, so a manifest still
+    /// present here is unresolved residue, and writing a new Run
+    /// header (and fresh sidecar) over it would mask the sidecar's
+    /// own drift gates. The refusal names the residue.
+    #[test]
+    fn open_refuses_a_directory_already_carrying_a_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("manifest.jsonl"), b"{}\n").expect("residue");
+        let error = Wal::open(
+            dir.path().to_path_buf(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+        )
+        .expect_err("a surviving manifest must refuse the open");
+        let text = error.to_string();
+        assert!(
+            text.contains("manifest already exists") && text.contains("refusing to write over it"),
+            "the refusal names the residue: {text}"
+        );
     }
 
     /// Each recorded batch gets its OWN segment file, and the sequence advances

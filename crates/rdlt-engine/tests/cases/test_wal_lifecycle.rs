@@ -108,3 +108,62 @@ async fn a_wal_open_failure_after_session_recovery_still_closes_the_session() {
          already gave up"
     );
 }
+
+/// Round-12: a WAL span the scan resolved must actually leave the
+/// disk, and a clear that CANNOT remove it refuses the run naming the
+/// directory — proceeding over unresolved residue would let the next
+/// crash re-resolve a span this run believed gone. The fixture plants
+/// a committed-looking manifest (the ordinary Discard shape) plus a
+/// write-protected subdirectory that makes `remove_dir_all` fail.
+#[tokio::test]
+async fn an_uncleanable_wal_directory_refuses_the_run_naming_the_clear_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workdir = dir.path().join("work");
+    let wal_dir = workdir.join("wal");
+    std::fs::create_dir_all(&wal_dir).expect("wal dir");
+    // A current-version header with no checkpoint: the scan's Discard
+    // arm, whose clear is the subject.
+    std::fs::write(
+        wal_dir.join("manifest.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "rec": "run",
+                "format_version": 2,
+                "load_id": "stale",
+                "pipeline": "wal-lifecycle",
+            })
+        ),
+    )
+    .expect("manifest");
+    std::fs::write(
+        wal_dir.join("rules.json"),
+        serde_json::json!({"max_len": 63}).to_string(),
+    )
+    .expect("sidecar");
+    // The immovable object: a file inside a directory the process may
+    // not write makes `remove_dir_all` fail with EACCES.
+    let locked = wal_dir.join("locked");
+    std::fs::create_dir(&locked).expect("locked dir");
+    std::fs::write(locked.join("pin"), b"residue").expect("pinned file");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555))
+        .expect("write-protect");
+
+    let error = Engine::new(config(&workdir), source(), MemoryDestination::new())
+        .run()
+        .await
+        .expect_err("the run must refuse over residue it cannot clear");
+    let text = error.to_string();
+    assert!(
+        text.contains("clearing the WAL directory")
+            && text.contains("unresolved residue")
+            && text.contains(&wal_dir.display().to_string()),
+        "the refusal names the clear failure and the directory: {text}"
+    );
+
+    // Unlock so the tempdir can reap itself.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+        .expect("unlock for cleanup");
+}
