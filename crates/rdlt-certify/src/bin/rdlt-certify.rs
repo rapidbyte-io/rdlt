@@ -299,10 +299,10 @@ impl TableProbe for ShellProbe {
                 // failure is NOT swallowed: the direct child still
                 // dies below either way, but the caller must know the
                 // grandchildren may have survived. The direct child is
-                // AWAITED so it is dead, not dying, on return, and the
-                // group is then POLLED to empty (signal 0 probes for
-                // survivors) within a small bounded window — beyond it
-                // the bounded residual is stated in the failure.
+                // AWAITED so it is dead, not dying, on return, and one
+                // signal-0 reading then reports possible residue —
+                // possible, because a recycled group id is
+                // indistinguishable from a survivor (see `group_kill`).
                 let group_note = match pgid {
                     None => {
                         let _ = child.start_kill();
@@ -345,16 +345,17 @@ impl TableProbe for ShellProbe {
     }
 }
 
-/// SIGKILL the probe's whole process group, then poll it to empty:
-/// `kill -0 -- -<pgid>` succeeds while ANY member survives, so the
-/// loop waits (bounded) for the grandchildren the signal reaches
-/// asynchronously — a store-holding grandchild must be dead, not
-/// dying, before the next clause opens the same store. The direct sh
-/// child is reaped BEFORE the poll (its zombie would answer signal 0
-/// forever otherwise), so the note names only GENUINE stragglers.
-/// Returns the degradation note for the failure message when the
-/// group could not be killed or drained — never a command echo, and
-/// never a silent swallow.
+/// SIGKILL the probe's whole process group, then take ONE `kill -0`
+/// reading (round-9 honesty fix — the old 20-poll, 1s drain window
+/// could spend its whole second observing a pgid RECYCLED to an
+/// unrelated live group, then state phantom survivors as FACT): the
+/// direct sh child is reaped BEFORE the reading (round-6 fix — its
+/// zombie would answer signal 0 forever), and a positive answer is
+/// then reported as POSSIBLE residue, because signal 0 cannot
+/// distinguish the probe's own stragglers from an unrelated group
+/// that inherited the recycled id. Returns the degradation note for
+/// the failure message when the group could not be killed or may not
+/// have drained — never a command echo, and never a silent swallow.
 async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'static str> {
     let target = format!("-{pgid}");
     let signalled = tokio::process::Command::new("kill")
@@ -362,9 +363,8 @@ async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'st
         .status()
         .await;
     // The direct child is reaped FIRST either way (round-6 fix): a
-    // zombie still answers signal 0 as a group member, so a survivor
-    // poll before this reap could never observe an empty group and
-    // the drain always exhausted its window with a phantom note.
+    // zombie still answers signal 0 as a group member and would turn
+    // every reading below into a phantom note.
     let _ = child.start_kill();
     let _ = child.wait().await;
     if !matches!(signalled, Ok(status) if status.success()) {
@@ -373,22 +373,20 @@ async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'st
              survived; only the direct child was killed",
         );
     }
-    for _ in 0..20 {
-        let survivors = tokio::process::Command::new("kill")
-            .args(["-0", "--", &target])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        match survivors {
-            Ok(status) if status.success() => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            // Probe failed to run, or no member answers signal 0: the
-            // group is gone.
-            _ => return None,
-        }
+    let survivors = tokio::process::Command::new("kill")
+        .args(["-0", "--", &target])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+    match survivors {
+        Ok(status) if status.success() => Some(
+            "processes may remain in the probe's process group (or the group id was \
+             recycled)",
+        ),
+        // The check failed to run, or no member answers signal 0: the
+        // group is gone.
+        _ => None,
     }
-    Some("the probe's process group still had survivors after the kill's 1s drain window")
 }
 
 /// Read the probe's stdout to EOF, then reap its exit status — split
