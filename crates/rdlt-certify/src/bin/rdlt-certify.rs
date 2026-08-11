@@ -323,13 +323,32 @@ impl TableProbe for ShellProbe {
                 Err(ProbeError { message })
             }
             Ok(Err(error)) => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
+                // Best-effort group kill on this exit too (round-11 —
+                // only the timeout path swept grandchildren, so a
+                // compound probe line's forks could outlive a count
+                // that failed or finished): the note is discarded,
+                // nothing here failed FOR that reason.
+                match pgid {
+                    Some(pgid) => {
+                        let _ = group_kill(pgid, &mut child).await;
+                    }
+                    None => {
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
+                    }
+                }
                 Err(ProbeError {
                     message: format!("the probe command could not run: {error}"),
                 })
             }
             Ok(Ok((status, stdout))) => {
+                // Same sweep on the normal exit — `drain` reaped the
+                // direct sh child, but a fork it left behind holds
+                // whatever the probe line opened (a single-writer
+                // store, for one) into the next clause.
+                if let Some(pgid) = pgid {
+                    let _ = group_kill(pgid, &mut child).await;
+                }
                 if !status.success() {
                     return Err(ProbeError {
                         message: format!("the probe command failed: {status}"),
