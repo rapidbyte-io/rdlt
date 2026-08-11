@@ -13,6 +13,15 @@ use crate::wal::WalRecord;
 
 use super::blocking::off_runtime;
 
+/// The scan's accumulated per-table record: latest schema + write
+/// mode, keyed by table — one alias (round-12) for the map every scan
+/// consumer reads (the fold builds it; `ChainMemo`, `live_tables` and
+/// `filter_covered` walk it).
+type SchemaMap = std::collections::BTreeMap<
+    rdlt_core::TableName,
+    (rdlt_core::TableSchema, rdlt_core::WriteMode),
+>;
+
 /// The uncommitted tail of a previous run.
 #[derive(Debug)]
 pub(crate) struct RecoverySpan {
@@ -111,10 +120,7 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
     let mut load_id: Option<LoadId> = None;
     let mut max_committed_seq: u64 = 0;
     let mut span: Vec<WalRecord> = Vec::new();
-    let mut schemas: std::collections::BTreeMap<
-        rdlt_core::TableName,
-        (rdlt_core::TableSchema, rdlt_core::WriteMode),
-    > = std::collections::BTreeMap::new();
+    let mut schemas = SchemaMap::new();
     for record in records {
         if let WalRecord::Delta { schema, mode, .. } = &record {
             schemas.insert(schema.table.clone(), (schema.clone(), mode.clone()));
@@ -283,10 +289,7 @@ impl ChainMemo {
     fn chain(
         &mut self,
         table: &rdlt_core::TableName,
-        schemas: &std::collections::BTreeMap<
-            rdlt_core::TableName,
-            (rdlt_core::TableSchema, rdlt_core::WriteMode),
-        >,
+        schemas: &SchemaMap,
     ) -> Result<&[rdlt_core::TableName], String> {
         if !self.chains.contains_key(table) {
             let mut path: Vec<rdlt_core::TableName> = Vec::new();
@@ -311,10 +314,7 @@ impl ChainMemo {
     fn root_of(
         &mut self,
         table: &rdlt_core::TableName,
-        schemas: &std::collections::BTreeMap<
-            rdlt_core::TableName,
-            (rdlt_core::TableSchema, rdlt_core::WriteMode),
-        >,
+        schemas: &SchemaMap,
     ) -> Result<rdlt_core::TableName, String> {
         Ok(self
             .chain(table, schemas)?
@@ -332,10 +332,7 @@ impl ChainMemo {
 /// ensure without rows is a hazard.
 fn live_tables(
     records: &[WalRecord],
-    schemas: &std::collections::BTreeMap<
-        rdlt_core::TableName,
-        (rdlt_core::TableSchema, rdlt_core::WriteMode),
-    >,
+    schemas: &SchemaMap,
     memo: &mut ChainMemo,
 ) -> std::collections::BTreeSet<rdlt_core::TableName> {
     let mut live = std::collections::BTreeSet::new();
@@ -367,10 +364,7 @@ fn live_tables(
 /// produce are refused below rather than guessed at.
 fn filter_covered(
     span: Vec<WalRecord>,
-    schemas: &std::collections::BTreeMap<
-        rdlt_core::TableName,
-        (rdlt_core::TableSchema, rdlt_core::WriteMode),
-    >,
+    schemas: &SchemaMap,
     rules: rdlt_core::naming::IdentRules,
     memo: &mut ChainMemo,
 ) -> Result<Option<Vec<WalRecord>>, String> {
