@@ -371,3 +371,128 @@ async fn a_source_that_fails_after_dropping_its_feed_is_not_certified() {
         "the post-drop error must fail certification, got: {failures:?}"
     );
 }
+
+/// Round-9 fix: `try_step!`'s abort must still CLOSE the session the
+/// host holds — a lease-class destination (the file destination's
+/// shape) releases its session-scoped lease in `close()`, which a plain
+/// drop cannot perform, so an abort that skipped the close left the
+/// lease held for the life of the certifying process. The destination
+/// here records whether its most recent session was closed; the probe
+/// errors at its THIRD count (D3's re-commit read-back), aborting the
+/// suite while `session2` is live.
+struct CloseRecordingDest {
+    inner: MemoryDestination,
+    last_session_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct CloseRecordingSession {
+    inner: Box<dyn LoadSession>,
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl Destination for CloseRecordingDest {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("close-recording", "0.0.0")
+    }
+
+    fn capabilities(&self) -> DestinationCapabilities {
+        self.inner.capabilities().with_merge(false)
+    }
+
+    async fn open(&self, ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
+        self.last_session_closed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(Box::new(CloseRecordingSession {
+            inner: self.inner.open(ctx).await?,
+            closed: std::sync::Arc::clone(&self.last_session_closed),
+        }))
+    }
+}
+
+#[async_trait]
+impl LoadSession for CloseRecordingSession {
+    async fn ensure_table(
+        &mut self,
+        schema: &TableSchema,
+        mode: &WriteMode,
+    ) -> Result<(), DestinationError> {
+        self.inner.ensure_table(schema, mode).await
+    }
+
+    async fn write(
+        &mut self,
+        table: &TableName,
+        batch: RecordBatch,
+    ) -> Result<(), DestinationError> {
+        self.inner.write(table, batch).await
+    }
+
+    async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+        self.inner.commit(meta).await
+    }
+
+    async fn read_state(
+        &mut self,
+        pipeline: &PipelineId,
+    ) -> Result<Option<StateDoc>, DestinationError> {
+        self.inner.read_state(pipeline).await
+    }
+
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.close().await
+    }
+}
+
+/// Fails at its `n`th count, delegating every earlier one to the real
+/// read-back.
+struct FailsAtCount {
+    inner: MemoryDestination,
+    calls: std::sync::atomic::AtomicU32,
+    fail_at: u32,
+}
+
+#[async_trait]
+impl TableProbe for FailsAtCount {
+    async fn count(&self, table: &TableName) -> Result<u64, ProbeError> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        if call == self.fail_at {
+            return Err(ProbeError {
+                message: "probe died mid-suite".into(),
+            });
+        }
+        Ok(self.inner.committed_rows(table.as_str()).len() as u64)
+    }
+}
+
+#[tokio::test]
+async fn an_abort_mid_suite_still_closes_the_held_session() {
+    let inner = MemoryDestination::new();
+    let last_session_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dest = CloseRecordingDest {
+        inner: inner.clone(),
+        last_session_closed: std::sync::Arc::clone(&last_session_closed),
+    };
+    // Counts run D1 → D4 → D3: the third is D3's re-commit read-back,
+    // with `session2` open and carrying committed work.
+    let probe = FailsAtCount {
+        inner,
+        calls: std::sync::atomic::AtomicU32::new(0),
+        fail_at: 3,
+    };
+
+    let (failures, _skips) = verify_destination(&dest, &probe).await.tolerating_skips();
+
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.clause == "D3" && f.message.contains("probe died mid-suite")),
+        "the abort lands at D3's count: {failures:?}"
+    );
+    assert!(
+        last_session_closed.load(std::sync::atomic::Ordering::SeqCst),
+        "the abort path must close the session it holds — a lease-class destination \
+         releases its lease in close(), which the drop the abort used to take cannot do"
+    );
+}

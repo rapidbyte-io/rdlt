@@ -26,7 +26,7 @@ use arrow::array::{Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use rdlt_connector::{
-    CommitMeta, Destination, OpenContext, WriteMode,
+    CommitMeta, Destination, LoadSession, OpenContext, WriteMode,
     core::{
         ColumnDef, ColumnType, CommitCounters, Cursor, LoadId, LogicalType, PipelineId, Provenance,
         StateDoc, StreamName, TableName, TableSchema, schema::system_columns,
@@ -161,6 +161,16 @@ pub async fn verify_destination<D: Destination>(
     let mut aborted: Option<&'static str> = None;
     let fail = |clause: &'static str, message: String| ConformanceFailure { clause, message };
 
+    // The host's CURRENT session lives OUTSIDE the labeled block
+    // (round-9 fix): `try_step!`'s abort used to jump past the
+    // best-effort close at the block's end, so any mid-suite failure
+    // left the last session open — for a destination holding a
+    // session-scoped lease (the file destination), the certifying
+    // process then reported a lease conflict on its next open instead
+    // of the probe failure that actually aborted. The close now sits
+    // AFTER the label, on both the completed and the aborted path.
+    let mut host_session: Option<Box<dyn LoadSession>> = None;
+
     'suite: {
         // Run a fallible step — an SPI call or a probe count; on error,
         // record the clause failure (message `"{prefix}: {error}"`) and
@@ -211,19 +221,20 @@ pub async fn verify_destination<D: Destination>(
             Err(e) => failures.push(fail("D6", format!("read_state failed: {e}"))),
         }
         concluded.push("D6");
-        // Best-effort, unclaused — same reasoning as `session2`'s close at
-        // the very end of this function (037 US2 fix round 2, M3): the kit
-        // is a HOST, and a well-behaved host closes every session it opens,
-        // not only its last one.
+        // Best-effort, unclaused — same reasoning as the host close after
+        // the labeled block (037 US2 fix round 2, M3): the kit is a HOST,
+        // and a well-behaved host closes every session it opens, not only
+        // its last one.
         let _ = session.close().await;
 
         // ---- D1: staged writes are invisible before commit ----
-        let mut session1 = try_step!(
+        host_session = Some(try_step!(
             "D1",
             "open failed",
             dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
                 .await
-        );
+        ));
+        let session1 = host_session.as_mut().expect("just opened");
         // D5: ensure_table is idempotent.
         for attempt in 0..2 {
             try_step!(
@@ -250,13 +261,17 @@ pub async fn verify_destination<D: Destination>(
         concluded.push("D1");
 
         // ---- D4: a new session tears down the previous session's staged data ----
-        drop(session1);
-        let mut session2 = try_step!(
+        // The deliberate close-LESS drop — a DEAD predecessor is D4's
+        // subject, so session1 must vanish without the close a
+        // well-behaved host would give it.
+        host_session = None;
+        host_session = Some(try_step!(
             "D4",
             "re-open failed",
             dest.open(OpenContext::new(pipeline.clone(), load_a.clone()))
                 .await
-        );
+        ));
+        let session2 = host_session.as_mut().expect("just opened");
         try_step!(
             "D5",
             "ensure_table on new session",
@@ -386,22 +401,25 @@ pub async fn verify_destination<D: Destination>(
             }
             concluded.push("D8");
         }
+    }
 
-        // The kit is itself a HOST: `session2` carried every commit from D2
-        // onward, and a well-behaved host closes a session that completed
-        // its last commit (037 US2 T7 fix round 1 — the SPI's `close`
-        // contract). Best-effort and unclaused deliberately: no clause here
-        // certifies `close` itself (a destination with nothing to release
-        // on close, which is most of them via the default impl, has
-        // nothing to fail), so a close error is not turned into a new
-        // failure the negative-test suite would need to account for — it
-        // would only ever surface a destination-specific bug the existing
-        // clauses cannot name anyway. What this closes is the resource
-        // leak: without it, every certified destination's LAST conformance
-        // session would stay open (a real cost for one that holds a
-        // session-scoped lock, like the file destination's lease) for the
-        // life of the process running this suite.
-        let _ = session2.close().await;
+    // The kit is itself a HOST, and a well-behaved host closes the
+    // session it holds — on the completed path AND on an abort (037 US2
+    // T7 fix round 1 gave the completed path its close; round 9 moved
+    // it here, past the label, so `try_step!`'s abort routes through it
+    // too). Best-effort and unclaused deliberately: no clause here
+    // certifies `close` itself (a destination with nothing to release
+    // on close, which is most of them via the default impl, has nothing
+    // to fail), so a close error is not turned into a new failure the
+    // negative-test suite would need to account for — it would only
+    // ever surface a destination-specific bug the existing clauses
+    // cannot name anyway. What this closes is the resource leak:
+    // without it, the suite's last session would stay open (a real cost
+    // for a destination holding a session-scoped lock, like the file
+    // destination's lease) for the life of the process running this
+    // suite.
+    if let Some(mut session) = host_session {
+        let _ = session.close().await;
     }
 
     // The unreached tail: every asserted clause (D8 only when the
