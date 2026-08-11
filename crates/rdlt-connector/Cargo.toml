@@ -14,11 +14,11 @@ repository.workspace = true
 [dependencies]
 rdlt-core = { workspace = true }
 arrow-array = { workspace = true }
-# `ArrayData` by name, for the byte-budget walk over a batch's buffer
-# tree; arrow-array uses the type but does not re-export it.
 # The buffer type the footprint walk trims (arrow-data does not
 # re-export it); already in the tree via arrow-array.
 arrow-buffer = { workspace = true }
+# `ArrayData` by name, for the byte-budget walk over a batch's buffer
+# tree; arrow-array uses the type but does not re-export it.
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
