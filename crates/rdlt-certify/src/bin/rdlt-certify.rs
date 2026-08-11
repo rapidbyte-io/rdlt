@@ -230,11 +230,14 @@ fn resolve(named: &str, config: Value) -> Target {
     }
 }
 
-/// How long one probe command may run before its count fails.
-/// The probe's ONLY bound: the library stops the clause clock while a
-/// count runs (its budget covers SPI traffic alone), so a hanging
-/// probe fails naming ITSELF and can never exhaust a clause budget
-/// whose evidence would blame the connector.
+/// How long one probe command may run before its count fails. The
+/// library stops the clause clock while a count runs (its budget
+/// covers SPI traffic alone), so a hanging probe fails naming ITSELF
+/// and can never exhaust a clause budget whose evidence would blame
+/// the connector. Not the only bound: the certifier additionally
+/// bounds EVERY probe — this shell one included — at the library's
+/// own 30s `PROBE_BOUND` (clock.rs), the no-hang backstop for probes
+/// it does not spawn; for CLI runs this tighter 20s fires first.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The `--probe-cmd` read-back: one shell line, run per count with
