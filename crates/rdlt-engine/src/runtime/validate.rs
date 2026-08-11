@@ -82,8 +82,10 @@ fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
     };
     Some(format!(
         "{opening} Any multi-stream run defers individual commit triggers while a \
-         co-stream holds rows its own checkpoint has not covered — a transient overlap; a \
-         stream that NEVER checkpoints makes that deferral last the whole run, and \
+         co-stream holds rows its own checkpoint has not covered — commits resume at a \
+         checkpoint boundary where every busy stream has checkpointed since its last \
+         rows, and under continuously interleaving busy streams such boundaries can be \
+         rare; a stream that NEVER checkpoints makes the deferral last the whole run, and \
          byte/time/checkpoint commit policies then cannot bound staging or WAL growth. The \
          run-time deferral warning is the authoritative signal — it fires on what actually \
          checkpoints"
@@ -425,6 +427,15 @@ mod hint_validation_tests {
         assert!(
             advisory.contains("run-time deferral warning is the authoritative signal"),
             "the advisory defers the verdict to the truth-driven run-time warning: {advisory}"
+        );
+        // Round-9 honesty: the overlap is NOT promised to pass — busy
+        // cursored co-streams can interleave so that no covering
+        // boundary ever aligns, and the advisory says so instead of
+        // calling the overlap transient.
+        assert!(
+            advisory.contains("such boundaries can be rare") && !advisory.contains("transient"),
+            "the deferral consequence states the boundary condition, never a 'transient' \
+             promise: {advisory}"
         );
 
         assert!(

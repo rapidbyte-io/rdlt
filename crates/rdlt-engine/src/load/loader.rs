@@ -339,11 +339,11 @@ impl Loader {
                         tracing::warn!(
                             uncovered_roots = %roots,
                             "mid-run commit deferred: these tables hold rows written since \
-                             their own streams' last checkpoints. The commit fires at the \
-                             next boundary where every written stream is covered — a \
-                             TRANSIENT overlap when the co-streams are cursored and keep \
-                             checkpointing; for a snapshot stream, which never checkpoints, \
-                             not before the run's end"
+                             their own streams' last checkpoints. Commits resume at a \
+                             checkpoint boundary where every busy stream has checkpointed \
+                             since its last rows — under continuously interleaving busy \
+                             streams such boundaries can be rare; for a snapshot stream, \
+                             which never checkpoints, none arrives before the run's end"
                         );
                     }
                 }
