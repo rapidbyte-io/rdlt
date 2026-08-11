@@ -86,6 +86,21 @@ pub enum ProviderError {
         /// The binary that stayed silent.
         binary: String,
     },
+    /// The spawned process exited unsuccessfully before writing any
+    /// handshake bytes. Exit code 2 is the connector binaries' usage
+    /// refusal when the requested role is unsupported.
+    #[error(
+        "connector `{binary}` exited before writing a handshake line for role `{role}` ({status})"
+    )]
+    ExitedBeforeHandshake {
+        /// The binary that exited.
+        binary: String,
+        /// The role passed to the binary.
+        role: String,
+        /// The process status distinguishing usage refusal from a
+        /// signal or another failure code.
+        status: std::process::ExitStatus,
+    },
     /// Everything past the handshake line is the client crate's to
     /// classify: dialing the advertised socket, the handshake RPC,
     /// identity/version verification (D-039-2).

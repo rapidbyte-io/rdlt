@@ -193,15 +193,31 @@ impl LocalBinaryConnectorProvider {
         // full buffer with no line terminator.
         let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
         let mut line = String::new();
-        match tokio::time::timeout(self.line_timeout, reader.read_line(&mut line)).await {
+        let deadline = tokio::time::Instant::now() + self.line_timeout;
+        match tokio::time::timeout_at(deadline, reader.read_line(&mut line)).await {
             Err(_elapsed) => Err(ProviderError::Timeout {
                 binary: binary.to_string(),
             }),
             Ok(Err(source)) => Err(spawn_error(source)),
-            // EOF (a process that exited without writing) reaches
-            // Line::parse as an empty string and refuses typed there —
-            // no separate arm to maintain.
-            Ok(Ok(_bytes)) => {
+            Ok(Ok(bytes)) => {
+                if bytes == 0 {
+                    match tokio::time::timeout_at(deadline, child.wait()).await {
+                        Err(_elapsed) => {
+                            return Err(ProviderError::Timeout {
+                                binary: binary.to_string(),
+                            });
+                        }
+                        Ok(Err(source)) => return Err(spawn_error(source)),
+                        Ok(Ok(status)) if !status.success() => {
+                            return Err(ProviderError::ExitedBeforeHandshake {
+                                binary: binary.to_string(),
+                                role: role.to_string(),
+                                status,
+                            });
+                        }
+                        Ok(Ok(_status)) => {}
+                    }
+                }
                 if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE_BYTES {
                     return Err(ProviderError::HandshakeLineOverflow {
                         binary: binary.to_string(),
@@ -227,29 +243,25 @@ impl LocalBinaryConnectorProvider {
     ///
     /// A served bin only answers under a role it carries, so this probe
     /// delegates to [`Self::spec_for_role`] source-first and retries
-    /// `destination` when the source attempt died BEFORE the wire — a
-    /// dual-role connector therefore answers with its SOURCE schema, and
-    /// a destination-only one (whose arg gate refuses `source`) still
-    /// answers on the second attempt. The CLI's `schema --role` flag is
-    /// the explicit door when the destination half of a dual-role
-    /// connector is the one wanted.
+    /// `destination` when the source process exits with the usage-error
+    /// code before writing any handshake bytes — a dual-role connector
+    /// therefore answers with its SOURCE schema, and a destination-only
+    /// one (whose arg gate refuses `source`) still answers on the second
+    /// attempt. The CLI's `schema --role` flag is the explicit door when
+    /// the destination half of a dual-role connector is the one wanted.
     pub async fn spec(
         &self,
         requirement: &ConnectorRequirement,
     ) -> Result<ConnectorSpec, ProviderError> {
         match self.spec_for_role(requirement, Role::Source).await {
-            // Only the pre-wire refusals retry: nothing spawned, or the
-            // process never spoke a handshake line — which is exactly
-            // what a single-role bin's arg gate refusing `source` looks
-            // like. Anything the SERVED wire did (dial, the RPC, the
-            // identity check) is the connector's answer and returns
-            // as-is; NotFound cannot improve on a second walk either.
-            Err(
-                ProviderError::Spawn { .. }
-                | ProviderError::Timeout { .. }
-                | ProviderError::HandshakeLine { .. }
-                | ProviderError::HandshakeLineOverflow { .. },
-            ) => self.spec_for_role(requirement, Role::Destination).await,
+            // Exit 2 before any handshake bytes is the role flag's
+            // usage refusal. Every other failure is the source probe's
+            // own answer and propagates without trying another role.
+            Err(ProviderError::ExitedBeforeHandshake { status, .. })
+                if status.code() == Some(2) =>
+            {
+                self.spec_for_role(requirement, Role::Destination).await
+            }
             outcome => outcome,
         }
     }

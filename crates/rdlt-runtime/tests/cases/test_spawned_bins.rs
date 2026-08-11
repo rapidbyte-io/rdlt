@@ -419,11 +419,15 @@ async fn spec_for_role_asks_exactly_the_named_half() {
         .spec_for_role(&requirement, Role::Source)
         .await
         .expect_err("the destination-only bin's arg gate refuses the source role");
-    assert!(
-        matches!(error, ProviderError::HandshakeLine { .. }),
-        "the refusal is the spawn tier's own (no handshake line), never a silent \
-         retry as the other half: {error:?}"
-    );
+    match error {
+        ProviderError::ExitedBeforeHandshake { status, .. } => {
+            assert_eq!(status.code(), Some(2), "clap's usage refusal is exit 2")
+        }
+        other => panic!(
+            "the refusal is the spawn tier's own (no handshake line), never a silent \
+             retry as the other half: {other:?}"
+        ),
+    }
     let destination = provider
         .spec_for_role(&requirement, Role::Destination)
         .await

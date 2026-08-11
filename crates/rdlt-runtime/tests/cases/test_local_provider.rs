@@ -13,10 +13,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use rdlt_connector::ConnectorSpec;
+use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
+use rdlt_connector_protocol::proto::{self, SpecReply};
 use rdlt_runtime::{
     ClientError, ConnectorProvider, ConnectorRequirement, LifecycleGuard,
     LocalBinaryConnectorProvider, ProviderError,
 };
+use tokio_stream::wrappers::UnixListenerStream;
+use tonic::{Request, Response, Status};
 
 /// Write an executable shell script `name` into `dir`.
 fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
@@ -48,6 +53,101 @@ fn dial_path(error: ProviderError) -> PathBuf {
         ProviderError::Client(ClientError::Dial { path, .. }) => path,
         other => panic!("expected Client(Dial), got {other:?}"),
     }
+}
+
+/// A connector control-plane fake that answers only the config-free
+/// `Spec` RPC. The shell fake below owns role handling and advertises
+/// this server only for its destination half.
+#[derive(Debug)]
+struct SpecServer;
+
+#[tonic::async_trait]
+impl Connector for SpecServer {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        Err(Status::unimplemented("the fake answers Spec alone"))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        Err(Status::unimplemented("the fake answers Spec alone"))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<SpecReply>, Status> {
+        let mut spec = ConnectorSpec::new("io.rapidbyte.fake", "1.0.0");
+        spec.config_schema = Some(serde_json::json!({"type": "object"}));
+        Ok(Response::new(SpecReply {
+            spec_json: serde_json::to_vec(&spec).expect("the fake spec serializes"),
+        }))
+    }
+}
+
+/// Serve the Spec-only fake at `socket` until the returned task is
+/// aborted or the listener is closed.
+fn serve_spec(socket: &Path) -> tokio::task::JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(socket).expect("the fake socket binds");
+    let incoming = UnixListenerStream::new(listener);
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::new(SpecServer))
+        .serve_with_incoming(incoming);
+    tokio::spawn(async move {
+        let _ = serving.await;
+    })
+}
+
+/// A role-dispatching fake advertises the in-process Spec server for
+/// destination and runs `source_action` for the source probe.
+fn spec_probe_body(socket: &Path, source_action: &str) -> String {
+    format!(
+        "#!/bin/sh\ncase \"$1\" in\n  --role=source) {source_action} ;;\n  --role=destination) echo 'rdlt-connector|1|0|0|{}'; exec sleep 30 ;;\n  *) exit 3 ;;\nesac\n",
+        socket.display()
+    )
+}
+
+/// The role-less Spec probe retries only a process that cleanly
+/// refuses the source role. A hung source is its own failure even when
+/// the same binary could answer as a destination.
+#[tokio::test]
+async fn the_spec_probe_retries_only_a_clean_role_refusal() {
+    let hanging = tempfile::tempdir().expect("tempdir");
+    let hanging_socket = hanging.path().join("spec.sock");
+    let hanging_server = serve_spec(&hanging_socket);
+    let hanging_bin = write_script(
+        hanging.path(),
+        "hanging-fake",
+        &spec_probe_body(&hanging_socket, "exec sleep 30"),
+    );
+    let provider =
+        LocalBinaryConnectorProvider::new().with_line_timeout(Duration::from_millis(300));
+    let error = provider
+        .spec(&ConnectorRequirement::new("io.rapidbyte.fake").with_path(&hanging_bin))
+        .await
+        .expect_err("a hung source probe must propagate its timeout");
+    assert!(matches!(error, ProviderError::Timeout { .. }), "{error:?}");
+    hanging_server.abort();
+
+    let refusing = tempfile::tempdir().expect("tempdir");
+    let refusing_socket = refusing.path().join("spec.sock");
+    let refusing_server = serve_spec(&refusing_socket);
+    let refusing_bin = write_script(
+        refusing.path(),
+        "refusing-fake",
+        &spec_probe_body(&refusing_socket, "exit 2"),
+    );
+    let spec = provider
+        .spec(&ConnectorRequirement::new("io.rapidbyte.fake").with_path(&refusing_bin))
+        .await
+        .expect("a clean source-role refusal retries as destination");
+    assert_eq!(spec.name, "io.rapidbyte.fake");
+    assert!(spec.config_schema.is_some());
+    refusing_server.abort();
 }
 
 /// Discovery resolves `io.rapidbyte.fake` to `rdlt-connector-fake` on
