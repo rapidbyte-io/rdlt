@@ -4537,7 +4537,14 @@ name = "rdlt"
 version = "0.3.0"
 dependencies = [
  "rdlt-connector",
+ "rdlt-connector-duckdb",
+ "rdlt-connector-file",
+ "rdlt-connector-iceberg",
+ "rdlt-connector-oracle",
+ "rdlt-connector-postgres",
+ "rdlt-connector-rest",
  "rdlt-connector-sdk",
+ "rdlt-connector-snowflake",
  "rdlt-core",
  "rdlt-engine",
  "rdlt-runtime",
