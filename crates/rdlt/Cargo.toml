@@ -1,6 +1,6 @@
 [package]
 name = "rdlt"
-description = "rdlt facade: Pipeline builder, prelude, connector features"
+description = "rdlt facade: Pipeline builder over spawned connectors"
 keywords = ["elt", "etl", "pipeline", "arrow", "data"]
 categories = ["database", "asynchronous"]
 documentation = "https://docs.rs/rdlt"
@@ -12,47 +12,32 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
-rest = ["dep:rdlt-connector-rest"]
-duckdb = ["dep:rdlt-connector-duckdb"]
-# Family features mean the WHOLE system (source + dest where both exist);
-# -source/-dest narrowings exist for build-size-conscious consumers.
-postgres = ["postgres-source", "postgres-dest"]
-file = ["dep:rdlt-connector-file"]
-iceberg = ["dep:rdlt-connector-iceberg"]
-oracle = ["dep:rdlt-connector-oracle"]
-snowflake = ["dep:rdlt-connector-snowflake"]
-postgres-source = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/source"]
-postgres-dest = ["dep:rdlt-connector-postgres", "rdlt-connector-postgres/destination"]
-# The parquet FEATURE spelling stays (frozen for build scripts): the
-# parquet destination now lives in the file family (015 FF1).
-parquet = ["file"]
+# The spawned-pipeline acceptance suite: tests that build a pipeline
+# from rich spellings and run it over REAL connector binaries. OFF by
+# default — a plain workspace run must not depend on bins no workspace
+# command builds. The Makefile's spawn-bins line enables it AND sets
+# RDLT_BUILD_CONNECTOR_BINS=1, the same discipline as rdlt-runtime's
+# own spawn-bins suite.
+spawn-bins = []
 
 [dependencies]
 rdlt-connector-sdk = { workspace = true }
 rdlt-core = { workspace = true }
 rdlt-connector = { workspace = true }
 rdlt-engine = { workspace = true }
-# The out-of-process connector seam (039): `connector:` in a pipeline
-# document resolves through a ConnectorProvider; the facade holds the
-# default local-binary one. The wire contract those crates carry is
-# FROZEN (ADR 0001 D8's amendment), but they remain unpublished pending
-# the separate publish wave — and rdlt itself cannot publish until they
-# do.
+# The out-of-process connector seam (039; the ONLY seam since the 043
+# D1 swap): every pipeline-document arm resolves through a
+# ConnectorProvider into a spawned binary; the facade holds the default
+# local-binary one. The wire contract those crates carry is FROZEN (ADR
+# 0001 D8's amendment), but they remain unpublished pending the
+# separate publish wave — and rdlt itself cannot publish until they do.
 rdlt-runtime = { workspace = true }
-rdlt-connector-rest = { workspace = true, optional = true }
-rdlt-connector-duckdb = { workspace = true, optional = true }
-rdlt-connector-file = { workspace = true, optional = true }
-rdlt-connector-oracle = { workspace = true, optional = true }
-rdlt-connector-iceberg = { workspace = true, optional = true }
-rdlt-connector-snowflake = { workspace = true, optional = true }
-rdlt-connector-postgres = { workspace = true, optional = true }
 # tokio-util only: `cancellation_token()` hands one out. tokio itself is a
 # DEV dependency — the facade's own source never names it, and a library that
 # pulls in a runtime it does not use forces that cost on every consumer.
 tokio-util = { workspace = true }
 # The shared pipeline_spec model: serde derive + serde_yaml's singleton_map
-# with-module, and serde_json for the postgres inline `from_value` gate.
+# with-module, and serde_json for the opaque connector config documents.
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }

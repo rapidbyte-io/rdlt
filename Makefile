@@ -163,6 +163,15 @@ cargo build \
 cargo build -p rdlt-certify --features bin --bin rdlt-certify
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
+# The D1 swap's live halves (043 T1): the facade's rich spellings
+# resolve to SPAWNED binaries, so its acceptance arm — a `file:` →
+# `duckdb:` document built and run end to end with no `connector:`
+# block anywhere — and the CLI's run/validate/events contract pins
+# both need real bins. Same env-var discipline; own line per the
+# one-module-per-invocation rule (an empty selection — a renamed
+# binary or module — fails its own line).
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(spawned_pipeline)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-cli --features spawn-bins -E 'test(spawned_runs)'
 # The postgres bin's OWN spawn suite (041) — the crate's gated cases
 # drive the built bin through the provider's Spec RPC (identity,
 # version, exit codes), same env-var discipline as the runtime lines.

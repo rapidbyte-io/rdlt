@@ -3,11 +3,12 @@
 //! refusal, and the provider's frozen NotFound spelling surfacing
 //! through `build_pipeline` verbatim.
 //!
-//! These tests need NO connector feature: the `connector` variant is
-//! deliberately always present (it names an out-of-process connector,
-//! not a compiled-in one).
+//! This is the explicit form every rich spelling desugars to — the
+//! one arm whose id, version pin and path override are spelled out.
 
-use rdlt::pipeline_spec::{ConnectorRef, DestSpec, SourceSpec, Spec, SpecError, build_pipeline};
+use rdlt::pipeline_spec::{
+    ConfigSource, ConnectorRef, DestSpec, SourceSpec, Spec, SpecError, build_pipeline,
+};
 
 /// The full vocabulary round-trips on both sides: id, the optional
 /// version pin and path override, and the opaque config document.
@@ -31,10 +32,6 @@ destination:
 "#;
     let spec: Spec = serde_yaml::from_str(text).expect("the connector vocabulary parses");
 
-    // Under default features (no compiled-in connectors) `Connector` is
-    // the enum's ONLY variant, so this pattern is irrefutable; the
-    // unified workspace build compiles the same pattern refutably.
-    #[allow(irrefutable_let_patterns)]
     let SourceSpec::Connector(source) = &spec.source else {
         panic!("source parses as the connector variant");
     };
@@ -46,18 +43,21 @@ destination:
     );
     // The config is the connector's OWN document, carried opaquely —
     // whatever YAML was written arrives as the equivalent JSON.
-    assert_eq!(source.config["streams"][0]["name"], "events");
+    let ConfigSource::Inline(config) = &source.config else {
+        panic!("an inline mapping parses as the inline config form");
+    };
+    assert_eq!(config["streams"][0]["name"], "events");
 
-    // Same constraint as the source side: irrefutable under default
-    // features, refutable in the unified workspace build.
-    #[allow(irrefutable_let_patterns)]
     let DestSpec::Connector(dest) = &spec.destination else {
         panic!("destination parses as the connector variant");
     };
     assert_eq!(dest.id, "io.rapidbyte.duckdb");
     assert_eq!(dest.version, None, "version is optional");
     assert_eq!(dest.path, None, "path is optional");
-    assert_eq!(dest.config["path"], "out.db");
+    let ConfigSource::Inline(config) = &dest.config else {
+        panic!("an inline mapping parses as the inline config form");
+    };
+    assert_eq!(config["path"], "out.db");
 }
 
 /// An unknown key inside `connector:` is refused at PARSE — the ref
@@ -113,7 +113,7 @@ fn a_debug_render_of_a_connector_ref_elides_the_config() {
         id: "io.rapidbyte.file".to_owned(),
         version: None,
         path: None,
-        config: serde_json::json!({ "password": "SECRET-MARKER-7f3a" }),
+        config: ConfigSource::Inline(serde_json::json!({ "password": "SECRET-MARKER-7f3a" })),
     };
     let rendered = format!("{reference:?}");
     assert!(

@@ -65,20 +65,18 @@ pub enum Command {
     },
     /// Print a connector's configuration JSON Schema to stdout.
     Schema {
-        /// Which connector's document to describe: a compiled-in
-        /// spelling (rest-source, postgres-source, oracle-source,
-        /// file-source, file-dest, postgres-dest, duckdb-dest,
-        /// snowflake-dest, iceberg-dest), or an out-of-process
-        /// connector — its reverse-DNS id (io.rapidbyte.file, found as
-        /// rdlt-connector-file on PATH) or an explicit binary path —
-        /// spawned and asked for its schema.
+        /// Which connector's document to describe: a short name (rest,
+        /// oracle, file, postgres, duckdb, iceberg, snowflake — the
+        /// same table the pipeline document's rich spellings resolve
+        /// through), a reverse-DNS id (io.rapidbyte.file, found as
+        /// rdlt-connector-file on PATH), or an explicit binary path.
+        /// The named binary is spawned and asked for its schema.
         #[arg(value_name = "connector")]
         connector: String,
 
-        /// Which half of an out-of-process connector to ask. Without
-        /// it the connector is probed source-first (a dual-role
-        /// connector answers with its source schema); the compiled-in
-        /// spellings already name their role and refuse the flag.
+        /// Which half of the connector to ask. Without it the
+        /// connector is probed source-first (a dual-role connector
+        /// answers with its source schema).
         #[arg(long, value_enum)]
         role: Option<SchemaRole>,
     },

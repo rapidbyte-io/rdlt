@@ -21,7 +21,6 @@
 //! to report, never an instruction to go and edit the pipeline configuration.
 
 mod args;
-mod cdc;
 mod run;
 mod schema;
 mod ui;
@@ -123,9 +122,9 @@ fn main() -> ExitCode {
             renderer,
         )),
         args::Command::Validate { spec } => runtime.block_on(run::validate(spec, verbosity)),
-        // Async since 039: an unrecognized spelling spawns the named
-        // connector binary and asks its config-free Spec RPC —
-        // source-first, or exactly the half `--role` names (040).
+        // Every spelling spawns a connector binary and asks its
+        // config-free Spec RPC — source-first, or exactly the half
+        // `--role` names (040).
         args::Command::Schema { connector, role } => {
             runtime.block_on(schema::print(&connector, role))
         }

@@ -3,8 +3,8 @@
 A library-first ELT engine: extract → shred (normalize) → load, with schema
 inference and evolution, incremental cursors, and crash-safe resumable runs.
 
-This is the facade — the crate to depend on. It re-exports the engine, the
-vocabulary, and the bundled connectors behind features.
+This is the facade — the crate to depend on. It re-exports the engine and
+the vocabulary; connectors run out of process, spawned per run.
 
 ```rust,no_run
 use rdlt::prelude::*;
@@ -24,15 +24,22 @@ Configuration errors surface at `build()`, not halfway through a load.
 
 ## Connectors
 
-Each is a feature, so you compile only what you use:
+Connectors are separate binaries, spawned per run and supervised over a
+local socket — none are compiled into this crate. A pipeline document
+names one either by its rich spelling (`postgres:`, `duckdb:`, `file:`,
+`rest:`, `oracle:`, `iceberg:`, `snowflake:`) or explicitly:
 
-| Feature | Connector |
-|---|---|
-| `postgres` / `postgres-dest` | PostgreSQL source (binary COPY → Arrow, plus logical-replication CDC) and destination |
-| `duckdb` | DuckDB destination |
-| `file` | JSONL / Parquet / CSV source and destination, local or S3 |
-| `rest` | declarative REST source — one YAML document describes an API |
-| `iceberg` | Apache Iceberg destination over a REST catalog |
+```yaml
+source:
+  connector:
+    id: io.rapidbyte.postgres
+    config: { conn: "host=..." }
+```
+
+Both forms resolve identically: the id's last segment names the binary
+(`rdlt-connector-postgres` on PATH, or `path:` overrides), the config
+document crosses the wire opaquely, and the connector's own gate
+validates it — refusals arrive in the connector's own wording.
 
 ## What it guarantees
 

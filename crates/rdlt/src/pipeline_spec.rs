@@ -1,33 +1,29 @@
-//! The pipeline spec: the ONE YAML document model that both consumers of the
-//! engine — the `rdlt` CLI and the `rdlt-bench` harness — parse, and its
-//! construction into a runnable [`Pipeline`].
+//! The pipeline spec: the ONE YAML document model that every consumer
+//! of the engine — the `rdlt` CLI, the `rdlt-bench` harness, library
+//! embedders — parses, and its construction into a runnable
+//! [`Pipeline`].
 //!
-//! ONE YAML document describes a whole pipeline: pipeline-wide settings, the
-//! source (inline, or `config: path` to a reusable document), and the
-//! destination. The CLI and the bench harness used to carry byte-identical
-//! copies of these structs; they now share this one, so a destination or
-//! source kind cannot be taught to one parser and forgotten in the other. The
-//! shared fixture `benches/parity_specs.yaml` pins the model from both
-//! consumers.
+//! ONE YAML document describes a whole pipeline: pipeline-wide
+//! settings, the source, and the destination. EVERY arm names an
+//! OUT-OF-PROCESS connector. The rich spellings (`postgres:`, `file:`,
+//! `duckdb:`, …) are sugar for the explicit `connector:` form: each
+//! desugars to the same [`ConnectorRef`] through the one
+//! [`connector_id`] table, and every reference — rich or explicit — is
+//! resolved through a [`rdlt_runtime::ConnectorProvider`] at build
+//! time into a spawned connector binary.
 //!
-//! Each variant that names a COMPILED-IN connector type is feature-gated to
-//! that connector, so the facade still builds with any subset of connectors
-//! (down to none): a spec that names a connector this build did not compile
-//! in fails to parse (the variant does not exist), never silently. The
-//! `connector:` variant is the exception BY DESIGN — it names an
-//! out-of-process connector resolved through a [`rdlt_runtime::ConnectorProvider`]
-//! at build time, so it is always present regardless of features.
+//! The config document inside any arm is OPAQUE here: it crosses the
+//! wire in the handshake and the CONNECTOR's own config gate validates
+//! it — the facade and CLI never learn connector vocabularies, so a
+//! refusal arrives in the connector's own wording, never a facade
+//! paraphrase.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rdlt_runtime::{ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider};
 use serde::Deserialize;
 
-use crate::builder::{Missing, PipelineBuilder};
 use crate::{CommitPolicy, Pipeline, WriteMode};
-
-#[cfg(feature = "postgres-source")]
-use crate::connector::postgres::source::Config as PostgresConfig;
 
 /// One pipeline, end to end.
 #[derive(Debug, Deserialize)]
@@ -97,110 +93,171 @@ pub enum WriteModeSpec {
 
 /// Which source a document selects, and how it is configured.
 ///
-/// Each variant is gated on its connector feature, so a build that excludes a
-/// connector also rejects documents naming it — rather than compiling and
-/// failing at run time.
+/// Each rich spelling is sugar for the `connector:` form — see
+/// [`SourceSpec::desugar`].
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceSpec {
-    /// The REST source: a document inline, or `config: <path>`.
-    #[cfg(feature = "rest")]
-    Rest(ConfigSpec<crate::connector::rest::source::Config>),
-    /// The Oracle source (tables with watermark cursors).
-    #[cfg(feature = "oracle")]
-    Oracle(ConfigSpec<crate::connector::oracle::source::Config>),
-    /// The file source (jsonl/csv/parquet streams).
-    #[cfg(feature = "file")]
-    File(ConfigSpec<crate::connector::file::source::Config>),
-    /// The postgres source.
-    #[cfg(feature = "postgres-source")]
-    Postgres(ConfigSpec<PostgresConfig>),
-    /// An out-of-process connector, spawned and handshaken at build:
-    /// `connector: {id: io.rapidbyte.file, config: {…}}`. Always present
-    /// — this is the variant that needs NO compiled-in feature.
+    /// The REST source — `io.rapidbyte.rest`.
+    Rest(ConfigSource),
+    /// The Oracle source — `io.rapidbyte.oracle`.
+    Oracle(ConfigSource),
+    /// The file source — `io.rapidbyte.file`.
+    File(ConfigSource),
+    /// The postgres source — `io.rapidbyte.postgres`.
+    Postgres(ConfigSource),
+    /// The explicit form the rich spellings desugar to:
+    /// `connector: {id: io.rapidbyte.file, config: {…}}` — the id
+    /// spelled in full, with the optional version pin and path
+    /// override the sugar cannot express.
     Connector(ConnectorRef),
 }
 
-/// The path form of a postgres source: `postgres: {config: source.yaml}`.
-///
-/// `deny_unknown_fields`, so mixing `config` with inline fields is a loud error
-/// rather than a document half of which is silently ignored.
 /// Which destination a document selects, and how it is configured.
 ///
-/// Each variant is gated on its connector feature, so a build that excludes a
-/// connector also rejects documents naming it.
+/// Each rich spelling is sugar for the `connector:` form — see
+/// [`DestSpec::desugar`].
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DestSpec {
-    /// A DuckDB database file — the crate's full config vocabulary
-    /// inline (`path`, `memory_limit`, `merge_strategy`, per-table
-    /// `tables`, `extensions`, `settings`).
-    ///
-    /// The connector's own config type IS the document shape, embedded
-    /// rather than mirrored — same reasoning as the postgres, file,
-    /// iceberg, and snowflake blocks: a hand-mirrored struct fails
-    /// silently in one direction, leaving a field configurable from
-    /// the library and invisible from YAML with no error anywhere. The
-    /// mirror's fields were already the config's fields one for one,
-    /// so retiring it relaxes nothing — the parity pin in rdlt-cli's
-    /// spec_model suite holds the two parses equal.
-    #[cfg(feature = "duckdb")]
-    Duckdb(Box<crate::connector::duckdb::destination::Config>),
-    /// A PostgreSQL schema — the crate's full config vocabulary inline
-    /// (`conn`, `dataset`, `tls`, `merge_strategy`, per-table `tables`).
-    ///
-    /// The connector's own config type IS the document shape, embedded
-    /// rather than mirrored — same reasoning as the file, iceberg, and
-    /// snowflake blocks: a hand-mirrored struct fails silently in one
-    /// direction, leaving a field configurable from the library and
-    /// invisible from YAML with no error anywhere.
-    ///
-    /// ONE user-visible consequence of retiring the mirror: `dataset` is
-    /// now OPTIONAL and defaults to `public`, where the mirror required
-    /// it. A document that omits it therefore loads into `public`
-    /// instead of being refused — a relaxation, never a refusal, but a
-    /// silent one, so a dropped or misspelled `dataset:` lands tables in
-    /// a schema nobody asked for rather than failing the parse.
-    #[cfg(feature = "postgres-dest")]
-    Postgres(Box<crate::connector::postgres::destination::Config>),
-    /// The frozen `parquet:` spelling (equivalent to `file: local parquet`);
-    /// the parquet destination lives in the file family.
-    #[cfg(feature = "file")]
-    Parquet {
-        /// Output directory.
-        path: PathBuf,
-    },
-    /// The full file-destination vocabulary — format (parquet|jsonl),
-    /// location (local | s3), partition_by, parquet options.
-    ///
-    /// The connector's own config type IS the document shape, embedded rather
-    /// than mirrored. Previously this was a struct variant restating each field
-    /// by hand, which failed silently in one direction: a field added to
-    /// the config and not added here compiled fine and was simply
-    /// unreachable from any pipeline document — configurable in the library,
-    /// invisible from YAML, with no error anywhere. Embedding removes the
-    /// possibility rather than guarding against it. Boxed because the config
-    /// dwarfs the other variants.
-    #[cfg(feature = "file")]
-    File(Box<crate::connector::file::destination::Config>),
-    /// The Iceberg destination — the crate's full config vocabulary inline
-    /// (catalog/auth, namespace, storage override, per-stream tables with
-    /// partition_by).
-    #[cfg(feature = "iceberg")]
-    Iceberg(Box<crate::connector::iceberg::destination::Config>),
-    /// The Snowflake destination — the crate's full config vocabulary inline
-    /// (account/auth, database, schema, warehouse, role, table type, session
-    /// parameters, and the shared merge options).
-    ///
-    /// Embedded, like the file and iceberg blocks: a hand-mirrored struct fails
-    /// silently in one direction, leaving a field configurable from the library
-    /// and invisible from YAML with no error anywhere.
-    #[cfg(feature = "snowflake")]
-    Snowflake(Box<crate::connector::snowflake::destination::Config>),
-    /// An out-of-process connector, spawned and handshaken at build —
-    /// the destination twin of [`SourceSpec::Connector`], same shape,
-    /// same always-present rule.
+    /// The DuckDB destination — `io.rapidbyte.duckdb`.
+    Duckdb(ConfigSource),
+    /// The postgres destination — `io.rapidbyte.postgres`.
+    Postgres(ConfigSource),
+    /// The file destination — `io.rapidbyte.file`.
+    File(ConfigSource),
+    /// The Iceberg destination — `io.rapidbyte.iceberg`.
+    Iceberg(ConfigSource),
+    /// The Snowflake destination — `io.rapidbyte.snowflake`.
+    Snowflake(ConfigSource),
+    /// The explicit form — the destination twin of
+    /// [`SourceSpec::Connector`], same shape, same rules.
     Connector(ConnectorRef),
+}
+
+/// A connector config document: an inline mapping, or a string path to
+/// a YAML/JSON file read at build time. A string means a path —
+/// connector documents are mappings by construction, so the untagged
+/// order cannot misread an inline document.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum ConfigSource {
+    /// `postgres: path/to/document.yaml` — the document lives in its
+    /// own file, read at resolve time (YAML unless the extension says
+    /// `.json`), relative paths joined onto the caller's base.
+    Path(String),
+    /// The document itself, written where the path would go. Opaque:
+    /// only the connector knows its vocabulary, and only the
+    /// connector's own config gate validates it.
+    Inline(serde_json::Value),
+}
+
+/// Manual on purpose, like [`ConnectorRef`]'s: an inline document is
+/// the connector's own vocabulary and routinely carries credentials,
+/// so a derived Debug would print them into any `{:?}` of a [`Spec`],
+/// a log line, or a test failure message. The path form renders (a
+/// path is an address, not a secret); the inline form is elided.
+impl std::fmt::Debug for ConfigSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigSource::Path(path) => f.debug_tuple("Path").field(path).finish(),
+            ConfigSource::Inline(_) => f.debug_tuple("Inline").field(&"<elided>").finish(),
+        }
+    }
+}
+
+impl ConfigSource {
+    /// Resolve to the connector's opaque config document.
+    ///
+    /// The path form reads its file — relative paths against `base` —
+    /// and parses it as YAML, or as JSON when the extension says so;
+    /// absence and a malformed document each refuse with a typed
+    /// [`SpecError::Resolve`] naming the path. The inline form clones.
+    pub fn resolve(&self, base: &Path) -> Result<serde_json::Value, SpecError> {
+        match self {
+            ConfigSource::Path(spelled) => {
+                let path = base.join(spelled);
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| SpecError::resolve(format!("reading {}: {e}", path.display())))?;
+                if is_json(&path) {
+                    serde_json::from_str(&text)
+                        .map_err(|e| SpecError::resolve(format!("parsing {}: {e}", path.display())))
+                } else {
+                    serde_yaml::from_str(&text)
+                        .map_err(|e| SpecError::resolve(format!("parsing {}: {e}", path.display())))
+                }
+            }
+            ConfigSource::Inline(value) => Ok(value.clone()),
+        }
+    }
+}
+
+/// Config files: YAML by default, JSON when the file says so — the same
+/// document shape either way, exactly as the connectors' own
+/// `from_yaml`/`from_json` treat it.
+fn is_json(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+}
+
+/// The ONE desugar table: rich spelling ↔ reverse-DNS connector id.
+/// The spec arms resolve through it, and `rdlt schema`'s short names
+/// map through [`connector_id`] over the same rows — so the document
+/// language and the CLI cannot drift apart.
+const DESUGAR_TABLE: &[(&str, &str)] = &[
+    ("rest", "io.rapidbyte.rest"),
+    ("oracle", "io.rapidbyte.oracle"),
+    ("file", "io.rapidbyte.file"),
+    ("postgres", "io.rapidbyte.postgres"),
+    ("duckdb", "io.rapidbyte.duckdb"),
+    ("iceberg", "io.rapidbyte.iceberg"),
+    ("snowflake", "io.rapidbyte.snowflake"),
+];
+
+/// The reverse-DNS connector id a rich spelling resolves to — `None`
+/// for anything outside the table (such a value is already an id or a
+/// binary path, not a short name).
+pub fn connector_id(spelling: &str) -> Option<&'static str> {
+    DESUGAR_TABLE
+        .iter()
+        .find(|(short, _)| *short == spelling)
+        .map(|(_, id)| *id)
+}
+
+impl SourceSpec {
+    /// Resolve this arm to the connector requirement it names.
+    ///
+    /// A rich spelling maps through the desugar table — the table's
+    /// id, no version pin, no path override — with its config
+    /// resolved ([`ConfigSource::resolve`], path form read relative to
+    /// `base`). The `connector:` arm keeps its id, version pin and
+    /// path override, and resolves its config by the same rule.
+    pub fn desugar(&self, base: &Path) -> Result<ConnectorRef, SpecError> {
+        let (spelling, config) = match self {
+            SourceSpec::Rest(config) => ("rest", config),
+            SourceSpec::Oracle(config) => ("oracle", config),
+            SourceSpec::File(config) => ("file", config),
+            SourceSpec::Postgres(config) => ("postgres", config),
+            SourceSpec::Connector(reference) => return reference.resolved(base),
+        };
+        ConnectorRef::desugared(spelling, config, base)
+    }
+}
+
+impl DestSpec {
+    /// The destination twin of [`SourceSpec::desugar`] — same table,
+    /// same resolution rules.
+    pub fn desugar(&self, base: &Path) -> Result<ConnectorRef, SpecError> {
+        let (spelling, config) = match self {
+            DestSpec::Duckdb(config) => ("duckdb", config),
+            DestSpec::Postgres(config) => ("postgres", config),
+            DestSpec::File(config) => ("file", config),
+            DestSpec::Iceberg(config) => ("iceberg", config),
+            DestSpec::Snowflake(config) => ("snowflake", config),
+            DestSpec::Connector(reference) => return reference.resolved(base),
+        };
+        ConnectorRef::desugared(spelling, config, base)
+    }
 }
 
 /// An out-of-process connector requirement, the `connector:` document:
@@ -213,6 +270,9 @@ pub enum DestSpec {
 ///     path: /explicit/bin   # optional override
 ///     config: { ... }       # the connector's own document, opaque here
 /// ```
+///
+/// `config` also takes the path form (`config: source.yaml`) — the
+/// same [`ConfigSource`] rule as every rich spelling's value.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectorRef {
@@ -231,11 +291,10 @@ pub struct ConnectorRef {
     /// Explicit binary path, bypassing PATH discovery entirely.
     #[serde(default)]
     pub path: Option<PathBuf>,
-    /// The connector's OWN config document, OPAQUE here: it crosses the
-    /// wire in the handshake and the CONNECTOR's config gate validates
-    /// it — the facade and CLI never learn remote vocabularies, so a
-    /// refusal arrives in the connector's own wording.
-    pub config: serde_json::Value,
+    /// The connector's OWN config document — inline, or a path to one.
+    /// Opaque here: it crosses the wire in the handshake and the
+    /// CONNECTOR's config gate validates it.
+    pub config: ConfigSource,
 }
 
 /// Manual on purpose (the workspace lint demands SOME Debug): the
@@ -255,6 +314,29 @@ impl std::fmt::Debug for ConnectorRef {
 }
 
 impl ConnectorRef {
+    /// A rich spelling's desugared form: the table's id, no version
+    /// pin, no path override, the config resolved inline.
+    fn desugared(spelling: &str, config: &ConfigSource, base: &Path) -> Result<Self, SpecError> {
+        let id = connector_id(spelling).expect("every rich spec arm has a desugar-table row");
+        Ok(ConnectorRef {
+            id: id.to_owned(),
+            version: None,
+            path: None,
+            config: ConfigSource::Inline(config.resolve(base)?),
+        })
+    }
+
+    /// This requirement with its config resolved inline — the
+    /// `connector:` arm's half of the desugar.
+    fn resolved(&self, base: &Path) -> Result<Self, SpecError> {
+        Ok(ConnectorRef {
+            id: self.id.clone(),
+            version: self.version.clone(),
+            path: self.path.clone(),
+            config: ConfigSource::Inline(self.config.resolve(base)?),
+        })
+    }
+
     /// The provider-facing half of the document — everything except the
     /// config, which travels beside it.
     fn requirement(&self) -> ConnectorRequirement {
@@ -276,7 +358,8 @@ impl ConnectorRef {
 #[derive(Debug)]
 pub enum SpecError {
     /// Resolving the spec into connectors failed — a missing/invalid config
-    /// file, an unopenable destination, rejected destination options.
+    /// file, a connector binary that could not be found or spawned, a
+    /// config the connector's own gate refused.
     Resolve(String),
     /// The typestate builder rejected the configuration (e.g. a destination
     /// that cannot Merge).
@@ -313,142 +396,7 @@ impl From<crate::RdltError> for SpecError {
     }
 }
 
-/// Source config files: YAML by default, JSON when the file says so — the same
-/// document shape either way (the library's from_yaml/from_json share
-/// validation; embedders pass serde_json::Value via from_value).
-#[cfg(any(
-    feature = "rest",
-    feature = "file",
-    feature = "postgres-source",
-    feature = "oracle"
-))]
-fn is_json(path: &std::path::Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-}
-
-/// A connector's configuration: EITHER a path to a document, OR the
-/// document written inline.
-///
-/// One spelling for every connector, because the alternative — some
-/// taking a path and some taking a document — is a difference the
-/// reader has to memorise per connector for no benefit.
-///
-/// Untagged, and the ORDER MATTERS: [`ConfigPath`] denies unknown
-/// fields, so it matches ONLY the exact `{config: <path>}` shape and
-/// every other map falls through to the inline arm.
-#[cfg(any(
-    feature = "rest",
-    feature = "file",
-    feature = "oracle",
-    feature = "postgres-source"
-))]
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum ConfigSpec<T> {
-    /// `config: path/to/document.yaml`
-    Path(ConfigPath),
-    /// The document itself, written where the path would go. TYPED,
-    /// not a free-form value: mixing `config:` with inline keys then
-    /// fails at PARSE — neither arm matches — instead of parsing as
-    /// an inline document with a stray key that only the connector
-    /// notices later.
-    Inline(Box<T>),
-}
-
-#[cfg(any(
-    feature = "rest",
-    feature = "file",
-    feature = "oracle",
-    feature = "postgres-source"
-))]
-/// The path form: `config: path/to/document.yaml`.
-///
-/// `deny_unknown_fields` is what makes the untagged choice
-/// unambiguous AND makes a half-written document loud: `config`
-/// mixed with inline keys is an error rather than a document half of
-/// which is silently ignored.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigPath {
-    /// The document to read. YAML unless the extension is `.json`.
-    pub config: PathBuf,
-}
-
-#[cfg(any(
-    feature = "rest",
-    feature = "file",
-    feature = "oracle",
-    feature = "postgres-source"
-))]
-impl<T> ConfigSpec<T> {
-    /// Resolve to the connector's own validated document.
-    ///
-    /// BOTH arms go through the connector's `Document` gate, so an
-    /// inline document is validated exactly as a file-backed one is —
-    /// untagged deserialization alone would have skipped `validate`
-    /// — and a failure carries the connector's own frozen wording
-    /// rather than a facade paraphrase.
-    fn document(&self) -> Result<T, SpecError>
-    where
-        T: rdlt_connector_sdk::config::Document + Clone,
-        T::Error: std::fmt::Display,
-    {
-        match self {
-            ConfigSpec::Path(spelled) => {
-                let path = &spelled.config;
-                let text = read_config(path)?;
-                if is_json(path) {
-                    T::from_json(&text)
-                } else {
-                    T::from_yaml(&text)
-                }
-                .map_err(|e| SpecError::resolve(e.to_string()))
-            }
-            // Deserialization alone does NOT validate, so the inline
-            // arm is put through the connector's own gate here — the
-            // same one the path arm passes through.
-            ConfigSpec::Inline(document) => {
-                let document = document.as_ref().clone();
-                document
-                    .validate()
-                    .map(|()| document.clone())
-                    .map_err(|e| SpecError::resolve(e.to_string()))
-            }
-        }
-    }
-}
-
-#[cfg(any(
-    feature = "rest",
-    feature = "file",
-    feature = "oracle",
-    feature = "postgres-source"
-))]
-fn read_config(path: &std::path::Path) -> Result<String, SpecError> {
-    std::fs::read_to_string(path)
-        .map_err(|e| SpecError::resolve(format!("reading {}: {e}", path.display())))
-}
-
-#[cfg(feature = "postgres-source")]
-impl Spec {
-    /// The resolved postgres SOURCE config when this spec's source is postgres
-    /// — reading the referenced file for the `config:` form, or re-validating
-    /// the inline document through the shared `from_value` gate (untagged
-    /// deserialization bypassed the document validation otherwise). `None` for
-    /// other source kinds. The CLI inspects it for CDC-composition advisories;
-    /// [`build_pipeline`] resolves it the same way for the source it builds.
-    pub fn pg_source_config(&self) -> Option<Result<PostgresConfig, SpecError>> {
-        match &self.source {
-            SourceSpec::Postgres(spec) => Some(spec.document()),
-            // Reachable in every build: the `Connector` variant is
-            // always present beside any compiled-in sources.
-            _ => None,
-        }
-    }
-}
-
-/// The engine byte budget a `connector:` spawn's dial derives its flow-control
+/// The engine byte budget a spawned connector's dial derives its flow-control
 /// windows from: the document's own batch-policy byte threshold when it names
 /// one, else the engine's channel default — the SAME constant the engine's
 /// byte channel uses, so the wire can never hold more in flight than the
@@ -459,16 +407,18 @@ fn engine_budget_bytes(spec: &Spec) -> u64 {
         .unwrap_or(rdlt_engine::DEFAULT_BYTE_BUDGET as u64)
 }
 
-/// Turn a parsed [`Spec`] into a runnable [`Pipeline`]. Construction only: no
-/// destination I/O beyond reading the referenced source-config files and
-/// opening compiled-in destinations — EXCEPT for `connector:` requirements,
-/// which are resolved through the default
-/// [`LocalBinaryConnectorProvider`]: spawn, dial, handshake (where the
-/// CONNECTOR validates its own config), wrap. The typestate builder's `build`
-/// re-checks against destination capabilities before any pipeline runs.
+/// Turn a parsed [`Spec`] into a runnable [`Pipeline`]. Construction only —
+/// no data moves — but BOTH arms desugar to connector requirements and are
+/// resolved through the default [`LocalBinaryConnectorProvider`]: spawn,
+/// dial, handshake (where the CONNECTOR validates its own config), wrap.
+/// Reading a path-form config file is the one other I/O. The typestate
+/// builder's `build` re-checks against destination capabilities before any
+/// pipeline runs.
 ///
-/// Async because of that spawn seam; embedders with their own provider (a
-/// pool, a remote scheduler) use [`build_pipeline_with`].
+/// Relative config paths resolve against the process working directory —
+/// the same rule the document's own relative `workdir` and data paths
+/// follow. Async because of the spawn seam; embedders with their own
+/// provider (a pool, a remote scheduler) use [`build_pipeline_with`].
 pub async fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
     let provider =
         LocalBinaryConnectorProvider::default().with_engine_budget_bytes(engine_budget_bytes(spec));
@@ -476,7 +426,7 @@ pub async fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
 }
 
 /// [`build_pipeline`] with the caller's own [`ConnectorProvider`] deciding how
-/// `connector:` requirements become processes (or pool members, or anything
+/// connector requirements become processes (or pool members, or anything
 /// else) — the engine never learns which.
 pub async fn build_pipeline_with(
     spec: &Spec,
@@ -509,107 +459,21 @@ pub async fn build_pipeline_with(
         None => builder,
     };
 
-    match &spec.source {
-        #[cfg(feature = "rest")]
-        SourceSpec::Rest(spec_config) => {
-            let source = crate::connector::rest::source::Shell::new(spec_config.document()?)
-                .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination, provider).await
-        }
-        #[cfg(feature = "oracle")]
-        SourceSpec::Oracle(spec_config) => {
-            let source = crate::connector::oracle::source::Shell::new(spec_config.document()?)
-                .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination, provider).await
-        }
-        #[cfg(feature = "file")]
-        SourceSpec::File(spec_config) => {
-            let source = crate::connector::file::source::Shell::new(spec_config.document()?)
-                .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination, provider).await
-        }
-        #[cfg(feature = "postgres-source")]
-        SourceSpec::Postgres(spec_config) => {
-            let source = crate::connector::postgres::source::Shell::new(spec_config.document()?)
-                .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination, provider).await
-        }
-        SourceSpec::Connector(reference) => {
-            // The provider's typed errors render verbatim — the frozen
-            // NotFound spelling, the handshake's identity/config
-            // refusals — never a facade paraphrase on top.
-            let source = provider
-                .source(&reference.requirement(), &reference.config)
-                .await
-                .map_err(|e| SpecError::resolve(e.to_string()))?;
-            build_with(builder.source(source), &spec.destination, provider).await
-        }
-    }
-}
-
-/// Fix the source generic, then dispatch the destination and build. Generic
-/// over the source so the typestate builder keeps its type through `build`.
-async fn build_with<S: rdlt_connector::Source>(
-    builder: PipelineBuilder<S, Missing>,
-    dest: &DestSpec,
-    provider: &dyn ConnectorProvider,
-) -> Result<Pipeline, SpecError> {
-    match dest {
-        #[cfg(feature = "duckdb")]
-        DestSpec::Duckdb(config) => {
-            // Shell::new runs the one validation gate and opens the
-            // database (settings/extensions applied eagerly).
-            let dest = crate::connector::duckdb::destination::Shell::new((**config).clone())
-                .map_err(|e| SpecError::resolve(format!("duckdb destination: {e}")))?;
-            Ok(builder.destination(dest).build()?)
-        }
-        #[cfg(feature = "postgres-dest")]
-        DestSpec::Postgres(config) => {
-            let dest = crate::connector::postgres::destination::Shell::new((**config).clone())
-                .map_err(|e| SpecError::resolve(format!("postgres destination: {e}")))?;
-            Ok(builder.destination(dest).build()?)
-        }
-        #[cfg(feature = "file")]
-        DestSpec::Parquet { path } => {
-            // The canonical local-parquet spelling: the sdk Shell over a
-            // plain-path config (Shell::new validates the document).
-            let config = crate::connector::file::destination::Config::new(
-                path.to_string_lossy().into_owned(),
-            );
-            let dest = crate::connector::file::destination::Shell::new(config)
-                .map_err(|e| SpecError::resolve(format!("opening parquet dir: {e}")))?;
-            Ok(builder.destination(dest).build()?)
-        }
-        #[cfg(feature = "file")]
-        DestSpec::File(config) => {
-            let dest = crate::connector::file::destination::Shell::new((**config).clone())
-                .map_err(|e| SpecError::resolve(format!("file destination: {e}")))?;
-            Ok(builder.destination(dest).build()?)
-        }
-        #[cfg(feature = "iceberg")]
-        DestSpec::Iceberg(config) => {
-            // Shell::new validates the hand-parsed document — the spec
-            // enum's serde parse is not the Document gate.
-            let dest = crate::connector::iceberg::destination::Shell::new((**config).clone())
-                .map_err(|e| SpecError::resolve(format!("iceberg destination: {e}")))?;
-            Ok(builder.destination(dest).build()?)
-        }
-        #[cfg(feature = "snowflake")]
-        DestSpec::Snowflake(config) => {
-            // Shell::new validates the hand-parsed document — the spec
-            // enum's serde parse is not the Document gate.
-            let dest = crate::connector::snowflake::destination::Shell::new((**config).clone())
-                .map_err(|e| SpecError::resolve(format!("snowflake destination: {e}")))?;
-            Ok(builder.destination(dest).build()?)
-        }
-        DestSpec::Connector(reference) => {
-            // Same verbatim rule as the source arm: the provider's and
-            // handshake's typed refusals ARE the message.
-            let dest = provider
-                .destination(&reference.requirement(), &reference.config)
-                .await
-                .map_err(|e| SpecError::resolve(e.to_string()))?;
-            Ok(builder.destination(dest).build()?)
-        }
-    }
+    let base = Path::new("");
+    // The provider's typed errors render verbatim — the frozen
+    // NotFound spelling, the handshake's identity/config refusals —
+    // never a facade paraphrase on top.
+    let source_ref = spec.source.desugar(base)?;
+    let source_config = source_ref.config.resolve(base)?;
+    let source = provider
+        .source(&source_ref.requirement(), &source_config)
+        .await
+        .map_err(|e| SpecError::resolve(e.to_string()))?;
+    let dest_ref = spec.destination.desugar(base)?;
+    let dest_config = dest_ref.config.resolve(base)?;
+    let dest = provider
+        .destination(&dest_ref.requirement(), &dest_config)
+        .await
+        .map_err(|e| SpecError::resolve(e.to_string()))?;
+    Ok(builder.source(source).destination(dest).build()?)
 }

@@ -17,8 +17,6 @@ path = "src/main.rs"
 # 2026-07-21); everything else ships in the workspace already.
 [dependencies]
 clap = { workspace = true }
-# postgres implies postgres-source; parquet implies file (see crates/rdlt features).
-rdlt = { workspace = true, features = ["rest", "duckdb", "postgres", "parquet", "iceberg"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -27,6 +25,16 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 tempfile = { workspace = true }
+
+[dev-dependencies]
+# The harness itself execs the built `rdlt` CLI; only the TEST suites
+# parse specs through the facade's shared model, so it rides dev-deps.
+rdlt = { workspace = true }
+# The remote-template pins push each `connector:` config block through
+# the named connector's OWN Document gate — reached directly now that
+# the facade compiles no connectors in (043 D1).
+rdlt-connector-file = { workspace = true }
+rdlt-connector-postgres = { workspace = true, features = ["source", "destination"] }
 
 [lints]
 workspace = true

@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rdlt::pipeline_spec::{DestSpec, SourceSpec, Spec};
+use rdlt::pipeline_spec::{ConfigSource, DestSpec, SourceSpec, Spec};
 use rdlt::sdk::config::Document;
 use rdlt_bench::runner::PIPELINE_SUBSTITUTION_KEYS;
 use rdlt_bench::template::substitute;
@@ -108,27 +108,30 @@ fn runner_subs() -> BTreeMap<String, String> {
 
 /// Push one `connector:` side's opaque config through the named
 /// connector's own Document gate — the validation a real run performs
-/// at the handshake, pulled forward to test time.
-fn validate_config(id: &str, role: &str, config: &serde_json::Value, file: &str) {
+/// at the handshake, pulled forward to test time. The connector crates
+/// are named DIRECTLY (dev-deps): since the D1 swap the facade
+/// compiles no connectors in, so the gates live only at their source.
+fn validate_config(id: &str, role: &str, config: &ConfigSource, file: &str) {
+    let ConfigSource::Inline(config) = config else {
+        panic!("{file}: the {role} `config:` block is written inline in every template");
+    };
     let config = config.clone();
     let outcome = match (id, role) {
         ("io.rapidbyte.postgres", "source") => {
-            rdlt::connector::postgres::source::Config::from_value(config)
+            rdlt_connector_postgres::source::Config::from_value(config)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         }
         ("io.rapidbyte.postgres", "destination") => {
-            rdlt::connector::postgres::destination::Config::from_value(config)
+            rdlt_connector_postgres::destination::Config::from_value(config)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         }
-        ("io.rapidbyte.file", "source") => {
-            rdlt::connector::file::source::Config::from_value(config)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
+        ("io.rapidbyte.file", "source") => rdlt_connector_file::source::Config::from_value(config)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
         ("io.rapidbyte.file", "destination") => {
-            rdlt::connector::file::destination::Config::from_value(config)
+            rdlt_connector_file::destination::Config::from_value(config)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         }

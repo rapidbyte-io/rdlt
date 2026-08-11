@@ -18,10 +18,12 @@
 //! # }
 //! ```
 //!
-//! Connector features: `rest` (declarative REST source), `duckdb`, `postgres`
-//! (with `postgres-source` / `postgres-dest` narrowings), `file`, `parquet`, and
-//! `iceberg`. The bundled connectors live under [`connector`], one module per SYSTEM —
-//! e.g. `rdlt::connector::postgres` carries `source`, `dest`, and `tls` together.
+//! Connectors run OUT OF PROCESS: every arm of a pipeline document — the
+//! rich spellings (`postgres:`, `file:`, `duckdb:`, …) and the explicit
+//! `connector:` form alike — resolves to a connector binary spawned and
+//! supervised through [`runtime`]. In-process implementations of the SPI
+//! traits (like the doctest's memory pair above) still plug straight into
+//! the [`Pipeline`] builder.
 
 // Warn, not deny: an undocumented public item is a gap to fill, not a
 // reason to fail a contributor's build. `make docs` is where the
@@ -46,42 +48,6 @@ pub use rdlt_core::{
 /// [`pipeline_spec::build_pipeline_with`] — or configure the default
 /// [`runtime::LocalBinaryConnectorProvider`] the no-provider form uses.
 pub use rdlt_runtime as runtime;
-
-/// The bundled connectors, one module per system — the same pattern as the
-/// crates themselves (`rdlt-connector-<system>`). A system module exposes
-/// everything it has: `connector::postgres::{source, destination, tls}`,
-/// `connector::rest::source::Shell`, `connector::duckdb::DuckDb`, etc.
-pub mod connector {
-    #[cfg(feature = "duckdb")]
-    pub use rdlt_connector_duckdb as duckdb;
-
-    #[cfg(feature = "file")]
-    pub use rdlt_connector_file as file;
-    #[cfg(feature = "oracle")]
-    pub use rdlt_connector_oracle as oracle;
-
-    #[cfg(feature = "iceberg")]
-    pub use rdlt_connector_iceberg as iceberg;
-
-    /// Frozen alias: the parquet destination lives in the file family;
-    /// `rdlt::connector::parquet::ParquetDir` keeps resolving for consumers
-    /// of the frozen `parquet` feature spelling.
-    #[cfg(feature = "parquet")]
-    pub use rdlt_connector_file as parquet;
-
-    #[cfg(any(
-        feature = "postgres",
-        feature = "postgres-source",
-        feature = "postgres-dest"
-    ))]
-    pub use rdlt_connector_postgres as postgres;
-
-    #[cfg(feature = "rest")]
-    pub use rdlt_connector_rest as rest;
-
-    #[cfg(feature = "snowflake")]
-    pub use rdlt_connector_snowflake as snowflake;
-}
 
 /// Glob-import target for pipeline authors.
 ///

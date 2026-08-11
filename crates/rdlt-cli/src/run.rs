@@ -1,7 +1,6 @@
-//! The `run` subcommand: parse the document, surface the CDC
-//! composition advisories, build through the shared model, drive the
-//! event feed, emit the report. The library does all the work — this
-//! file is plumbing and rendering.
+//! The `run` subcommand: parse the document, build through the shared
+//! model, drive the event feed, emit the report. The library does all
+//! the work — this file is plumbing and rendering.
 
 use std::path::PathBuf;
 
@@ -9,7 +8,7 @@ use rdlt::pipeline_spec::{self, Spec};
 
 use crate::args::Verbosity;
 use crate::ui::RendererKind;
-use crate::{CliError, cdc, ui};
+use crate::{CliError, ui};
 
 /// Where the run's outputs go — grouped so the drive signature stays
 /// readable as destinations accrue.
@@ -67,23 +66,13 @@ pub(crate) async fn run(
     .await
 }
 
-/// Parse the document and surface the CDC composition advisories —
-/// shared by `run` and `validate`, so the two can never disagree
-/// about what a valid document is.
+/// Parse the document — shared by `run` and `validate`, so the two
+/// can never disagree about what a valid document is.
 fn load_spec(spec_path: &std::path::Path) -> Result<(Spec, String), CliError> {
     let raw = std::fs::read_to_string(spec_path)
         .map_err(|e| CliError::Io(format!("reading {}: {e}", spec_path.display())))?;
     let spec: Spec =
         serde_yaml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
-
-    // The exactly-once CDC composition advisories need the resolved postgres
-    // SOURCE config; `pg_source_config` is `None` for other source kinds.
-    if let Some(config) = spec.pg_source_config() {
-        let config = config?;
-        for warning in cdc::cdc_composition_warnings(&spec, &config) {
-            crate::ui::stderr_line(&format!("warning: {warning}"));
-        }
-    }
     let name = spec.pipeline.clone();
     Ok((spec, name))
 }
