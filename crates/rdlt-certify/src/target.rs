@@ -7,7 +7,6 @@
 //! the provider spawns; everything role-generic lives HERE, once.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use rdlt_connector_protocol::handshake::Line;
@@ -15,10 +14,10 @@ use rdlt_runtime::{
     ClientError, ConnectorRequirement, LocalBinaryConnectorProvider, ProviderError, Role,
 };
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Command;
+use tokio::io::AsyncReadExt;
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
+use crate::wire;
 
 /// What to certify: the connector requirement plus the config document
 /// the certification session hands it. The config is CARRIED, never
@@ -206,83 +205,58 @@ pub(crate) fn report_p4(report: &mut Report, spec: &Result<rdlt_connector::Conne
 }
 
 /// The P1 probe: spawn the binary directly under `role`, read the FIRST
-/// stdout line under the provider's own cap and timeout, parse it as a
-/// handshake line, then listen [`SECOND_LINE_WINDOW`] for any further
-/// stdout byte — one is a violation (stdout is the machine channel;
-/// logs belong on stderr). EVERY exit — failure paths included (round-9
-/// fix: the early errors returned with only `kill_on_drop`'s SIGKILL
-/// sent, leaving a dying-not-dead child whose store lock could refuse
-/// the immediately-following wire spawn on a single-writer destination)
-/// — kills AND REAPS the probe process, and unlinks any socket its line
-/// advertised (no guard ever owned it).
+/// stdout line, parse it as a handshake line, then listen
+/// [`SECOND_LINE_WINDOW`] for any further stdout byte — one is a
+/// violation (stdout is the machine channel; logs belong on stderr).
+/// The spawn and first-line read are the wire attach's own funnel
+/// ([`wire::spawn_and_read_line`], round-12 — this probe hand-rolled
+/// an identical copy), and the child rides the standardized
+/// [`wire::ChildSlot`]: the unconditional [`wire::reap_parked`] on the
+/// way out kills AND REAPS the process and unlinks any socket its line
+/// advertised on EVERY exit, pass and fail alike (the round-9
+/// discipline).
 pub(crate) async fn probe_handshake_line(target: &Target, role: Role) -> Result<(), String> {
     let path = resolve_binary(&target.requirement)?;
-    let mut child = Command::new(&path)
-        // The bin contract's spelling, as the provider spawns it.
-        .arg(role_arg(role))
-        // stderr is nulled: this probe's only purpose is stdout
-        // discipline, not the connector's human log.
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| format!("spawning `{}`: {error}", path.display()))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .expect("stdout was piped at spawn, so the child carries it");
-    let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
-
-    // The probe body runs in a block so every path — pass and fail —
-    // funnels through the one kill-and-reap exit below.
-    let mut advertised_socket: Option<std::path::PathBuf> = None;
-    let verdict: Result<(), String> = async {
-        let mut line = String::new();
-        match tokio::time::timeout(LINE_TIMEOUT, reader.read_line(&mut line)).await {
-            Err(_elapsed) => {
-                return Err(format!(
-                    "wrote no handshake line within {}s — the first stdout line must be the \
-                     handshake line",
-                    LINE_TIMEOUT.as_secs()
-                ));
-            }
-            Ok(Err(error)) => return Err(format!("reading the handshake line: {error}")),
-            Ok(Ok(_bytes)) => {}
-        }
-        if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE_BYTES {
-            return Err(format!(
-                "wrote {MAX_LINE_BYTES} bytes of stdout without completing a handshake line"
-            ));
-        }
-        let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
-            .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
-        advertised_socket = Some(parsed.socket_path);
-
-        // The second-line poll: silence (or EOF — nothing more CAN be
-        // spoken) passes; any byte fails.
-        let mut byte = [0u8; 1];
-        match tokio::time::timeout(SECOND_LINE_WINDOW, reader.read(&mut byte)).await {
-            Err(/* window elapsed in silence */ _) | Ok(Ok(0)) => Ok(()),
-            Ok(Ok(_more)) => Err(
-                "stdout spoke after the handshake line — stdout is the machine channel and \
-                 carries EXACTLY one line; logs belong on stderr"
-                    .to_string(),
-            ),
-            Ok(Err(error)) => Err(format!("reading stdout after the handshake line: {error}")),
-        }
-    }
-    .await;
-
-    // Kill the probe — awaited, so it is dead and reaped, not dying,
-    // when the caller's next spawn opens the same store — and reclaim
-    // any socket its line advertised.
-    let _ = child.kill().await;
-    if let Some(socket) = advertised_socket {
-        let _ = std::fs::remove_file(&socket);
-    }
+    let slot = wire::ChildSlot::default();
+    let verdict = first_line_discipline(&path, role, &slot).await;
+    wire::reap_parked(&slot).await;
     verdict
+}
+
+/// The P1 judgments proper, over the shared funnel; the caller owns
+/// the one reap on the way out (a helper error path has already
+/// reaped — [`wire::reap_parked`] is idempotent).
+async fn first_line_discipline(
+    path: &std::path::Path,
+    role: Role,
+    slot: &wire::ChildSlot,
+) -> Result<(), String> {
+    let (mut reader, line) = wire::spawn_and_read_line(path, role, slot).await?;
+    if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE_BYTES {
+        return Err(format!(
+            "wrote {MAX_LINE_BYTES} bytes of stdout without completing a handshake line"
+        ));
+    }
+    let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
+        .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
+    // The advertised socket joins the parked state the moment it is
+    // KNOWN, so the caller's reap unlinks it too.
+    slot.lock()
+        .expect("child slot lock")
+        .park_socket(parsed.socket_path);
+
+    // The second-line poll: silence (or EOF — nothing more CAN be
+    // spoken) passes; any byte fails.
+    let mut byte = [0u8; 1];
+    match tokio::time::timeout(SECOND_LINE_WINDOW, reader.read(&mut byte)).await {
+        Err(/* window elapsed in silence */ _) | Ok(Ok(0)) => Ok(()),
+        Ok(Ok(_more)) => Err(
+            "stdout spoke after the handshake line — stdout is the machine channel and \
+             carries EXACTLY one line; logs belong on stderr"
+                .to_string(),
+        ),
+        Ok(Err(error)) => Err(format!("reading stdout after the handshake line: {error}")),
+    }
 }
 
 /// Resolve the requirement to a spawnable path for a direct probe (the

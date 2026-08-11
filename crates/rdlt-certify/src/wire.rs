@@ -154,6 +154,15 @@ pub(crate) struct Parked {
     socket: Option<PathBuf>,
 }
 
+impl Parked {
+    /// Park the advertised socket the moment it is known, so every
+    /// subsequent reap unlinks it — the P1 probe's seam into the
+    /// shared cleanup (attach parks its own inline).
+    pub(crate) fn park_socket(&mut self, socket: PathBuf) {
+        self.socket = Some(socket);
+    }
+}
+
 /// The shared handle to one attach's [`Parked`] state.
 pub(crate) type ChildSlot = std::sync::Arc<std::sync::Mutex<Parked>>;
 
@@ -172,6 +181,64 @@ pub(crate) async fn reap_parked(slot: &ChildSlot) {
     }
     if let Some(socket) = socket {
         let _ = std::fs::remove_file(&socket);
+    }
+}
+
+/// Spawn `bin` under `role` with the probes' shared stdio discipline
+/// (stdout piped and capped, stderr nulled, stdin nulled,
+/// `kill_on_drop` as the net under the slot), park the child in
+/// `slot`, and read the FIRST stdout line under [`MAX_LINE_BYTES`] and
+/// [`LINE_TIMEOUT`] — the one first-line funnel the wire attach and
+/// the P1 line probe both ride (round-12: P1 hand-rolled an identical
+/// copy, kill-and-reap included). Error paths REAP the parked child
+/// before returning; the returned reader carries whatever stdout
+/// follows the line, for callers that keep listening.
+pub(crate) async fn spawn_and_read_line(
+    bin: &Path,
+    role: Role,
+    slot: &ChildSlot,
+) -> Result<
+    (
+        BufReader<tokio::io::Take<tokio::process::ChildStdout>>,
+        String,
+    ),
+    String,
+> {
+    let mut child = Command::new(bin)
+        .arg(role_arg(role))
+        // stderr is nulled: the probes observe the machine channel and
+        // the wire, not the connector's human log.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        // The safety net under the slot: if the slot itself is
+        // dropped with the child parked, the drop still signals.
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("spawning `{}`: {error}", bin.display()))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .expect("stdout was piped at spawn, so the child carries it");
+    slot.lock().expect("child slot lock").child = Some(child);
+
+    let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
+    let mut line = String::new();
+    match tokio::time::timeout(LINE_TIMEOUT, reader.read_line(&mut line)).await {
+        Err(_elapsed) => {
+            reap_parked(slot).await;
+            Err(format!(
+                "wrote no handshake line within {}s — the first stdout line must be the \
+                 handshake line",
+                LINE_TIMEOUT.as_secs()
+            ))
+        }
+        Ok(Err(error)) => {
+            reap_parked(slot).await;
+            Err(format!("reading the handshake line: {error}"))
+        }
+        Ok(Ok(_bytes)) => Ok((reader, line)),
     }
 }
 
@@ -229,42 +296,7 @@ impl WireProbe {
         budget_bytes: u64,
         slot: &ChildSlot,
     ) -> Result<Self, String> {
-        let mut child = Command::new(bin)
-            .arg(role_arg(role))
-            // stderr is nulled: the probe observes the machine channel
-            // and the wire, not the connector's human log.
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            // The safety net under the slot: if the slot itself is
-            // dropped with the child parked, the drop still signals.
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("spawning `{}`: {error}", bin.display()))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .expect("stdout was piped at spawn, so the child carries it");
-        slot.lock().expect("child slot lock").child = Some(child);
-
-        let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
-        let mut line = String::new();
-        match tokio::time::timeout(LINE_TIMEOUT, reader.read_line(&mut line)).await {
-            Err(_elapsed) => {
-                reap_parked(slot).await;
-                return Err(format!(
-                    "wrote no handshake line within {}s — the first stdout line must be the \
-                     handshake line",
-                    LINE_TIMEOUT.as_secs()
-                ));
-            }
-            Ok(Err(error)) => {
-                reap_parked(slot).await;
-                return Err(format!("reading the handshake line: {error}"));
-            }
-            Ok(Ok(_bytes)) => {}
-        }
+        let (_reader, line) = spawn_and_read_line(bin, role, slot).await?;
         let parsed = match Line::parse(line.trim_end_matches(['\n', '\r'])) {
             Ok(parsed) => parsed,
             Err(error) => {
