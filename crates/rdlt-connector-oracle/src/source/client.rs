@@ -165,10 +165,10 @@ const DPI_CLIENT_LOAD_FAMILY: &[i32] = &[1047, 1049, 1050, 1072, 1079];
 /// RUNTIME, and a process without a usable one dies inside the driver
 /// with an error no caller upstream can type. Probed by attempting a
 /// connection to an address nothing answers: the driver reports a
-/// load-time client failure ([`DPI_CLIENT_LOAD_FAMILY`], through the
-/// crate's structured `Error::dpi_code` accessor — no ORA code exists
-/// at that layer) differently from a network failure, and any OTHER
-/// outcome means a client was found and loaded.
+/// load-time client failure (the `DPI_CLIENT_LOAD_FAMILY` codes just
+/// above, through the crate's structured `Error::dpi_code` accessor —
+/// no ORA code exists at that layer) differently from a network
+/// failure, and any OTHER outcome means a client was found and loaded.
 ///
 /// The connector binary calls this BEFORE the protocol handshake so an
 /// unusable client is a typed refusal on stderr, never an opaque death
