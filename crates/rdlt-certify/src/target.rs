@@ -466,7 +466,6 @@ mod tests {
         );
     }
 
-    /// The negative pin for the manual `Debug`: a marker planted inside
     /// Round-9 fix: an EARLY P1 failure (here the fastest one — an
     /// unparseable first line) must kill AND REAP the probe child
     /// before returning. `kill_on_drop` only SENDS SIGKILL, and a
@@ -511,6 +510,7 @@ mod tests {
         );
     }
 
+    /// The negative pin for the manual `Debug`: a marker planted inside
     /// the config document never reaches the rendered output — the
     /// document is elided, not filtered.
     #[test]

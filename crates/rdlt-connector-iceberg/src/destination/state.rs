@@ -318,12 +318,6 @@ pub(super) async fn read_state_doc(
     }
 }
 
-/// Remove a scope's state property. TEST-ONLY: production never
-/// deletes a state property (a load only ever `write_state`s), this
-/// exists so a live cell can relocate a pipeline's state to the
-/// legacy key (`testhook::move_state_to_legacy_key`) without leaving
-/// BOTH the current and legacy properties behind — which would mask
-/// the very refusal gate under test.
 /// TEST-ONLY (behind the testhook): remove one load's receipt property
 /// — the missing half of the mid-publish crash residue `remove_state`
 /// stages (a crash between a table's `append_commit` and the receipt
@@ -358,6 +352,12 @@ pub(super) async fn remove_receipt(
     .map(|_| ())
 }
 
+/// Remove a scope's state property. TEST-ONLY: production never
+/// deletes a state property (a load only ever `write_state`s), this
+/// exists so a live cell can relocate a pipeline's state to the
+/// legacy key (`testhook::move_state_to_legacy_key`) without leaving
+/// BOTH the current and legacy properties behind — which would mask
+/// the very refusal gate under test.
 pub(super) async fn remove_state(
     catalog: &Arc<dyn Catalog>,
     namespace: &NamespaceIdent,
