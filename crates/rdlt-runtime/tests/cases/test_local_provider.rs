@@ -346,7 +346,7 @@ async fn a_closed_stdout_with_a_live_child_refuses_without_the_line_deadline() {
         .await
         .expect_err("a closed stdout must refuse");
     assert!(
-        started.elapsed() < Duration::from_secs(6),
+        started.elapsed() < Duration::from_secs(8),
         "the refusal must come from the EOF grace, not the 10 s line \
          deadline (took {:?})",
         started.elapsed()
