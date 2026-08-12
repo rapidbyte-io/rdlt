@@ -41,8 +41,12 @@ const MAX_LINE_BYTES: u64 = 64 * 1024;
 /// learn — reports the exit status rather than an empty-line parse.
 /// A child that closed stdout and kept running gets the same typed
 /// handshake-line refusal it always did, after this grace instead of
-/// the full line deadline.
-const EOF_EXIT_GRACE: Duration = Duration::from_millis(500);
+/// the full line deadline. Generous relative to the instant the
+/// common case needs, deliberately: a role refusal whose exit status
+/// is reaped AFTER the grace would misreport as a malformed handshake
+/// — and on the flagless dual-role probe, skip the destination retry
+/// keyed to the exit code — so the grace errs far toward waiting.
+const EOF_EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// Spawns connector binaries and manages their lifecycle (D-039-1).
 ///
