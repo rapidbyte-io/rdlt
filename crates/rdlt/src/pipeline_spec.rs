@@ -139,7 +139,7 @@ pub enum DestSpec {
 /// a YAML/JSON file read at build time. A string means a path —
 /// connector documents are mappings by construction, so the untagged
 /// order cannot misread an inline document.
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(untagged)]
 pub enum ConfigSource {
     /// `postgres: path/to/document.yaml` — the document lives in its
