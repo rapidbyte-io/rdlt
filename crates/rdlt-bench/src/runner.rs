@@ -118,9 +118,8 @@ fn render_spec(
     Ok(Some(spec))
 }
 
-/// The connector binaries a pipeline template names, read straight off
-/// the UNRENDERED text: every `{{bins}}/<name>` occurrence yields
-/// `<name>`.
+/// The connector binaries a pipeline template names through literal
+/// `{{bins}}/<name>` paths, read straight from the unrendered text.
 ///
 /// Scoped by construction — a template that never mentions `{{bins}}`
 /// (a rich-spelling spec resolves its bins off PATH instead) yields an
@@ -143,23 +142,52 @@ fn required_connector_bins(template: &str) -> BTreeSet<&str> {
     names
 }
 
-/// Everything a cell needs ON DISK before anything is built, seeded or
-/// measured: the release CLI, and every connector binary its template
-/// names via `{{bins}}`.
+/// The conventional connector binaries named by the pipeline's source
+/// and destination declarations. Rich spellings use their key directly;
+/// `connector:` declarations use the last segment of their `id`.
+fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
+    let mut rendered = template.to_owned();
+    for key in PIPELINE_SUBSTITUTION_KEYS {
+        rendered = rendered.replace(&format!("{{{{{key}}}}}"), "rdlt-placeholder");
+    }
+    let document: serde_yaml::Value = serde_yaml::from_str(&rendered)
+        .map_err(|error| BenchError(format!("parsing pipeline template: {error}")))?;
+    let mut bins = BTreeSet::new();
+    for role in ["source", "destination"] {
+        let Some(declaration) = document.get(role).and_then(serde_yaml::Value::as_mapping) else {
+            continue;
+        };
+        let connector = serde_yaml::Value::String("connector".to_owned());
+        let spelling = if let Some(explicit) = declaration
+            .get(&connector)
+            .and_then(serde_yaml::Value::as_mapping)
+        {
+            let id = serde_yaml::Value::String("id".to_owned());
+            explicit
+                .get(&id)
+                .and_then(serde_yaml::Value::as_str)
+                .and_then(|value| value.rsplit('.').next())
+        } else {
+            declaration.keys().find_map(serde_yaml::Value::as_str)
+        };
+        if let Some(segment) = spelling.filter(|segment| !segment.is_empty()) {
+            bins.insert(format!("rdlt-connector-{segment}"));
+        }
+    }
+    Ok(bins)
+}
+
+/// Everything a cell needs on disk before anything is built, seeded or
+/// measured: the release CLI and every connector binary its pipeline
+/// names through a literal path, a rich spelling, or a connector id.
 ///
-/// Depends on the cell and the paths and NOTHING else, which is what
-/// lets it run at the very top of `main`'s `run_one_cell` — BEFORE
-/// `fixtures::start` brings up containers and generates datasets, and
-/// before the competitor baselines run. That placement is the whole
-/// point: a missing binary used to surface at spawn, after the fixture
-/// seed (up to 1M rows) and after every dlt/Airbyte arm had already
-/// run, so the operator paid the full cost of the cell to learn they
-/// had not built something. Now nothing is paid.
+/// The function depends only on the cell and paths, so `run_one_cell`
+/// calls it before `fixtures::start` brings up containers or generates
+/// datasets and before competitor baselines run.
 ///
-/// `run_cell` calls it too. That is not redundancy for its own sake:
-/// `run_cell` is public and `tests/selftest.rs` drives it directly, so
-/// the guarantee has to live at that entry point as well. The cost is
-/// two `stat`s and one small file read.
+/// `run_cell` calls it too because that public entry point is also used
+/// directly. Each call performs filesystem metadata checks and one
+/// small template read.
 pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
     // Every cell runs the same way: the release-CLI subprocess, warmups then N
     // counted runs. A `command` cell (selftest) needs no CLI; a pipeline cell
@@ -170,11 +198,10 @@ pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
             paths.cli.display()
         )));
     }
-    // The same question for the connector binaries a cell's template
-    // names via `{{bins}}`. Reads the template — render_spec reads it
-    // again per run, which is cheap and keeps that function's one job
-    // intact. (A rich-spelling template names no binary, so a bin it
-    // resolves off PATH at spawn time is not checked here.)
+    // The same question for connector binaries. The literal token check
+    // preserves path-specific diagnostics; the declaration check covers
+    // rich spellings and connector ids before PATH resolution can reach a
+    // host-installed binary.
     if let Some(template) = &cell.pipeline {
         let path = paths.benches.join(template);
         let raw = std::fs::read_to_string(&path).map_err(|e| {
@@ -192,9 +219,28 @@ pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
                      as `{{{{bins}}}}/{name}`; build it with `cargo build --release \
                      -p {name} --features bin-serve --bin {name}` (release \
                      unconditionally, like the CLI: a debug fallback would measure an \
-                     unoptimized connector)",
+                     unoptimized connector), or run `make connector-bins`",
                     cell.id,
                     bin.display()
+                )));
+            }
+        }
+        let declared = declared_connector_bins(&raw).map_err(|error| {
+            BenchError(format!(
+                "cell `{}`: reading connector declarations from {}: {error}",
+                cell.id,
+                path.display()
+            ))
+        })?;
+        for name in declared {
+            let bin = paths.bins.join(&name);
+            if !bin.is_file() {
+                return Err(BenchError(format!(
+                    "cell `{}`: connector binary missing at {} — pipeline {} requires \
+                     `{name}`; run `make connector-bins` before benchmarking",
+                    cell.id,
+                    bin.display(),
+                    path.display()
                 )));
             }
         }
@@ -673,12 +719,10 @@ pub fn run_cell(
 mod tests {
     use super::*;
 
-    /// The `{{bins}}` precondition's scope, both directions: a
-    /// `connector:`-shaped template names its binaries, and a
-    /// rich-spelling one names none — which is what keeps the
-    /// precondition invisible to it (its bins resolve off PATH).
+    /// Literal paths and pipeline declarations independently identify
+    /// the connector binaries a cell requires.
     #[test]
-    fn connector_bins_are_read_off_the_template_and_only_off_remote_ones() {
+    fn connector_bins_are_read_from_paths_and_declarations() {
         let remote = "source:\n  connector:\n    path: {{bins}}/rdlt-connector-postgres\n\
                       destination:\n  connector:\n    path: \"{{bins}}/rdlt-connector-file\"\n";
         assert_eq!(
@@ -694,6 +738,80 @@ mod tests {
         // name after it, both demand nothing.
         assert!(required_connector_bins("source:\n  postgres:\n    conn: {{conn}}\n").is_empty());
         assert!(required_connector_bins("dir: {{bins}}\n").is_empty());
+
+        let rich = "source:\n  oracle: {{data}}/oracle.yaml\n\
+                    destination:\n  postgres:\n    conn: '{{conn}}'\n";
+        assert_eq!(
+            declared_connector_bins(rich).expect("the rich template parses"),
+            BTreeSet::from([
+                "rdlt-connector-oracle".to_owned(),
+                "rdlt-connector-postgres".to_owned(),
+            ])
+        );
+        let explicit = "source:\n  connector:\n    id: io.rapidbyte.file\n\
+                        destination:\n  connector:\n    id: io.rapidbyte.postgres\n";
+        assert_eq!(
+            declared_connector_bins(explicit).expect("the connector template parses"),
+            BTreeSet::from([
+                "rdlt-connector-file".to_owned(),
+                "rdlt-connector-postgres".to_owned(),
+            ])
+        );
+    }
+
+    /// A rich-spelling pipeline refuses a missing release connector
+    /// before the runner can resolve a host-installed binary from PATH.
+    #[test]
+    fn rich_pipeline_refuses_a_missing_release_connector() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let benches = root.path().join("benches");
+        let pipeline = benches.join("cells/pipelines/rich.yaml");
+        let bins = root.path().join("target/release");
+        std::fs::create_dir_all(pipeline.parent().expect("pipeline parent"))
+            .expect("the pipeline directory creates");
+        std::fs::create_dir_all(&bins).expect("the release directory creates");
+        std::fs::write(
+            &pipeline,
+            "source:\n  oracle: config.yaml\ndestination:\n  postgres: {}\n",
+        )
+        .expect("the rich pipeline writes");
+        let cli = bins.join("rdlt");
+        std::fs::write(&cli, "").expect("the release CLI marker writes");
+        let paths = Paths {
+            repo: root.path().to_owned(),
+            benches,
+            cells_dir: root.path().join("unused-cells"),
+            fixtures_toml: root.path().join("unused-fixtures.toml"),
+            bars_toml: root.path().join("unused-bars.toml"),
+            results: root.path().join("unused-results"),
+            cli,
+            bins: bins.clone(),
+        };
+        let file: toml::Value = toml::from_str(
+            "[[cell]]\nid='rich'\nfixtures=['oracle']\npipeline='cells/pipelines/rich.yaml'\n\
+             [cell.verify]\nevents=1\n",
+        )
+        .expect("the cell TOML parses");
+        let cell: Cell = file["cell"][0]
+            .clone()
+            .try_into()
+            .expect("the cell deserializes");
+
+        let error = preconditions(&cell, &paths)
+            .expect_err("a missing rich connector must refuse")
+            .to_string();
+        assert!(
+            error.contains(
+                bins.join("rdlt-connector-oracle")
+                    .to_str()
+                    .expect("utf-8 path")
+            ),
+            "the refusal names the missing binary: {error}"
+        );
+        assert!(
+            error.contains("make connector-bins"),
+            "the refusal names the aggregate build target: {error}"
+        );
     }
 
     /// The `put` guard is live, not decorative: a key outside
