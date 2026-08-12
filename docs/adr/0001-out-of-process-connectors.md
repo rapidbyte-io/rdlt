@@ -429,6 +429,69 @@ certifier is the boundary (a connector enters when `rdlt-certify`
 passes it, the same bar third parties answer to), which is what
 keeps the new repo free of legacy by construction.
 
+*(AMENDED 2026-08-12 — THE SEED IS EXECUTED. Feature 044 created
+`rdlt-connectors` in exactly the shape this direction recorded: one
+first-party connector monorepo (the rapidbyte-io shape, local until
+the owner creates the remote) carrying the seven connectors +
+sqlcore + the examples and their gate, seeded FRESH from rdlt @
+`5bd54c1e` with the provenance pointer in the seed commits and
+README rather than an extracted history — per-file blame
+deliberately not carried; the full development history stays
+reachable forever in rdlt's log, under rdlt's `pre-repo-split` tag.
+The boundary is the one this paragraph promised, and it is ENFORCED
+rather than aspirational: every connector crate carries its
+certify-wire suite inside the new repo's own `make check`, so a
+connector that stops certifying fails the repo's own gate — the
+same `rdlt-certify` bar a third-party entry answers to. That gate
+ran standalone-green twice at predicted counts (932 nextest tests +
+3 doc-tests: 878 workspace + 28 spawn matrix + 1 e2e + 25 sweep)
+BEFORE the cut in rdlt was permitted, and once more, unchanged,
+after it — the decoupling is measured, not asserted.
+
+The engine repo tests the contract with a NEW
+`rdlt-connector-reference` crate: a deliberately minimal jsonl
+source (real persistable byte cursor) and jsonl destination (real
+durable receipt log), sdk-born under the one-dependency rule,
+passing both testkit conformance kits AND rdlt-certify inside the
+default gate — the engine keeps a live certifier exercise after the
+product connectors leave. It gets NO rich YAML spelling and no
+desugar-table row (it is the contract's connector, not a product
+connector; tests reach it as `io.rapidbyte.reference`), and it is
+the living companion to docs/connector-authoring.md. The gate split
+the Consequences below anticipated ("designed deliberately at
+repo-split time") is now real: rdlt's gate is engine + contract +
+reference (602 workspace / 692 gated nextest tests, twice clean at
+prediction post-cut), the connectors repo's gate is the
+per-connector suites plus certification, and the certifier stands
+between them.
+
+The cross-repo mechanism is git dependencies on rdlt's pushed
+origin main: the connectors repo consumes the sdk (and the SPI,
+testkit, and the dev-dep tier) as
+`{ git = "https://github.com/rapidbyte-io/rdlt" }` entries with NO
+version key — under the 023 packaging rule that form makes
+`cargo package` REFUSE, the safe posture until the publish wave
+deliberately respells git→version crate by crate. The committed
+Cargo.lock pins the exact rdlt revision (`360beea8` at seed time),
+so engine changes arrive only via a deliberate `cargo update`; the
+two-checkout dev loop is a gitignored local
+`[patch.'https://github.com/rapidbyte-io/rdlt']` redirect,
+documented in the new repo's README and never committed.
+
+Two operational consequences, recorded here because the
+Consequences below describe the old shape: (1) the benchmark stays
+engine-side, but its five e2e cells now need connector bins
+PROVISIONED from the connectors repo (`make connector-bins` there;
+rdlt's bench preflight refuses with instructions when bins are
+missing) — a provisioning verb or configurable bins dir is recorded
+owner work; (2) the cold-start regime changed again, downward: the
+≤40 ms bar is unchanged and still measured end-to-end including two
+connector spawn+handshakes, but the floor fell from 043's 27.9 ms
+to 7.3/7.5 ms in-gate (5.2 ms on a quiet machine) because the
+destination arm is now the reference connector and duckdb's
+shared-library open left the measured pipeline. Read future cold
+figures against the reference-connector regime, dated 2026-08-12.)*
+
 Merge policy (owner decision, 2026-08-06): interim program features
 merge to main INDIVIDUALLY as they complete — they are additive and
 inert by construction, per-feature gates stay truthful against real
