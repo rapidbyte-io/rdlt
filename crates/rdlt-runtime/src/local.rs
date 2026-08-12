@@ -34,6 +34,16 @@ const DEFAULT_LINE_TIMEOUT: Duration = Duration::from_secs(10);
 /// would grow the line buffer unboundedly until the timeout.
 const MAX_LINE_BYTES: u64 = 64 * 1024;
 
+/// How long after stdout EOF the provider waits for the child to EXIT
+/// before refusing on the empty line. EOF means no handshake can ever
+/// arrive, so this is not a handshake budget: it exists only so the
+/// overwhelmingly common shape — the process died and EOF is how we
+/// learn — reports the exit status rather than an empty-line parse.
+/// A child that closed stdout and kept running gets the same typed
+/// handshake-line refusal it always did, after this grace instead of
+/// the full line deadline.
+const EOF_EXIT_GRACE: Duration = Duration::from_millis(500);
+
 /// Spawns connector binaries and manages their lifecycle (D-039-1).
 ///
 /// Discovery: the requirement id's LAST `.`-segment names the binary —
@@ -201,12 +211,17 @@ impl LocalBinaryConnectorProvider {
             Ok(Err(source)) => Err(spawn_error(source)),
             Ok(Ok(bytes)) => {
                 if bytes == 0 {
-                    match tokio::time::timeout_at(deadline, child.wait()).await {
-                        Err(_elapsed) => {
-                            return Err(ProviderError::Timeout {
-                                binary: binary.to_string(),
-                            });
-                        }
+                    // EOF: no handshake can ever arrive, so never wait
+                    // out the full line deadline here — a child that
+                    // closed stdout but kept running would convert this
+                    // typed refusal into a Timeout. [`EOF_EXIT_GRACE`]
+                    // bounds the wait for an exit status; on elapse the
+                    // empty line falls through to the parse refusal
+                    // below (the still-running child dies with its
+                    // kill_on_drop handle).
+                    let grace = tokio::time::Instant::now() + EOF_EXIT_GRACE;
+                    match tokio::time::timeout_at(deadline.min(grace), child.wait()).await {
+                        Err(_elapsed) => {}
                         Ok(Err(source)) => return Err(spawn_error(source)),
                         Ok(Ok(status)) if !status.success() => {
                             return Err(ProviderError::ExitedBeforeHandshake {

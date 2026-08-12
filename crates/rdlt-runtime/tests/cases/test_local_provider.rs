@@ -322,6 +322,41 @@ async fn a_newline_less_flood_refuses_at_the_cap() {
     );
 }
 
+/// A binary that CLOSES stdout without exiting refuses typed as
+/// `HandshakeLine` (the empty line) after the short EOF exit-grace —
+/// never as a full-line-deadline `Timeout`: EOF means no handshake can
+/// ever arrive, so there is nothing left to wait for. The 10 s default
+/// line budget stays in force to prove the refusal beat it.
+#[tokio::test]
+async fn a_closed_stdout_with_a_live_child_refuses_without_the_line_deadline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_script(
+        dir.path(),
+        "rdlt-connector-fake",
+        "#!/bin/sh\nexec >&- \nexec sleep 30\n",
+    );
+
+    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let started = std::time::Instant::now();
+    let error = provider
+        .source(
+            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("a closed stdout must refuse");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the refusal must come from the EOF grace, not the 10 s line \
+         deadline (took {:?})",
+        started.elapsed()
+    );
+    match &error {
+        ProviderError::HandshakeLine { binary, .. } => assert_eq!(binary, "rdlt-connector-fake"),
+        other => panic!("expected HandshakeLine, got {other:?}"),
+    }
+}
+
 /// A first line that is not a handshake line refuses typed as
 /// `HandshakeLine`, carrying the parse refusal as its cause.
 #[tokio::test]
