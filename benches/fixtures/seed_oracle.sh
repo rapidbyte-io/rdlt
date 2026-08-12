@@ -8,8 +8,8 @@
 # port) has passed. That probe means nothing here: Oracle's listener accepts
 # TCP long before FREEPDB1 registers with it, and a connect in that gap answers
 # ORA-12514. So the REAL readiness wait lives here, in two phases, mirroring
-# the connector's own fixture (crates/rdlt-connector-oracle/tests/cases/
-# common.rs::await_service):
+# the connector's own fixture (rdlt-connectors repo,
+# crates/rdlt-connector-oracle/tests/cases/common.rs::await_service):
 #
 #   1. the image's "DATABASE IS READY TO USE!" line in the container log — the
 #      CDB opened and gvenzl's setup scripts (which create the app user) ran;

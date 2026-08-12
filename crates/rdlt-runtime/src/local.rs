@@ -51,7 +51,7 @@ const EOF_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// Spawns connector binaries and manages their lifecycle (D-039-1).
 ///
 /// Discovery: the requirement id's LAST `.`-segment names the binary —
-/// `io.rapidbyte.file` → `rdlt-connector-file` — found by a
+/// `io.rapidbyte.reference` → `rdlt-connector-reference` — found by a
 /// `which`-style walk of PATH. An explicit `path` on the requirement
 /// bypasses discovery entirely (no managed directory tree, no
 /// registry — that layer belongs to products above, ADR 0001 D2).
@@ -298,7 +298,7 @@ impl LocalBinaryConnectorProvider {
     /// equality): a discovered binary whose reported `name` differs
     /// from the requirement id is refused, never worked around — the
     /// last-segment convention would otherwise resolve
-    /// `com.example.file` to `rdlt-connector-file` and print the WRONG
+    /// `com.example.reference` to `rdlt-connector-reference` and print the WRONG
     /// connector's schema as if it were the asked-for one. An explicit
     /// `path` on the requirement skips the check: the operator named a
     /// binary, not an id, so whatever it reports IS the answer.
@@ -339,7 +339,7 @@ impl LocalBinaryConnectorProvider {
 }
 
 /// D-039-1's convention: the id's LAST `.`-segment, prefixed
-/// `rdlt-connector-` — `io.rapidbyte.file` → `rdlt-connector-file`. An
+/// `rdlt-connector-` — `io.rapidbyte.reference` → `rdlt-connector-reference`. An
 /// id with no dots is its own last segment.
 fn binary_name(id: &str) -> String {
     let segment = id.rsplit('.').next().unwrap_or(id);
@@ -417,11 +417,10 @@ mod tests {
     /// The convention, spelled: last segment, dotless ids included.
     #[test]
     fn the_binary_name_convention_takes_the_last_segment() {
-        assert_eq!(binary_name("io.rapidbyte.file"), "rdlt-connector-file");
         assert_eq!(
-            binary_name("io.rapidbyte.postgres"),
-            "rdlt-connector-postgres"
+            binary_name("io.rapidbyte.reference"),
+            "rdlt-connector-reference"
         );
-        assert_eq!(binary_name("file"), "rdlt-connector-file");
+        assert_eq!(binary_name("reference"), "rdlt-connector-reference");
     }
 }

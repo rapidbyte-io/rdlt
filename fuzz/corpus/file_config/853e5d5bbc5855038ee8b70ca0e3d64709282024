@@ -1,3 +1,0 @@
-streams:
-  - name: events
-    format: json#

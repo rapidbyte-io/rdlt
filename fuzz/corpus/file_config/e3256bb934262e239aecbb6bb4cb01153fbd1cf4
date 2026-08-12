@@ -1,4 +1,0 @@
-streams:
-  - name: envets
-    format: jsonl
-    ptah: "/dat

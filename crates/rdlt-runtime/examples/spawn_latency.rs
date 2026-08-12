@@ -1,22 +1,23 @@
 //! The 041 spawn-latency instrument, run BY HAND in the recorded
-//! session (Task 7): spawn the postgres connector bin N times
+//! session (Task 7, then measured against the postgres bin; since the
+//! 044 cut the in-tree default subject is the reference connector —
+//! any bin path works via argv[1]): spawn the connector bin N times
 //! sequentially through the provider and report min/median/p90 of
 //! spawn → handshake-complete (process spawn, handshake line, socket
 //! dial, wire handshake with the connector validating its config —
 //! everything a `connector:` pipeline pays before the first byte).
 //!
-//! The config is syntactically valid and validated LOCALLY by the
-//! connector's own gate, so NO live postgres server is needed. Each
-//! spawned child is dropped before the next spawn — sequential cold
-//! spawns, no pooling.
+//! The config is validated LOCALLY by the connector's own gate, so no
+//! live service is needed. Each spawned child is dropped before the
+//! next spawn — sequential cold spawns, no pooling.
 //!
 //! Usage (bin path is argv[1]; omit it to discover
-//! `rdlt-connector-postgres` on PATH; N is argv[2], default 20):
+//! `rdlt-connector-reference` on PATH; N is argv[2], default 20):
 //!
 //! ```sh
-//! cargo build -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
+//! cargo build -p rdlt-connector-reference --features bin-serve --bin rdlt-connector-reference
 //! cargo run -p rdlt-runtime --features spawn-bins --example spawn_latency -- \
-//!     target/debug/rdlt-connector-postgres [N]
+//!     target/debug/rdlt-connector-reference [N]
 //! ```
 
 use std::time::Instant;
@@ -38,16 +39,13 @@ async fn main() {
     // wrong. Say what the expect already promises.
     assert!(n > 0, "N (argv[2]) must be a positive integer, got 0");
 
-    let mut requirement = ConnectorRequirement::new("io.rapidbyte.postgres");
+    let mut requirement = ConnectorRequirement::new("io.rapidbyte.reference");
     if let Some(bin) = &bin {
         requirement = requirement.with_path(bin);
     }
     // Validated by the connector's LOCAL config gate at the handshake;
-    // nothing connects to this address.
-    let config = serde_json::json!({
-        "conn": "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=src",
-        "tables": [{"name": "events"}],
-    });
+    // the file need not exist for the handshake to complete.
+    let config = serde_json::json!({ "path": "spawn-latency-probe.jsonl" });
     let provider = LocalBinaryConnectorProvider::new();
 
     let mut samples_ms: Vec<f64> = Vec::with_capacity(n);
@@ -71,7 +69,7 @@ async fn main() {
     // middle values (9.5 rounds up).
     let rank = |q: f64| samples_ms[(q * (samples_ms.len() - 1) as f64).round() as usize];
     println!(
-        "spawn -> handshake-complete, io.rapidbyte.postgres (source role), \
+        "spawn -> handshake-complete, io.rapidbyte.reference (source role), \
          {n} sequential spawns ({}):",
         bin.as_deref().unwrap_or("discovered on PATH"),
     );

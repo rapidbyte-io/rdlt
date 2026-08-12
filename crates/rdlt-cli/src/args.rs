@@ -68,9 +68,9 @@ pub enum Command {
         /// Which connector's document to describe: a short name (rest,
         /// oracle, file, postgres, duckdb, iceberg, snowflake — the
         /// same table the pipeline document's rich spellings resolve
-        /// through), a reverse-DNS id (io.rapidbyte.file, found as
-        /// rdlt-connector-file on PATH), or an explicit binary path.
-        /// The named binary is spawned and asked for its schema.
+        /// through), a reverse-DNS id (io.rapidbyte.reference, found
+        /// as rdlt-connector-reference on PATH), or an explicit binary
+        /// path. The named binary is spawned and asked for its schema.
         #[arg(value_name = "connector")]
         connector: String,
 

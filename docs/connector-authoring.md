@@ -1,9 +1,14 @@
 # Authoring an rdlt connector
 
 How to build a connector on `rdlt-connector-sdk` — the shape every
-in-tree connector converges on and the shape an out-of-tree connector
-starts with. The worked examples are `rdlt-connector-rest` (a source)
-and `rdlt-connector-postgres` (both halves); read them alongside this.
+first-party connector converges on and the shape an out-of-tree
+connector starts with. The living in-tree example is
+`rdlt-connector-reference` (both halves, deliberately small — the
+contract's own connector, which this repo's gates spawn and certify);
+the seven first-party connectors in the sibling
+[rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
+repository are the production-shaped worked examples (`rest` as a
+source, `postgres` as both halves). Read them alongside this.
 
 ## The one-dependency rule
 
@@ -21,10 +26,10 @@ feature under the same spelling: `failpoints` (crash sweeps), `schema`
 (generated config schemas), `object-store`. `rdlt-testkit` is a
 **dev**-dependency (the verification half), tolerated in
 `[dependencies]` only as an *optional* dep behind a `fixtures` feature.
-Two recorded exceptions exist and are enforced as such by
-`rdlt-connector-sdk`'s `test_dependency_rule`: SQL destinations may
-depend on `rdlt-connector-sqlcore` (the shared merge core), and nothing
-else.
+One recorded exception exists: SQL destinations may depend on
+`rdlt-connector-sqlcore` (the shared merge core, which lives with them
+in rdlt-connectors), and nothing else. `rdlt-connector-sdk`'s
+`test_dependency_rule` enforces the rule for in-tree connectors.
 
 Hosts are the mirror image: the engine and embedders depend on
 `rdlt-connector` alone and never on the sdk.
@@ -70,7 +75,7 @@ impl SourceConnector for MySource {
 three derived facts: the wire handshake reports it and the client
 verifies it by strict equality against the requirement's id; discovery
 resolves the id's **last segment** to the binary name on PATH
-(`io.rapidbyte.postgres` → `rdlt-connector-postgres`); and the `Spec`
+(`io.rapidbyte.reference` → `rdlt-connector-reference`); and the `Spec`
 RPC answers it as the connector's static identity. A dotless `NAME`
 would still resolve — the last-segment convention degenerates to the
 whole name — but the id is the connector's public identity, verified
@@ -138,8 +143,9 @@ The sdk session refuses a write to a never-ensured table and always
 consults `existing_receipt` (then `replay`) before `publish` — you
 never re-implement the idempotence dance, but your storage must still
 make publish-with-state atomic. Keep a transactional receipt guard as
-defense in depth. The postgres destination is the reference for a
-transactional backend; the sdk's example connector
+defense in depth. The postgres destination (in rdlt-connectors) is the
+model for a transactional backend; `rdlt-connector-reference`'s jsonl
+destination for a direct-publish one; the sdk's example connector
 (`rdlt-connector-sdk/tests/cases/example.rs`) for the minimal one.
 
 ### Load identity

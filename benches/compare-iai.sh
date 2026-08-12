@@ -81,17 +81,30 @@ def codegen_signature():
             f"codegen-units={field('codegen-units', '16')},"
             f"opt-level={field('opt-level', '3')}")
 
+# The postgres bench (iai_pg) moved to the rdlt-connectors repository with its
+# crate at the 044 cut; its recorded baselines stay in the file as the dated
+# reference and are neither compared nor re-recorded here — this repo can no
+# longer run them.
+MOVED = {"pg_copy_decode_10k", "pg_copy_encode_10k"}
+
 mode = sys.argv[1]
 if mode == "--record":
     import subprocess
     toolchain = subprocess.run(
         ["rustc", "--version"], capture_output=True, text=True
     ).stdout.strip()
+    benches = {name: {"instructions": ir} for name, ir in sorted(measured.items())}
+    # Carry the moved benches' recorded figures forward untouched — a
+    # re-record must never silently delete a dated reference.
+    if BASELINE_FILE.exists():
+        prior = json.loads(BASELINE_FILE.read_text()).get("benches", {})
+        for name in sorted(MOVED & set(prior)):
+            benches.setdefault(name, prior[name])
     BASELINE_FILE.write_text(json.dumps({
         "format_version": 1,
         "toolchain": toolchain,
         "codegen": codegen_signature(),
-        "benches": {name: {"instructions": ir} for name, ir in sorted(measured.items())},
+        "benches": benches,
     }, indent=2) + "\n")
     print(f"recorded {len(measured)} baselines -> {BASELINE_FILE}")
     sys.exit(0)
@@ -131,6 +144,8 @@ if recorded_codegen and recorded_codegen != current_codegen:
 
 failures = []
 for name, entry in sorted(baselines.items()):
+    if name in MOVED:
+        continue
     base = entry["instructions"]
     now = measured.get(name)
     if now is None:

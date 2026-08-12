@@ -82,7 +82,7 @@ generate_sh = "python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.js
 hash = ["{{data}}/rows.jsonl"]
 
 # One Oracle Database 23ai Free, pinned to the SAME tag the Oracle connector's
-# live suite uses (crates/rdlt-connector-oracle/tests/cases/common.rs) — one
+# live suite uses (rdlt-connectors repo, its common.rs fixture) — one
 # Oracle version for the gate and for the bench. Seeded once per session with
 # EVENTS 200k×12, the Oracle mirror of the pg `events` shape, so the two
 # source cells differ in the SOURCE, not the data. Read-only: no reset seam

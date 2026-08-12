@@ -9,29 +9,7 @@
 # `version`: that form publishes successfully with the git source stripped, so
 # it is refused outright rather than recorded.
 
-[[allow]]
-dependency = "snowflake-connector-rs"
-manifest   = "Cargo.toml"
-table      = "workspace.dependencies"
-git        = "https://github.com/rapidbyte-io/snowflake-connector-rs.git"
-rev        = "cd9ec04aa7ea65883f5b7bb2a5d6fb6dd0931be5"
-
-reason = """
-The published crate cannot upload a file to a stage: the SQL API refuses the
-statement (structured code 391911) and the crate exposes no raw-response escape
-hatch — verified in source during feature 022, which shipped two workarounds
-because of it. This fork implements the upload, and feature 023 makes it the
-connector's only ingestion path, deleting both workarounds. The capability
-exists nowhere else on crates.io.
-"""
-
-exit = """
-Either: the change is accepted upstream, and this becomes a registry version
-(one line, `version = "1.2"`); or the fork is published under its own name and
-consumed through cargo's `package =` rename, which needs ZERO source changes
-because every `use snowflake_connector_rs::...` keeps resolving. The upstream
-contribution opens once the fork has been validated in real use here — that
-sequencing is deliberate and recorded in specs/023-snowflake-put/research.md.
-"""
-
-unpublishable = ["rdlt-connector-snowflake"]
+# No entries: this workspace carries no git dependencies since the 044
+# cut. (The snowflake fork's entry moved to the rdlt-connectors
+# repository with its crate; that repo's own allowlist records it, plus
+# the git dependencies its connectors hold on this repository.)

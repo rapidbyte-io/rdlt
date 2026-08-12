@@ -37,8 +37,12 @@ one by its rich spelling (`postgres:`, `rest:`, `oracle:`, `duckdb:`,
 `file:`, `iceberg:`, `snowflake:`) or by its reverse-DNS id
 (`io.rapidbyte.postgres`); either way the id's last segment resolves
 to a `rdlt-connector-<segment>` binary on PATH, and `path:` names an
-out-of-tree binary explicitly. In-tree, `make connector-bins` builds
-them all.
+out-of-tree binary explicitly. The first-party connectors live in the
+sibling [rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
+repository — its `make connector-bins` builds their release binaries;
+put them on PATH and every rich spelling above resolves. This repo
+ships the engine, the CLI, and the reference connector its own gates
+spawn.
 
 ## Use it from the CLI
 
@@ -63,18 +67,14 @@ the library's own telemetry seams — events, the `Metrics` fold, and
 `tracing` spans — documented in [docs/telemetry.md](docs/telemetry.md)
 for anyone embedding rdlt directly.
 
-Runnable pipelines covering every connector live in
-[`examples/`](examples/), each executed as written before being
+Runnable pipelines covering every connector live in the
+[rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
+repository's `examples/`, each executed as written before being
 committed. Every connector has one example showing its COMPLETE
-configuration (a property the test suite enforces), and the
+configuration (a property that repo's test suite enforces), and the
 containerised ones ship a seeded `compose.yaml` — `docker compose up`
-and run. Start with
-[`pokemon-to-jsonl`](examples/pokemon-to-jsonl/), which reads a public
-API and needs no setup at all:
-
-```sh
-rdlt run examples/pokemon-to-jsonl/pipeline.yaml
-```
+and run. Start with `pokemon-to-jsonl`, which reads a public API and
+needs no setup at all.
 
 ### Parquet output is compressed
 

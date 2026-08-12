@@ -9,12 +9,14 @@
 //!   1. the facade's `pipeline_spec::Spec` parse (deny_unknown_fields —
 //!      a typoed top-level or `connector:` key dies here);
 //!   2. both sides must be the `connector:` arm with the expected
-//!      reverse-DNS id and a `{{bins}}`-resolved path override;
-//!   3. the OPAQUE `config:` block — which the Spec parse deliberately
-//!      does not validate — is pushed through the named connector's own
-//!      `Document` gate (`from_value`), so a config key that drifted
-//!      from the connector's vocabulary is caught HERE, not at
-//!      the handshake in the by-hand session.
+//!      reverse-DNS id and a `{{bins}}`-resolved path override.
+//!
+//! The OPAQUE `config:` blocks — which the Spec parse deliberately does
+//! not validate — used to be pushed through the named connectors' own
+//! `Document` gates here as well. Those crates live in the sibling
+//! rdlt-connectors repository since the cut (044), so that half of the
+//! pin lives with them; in a live run the spawned connector's own gate
+//! still validates the block at the handshake, in its own wording.
 //!
 //! The cell registry side (ids, verify, competitor arms) is load-checked
 //! by `selftest.rs`'s whole-registry load; this suite owns the pipeline
@@ -23,8 +25,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rdlt::pipeline_spec::{ConfigSource, DestSpec, SourceSpec, Spec};
-use rdlt::sdk::config::Document;
+use rdlt::pipeline_spec::{DestSpec, SourceSpec, Spec};
 use rdlt_bench::runner::PIPELINE_SUBSTITUTION_KEYS;
 use rdlt_bench::template::substitute;
 
@@ -81,9 +82,8 @@ fn pipelines_dir() -> PathBuf {
 ///
 /// The values are shaped only where a value is inspected: `bins` must
 /// look like a release directory because the assertions below check the
-/// rendered `path:` overrides came from it, and `conn` must be a
-/// libpq string because the configs are pushed through the connectors'
-/// own gates. Everything else is a placeholder.
+/// rendered `path:` overrides came from it. Everything else is a
+/// placeholder.
 fn runner_subs() -> BTreeMap<String, String> {
     let value = |key: &str| match key {
         "repo" => "/repo",
@@ -108,44 +108,8 @@ fn runner_subs() -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Push one `connector:` side's opaque config through the named
-/// connector's own Document gate — the validation a real run performs
-/// at the handshake, pulled forward to test time. The connector crates
-/// are named DIRECTLY (dev-deps): since the D1 swap the facade
-/// compiles no connectors in, so the gates live only at their source.
-fn validate_config(id: &str, role: &str, config: &ConfigSource, file: &str) {
-    let ConfigSource::Inline(config) = config else {
-        panic!("{file}: the {role} `config:` block is written inline in every template");
-    };
-    let config = config.clone();
-    let outcome = match (id, role) {
-        ("io.rapidbyte.postgres", "source") => {
-            rdlt_connector_postgres::source::Config::from_value(config)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        ("io.rapidbyte.postgres", "destination") => {
-            rdlt_connector_postgres::destination::Config::from_value(config)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        ("io.rapidbyte.file", "source") => rdlt_connector_file::source::Config::from_value(config)
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
-        ("io.rapidbyte.file", "destination") => {
-            rdlt_connector_file::destination::Config::from_value(config)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        other => panic!("{file}: no gate wired for {other:?}"),
-    };
-    if let Err(error) = outcome {
-        panic!("{file}: the {role} `config:` block fails {id}'s own document gate: {error}");
-    }
-}
-
 #[test]
-fn the_five_remote_pipelines_render_parse_and_pass_the_connector_gates() {
+fn the_five_remote_pipelines_render_parse_and_name_their_connectors() {
     let dir = pipelines_dir();
     let subs = runner_subs();
     for (file, source_id, destination_id) in REMOTE_PIPELINES {
@@ -174,7 +138,6 @@ fn the_five_remote_pipelines_render_parse_and_pass_the_connector_gates() {
                     "{file}: the source path override must come from {{{{bins}}}}: {}",
                     bin.display()
                 );
-                validate_config(source_id, "source", &reference.config, file);
             }
             other => panic!("{file}: the source is not the `connector:` arm: {other:?}"),
         }
@@ -192,7 +155,6 @@ fn the_five_remote_pipelines_render_parse_and_pass_the_connector_gates() {
                     "{file}: the destination path override must come from {{{{bins}}}}: {}",
                     bin.display()
                 );
-                validate_config(destination_id, "destination", &reference.config, file);
             }
             other => panic!("{file}: the destination is not the `connector:` arm: {other:?}"),
         }

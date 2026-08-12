@@ -14,8 +14,6 @@ arrow = "58.3"
 rdlt-core = { path = "../crates/rdlt-core" }
 rdlt-connector = { path = "../crates/rdlt-connector" }
 rdlt-engine = { path = "../crates/rdlt-engine" }
-rdlt-connector-file = { path = "../crates/rdlt-connector-file" }
-rdlt-connector-postgres = { path = "../crates/rdlt-connector-postgres" }
 
 # Standalone workspace: libFuzzer needs nightly; the main build never sees this.
 [workspace]
@@ -30,18 +28,6 @@ test = false
 doc = false
 
 [[bin]]
-name = "cursor_decode"
-path = "fuzz_targets/cursor_decode.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "file_config"
-path = "fuzz_targets/file_config.rs"
-test = false
-doc = false
-
-[[bin]]
 name = "arrow_schema_map"
 path = "fuzz_targets/arrow_schema_map.rs"
 test = false
@@ -52,17 +38,3 @@ name = "shred_push"
 path = "fuzz_targets/shred_push.rs"
 test = false
 doc = false
-
-[[bin]]
-name = "pg_copy_decode"
-path = "fuzz_targets/pg_copy_decode.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "pg_pgoutput_decode"
-path = "fuzz_targets/pg_pgoutput_decode.rs"
-test = false
-doc = false
-bench = false

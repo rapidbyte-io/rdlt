@@ -1,14 +1,14 @@
 //! The one-dependency rule, enforced: a connector authored on the sdk
 //! carries EXACTLY ONE rdlt runtime dependency — this crate — and
 //! reaches the SPI through its `spi` re-export. Dev-dependencies are
-//! exempt (the testkit is the verification half); `rdlt-connector-sqlcore`
-//! is the RECORDED exception for SQL destinations (shared merge-core
-//! substrate; whether it folds into the sdk is an owner decision at the
-//! connector rewrites).
+//! exempt (the testkit is the verification half).
 //!
-//! Only ADOPTED connectors are bound — the list grows as rewrites land.
-//! An unlisted connector crate is not a pass; it is out of the rule's
-//! jurisdiction until adopted, and the plan records which those are.
+//! Only ADOPTED connectors are bound, and only IN-TREE ones can be:
+//! since the 044 cut the seven first-party connectors (with their
+//! recorded `rdlt-connector-sqlcore` exception for SQL destinations)
+//! live in the rdlt-connectors repository, whose manifests this test
+//! cannot read — the rule binds them there by review. What stays in
+//! this tree is the reference connector, the contract's own.
 
 use std::path::Path;
 
@@ -19,24 +19,7 @@ use std::path::Path;
 /// routes them through the testkit's gate posture by design (D9), and an
 /// optional dep must live in `[dependencies]` to be feature-gated. A
 /// NON-optional testkit dependency stays a violation.
-const ADOPTED: &[(&str, &[&str])] = &[
-    ("rdlt-connector-rest", &["rdlt-connector-sdk"]),
-    (
-        "rdlt-connector-postgres",
-        &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
-    ),
-    (
-        "rdlt-connector-snowflake",
-        &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
-    ),
-    ("rdlt-connector-iceberg", &["rdlt-connector-sdk"]),
-    ("rdlt-connector-file", &["rdlt-connector-sdk"]),
-    ("rdlt-connector-oracle", &["rdlt-connector-sdk"]),
-    (
-        "rdlt-connector-duckdb",
-        &["rdlt-connector-sdk", "rdlt-connector-sqlcore"],
-    ),
-];
+const ADOPTED: &[(&str, &[&str])] = &[("rdlt-connector-reference", &["rdlt-connector-sdk"])];
 
 /// The rdlt crates named in a manifest's `[dependencies]` section (table
 /// headers end the section; `rdlt-` prefixed keys are collected), with

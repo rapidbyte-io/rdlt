@@ -1,5 +1,0 @@
-streams:
-  -ms:
-  - nam  - name: events
-    at: jso//*.s
-   "

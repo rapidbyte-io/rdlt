@@ -1,4 +1,0 @@
-streams:
-  - name: events
-    format: jsonl
-    path: #/data/*.jsonl

@@ -1,4 +1,0 @@
-.treams:
-" - name: events
-    frmat: jsonl
-    path: "/data/*.jsonl"

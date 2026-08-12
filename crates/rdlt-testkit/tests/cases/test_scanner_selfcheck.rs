@@ -19,33 +19,15 @@ use std::path::Path;
 /// literal lives at the constructor supplying it — so they are absent here by
 /// design and covered instead by the "declared names must appear twice" half of
 /// `assert_registry_matches_sources`.
-const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[
-    ("rdlt-engine", 7),
-    // 12 since 034's review round 3 armed `pq.manifest.write` around
-    // the publish manifest — the count moves WITH the registry, and
-    // this line is the deliberate second place a new point must be
-    // named. 14 since 037 US2's lease module armed `file.lease.acquire`
-    // and `file.lease.release` (T6, `destination/lease.rs`).
-    ("rdlt-connector-file", 14),
-    ("rdlt-connector-rest", 3),
-    ("rdlt-connector-iceberg", 3),
-    ("rdlt-connector-duckdb", 2),
-    ("rdlt-connector-oracle", 2),
-    // Two `crash_point!` plus two `crash_at` — the crate that proves recognising
-    // one arming spelling is not enough.
-    ("rdlt-connector-snowflake", 4),
-    // 11, not the 14 names its three registries declare: THREE points are armed
-    // indirectly, so their literals sit at the constructor that supplies the name
-    // rather than beside the macro —
-    //   pg.src.mid_copy          a labelled struct  (source/connector.rs)
-    //   pg.src.after_batch_push  a labelled struct  (source/connector.rs)
-    //   cdc.snapshot.copy        a labelled struct  (source/cdc/read.rs)
-    // Each was verified to appear twice — once declared, once where it arms — so
-    // the "declared names appear twice" half of the assertion covers all three.
-    // This crate is the reason that half exists: a set-equality design would
-    // report these as missing and invite widening or shrinking to "fix" it.
-    ("rdlt-connector-postgres", 11),
-];
+/// The connector crates' rows (file 14, rest 3, iceberg 3, duckdb 2,
+/// oracle 2, snowflake's two-spellings proof at 4, postgres's
+/// indirect-arming proof at 11) moved with their crates to the
+/// rdlt-connectors repository at the 044 cut — the multi-crate,
+/// multi-spelling evidence lives beside the sources it counts. The
+/// scanner itself is shared (this crate rides both repos as the
+/// verification half), so the selfcheck here keeps the one crate this
+/// workspace arms.
+const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[("rdlt-engine", 7)];
 
 #[test]
 fn the_scanner_finds_every_directly_armed_name() {

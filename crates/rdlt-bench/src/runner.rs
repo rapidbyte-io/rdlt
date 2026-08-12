@@ -163,9 +163,9 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
             .and_then(serde_yaml::Value::as_mapping)
         {
             // A declaration carrying `path:` names its OWN binary —
-            // possibly one this workspace never builds — so demanding
-            // the conventional `{{bins}}` name would refuse a cell
-            // `make connector-bins` can never satisfy. The spawn
+            // possibly one no conventional build produces — so
+            // demanding the conventional `{{bins}}` name would refuse
+            // a cell no provisioning step can satisfy. The spawn
             // diagnoses that path itself. The override is any STRING,
             // exactly as the Spec model reads it: a null `path:`
             // parses as None there (PATH discovery — provision), while
@@ -235,10 +235,11 @@ pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
             if !bin.is_file() {
                 return Err(BenchError(format!(
                     "cell `{}`: connector binary missing at {} — the template names it \
-                     as `{{{{bins}}}}/{name}`; build it with `cargo build --release \
-                     -p {name} --features bin-serve --bin {name}` (release \
-                     unconditionally, like the CLI: a debug fallback would measure an \
-                     unoptimized connector), or run `make connector-bins`",
+                     as `{{{{bins}}}}/{name}`; the first-party connector bins are built \
+                     in the sibling rdlt-connectors repository (`make connector-bins` \
+                     there builds them release — a debug fallback would measure an \
+                     unoptimized connector); copy or link the bin into this \
+                     workspace's target/release",
                     cell.id,
                     bin.display()
                 )));
@@ -256,7 +257,9 @@ pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
             if !bin.is_file() {
                 return Err(BenchError(format!(
                     "cell `{}`: connector binary missing at {} — pipeline {} requires \
-                     `{name}`; run `make connector-bins` before benchmarking",
+                     `{name}`; build it in the sibling rdlt-connectors repository \
+                     (`make connector-bins` there) and copy or link it into this \
+                     workspace's target/release before benchmarking",
                     cell.id,
                     bin.display(),
                     path.display()
@@ -875,8 +878,8 @@ mod tests {
             "the refusal names the missing binary: {error}"
         );
         assert!(
-            error.contains("make connector-bins"),
-            "the refusal names the aggregate build target: {error}"
+            error.contains("rdlt-connectors") && error.contains("make connector-bins"),
+            "the refusal points at the connectors repository's build verb: {error}"
         );
     }
 

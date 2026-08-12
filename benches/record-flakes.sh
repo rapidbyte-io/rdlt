@@ -17,7 +17,7 @@
 #
 # Usage:
 #   benches/record-flakes.sh                     # whole suite
-#   benches/record-flakes.sh -E 'package(rdlt-connector-file)'   # a slice
+#   benches/record-flakes.sh -E 'package(rdlt-engine)'   # a slice
 #
 # Anything after the script name is passed to `cargo nextest run` verbatim.
 set -uo pipefail

@@ -140,7 +140,7 @@ pub(super) fn validate_streams(
         // itself, and postgres discovery mints exactly such roots from
         // hostile identifiers (`Order "Items"` -> `order__items_`) that the
         // operator does not own and cannot rename — refusing it outright
-        // broke a pinned product capability (rdlt-connector-postgres's
+        // broke a pinned product capability (the postgres connector's
         // `hostile_identifiers_and_column_selection` conformance cell).
         for (existing_table, existing_stream) in &root_tables {
             let et = existing_table.as_str();
@@ -340,7 +340,7 @@ mod hint_validation_tests {
         // The bare `__`-substring is not dangerous in isolation — a lone
         // root cannot collide with itself, and postgres table discovery
         // mints exactly this shape from hostile identifiers the operator
-        // does not own and cannot rename (`rdlt-connector-postgres`'s
+        // does not own and cannot rename (the postgres connector's
         // `hostile_identifiers_and_column_selection` conformance cell:
         // `Order "Items"` normalizes to `order__items_`). An earlier
         // version of this gate refused any `__`-containing root outright

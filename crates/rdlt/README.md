@@ -49,6 +49,9 @@ Both forms resolve identically: the id's last segment names the binary
 (`rdlt-connector-postgres` on PATH, or `path:` overrides), the config
 document crosses the wire opaquely, and the connector's own gate
 validates it — refusals arrive in the connector's own wording. The
+first-party connector binaries are built and installed from the
+sibling [rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
+repository. The
 config is given inline (as above) or as a path string
 (`config: ./creds.yaml`) pointing at a YAML/JSON document of the same
 shape — never both at once.

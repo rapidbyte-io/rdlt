@@ -7,17 +7,9 @@ members = [
     "crates/rdlt-engine",
     "crates/rdlt",
     "crates/rdlt-testkit",
-    "crates/rdlt-connector-rest",
-    "crates/rdlt-connector-duckdb",
-    "crates/rdlt-connector-file",
-    "crates/rdlt-connector-iceberg",
-    "crates/rdlt-connector-oracle",
-    "crates/rdlt-connector-postgres",
     "crates/rdlt-connector-reference",
     "crates/rdlt-cli",
     "crates/rdlt-bench",
-    "crates/rdlt-connector-sqlcore",
-    "crates/rdlt-connector-snowflake",
     "crates/rdlt-connector-protocol",
     "crates/rdlt-connector-client",
     "crates/rdlt-runtime",
@@ -35,27 +27,17 @@ repository = "https://github.com/rapidbyte-io/rdlt"
 
 [workspace.dependencies]
 fail = "0.5"
-memchr = "2"
-# Internal crates (path deps; version for future publishing).
-# EXCEPTION while the Snowflake connector consumes a forked driver by git
-# revision: rdlt, rdlt-cli and rdlt-connector-snowflake cannot be published
-# until that dependency is retired. Recorded, with the exits, in
-# tools/allowed-git-deps.toml.
+# Internal crates (path deps; version for future publishing). The seven
+# first-party connectors (and the sqlcore merge substrate) live in the
+# sibling rdlt-connectors repository since 044; they consume these crates
+# as git dependencies on this repository's main branch.
 rdlt-core = { path = "crates/rdlt-core", version = "0.3.0" }
 rdlt-connector = { path = "crates/rdlt-connector", version = "0.3.0" }
 rdlt-connector-sdk = { path = "crates/rdlt-connector-sdk", version = "0.3.0" }
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.3.0" }
 rdlt = { path = "crates/rdlt", version = "0.3.0" }
 rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.3.0" }
-rdlt-connector-rest = { path = "crates/rdlt-connector-rest", version = "0.3.0" }
-rdlt-connector-duckdb = { path = "crates/rdlt-connector-duckdb", version = "0.3.0" }
-rdlt-connector-snowflake = { path = "crates/rdlt-connector-snowflake", version = "0.3.0" }
-rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.3.0" }
-rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.3.0" }
-rdlt-connector-oracle = { path = "crates/rdlt-connector-oracle", version = "0.3.0" }
-rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.3.0", default-features = false }
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.3.0" }
-rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
 rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
 rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
 # PATH-ONLY, deliberately no `version` key — the rule for a `publish =
@@ -73,8 +55,9 @@ rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.
 #     the packaged manifest entirely (proven: the `[dev-dependencies]`
 #     table comes out empty) but KEEPS a versioned one — so a versioned
 #     entry pointing at an unpublishable crate blocks packaging every
-#     consumer that merely TESTS against it, which is exactly what
-#     rdlt-connector-postgres's spawn suite does.
+#     consumer that merely TESTS against it, which is exactly what the
+#     reference connector's certification suite does (rdlt-certify in
+#     its dev-dependencies).
 #
 # Path-only gets both right: the dev-dep vanishes from the published
 # manifest (the suite is not a consumer's problem), and a normal dep
@@ -86,18 +69,15 @@ rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.
 rdlt-runtime = { path = "crates/rdlt-runtime" }
 rdlt-certify = { path = "crates/rdlt-certify" }
 
-# arrow-rs: single workspace-wide major (research.md R10). Pinned to the major that
-# duckdb-rs links — connectors receive `RecordBatch` through the rdlt-connector
-# re-export, so version identity across the workspace is a correctness requirement,
-# not a preference.
+# arrow-rs: single workspace-wide major (research.md R10). Connectors receive
+# `RecordBatch` through the rdlt-connector re-export, so version identity is a
+# correctness requirement, not a preference — the rdlt-connectors repository
+# carries the same pin for the same reason, and the two move together.
 arrow = "58.3"
 arrow-schema = "58.3"
 arrow-array = "58.3"
 arrow-buffer = "58.3"
 arrow-data = "58.3"
-arrow-select = "58.3"
-arrow-cast = "58.3"
-parquet = "58.3"
 
 # `process` (039): rdlt-runtime spawns connector binaries and supervises
 # them through its lifecycle guard.
@@ -110,11 +90,6 @@ tracing = "0.1"
 bytes = "1"
 blake3 = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-glob = "0.3"
-csv = "1.4"
-flate2 = "1"
-zstd = "0.13"
-futures = "0.3"
 tokio-util = "0.7"
 fs4 = "0.13"
 # CLI-only: the mallopt FFI (rdlt-cli) — the sole sanctioned unsafe in the tree.
@@ -139,34 +114,11 @@ protoc-bin-vendored = "3"
 # call's response frames) as `Stream`s for tonic's server builder.
 tokio-stream = "0.1"
 
-# Connectors
+# The SPI's opt-in object-store seam (rdlt-connector's `object-store`
+# feature); the connector crates that consume it live in rdlt-connectors.
 object_store = { version = "0.12", features = ["aws"] }
-iceberg = "=0.10.0"
-iceberg-catalog-rest = "=0.10.0"
-iceberg-storage-opendal = { version = "=0.10.0", features = ["opendal-s3"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 serde_yaml = "0.9"
-# Already in the tree via hyper (reqwest); a direct edge costs no new entry.
-httpdate = "1"
-duckdb = { version = "1", features = ["bundled", "appender-arrow"] }
-# Snowflake session protocol. Default features carry key-pair auth; the
-# interactive external-browser SSO flow is deliberately NOT enabled — an
-# embedded engine cannot open a browser.
-# Consumed from a FORK, pinned by revision, with NO `version` key — and that
-# omission is load-bearing, not stylistic. A dependency carrying BOTH a git
-# source and a version publishes SUCCESSFULLY with the git source silently
-# stripped: the shipped crate would resolve upstream (which has no PUT),
-# compile, and fail only at run time. Without the version, packaging refuses
-# instead. tools/allowed-git-deps.toml records the arrangement, the crates it
-# renders unpublishable, and the exit that retires it.
-snowflake-connector-rs = { git = "https://github.com/rapidbyte-io/snowflake-connector-rs.git", rev = "cd9ec04aa7ea65883f5b7bb2a5d6fb6dd0931be5", default-features = false, features = ["key-pair-auth", "put"] }
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
-tokio-postgres-rustls = "0.13"
-rustls = { version = "0.23", features = ["ring"] }
-rustls-pemfile = "2"
-rustls-native-certs = "0.8"
 schemars = "1"
-jsonschema = "0.48"
 
 # Dev / test
 proptest = "1"
@@ -176,11 +128,7 @@ criterion = "0.5"
 # perf-gate job) — lib and runner must agree or counts skew; the perf-gate job
 # has a step that fails loudly if these drift.
 iai-callgrind = "=0.16.1"
-wiremock = "0.6"
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tempfile = "3"
-rcgen = "0.13"
 toml = "0.8"
 # The tonic-client-over-UDS idiom: `tower::service_fn` supplies
 # `connect_with_connector`'s connector, `hyper_util::rt::TokioIo` adapts
