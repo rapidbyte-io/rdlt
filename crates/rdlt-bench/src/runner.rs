@@ -166,16 +166,19 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
             // possibly one this workspace never builds — so demanding
             // the conventional `{{bins}}` name would refuse a cell
             // `make connector-bins` can never satisfy. The spawn
-            // diagnoses that path itself. The override must be a real
-            // string: the Spec model parses a null `path:` as None and
-            // falls back to PATH discovery, so a bare key must still
-            // provision or the two readers disagree.
+            // diagnoses that path itself. The override is any STRING,
+            // exactly as the Spec model reads it: a null `path:`
+            // parses as None there (PATH discovery — provision), while
+            // `path: ""` parses as a real override the runtime will
+            // try to exec, so provisioning a conventional bin for it
+            // would misdirect the operator toward a fix that cannot
+            // help.
             let path = serde_yaml::Value::String("path".to_owned());
-            let has_path_override = explicit
+            if explicit
                 .get(&path)
                 .and_then(serde_yaml::Value::as_str)
-                .is_some_and(|value| !value.is_empty());
-            if has_path_override {
+                .is_some()
+            {
                 continue;
             }
             let id = serde_yaml::Value::String("id".to_owned());
@@ -786,9 +789,14 @@ mod tests {
         );
         // A NULL `path:` is not an override: the Spec model reads it
         // as None and falls back to PATH discovery, so preflight must
-        // still provision the conventional bin.
-        let null_path = "source:\n  connector:\n    id: io.rapidbyte.postgres\n    path:\n\
-                         destination:\n  connector:\n    id: io.rapidbyte.file\n";
+        // still provision the conventional bin — while `path: ""` IS
+        // an override there (a string the runtime will try to exec),
+        // so preflight must not demand a bin the run would never use.
+        // Both templates are parsed through the REAL Spec model below,
+        // pinning the agreement itself rather than one reader's half.
+        let null_path = "source:\n  connector:\n    id: io.rapidbyte.postgres\n    path:\n    \
+                         config: {}\n\
+                         destination:\n  connector:\n    id: io.rapidbyte.file\n    config: {}\n";
         assert_eq!(
             declared_connector_bins(null_path).expect("the null-path template parses"),
             BTreeSet::from([
@@ -796,6 +804,25 @@ mod tests {
                 "rdlt-connector-postgres".to_owned(),
             ])
         );
+        let empty_path = null_path.replace("path:\n", "path: \"\"\n");
+        assert_eq!(
+            declared_connector_bins(&empty_path).expect("the empty-path template parses"),
+            BTreeSet::from(["rdlt-connector-file".to_owned()])
+        );
+        for (template, expected_path) in [(null_path, None), (empty_path.as_str(), Some(""))] {
+            let spec: rdlt::pipeline_spec::Spec =
+                serde_yaml::from_str(&format!("pipeline: p\n{template}"))
+                    .expect("the template parses through the real Spec model");
+            let reference = spec
+                .source
+                .desugar(std::path::Path::new(""))
+                .expect("the connector arm desugars");
+            assert_eq!(
+                reference.path.as_deref(),
+                expected_path.map(std::path::Path::new),
+                "the Spec model's reading this rule mirrors"
+            );
+        }
     }
 
     /// A rich-spelling pipeline refuses a missing release connector
