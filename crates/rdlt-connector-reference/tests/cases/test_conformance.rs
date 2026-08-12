@@ -4,7 +4,7 @@
 //! receipt-driven replay that keeps a crashed load from duplicating.
 
 use rdlt_connector_reference::{destination, source};
-use rdlt_connector_sdk::spi::core::{LoadId, PipelineId, TableName, WriteMode};
+use rdlt_connector_sdk::spi::core::{CommitReceipt, LoadId, PipelineId, TableName, WriteMode};
 use rdlt_connector_sdk::spi::{Destination, OpenContext, Source};
 use rdlt_testkit::{
     TableProbe, assert_conformant, batch_of, commit_meta_for, schema_for, verify_destination,
@@ -224,5 +224,154 @@ fn the_config_gate_refuses_with_frozen_spellings() {
     assert_eq!(
         refused.to_string(),
         "invalid reference destination config: `path` is empty — one output directory is required"
+    );
+}
+
+/// Replace is typed-unsupported, recorded never silent: accepting it
+/// would append where the pipeline asked for the table's contents to
+/// be replaced, quietly forever.
+#[tokio::test]
+async fn a_replace_write_mode_refuses_with_the_frozen_spelling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let mut session = shell
+        .open(OpenContext::new(
+            PipelineId::new("ref-replace"),
+            LoadId::new("ref-load-r"),
+        ))
+        .await
+        .expect("open");
+    let refused = session
+        .ensure_table(&schema_for("events"), &WriteMode::Replace)
+        .await
+        .expect_err("replace must refuse");
+    assert_eq!(
+        refused.to_string(),
+        "fatal destination error: reference destination: table `events`: write mode `replace` \
+         is not supported — jsonl parts are append-only"
+    );
+}
+
+/// A receipt whose append TORE mid-write (its line never got the
+/// terminating newline) never became durable: it reads as ABSENT, the
+/// retried commit republishes over its deterministic part names
+/// without duplicating, and the repaired log carries exactly the
+/// durable receipt line — no glued garbage for a later read to refuse.
+#[tokio::test]
+async fn a_torn_receipt_tail_reads_as_absent_and_republishes_without_duplication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let probe = DirProbe(dir.path().to_path_buf());
+    let pipeline = PipelineId::new("ref-torn");
+    let load = LoadId::new("ref-load-t");
+    let table = TableName::new("events");
+    let schema = schema_for("events");
+
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema, &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("commit");
+    drop(session);
+
+    // The tear: the append died mid-line, before its newline landed.
+    let log_path = dir.path().join("_reference_receipts.json");
+    let log = std::fs::read_to_string(&log_path).expect("read log");
+    std::fs::write(&log_path, &log[..log.len() - 5]).expect("tear the tail");
+
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("re-open");
+    session
+        .ensure_table(&schema, &WriteMode::Append)
+        .await
+        .expect("re-ensure");
+    session
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("redelivered write");
+    let receipt = session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("the torn receipt reads as absent, so this commit republishes");
+    assert_eq!(
+        probe.count(&table).await.expect("count"),
+        2,
+        "the republish overwrites its own deterministic part — never duplicates"
+    );
+    let repaired = std::fs::read_to_string(&log_path).expect("read repaired log");
+    assert_eq!(
+        repaired,
+        format!("{}\n", serde_json::to_string(&receipt).expect("encode")),
+        "the torn bytes are gone and exactly the durable receipt line remains"
+    );
+
+    // The republished receipt IS durable: a further re-commit replays.
+    session
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("second redelivery");
+    let replayed = session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("replayed commit");
+    assert_eq!(replayed, receipt);
+    assert_eq!(probe.count(&table).await.expect("count"), 2);
+}
+
+/// Mid-log corruption is NOT a torn append: an unparseable line that
+/// IS newline-terminated refuses typed, full-string — including the
+/// parser's own framing, reproduced rather than transcribed.
+#[tokio::test]
+async fn a_corrupt_interior_receipt_line_still_refuses() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let log_path = dir.path().join("_reference_receipts.json");
+    std::fs::write(&log_path, "not a receipt\n").expect("seed corruption");
+
+    let mut session = shell
+        .open(OpenContext::new(
+            PipelineId::new("ref-corrupt"),
+            LoadId::new("ref-load-c"),
+        ))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let refused = session
+        .commit(commit_meta_for(
+            &PipelineId::new("ref-corrupt"),
+            &LoadId::new("ref-load-c"),
+            1,
+        ))
+        .await
+        .expect_err("a corrupt interior line must refuse");
+    let parse_error =
+        serde_json::from_str::<CommitReceipt>("not a receipt").expect_err("not a receipt json");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "fatal destination error: reference destination: {} carries a corrupt receipt line \
+             `not a receipt`: {parse_error}",
+            log_path.display()
+        )
     );
 }

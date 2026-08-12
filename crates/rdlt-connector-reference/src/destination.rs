@@ -26,7 +26,9 @@ use rdlt_connector_sdk::spi::{
 
 /// The append-only receipt log: one json line per published commit,
 /// `{"load_id":<string>,"commit_seq":<u64>}` — what `existing_receipt`
-/// answers the sdk's replay choreography from.
+/// answers the sdk's replay choreography from. A line's terminating
+/// newline is its durability marker: a newline-less tail is a torn
+/// append, read as absent and truncated before the next append.
 const RECEIPTS_FILE: &str = "_reference_receipts.json";
 
 /// The latest committed state document, written atomically (write to a
@@ -136,13 +138,32 @@ pub struct Writer {
 impl Backend for Writer {
     async fn ensure_table(
         &mut self,
-        _schema: &TableSchema,
-        _mode: &WriteMode,
+        schema: &TableSchema,
+        mode: &WriteMode,
     ) -> Result<(), DestinationError> {
-        // A jsonl part carries its own column names on every row —
-        // there is no DDL to run, and re-ensuring is trivially
-        // idempotent.
-        Ok(())
+        match mode {
+            // A jsonl part carries its own column names on every row —
+            // there is no DDL to run, and re-ensuring is trivially
+            // idempotent. Merge reaches here only from a host ignoring
+            // the declared capabilities (merge stays false), so Append
+            // is the one disposition this destination performs.
+            WriteMode::Append | WriteMode::Merge { .. } => Ok(()),
+            // Replace — and any future disposition — is typed-
+            // unsupported, never silent: accepting it would append
+            // where the pipeline asked for a table's contents to be
+            // replaced, quietly forever.
+            other => {
+                let mode_name = match other {
+                    WriteMode::Replace => "replace".to_owned(),
+                    other => format!("{other:?}"),
+                };
+                Err(DestinationError::fatal(format!(
+                    "reference destination: table `{}`: write mode `{mode_name}` is not \
+                     supported — jsonl parts are append-only",
+                    schema.table
+                )))
+            }
+        }
     }
 
     async fn write(
@@ -170,7 +191,20 @@ impl Backend for Writer {
                 )));
             }
         };
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        // The terminating newline is an append's durability marker:
+        // bytes after the LAST newline are a receipt whose append tore
+        // mid-write (disk full, a crash inside the write). That receipt
+        // never became durable, so it reads as ABSENT — the retried
+        // commit republishes convergently over its deterministic part
+        // names, and publish truncates the torn bytes before appending.
+        // An unparseable line that IS newline-terminated sits in the
+        // log's interior: that is corruption, not a torn append, and
+        // stays a typed refusal below.
+        let durable = match text.rfind('\n') {
+            Some(last_newline) => &text[..=last_newline],
+            None => "",
+        };
+        for line in durable.lines().filter(|line| !line.trim().is_empty()) {
             let receipt: CommitReceipt = serde_json::from_str(line).map_err(|error| {
                 DestinationError::fatal(format!(
                     "reference destination: {} carries a corrupt receipt line `{line}`: {error}",
@@ -240,6 +274,7 @@ impl Backend for Writer {
             ))
         })?;
         let path = self.dir.join(RECEIPTS_FILE);
+        self.truncate_torn_tail(&path)?;
         let mut log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -288,6 +323,48 @@ impl Backend for Writer {
 }
 
 impl Writer {
+    /// Cut a torn (newline-less) tail off the receipt log before
+    /// appending to it. Those bytes were never a durable receipt —
+    /// `existing_receipt` already reads them as absent — and appending
+    /// after them would glue this commit's receipt into a corrupt,
+    /// newline-terminated INTERIOR line, which is exactly the shape
+    /// every later read refuses.
+    fn truncate_torn_tail(&self, path: &std::path::Path) -> Result<(), DestinationError> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(DestinationError::transient(format!(
+                    "reference destination: read {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        let durable = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |newline| newline + 1);
+        if durable == bytes.len() {
+            return Ok(());
+        }
+        let log = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|error| {
+                DestinationError::transient(format!(
+                    "reference destination: open {}: {error}",
+                    path.display()
+                ))
+            })?;
+        log.set_len(durable as u64).map_err(|error| {
+            DestinationError::transient(format!(
+                "reference destination: truncate the torn tail of {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(())
+    }
+
     /// Write `bytes` to `name` atomically: to an underscore-prefixed
     /// temporary first (invisible to any table-prefix reader), then a
     /// same-directory rename.
