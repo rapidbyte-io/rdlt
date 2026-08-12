@@ -48,20 +48,75 @@ const CEILING_BYTES: u64 = 512 * 1024 * 1024;
 /// Seeded rows: ~170 B/row on-disk ⇒ ~6.9 GB, ≥ 12× the ceiling.
 const ROWS: u64 = 40_000_000;
 
-/// The release artifacts directory — `CARGO_TARGET_DIR` honored the way
-/// the spawn suites honor it: `join` with an absolute value replaces the
-/// prefix, so both spellings resolve exactly as cargo treats them.
+/// The release artifacts directory — `CARGO_TARGET_DIR` honored when
+/// absolute and REFUSED when relative, the same rule as
+/// `rdlt_testkit::spawn` (which owns the debug half): cargo resolves a
+/// relative value against its own invocation cwd, so any single
+/// resolution here would be a guess that can disagree with where the
+/// binaries actually landed.
 fn release_dir() -> std::path::PathBuf {
-    let target = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into());
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(target)
-        .join("release")
+    match std::env::var_os("CARGO_TARGET_DIR") {
+        None => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("target/release"),
+        Some(target) => {
+            let target = std::path::PathBuf::from(target);
+            assert!(
+                target.is_absolute(),
+                "CARGO_TARGET_DIR `{}` is relative — cargo resolves it against each \
+                 invocation's OWN cwd, so this suite cannot know where the release \
+                 binaries landed; set an absolute CARGO_TARGET_DIR",
+                target.display()
+            );
+            target.join("release")
+        }
+    }
 }
 
 fn release_bin(name: &str) -> Option<std::path::PathBuf> {
     let path = release_dir().join(name);
     path.exists().then_some(path)
+}
+
+/// SIGKILL the pipeline's orphans — and ONLY them. After `wait()` has
+/// reaped the group leader, the PGID number is free for reuse the
+/// moment every member exits, so a blanket `kill -9 -- -PGID` could
+/// land on an unrelated process group that recycled it (the deep gate
+/// runs many suites concurrently and PIDs wrap at kernel.pid_max).
+/// Each candidate must therefore match TWICE before it is signalled:
+/// it sits in the pipeline's process group (/proc stat pgrp) AND its
+/// cmdline names an rdlt artifact this test spawned.
+fn reap_pipeline_orphans(pgid: u32) {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        // `pid (comm) state ppid pgrp …` — comm may hold spaces and
+        // parens, so the fields are taken after the LAST ')'.
+        let Some((_, tail)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        if tail.split_whitespace().nth(2) != Some(pgid.to_string().as_str()) {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        if !cmdline.contains("rdlt") {
+            continue;
+        }
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -238,12 +293,9 @@ async fn a_table_ten_times_the_memory_ceiling_still_snapshots_within_it() {
         .spawn()
         .expect("spawn CLI under prlimit");
     let status = child.wait().expect("wait for CLI under prlimit");
-    // The child was its own group leader, so this reaps any connector
-    // the pipeline orphaned; on success it kills nothing.
-    let _ = std::process::Command::new("kill")
-        .args(["-9", "--", &format!("-{}", child.id())])
-        .stderr(std::process::Stdio::null())
-        .status();
+    // The child was its own group leader, so its id is the pipeline's
+    // PGID; on success this reaps nothing.
+    reap_pipeline_orphans(child.id());
     assert!(
         status.success(),
         "CLI under a {CEILING_BYTES}-byte data ceiling failed:\nstdout: {}\nstderr: {}",
