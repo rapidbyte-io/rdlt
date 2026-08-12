@@ -71,38 +71,40 @@ fn io_and_config_failures_keep_their_codes() {
 /// no binaries reachable, the refusal itself is the proof — the
 /// spelling arrived at discovery as its reverse-DNS id, not as a
 /// literal binary name. (PATH is emptied so a developer's installed
-/// connectors cannot turn this into a live probe.)
+/// connectors cannot turn this into a live probe; the probed rows are
+/// `oracle` and `rest` so the pin needs no binary that this repo
+/// builds — the full spelling table is desugar.rs's.)
 #[test]
 fn schema_maps_a_short_name_through_the_desugar_table() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = rdlt()
         .env("PATH", dir.path())
-        .args(["schema", "duckdb"])
+        .args(["schema", "oracle"])
         .output()
         .expect("spawn");
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(out.stdout.is_empty(), "no machine output on refusal");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("connector `io.rapidbyte.duckdb`")
-            && stderr.contains("no binary `rdlt-connector-duckdb`"),
+        stderr.contains("connector `io.rapidbyte.oracle`")
+            && stderr.contains("no binary `rdlt-connector-oracle`"),
         "the short name resolved to its table id before discovery: {stderr}"
     );
 
-    std::fs::write(dir.path().join("file"), "not a connector binary")
+    std::fs::write(dir.path().join("rest"), "not a connector binary")
         .expect("the shadowing file writes");
     let out = rdlt()
         .current_dir(dir.path())
         .env("PATH", dir.path())
-        .args(["schema", "file"])
+        .args(["schema", "rest"])
         .output()
         .expect("spawn");
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(out.stdout.is_empty(), "no machine output on refusal");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("connector `io.rapidbyte.file`")
-            && stderr.contains("no binary `rdlt-connector-file`"),
+        stderr.contains("connector `io.rapidbyte.rest`")
+            && stderr.contains("no binary `rdlt-connector-rest`"),
         "the short name wins over a same-named working-directory file: {stderr}"
     );
 }
@@ -195,24 +197,25 @@ fn a_connector_spec_with_a_missing_binary_exits_2_on_run_and_validate() {
     }
 }
 
-/// The live half of the contract: real runs over the spawned file
+/// The live half of the contract: real runs over the spawned reference
 /// connector. Everything here needs the built bin, so the whole
 /// module rides `spawn-bins` — the Makefile's line builds and runs it.
 #[cfg(feature = "spawn-bins")]
 mod spawned_runs {
     use std::process::Command;
 
-    /// The CLI, with the built file bin's directory prepended to PATH
-    /// so the provider's discovery finds `rdlt-connector-file`. The bin
-    /// comes through the testkit's ONE spawn scaffold — building under
-    /// `RDLT_BUILD_CONNECTOR_BINS`, refusing a relative
-    /// `CARGO_TARGET_DIR`, failing loudly on a missing bin — rather
-    /// than a local copy of those mechanics (the 042 lesson: copies
-    /// diverge, and a diverged copy certifies a stale binary).
+    /// The CLI, with the built reference bin's directory prepended to
+    /// PATH so the provider's discovery finds
+    /// `rdlt-connector-reference`. The bin comes through the testkit's
+    /// ONE spawn scaffold — building under `RDLT_BUILD_CONNECTOR_BINS`,
+    /// refusing a relative `CARGO_TARGET_DIR`, failing loudly on a
+    /// missing bin — rather than a local copy of those mechanics (the
+    /// 042 lesson: copies diverge, and a diverged copy certifies a
+    /// stale binary).
     fn rdlt() -> Command {
         let bin = rdlt_testkit::spawn::built_connector_bin(
             env!("CARGO_MANIFEST_DIR"),
-            "rdlt-connector-file",
+            "rdlt-connector-reference",
         );
         let bins = bin
             .parent()
@@ -231,18 +234,19 @@ mod spawned_runs {
     }
 
     fn fresh_pipeline() -> (tempfile::TempDir, std::path::PathBuf) {
-        // Fresh per phase: the file source's cursor knows a fully-read
-        // file, so re-running against one workdir reads zero rows — which
-        // is correct engine behaviour and would vacuously pass the
-        // quiet/verbose assertions below.
+        // Fresh per phase: the reference source's byte cursor knows a
+        // fully-read file, so re-running against one workdir reads zero
+        // rows — which is correct engine behaviour and would vacuously
+        // pass the quiet/verbose assertions below. The fixture's stem
+        // names the stream: `events`.
         let dir = tempfile::tempdir().expect("tempdir");
-        let data = dir.path().join("rows.jsonl");
+        let data = dir.path().join("events.jsonl");
         std::fs::write(&data, "{\"id\": 1}\n{\"id\": 2}\n{\"id\": 3}\n").expect("write");
         let spec = dir.path().join("pipeline.yaml");
         std::fs::write(
             &spec,
             format!(
-                "pipeline: contract\nworkdir: {}\nsource:\n  file:\n    streams:\n      - name: events\n        format: jsonl\n        path: {}\ndestination:\n  file:\n    path: {}\n    format: jsonl\n",
+                "pipeline: contract\nworkdir: {}\nsource:\n  connector:\n    id: io.rapidbyte.reference\n    config:\n      path: {}\ndestination:\n  connector:\n    id: io.rapidbyte.reference\n    config:\n      path: {}\n",
                 dir.path().join(".rdlt").display(),
                 data.display(),
                 dir.path().join("out").display()
@@ -268,10 +272,12 @@ mod spawned_runs {
             .unwrap_or_else(|e| panic!("stdout is exactly the report JSON: {e}\n{stdout}"));
         assert_eq!(report["tables"]["events"]["rows"], 3);
         assert!(stderr.contains("-> stream events started"), "{stderr}");
-        assert!(stderr.contains("events: +3 rows"), "{stderr}");
+        // The reference source pushes one row per frame, so each
+        // commit's feed line counts 1 — three commits over three rows.
+        assert!(stderr.contains("events: +1 rows"), "{stderr}");
         assert!(stderr.contains("commit 1 ok"), "{stderr}");
         // Heartbeats and 036 detail stay OUT of the default feed.
-        assert!(!stderr.contains("read 3 rows"), "{stderr}");
+        assert!(!stderr.contains("read 1 rows"), "{stderr}");
 
         // Quiet: stderr carries nothing at all for a clean run.
         let (_dir, spec) = fresh_pipeline();
@@ -295,7 +301,7 @@ mod spawned_runs {
             .output()
             .expect("spawn");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("read 3 rows"), "{stderr}");
+        assert!(stderr.contains("read 1 rows"), "{stderr}");
         assert!(stderr.contains("commit 1 starting"), "{stderr}");
 
         // --report: the JSON moves to the file; stdout is empty.
@@ -343,12 +349,17 @@ mod spawned_runs {
 
         // A config the CONNECTOR's own gate refuses exits 2 — the same
         // resolve class as a missing binary, but this one crossed the
-        // wire and came back in the connector's wording.
+        // wire and came back in the connector's wording (the reference
+        // source refuses an empty `path`).
         let dir = tempfile::tempdir().expect("tempdir");
         let bad = dir.path().join("bad.yaml");
-        std::fs::write(&bad, "pipeline: p\nsource:\n  file:\n    streams: []\n").expect("write");
+        std::fs::write(
+            &bad,
+            "pipeline: p\nsource:\n  connector:\n    id: io.rapidbyte.reference\n    config:\n      path: \"\"\n",
+        )
+        .expect("write");
         let out = rdlt().arg("validate").arg(&bad).output().expect("spawn");
-        assert_eq!(out.status.code(), Some(2));
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
     }
 
     /// `--events` writes the feed as NDJSON: one JSON object per line,
@@ -405,17 +416,18 @@ mod spawned_runs {
     /// and parseable line-by-line. This pins the half of 22b's flush-on-
     /// error guarantee that was previously inspection-only.
     ///
-    /// The failure is forced with the file destination's own layout-v2
-    /// version gate (`destination/layout.rs`'s `version_gate`): a first
-    /// clean run writes a real v2 `_rdlt_commits.{scope}.json`; planting a
-    /// v1-format commit log over it makes the SECOND run's first commit
-    /// refuse with a "predates" error — a genuine destination-side failure
-    /// reached only after streaming has begun, not a config-time refusal.
+    /// The failure is forced with the reference destination's own
+    /// receipt-log integrity gate: a first clean run writes a real
+    /// `_reference_receipts.json`; planting a newline-terminated garbage
+    /// line into its interior makes the SECOND run's first commit refuse
+    /// with the "corrupt receipt line" error — a genuine
+    /// destination-side failure reached only after streaming has begun,
+    /// not a config-time refusal.
     #[test]
     fn a_mid_run_destination_failure_flushes_the_events_sink_before_exiting() {
         let (dir, spec) = fresh_pipeline();
 
-        // First run: clean, writes a real v2 commit log under `out/`.
+        // First run: clean, writes a real receipt log under `out/`.
         let out = rdlt().arg("run").arg(&spec).output().expect("spawn");
         assert_eq!(
             out.status.code(),
@@ -423,33 +435,30 @@ mod spawned_runs {
             "first run must succeed: {out:?}"
         );
 
-        // Plant a v1-format commit log over the real one — captured from the
-        // first run's own output listing rather than re-deriving the scope
-        // hash, so this test does not need to depend on the naming crate.
-        let out_dir = dir.path().join("out");
-        let commits_file = std::fs::read_dir(&out_dir)
-            .expect("read output dir")
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .find(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("_rdlt_commits.") && n.ends_with(".json"))
-            })
-            .expect("the first run wrote a commit log");
-        std::fs::write(&commits_file, br#"{"format_version":1,"receipts":[]}"#)
-            .expect("plant a v1 commit log");
+        // Corrupt the receipt log's INTERIOR: a newline-terminated line
+        // that is not a receipt is corruption (a newline-less tail
+        // would instead read as a torn append and heal), so the next
+        // commit's replay check refuses typed.
+        let receipts = dir.path().join("out").join("_reference_receipts.json");
+        {
+            use std::io::Write as _;
+            let mut log = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&receipts)
+                .expect("the first run wrote a receipt log");
+            writeln!(log, "not a receipt").expect("append the corrupt line");
+        }
 
-        // The source cursor already consumed `rows.jsonl` to EOF, so the
-        // second run needs fresh rows to extract anything at all — appended,
-        // never rewritten, so the tail-hash resume check still recognizes it
-        // as the same file continuing rather than refusing it as rewritten.
+        // The source's byte cursor already consumed `events.jsonl` to
+        // EOF, so the second run needs fresh rows to extract anything at
+        // all — appended, never rewritten, so the resume offset still
+        // lands on a line boundary of the same file continuing.
         {
             use std::io::Write as _;
             let mut f = std::fs::OpenOptions::new()
                 .append(true)
-                .open(dir.path().join("rows.jsonl"))
-                .expect("open rows.jsonl");
+                .open(dir.path().join("events.jsonl"))
+                .expect("open events.jsonl");
             writeln!(f, "{{\"id\": 4}}").expect("append");
             writeln!(f, "{{\"id\": 5}}").expect("append");
         }
@@ -465,13 +474,13 @@ mod spawned_runs {
         assert_ne!(
             out.status.code(),
             Some(0),
-            "the stale commit log must fail the second run: {out:?}"
+            "the corrupt receipt log must fail the second run: {out:?}"
         );
 
         let stderr = String::from_utf8(out.stderr).expect("utf8");
         assert!(
-            stderr.contains("predates"),
-            "stderr carries the version-gate refusal: {stderr}"
+            stderr.contains("corrupt receipt line"),
+            "stderr carries the receipt-integrity refusal: {stderr}"
         );
 
         let ndjson = std::fs::read_to_string(&events_path)
