@@ -162,6 +162,15 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
             .get(&connector)
             .and_then(serde_yaml::Value::as_mapping)
         {
+            // A declaration carrying `path:` names its OWN binary —
+            // possibly one this workspace never builds — so demanding
+            // the conventional `{{bins}}` name would refuse a cell
+            // `make connector-bins` can never satisfy. The spawn
+            // diagnoses that path itself.
+            let path = serde_yaml::Value::String("path".to_owned());
+            if explicit.contains_key(&path) {
+                continue;
+            }
             let id = serde_yaml::Value::String("id".to_owned());
             explicit
                 .get(&id)
@@ -756,6 +765,17 @@ mod tests {
                 "rdlt-connector-file".to_owned(),
                 "rdlt-connector-postgres".to_owned(),
             ])
+        );
+        // A `path:` override names its OWN binary — the conventional
+        // workspace name is NOT demanded for it (an out-of-tree bin
+        // would otherwise make the cell permanently unrunnable), while
+        // the other side's id-only declaration still is.
+        let overridden = "source:\n  connector:\n    id: com.example.foo\n    \
+                          path: /opt/foo/bin/foo-connector\n\
+                          destination:\n  connector:\n    id: io.rapidbyte.postgres\n";
+        assert_eq!(
+            declared_connector_bins(overridden).expect("the overridden template parses"),
+            BTreeSet::from(["rdlt-connector-postgres".to_owned()])
         );
     }
 
