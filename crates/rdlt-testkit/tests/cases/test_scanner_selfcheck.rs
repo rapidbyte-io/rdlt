@@ -22,11 +22,12 @@ use std::path::Path;
 /// The connector crates' rows (file 14, rest 3, iceberg 3, duckdb 2,
 /// oracle 2, snowflake's two-spellings proof at 4, postgres's
 /// indirect-arming proof at 11) moved with their crates to the
-/// rdlt-connectors repository at the 044 cut — the multi-crate,
-/// multi-spelling evidence lives beside the sources it counts. The
-/// scanner itself is shared (this crate rides both repos as the
-/// verification half), so the selfcheck here keeps the one crate this
-/// workspace arms.
+/// rdlt-connectors repository at the 044 cut and live in ITS gate:
+/// `crates/examples-gate/tests/scanner_selfcheck.rs` there carries the
+/// per-crate counts beside the sources they count, including the
+/// two-spellings and indirect-arming evidence. The scanner itself is
+/// shared (this crate rides both repos as the verification half), so
+/// the selfcheck here keeps the one crate this workspace arms.
 const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[("rdlt-engine", 7)];
 
 #[test]

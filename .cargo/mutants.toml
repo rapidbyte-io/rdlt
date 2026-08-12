@@ -7,7 +7,9 @@ examine_globs = [
     "crates/rdlt-core/src/**/*.rs",
     "crates/rdlt-connector/src/**/*.rs",
     # The shared merge core (sqlcore) moved to the rdlt-connectors
-    # repository with the SQL destinations at the 044 cut.
+    # repository with the SQL destinations at the 044 cut; that
+    # repository carries no cargo-mutants gate yet (standing owner
+    # record there), so its mutation coverage lapsed with the move.
 ]
 
 exclude_globs = [

@@ -62,8 +62,10 @@ TARGET ?=
 MUTANTS_TMPDIR ?= $(CURDIR)/target/mutants-tmp
 FUZZ_SECONDS ?= 600
 # The connector-owned fuzz targets (file_config, cursor_decode,
-# pg_copy_decode, pg_pgoutput_decode) left with their crates at the
-# 044 cut; what stays fuzzes the engine alone.
+# pg_copy_decode, pg_pgoutput_decode) were DELETED at the 044 cut with
+# their crates' move — the rdlt-connectors repository carries no fuzz
+# harness yet (standing owner record there); what stays fuzzes the
+# engine alone.
 FUZZ_TARGETS := jsonl_slab arrow_schema_map shred_push
 
 .PHONY: build release connector-bins dist lint docs test bench check coverage reclaim
@@ -388,8 +390,11 @@ else ifeq ($(TARGET),mutants)
 	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 \
 	    --minimum-test-timeout 180 --profile mutants
 else ifeq ($(TARGET),deep)
-	# The RDLT_HEAVY memory_bound claim and the (retired) Spark read-back
-	# tier moved with their crates to the rdlt-connectors repo (044).
+	# The RDLT_HEAVY memory_bound claim moved with the postgres crate to
+	# the rdlt-connectors repo, where `TARGET=deep make test` runs it
+	# (that verb installs the release rdlt CLI at the repo's locked rdlt
+	# revision and builds the release connector bins the cell spawns).
+	# The (retired) Spark read-back tier died with iceberg generation 1.
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep
 	$(MAKE) test TARGET=mutants
