@@ -534,6 +534,7 @@ async fn preflight(target: &Target) -> Option<String> {
         Ok(Err(
             error @ (ProviderError::NotFound { .. }
             | ProviderError::Spawn { .. }
+            | ProviderError::ExitedBeforeHandshake { .. }
             | ProviderError::HandshakeLine { .. }
             | ProviderError::HandshakeLineOverflow { .. }
             | ProviderError::Timeout { .. }),

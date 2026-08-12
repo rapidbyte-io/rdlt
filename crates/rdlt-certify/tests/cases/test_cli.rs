@@ -157,6 +157,39 @@ fn a_missing_connector_id_refuses_with_exit_2() {
     assert!(output.stdout.is_empty(), "a refusal writes no report");
 }
 
+/// A binary that exits unsuccessfully before writing any handshake
+/// byte is a pre-certification refusal: exit 2, the binary and its exit
+/// status on stderr, and no clause report on stdout.
+#[test]
+fn an_early_connector_exit_refuses_before_certification() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("exits-before-handshake");
+    std::fs::write(&script, "#!/bin/sh\nexit 3\n").expect("the connector script writes");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("the connector script becomes executable");
+
+    let output = certify(&["--role", "source", script.to_str().expect("utf-8 path")]);
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(2), "stderr:\n{stderr}");
+    assert!(
+        output.stdout.is_empty(),
+        "a refusal writes no clause report"
+    );
+    assert!(
+        stderr.contains(&format!("connector `{}` exited", script.display())),
+        "the refusal names the binary:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("exit status: 3"),
+        "the refusal names the exit status:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("PASS ") && !stderr.contains("FAIL ") && !stderr.contains("SKIP "),
+        "a refusal prints no clause verdicts:\n{stderr}"
+    );
+}
+
 /// Bad arguments are clap's default exit 2.
 #[test]
 fn a_bogus_role_exits_2() {
