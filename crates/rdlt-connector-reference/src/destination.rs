@@ -4,17 +4,22 @@
 //! Staging is in-memory (a crashed session's staging simply vanishes —
 //! the open contract by construction); publish writes each table's
 //! staged rows to `<table>-<load_id>-<part>.jsonl`, persists the state
-//! document, and appends a receipt line LAST. The part number IS the
-//! commit sequence, deliberately: a crash after the parts but before
-//! the receipt leaves no receipt, so the retried commit re-publishes —
-//! and deterministic names make that re-publish overwrite its own
-//! files instead of duplicating them.
+//! document, and appends a receipt line LAST — each step fsynced, so
+//! the receipt can only be durable after the parts and state it
+//! acknowledges are. The part number IS the commit sequence,
+//! deliberately: a crash after the parts but before the receipt leaves
+//! no receipt, so the retried commit re-publishes — and deterministic
+//! names make that re-publish overwrite its own files instead of
+//! duplicating them. One session at a time: connect takes an OS
+//! advisory lease beside the state slot, released on drop and on
+//! process death.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use fs4::fs_std::FileExt as _;
 use rdlt_connector_sdk::config::{self, Document};
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::spi::core::{
@@ -32,8 +37,16 @@ use rdlt_connector_sdk::spi::{
 const RECEIPTS_FILE: &str = "_reference_receipts.json";
 
 /// The latest committed state document, written atomically (write to a
-/// temporary, then rename) by every publish, BEFORE its receipt.
+/// temporary, fsync, then rename) by every publish, BEFORE its receipt.
 const STATE_FILE: &str = "_reference_state.json";
+
+/// The session lease: an OS advisory lock held from connect to drop.
+/// Two concurrent sessions over one directory would each read the same
+/// persisted cursor and publish the same rows under their own load ids
+/// — deterministic part names dedupe only WITHIN a load — so the
+/// second open is refused typed instead. Advisory locks release on
+/// process death, so a crashed run never blocks its own recovery.
+const LEASE_FILE: &str = "_reference_lease.lock";
 
 /// The reference destination document: ONE output directory.
 /// `{ "path": "out/dir" }`
@@ -119,21 +132,58 @@ impl DestinationConnector for Reference {
                 self.dir.display()
             ))
         })?;
+        let lease = self.acquire_lease()?;
         Ok(Writer {
             dir: self.dir.clone(),
             load_id: context.load_id.clone(),
             staged: Vec::new(),
+            lease: Some(lease),
         })
     }
 }
 
+impl Reference {
+    /// Take the session lease, refusing typed when another session
+    /// holds it. Fatal, not transient: the holder may be a hung run,
+    /// and retrying against it forever is exactly the double-fired-cron
+    /// scenario the lease exists to surface.
+    fn acquire_lease(&self) -> Result<std::fs::File, DestinationError> {
+        let path = self.dir.join(LEASE_FILE);
+        let framed = |verb: &str, error: std::io::Error| {
+            DestinationError::transient(format!(
+                "reference destination: {verb} {}: {error}",
+                path.display()
+            ))
+        };
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|error| framed("open", error))?;
+        if !file
+            .try_lock_exclusive()
+            .map_err(|error| framed("lock", error))?
+        {
+            return Err(DestinationError::fatal(format!(
+                "reference destination: another session holds the lease at {} — one session \
+                 per output directory",
+                path.display()
+            )));
+        }
+        Ok(file)
+    }
+}
+
 /// One session's system IO: staged batches in memory, published files,
-/// receipts and state on disk.
+/// receipts and state on disk. Holds the session lease; `close` and
+/// drop both release it.
 #[derive(Debug)]
 pub struct Writer {
     dir: PathBuf,
     load_id: LoadId,
     staged: Vec<(TableName, RecordBatch)>,
+    lease: Option<std::fs::File>,
 }
 
 #[async_trait]
@@ -146,17 +196,23 @@ impl Backend for Writer {
         match mode {
             // A jsonl part carries its own column names on every row —
             // there is no DDL to run, and re-ensuring is trivially
-            // idempotent. Merge reaches here only from a host ignoring
-            // the declared capabilities (merge stays false), so Append
-            // is the one disposition this destination performs.
-            WriteMode::Append | WriteMode::Merge { .. } => Ok(()),
-            // Replace — and any future disposition — is typed-
-            // unsupported, never silent: accepting it would append
-            // where the pipeline asked for a table's contents to be
-            // replaced, quietly forever.
+            // idempotent. Append is the ONE disposition this
+            // destination performs.
+            WriteMode::Append => Ok(()),
+            // Everything else — Replace, Merge, and any future
+            // disposition — is typed-unsupported, never silent.
+            // Accepting Replace would append where the pipeline asked
+            // for a table's contents to be replaced; accepting Merge
+            // would append where the pipeline asked for upsert-by-key,
+            // duplicating every redelivery — each quietly, forever. The
+            // engine's validate gate refuses Merge against the declared
+            // `merge = false` capability, but a host driving this
+            // backend directly never passes that gate, so the refusal
+            // lives here too.
             other => {
                 let mode_name = match other {
                     WriteMode::Replace => "replace".to_owned(),
+                    WriteMode::Merge { .. } => "merge".to_owned(),
                     other => format!("{other:?}"),
                 };
                 Err(DestinationError::fatal(format!(
@@ -233,6 +289,13 @@ impl Backend for Writer {
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+        // THE DURABILITY ORDER IS THE EXACTLY-ONCE PROOF and is pinned
+        // by the suite: every part, then the state document, each
+        // persisted through fsync — and only THEN the receipt append.
+        // A receipt that reached the journal while a part still sat in
+        // page cache would, after power loss, answer `existing_receipt`
+        // for a commit whose rows are gone: replay would drop the
+        // redelivered staging and the loss would be silent.
         let mut tables: BTreeMap<TableName, Vec<RecordBatch>> = BTreeMap::new();
         for (table, batch) in self.staged.drain(..) {
             tables.entry(table).or_default().push(batch);
@@ -270,29 +333,7 @@ impl Backend for Writer {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
         };
-        let line = serde_json::to_string(&receipt).map_err(|error| {
-            DestinationError::fatal(format!(
-                "reference destination: encode the receipt: {error}"
-            ))
-        })?;
-        let path = self.dir.join(RECEIPTS_FILE);
-        self.truncate_torn_tail(&path)?;
-        let mut log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|error| {
-                DestinationError::transient(format!(
-                    "reference destination: open {}: {error}",
-                    path.display()
-                ))
-            })?;
-        writeln!(log, "{line}").map_err(|error| {
-            DestinationError::transient(format!(
-                "reference destination: append to {}: {error}",
-                path.display()
-            ))
-        })?;
+        self.append_receipt(&receipt)?;
         Ok(receipt)
     }
 
@@ -321,6 +362,17 @@ impl Backend for Writer {
         // pipeline, so another pipeline's read answers None (fresh)
         // rather than someone else's cursors.
         Ok((state.pipeline == *pipeline).then_some(state))
+    }
+
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        // The lease ends with the SESSION, not with the object: a
+        // well-behaved host closes a session before opening the next,
+        // and the successor must not be refused by a closed
+        // predecessor whose handle is still in scope. Dropping the
+        // file releases the advisory lock; an unclosed drop (crash,
+        // error path) releases it the same way.
+        self.lease = None;
+        Ok(())
     }
 }
 
@@ -367,9 +419,11 @@ impl Writer {
         Ok(())
     }
 
-    /// Write `bytes` to `name` atomically: to an underscore-prefixed
-    /// temporary first (invisible to any table-prefix reader), then a
-    /// same-directory rename.
+    /// Write `bytes` to `name` atomically AND durably: to an
+    /// underscore-prefixed temporary first (invisible to any
+    /// table-prefix reader), fsynced BEFORE the same-directory rename
+    /// so the rename can never land pointing at unwritten cache, then
+    /// the directory fsynced so the rename itself survives power loss.
     fn persist(&self, name: &str, bytes: &[u8]) -> Result<(), DestinationError> {
         let temp = self.dir.join(format!("_staged-{name}"));
         let target = self.dir.join(name);
@@ -379,9 +433,62 @@ impl Writer {
                 path.display()
             ))
         };
-        std::fs::write(&temp, bytes).map_err(|error| framed("write", &temp, error))?;
+        let mut file =
+            std::fs::File::create(&temp).map_err(|error| framed("write", &temp, error))?;
+        file.write_all(bytes)
+            .map_err(|error| framed("write", &temp, error))?;
+        file.sync_all()
+            .map_err(|error| framed("sync", &temp, error))?;
+        drop(file);
         std::fs::rename(&temp, &target).map_err(|error| framed("publish", &target, error))?;
+        self.sync_dir()?;
         Ok(())
+    }
+
+    /// Append `receipt` to the log durably: torn tail cut, the line
+    /// written and the log fsynced — and, when this append CREATED the
+    /// log, the directory fsynced too, so the new file's very existence
+    /// survives power loss. Called only after every part and the state
+    /// document have been persisted; the ordering is the barrier.
+    fn append_receipt(&self, receipt: &CommitReceipt) -> Result<(), DestinationError> {
+        let line = serde_json::to_string(receipt).map_err(|error| {
+            DestinationError::fatal(format!(
+                "reference destination: encode the receipt: {error}"
+            ))
+        })?;
+        let path = self.dir.join(RECEIPTS_FILE);
+        self.truncate_torn_tail(&path)?;
+        let framed = |verb: &str, error: std::io::Error| {
+            DestinationError::transient(format!(
+                "reference destination: {verb} {}: {error}",
+                path.display()
+            ))
+        };
+        let created = !path.exists();
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| framed("open", error))?;
+        writeln!(log, "{line}").map_err(|error| framed("append to", error))?;
+        log.sync_all().map_err(|error| framed("sync", error))?;
+        if created {
+            self.sync_dir()?;
+        }
+        Ok(())
+    }
+
+    /// Fsync the output directory itself — what makes a rename or a
+    /// file creation durable, not just the bytes behind it.
+    fn sync_dir(&self) -> Result<(), DestinationError> {
+        std::fs::File::open(&self.dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| {
+                DestinationError::transient(format!(
+                    "reference destination: sync {}: {error}",
+                    self.dir.display()
+                ))
+            })
     }
 }
 

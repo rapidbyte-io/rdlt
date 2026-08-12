@@ -272,12 +272,13 @@ mod spawned_runs {
             .unwrap_or_else(|e| panic!("stdout is exactly the report JSON: {e}\n{stdout}"));
         assert_eq!(report["tables"]["events"]["rows"], 3);
         assert!(stderr.contains("-> stream events started"), "{stderr}");
-        // The reference source pushes one row per frame, so each
-        // commit's feed line counts 1 — three commits over three rows.
-        assert!(stderr.contains("events: +1 rows"), "{stderr}");
+        // The reference source pushes batches and checkpoints at batch
+        // boundaries, so the three-row fixture is one frame, one
+        // commit, one feed line counting all three rows.
+        assert!(stderr.contains("events: +3 rows"), "{stderr}");
         assert!(stderr.contains("commit 1 ok"), "{stderr}");
         // Heartbeats and 036 detail stay OUT of the default feed.
-        assert!(!stderr.contains("read 1 rows"), "{stderr}");
+        assert!(!stderr.contains("read 3 rows"), "{stderr}");
 
         // Quiet: stderr carries nothing at all for a clean run.
         let (_dir, spec) = fresh_pipeline();
@@ -301,7 +302,7 @@ mod spawned_runs {
             .output()
             .expect("spawn");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("read 1 rows"), "{stderr}");
+        assert!(stderr.contains("read 3 rows"), "{stderr}");
         assert!(stderr.contains("commit 1 starting"), "{stderr}");
 
         // --report: the JSON moves to the file; stdout is empty.

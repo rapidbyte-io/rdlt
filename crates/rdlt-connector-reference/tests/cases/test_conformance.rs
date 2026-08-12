@@ -1,7 +1,9 @@
 //! The reference connector answers the same kits every shipping
 //! connector answers, plus its own exactly-once pins: the byte cursor's
-//! resume law over an unchanged, grown, and shrunk file, and the
-//! receipt-driven replay that keeps a crashed load from duplicating.
+//! resume law over an unchanged, grown, shrunk, and rewritten file, the
+//! newline-termination rule against a live appender, the session lease,
+//! and the receipt-driven replay that keeps a crashed load from
+//! duplicating.
 
 use rdlt_connector_reference::{destination, source};
 use rdlt_connector_sdk::spi::core::{CommitReceipt, LoadId, PipelineId, TableName, WriteMode};
@@ -17,6 +19,13 @@ use super::common::{DirProbe, read_stream};
 /// Three seed rows, 8 bytes per line (`{"n":1}` + newline) — the byte
 /// offsets the cursor pins below are derived from this shape.
 const SEED: &str = "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n";
+
+/// The cursor's tail hash, re-derived independently of the crate: the
+/// hex blake3 of the last `min(bytes_read, 4096)` consumed bytes.
+fn tail_hash_of(consumed: &str) -> String {
+    let tail = &consumed.as_bytes()[consumed.len().saturating_sub(4096)..];
+    blake3::hash(tail).to_hex().to_string()
+}
 
 /// A tempdir holding `events.jsonl` seeded with [`SEED`], plus a source
 /// shell over it.
@@ -56,7 +65,8 @@ async fn the_destination_kit_certifies_the_shell() {
 
 /// The exactly-once pin: a committed cursor at EOF means a re-run of an
 /// unchanged file reads NOTHING again. Also pins the persisted v1 wire
-/// shape — `{"v":1,"bytes_read":<u64>}` — as data, not just behavior.
+/// shape — `{"v":1,"bytes_read":<u64>,"tail_hash":<hex>}` — as data,
+/// not just behavior, the hash re-derived independently.
 #[tokio::test]
 async fn a_second_read_of_an_unchanged_file_yields_zero_rows() {
     let (_dir, _path, shell) = seeded_source();
@@ -70,7 +80,10 @@ async fn a_second_read_of_an_unchanged_file_yields_zero_rows() {
     let (rows, checkpoint) = read_stream(&shell, &stream, None).await.expect("full read");
     assert_eq!(rows.len(), 3);
     let cursor = checkpoint.expect("the read checkpoints");
-    assert_eq!(cursor.as_value(), &json!({"v": 1, "bytes_read": 24}));
+    assert_eq!(
+        cursor.as_value(),
+        &json!({"v": 1, "bytes_read": 24, "tail_hash": tail_hash_of(SEED)})
+    );
 
     let (rows, _) = read_stream(&shell, &stream, Some(cursor))
         .await
@@ -98,9 +111,89 @@ async fn a_grown_file_yields_only_the_tail() {
         .await
         .expect("tail read");
     assert_eq!(rows, vec![json!({"n": 4})], "only the appended tail");
+    let grown = std::fs::read_to_string(&path).expect("read back");
     assert_eq!(
         checkpoint.expect("the tail read checkpoints").as_value(),
-        &json!({"v": 1, "bytes_read": 32})
+        &json!({"v": 1, "bytes_read": 32, "tail_hash": tail_hash_of(&grown)})
+    );
+}
+
+/// A file REWRITTEN IN PLACE to the same (or greater) length refuses
+/// typed with the frozen spelling: a bare offset guard would silently
+/// resume mid-way through unrelated new content and emit its tail as
+/// appended rows. A same-content rewrite legitimately passes — the
+/// guard answers "is this still the file I read", not "was the inode
+/// untouched".
+#[tokio::test]
+async fn a_file_rewritten_in_place_refuses_with_the_frozen_spelling() {
+    let (_dir, path, shell) = seeded_source();
+    let stream = shell.streams().await.expect("streams").remove(0);
+    let (_, checkpoint) = read_stream(&shell, &stream, None).await.expect("full read");
+    let cursor = checkpoint.expect("the read checkpoints");
+
+    // Same byte length (24), different content: the shrink guard alone
+    // cannot see this.
+    std::fs::write(&path, "{\"m\":7}\n{\"m\":8}\n{\"m\":9}\n").expect("rewrite file");
+    let refused = read_stream(&shell, &stream, Some(cursor.clone()))
+        .await
+        .expect_err("a rewritten file must refuse");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "fatal source error: reference source: {}: the 24 bytes before the cursor no \
+             longer match its tail hash — the file was rewritten in place, refusing to resume",
+            path.display()
+        )
+    );
+
+    // The rewrite restored byte-for-byte: the resume is legal again and
+    // reads nothing new.
+    std::fs::write(&path, SEED).expect("restore file");
+    let (rows, _) = read_stream(&shell, &stream, Some(cursor))
+        .await
+        .expect("a same-content rewrite resumes");
+    assert!(rows.is_empty(), "nothing new to read, got {rows:?}");
+}
+
+/// The newline-termination rule against a live appender: a final line
+/// missing its newline is a row still being written — it is NOT
+/// emitted, the cursor stays at the last newline, and the read that
+/// sees the line completed picks it up whole. No split rows, no
+/// refusal, and a fresh full read agrees with what the incremental
+/// sessions delivered.
+#[tokio::test]
+async fn a_newline_less_tail_is_left_for_the_read_that_sees_it_complete() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("events.jsonl");
+    // The appender flushed mid-line: the tail parses as JSON but its
+    // line is not terminated.
+    std::fs::write(&path, "{\"n\":1}\n{\"n\":2}").expect("seed file");
+    let shell = source::Shell::from_value(json!({"path": path})).expect("valid config");
+    let stream = shell.streams().await.expect("streams").remove(0);
+
+    let (rows, checkpoint) = read_stream(&shell, &stream, None).await.expect("read");
+    assert_eq!(
+        rows,
+        vec![json!({"n": 1})],
+        "only the newline-terminated row is emitted"
+    );
+    let cursor = checkpoint.expect("the read checkpoints");
+    assert_eq!(
+        cursor.as_value(),
+        &json!({"v": 1, "bytes_read": 8, "tail_hash": tail_hash_of("{\"n\":1}\n")}),
+        "the cursor stays at the last newline, never mid-line"
+    );
+
+    // The appender finishes the line: the resumed read yields exactly
+    // the completed row.
+    std::fs::write(&path, "{\"n\":1}\n{\"n\":2}\n").expect("complete the line");
+    let (rows, _) = read_stream(&shell, &stream, Some(cursor))
+        .await
+        .expect("resumed read");
+    assert_eq!(
+        rows,
+        vec![json!({"n": 2})],
+        "the completed row arrives whole — no split, no refusal"
     );
 }
 
@@ -249,6 +342,108 @@ async fn a_replace_write_mode_refuses_with_the_frozen_spelling() {
         refused.to_string(),
         "fatal destination error: reference destination: table `events`: write mode `replace` \
          is not supported — jsonl parts are append-only"
+    );
+}
+
+/// Merge refuses the same way — typed, never silent. The engine's
+/// validate gate refuses Merge against the declared `merge = false`
+/// capability, but a host driving the backend directly never passes
+/// that gate: accepting Merge here would append where the caller asked
+/// for upsert-by-key, duplicating every redelivery quietly forever.
+#[tokio::test]
+async fn a_merge_write_mode_refuses_with_the_frozen_spelling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let mut session = shell
+        .open(OpenContext::new(
+            PipelineId::new("ref-merge"),
+            LoadId::new("ref-load-m"),
+        ))
+        .await
+        .expect("open");
+    let refused = session
+        .ensure_table(
+            &schema_for("events"),
+            &WriteMode::Merge {
+                key: vec!["id".into()],
+            },
+        )
+        .await
+        .expect_err("merge must refuse");
+    assert_eq!(
+        refused.to_string(),
+        "fatal destination error: reference destination: table `events`: write mode `merge` \
+         is not supported — jsonl parts are append-only"
+    );
+}
+
+/// The session lease: two concurrent sessions of one pipeline would
+/// each read the same persisted cursor and publish the same rows under
+/// their own load ids — so the second open refuses typed with the
+/// frozen spelling, and the lease releases with the session (drop or
+/// process death), never blocking a successor.
+#[tokio::test]
+async fn a_second_concurrent_session_refuses_and_the_lease_releases_on_drop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let held = shell
+        .open(OpenContext::new(
+            PipelineId::new("ref-lease"),
+            LoadId::new("ref-load-a"),
+        ))
+        .await
+        .expect("first open");
+    let refused = match shell
+        .open(OpenContext::new(
+            PipelineId::new("ref-lease"),
+            LoadId::new("ref-load-b"),
+        ))
+        .await
+    {
+        Ok(_) => panic!("a second concurrent session must refuse"),
+        Err(refused) => refused,
+    };
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "fatal destination error: reference destination: another session holds the lease \
+             at {} — one session per output directory",
+            dir.path().join("_reference_lease.lock").display()
+        )
+    );
+    drop(held);
+    shell
+        .open(OpenContext::new(
+            PipelineId::new("ref-lease"),
+            LoadId::new("ref-load-c"),
+        ))
+        .await
+        .expect("the lease released with the dropped session");
+}
+
+/// A configured path naming a DIRECTORY can never be read no matter how
+/// often it is retried: the failure classifies FATAL, the io error's
+/// own rendering reproduced rather than transcribed. (`check` passes —
+/// the path exists — so the read is where the misconfiguration
+/// surfaces.)
+#[tokio::test]
+async fn a_path_naming_a_directory_reads_fatal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("events");
+    std::fs::create_dir(&path).expect("a directory where the file should be");
+    let shell = source::Shell::from_value(json!({"path": path})).expect("valid config");
+    let stream = shell.streams().await.expect("streams").remove(0);
+
+    let refused = read_stream(&shell, &stream, None)
+        .await
+        .expect_err("reading a directory must refuse");
+    let direct = std::fs::read(&path).expect_err("a directory does not read as a file");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "fatal source error: reference source: {}: {direct}",
+            path.display()
+        )
     );
 }
 

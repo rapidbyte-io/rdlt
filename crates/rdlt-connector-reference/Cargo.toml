@@ -49,6 +49,12 @@ clap = { workspace = true, optional = true }
 # the SPI's RecordBatch — the destination writes nothing else.
 arrow = { workspace = true }
 async-trait = { workspace = true }
+# The cursor's rewrite-in-place guard (tail hash) — the same hash the
+# file connector's resume rulebook rides.
+blake3 = { workspace = true }
+# The session lease: an OS advisory lock beside the state slot, released
+# automatically on process death so a crashed run never blocks recovery.
+fs4 = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

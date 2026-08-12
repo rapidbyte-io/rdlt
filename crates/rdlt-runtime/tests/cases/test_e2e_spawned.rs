@@ -331,17 +331,18 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
 /// only committed data (possibly none) is visible at the destination,
 /// that the WAL survives the abort, and that a FRESH run (new spawns)
 /// then converges to exactly-once through the receipts/cursor
-/// machinery answering across the wire. (The reference destination
-/// holds no lease, so the fresh session proceeds immediately — its
+/// machinery answering across the wire. (The reference destination's
+/// session lease is an OS advisory lock, released by the SIGKILL with
+/// the process, so the fresh session proceeds immediately — and its
 /// staging died with the killed process's memory by construction.)
 #[tokio::test(flavor = "multi_thread")]
 async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converges() {
-    // Sized for the reference connector's wire shape: it pushes one
-    // row frame plus one checkpoint frame per line (per-prefix resume
-    // is its contract), so wall scales with ROW COUNT, not commits —
-    // measured 2k rows ≈ 5 s and 20k ≈ 240 s through the debug CLI.
     // 2k rows over 100-row batches keeps ~20 destination RPCs, plenty
-    // of run left after the kill, at gate-friendly cost.
+    // of run left after the kill, at gate-friendly cost. (The cell was
+    // sized when the reference source checkpointed per LINE — two wire
+    // frames per row, measured 2k rows ≈ 5 s and 20k ≈ 240 s through
+    // the debug CLI; it now checkpoints at batch boundaries, and the
+    // cell deliberately stays at its resized row count.)
     const ROWS: u64 = 2_000;
     let bin = built_bin();
     let dir = tempfile::tempdir().expect("tempdir");
