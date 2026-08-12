@@ -144,12 +144,44 @@ destination:
     config: {}
 "#;
     let spec: Spec = serde_yaml::from_str(text).expect("parses");
-    match build_pipeline(&spec).await {
+    match build_pipeline(&spec, std::path::Path::new("")).await {
         Err(SpecError::Resolve(message)) => assert_eq!(
             message,
             "connector `io.rdlt.test.absent`: no binary `rdlt-connector-absent` on PATH \
              and no explicit path was given — install it (e.g. cargo install \
              rdlt-connector-absent) or set path: in the connector requirement"
+        ),
+        Err(other) => panic!("expected a Resolve error, got: {other}"),
+        Ok(_) => panic!("a missing connector binary must not build"),
+    }
+}
+
+/// `build_pipeline` resolves a relative path-form config against the
+/// `base` the caller passes — the include rule, NOT the working
+/// directory. The config file exists only beside the (imaginary) spec,
+/// so getting past resolution to the frozen NotFound refusal proves the
+/// base was honored; a cwd-based resolution would refuse at `reading`.
+#[tokio::test]
+async fn a_relative_config_path_resolves_against_the_base_not_the_cwd() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("cfg.yaml"), "k: v\n").expect("config writes");
+    let text = r#"
+pipeline: p
+source:
+  connector:
+    id: io.rdlt.test.absent
+    config: ./cfg.yaml
+destination:
+  connector:
+    id: io.rdlt.test.absent
+    config: {}
+"#;
+    let spec: Spec = serde_yaml::from_str(text).expect("parses");
+    match build_pipeline(&spec, dir.path()).await {
+        Err(SpecError::Resolve(message)) => assert!(
+            message.contains("no binary `rdlt-connector-absent`"),
+            "resolution must SUCCEED (the failure is the absent binary, \
+             after it): {message}"
         ),
         Err(other) => panic!("expected a Resolve error, got: {other}"),
         Ok(_) => panic!("a missing connector binary must not build"),

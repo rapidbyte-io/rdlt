@@ -272,7 +272,7 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
     ));
 
     let provider = RecordingProvider::new();
-    let pipeline = build_pipeline_with(&spec, &provider)
+    let pipeline = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both connector requirements spawn and handshake");
     let report = pipeline
@@ -317,7 +317,7 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
     // the same document — through the DEFAULT provider this time, the
     // exact path `build_pipeline` gives embedders — succeeds
     // immediately (no lease wait) and reads nothing new.
-    let report2 = build_pipeline(&spec)
+    let report2 = build_pipeline(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the second run")
         .run()
@@ -401,7 +401,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     ));
 
     let provider = RecordingProvider::new();
-    let pipeline = build_pipeline_with(&spec, &provider)
+    let pipeline = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both connector requirements spawn and handshake");
     let (dest_pid, dest_socket) = provider.recorded("destination")[0].clone();
@@ -492,7 +492,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     // path do the rest.
     age_the_crashed_lease(&out_dir);
 
-    let report = build_pipeline(&spec)
+    let report = build_pipeline(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the recovery run")
         .run()

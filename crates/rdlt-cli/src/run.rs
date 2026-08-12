@@ -45,7 +45,7 @@ pub(crate) async fn run(
     }
 
     let (spec, pipeline_name) = load_spec(&spec_path)?;
-    let pipeline = pipeline_spec::build_pipeline(&spec).await?;
+    let pipeline = pipeline_spec::build_pipeline(&spec, spec_base(&spec_path)).await?;
     let events_sink = match events_path {
         None => None,
         Some(_) if events_to_stdout => Some(EventSink::Stdout),
@@ -64,6 +64,16 @@ pub(crate) async fn run(
         renderer,
     )
     .await
+}
+
+/// The directory a spec's relative path-form configs resolve against:
+/// the pipeline file's own — the include rule — so `postgres:
+/// ./creds.yaml` finds the file beside the document naming it, from
+/// any working directory. A bare `pipeline.yaml` has an EMPTY parent,
+/// which joins as the working directory — the same place the file
+/// itself was found.
+fn spec_base(spec_path: &std::path::Path) -> &std::path::Path {
+    spec_path.parent().unwrap_or(std::path::Path::new(""))
 }
 
 /// Parse the document — shared by `run` and `validate`, so the two
@@ -85,7 +95,7 @@ fn load_spec(spec_path: &std::path::Path) -> Result<(Spec, String), CliError> {
 /// with it.
 pub(crate) async fn validate(spec_path: PathBuf, verbosity: Verbosity) -> Result<(), CliError> {
     let (spec, pipeline_name) = load_spec(&spec_path)?;
-    let _pipeline = pipeline_spec::build_pipeline(&spec).await?;
+    let _pipeline = pipeline_spec::build_pipeline(&spec, spec_base(&spec_path)).await?;
     if verbosity != Verbosity::Quiet {
         crate::ui::stderr_line(&format!("ok: pipeline {pipeline_name} is valid"));
     }

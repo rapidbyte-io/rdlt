@@ -415,14 +415,18 @@ fn engine_budget_bytes(spec: &Spec) -> u64 {
 /// builder's `build` re-checks against destination capabilities before any
 /// pipeline runs.
 ///
-/// Relative config paths resolve against the process working directory —
-/// the same rule the document's own relative `workdir` and data paths
-/// follow. Async because of the spawn seam; embedders with their own
-/// provider (a pool, a remote scheduler) use [`build_pipeline_with`].
-pub async fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
+/// `base` anchors relative path-form configs — the include rule: a
+/// `postgres: ./creds.yaml` resolves beside the document that names it,
+/// so the CLI passes the pipeline file's own directory and a spec built
+/// from a string names whatever directory its author means. Data paths
+/// INSIDE a config document are a different story: the connector
+/// process resolves those against its working directory. Async because
+/// of the spawn seam; embedders with their own provider (a pool, a
+/// remote scheduler) use [`build_pipeline_with`].
+pub async fn build_pipeline(spec: &Spec, base: &Path) -> Result<Pipeline, SpecError> {
     let provider =
         LocalBinaryConnectorProvider::default().with_engine_budget_bytes(engine_budget_bytes(spec));
-    build_pipeline_with(spec, &provider).await
+    build_pipeline_with(spec, base, &provider).await
 }
 
 /// [`build_pipeline`] with the caller's own [`ConnectorProvider`] deciding how
@@ -430,6 +434,7 @@ pub async fn build_pipeline(spec: &Spec) -> Result<Pipeline, SpecError> {
 /// else) — the engine never learns which.
 pub async fn build_pipeline_with(
     spec: &Spec,
+    base: &Path,
     provider: &dyn ConnectorProvider,
 ) -> Result<Pipeline, SpecError> {
     let builder = Pipeline::builder(spec.pipeline.as_str());
@@ -459,7 +464,6 @@ pub async fn build_pipeline_with(
         None => builder,
     };
 
-    let base = Path::new("");
     // The provider's typed errors render verbatim — the frozen
     // NotFound spelling, the handshake's identity/config refusals —
     // never a facade paraphrase on top.

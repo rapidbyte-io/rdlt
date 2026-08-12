@@ -104,7 +104,7 @@ destination:
         "commit_policy: {}",
     );
     let spec: Spec = serde_yaml::from_str(&empty).expect("parses");
-    let err = rdlt::pipeline_spec::build_pipeline(&spec)
+    let err = rdlt::pipeline_spec::build_pipeline(&spec, std::path::Path::new(""))
         .await
         .expect_err("a policy with no threshold must not build")
         .to_string();

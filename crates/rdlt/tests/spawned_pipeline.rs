@@ -131,7 +131,7 @@ async fn a_rich_spelling_document_runs_over_spawned_binaries() {
     // the full desugar → discovery route: the provider's search path
     // stands in for PATH, pointing at the built bins.
     let provider = LocalBinaryConnectorProvider::new().with_search_path(target_debug_dir());
-    let report = build_pipeline_with(&spec, &provider)
+    let report = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both rich arms resolve to spawned connectors")
         .run()
@@ -147,7 +147,7 @@ async fn a_rich_spelling_document_runs_over_spawned_binaries() {
 
     // The cursor round-tripped over the wire: a second build (fresh
     // spawns) reads nothing new — exactly-once across sessions.
-    let report = build_pipeline_with(&spec, &provider)
+    let report = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("fresh spawns for the second run")
         .run()
