@@ -22,14 +22,14 @@ workdir: examples/oracle-to-jsonl/.rdlt
 write_mode: append
 
 source:
-  # Written INLINE. Every connector also accepts `config: <path>`
-  # instead — worth preferring here, because the password below is a
+  # Written INLINE. Every connector also accepts a bare string PATH
+  # instead — resolved relative to this pipeline file's own directory
+  # — worth preferring here, because the password below is a
   # credential sitting in the pipeline file. A separate document can
   # be gitignored on its own:
   #
   #   source:
-  #     oracle:
-  #       config: examples/oracle-to-jsonl/oracle.yaml
+  #     oracle: oracle.yaml
   oracle:
     # These values match compose.yaml; edit them for a real estate.
     host: 127.0.0.1

@@ -2,11 +2,15 @@
 //! must parse through the real Spec gate, every connector reference in
 //! it — rich spelling or `connector:` — must desugar to a known
 //! reverse-DNS id, and every resolved config must pass that connector's
-//! own Document gate. No spawn in the default gate: whether the
-//! documents RUN against real binaries is the spawn suites' business;
-//! this holds the document language itself against the examples.
+//! own Document gate; each connector's designated REFERENCE example
+//! must additionally mention EVERY field of that connector's config
+//! schema, active or commented, so "the full configuration is visible
+//! in examples/" stays a property the gate holds rather than a promise
+//! that rots. No spawn in the default gate: whether the documents RUN
+//! against real binaries is the spawn suites' business; this holds the
+//! document language itself against the examples.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use rdlt::pipeline_spec::{ConfigSource, ConnectorRef};
@@ -135,4 +139,127 @@ fn every_example_pipeline_parses_desugars_and_passes_connector_gates() {
         seen += 1;
     }
     assert_eq!(seen, 7, "every example directory carries a pipeline.yaml");
+}
+
+/// Each connector's designated REFERENCE example, with the schema(s)
+/// its pipeline must mention in full. A connector may appear in
+/// several examples; the full-vocabulary claim binds only its
+/// designated one. The schemas come straight from the connector
+/// crates — the same documents a spawned `rdlt schema` serves.
+fn reference_map() -> Vec<(&'static str, Vec<serde_json::Value>)> {
+    vec![
+        (
+            "pokemon-to-jsonl",
+            vec![rdlt_connector_rest::source::config_schema()],
+        ),
+        (
+            "oracle-to-jsonl",
+            vec![rdlt_connector_oracle::source::config_schema()],
+        ),
+        (
+            "postgres-to-parquet",
+            vec![
+                rdlt_connector_postgres::source::config_schema(),
+                rdlt_connector_file::destination::config_schema(),
+            ],
+        ),
+        (
+            "jsonl-to-postgres",
+            vec![
+                rdlt_connector_file::source::config_schema(),
+                rdlt_connector_postgres::destination::config_schema(),
+            ],
+        ),
+        (
+            "csv-to-duckdb",
+            vec![rdlt_connector_duckdb::destination::config_schema()],
+        ),
+        (
+            "postgres-to-iceberg",
+            vec![rdlt_connector_iceberg::destination::config_schema()],
+        ),
+        (
+            "jsonl-to-snowflake",
+            vec![rdlt_connector_snowflake::destination::config_schema()],
+        ),
+    ]
+}
+
+/// Collect every property name reachable in a config schema, walking
+/// nested objects, arrays, unions and `$defs`.
+fn property_names(schema: &serde_json::Value, out: &mut BTreeSet<String>) {
+    if let Some(props) = schema.get("properties").and_then(|p| p.as_object()) {
+        for (name, sub) in props {
+            out.insert(name.clone());
+            property_names(sub, out);
+        }
+    }
+    for key in ["items", "additionalProperties"] {
+        if let Some(sub) = schema.get(key) {
+            property_names(sub, out);
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(list) = schema.get(key).and_then(|l| l.as_array()) {
+            for sub in list {
+                property_names(sub, out);
+            }
+        }
+    }
+    if let Some(defs) = schema.get("$defs").and_then(|d| d.as_object()) {
+        for sub in defs.values() {
+            property_names(sub, out);
+        }
+    }
+}
+
+/// The reference map IS the example set: an example directory this
+/// test does not know is either missing its designated-schema entry or
+/// is dead weight — both are findings.
+#[test]
+fn the_reference_map_matches_the_example_directories() {
+    let mut on_disk: Vec<String> = std::fs::read_dir(examples_dir())
+        .expect("examples/ exists")
+        .filter_map(|entry| {
+            let entry = entry.expect("entry");
+            entry
+                .path()
+                .join("pipeline.yaml")
+                .is_file()
+                .then(|| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    on_disk.sort();
+    let mut mapped: Vec<String> = reference_map()
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    mapped.sort();
+    assert_eq!(on_disk, mapped);
+}
+
+/// THE FULL-CONFIGURATION GUARANTEE: each designated example mentions
+/// every field of its connector's schema, in an active line or a
+/// commented one. A field added to a config struct without a home in
+/// its reference example fails HERE — which is the entire point of
+/// this file.
+#[test]
+fn each_reference_example_mentions_every_schema_field() {
+    for (name, schemas) in reference_map() {
+        let text = std::fs::read_to_string(examples_dir().join(name).join("pipeline.yaml"))
+            .expect("read example");
+        let mut fields = BTreeSet::new();
+        for schema in &schemas {
+            property_names(schema, &mut fields);
+        }
+        let missing: Vec<&String> = fields
+            .iter()
+            .filter(|field| !text.contains(field.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{name}/pipeline.yaml is the reference for its connector but never mentions: \
+             {missing:?} — show each field, active or commented"
+        );
+    }
 }

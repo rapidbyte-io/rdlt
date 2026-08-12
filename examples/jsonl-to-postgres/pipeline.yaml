@@ -18,7 +18,8 @@ write_mode:
     key: [id]
 
 source:
-  # Inline; `file: {config: <path>}` is the separated-document form.
+  # Inline; `file: <path>` is the separated-document form (the path
+  # resolves relative to this pipeline file's own directory).
   file:
     streams:
       - name: events

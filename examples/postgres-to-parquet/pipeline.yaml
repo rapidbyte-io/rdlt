@@ -31,12 +31,12 @@ write_mode: replace
 #   every_seconds: 900
 
 source:
-  # Inline here; every source also accepts `config: <path>` instead —
-  # a separate YAML/JSON document with the identical shape, better
-  # once credentials should live outside the pipeline file:
+  # Inline here; every source also accepts a bare string PATH instead
+  # — a separate YAML/JSON document with the identical shape, resolved
+  # relative to this pipeline file's own directory, better once
+  # credentials should live outside the pipeline file:
   #
-  #   postgres:
-  #     config: examples/postgres-to-parquet/postgres.yaml
+  #   postgres: postgres.yaml
   postgres:
     # libpq-style connection string or URL. `sslmode` up to `require`
     # may be set here; the verify-* modes need the `tls:` block.

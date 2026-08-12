@@ -83,15 +83,17 @@ it, commented with a real value where it does not:
 | iceberg destination | postgres-to-iceberg |
 
 This is a GATE PROPERTY, not a promise: `crates/rdlt/tests/examples.rs`
-parses and builds every pipeline through the real Spec gate, and fails
-if a reference example omits any field of its connector's config
-schema. A config field added without a home in the examples fails the
-suite.
+parses every pipeline through the real Spec gate, desugars every
+connector reference to a shipped connector's id, validates every config
+against that connector's own document gate, and fails if a reference
+example omits any field of its connector's config schema. A config
+field added without a home in the examples fails the suite.
 
-Every connector accepts its config inline (as these do) or as
-`config: <path>` pointing at a separate YAML/JSON document with the
-identical shape; mixing the two is refused, so half a document can
-never be silently ignored.
+Every connector accepts its config inline (as these do) or as a bare
+string path — `postgres: postgres.yaml` — pointing at a separate
+YAML/JSON document with the identical shape, resolved relative to the
+pipeline file's own directory. The value is either the document or the
+path, so half a document can never be silently ignored.
 
 Fixed host ports, chosen high to avoid dev services: postgres 15432
 (parquet example) / 15433 (postgres-destination example) / 15434
