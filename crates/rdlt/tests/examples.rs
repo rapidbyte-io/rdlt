@@ -118,6 +118,21 @@ fn every_example_pipeline_parses_desugars_and_passes_connector_gates() {
             .unwrap_or_else(|e| panic!("{name}/pipeline.yaml must read: {e}"));
         let spec: rdlt::pipeline_spec::Spec = serde_yaml::from_str(&text)
             .unwrap_or_else(|e| panic!("{name}/pipeline.yaml must parse: {e}"));
+        // The pipeline-level halves of the build gate that need no
+        // spawn: the commit-policy threshold rule is the SAME check
+        // build_pipeline runs before any connector resolves, and a
+        // merge key must be non-empty (the builder's refusal, pinned
+        // in builder_errors). The capability half — a write mode the
+        // destination refuses — needs a live connector and stays with
+        // the spawn suites.
+        if let Some(policy) = &spec.commit_policy {
+            policy
+                .check()
+                .unwrap_or_else(|e| panic!("{name}: commit_policy must pass the build gate: {e}"));
+        }
+        if let Some(rdlt::pipeline_spec::WriteModeSpec::Merge { key }) = &spec.write_mode {
+            assert!(!key.is_empty(), "{name}: a merge write mode needs a key");
+        }
         // The example's own directory is the base, so a path-form
         // config resolves relative to the files beside it.
         let source = spec
@@ -238,6 +253,23 @@ fn the_reference_map_matches_the_example_directories() {
     assert_eq!(on_disk, mapped);
 }
 
+/// Does `text` mention `field` as a whole word? A raw substring check
+/// would let one field vouch for another it merely contains — a new
+/// `ssl` field counted as documented by the existing `sslmode`, a
+/// `key` by `primary_key` — re-opening exactly the rot this gate
+/// exists to prevent.
+fn mentions_field(text: &str, field: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(field).any(|(at, _)| {
+        let clear_before = text[..at].chars().next_back().is_none_or(|c| !is_word(c));
+        let clear_after = text[at + field.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_word(c));
+        clear_before && clear_after
+    })
+}
+
 /// THE FULL-CONFIGURATION GUARANTEE: each designated example mentions
 /// every field of its connector's schema, in an active line or a
 /// commented one. A field added to a config struct without a home in
@@ -254,7 +286,7 @@ fn each_reference_example_mentions_every_schema_field() {
         }
         let missing: Vec<&String> = fields
             .iter()
-            .filter(|field| !text.contains(field.as_str()))
+            .filter(|field| !mentions_field(&text, field))
             .collect();
         assert!(
             missing.is_empty(),
