@@ -4831,6 +4831,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-reference"
+version = "0.3.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "clap",
+ "rdlt-certify",
+ "rdlt-connector-sdk",
+ "rdlt-testkit",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "rdlt-connector-rest"
 version = "0.3.0"
 dependencies = [

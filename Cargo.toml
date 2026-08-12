@@ -13,6 +13,7 @@ members = [
     "crates/rdlt-connector-iceberg",
     "crates/rdlt-connector-oracle",
     "crates/rdlt-connector-postgres",
+    "crates/rdlt-connector-reference",
     "crates/rdlt-cli",
     "crates/rdlt-bench",
     "crates/rdlt-connector-sqlcore",
@@ -53,6 +54,7 @@ rdlt-connector-file = { path = "crates/rdlt-connector-file", version = "0.3.0" }
 rdlt-connector-iceberg = { path = "crates/rdlt-connector-iceberg", version = "0.3.0" }
 rdlt-connector-oracle = { path = "crates/rdlt-connector-oracle", version = "0.3.0" }
 rdlt-connector-postgres = { path = "crates/rdlt-connector-postgres", version = "0.3.0", default-features = false }
+rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.3.0" }
 rdlt-connector-sqlcore = { path = "crates/rdlt-connector-sqlcore", version = "0.3.0" }
 rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
 rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
