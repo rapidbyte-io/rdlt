@@ -257,9 +257,13 @@ fn the_reference_map_matches_the_example_directories() {
 /// would let one field vouch for another it merely contains — a new
 /// `ssl` field counted as documented by the existing `sslmode`, a
 /// `key` by `primary_key` — re-opening exactly the rot this gate
-/// exists to prevent.
+/// exists to prevent. Hyphens and dots count as word characters so a
+/// compound token in prose or a URL (`append-mode`, `ssl-mode=`)
+/// cannot vouch for a field embedded in it either; config fields
+/// themselves are underscore-spelled, so no legitimate mention is a
+/// hyphenated or dotted compound.
 fn mentions_field(text: &str, field: &str) -> bool {
-    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.';
     text.match_indices(field).any(|(at, _)| {
         let clear_before = text[..at].chars().next_back().is_none_or(|c| !is_word(c));
         let clear_after = text[at + field.len()..]
