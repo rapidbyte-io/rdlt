@@ -1,4 +1,5 @@
-//! The kill matrix over the REAL file connector bin: SIGKILL at every
+//! The kill matrix over the REAL reference connector bin: SIGKILL at
+//! every
 //! message boundary of the K-vocabulary — K-S1/K-S2/K-S3 on the read
 //! wire, K-D1..K-D6 on the session wire — asserting a typed error
 //! surfaces (never a hang) and, for the destination arms, that a fresh
@@ -45,40 +46,29 @@ fn render(entries: &[Entry]) -> String {
 
 /// A jsonl fixture big enough that the read stream provably outlives
 /// the kill: the kill-matrix source arms dial with a floored h2 window
-/// (64 KiB), so a fixture WELL past that (60 files, 100 rows each,
-/// ~3 KiB per file plus a growing checkpoint per file) guarantees the
-/// server is still blocked mid-stream when the kill lands after frame 1
-/// — a smaller fixture could be fully in flight before the SIGKILL and
-/// end the stream cleanly instead of erroring.
-fn write_source_fixture(dir: &Path) {
-    for file in 0..60 {
-        let mut text = String::new();
-        for row in 0..100 {
-            let id = file * 100 + row;
-            text.push_str(&format!("{{\"id\":{id},\"name\":\"row-{id}\"}}\n"));
-        }
-        std::fs::write(dir.join(format!("rows-{file:02}.jsonl")), text)
-            .expect("the fixture file writes");
+/// (64 KiB), so a fixture WELL past that (6,000 rows ≈ 170 KiB, plus a
+/// checkpoint per consumed line) guarantees the server is still
+/// blocked mid-stream when the kill lands after frame 1 — a smaller
+/// fixture could be fully in flight before the SIGKILL and end the
+/// stream cleanly instead of erroring.
+fn write_source_fixture(dir: &Path) -> std::path::PathBuf {
+    let mut text = String::new();
+    for id in 0..6_000 {
+        text.push_str(&format!("{{\"id\":{id},\"name\":\"row-{id}\"}}\n"));
     }
+    let path = dir.join("events.jsonl");
+    std::fs::write(&path, text).expect("the fixture file writes");
+    path
 }
 
-fn source_target(fixture_dir: &Path) -> Target {
-    let config = json!({
-        "streams": [{
-            "name": "events",
-            "format": "jsonl",
-            "path": format!("{}/*.jsonl", fixture_dir.display()),
-        }]
-    });
-    Target::resolve_path(built_bin("rdlt-connector-file"), config)
+fn source_target(fixture: &Path) -> Target {
+    let config = json!({ "path": fixture });
+    Target::resolve_path(built_bin("rdlt-connector-reference"), config)
 }
 
 fn dest_target(out_root: &Path) -> Target {
-    let config = json!({
-        "path": out_root.display().to_string(),
-        "format": "jsonl",
-    });
-    Target::resolve_path(built_bin("rdlt-connector-file"), config)
+    let config = json!({ "path": out_root.display().to_string() });
+    Target::resolve_path(built_bin("rdlt-connector-reference"), config)
 }
 
 /// The source half: every boundary in K order, every arm Pass — the
@@ -86,9 +76,9 @@ fn dest_target(out_root: &Path) -> Target {
 #[tokio::test]
 async fn the_source_kill_matrix_passes_at_every_boundary() {
     let dir = tempfile::tempdir().expect("tempdir");
-    write_source_fixture(dir.path());
+    let fixture = write_source_fixture(dir.path());
 
-    let entries = kill_matrix_source(&source_target(dir.path())).await;
+    let entries = kill_matrix_source(&source_target(&fixture)).await;
 
     let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
     assert_eq!(

@@ -3,9 +3,9 @@
 #[cfg(feature = "spawn-bins")]
 mod support;
 #[cfg(feature = "spawn-bins")]
-mod test_certify_file_destination;
+mod test_certify_reference_destination;
 #[cfg(feature = "spawn-bins")]
-mod test_certify_file_source;
+mod test_certify_reference_source;
 // The CLI cases additionally need the `bin` feature: they spawn the
 // certifier bin itself, whose path `CARGO_BIN_EXE_rdlt-certify` only
 // exists when cargo builds the bin target alongside the tests.

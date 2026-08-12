@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 /// The path to a built connector bin — see
 /// [`rdlt_testkit::spawn::built_connector_bin`] for the guard and
-/// build semantics. The file connector is the one bin these cases
+/// build semantics. The reference connector is the one bin these cases
 /// spawn today; a second certification subject just names its crate.
 pub(crate) fn built_bin(name: &str) -> PathBuf {
     rdlt_testkit::spawn::built_connector_bin(env!("CARGO_MANIFEST_DIR"), name)

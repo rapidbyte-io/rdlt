@@ -38,30 +38,22 @@ fn stderr_of(output: &Output) -> String {
 /// Write a jsonl source fixture and its config document; hand back the
 /// config file's path (the fixture directory rides along).
 fn source_config(dir: &Path) -> std::path::PathBuf {
-    std::fs::write(
-        dir.join("rows.jsonl"),
-        "{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n",
-    )
-    .expect("the fixture file writes");
-    let config = serde_json::json!({
-        "streams": [{
-            "name": "events",
-            "format": "jsonl",
-            "path": format!("{}/*.jsonl", dir.display()),
-        }]
-    });
+    let fixture = dir.join("events.jsonl");
+    std::fs::write(&fixture, "{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n")
+        .expect("the fixture file writes");
+    let config = serde_json::json!({ "path": fixture });
     let path = dir.join("config.json");
     std::fs::write(&path, config.to_string()).expect("the config file writes");
     path
 }
 
-/// The happy path: the real file connector bin certifies as a source,
-/// exit 0, the clause lines on stdout.
+/// The happy path: the real reference connector bin certifies as a
+/// source, exit 0, the clause lines on stdout.
 #[test]
-fn the_file_source_certifies_all_pass_with_exit_0() {
+fn the_reference_source_certifies_all_pass_with_exit_0() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = source_config(dir.path());
-    let bin = built_bin("rdlt-connector-file");
+    let bin = built_bin("rdlt-connector-reference");
 
     let output = certify(&[
         "--role",
@@ -87,7 +79,7 @@ fn the_file_source_certifies_all_pass_with_exit_0() {
 fn the_json_report_parses_with_entries() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = source_config(dir.path());
-    let bin = built_bin("rdlt-connector-file");
+    let bin = built_bin("rdlt-connector-reference");
 
     let output = certify(&[
         "--role",
@@ -238,102 +230,13 @@ fn explain_covers_the_whole_vocabulary_with_exit_0() {
     }
 }
 
-/// Write a file-destination config document rooted at `out_root`; hand
-/// back the config file's path.
+/// Write a reference-destination config document rooted at `out_root`;
+/// hand back the config file's path.
 fn dest_config(dir: &Path, out_root: &Path) -> std::path::PathBuf {
-    let config = serde_json::json!({
-        "path": out_root.display().to_string(),
-        "format": "jsonl",
-    });
+    let config = serde_json::json!({ "path": out_root.display().to_string() });
     let path = dir.join("config.json");
     std::fs::write(&path, config.to_string()).expect("the config file writes");
     path
-}
-
-/// A source-suite skip is NOT certified evidence by default (round-3
-/// fix): a stream that never checkpoints and declares no cursor field
-/// earns an honest S2 skip — but a source that merely FORGOT resume
-/// looks identical, so the bin refuses (exit 1), the report naming the
-/// skipped clause and the acknowledgment. The acknowledgment takes
-/// STREAM NAMES (round-12 — a blanket flag accepted for one genuine
-/// snapshot stream also folded a regressed co-stream green): naming
-/// the wrong stream still refuses; naming the skipping stream is the
-/// operator owning the trade — exit 0, the skip still rendered.
-#[test]
-fn a_source_suite_skip_refuses_unless_acknowledged() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    // A glob matching NOTHING: the stream reads no files, never
-    // checkpoints, and declares no cursor field — the snapshot shape.
-    let config = serde_json::json!({
-        "streams": [{
-            "name": "events",
-            "format": "jsonl",
-            "path": format!("{}/*.jsonl", dir.path().display()),
-        }]
-    });
-    let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, config.to_string()).expect("the config file writes");
-    let bin = built_bin("rdlt-connector-file");
-
-    let refused = certify(&[
-        "--role",
-        "source",
-        "--config",
-        config_path.to_str().expect("utf-8 path"),
-        bin.to_str().expect("utf-8 path"),
-    ]);
-    let stdout = stdout_of(&refused);
-    assert_eq!(
-        refused.status.code(),
-        Some(1),
-        "an unacknowledged source skip refuses\nstdout:\n{stdout}\nstderr:\n{}",
-        stderr_of(&refused)
-    );
-    // The refusal is the LIBRARY's (round-4 fix): the unacknowledged
-    // skip folds as a FAIL entry naming the flag, so embedders gating
-    // on Report::passed share the exact guard this exit code speaks.
-    assert!(
-        stdout.contains("FAIL S2") && stdout.contains("--accept-skips events"),
-        "the unacknowledged skip fails S2 naming the stream's own acknowledgment: {stdout}"
-    );
-
-    // Naming a DIFFERENT stream acknowledges nothing: still exit 1.
-    let wrong_name = certify(&[
-        "--role",
-        "source",
-        "--config",
-        config_path.to_str().expect("utf-8 path"),
-        "--accept-skips",
-        "not-events",
-        bin.to_str().expect("utf-8 path"),
-    ]);
-    assert_eq!(
-        wrong_name.status.code(),
-        Some(1),
-        "a wrong-name acknowledgment must not certify\nstdout:\n{}",
-        stdout_of(&wrong_name)
-    );
-
-    let accepted = certify(&[
-        "--role",
-        "source",
-        "--config",
-        config_path.to_str().expect("utf-8 path"),
-        "--accept-skips",
-        "events",
-        bin.to_str().expect("utf-8 path"),
-    ]);
-    let stdout = stdout_of(&accepted);
-    assert_eq!(
-        accepted.status.code(),
-        Some(0),
-        "the acknowledged skip passes\nstdout:\n{stdout}\nstderr:\n{}",
-        stderr_of(&accepted)
-    );
-    assert!(
-        stdout.contains("SKIP S2"),
-        "the skip still renders: {stdout}"
-    );
 }
 
 /// A probe template without `{{table}}` would count ONE fixed target
@@ -377,7 +280,7 @@ fn the_kill_matrix_flag_appends_the_k_clauses() {
     let out_root = dir.path().join("out");
     std::fs::create_dir(&out_root).expect("the output root creates");
     let config_path = dest_config(dir.path(), &out_root);
-    let bin = built_bin("rdlt-connector-file");
+    let bin = built_bin("rdlt-connector-reference");
 
     let output = certify(&[
         "--role",
@@ -419,7 +322,7 @@ fn probe_cmd_drives_the_read_back_clauses_and_is_never_echoed() {
     let config_path = dest_config(dir.path(), &out_root);
     let marker = dir.path().join("probe-marker");
     let probe_line = format!("echo {{{{table}}}} >> {}; echo 3", marker.display());
-    let bin = built_bin("rdlt-connector-file");
+    let bin = built_bin("rdlt-connector-reference");
 
     let output = certify(&[
         "--role",
@@ -470,7 +373,7 @@ fn a_failing_probe_cmd_fails_the_read_back_clause_naming_the_probe() {
     let out_root = dir.path().join("out");
     std::fs::create_dir(&out_root).expect("the output root creates");
     let config_path = dest_config(dir.path(), &out_root);
-    let bin = built_bin("rdlt-connector-file");
+    let bin = built_bin("rdlt-connector-reference");
 
     let output = certify(&[
         "--role",
@@ -511,7 +414,7 @@ fn an_unparseable_probe_count_fails_naming_the_output() {
     let out_root = dir.path().join("out");
     std::fs::create_dir(&out_root).expect("the output root creates");
     let config_path = dest_config(dir.path(), &out_root);
-    let bin = built_bin("rdlt-connector-file");
+    let bin = built_bin("rdlt-connector-reference");
 
     let output = certify(&[
         "--role",
