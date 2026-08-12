@@ -12,86 +12,25 @@
 
 #![cfg(feature = "spawn-bins")]
 
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::PathBuf;
 
 use rdlt::pipeline_spec::{Spec, build_pipeline_with};
 use rdlt::runtime::LocalBinaryConnectorProvider;
 
-/// The workspace root: two levels above this crate's own manifest.
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crates/rdlt sits two levels below the workspace root")
+/// The directory holding the two bins this suite spawns, through the
+/// testkit's ONE spawn scaffold — building them under
+/// `RDLT_BUILD_CONNECTOR_BINS`, refusing a relative `CARGO_TARGET_DIR`,
+/// failing loudly on a missing bin — rather than a local copy of those
+/// mechanics (the 042 lesson: copies diverge, and a diverged copy
+/// certifies a stale binary).
+fn bins_dir() -> PathBuf {
+    let file_bin =
+        rdlt_testkit::spawn::built_connector_bin(env!("CARGO_MANIFEST_DIR"), "rdlt-connector-file");
+    rdlt_testkit::spawn::built_connector_bin(env!("CARGO_MANIFEST_DIR"), "rdlt-connector-duckdb");
+    file_bin
+        .parent()
+        .expect("a built bin has a parent directory")
         .to_path_buf()
-}
-
-/// Where debug binaries land — `CARGO_TARGET_DIR` honored (absolute
-/// used as-is, relative resolved against the repo root, exactly as
-/// cargo treats it), the same rule as rdlt-runtime's spawn suites.
-fn target_debug_dir() -> PathBuf {
-    match std::env::var_os("CARGO_TARGET_DIR") {
-        Some(target) => {
-            let target = PathBuf::from(target);
-            if target.is_absolute() {
-                target.join("debug")
-            } else {
-                workspace_root().join(target).join("debug")
-            }
-        }
-        None => workspace_root().join("target/debug"),
-    }
-}
-
-/// Build the two bins this suite spawns (once per test process) when
-/// `RDLT_BUILD_CONNECTOR_BINS` is set; without it, require them to
-/// already exist and fail loudly — never build behind the runner's
-/// back, never skip silently.
-fn ensure_bins() {
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
-        if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
-            // Opt-in rebuild, same residue as the runtime suites: a
-            // stale bin passes green here, so say so out loud.
-            eprintln!(
-                "note: RDLT_BUILD_CONNECTOR_BINS is unset — spawning the connector \
-                 binaries already on disk WITHOUT rebuilding. Whatever this suite \
-                 proves is about those binaries, not necessarily the current source. \
-                 The Makefile's spawn-bins lines set the var."
-            );
-            return;
-        }
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = std::process::Command::new(&cargo)
-            .current_dir(workspace_root())
-            .args([
-                "build",
-                "-p",
-                "rdlt-connector-file",
-                "-p",
-                "rdlt-connector-duckdb",
-                "--features",
-                "bin-serve",
-                "--bin",
-                "rdlt-connector-file",
-                "--bin",
-                "rdlt-connector-duckdb",
-            ])
-            .status()
-            .expect("cargo build for the connector bins spawns");
-        assert!(status.success(), "building the connector bins failed");
-    });
-    for name in ["rdlt-connector-file", "rdlt-connector-duckdb"] {
-        let path = target_debug_dir().join(name);
-        assert!(
-            path.is_file(),
-            "connector binary `{}` is not built — run the Makefile's spawn-bins \
-             line (it sets RDLT_BUILD_CONNECTOR_BINS=1) or `cargo build -p {name} \
-             --features bin-serve` first",
-            path.display()
-        );
-    }
 }
 
 /// Rich spellings only, both sides — the exact document shape the D1
@@ -99,7 +38,7 @@ fn ensure_bins() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rich_spelling_document_runs_over_spawned_binaries() {
     const ROWS: u64 = 200;
-    ensure_bins();
+    let bins = bins_dir();
     let dir = tempfile::tempdir().expect("tempdir");
     let src_dir = dir.path().join("src");
     std::fs::create_dir_all(&src_dir).expect("fixture dir");
@@ -130,7 +69,7 @@ async fn a_rich_spelling_document_runs_over_spawned_binaries() {
     // No `path:` overrides anywhere in the document, so this exercises
     // the full desugar → discovery route: the provider's search path
     // stands in for PATH, pointing at the built bins.
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(target_debug_dir());
+    let provider = LocalBinaryConnectorProvider::new().with_search_path(bins);
     let report = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both rich arms resolve to spawned connectors")

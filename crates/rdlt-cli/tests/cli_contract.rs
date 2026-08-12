@@ -200,82 +200,25 @@ fn a_connector_spec_with_a_missing_binary_exits_2_on_run_and_validate() {
 /// module rides `spawn-bins` — the Makefile's line builds and runs it.
 #[cfg(feature = "spawn-bins")]
 mod spawned_runs {
-    use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::OnceLock;
 
-    /// The workspace root: two levels above this crate's own manifest.
-    fn workspace_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .expect("crates/rdlt-cli sits two levels below the workspace root")
-            .to_path_buf()
-    }
-
-    /// Where debug binaries land — `CARGO_TARGET_DIR` honored, the
-    /// same rule as rdlt-runtime's spawn suites.
-    fn target_debug_dir() -> PathBuf {
-        match std::env::var_os("CARGO_TARGET_DIR") {
-            Some(target) => {
-                let target = PathBuf::from(target);
-                if target.is_absolute() {
-                    target.join("debug")
-                } else {
-                    workspace_root().join(target).join("debug")
-                }
-            }
-            None => workspace_root().join("target/debug"),
-        }
-    }
-
-    /// Build the file bin (once per test process) when
-    /// `RDLT_BUILD_CONNECTOR_BINS` is set; without it, require it to
-    /// already exist and fail loudly — never build behind the
-    /// runner's back, never skip silently.
-    fn ensure_file_bin() {
-        static BUILT: OnceLock<()> = OnceLock::new();
-        BUILT.get_or_init(|| {
-            if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
-                // Opt-in rebuild, same residue as the runtime suites:
-                // a stale bin passes green here, so say so out loud.
-                eprintln!(
-                    "note: RDLT_BUILD_CONNECTOR_BINS is unset — spawning the connector \
-                     binary already on disk WITHOUT rebuilding; it may predate the \
-                     current source. The Makefile's spawn-bins lines set the var."
-                );
-                return;
-            }
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-            let status = Command::new(&cargo)
-                .current_dir(workspace_root())
-                .args([
-                    "build",
-                    "-p",
-                    "rdlt-connector-file",
-                    "--features",
-                    "bin-serve",
-                    "--bin",
-                    "rdlt-connector-file",
-                ])
-                .status()
-                .expect("cargo build -p rdlt-connector-file spawns");
-            assert!(status.success(), "building rdlt-connector-file failed");
-        });
-        let path = target_debug_dir().join("rdlt-connector-file");
-        assert!(
-            path.is_file(),
-            "connector binary `{}` is not built — run the Makefile's spawn-bins \
-             line (it sets RDLT_BUILD_CONNECTOR_BINS=1) first",
-            path.display()
-        );
-    }
-
-    /// The CLI, with the built bins' directory prepended to PATH so
-    /// the provider's discovery finds `rdlt-connector-file`.
+    /// The CLI, with the built file bin's directory prepended to PATH
+    /// so the provider's discovery finds `rdlt-connector-file`. The bin
+    /// comes through the testkit's ONE spawn scaffold — building under
+    /// `RDLT_BUILD_CONNECTOR_BINS`, refusing a relative
+    /// `CARGO_TARGET_DIR`, failing loudly on a missing bin — rather
+    /// than a local copy of those mechanics (the 042 lesson: copies
+    /// diverge, and a diverged copy certifies a stale binary).
     fn rdlt() -> Command {
-        ensure_file_bin();
-        let mut paths = vec![target_debug_dir()];
+        let bin = rdlt_testkit::spawn::built_connector_bin(
+            env!("CARGO_MANIFEST_DIR"),
+            "rdlt-connector-file",
+        );
+        let bins = bin
+            .parent()
+            .expect("a built bin has a parent directory")
+            .to_path_buf();
+        let mut paths = vec![bins];
         paths.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         ));

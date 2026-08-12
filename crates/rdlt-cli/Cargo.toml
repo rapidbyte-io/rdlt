@@ -39,4 +39,5 @@ serde_yaml = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }

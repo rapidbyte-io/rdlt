@@ -4604,6 +4604,7 @@ dependencies = [
  "indicatif",
  "libc",
  "rdlt",
+ "rdlt-testkit",
  "serde",
  "serde_json",
  "serde_yaml",
