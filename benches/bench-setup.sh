@@ -2,12 +2,12 @@
 # One-shot competitor setup for the e2e matrix (`TARGET=setup make bench`).
 #
 # Leg 1 — dlt: build the pinned baseline image (idempotent, cached).
-# Leg 2 — Airbyte: create/refresh the bench connections. Airbyte's discover
-#   must READ the source schemas, so this leg brings up the three fixture
-#   containers with the harness's own seeds, runs the module's setup.py
-#   against them, and always tears them down. Skipped with guidance (exit 0)
-#   when no abctl cluster is reachable — the bench then runs 2-way and records
-#   the Airbyte arms as Missing{reason}, never silently.
+# Leg 2 — Airbyte: create/refresh the oracle-to-pg-200k connection. This leg
+#   provisions a zero-row RDLT.EVENTS schema in Oracle for source discovery and
+#   an empty Postgres dest_airbyte database, runs setup.py, and tears both
+#   services down. Skipped with guidance (exit 0) when no abctl cluster is
+#   reachable — the bench then runs 2-way and records the Airbyte arm as
+#   Missing{reason}, never silently.
 #
 #   The Oracle throwaway is seeded with ZERO rows: discover reads metadata
 #   only, and Oracle's boot is the slowest thing here without also paying for
@@ -37,7 +37,7 @@ if [ ! -f "$KC" ] || ! KUBECONFIG="$KC" "$KUBECTL" get ns airbyte-abctl >/dev/nu
 fi
 
 echo "== airbyte: seeding throwaway fixtures + creating connections =="
-for port in 5439 19110 15210; do
+for port in 5439 15210; do
   if command -v ss >/dev/null && ss -tln | grep -q ":$port "; then
     echo "port $port is already in use — a bench session or stale fixture is" \
          "running; stop it first (podman ps)" >&2
@@ -45,22 +45,18 @@ for port in 5439 19110 15210; do
   fi
 done
 
-ROWS=$(mktemp /tmp/rdlt-bench-setup-rows.XXXXXX.jsonl)
 IDENTITY=$(mktemp /tmp/rdlt-bench-setup-oracle.XXXXXX.txt)
 cleanup() {
-  "$ENGINE" rm -f rdlt-bench-pg rdlt-bench-rustfs rdlt-bench-oracle \
+  "$ENGINE" rm -f rdlt-bench-pg rdlt-bench-oracle \
     >/dev/null 2>&1 || true
-  rm -f "$ROWS" "$IDENTITY"
+  rm -f "$IDENTITY"
 }
 trap cleanup EXIT
 
 "$ENGINE" run -d --name rdlt-bench-pg -p 5439:5432 \
   -e POSTGRES_PASSWORD=postgres postgres:16 >/dev/null
-"$ENGINE" run -d --name rdlt-bench-rustfs -p 19110:9000 \
-  -e RUSTFS_ACCESS_KEY=rdlt-bench -e RUSTFS_SECRET_KEY=rdlt-bench-secret \
-  docker.io/rustfs/rustfs:1.0.0-beta.11 >/dev/null
-# Started detached here so its (slow) boot overlaps the postgres and S3 seeds
-# below; seed_oracle.sh does its own readiness wait, so nothing races.
+# Oracle starts beside Postgres so its slower boot overlaps the destination
+# readiness check. seed_oracle.sh performs its own readiness wait.
 "$ENGINE" run -d --name rdlt-bench-oracle -p 15210:1521 \
   -e ORACLE_PASSWORD=rdlt-bench-sys -e APP_USER=RDLT \
   -e APP_USER_PASSWORD=rdlt-bench \
@@ -80,13 +76,7 @@ ${PG_READY_TIMEOUT}s — inspect it with \`$ENGINE logs rdlt-bench-pg\`" >&2
   sleep 1
   waited=$((waited + 1))
 done
-"$ENGINE" exec -i rdlt-bench-pg psql -q -U postgres -f - \
-  < benches/fixtures/seed_pg.sql >/dev/null
-python3 benches/fixtures/gen_jsonl.py 200000 "$ROWS"
-python3 benches/fixtures/seed_s3.py http://127.0.0.1:19110 \
-  rdlt-bench rdlt-bench-secret raw landed/rows.jsonl "$ROWS"
-python3 benches/fixtures/s3_bucket.py http://127.0.0.1:19110 \
-  rdlt-bench rdlt-bench-secret lake
+"$ENGINE" exec rdlt-bench-pg createdb -U postgres dest_airbyte
 # Schema only (0 rows): discover reads metadata. The script owns the Oracle
 # readiness wait — the listener accepts TCP long before FREEPDB1 registers.
 sh benches/fixtures/seed_oracle.sh rdlt-bench-oracle 15210 RDLT rdlt-bench 0 \

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Per-cell Airbyte sync driver (feature 018, T022). The harness invokes:
+"""Airbyte sync driver for the oracle-to-pg-200k competitor arm. The harness
+invokes:
 
     <module>/.venv/bin/python driver.py <cell-id> [expected-rows]   # cwd=module
 
-for each [[cell.competitor]] entry, AFTER resetting the cell's fixtures. It
-drives ONE pre-created connection (from state.json, written by setup.py) to a
-terminal sync, verifies the landed rowcount in the destination, and prints ONE
-JSON summary line as the LAST line of stdout — the harness's driver contract:
+after resetting the cell's fixtures. Setup provisions the arm's Oracle source
+schema, empty Postgres destination, and pre-created connection. This driver
+takes the connection from state.json, drives it to a terminal sync, verifies
+the landed Postgres rowcount, and prints one JSON summary line as the last line
+of stdout:
 
     {"seconds": <driver trigger->terminal wall, THE headline>,
      "rows": <rowsSynced>,
@@ -41,43 +43,25 @@ def fail(reason):
 
 
 def clean_destination(cell):
-    """Guarantee a clean destination before the timed run. The harness fixture
-    reset recreates the postgres dest schemas (covers pg cells), but does NOT
-    touch the lake output prefix, so S3-dest cells are cleaned here (spike 05).
-    Postgres cells are verified empty defensively."""
+    """Verify the harness reset left the Postgres destination empty."""
     v = cell["verify"]
-    if v["kind"] == "s3":
-        n = ab.s3_delete_prefix(v["endpoint"], v["key"], v["secret"],
-                                v["bucket"], v["prefix"])
-        log(f"cleaned {n} object(s) under {v['bucket']}/{v['prefix']}")
-    else:
-        existing = ab.pg_count(v["container"], v["db"], v["schema"], v["table"])
-        if existing:
-            log(f"warning: dest {v['schema']}.{v['table']} not empty "
-                f"({existing} rows) after fixture reset")
+    if v["kind"] != "pg":
+        fail(f"unsupported destination verification kind {v['kind']}")
+    existing = ab.pg_count(v["container"], v["db"], v["schema"], v["table"])
+    if existing:
+        log(f"warning: dest {v['schema']}.{v['table']} not empty "
+            f"({existing} rows) after fixture reset")
 
 
 def verify_rows(cell, rows_synced, expected):
     v = cell["verify"]
-    if v["kind"] == "pg":
-        got = ab.pg_count(v["container"], v["db"], v["schema"], v["table"])
-        if got != expected:
-            fail(f"destination rowcount {got} != expected {expected} "
-                 f"({v['schema']}.{v['table']})")
-        log(f"verified pg dest {v['schema']}.{v['table']} = {got} rows")
-    else:
-        # Parquet on S3: a stdlib parquet row re-count is impractical, so the
-        # check is Airbyte's emitted rowsSynced == expected AND >=1 object
-        # present under the prefix (documented in README).
-        keys = ab.s3_list_keys(v["endpoint"], v["key"], v["secret"],
-                               v["bucket"], v["prefix"])
-        if not keys:
-            fail(f"no objects under {v['bucket']}/{v['prefix']} after sync")
-        if rows_synced != expected:
-            fail(f"rowsSynced {rows_synced} != expected {expected} "
-                 f"(s3 dest, {len(keys)} objects)")
-        log(f"verified s3 dest {v['bucket']}/{v['prefix']}: "
-            f"{len(keys)} object(s), rowsSynced={rows_synced}")
+    if v["kind"] != "pg":
+        fail(f"unsupported destination verification kind {v['kind']}")
+    got = ab.pg_count(v["container"], v["db"], v["schema"], v["table"])
+    if got != expected:
+        fail(f"destination rowcount {got} != expected {expected} "
+             f"({v['schema']}.{v['table']})")
+    log(f"verified pg dest {v['schema']}.{v['table']} = {got} rows")
 
 
 def main():

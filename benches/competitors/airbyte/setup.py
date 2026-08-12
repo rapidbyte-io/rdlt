@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
-"""One-time, idempotent setup for the Airbyte competitor arm (feature 018,
-T022). Run MANUALLY once per machine before a bench session:
+"""One-time, idempotent setup for the Airbyte oracle-to-pg-200k competitor
+arm. Run manually once per machine before a bench session:
 
     python3 benches/competitors/airbyte/setup.py
 
-It (1) re-applies the two runtime deltas the spike recorded (ingress scaled to
-0; node pids-limit raised), (2) creates one Airbyte source/destination set and
-a connection per e2e cell against the bench fixture endpoints, discovering each
-source's catalog BEFORE the connection create (mandatory — else the public API
-NPEs, spike 03), and (3) writes benches/competitors/airbyte/state.json (the
-connection ids + per-cell destination-verify recipe the driver reads).
-state.json is gitignored.
+It (1) re-applies the two runtime deltas, (2) creates the Oracle source,
+Postgres destination, and connection used by the oracle-to-pg-200k arm after
+discovering the source catalog, and (3) writes
+benches/competitors/airbyte/state.json for driver.py. state.json is gitignored.
 
-Fixtures: it targets the same endpoints the bench fixtures publish — postgres
-on :5439 (database `dest_airbyte`, user postgres) and Oracle 23ai Free on
-:15210 (service FREEPDB1, schema RDLT). Connector PODS reach them at
-169.254.1.2 (pasta host mapping); this host-side script reaches them at
-127.0.0.1. If the fixtures are not up when setup runs, bring them up first
-(the harness owns them) — setup does not seed rows itself; discover needs
-only the schema. Pass AB_* overrides if a standalone throwaway fixture
-differs.
+The setup workflow provisions only what this arm needs: Postgres on :5439
+with an empty `dest_airbyte` database and Oracle 23ai Free on :15210 with the
+zero-row RDLT.EVENTS schema used for discovery. Connector pods reach them at
+169.254.1.2; this host-side script reaches them at 127.0.0.1. If the fixtures
+are not up when setup.py runs directly, bring them up first. Pass AB_*
+overrides if a standalone throwaway fixture differs.
 
-Each cell is built independently; a connector that fails (e.g. an S3 image that
-will not pull) records its reason in state.json and the driver reports that arm
-as Missing — the other arms still run. Re-running setup is safe: it deletes any
-prior `rb-ab-*` resources first, then recreates.
+If the connection cannot be built, setup records its reason in state.json and
+the driver reports the arm as Missing. Re-running setup is safe: it deletes
+prior `rb-ab-*` resources first, then recreates them.
 """
 
 import os
@@ -96,9 +90,9 @@ def oracle_source_config():
     }
 
 
-# --- the cells, declaratively --------------------------------------------
-# stream = the source stream Airbyte selects; sync_mode per regime; verify =
-# how the driver independently checks the landed rowcount.
+# --- the connection, declaratively --------------------------------------
+# The sole Airbyte arm reads Oracle RDLT.EVENTS and verifies the landed
+# Postgres table in dest_airbyte.
 
 def pg_verify(table, expected):
     return {"kind": "pg", "container": PG_CONTAINER, "db": DEST_DB,
@@ -107,22 +101,12 @@ def pg_verify(table, expected):
 
 CELLS = [
     {
-        # 032: Oracle 23ai Free -> postgres, full replace. The stream name is
-        # the Oracle table as the connector discovers it (Oracle folds
-        # unquoted names UPPERCASE, so `EVENTS`, in namespace `RDLT`), and the
-        # landed destination table is whatever Airbyte's pg destination
-        # normalizes that to. BOTH are unverified against a live 23ai — no
-        # abctl cluster was reachable when this was wired — so if setup or the
-        # first sync disagrees, correct these two strings from the discover
-        # output rather than assuming the sync is broken.
+        # Oracle folds the unquoted table name to `EVENTS` in namespace
+        # `RDLT`. The Postgres destination preserves that case and lands
+        # the stream in `public."EVENTS"`.
         "id": "oracle-to-pg-200k",
         "source": ("oracle", None), "destination": ("pg", DEST_DB),
         "stream": "EVENTS", "sync_mode": "full_refresh_overwrite",
-        # VERIFIED LIVE (032): Oracle folds identifiers upper, so the
-        # stream is `EVENTS`, and Airbyte's postgres destination
-        # PRESERVES that case — `public."EVENTS"`, confirmed by
-        # querying the fixture after the first successful sync. This
-        # is the correction the comment above anticipated.
         "verify": pg_verify("EVENTS", 200_000),
     },
 ]
