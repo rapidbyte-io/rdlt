@@ -166,9 +166,16 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
             // possibly one this workspace never builds — so demanding
             // the conventional `{{bins}}` name would refuse a cell
             // `make connector-bins` can never satisfy. The spawn
-            // diagnoses that path itself.
+            // diagnoses that path itself. The override must be a real
+            // string: the Spec model parses a null `path:` as None and
+            // falls back to PATH discovery, so a bare key must still
+            // provision or the two readers disagree.
             let path = serde_yaml::Value::String("path".to_owned());
-            if explicit.contains_key(&path) {
+            let has_path_override = explicit
+                .get(&path)
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|value| !value.is_empty());
+            if has_path_override {
                 continue;
             }
             let id = serde_yaml::Value::String("id".to_owned());
@@ -776,6 +783,18 @@ mod tests {
         assert_eq!(
             declared_connector_bins(overridden).expect("the overridden template parses"),
             BTreeSet::from(["rdlt-connector-postgres".to_owned()])
+        );
+        // A NULL `path:` is not an override: the Spec model reads it
+        // as None and falls back to PATH discovery, so preflight must
+        // still provision the conventional bin.
+        let null_path = "source:\n  connector:\n    id: io.rapidbyte.postgres\n    path:\n\
+                         destination:\n  connector:\n    id: io.rapidbyte.file\n";
+        assert_eq!(
+            declared_connector_bins(null_path).expect("the null-path template parses"),
+            BTreeSet::from([
+                "rdlt-connector-file".to_owned(),
+                "rdlt-connector-postgres".to_owned(),
+            ])
         );
     }
 
