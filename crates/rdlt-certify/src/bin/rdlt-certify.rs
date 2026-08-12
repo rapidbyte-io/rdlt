@@ -35,7 +35,7 @@ use rdlt_certify::{
     kill_matrix_source,
 };
 use rdlt_connector::core::TableName;
-use rdlt_runtime::{LocalBinaryConnectorProvider, ProviderError};
+use rdlt_runtime::{LocalBinaryConnectorProvider, ProviderError, Role};
 use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 use serde_json::Value;
 
@@ -58,6 +58,15 @@ const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 enum CertifyRole {
     Source,
     Destination,
+}
+
+impl CertifyRole {
+    fn runtime_role(self) -> Role {
+        match self {
+            Self::Source => Role::Source,
+            Self::Destination => Role::Destination,
+        }
+    }
 }
 
 /// Where the report lands on stdout.
@@ -487,7 +496,7 @@ async fn run(
     target: &Target,
     probe: Option<&dyn TableProbe>,
 ) -> ExitCode {
-    if let Some(refused) = preflight(target).await {
+    if let Some(refused) = preflight(target, role.runtime_role()).await {
         eprintln!("{refused}");
         return ExitCode::from(EXIT_REFUSED);
     }
@@ -527,9 +536,13 @@ async fn run(
 /// clauses will name it and the run exits with the failure code
 /// instead. A pre-flight that stalls past its budget also falls
 /// through — every clause is timeout-bounded on its own.
-async fn preflight(target: &Target) -> Option<String> {
+async fn preflight(target: &Target, role: Role) -> Option<String> {
     let provider = LocalBinaryConnectorProvider::new();
-    let outcome = tokio::time::timeout(PREFLIGHT_TIMEOUT, provider.spec(&target.requirement)).await;
+    let outcome = tokio::time::timeout(
+        PREFLIGHT_TIMEOUT,
+        provider.spec_for_role(&target.requirement, role),
+    )
+    .await;
     match outcome {
         Ok(Err(
             error @ (ProviderError::NotFound { .. }

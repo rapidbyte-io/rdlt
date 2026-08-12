@@ -78,6 +78,14 @@ by strict equality on every handshake, so a later rename is an
 identity change: spell it reverse-DNS from the start. Both halves of a
 dual-role connector report the SAME id.
 
+A connector binary MUST refuse an unsupported `--role` by exiting with
+code 2 before writing any stdout byte. The handshake line is written
+only for a role the binary serves. The role-less schema probe relies on
+exactly this signal to retry a destination probe after a source
+refusal; no other exit or stdout-producing failure means "unsupported
+role." First-party binaries obtain this refusal from clap, and their
+spawn suites pin the exit code and empty stdout.
+
 The sdk's shell provides the whole SPI. Export the canonical face as a
 type alias and the SPI arrives in one call:
 

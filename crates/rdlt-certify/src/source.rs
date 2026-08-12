@@ -61,7 +61,7 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     // identity: the operator named a binary, not an id, so the id the
     // wire handshake verifies strictly (D-039-2) is learned from the
     // connector's own report.
-    let spec = fetch_spec(&provider, &target.requirement).await;
+    let spec = fetch_spec(&provider, &target.requirement, Role::Source).await;
 
     // Everything past P1 (whose probe already wrote its entry) runs
     // over a verified handshake; without one, every remaining clause

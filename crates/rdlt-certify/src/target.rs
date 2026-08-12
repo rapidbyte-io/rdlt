@@ -127,8 +127,9 @@ pub(crate) fn role_arg(role: Role) -> &'static str {
 pub(crate) async fn fetch_spec(
     provider: &LocalBinaryConnectorProvider,
     requirement: &ConnectorRequirement,
+    role: Role,
 ) -> Result<rdlt_connector::ConnectorSpec, String> {
-    match tokio::time::timeout(CLAUSE_TIMEOUT, provider.spec(requirement)).await {
+    match tokio::time::timeout(CLAUSE_TIMEOUT, provider.spec_for_role(requirement, role)).await {
         Ok(Ok(spec)) => Ok(spec),
         Ok(Err(error)) => Err(error.to_string()),
         Err(_elapsed) => Err(timed_out()),
@@ -430,7 +431,7 @@ mod tests {
 
         let requirement = ConnectorRequirement::new("").with_path(&script);
         let provider = LocalBinaryConnectorProvider::new();
-        let spec = fetch_spec(&provider, &requirement).await;
+        let spec = fetch_spec(&provider, &requirement, Role::Source).await;
         let mut report = Report::default();
         report_p4(&mut report, &spec);
         report

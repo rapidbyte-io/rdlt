@@ -131,7 +131,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // identity: the operator named a binary, not an id, so the id the
     // wire handshake verifies strictly (D-039-2) is learned from the
     // connector's own report.
-    let spec = fetch_spec(&provider, &target.requirement).await;
+    let spec = fetch_spec(&provider, &target.requirement, Role::Destination).await;
 
     // Everything past P1 (whose probe already wrote its entry) runs
     // over a verified handshake; without one, every remaining clause
