@@ -78,22 +78,14 @@ build:
 release:
 	cargo build --release -p rdlt-cli
 
-# Every connector BINARY, release — what a pipeline's rich spellings and
-# `connector:` ids resolve to on PATH (`rdlt-connector-<segment>`), and the
-# install verb the READMEs point at. `release` builds the CLI alone, so
-# without this a run dies loud at spawn. The benchmarks lean on the same
-# target: the cells' `connector: path: {{bins}}/…` overrides and the
-# rich-spelling specs resolve bins off `<target>/release` (rdlt-bench
-# paths.rs), and a measured cell must spawn the shipped shape — a debug bin
-# beside the release engine would measure the wire's overhead wrong.
+# The reference connector BINARY, release — what this repo's own gates
+# (the cold-start instrument's `connector:` arms) spawn on PATH. The
+# SEVEN first-party connectors live in the sibling rdlt-connectors repo
+# now (044); their release bins are built and installed from there, and
+# any cell or run that spawns them must get them from that repo's own
+# verbs — this engine repo builds only the connector it gates on.
 connector-bins:
-	cargo build --release -p rdlt-connector-postgres --features bin-serve --bin rdlt-connector-postgres
-	cargo build --release -p rdlt-connector-file --features bin-serve --bin rdlt-connector-file
-	cargo build --release -p rdlt-connector-duckdb --features bin-serve --bin rdlt-connector-duckdb
-	cargo build --release -p rdlt-connector-oracle --features bin-serve --bin rdlt-connector-oracle
-	cargo build --release -p rdlt-connector-rest --features bin-serve --bin rdlt-connector-rest
-	cargo build --release -p rdlt-connector-iceberg --features bin-serve --bin rdlt-connector-iceberg
-	cargo build --release -p rdlt-connector-snowflake --features bin-serve --bin rdlt-connector-snowflake
+	cargo build --release -p rdlt-connector-reference --features bin-serve --bin rdlt-connector-reference
 
 # The shipped artifact: release plus symbol stripping. Separate from `release`
 # so day-to-day builds keep their symbols for profiling and backtraces.
@@ -137,27 +129,35 @@ define spawn-suite-matrix
 # compiles them — built here explicitly so a bin that stops
 # compiling fails the gate rather than rotting unseen (the
 # snowflake-crash-sweep lesson). Then rdlt-runtime's spawn-bins
-# suite drives the BUILT bins through the provider — the T6 smoke
-# (test_spawned_bins) plus the T8 headline e2e (test_e2e_file: a
-# full engine run over spawned connectors on both sides, and its
-# one crash arm); the env var tells the shared helper to (re)build
-# the bins itself, so the suite stays honest run alone. ONE module
-# per invocation applies to the NEXTEST lines below (empty-selection
-# semantics), not to builds: the seven bin-serve bins batch into ONE
-# cargo invocation (round-10 — eight sequential invocations paid
-# resolution, the target-dir lock and process startup eight times per
-# gate block). The BARE `--features bin-serve` spelling is deliberate
-# and measured: cargo applies it to every selected package (each
-# defines the feature; one that dropped it would fail the line), while
-# the package-prefixed `rdlt-connector-postgres/bin-serve` form does
-# NOT register for the one crate whose workspace dependency entry pins
-# `default-features = false` — its bin then fails required-features. A
-# build failure still names its package.
+# suite drives the BUILT reference bin through the provider — the
+# T6 smoke (test_spawned_bins) plus the T8 headline e2e
+# (test_e2e_spawned: a full engine run over the spawned reference
+# connector on both sides, and its one crash arm); the env var
+# tells the shared helper to (re)build the bins itself, so the
+# suite stays honest run alone. Every ENGINE gate line below spawns
+# the reference bin alone (044): the seven first-party connectors
+# are leaving for the sibling rdlt-connectors repo, and an engine
+# gate anchored on them would go dark at the cut — their own suites
+# (still gated below until the cut) keep certifying them here
+# meanwhile. ONE module per invocation applies to the NEXTEST lines
+# below (empty-selection semantics), not to builds: the bin-serve
+# bins batch into ONE cargo invocation (round-10 — sequential
+# invocations paid resolution, the target-dir lock and process
+# startup once per bin per gate block). The BARE `--features
+# bin-serve` spelling is deliberate and measured: cargo applies it
+# to every selected package (each defines the feature; one that
+# dropped it would fail the line), while the package-prefixed
+# `rdlt-connector-postgres/bin-serve` form does NOT register for
+# the one crate whose workspace dependency entry pins
+# `default-features = false` — its bin then fails required-features.
+# A build failure still names its package.
 cargo build \
+  -p rdlt-connector-reference \
   -p rdlt-connector-file -p rdlt-connector-snowflake -p rdlt-connector-postgres \
   -p rdlt-connector-rest -p rdlt-connector-duckdb -p rdlt-connector-iceberg \
   -p rdlt-connector-oracle \
   --features bin-serve \
+  --bin rdlt-connector-reference \
   --bin rdlt-connector-file --bin rdlt-connector-snowflake --bin rdlt-connector-postgres \
   --bin rdlt-connector-rest --bin rdlt-connector-duckdb --bin rdlt-connector-iceberg \
   --bin rdlt-connector-oracle
@@ -168,16 +168,25 @@ cargo build \
 # the bin-serve group.
 cargo build -p rdlt-certify --features bin --bin rdlt-certify
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
-RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_file)'
-# The D1 swap's live halves (043 T1): the facade's rich spellings
-# resolve to SPAWNED binaries, so its acceptance arm — a `file:` →
-# `duckdb:` document built and run end to end with no `connector:`
-# block anywhere — and the CLI's run/validate/events contract pins
-# both need real bins. Same env-var discipline; own line per the
-# one-module-per-invocation rule (an empty selection — a renamed
-# binary or module — fails its own line).
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_spawned)'
+# The D1 swap's live halves (043 T1), on the reference bin since 044:
+# the facade's `connector:` documents resolve to SPAWNED binaries, so
+# its acceptance arm (spawned_pipeline: discovery over the search
+# path, no path: override), its load-bearing e2e (the `e2e` binary:
+# build_pipeline + persisted cursor across sessions), and the CLI's
+# run/validate/events contract pins all need the real bin. Same
+# env-var discipline; own line per the one-module-per-invocation rule
+# (an empty selection — a renamed binary or module — fails its own
+# line).
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(spawned_pipeline)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(e2e)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-cli --features spawn-bins -E 'test(spawned_runs)'
+# The reference connector's OWN certification cells (044 T1): the
+# spawned reference bin faces the full clause suite over the wire,
+# BOTH roles — hermetic on tempdirs, no container runtime, never
+# skips. This is the in-gate certifier exercise that outlives the
+# connectors' move; own line per the one-module-per-invocation rule.
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-reference --features spawn-bins -E 'test(test_certify_wire)'
 # The postgres bin's OWN spawn suite (041) — the crate's gated cases
 # drive the built bin through the provider's Spec RPC (identity,
 # version, exit codes), same env-var discipline as the runtime lines.
@@ -260,7 +269,7 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --feature
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_certify_wire)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --features spawn-bins -E 'test(test_kill_wire)'
 # Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
-# cases drive the REAL file bin through the certification stack —
+# cases drive the REAL reference bin through the certification stack —
 # source, destination, and the kill matrix (SIGKILL at every K
 # boundary, convergence by re-run) — behind `spawn-bins` +
 # RDLT_BUILD_CONNECTOR_BINS=1 exactly like the runtime lines above
@@ -269,8 +278,8 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-oracle --feature
 # in this block. The crate's UNGATED tests (report pins, the
 # in-process rogue suites) carry no required-features, so the bare
 # workspace line at the top already runs them — no line here.
-RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_source)'
-RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_file_destination)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_reference_source)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_reference_destination)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
 # The CLI suite additionally enables `bin`: it spawns the certifier
 # bin itself (cargo builds it for `CARGO_BIN_EXE_`), pinning the
@@ -363,6 +372,13 @@ else ifeq ($(TARGET),unit)
 		echo "SKIP: python3 absent — the Python proof-connector certification needs it"; \
 	fi
 else ifeq ($(TARGET),e2e)
+	# Two e2e binaries answer this name today: the file crate's (default
+	# features, selected and run here) and the rdlt facade's (spawn-gated,
+	# so THIS selection compiles it empty — its cells run on the spawn
+	# matrix's own `binary(e2e)` line, which builds the reference bin the
+	# suite spawns). When the file crate moves out (044 cut), this line
+	# must grow the spawn feature + env var or it will select zero tests
+	# and fail — deliberately, the 024 empty-selection discipline.
 	cargo nextest run --workspace -E 'binary(/e2e/)'
 else ifeq ($(TARGET),sweep)
 	# No `--no-tests=pass` on any line below, and that distinction is the point:
@@ -505,8 +521,8 @@ else ifeq ($(TARGET),cold)
 	# machine, neither of which a shared CI runner provides. It rides `make
 	# check` locally and the recorded measurement session, never the CI perf
 	# gate — where it silently required a tool no workflow installs. The
-	# measured pipeline spawns the file and duckdb bins, so they are built
-	# alongside the CLI.
+	# measured pipeline spawns the reference bin on both sides (044), so it
+	# is built alongside the CLI.
 	$(MAKE) release
 	$(MAKE) connector-bins
 	benches/check-cold-start.sh
