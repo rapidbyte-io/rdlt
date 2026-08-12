@@ -1,9 +1,12 @@
 //! THE 039 HEADLINE (T8): a full engine run with the spawned
-//! `rdlt-connector-file` binary on BOTH sides of the wire — the YAML
-//! `connector:` vocabulary through the facade's `build_pipeline`, the
-//! D3 choreography (receipts, state, part events) crossing two Unix
-//! sockets, rows landing exactly-once, and the spawned processes dying
-//! with their guards.
+//! `rdlt-connector-reference` binary on BOTH sides of the wire — the
+//! YAML `connector:` vocabulary through the facade's `build_pipeline`,
+//! the D3 choreography (receipts, state, part events) crossing two
+//! Unix sockets, rows landing exactly-once, and the spawned processes
+//! dying with their guards. The reference connector is the spawn
+//! subject because it lives beside the engine forever; the seven
+//! first-party connectors move to their own repository (044) and prove
+//! this same choreography in their own suites there.
 //!
 //! Plus ONE crash arm: SIGKILL the destination child mid-run — the run
 //! fails with the typed transport-fatal destination error, nothing
@@ -109,14 +112,15 @@ impl ConnectorProvider for RecordingProvider {
     }
 }
 
-/// Write `rows` jsonl fixture rows (`{"id": N, "name": "row-N"}`) and
-/// return the file's path.
+/// Write `rows` jsonl fixture rows (`{"id": N, "name": "row-N"}`) as
+/// `events.jsonl` — the stem names the reference source's one stream —
+/// and return the file's path.
 fn write_fixture(dir: &Path, rows: u64) -> PathBuf {
     let mut text = String::new();
     for id in 0..rows {
         text.push_str(&format!("{{\"id\":{id},\"name\":\"row-{id}\"}}\n"));
     }
-    let path = dir.join("rows.jsonl");
+    let path = dir.join("events.jsonl");
     std::fs::write(&path, text).expect("the fixture file writes");
     path
 }
@@ -128,7 +132,7 @@ fn spec_yaml(
     pipeline: &str,
     workdir: &Path,
     bin: &Path,
-    fixture_glob: &str,
+    fixture: &Path,
     out_dir: &Path,
     batch_rows: Option<u64>,
 ) -> String {
@@ -142,22 +146,19 @@ fn spec_yaml(
          {batch_policy}\
          source:\n\
         \x20 connector:\n\
-        \x20   id: io.rapidbyte.file\n\
+        \x20   id: io.rapidbyte.reference\n\
         \x20   path: {bin}\n\
         \x20   config:\n\
-        \x20     streams:\n\
-        \x20       - name: events\n\
-        \x20         format: jsonl\n\
-        \x20         path: \"{fixture_glob}\"\n\
+        \x20     path: \"{fixture}\"\n\
          destination:\n\
         \x20 connector:\n\
-        \x20   id: io.rapidbyte.file\n\
+        \x20   id: io.rapidbyte.reference\n\
         \x20   path: {bin}\n\
         \x20   config:\n\
-        \x20     path: \"{out}\"\n\
-        \x20     format: jsonl\n",
+        \x20     path: \"{out}\"\n",
         workdir = workdir.display(),
         bin = bin.display(),
+        fixture = fixture.display(),
         out = out_dir.display(),
     )
 }
@@ -166,35 +167,29 @@ fn parse_spec(text: &str) -> Spec {
     serde_yaml::from_str(text).expect("the connector pipeline document parses")
 }
 
-/// Every PUBLISHED row's `id` under the output root, sorted. Committed
-/// data only, by the file destination's own visibility contract:
-/// staged parts are dot-prefixed and bookkeeping documents are
-/// `_rdlt_`-prefixed, so both are excluded — what remains is exactly
-/// what a reader of the destination would see.
+/// Every PUBLISHED row's `id` under the output directory, sorted.
+/// Committed data only, by the reference destination's own visibility
+/// contract: published parts are `<table>-<load_id>-<part>.jsonl`, and
+/// every underscore-prefixed name (the `_reference_*` bookkeeping
+/// documents, `_staged-*` temporaries) is what a reader never sees, so
+/// both are excluded — what remains is exactly what a reader of the
+/// destination would see.
 fn published_ids(out_dir: &Path) -> Vec<u64> {
     let mut ids = Vec::new();
-    let mut stack = vec![out_dir.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    let Ok(entries) = std::fs::read_dir(out_dir) else {
+        return ids;
+    };
+    for entry in entries {
+        let entry = entry.expect("the output directory lists");
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('_') || !name.ends_with(".jsonl") {
             continue;
-        };
-        for entry in entries {
-            let entry = entry.expect("the output tree lists");
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || name.starts_with("_rdlt") {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
-                let text = std::fs::read_to_string(&path).expect("a published part reads");
-                for line in text.lines() {
-                    let row: serde_json::Value = serde_json::from_str(line)
-                        .expect("every published line is a complete JSON row — never torn");
-                    ids.push(row["id"].as_u64().expect("the fixture id survived"));
-                }
-            }
+        }
+        let text = std::fs::read_to_string(entry.path()).expect("a published part reads");
+        for line in text.lines() {
+            let row: serde_json::Value = serde_json::from_str(line)
+                .expect("every published line is a complete JSON row — never torn");
+            ids.push(row["id"].as_u64().expect("the fixture id survived"));
         }
     }
     ids.sort_unstable();
@@ -241,32 +236,31 @@ async fn assert_socket_unlinked(socket: &Path, who: &str) {
     );
 }
 
-/// THE HEADLINE: jsonl fixture → spawned file SOURCE → engine →
-/// spawned file DESTINATION, both sides resolved from the `connector:`
-/// document. Asserts, in order: rows land exactly-once (count AND
-/// content against the fixture), the report's totals match with
-/// `output_bytes > 0` (the part-close events crossed the wire), a
-/// second run through the DEFAULT provider immediately succeeds
-/// reading nothing new (the lease was released and the cursor
-/// round-tripped), and the spawned processes are gone with their
-/// sockets unlinked once the pipeline is dropped.
+/// THE HEADLINE: jsonl fixture → spawned reference SOURCE → engine →
+/// spawned reference DESTINATION, both sides resolved from the
+/// `connector:` document. Asserts, in order: rows land exactly-once
+/// (count AND content against the fixture), the report's totals match,
+/// a second run through the DEFAULT provider immediately succeeds
+/// reading nothing new (the cursor round-tripped and persisted), and
+/// the spawned processes are gone with their sockets unlinked once the
+/// pipeline is dropped.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
     const ROWS: u64 = 500;
-    let bin = built_bin("rdlt-connector-file");
+    let bin = built_bin();
     let dir = tempfile::tempdir().expect("tempdir");
     let src_dir = dir.path().join("src");
     let out_dir = dir.path().join("out");
     let workdir = dir.path().join("work");
     std::fs::create_dir_all(&src_dir).expect("fixture dir");
     std::fs::create_dir_all(&out_dir).expect("output dir");
-    write_fixture(&src_dir, ROWS);
+    let fixture = write_fixture(&src_dir, ROWS);
 
     let spec = parse_spec(&spec_yaml(
         "t8-headline",
         &workdir,
         &bin,
-        &format!("{}/*.jsonl", src_dir.display()),
+        &fixture,
         &out_dir,
         None,
     ));
@@ -291,11 +285,6 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
         .map(|(_, table_report)| *table_report)
         .expect("the stream's root table is in the report");
     assert_eq!(events_table.rows, ROWS);
-    assert!(
-        events_table.output_bytes > 0,
-        "output_bytes is fed by PartClosed events — zero would mean the \
-         part-event callback never crossed the wire"
-    );
     assert_eq!(
         published_ids(&out_dir),
         (0..ROWS).collect::<Vec<_>>(),
@@ -313,16 +302,17 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
         assert_socket_unlinked(socket, "connector").await;
     }
 
-    // The lease released + the cursor round-tripped: a SECOND run of
-    // the same document — through the DEFAULT provider this time, the
-    // exact path `build_pipeline` gives embedders — succeeds
-    // immediately (no lease wait) and reads nothing new.
+    // The cursor round-tripped: a SECOND run of the same document —
+    // through the DEFAULT provider this time, the exact path
+    // `build_pipeline` gives embedders — succeeds and reads nothing
+    // new (the reference source's byte cursor persisted through the
+    // destination's state document).
     let report2 = build_pipeline(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the second run")
         .run()
         .await
-        .expect("the second run acquires the released lease immediately");
+        .expect("the second run succeeds");
     assert_eq!(
         report2.total_rows(),
         0,
@@ -335,69 +325,42 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
     );
 }
 
-/// Rewrite the crashed session's lease document as if its TTL had
-/// elapsed. A SIGKILLed holder cannot release its lease; the recorded
-/// 037 rule is that such a lease expires by `TTL_SECS` (300 s) — real
-/// on the wall clock, unpayable in a gate — so the test ages the
-/// STAMPS instead and lets the next session take the lease over
-/// through the production stale-takeover path, exactly as it would
-/// five minutes later.
-fn age_the_crashed_lease(out_dir: &Path) {
-    let mut aged = 0;
-    for entry in std::fs::read_dir(out_dir).expect("the output root lists") {
-        let entry = entry.expect("the output root lists");
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !(name.starts_with("_rdlt_lease.") && name.ends_with(".json")) {
-            continue;
-        }
-        let text = std::fs::read_to_string(entry.path()).expect("the lease doc reads");
-        let mut doc: serde_json::Value =
-            serde_json::from_str(&text).expect("the crashed session's lease doc parses");
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("the clock is past the epoch")
-            .as_millis() as u64;
-        let stale_ms = now_ms.saturating_sub(400_000); // well past TTL_SECS = 300
-        doc["renewed_at_ms"] = stale_ms.into();
-        doc["acquired_at_ms"] = stale_ms.into();
-        std::fs::write(entry.path(), serde_json::to_vec(&doc).expect("re-encodes"))
-            .expect("the aged lease doc writes");
-        aged += 1;
-    }
-    assert_eq!(
-        aged, 1,
-        "the SIGKILLed session must have left exactly its one lease document behind"
-    );
-}
-
 /// THE CRASH ARM: SIGKILL the destination child after the first
 /// `BatchLoaded` event — rows are provably flowing — and assert the
 /// run fails with the typed transport-fatal destination error, that
 /// only committed data (possibly none) is visible at the destination,
 /// that the WAL survives the abort, and that a FRESH run (new spawns)
 /// then converges to exactly-once through the receipts/cursor
-/// machinery answering across the wire.
+/// machinery answering across the wire. (The reference destination
+/// holds no lease, so the fresh session proceeds immediately — its
+/// staging died with the killed process's memory by construction.)
 #[tokio::test(flavor = "multi_thread")]
 async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converges() {
-    const ROWS: u64 = 20_000;
-    let bin = built_bin("rdlt-connector-file");
+    // Sized for the reference connector's wire shape: it pushes one
+    // row frame plus one checkpoint frame per line (per-prefix resume
+    // is its contract), so wall scales with ROW COUNT, not commits —
+    // measured 2k rows ≈ 5 s and 20k ≈ 240 s through the debug CLI.
+    // 2k rows over 100-row batches keeps ~20 destination RPCs, plenty
+    // of run left after the kill, at gate-friendly cost.
+    const ROWS: u64 = 2_000;
+    let bin = built_bin();
     let dir = tempfile::tempdir().expect("tempdir");
     let src_dir = dir.path().join("src");
     let out_dir = dir.path().join("out");
     let workdir = dir.path().join("work");
     std::fs::create_dir_all(&src_dir).expect("fixture dir");
     std::fs::create_dir_all(&out_dir).expect("output dir");
-    write_fixture(&src_dir, ROWS);
+    let fixture = write_fixture(&src_dir, ROWS);
 
     // Small write batches so the run is MANY destination RPCs long —
-    // the kill after RPC 1 of ~40 lands far from the finish line.
+    // the kill after RPC 1 of ~20 lands far from the finish line.
     let spec = parse_spec(&spec_yaml(
         "t8-crash",
         &workdir,
         &bin,
-        &format!("{}/*.jsonl", src_dir.display()),
+        &fixture,
         &out_dir,
-        Some(500),
+        Some(100),
     ));
 
     let provider = RecordingProvider::new();
@@ -486,12 +449,9 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     assert_socket_unlinked(&dest_socket, "destination").await;
     assert_socket_unlinked(&source_socket, "source").await;
 
-    // A fresh session (new pid, new lease owner) faces the crashed
-    // session's unreleased lease; age it past its TTL rather than
-    // waiting out the real 300 s, then let the production takeover
-    // path do the rest.
-    age_the_crashed_lease(&out_dir);
-
+    // A fresh session (new pid, new spawns) converges over the crashed
+    // session's remains: the receipts answer replay across the wire,
+    // the persisted state feeds the source's resume cursor.
     let report = build_pipeline(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the recovery run")

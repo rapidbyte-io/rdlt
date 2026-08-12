@@ -4982,6 +4982,7 @@ dependencies = [
  "rdlt-connector",
  "rdlt-connector-client",
  "rdlt-connector-protocol",
+ "rdlt-testkit",
  "serde_json",
  "serde_yaml",
  "tempfile",

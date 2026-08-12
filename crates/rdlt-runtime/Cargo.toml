@@ -13,13 +13,13 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# The T6 smoke suite: tests that spawn the REAL connector binaries
-# (file both roles, snowflake destination) through the provider. OFF by
-# default — a plain workspace run must not depend on bins no workspace
-# command builds. The Makefile's own line enables it AND sets
-# RDLT_BUILD_CONNECTOR_BINS=1 so the suite's helper (re)builds the bins
-# via cargo before spawning; without the env var the helper requires
-# the bins to already exist and fails loudly, never silently.
+# The T6 smoke suite: tests that spawn the REAL reference connector
+# binary (dual-role) through the provider. OFF by default — a plain
+# workspace run must not depend on a bin no workspace command builds.
+# The Makefile's own line enables it AND sets RDLT_BUILD_CONNECTOR_BINS=1
+# so the suite's helper (re)builds the bin via cargo before spawning;
+# without the env var the helper requires the bin to already exist and
+# fails loudly, never silently.
 spawn-bins = []
 
 # The 041 spawn-latency instrument (Task 7's by-hand measurement):
@@ -51,6 +51,10 @@ async-trait = { workspace = true }
 # lives. No connector features: the `connector:` variant is always
 # present, and the bins are spawned, not compiled in.
 rdlt = { workspace = true }
+# The ONE spawn scaffold (042): built_connector_bin locates and
+# (re)builds the reference bin for the spawn suites — the mechanics
+# live in the testkit once, never copied per crate.
+rdlt-testkit = { workspace = true }
 serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
