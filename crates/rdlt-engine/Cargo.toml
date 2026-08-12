@@ -47,12 +47,11 @@ async-trait = { workspace = true }
 criterion = { workspace = true }
 iai-callgrind = { workspace = true }
 proptest = { workspace = true }
-rdlt-connector-duckdb = { workspace = true, features = [
-    "failpoints",
-] }
-rdlt-connector-file = { workspace = true, features = [
-    "failpoints",
-] }
+# The crash sweep's durable-storage substrate (044): the reference
+# connector's jsonl destination, in-process through the sdk Shell. The
+# first-party connectors' own sweeps live with their crates in the
+# rdlt-connectors repository.
+rdlt-connector-reference = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }
 

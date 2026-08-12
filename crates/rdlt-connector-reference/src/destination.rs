@@ -73,8 +73,10 @@ impl Document for Config {
     }
 }
 
-/// The connector: one directory.
-#[derive(Debug)]
+/// The connector: one directory. `Clone` is part of the in-process
+/// face: the sdk Shell forwards it, and the engine's crash sweep
+/// clones its destination handle once per recovery attempt.
+#[derive(Debug, Clone)]
 pub struct Reference {
     dir: PathBuf,
 }

@@ -3,17 +3,26 @@
 //! For EVERY registered fail point: arm it (error-return AND panic), run a
 //! multi-commit pipeline until it dies, run again still-armed (a crash DURING
 //! recovery), then disarm and recover — asserting exactly-once visibility of all
-//! 100 source rows every single time, for every bundled in-process destination,
-//! in both Append and Replace modes.
+//! 100 source rows every single time, in every write disposition the substrate
+//! serves.
 //!
-//! Gate G2.2: `sweep_covers_entire_registry` pins the swept list to the union of
-//! every crate's registry const — an instrumented-but-unswept boundary fails here.
+//! The substrates are in-repo since the connectors moved out (044): the
+//! testkit's in-memory destination carries all three dispositions (and the
+//! keyed structured-merge arm), and the reference connector's jsonl
+//! destination carries the durable-storage arm — real part files, a real
+//! receipt log, recovery reading state from disk. The connector-owned crash
+//! points (pq.*, duck.*, pg.* …) are swept where their crates live now: each
+//! connector's own crash_sweep suite in the rdlt-connectors repository.
+//!
+//! Gate G2.2: `sweep_covers_entire_registry` pins the swept list against the
+//! engine's own sources — an instrumented-but-unswept boundary fails here.
 
 #![cfg(feature = "failpoints")]
 
 use std::path::Path;
+use std::path::PathBuf;
 
-use rdlt_connector::{Destination, StreamSpec};
+use rdlt_connector::{Destination, Source, StreamSpec};
 use rdlt_core::{WriteMode, failpoint::fail};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
@@ -59,12 +68,12 @@ fn config(workdir: &Path, mode: &WriteMode) -> EngineConfig {
 
 /// Run one attempt; a panic anywhere inside the engine is contained and reported
 /// as a crash (that's the point of the panic-action sweep).
-async fn attempt<D: Destination + Clone>(
-    workdir: &Path,
-    dest: &D,
-    mode: &WriteMode,
-) -> Result<(), String> {
-    let engine = Engine::new(config(workdir, mode), source(), dest.clone());
+async fn attempt<S, D>(workdir: &Path, source: S, dest: &D, mode: &WriteMode) -> Result<(), String>
+where
+    S: Source + 'static,
+    D: Destination + Clone,
+{
+    let engine = Engine::new(config(workdir, mode), source, dest.clone());
     match tokio::spawn(engine.run()).await {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(e.to_string()),
@@ -77,13 +86,16 @@ async fn attempt<D: Destination + Clone>(
 /// attempt under this (destination, mode) — the anti-vacuousness instrument
 /// (005 review: a sweep that tolerates dead crash points proves nothing).
 /// Points outside the pin are mode/destination-unreachable by design.
-async fn sweep<D, F, C>(
+async fn sweep<S, MS, D, F, C>(
     points: &[&str],
     mode: WriteMode,
+    make_source: MS,
     make_dest: F,
     count: C,
     expected_fired: &[&str],
 ) where
+    S: Source + 'static,
+    MS: Fn() -> S,
     D: Destination + Clone,
     F: Fn(&Path) -> D,
     C: Fn(&Path, &D) -> u64,
@@ -103,15 +115,15 @@ async fn sweep<D, F, C>(
             fail::cfg(point, action).expect("configure fail point");
             // First run: dies at the point (or completes if the point is
             // unreachable under this destination/mode — pinned below).
-            let armed1 = attempt(&workdir, &dest, &mode).await;
+            let armed1 = attempt(&workdir, make_source(), &dest, &mode).await;
             // Second run STILL armed: a crash during recovery itself.
-            let armed2 = attempt(&workdir, &dest, &mode).await;
+            let armed2 = attempt(&workdir, make_source(), &dest, &mode).await;
             fail::remove(point);
             if armed1.is_err() || armed2.is_err() {
                 fired.insert(point);
             }
 
-            let recovered = attempt(&workdir, &dest, &mode).await;
+            let recovered = attempt(&workdir, make_source(), &dest, &mode).await;
             assert!(
                 recovered.is_ok(),
                 "[{point} / {action} / {mode:?}] recovery failed: {recovered:?}"
@@ -132,60 +144,12 @@ async fn sweep<D, F, C>(
     );
 }
 
-fn engine_and<'a>(dest_points: &[&'a str]) -> Vec<&'a str> {
-    ENGINE_POINTS.iter().chain(dest_points).copied().collect()
-}
-
+/// All three shredded write dispositions against the in-memory destination —
+/// the substrate that serves every mode (merge-capable by default). The
+/// destination survives across the three attempts of an iteration, playing
+/// the database server that outlives the crashing engine.
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_memory_destination() {
-    let points = engine_and(&[]);
-    sweep(
-        &points,
-        WriteMode::Append,
-        |_dir| MemoryDestination::new(),
-        |_dir, dest| dest.committed_rows("s").len() as u64,
-        ENGINE_POINTS,
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn sweep_parquet_destination() {
-    let points = engine_and(rdlt_connector_file::destination::FAIL_POINTS);
-    // Measured 2026-07-20: EVERY parquet boundary fires in BOTH modes —
-    // the receipt-log and truncate guards run on every publish, not just
-    // Replace (which is why the second-occurrence pass caught the 003
-    // Replace-recovery bug class in the first place).
-    for mode in [WriteMode::Append, WriteMode::Replace] {
-        let expected_fired =
-            [ENGINE_POINTS, rdlt_connector_file::destination::FAIL_POINTS].concat();
-        // The second generation's ParquetDir is the sdk Shell over the
-        // canonical local-parquet config; counting goes through the
-        // crate's own testhook (the ownership listing).
-        let config_for = |dir: &Path| {
-            rdlt_connector_file::destination::Config::new(
-                dir.join("out").to_string_lossy().into_owned(),
-            )
-        };
-        sweep(
-            &points,
-            mode,
-            |dir| rdlt_connector_file::destination::Shell::new(config_for(dir)).expect("open"),
-            |dir, _dest| {
-                rdlt_connector_file::destination::testhook::count_rows(&config_for(dir), "s")
-                    .expect("count")
-            },
-            &expected_fired,
-        )
-        .await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn sweep_duckdb_destination() {
-    let points = engine_and(rdlt_connector_duckdb::destination::FAIL_POINTS);
-    // Merge (feature 006 sweep extension): the shredded identity-merge
-    // DELETE+INSERT arm crosses the same staging/publish boundaries.
     for mode in [
         WriteMode::Append,
         WriteMode::Replace,
@@ -193,75 +157,84 @@ async fn sweep_duckdb_destination() {
             key: vec!["id".into()],
         },
     ] {
-        let expected_fired = [
-            ENGINE_POINTS,
-            rdlt_connector_duckdb::destination::FAIL_POINTS,
-        ]
-        .concat();
-        // The second generation is the sdk Shell over the config; counting
-        // goes through the crate's own config-keyed READ-ONLY testhook,
-        // safe beside the live shell.
-        let config_for =
-            |dir: &Path| rdlt_connector_duckdb::destination::Config::new(dir.join("out.duckdb"));
         sweep(
-            &points,
+            ENGINE_POINTS,
             mode,
-            |dir| rdlt_connector_duckdb::destination::Shell::new(config_for(dir)).expect("open"),
-            |dir, _dest| {
-                rdlt_connector_duckdb::destination::testhook::count_rows(&config_for(dir), "s")
-                    .expect("count")
-            },
-            &expected_fired,
+            source,
+            |_dir| MemoryDestination::new(),
+            |_dir, dest| dest.committed_rows("s").len() as u64,
+            ENGINE_POINTS,
         )
         .await;
     }
+}
+
+/// The durable-storage arm: the reference connector's jsonl destination
+/// (the sdk Shell, in-process) — part files, an on-disk receipt log and
+/// state document, so recovery here replays against REAL durable state
+/// rather than shared memory. Append only: the reference destination
+/// types-refuses Replace and declares no merge, by design.
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_reference_destination() {
+    let config_for = |dir: &Path| rdlt_connector_reference::destination::Config {
+        path: dir.join("out").to_string_lossy().into_owned(),
+    };
+    sweep(
+        ENGINE_POINTS,
+        WriteMode::Append,
+        source,
+        |dir| rdlt_connector_reference::destination::Shell::new(config_for(dir)).expect("open"),
+        |dir, _dest| count_reference_rows(&dir.join("out")),
+        ENGINE_POINTS,
+    )
+    .await;
+}
+
+/// Rows across the reference destination's published parts for table `s`:
+/// `s-<load_id>-<commit_seq>.jsonl`, one row per line. Underscore-prefixed
+/// names are bookkeeping (receipts, state, staged temporaries), never data.
+fn count_reference_rows(out: &PathBuf) -> u64 {
+    let entries = match std::fs::read_dir(out) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(error) => panic!("reading {}: {error}", out.display()),
+    };
+    let mut rows = 0u64;
+    for entry in entries {
+        let entry = entry.expect("dir entry");
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("s-") && name.ends_with(".jsonl") {
+            let text = std::fs::read_to_string(entry.path()).expect("part file");
+            rows += text.lines().filter(|line| !line.trim().is_empty()).count() as u64;
+        }
+    }
+    rows
 }
 
 /// Gate G2.2: the swept set IS the registry — no silently unswept boundary.
 /// The engine's own list lives in THIS file, so the check greps the engine
 /// sources for `crash_point!` call sites instead of comparing a const to
 /// itself (that would be circular): every site found in src/ must appear in
-/// ENGINE_POINTS, count-exact.
+/// ENGINE_POINTS, count-exact. Connector registries (pq.*, duck.*, pg.* …)
+/// are pinned in their own crates' crash_sweep suites, which moved with the
+/// crates to the rdlt-connectors repository (044).
 #[test]
 fn sweep_covers_entire_registry() {
-    // Engine side: read the sources, not the const. The scanner is shared with
-    // every connector that arms crash points, because a copied scanner fails
+    // Read the sources, not the const. The scanner is shared with every
+    // connector that arms crash points, because a copied scanner fails
     // OPEN — it finds fewer sites and the assertion still passes, so one
     // implementation is the only arrangement where fixing it fixes every user.
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     rdlt_testkit::assert_registry_matches_sources(&src, &[ENGINE_POINTS]);
-
-    // Destination side: the exported registries, pinned against this list.
-    // (The Postgres registry is pinned in ITS crate's crash_sweep test — the
-    // engine's test tree does not depend on the postgres stack.)
-    let mut registry: Vec<&str> = rdlt_connector_file::destination::FAIL_POINTS
-        .iter()
-        .chain(rdlt_connector_duckdb::destination::FAIL_POINTS)
-        .copied()
-        .collect();
-    registry.sort_unstable();
-    let mut expected = vec![
-        "pq.replace.truncate",
-        "pq.manifest.write",
-        "pq.staged.sync",
-        "pq.part.rename",
-        "pq.dir.fsync",
-        "pq.state.write",
-        "pq.receipt.write",
-        "duck.append",
-        "duck.tx.commit",
-    ];
-    expected.sort_unstable();
-    assert_eq!(
-        registry, expected,
-        "a destination registered a fail point the sweep does not know (update \
-         BOTH the registry const and this list — gate G2.2)"
-    );
 }
 
-// ---- Review F11: the DuckDB KEYED structured-merge arm under the engine's
-// and DuckDB's own fail points — the shredded sweeps above exercise only the
-// identity-merge branch (contract merge-structured.md conformance). ----
+// ---- Review F11 (re-derived at 044): the KEYED structured-merge arm under
+// the engine's fail points — the shredded sweeps above exercise only the
+// identity-merge branch (contract merge-structured.md conformance). The
+// merge-capable substrate is the in-memory destination now; the SQL
+// destinations' own merge machinery is swept in their crates' suites in
+// rdlt-connectors. ----
 
 /// Structured stream with a declared key, resumable by batch index.
 struct KeyedArrowSource;
@@ -325,58 +298,16 @@ impl rdlt_connector::Source for KeyedArrowSource {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sweep_duckdb_keyed_structured_merge() {
-    let points = engine_and(rdlt_connector_duckdb::destination::FAIL_POINTS);
-    let mode = WriteMode::Merge {
-        key: vec!["id".into()],
-    };
-    let mut fired: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for &point in &points {
-        for action in ["return", "panic", "1*off->return"] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let workdir = dir.path().join("wal");
-            // ONE shell held across attempts; clones share the instance
-            // (a second read-write open of the same file is refused).
-            let dest_config =
-                rdlt_connector_duckdb::destination::Config::new(dir.path().join("out.duckdb"));
-            let dest = rdlt_connector_duckdb::destination::Shell::new(dest_config.clone())
-                .expect("open duckdb");
-            async fn run(
-                dest: rdlt_connector_duckdb::destination::Shell,
-                workdir: &Path,
-                mode: &WriteMode,
-            ) -> Result<(), String> {
-                let engine = Engine::new(config(workdir, mode), KeyedArrowSource, dest);
-                match tokio::spawn(engine.run()).await {
-                    Ok(Ok(_)) => Ok(()),
-                    Ok(Err(e)) => Err(e.to_string()),
-                    Err(join) => Err(format!("panicked: {join}")),
-                }
-            }
-            fail::cfg(point, action).expect("configure fail point");
-            let armed1 = run(dest.clone(), &workdir, &mode).await;
-            let armed2 = run(dest.clone(), &workdir, &mode).await;
-            fail::remove(point);
-            if armed1.is_err() || armed2.is_err() {
-                fired.insert(point);
-            }
-            let recovered = run(dest.clone(), &workdir, &mode).await;
-            assert!(
-                recovered.is_ok(),
-                "[{point} / {action} / keyed] recovery failed: {recovered:?}"
-            );
-            assert_eq!(
-                rdlt_connector_duckdb::destination::testhook::count_rows(&dest_config, "s")
-                    .expect("count"),
-                TOTAL_ROWS,
-                "[{point} / {action} / keyed] exactly-once violated"
-            );
-        }
-    }
-    let expected: std::collections::BTreeSet<&str> = points.iter().copied().collect();
-    assert_eq!(
-        fired, expected,
-        "keyed-merge armed-fire pin diverged — a missing point means the keyed \
-         arm never crossed that boundary"
-    );
+async fn sweep_memory_keyed_structured_merge() {
+    sweep(
+        ENGINE_POINTS,
+        WriteMode::Merge {
+            key: vec!["id".into()],
+        },
+        || KeyedArrowSource,
+        |_dir| MemoryDestination::new(),
+        |_dir, dest| dest.committed_rows("s").len() as u64,
+        ENGINE_POINTS,
+    )
+    .await;
 }
