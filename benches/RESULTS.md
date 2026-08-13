@@ -17,6 +17,21 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
 
 **Policy log** (one entry per governance event; newest first):
 
+- **2026-08-13 — THE HISTORY RESET: the pre-split recorded regime ENDS here
+  (feature 045, D-045-5)**: every recorded session above this line was
+  measured under the pre-split regime, and its records — `history.jsonl`,
+  `flakes.log`, and the six committed `results/*.json` artifacts — retire
+  content-byte-identical to `benches/records/archive-2026-08-13/` (archive
+  commit `b3d962d8`). No figure is restated and no bar moves: `bars.toml`
+  KEEPS BINDING — `rdlt-bench gate` enforces its unchanged floors against
+  the archived recordings' values, because the floors are facts about
+  recorded runs. The live ledger (`benches/results/`, the `history.jsonl`
+  trends feed) is EMPTY from here until 046's post-byte-bound session mints
+  fresh baselines on the post-split shape and re-mints or re-rules the bars
+  under 004 governance; the Matrix and Trends sections below render that
+  emptiness honestly until then, and the recorded-session narratives below
+  describe the archived regime.
+
 - **2026-08-11 — the D1 swap: the spawned-connector recordings ARE the
   benchmark identity (feature 043, ADR 0001 D1)**: the in-process build tier
   is deleted — every rdlt pipeline now spawns its connectors as separate
