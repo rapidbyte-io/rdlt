@@ -86,6 +86,23 @@ pub enum ProviderError {
         /// The binary that stayed silent.
         binary: String,
     },
+    /// The handshake line advertised a protocol range this host's
+    /// version sits outside — refused AT THE LINE, before any dial, so
+    /// the mismatch surfaces as one typed error instead of whatever a
+    /// version-skewed gRPC exchange happens to produce.
+    #[error(
+        "connector `{binary}` accepts protocol versions {min}..={max}, but this host speaks protocol {ours} — upgrade whichever side is behind"
+    )]
+    ProtocolRange {
+        /// The binary whose line advertised the range.
+        binary: String,
+        /// The connector's lowest accepted protocol version.
+        min: u32,
+        /// The connector's highest accepted protocol version.
+        max: u32,
+        /// This host's protocol version.
+        ours: u32,
+    },
     /// The spawned process exited unsuccessfully before writing any
     /// handshake bytes. Exit code 2 is the connector binaries' usage
     /// refusal when the requested role is unsupported.

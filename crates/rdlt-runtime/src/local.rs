@@ -10,9 +10,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rdlt_connector::ConnectorSpec;
 use rdlt_connector_client::{ClientError, Role, connector_client, destination, dial, source};
-use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
+use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -55,6 +55,15 @@ const EOF_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// `which`-style walk of PATH. An explicit `path` on the requirement
 /// bypasses discovery entirely (no managed directory tree, no
 /// registry — that layer belongs to products above, ADR 0001 D2).
+///
+/// Discovery and the handshake's identity check are SANITY CHECKS,
+/// not authentication: string equality on the reported id catches an
+/// accidental wrong binary, never a malicious one, and running a
+/// connector means running its code with this process's privileges.
+/// Trust is decided by what is ON PATH — pin `path:` in the document
+/// or [`Self::with_search_path`] to a directory only trusted tooling
+/// writes; a content pin (digest verification) is the anticipated
+/// door for installers that want more.
 ///
 /// Spawn contract: `<binary> --role=<source|destination>`, stdout
 /// piped (the handshake line), stderr inherited (the connector's human
@@ -250,6 +259,19 @@ impl LocalBinaryConnectorProvider {
                             source,
                         }
                     })?;
+                // The range the line advertises is HONORED here, before
+                // any dial: this host's protocol version must sit inside
+                // it. The SDK's gRPC handshake would refuse a mismatch
+                // too, but only after the socket exchange — late, and in
+                // whatever shape a version-skewed exchange produces.
+                if !(parsed.proto_min..=parsed.proto_max).contains(&PROTOCOL_VERSION) {
+                    return Err(ProviderError::ProtocolRange {
+                        binary: binary.to_string(),
+                        min: parsed.proto_min,
+                        max: parsed.proto_max,
+                        ours: PROTOCOL_VERSION,
+                    });
+                }
                 Ok((child, parsed))
             }
         }

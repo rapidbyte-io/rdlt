@@ -440,3 +440,32 @@ async fn the_guard_drop_kills_the_child_and_unlinks_the_socket() {
         "the guard's drop must unlink the socket file"
     );
 }
+
+/// The handshake line's protocol range is HONORED (045 external
+/// findings, GROK 7): a connector advertising a range that excludes
+/// this host's protocol version refuses typed AT THE LINE — the fake's
+/// socket has no listener, so surviving to a `Client(Dial)` error
+/// would mean the range was parsed and ignored, exactly the defect.
+#[tokio::test]
+async fn a_protocol_range_outside_ours_refuses_before_dialing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_script(
+        dir.path(),
+        "rdlt-connector-fake",
+        "#!/bin/sh\necho 'rdlt-connector|1|7|9|/nowhere.sock'\nexec sleep 30\n",
+    );
+
+    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let error = provider
+        .source(
+            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("an out-of-range protocol advertisement must refuse");
+    assert_eq!(
+        error.to_string(),
+        "connector `rdlt-connector-fake` accepts protocol versions 7..=9, but this host \
+         speaks protocol 0 — upgrade whichever side is behind"
+    );
+}

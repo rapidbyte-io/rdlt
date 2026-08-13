@@ -78,6 +78,13 @@ impl Line {
             .ok_or_else(|| LineError::Malformed("missing proto_max field".to_string()))?
             .parse::<u32>()
             .map_err(|_| LineError::Malformed("proto_max is not a u32".to_string()))?;
+        if proto_min > proto_max {
+            // An inverted range can never be satisfied — refused where
+            // it is parsed, so no consumer re-derives the sanity check.
+            return Err(LineError::Malformed(format!(
+                "proto_min {proto_min} exceeds proto_max {proto_max}"
+            )));
+        }
         let socket_path = fields
             .next()
             .ok_or_else(|| LineError::Malformed("missing socket_path field".to_string()))?;
@@ -127,6 +134,19 @@ mod tests {
             proto_max: 0,
         };
         assert_eq!(Line::parse(&line.render()).expect("parses"), line);
+    }
+
+    /// An inverted range can never be satisfied — refused where it is
+    /// parsed, so no consumer has to re-derive the sanity check (045
+    /// external findings, GROK 7).
+    #[test]
+    fn an_inverted_protocol_range_refuses_at_parse() {
+        assert_eq!(
+            Line::parse("rdlt-connector|1|3|1|/x"),
+            Err(LineError::Malformed(
+                "proto_min 3 exceeds proto_max 1".to_string()
+            ))
+        );
     }
 
     #[test]
