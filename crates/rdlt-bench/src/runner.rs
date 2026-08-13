@@ -854,6 +854,7 @@ mod tests {
             bars_toml: root.path().join("unused-bars.toml"),
             results: root.path().join("unused-results"),
             recorded_results: root.path().join("unused-recorded-results"),
+            recorded_history: root.path().join("unused-recorded-history.jsonl"),
             cli,
             bins: bins.clone(),
         };

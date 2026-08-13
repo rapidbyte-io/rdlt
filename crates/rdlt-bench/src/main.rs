@@ -327,12 +327,19 @@ fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
 fn cmd_report(paths: &Paths) -> rdlt_bench::Result<()> {
     let (all_cells, bars) = load_all(paths)?;
     let results_md = paths.benches.join("RESULTS.md");
-    let updated = report::regenerate(&results_md, &all_cells, &bars, &paths.results)?;
-    if updated.is_empty() {
-        println!("no artifacts found — nothing regenerated");
-    } else {
-        println!("regenerated sections: {}", updated.join(", "));
-    }
+    // Report renders the RECORDED truth — the same archived artifacts
+    // and history feed the gate's bars bind against, never the live
+    // ledger (empty since the 045 reset until 046 re-points both):
+    // reading the emptied live paths spliced a header-only matrix and
+    // empty trends over the recorded tables the bars still cite.
+    let updated = report::regenerate(
+        &results_md,
+        &all_cells,
+        &bars,
+        &paths.recorded_results,
+        &paths.recorded_history,
+    )?;
+    println!("regenerated sections: {}", updated.join(", "));
     Ok(())
 }
 

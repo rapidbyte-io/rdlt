@@ -401,15 +401,18 @@ pub fn splice(results_md: &str, section: &str, body: &str) -> Result<String> {
     Ok(out)
 }
 
-/// Regenerate the two generated regions — `matrix` (from committed artifacts)
-/// and `trends` (from the history feed) — from disk. The hand-written sections
-/// are preserved byte-for-byte. A cell with an artifact file that cannot be
+/// Regenerate the two generated regions — `matrix` (from the artifacts in
+/// `results_dir`) and `trends` (from the history feed at `history_path`) —
+/// from disk. The caller says WHICH ledger both read (the recorded archive
+/// since the 045 split — see `cmd_report`); the hand-written sections are
+/// preserved byte-for-byte. A cell with an artifact file that cannot be
 /// read (corrupt, format-version mismatch) fails loudly.
 pub fn regenerate(
     results_md_path: &Path,
     cells: &[Cell],
     bars: &[Bar],
     results_dir: &Path,
+    history_path: &Path,
 ) -> Result<Vec<String>> {
     let mut content = std::fs::read_to_string(results_md_path)
         .map_err(|e| BenchError(format!("reading {}: {e}", results_md_path.display())))?;
@@ -433,7 +436,7 @@ pub fn regenerate(
     );
     content = splice(&content, "matrix", &matrix_body)?;
 
-    let history = read_history(&results_md_path.with_file_name("history.jsonl"))?;
+    let history = read_history(history_path)?;
     content = splice(&content, "trends", &trends_table(&history))?;
 
     std::fs::write(results_md_path, content)?;
@@ -530,6 +533,42 @@ mod tests {
         assert!(table.contains("pg-to-pg-1m"), "{table}");
         assert!(table.contains("rdlt"), "{table}");
         assert!(table.contains("+10.0%"), "{table}");
+    }
+
+    /// The 045 recorded/live split's report half: regenerate renders
+    /// the artifacts and history feed it is POINTED AT — cmd_report
+    /// points it at the recorded archive the gate's bars bind against,
+    /// so a report run re-renders the recorded tables rather than
+    /// splicing emptiness (the emptied live ledger) over them.
+    #[test]
+    fn regenerate_renders_the_artifacts_and_history_it_is_pointed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorded = dir.path().join("recorded");
+        std::fs::create_dir(&recorded).unwrap();
+        let mut artifact = crate::artifact::tests::minimal("pg-cell");
+        artifact.rdlt.median_ms = 1234.0;
+        crate::artifact::write(&recorded, &artifact).unwrap();
+        let history = recorded.join("history.jsonl");
+        append_history(&history, &artifact).unwrap();
+
+        let results_md = dir.path().join("RESULTS.md");
+        std::fs::write(
+            &results_md,
+            "# Results\n\n<!-- rdlt-bench:BEGIN matrix -->\nstale\n<!-- rdlt-bench:END matrix -->\n\
+             \n<!-- rdlt-bench:BEGIN trends -->\nstale\n<!-- rdlt-bench:END trends -->\n",
+        )
+        .unwrap();
+        let cell: Cell = toml::from_str("id = \"pg-cell\"\nfixtures = []").unwrap();
+
+        let updated = regenerate(&results_md, &[cell], &[], &recorded, &history).unwrap();
+        assert_eq!(updated, ["matrix", "trends"]);
+        let out = std::fs::read_to_string(&results_md).unwrap();
+        assert!(
+            out.matches("| pg-cell |").count() >= 2,
+            "both the matrix and the trends table carry the recorded cell: {out}"
+        );
+        assert!(out.contains("1.23 s"), "{out}");
+        assert!(!out.contains("stale"), "{out}");
     }
 
     /// A cell whose scope is corrected moves fewer rows than it did before, so

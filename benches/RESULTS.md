@@ -28,9 +28,13 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
   recorded runs. The live ledger (`benches/results/`, the `history.jsonl`
   trends feed) is EMPTY from here until 046's post-byte-bound session mints
   fresh baselines on the post-split shape and re-mints or re-rules the bars
-  under 004 governance; the Matrix and Trends sections below render that
-  emptiness honestly until then, and the recorded-session narratives below
-  describe the archived regime.
+  under 004 governance; until then `rdlt-bench report` keeps rendering the
+  ARCHIVED recordings — it reads the same archived artifacts and history
+  feed the gate's bars bind against, never the empty live ledger — so the
+  Matrix and Trends sections below keep showing the recorded truth the
+  bars cite, and the recorded-session narratives below describe the
+  archived regime. 046 re-points report and gate at the live ledger
+  together.
 
 - **2026-08-11 — the D1 swap: the spawned-connector recordings ARE the
   benchmark identity (feature 043, ADR 0001 D1)**: the in-process build tier

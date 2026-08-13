@@ -19,6 +19,7 @@ fn repo_paths() -> Paths {
         bars_toml: repo.join("benches/bars.toml"),
         results: repo.join("benches/results"),
         recorded_results: repo.join("benches/records/archive-2026-08-13"),
+        recorded_history: repo.join("benches/records/archive-2026-08-13/history.jsonl"),
         cli: repo.join("target/release/rdlt"),
         bins: repo.join("target/release"),
         benches: repo.join("benches"),

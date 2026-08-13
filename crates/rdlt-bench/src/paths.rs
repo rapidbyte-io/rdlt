@@ -12,17 +12,25 @@ pub struct Paths {
     pub cells_dir: PathBuf,
     pub fixtures_toml: PathBuf,
     pub bars_toml: PathBuf,
-    /// The live ledger: where `run` writes fresh artifacts (and `report`
-    /// reads them). Empty since the 045 history reset until a recorded
-    /// session re-mints baselines.
+    /// The live ledger: where `run` writes fresh artifacts. Empty since
+    /// the 045 history reset until a recorded session re-mints baselines.
     pub results: PathBuf,
-    /// The RECORDED artifacts the bars bind against — what `gate` reads.
-    /// Since the 045 history reset this is the dated archive of the
-    /// pre-split recordings; `run` writes to `results`, never here, so a
-    /// live run cannot overwrite an archived recording. The next recorded
-    /// session (046) re-points this at `results` when it mints post-split
+    /// The RECORDED artifacts the bars bind against — what `gate` reads,
+    /// and what `report` renders the matrix from (the two must agree: a
+    /// report reading the emptied live ledger would splice emptiness
+    /// over the recorded tables the bars still cite). Since the 045
+    /// history reset this is the dated archive of the pre-split
+    /// recordings; `run` writes to `results`, never here, so a live run
+    /// cannot overwrite an archived recording. The next recorded session
+    /// (046) re-points this at `results` when it mints post-split
     /// baselines under 004 governance.
     pub recorded_results: PathBuf,
+    /// The RECORDED history feed `report`'s Trends table renders —
+    /// archived beside [`Self::recorded_results`]'s artifacts; the live
+    /// feed (`benches/history.jsonl`, appended by `run`) starts empty.
+    /// 046 re-points this at the live feed together with
+    /// `recorded_results`.
+    pub recorded_history: PathBuf,
     pub cli: PathBuf,
     /// Where the connector BINARIES land (`<target>/release`) — the
     /// `{{bins}}` substitution the cells' pipeline templates
@@ -60,12 +68,17 @@ impl Paths {
             Some(target) => dir.join(target),
             None => dir.join("target"),
         };
+        let recorded_results = benches.join("records/archive-2026-08-13");
+        // KEEP TOGETHER: 046's re-point moves this pair to the live
+        // ledger (`results` / `benches/history.jsonl`) in one edit —
+        // gate and report read the same recorded truth either way.
         Ok(Self {
             cells_dir: benches.join("harness/cells"),
             fixtures_toml: benches.join("harness/fixtures/fixtures.toml"),
             bars_toml: benches.join("bars.toml"),
             results: benches.join("results"),
-            recorded_results: benches.join("records/archive-2026-08-13"),
+            recorded_history: recorded_results.join("history.jsonl"),
+            recorded_results,
             cli: target.join("release/rdlt"),
             bins: target.join("release"),
             repo: dir,
