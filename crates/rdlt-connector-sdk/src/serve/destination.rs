@@ -145,9 +145,20 @@ use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 /// forwarded part events alike — can sit unread while the CLIENT stalls
 /// reading its own stream; a telemetry burst beyond it parks in the
 /// unbounded pair (the forwarding loop parking with it) rather than
-/// growing this channel, so this is not a throughput budget. 16, the
-/// same order of magnitude as the source side's read-frame channel, for
-/// the same reason: headroom.
+/// growing this channel, so this is not a throughput budget. 16:
+/// headroom.
+///
+/// A COUNT IS THE RIGHT UNIT HERE, unlike the source side's frame
+/// channel, which 046 re-based on BYTES after a count let 16 multi-
+/// megabyte frames pile up. Every reply this channel can carry is a
+/// small control message — five are literally empty, the receipt and
+/// state documents are cursors and identifiers, a part event is a table
+/// name plus two scalars — so 16 of them is bounded by inspection at
+/// kilobytes, and no frame size a workload picks changes that. The bulk
+/// payload on a destination session travels the OTHER way (`Write`
+/// frames carrying Arrow IPC, client to server), where it never touches
+/// this channel: h2 flow control paces it and
+/// `common::MAX_FRAME_BYTES` caps any single frame.
 const REPLY_CHANNEL_BUDGET: usize = 16;
 
 /// The role a destination's handshake must be asked for — mirrors

@@ -6,7 +6,7 @@
 //! session choreography plus an induced publish failure — without
 //! pulling in a real system either way.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
@@ -36,11 +36,35 @@ pub fn break_observed() -> bool {
     BREAK_OBSERVED.load(Ordering::SeqCst)
 }
 
+/// Bytes this process's `read_stream` pushes have been ADMITTED for
+/// under the [`EchoConfig::push_bytes`] knob (the unsized default path
+/// leaves this at zero — its rows are too small for a byte bound to
+/// say anything about). Incremented only once a push RETURNS, so a
+/// push parked on backpressure is deliberately not counted: that makes
+/// this counter a direct readout of how much a stalled reader lets the
+/// serve layer buffer, which is exactly what the frame channel's budget
+/// bounds. Process-global for the same reason [`BREAK_OBSERVED`] is —
+/// the connector lives inside the served process with no handle a test
+/// could hold.
+static PUSHED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Bytes admitted so far — see [`PUSHED_BYTES`].
+pub fn pushed_bytes() -> u64 {
+    PUSHED_BYTES.load(Ordering::SeqCst)
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct EchoConfig {
     pub rows: u64,
     #[serde(default)]
     pub fail_read: bool,
+    /// When set, every push is one `raw_json` document of EXACTLY this
+    /// many bytes instead of the tiny `{"n": i}` row — the knob the
+    /// frame-channel byte-bound test needs, since a bound measured in
+    /// BYTES only shows itself against frames big enough for a
+    /// frame-COUNT bound to price wrongly.
+    #[serde(default)]
+    pub push_bytes: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +95,23 @@ impl Document for EchoConfig {
 pub struct EchoSource {
     rows: u64,
     fail_read: bool,
+    push_bytes: usize,
+}
+
+/// One NDJSON document of exactly `bytes` bytes carrying `n` — a real
+/// row padded out, so a frame under test is both well-formed and
+/// precisely sized. Under the padding's own minimum length the document
+/// is simply as short as it can be; the tests that care pass sizes far
+/// above it.
+fn padded_row(n: u64, bytes: usize) -> bytes::Bytes {
+    let head = format!("{{\"n\":{n},\"pad\":\"");
+    let tail = "\"}\n";
+    let pad = bytes.saturating_sub(head.len() + tail.len());
+    let mut row = String::with_capacity(head.len() + pad + tail.len());
+    row.push_str(&head);
+    row.extend(std::iter::repeat_n('x', pad));
+    row.push_str(tail);
+    bytes::Bytes::from(row.into_bytes())
 }
 
 #[async_trait]
@@ -83,6 +124,7 @@ impl SourceConnector for EchoSource {
         Ok(Self {
             rows: config.rows,
             fail_read: config.fail_read,
+            push_bytes: config.push_bytes,
         })
     }
 
@@ -102,10 +144,18 @@ impl SourceConnector for EchoSource {
         let mut last = 0;
         for n in 0..self.rows {
             last = n;
-            if feed.rows([serde_json::json!({"n": n})]).await.is_break() {
+            let (flow, bytes) = if self.push_bytes > 0 {
+                let row = padded_row(n, self.push_bytes);
+                let bytes = row.len() as u64;
+                (feed.raw_json(row).await, bytes)
+            } else {
+                (feed.rows([serde_json::json!({"n": n})]).await, 0)
+            };
+            if flow.is_break() {
                 BREAK_OBSERVED.store(true, Ordering::SeqCst);
                 return Ok(());
             }
+            PUSHED_BYTES.fetch_add(bytes, Ordering::SeqCst);
         }
         let _ = feed
             .checkpoint(Cursor::new(serde_json::json!({"n": last})))

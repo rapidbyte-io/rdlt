@@ -14,7 +14,9 @@
 
 use std::io::Write as _;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 
 use rdlt_connector::{PushPayload, Source as _, SourceError, records_channel};
 use rdlt_connector_protocol::PROTOCOL_VERSION;
@@ -25,8 +27,10 @@ use rdlt_connector_protocol::proto::{
     self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeReply, HandshakeRequest,
     StreamList, StreamsReply, StreamsRequest, check_reply, read_frame, streams_reply,
 };
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
+use tokio_stream::Stream;
+use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
 use super::common::{self, ServeError};
@@ -42,21 +46,199 @@ use crate::source::{Shell, SourceConnector};
 /// which governs the far side of that wire starting at 039's adapter.
 const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 
-/// Bound on the frame channel one `Read` call forwards into — caps how
-/// many already-encoded `ReadFrame`s can sit unread while the CLIENT
-/// stalls reading its stream before the forwarding loop parks (and the
-/// connector's producer parks behind it, against
-/// [`READ_CHANNEL_BUDGET`]'s byte budget). Not a throughput budget:
-/// headroom. 16 — the destination side's `REPLY_CHANNEL_BUDGET`
-/// (`serve::destination`) cites this channel as the same order of
-/// magnitude for the same reason; the two figures are kin, not
-/// coupled.
-const FRAME_CHANNEL_BUDGET: usize = 16;
+/// Budget on the frame channel one `Read` call forwards into — caps how
+/// many BYTES of already-encoded `ReadFrame`s can sit between the
+/// forwarding loop and the gRPC response stream while the CLIENT stalls
+/// reading (the connector's producer parks behind it, against
+/// [`READ_CHANNEL_BUDGET`]'s byte budget on the SPI push channel).
+/// Together those two budgets, plus whatever tonic holds for the wire,
+/// are a spawned connector's in-flight read memory.
+///
+/// IT COUNTS BYTES BECAUSE COUNTING FRAMES PRICED THEM ALL THE SAME.
+/// This channel was bounded at 16 already-encoded frames regardless of
+/// size, which for a postgres source's ~10 MiB frames measured a ~500 MB
+/// out-of-box plateau (043's operator finding) — and no engine-side knob
+/// reached it: `batch_policy.every_bytes` is the ENGINE's accumulate
+/// cadence, not this buffer, so an operator watching a spawned
+/// connector's memory had nothing to turn. A byte budget prices a
+/// 64-byte checkpoint and an 8 MiB batch as what they are.
+///
+/// 32 MiB (D-046-1): twice the read channel, an order of magnitude below
+/// that old worst case, and above any single frame a source in this tree
+/// produces — so the at-least-one rule below stays the exception it is
+/// meant to be rather than the normal path.
+///
+/// NO OPERATOR KNOB, deliberately (YAGNI): one honest constant beats a
+/// dial nobody has a number for. Should a real workload ever need one,
+/// the door is a `with_*` builder on the serve entry points — not a
+/// config key, which would put a memory bound in the same document as
+/// connection details and make it part of the frozen config vocabulary.
+const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
+
+/// Secondary message cap on the frame channel, for the same reason the
+/// SPI's records channel keeps one: the byte budget prices a zero-byte
+/// message at nothing, so without a message cap frames carrying no
+/// payload (an empty push, a terminal `ErrorFrame`) could queue without
+/// limit while never touching the budget.
+const FRAME_MESSAGE_CAPACITY: usize = 64;
 
 /// The role a source's handshake must be asked for — the mirrored
 /// spelling lives on the destination side (`serve::destination`'s own
 /// `EXPECTED_ROLE`).
 const EXPECTED_ROLE: &str = "source";
+
+// ---- the byte-budgeted frame channel ---------------------------------------
+//
+// The admission rule is the SPI's (`rdlt_connector::channel`): a budget
+// in bytes, a permit that travels WITH the value and releases when the
+// value is taken, a secondary message cap, and at-least-one admission so
+// an over-budget value still passes rather than deadlocking. The SPI
+// owns that rule for pushes; this is the same rule over ENCODED frames,
+// written here rather than reused because the receiving half must be a
+// `Stream` for tonic to poll, and the SPI's `ByteReceiver` exposes only
+// an `async fn recv`. Any fix to the rule belongs in both places.
+
+/// One encoded frame plus the budget it was admitted under. The permit
+/// rides WITH the frame and releases only when [`FrameStream`] hands
+/// the frame to tonic, so the budget describes bytes QUEUED OR
+/// PULLED-FOR-THE-WIRE — never bytes merely sent at some point.
+struct BudgetedFrame {
+    frame: Result<proto::ReadFrame, Status>,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+/// The response stream is gone: the client hung up, or the stream
+/// errored out from under this task. The forwarding loop turns it into
+/// the SPI's closed-channel cancellation for the connector's producer.
+#[derive(Debug)]
+struct StreamGone;
+
+/// The sending half the forwarding loop holds.
+struct FrameSender {
+    frames: mpsc::Sender<BudgetedFrame>,
+    budget: Arc<Semaphore>,
+    budget_total: usize,
+}
+
+impl FrameSender {
+    /// Send one frame, parking until its encoded bytes fit inside the
+    /// budget (and a message slot is free).
+    ///
+    /// A frame larger than the ENTIRE budget must still pass — refusing
+    /// it, or waiting on permits that cannot exist, would deadlock a
+    /// legal read — so its request is capped at the budget total and it
+    /// degrades to "wait for the whole budget, then go alone". The
+    /// `u32` saturation matters only for a budget above `u32::MAX`
+    /// (semaphore permits are `u32`), where a saturated request is
+    /// still the same drain-everything request.
+    async fn send(&self, frame: Result<proto::ReadFrame, Status>) -> Result<(), StreamGone> {
+        let bytes = match &frame {
+            Ok(frame) => frame_bytes(frame),
+            // A transport `Status` carries diagnostic text and ends the
+            // stream; there is no payload to budget.
+            Err(_) => 0,
+        };
+        let requested = bytes.min(self.budget_total).try_into().unwrap_or(u32::MAX);
+        // Zero-byte frames skip the semaphore entirely — the message cap
+        // is what bounds them. Acquiring zero permits would also
+        // succeed; skipping states the intent, and keeps such a frame
+        // passing even against a fully spent budget.
+        let permit = if requested > 0 {
+            Some(
+                Arc::clone(&self.budget)
+                    .acquire_many_owned(requested)
+                    .await
+                    .map_err(|_| StreamGone)?,
+            )
+        } else {
+            None
+        };
+        self.frames
+            .send(BudgetedFrame {
+                frame,
+                _permit: permit,
+            })
+            .await
+            .map_err(|_| StreamGone)
+    }
+}
+
+/// The `Read` response stream: frames in the order the forwarding loop
+/// sent them, each releasing its budget as it is pulled.
+struct FrameStream {
+    frames: mpsc::Receiver<BudgetedFrame>,
+    budget: Arc<Semaphore>,
+}
+
+impl Stream for FrameStream {
+    type Item = Result<proto::ReadFrame, Status>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Taking `frame` out of the wrapper drops the permit with it:
+        // the budget releases exactly when tonic takes the frame for
+        // the wire, not when the forwarding loop sent it.
+        self.frames
+            .poll_recv(cx)
+            .map(|budgeted| budgeted.map(|budgeted| budgeted.frame))
+    }
+}
+
+impl Drop for FrameStream {
+    /// A client hang-up drops this stream, and a sender PARKED on the
+    /// byte budget is waiting on the SEMAPHORE — a wait the message
+    /// queue's own closure says nothing about. Closing both makes the
+    /// hang-up an event the forwarding loop observes from EITHER wait,
+    /// exactly as the SPI's `ByteReceiver::close` closes both halves of
+    /// a records channel.
+    ///
+    /// It is deliberately explicit rather than left to emerge: dropping
+    /// the receiver also drops the frames still queued, releasing their
+    /// permits, which would eventually let a parked sender acquire and
+    /// then fail on the closed queue instead — so a test cannot tell
+    /// the two apart, and removing these lines leaves the suite green.
+    /// That equivalence rests on when a dropped receiver releases
+    /// buffered messages, which is tokio's business and not a promise
+    /// this cancellation path should be built on: the connector's read
+    /// task hanging forever is the failure at the other end of it.
+    fn drop(&mut self) {
+        self.frames.close();
+        self.budget.close();
+    }
+}
+
+/// A frame channel: `byte_budget` caps the encoded bytes in flight,
+/// `message_capacity` is the secondary cap that keeps payload-free
+/// frames from queueing without limit.
+fn frame_channel(byte_budget: usize, message_capacity: usize) -> (FrameSender, FrameStream) {
+    let budget = Arc::new(Semaphore::new(byte_budget));
+    let (frames_tx, frames_rx) = mpsc::channel(message_capacity);
+    (
+        FrameSender {
+            frames: frames_tx,
+            budget: Arc::clone(&budget),
+            budget_total: byte_budget,
+        },
+        FrameStream {
+            frames: frames_rx,
+            budget,
+        },
+    )
+}
+
+/// What a frame costs the budget: the payload it carries. The protobuf
+/// envelope around that payload is a handful of bytes on top and is
+/// deliberately not modelled — the budget bounds the data a stalled
+/// reader lets pile up, and every byte that can actually pile up is in
+/// one of these arms. An `ErrorFrame` is terminal, tiny, and priced at
+/// nothing so it can always reach a client whose budget is spent.
+fn frame_bytes(frame: &proto::ReadFrame) -> usize {
+    match &frame.frame {
+        Some(read_frame::Frame::RawJson(bytes)) => bytes.len(),
+        Some(read_frame::Frame::ArrowIpc(bytes)) => bytes.len(),
+        Some(read_frame::Frame::CheckpointCursorJson(bytes)) => bytes.len(),
+        Some(read_frame::Frame::Error(_)) | None => 0,
+    }
+}
 
 /// The gRPC surface over one [`SourceConnector`]. `shell` is empty until
 /// a handshake succeeds; `Arc` (not a bare `Shell<C>`) because the `Read`
@@ -213,7 +395,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         }))
     }
 
-    type ReadStream = ReceiverStream<Result<proto::ReadFrame, Status>>;
+    type ReadStream = FrameStream;
 
     async fn read(
         &self,
@@ -252,7 +434,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let read_task: JoinHandle<Result<(), SourceError>> =
             tokio::spawn(async move { shell.read(read_request).await });
 
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(FRAME_CHANNEL_BUDGET);
+        let (frame_tx, frame_rx) = frame_channel(BYTE_FRAME_BUDGET, FRAME_MESSAGE_CAPACITY);
 
         tokio::spawn(async move {
             // Whether the encode-failure arm below has already emitted
@@ -327,7 +509,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             }
         });
 
-        Ok(Response::new(ReceiverStream::new(frame_rx)))
+        Ok(Response::new(frame_rx))
     }
 }
 
@@ -335,8 +517,12 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
 /// frame is a terminal FATAL [`ErrorFrame`] carrying `message` — what a
 /// request-decode failure answers with (see the comment inside
 /// `SourceServer::read` for why this is a frame, not a `Status`).
-fn error_stream(message: String) -> Response<ReceiverStream<Result<proto::ReadFrame, Status>>> {
-    let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
+fn error_stream(message: String) -> Response<FrameStream> {
+    // One terminal frame and nothing else, so the channel needs one
+    // message slot and no byte budget at all: an `ErrorFrame` is priced
+    // at nothing (see [`frame_bytes`]), which is what lets this be
+    // placed synchronously — the enqueue below cannot park.
+    let (frame_tx, frame_rx) = frame_channel(0, 1);
     let frame = proto::ReadFrame {
         frame: Some(read_frame::Frame::Error(common::error_frame(
             Classification::Fatal,
@@ -345,9 +531,13 @@ fn error_stream(message: String) -> Response<ReceiverStream<Result<proto::ReadFr
         ))),
     };
     frame_tx
-        .try_send(Ok(frame))
+        .frames
+        .try_send(BudgetedFrame {
+            frame: Ok(frame),
+            _permit: None,
+        })
         .expect("a fresh channel with capacity 1 accepts its one frame");
-    Response::new(ReceiverStream::new(frame_rx))
+    Response::new(frame_rx)
 }
 
 /// One SPI push, translated to its wire shape — the payload picks the
@@ -452,4 +642,181 @@ pub async fn source<C: SourceConnector>() -> Result<(), ServeError> {
     stdout.flush().map_err(ServeError::Stdout)?;
 
     handle.await.map_err(ServeError::Join)?
+}
+
+#[cfg(test)]
+mod tests {
+    //! The frame channel's admission rule, driven directly: the budget
+    //! is in BYTES, an over-budget frame still passes alone, and a
+    //! parked sender learns when the stream goes away. The wire-level
+    //! consequence — what a STALLED reader lets pile up end to end —
+    //! is pinned separately in `tests/cases/test_serve_source.rs`.
+    use std::time::Duration;
+
+    use tokio_stream::StreamExt as _;
+
+    use super::*;
+
+    /// Every wait that must SUCCEED is bounded: the failure mode under
+    /// test is a hang, and an unbounded await would report it as a
+    /// timeout of the whole suite rather than a named failure.
+    const BOUND: Duration = Duration::from_secs(5);
+
+    /// Long enough that a send which is going to complete has, short
+    /// enough to keep the suite quick — the same bounded-negative idiom
+    /// the SPI channel's own budget tests use.
+    const PARKED: Duration = Duration::from_millis(50);
+
+    /// Roomy enough that the message cap can never fire first — these
+    /// tests are about the BYTE budget, and a message-count stall would
+    /// be a different mechanism passing for it.
+    const ROOMY: usize = 256;
+
+    fn frame_of(bytes: usize) -> Result<proto::ReadFrame, Status> {
+        Ok(proto::ReadFrame {
+            frame: Some(read_frame::Frame::RawJson(vec![b'x'; bytes])),
+        })
+    }
+
+    fn error_frame_of(message: &str) -> Result<proto::ReadFrame, Status> {
+        Ok(proto::ReadFrame {
+            frame: Some(read_frame::Frame::Error(common::error_frame(
+                Classification::Fatal,
+                message.to_string(),
+                None,
+            ))),
+        })
+    }
+
+    #[test]
+    fn frame_bytes_prices_every_payload_arm_by_what_it_carries() {
+        assert_eq!(frame_bytes(&frame_of(1234).unwrap()), 1234);
+        assert_eq!(
+            frame_bytes(&proto::ReadFrame {
+                frame: Some(read_frame::Frame::ArrowIpc(vec![0; 77])),
+            }),
+            77
+        );
+        assert_eq!(
+            frame_bytes(&proto::ReadFrame {
+                frame: Some(read_frame::Frame::CheckpointCursorJson(vec![0; 9])),
+            }),
+            9
+        );
+        // Terminal, tiny, and deliberately free — see `frame_bytes`.
+        assert_eq!(frame_bytes(&error_frame_of("boom").unwrap()), 0);
+        assert_eq!(frame_bytes(&proto::ReadFrame { frame: None }), 0);
+    }
+
+    #[tokio::test]
+    async fn the_budget_counts_bytes_not_frames() {
+        let (sender, mut stream) = frame_channel(100, ROOMY);
+        // Fifty small frames pass — a count bound of 16 (what this
+        // channel used to carry) would have parked at the seventeenth.
+        for _ in 0..50 {
+            sender.send(frame_of(2)).await.expect("small frames fit");
+        }
+        for _ in 0..50 {
+            stream
+                .next()
+                .await
+                .expect("the queued frames")
+                .expect("a frame, not a status");
+        }
+        // …while the second of two large frames parks until the first is
+        // pulled for the wire.
+        sender
+            .send(frame_of(80))
+            .await
+            .expect("the first large frame");
+        let parked = sender.send(frame_of(80));
+        tokio::pin!(parked);
+        tokio::select! {
+            _ = &mut parked => panic!("the byte budget did not park the second large frame"),
+            _ = tokio::time::sleep(PARKED) => {}
+        }
+        stream
+            .next()
+            .await
+            .expect("the first large frame")
+            .expect("a frame, not a status");
+        tokio::time::timeout(BOUND, parked)
+            .await
+            .expect("pulling a frame releases its budget")
+            .expect("the stream is still there");
+    }
+
+    #[tokio::test]
+    async fn a_frame_larger_than_the_whole_budget_passes_alone() {
+        // Degrades to drain-the-budget rather than waiting on permits
+        // that cannot exist — refusing it would deadlock a legal read.
+        let (sender, mut stream) = frame_channel(16, ROOMY);
+        tokio::time::timeout(BOUND, sender.send(frame_of(1_000_000)))
+            .await
+            .expect("an over-budget frame must pass rather than park forever")
+            .expect("the stream is still there");
+        // ALONE: nothing else is admitted beside it until it is pulled.
+        let beside = tokio::time::timeout(PARKED, sender.send(frame_of(16))).await;
+        assert!(
+            beside.is_err(),
+            "an over-budget frame holds the whole budget while it waits to be pulled"
+        );
+        assert_eq!(
+            frame_bytes(&stream.next().await.expect("the big frame").expect("ok")),
+            1_000_000
+        );
+        tokio::time::timeout(BOUND, sender.send(frame_of(16)))
+            .await
+            .expect("the budget released with the big frame")
+            .expect("the stream is still there");
+    }
+
+    #[tokio::test]
+    async fn a_payload_free_frame_passes_a_fully_spent_budget() {
+        // The terminal ErrorFrame is the diagnosis a client is waiting
+        // for; gating it on a budget the stalled client itself spent
+        // would hide exactly the failures that matter most.
+        let (sender, mut stream) = frame_channel(100, ROOMY);
+        sender
+            .send(frame_of(100))
+            .await
+            .expect("exactly the budget");
+        tokio::time::timeout(BOUND, sender.send(error_frame_of("induced")))
+            .await
+            .expect("a payload-free frame must not wait on the budget")
+            .expect("the stream is still there");
+        assert_eq!(frame_bytes(&stream.next().await.unwrap().unwrap()), 100);
+        assert!(matches!(
+            stream.next().await.unwrap().unwrap().frame,
+            Some(read_frame::Frame::Error(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_stream_wakes_a_sender_parked_on_the_budget() {
+        // A client hang-up must reach a sender waiting on the
+        // SEMAPHORE, not just one waiting for a message slot —
+        // otherwise the forwarding loop never learns to cancel the
+        // connector, and the read task hangs on forever. This pins the
+        // OUTCOME, not the mechanism: `FrameStream::drop`'s own comment
+        // records that the semaphore close it performs is belt to the
+        // queue-drop's braces, so this test stays green if that line is
+        // removed.
+        let (sender, stream) = frame_channel(8, ROOMY);
+        sender
+            .send(frame_of(8))
+            .await
+            .expect("the first frame fits");
+        let parked = tokio::spawn(async move { sender.send(frame_of(8)).await });
+        tokio::time::sleep(PARKED).await; // let it park
+        drop(stream);
+        let result = tokio::time::timeout(BOUND, parked)
+            .await
+            .expect("the hang-up must wake the parked sender")
+            .expect("task joins");
+        assert!(
+            result.is_err(),
+            "the woken sender is told the stream is gone, so the read can be cancelled"
+        );
+    }
 }

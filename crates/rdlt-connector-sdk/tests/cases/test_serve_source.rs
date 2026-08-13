@@ -60,6 +60,13 @@ fn echo_config(rows: u64, fail_read: bool) -> Vec<u8> {
         .expect("echo config serializes")
 }
 
+/// The same config with every push sized to `push_bytes` — the sized
+/// half of the echo source, used by the frame-budget test below.
+fn sized_echo_config(rows: u64, push_bytes: usize) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({"rows": rows, "push_bytes": push_bytes}))
+        .expect("echo config serializes")
+}
+
 fn numbers_stream_spec_json() -> Vec<u8> {
     serde_json::to_vec(&rdlt_connector::StreamSpec::new("numbers")).expect("stream spec json")
 }
@@ -586,6 +593,98 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
     assert!(
         frames.message().await.expect("stream ends").is_none(),
         "nothing follows the terminal error"
+    );
+}
+
+/// THE BYTE-BOUND PIN (046, closing the 043 operator finding): what a
+/// STALLED reader lets the serve layer buffer is bounded in BYTES, not
+/// in frames. The client here starts a `Read` and then never polls its
+/// response stream, while the connector pushes 8 MiB documents as fast
+/// as the layer admits them; the echo source counts only pushes that
+/// RETURNED, so the counter reads exactly how much sat buffered before
+/// everything parked.
+///
+/// The ceiling is the sum of the layer's own budgets, each named below
+/// rather than folded into one magic number. Under the frame-COUNT
+/// bound this replaces (16 already-encoded frames regardless of size)
+/// the same run admitted ~19 frames — over 150 MiB — because a count
+/// prices a 64-byte frame and an 8 MiB frame identically; that is the
+/// defect this pin exists to keep closed, and it is why the frames here
+/// are large: a byte bound and a count bound are indistinguishable at
+/// small frame sizes.
+#[tokio::test]
+async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
+    // 8 MiB frames: the shape the 043 finding measured (a postgres
+    // source's ~10 MiB frames), and far enough above the read
+    // channel's own per-frame arithmetic that the two regimes cannot
+    // be confused.
+    const FRAME_BYTES: usize = 8 * 1024 * 1024;
+    // More rows than any regime can admit, so admission — not the row
+    // supply — is what stops the producer.
+    const ROWS: u64 = 64;
+    // BYTE_FRAME_BUDGET (32 MiB, `serve::source`) for the encoded
+    // frames, plus READ_CHANNEL_BUDGET (8 MiB) for the SPI push channel
+    // feeding it, plus four frames of slack: the one the forwarding
+    // loop holds in hand, what tonic has pulled for the wire and is
+    // holding against the client's h2 window, and margin so a tonic
+    // that buffers one frame more than measured is not a failure. The
+    // recorded measurement is 7 frames (56 MiB) admitted — the slack is
+    // the only part of this ceiling that is not somebody's declared
+    // budget.
+    const CEILING: u64 = (32 * 1024 * 1024) + (8 * 1024 * 1024) + 4 * FRAME_BYTES as u64;
+
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: sized_echo_config(ROWS, FRAME_BYTES),
+        })
+        .await
+        .expect("handshake rpc");
+
+    // Held, never polled: this IS the stall under test. Dropping it
+    // would cancel the read instead of stalling it.
+    let _frames = source
+        .read(ReadRequest {
+            stream_spec_json: numbers_stream_spec_json(),
+            since_cursor_json: None,
+        })
+        .await
+        .expect("read rpc")
+        .into_inner();
+
+    // Bounded polling until admission stops moving — the producer parks
+    // silently, so there is no event to await; five unchanged samples
+    // (250 ms) is the quiescence signal, and the overall bound turns a
+    // never-parking regression into a named failure rather than a hung
+    // suite.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut admitted = echo::pushed_bytes();
+    let mut unchanged = 0;
+    while unchanged < 5 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let now = echo::pushed_bytes();
+        unchanged = if now == admitted { unchanged + 1 } else { 0 };
+        admitted = now;
+    }
+
+    assert!(
+        admitted > 0,
+        "the harness proves nothing if the connector never pushed: \
+         admission must reach the layer's budgets before it stops"
+    );
+    assert!(
+        admitted <= CEILING,
+        "a stalled reader admitted {admitted} bytes ({} frames of {FRAME_BYTES}), \
+         above the {CEILING}-byte ceiling the layer's own budgets set — \
+         a frame-COUNT bound admits ~19 frames here regardless of size",
+        admitted / FRAME_BYTES as u64
     );
 }
 
