@@ -52,8 +52,15 @@ result here, not a claim.
 
 Every frozen message spelling, error-classification keys (six
 connectors classify on six different, load-bearing keys), cursor
-machinery, and SQL planning. The extraction evidence behind those
-boundaries is recorded in `specs/027-sdk-trio/plan.md` (Wave 2).
+machinery, and SQL planning. Those boundaries were measured, not
+guessed: a read-only study over all six connectors held every candidate
+extraction to a two-plus-message-identical bar. Cursor watermarking
+failed it (REST's 41 lines of stringly max-observed and postgres's
+~800-line typed watermark share only the never-move-backwards idea); a
+shared error skeleton failed it (a common detail string could not
+reproduce the six frames verbatim, and would break snowflake's downcast
+of the preserved library error); only the config-document seam cleared
+it — by never rendering text.
 
 Features: `schema` (`config::schema_of` — JSON Schema generated from
 the config structs themselves).

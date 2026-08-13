@@ -4,8 +4,11 @@ One declarative harness (`crates/rdlt-bench`) runs the six-cell,
 three-way end-to-end matrix (rdlt / dlt / Airbyte, same conditions):
 cells are DATA, the protocol is code, results are committed artifacts,
 and enforcement exists only as bars set below recorded session floors.
-Contract: `specs/018-bench-refinement/contracts/bench-refinement.md`
-(BR1–BR8); constitution Principle VIII governs.
+The governing rule, in full: a bar references exactly one existing cell,
+lives in `bars.toml`, and is enforced by the bench gate; no bar exists
+without recorded measurement evidence — each is set below the floor of a
+recorded session and cites a policy-log entry. Performance claims are
+backed by harness evidence, never ad-hoc timing.
 
 ## Running it
 

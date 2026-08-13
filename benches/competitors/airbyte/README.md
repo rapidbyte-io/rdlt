@@ -7,12 +7,13 @@ self-timed container the harness runs directly — Airbyte is a long-lived
 `driver.py` drives pre-created connections against an already-running
 `abctl` cluster and prints the same summary JSON line as every other arm.
 
-Everything here was pinned by the feasibility probes in
-`specs/018-bench-refinement/spike/` — read those first:
-`01-runtime.md` (abctl on rootless podman), `02-networking.md`
-(pods reach host fixtures at `169.254.1.2`), `03-api-fields.md` (the job API
-field pins, the two setup deltas, the driver gotchas), `05-reset.md`
-(reset fidelity / the per-run clean-dest recipe).
+Everything here rides facts pinned by live feasibility probes before
+any harness code was written: abctl runs on rootless podman; pods reach
+the host's fixtures at the gateway address `169.254.1.2`; the job API's
+field meanings, the two setup deltas, and the driver gotchas were
+measured against a running cluster; and the per-run reset was verified
+to leave the destination truly empty. The sections below carry those
+findings.
 
 ## Files
 
@@ -31,7 +32,7 @@ harness runs the driver on system `python3`.
 ## Prerequisites (once per machine)
 
 1. **Install the cluster** (owner-approved, one-time): `abctl local install
-   --low-resource-mode`. See `spike/01-runtime.md`.
+   --low-resource-mode`.
 2. **Run setup**:
 
    ```
@@ -52,7 +53,7 @@ harness runs the driver on system `python3`.
    pulls the source connector images inside the cluster and can take several
    minutes per new connector.
 
-### The two setup deltas (enforced by setup.py, `spike/03`)
+### The two setup deltas (enforced by setup.py)
 
 - **ingress-nginx scaled to 0** — its CrashLooping controller declares
   hostPorts 80/443, and the CNI portmap DNAT then hijacks *all* in-cluster
@@ -83,7 +84,7 @@ Both are idempotent; setup refreshes them every run.
 - **Rowcount verification**: postgres destinations are counted exactly
   (`SELECT count(*)` via `podman exec` into the fixture container).
 
-## Per-run reset & clean-dest recipe (`spike/05`)
+## Per-run reset & clean-dest recipe
 
 The harness resets fixtures before every driver invocation. For postgres
 destinations that reset drops and recreates the `dest_airbyte` schemas, so

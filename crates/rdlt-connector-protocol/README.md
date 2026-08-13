@@ -439,8 +439,7 @@ never frames.
 ## Gotchas, named so they're searchable
 
 **grpc-python over a Unix domain socket needs an explicit authority.**
-Measured live (research spike, `specs/038-connector-protocol/research.md`
-§4): grpc-python's C-core UDS resolver synthesizes an HTTP/2
+Measured live: grpc-python's C-core UDS resolver synthesizes an HTTP/2
 `:authority` pseudo-header from the socket path itself, which tonic's
 `h2` layer rejects outright — `RST_STREAM (error code 1)` on EVERY RPC,
 including a bare unary call, with the server-side log reading
@@ -461,7 +460,7 @@ non-Rust integrator hits, and diagnose it by that exact
 at fault.
 
 **tonic's default CLIENT flow-control window is ~2 MiB, not HTTP/2's
-64 KiB.** Measured live (same spike, §2): a `tonic::transport::Endpoint`
+64 KiB.** Measured live: a `tonic::transport::Endpoint`
 that never calls `initial_stream_window_size`/
 `initial_connection_window_size` explicitly gets a much larger window
 than the raw HTTP/2 spec default — generous, not a problem by itself,

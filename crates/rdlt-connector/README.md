@@ -11,8 +11,9 @@ second-generation rewrite of the original SPI, which it replaced
 wholesale at workspace version 0.3.0: behavior is contract-identical —
 the six error classification frames, the channel's byte-budget
 semantics, secret redaction, and every serde spelling carried over
-verbatim — while the Rust API gained the additions below. The design
-record is `specs/027-sdk-trio/plan.md`.
+verbatim — while the Rust API gained the additions below. The rewrite
+was re-derived from the generation-1 contract under a no-copying rule,
+and each addition was a recorded decision, not drift.
 
 ## What is new over generation 1
 
