@@ -59,6 +59,12 @@ pub struct Spec {
     /// Distinct from `commit_policy`: this is write granularity
     /// (throughput and memory), that is durability (what a crash
     /// costs). A batch never spans a commit.
+    ///
+    /// The memory it governs is the ENGINE's accumulation. A spawned
+    /// connector's in-flight frames are byte-bounded by the connector
+    /// sdk's serve budget, and the connector's own batch knobs size
+    /// its frames — this knob neither bounds nor needs to bound a
+    /// connector process.
     #[serde(default)]
     pub batch_policy: Option<rdlt_core::BatchPolicy>,
     /// When accumulated rows are committed — and so, for file

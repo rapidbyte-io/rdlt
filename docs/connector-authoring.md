@@ -103,6 +103,19 @@ pub type Shell = rdlt_connector_sdk::source::Shell<MySource>;
 `ControlFlow`, and `Break` means the host hung up — return `Ok(())`
 promptly. Never invent an error for a closed channel.
 
+Memory, when spawned: the serve loop that carries your frames to the
+wire is BYTE-bounded, so a spawned connector's in-flight encoded
+frames are capped by the sdk's own budget — your producer parks
+behind a slow consumer exactly like an in-process reader would,
+rather than buffering ahead without limit. `BYTE_FRAME_BUDGET` in the
+sdk's `serve/source.rs` owns the numbers and the worst-case
+arithmetic. Two consequences: your own batch/page sizing decides
+FRAME sizes (the budget prices frames by what they weigh, so smaller
+frames pipeline more smoothly than a few enormous ones), and the
+engine-side `batch_policy.every_bytes` is the ENGINE's accumulate
+cadence — it never reaches, and never needs to reach, your process's
+buffers.
+
 What stays yours: stream resolution against your config (including the
 unknown-stream refusal, worded where the config's shape is known),
 cursor semantics, error **classification** (your keys decide

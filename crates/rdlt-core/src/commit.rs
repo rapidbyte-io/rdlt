@@ -319,6 +319,14 @@ pub struct BatchPolicy {
     ///
     /// Measured, for scale: on a 4-column REST stream, 100 KB of
     /// in-memory footprint produced ~73 KB JSONL files.
+    ///
+    /// It bounds the ENGINE's accumulation only. A spawned connector's
+    /// own in-flight memory is bounded separately: the connector sdk
+    /// byte-budgets the encoded frames a served source can hold ahead
+    /// of the wire (`BYTE_FRAME_BUDGET` in `rdlt-connector-sdk`'s
+    /// `serve/source.rs` owns the numbers and the worst case), and the
+    /// connector's own batch knobs size its frames. This knob cannot
+    /// reach those buffers, and no longer needs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_bytes: Option<u64>,
 }
