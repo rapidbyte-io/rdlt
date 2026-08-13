@@ -114,15 +114,9 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
 
     // P1 — the handshake-line discipline, probed on a direct spawn whose
     // only purpose is P1; certification re-spawns cleanly afterward.
-    match tokio::time::timeout(
-        CLAUSE_TIMEOUT,
-        probe_handshake_line(target, Role::Destination),
-    )
-    .await
-    {
-        Ok(Ok(())) => report.pass("P1"),
-        Ok(Err(why)) => report.fail("P1", why),
-        Err(_elapsed) => report.fail("P1", timed_out()),
+    match probe_handshake_line(target, Role::Destination, CLAUSE_TIMEOUT).await {
+        Ok(()) => report.pass("P1"),
+        Err(why) => report.fail("P1", why),
     }
 
     // P13 — the unserved role's refusal, probed on its own spawn of

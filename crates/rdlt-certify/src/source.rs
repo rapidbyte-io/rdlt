@@ -48,11 +48,12 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     let mut report = Report::default();
 
     // P1 — the handshake-line discipline, probed on a direct spawn whose
-    // only purpose is P1; certification re-spawns cleanly afterward.
-    match tokio::time::timeout(CLAUSE_TIMEOUT, probe_handshake_line(target, Role::Source)).await {
-        Ok(Ok(())) => report.pass("P1"),
-        Ok(Err(why)) => report.fail("P1", why),
-        Err(_elapsed) => report.fail("P1", timed_out()),
+    // only purpose is P1; certification re-spawns cleanly afterward. The
+    // clause timeout rides INSIDE the probe so its reap runs even on a
+    // timeout (the P13 shape).
+    match probe_handshake_line(target, Role::Source, CLAUSE_TIMEOUT).await {
+        Ok(()) => report.pass("P1"),
+        Err(why) => report.fail("P1", why),
     }
 
     // P13 — the unserved role's refusal, probed on its own spawn of

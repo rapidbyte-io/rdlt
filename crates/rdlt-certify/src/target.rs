@@ -238,14 +238,25 @@ pub(crate) fn report_p4(report: &mut Report, spec: &Result<rdlt_connector::Conne
 /// The spawn and first-line read are the wire attach's own funnel
 /// ([`wire::spawn_and_read_line`], round-12 — this probe hand-rolled
 /// an identical copy), and the child rides the standardized
-/// [`wire::ChildSlot`]: the unconditional [`wire::reap_parked`] on the
-/// way out kills AND REAPS the process and unlinks any socket its line
-/// advertised on EVERY exit, pass and fail alike (the round-9
-/// discipline).
-pub(crate) async fn probe_handshake_line(target: &Target, role: Role) -> Result<(), String> {
+/// [`wire::ChildSlot`]. `budget` (the caller's clause timeout) wraps
+/// the probe I/O ALONE and the [`wire::reap_parked`] sits OUTSIDE it —
+/// the P13 probe's shape: a timeout wrapped around the whole probe
+/// cancelled the reap with the future, and the P1 child is a live
+/// server holding its store while the P2 spawn follows immediately.
+/// On every exit, timeout included, the child is dead AND reaped and
+/// any socket its line advertised is unlinked.
+pub(crate) async fn probe_handshake_line(
+    target: &Target,
+    role: Role,
+    budget: Duration,
+) -> Result<(), String> {
     let path = resolve_binary(&target.requirement)?;
     let slot = wire::ChildSlot::default();
-    let verdict = first_line_discipline(&path, role, &slot).await;
+    let verdict =
+        match tokio::time::timeout(budget, first_line_discipline(&path, role, &slot)).await {
+            Ok(verdict) => verdict,
+            Err(_elapsed) => Err(timed_out()),
+        };
     wire::reap_parked(&slot).await;
     verdict
 }
@@ -759,7 +770,7 @@ mod tests {
             .expect("the script becomes executable");
 
         let target = Target::resolve_path(script, serde_json::json!({}));
-        let error = probe_handshake_line(&target, Role::Source)
+        let error = probe_handshake_line(&target, Role::Source, CLAUSE_TIMEOUT)
             .await
             .expect_err("a garbage first line fails P1");
         assert!(
@@ -860,6 +871,35 @@ mod tests {
             ),
             other => panic!("P13 must Fail, got {other:?}:\n{}", report.render_text()),
         }
+    }
+
+    /// The P1 twin of the P13 timeout-reap pin below (the re-review
+    /// ruling): probe_handshake_line's reap also survives its budget —
+    /// this child is a live server holding its store, and the P2 spawn
+    /// follows immediately, so a cancelled reap here is the WORSE
+    /// instance of the same hazard.
+    #[tokio::test]
+    async fn a_timed_out_handshake_probe_still_reaps_its_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("pid");
+        let script = write_role_script(
+            dir.path(),
+            "staller",
+            &format!("echo $$ > {}\nexec sleep 30", pidfile.display()),
+        );
+        let target = Target::resolve_path(script, serde_json::json!({}));
+        let error = probe_handshake_line(&target, Role::Source, Duration::from_millis(300))
+            .await
+            .expect_err("a stalled probe times out");
+        assert_eq!(error, timed_out());
+        let pid = std::fs::read_to_string(&pidfile)
+            .expect("the script wrote its pid before stalling")
+            .trim()
+            .to_owned();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the probe child (pid {pid}) must be dead AND reaped when the probe returns"
+        );
     }
 
     /// Final-review fix: the reap survives the clause timeout — the
