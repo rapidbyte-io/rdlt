@@ -175,6 +175,17 @@ impl Loader {
                 delta,
                 mode,
             } => {
+                // A SCHEMA CHANGE forces the buffer out FIRST — here, at
+                // the Delta, not one batch later: the pending batches
+                // carry the pre-delta schema, and ensuring the widened
+                // table before writing them hands old-shape rows to an
+                // already-widened destination (or, when the run ends
+                // right after the Delta, has `finish` write them after
+                // the new ensure). `flush_all` over the one table's
+                // flush, deliberately: a recorded child table's shape
+                // can ride the same delta, and over-flushing costs a
+                // smaller write, never correctness.
+                self.flush_all().await?;
                 // Lowering + ensure + hash-record at the destination seam, shared
                 // with WAL replay so recovery reproduces this exactly.
                 apply::apply_delta(

@@ -142,3 +142,133 @@ async fn accumulated_rows_are_written_before_each_commit() {
         "every accumulated row is committed, none stranded in the buffer"
     );
 }
+
+/// A schema Delta forces the ACCUMULATED buffer out BEFORE the wider
+/// table is ensured (045 external findings, GROK 4): the loader's own
+/// invariant — "a schema change forces the buffer out first" — must
+/// hold at the Delta, not one batch later. A destination that widens
+/// eagerly (DDL, file formats with per-part schemas) would otherwise
+/// receive old-schema rows into an already-widened table, or — on a
+/// run that ends right after the Delta — have `finish()` write them
+/// after the new ensure.
+mod delta_flushes_pending_first {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    use rdlt_connector::{
+        CommitMeta, CommitReceipt, Destination, DestinationCapabilities, DestinationError,
+        LoadSession, OpenContext, RecordBatch, StateDoc,
+    };
+    use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
+    use serde_json::json;
+
+    /// MemoryDestination plus an ordered op log — the ONE observable
+    /// this pin needs is whether a `write` or an `ensure` came first.
+    #[derive(Clone)]
+    struct Recording {
+        inner: MemoryDestination,
+        ops: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct RecordingSession {
+        inner: Box<dyn LoadSession>,
+        ops: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Destination for Recording {
+        fn spec(&self) -> rdlt_connector::ConnectorSpec {
+            self.inner.spec()
+        }
+        fn capabilities(&self) -> DestinationCapabilities {
+            self.inner.capabilities()
+        }
+        async fn open(
+            &self,
+            context: OpenContext,
+        ) -> Result<Box<dyn LoadSession>, DestinationError> {
+            let inner = self.inner.open(context).await?;
+            Ok(Box::new(RecordingSession {
+                inner,
+                ops: Arc::clone(&self.ops),
+            }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoadSession for RecordingSession {
+        async fn ensure_table(
+            &mut self,
+            schema: &rdlt_connector::TableSchema,
+            mode: &rdlt_connector::WriteMode,
+        ) -> Result<(), DestinationError> {
+            self.ops
+                .lock()
+                .expect("ops lock")
+                .push(format!("ensure:{}", schema.columns.len()));
+            self.inner.ensure_table(schema, mode).await
+        }
+        async fn write(
+            &mut self,
+            table: &rdlt_connector::TableName,
+            batch: RecordBatch,
+        ) -> Result<(), DestinationError> {
+            self.ops
+                .lock()
+                .expect("ops lock")
+                .push(format!("write:{}", batch.num_rows()));
+            self.inner.write(table, batch).await
+        }
+        async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+            self.inner.commit(meta).await
+        }
+        async fn read_state(
+            &mut self,
+            pipeline: &rdlt_connector::PipelineId,
+        ) -> Result<Option<StateDoc>, DestinationError> {
+            self.inner.read_state(pipeline).await
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_batches_flush_before_the_delta_is_ensured() {
+        use rdlt_core::BatchPolicy;
+
+        let source = MemorySource::new(vec![MemoryStream::new(
+            rdlt_connector::StreamSpec::new("s"),
+            vec![
+                MemoryBatch::new(vec![json!({"a": 1}), json!({"a": 2})]).with_checkpoint(1),
+                MemoryBatch::new(vec![json!({"a": 3, "b": "late"})]).with_checkpoint(2),
+            ],
+        )]);
+        let dest = Recording {
+            inner: MemoryDestination::new(),
+            ops: Arc::new(Mutex::new(Vec::new())),
+        };
+        let ops_handle = Arc::clone(&dest.ops);
+        let mut config = EngineConfig::new("delta-flush");
+        // Accumulate everything: only a schema change (or the end of
+        // the run) may force a write out.
+        config = config
+            .with_batch_policy(BatchPolicy::every_rows(1_000_000))
+            .with_commit_policy(CommitPolicy::every_checkpoints(1_000_000));
+        Engine::new(config, source, dest).run().await.expect("run");
+
+        let ops = ops_handle.lock().expect("ops lock").clone();
+        let first_write = ops
+            .iter()
+            .position(|op| op.starts_with("write:"))
+            .unwrap_or_else(|| panic!("some write must happen: {ops:?}"));
+        let second_ensure = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.starts_with("ensure:"))
+            .map(|(i, _)| i)
+            .nth(1)
+            .unwrap_or_else(|| panic!("the evolution must ensure a second time: {ops:?}"));
+        assert!(
+            first_write < second_ensure,
+            "the old-schema buffer must be written BEFORE the widened ensure — got {ops:?}"
+        );
+    }
+}
