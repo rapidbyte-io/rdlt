@@ -76,10 +76,10 @@
 //!
 //! See the crate's `README.md` for the handshake line format spelled
 //! out field-by-field, the three services' shapes, and the operational
-//! gotchas measured by the research spike (`specs/038-connector-protocol/
-//! research.md`) — this module doc stays scoped to what governs the
-//! Rust API surface; the README is the page a third-party integrator
-//! (including a non-Rust one) actually needs.
+//! gotchas measured live when the protocol was designed — this module
+//! doc stays scoped to what governs the Rust API surface; the README
+//! is the page a third-party integrator (including a non-Rust one)
+//! actually needs.
 
 pub mod handshake;
 

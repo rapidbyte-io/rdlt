@@ -61,7 +61,7 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
   both connector bins (two spawn+handshakes inside the measured wall),
   median **27.1 ms** (mean 27.2 ± 0.7 ms, range 25.8–28.8 ms, 20 runs,
   loadavg 0.87) on the swapped tree against the UNCHANGED 40 ms bar
-  (`benches/check-cold-start.sh`). One survivor spelling was repaired to get
+  (`benches/harness/check-cold-start.sh`). One survivor spelling was repaired to get
   there: the cold and oracle pipelines carried the retired
   `source: <name>: {config: <path>}` sub-key form, which the spawned
   connectors' own document gates refuse (`unknown field \`config\``) — both
@@ -194,7 +194,7 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
   gated/scoreboard taxonomy, cell suites, the library/hyperfine run modes, 25
   legacy cells, 10 fixtures, every v1 artifact, and all 8 bars were retired in
   one migration commit; the cold-start check moved to the instruments track
-  (`benches/check-cold-start.sh`, ≤ 40 ms). Enforcement returns
+  (`benches/harness/check-cold-start.sh`, ≤ 40 ms). Enforcement returns
   measurement-first (constitution v1.1.0): `bars.toml` is empty until the first
   recorded three-way session sets at most one bar per cell, each below its cited
   session floor with a policy-log entry here. Every retired cell's final value
@@ -558,7 +558,7 @@ Stated so the numbers stay honest as the matrix fills:
 - **Cold start** lives on the instruments track, not the matrix: a one-row
   file → duckdb pipeline that spawns both connector bins (two
   spawn+handshakes inside the measured wall since the D1 swap, 2026-08-11),
-  ≤ 40 ms absolute (`benches/check-cold-start.sh`,
+  ≤ 40 ms absolute (`benches/harness/check-cold-start.sh`,
   run by `TARGET=cold make bench` and therefore `make check`).
 
 ## Trends

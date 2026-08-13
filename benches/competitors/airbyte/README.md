@@ -9,7 +9,8 @@ self-timed container the harness runs directly — Airbyte is a long-lived
 
 Everything here rides facts pinned by live feasibility probes before
 any harness code was written: abctl runs on rootless podman; pods reach
-the host's fixtures at the gateway address `169.254.1.2`; the job API's
+the host's fixtures at the pasta host-mapping address `169.254.1.2`
+(distinct from the gateway IP, which does NOT reach the host); the job API's
 field meanings, the two setup deltas, and the driver gotchas were
 measured against a running cluster; and the per-run reset was verified
 to leave the destination truly empty. The sections below carry those

@@ -2,8 +2,8 @@
 //! domain socket the handshake line advertises, and the [`proto::ErrorFrame`]
 //! encoding every RPC error path converges on.
 //!
-//! NOT HERE: gRPC client flow-control window sizing. The research spike
-//! (`specs/038-connector-protocol/research.md` #2) measured that h2's
+//! NOT HERE: gRPC client flow-control window sizing. The protocol's
+//! design-time research measured that h2's
 //! flow-control window bounds a `Read` stream's in-flight bytes
 //! correctly (D6: rides h2 for v1, no explicit credit message) — but
 //! also that tonic's CLIENT `Endpoint` defaults to a ~2 MiB window

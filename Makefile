@@ -403,7 +403,7 @@ docs:
 # Measured line coverage; the recorded floor is 80%, enforced at feature
 # close-out rather than per-push (no CI gate). The run is WORKSPACE-WIDE —
 # `cargo llvm-cov nextest` takes no package filter here — so the floor is read
-# against the whole tree. Numbers + exclusions live in benches/RESULTS.md.
+# against the whole tree. Numbers + exclusions live in benches/GOVERNANCE.md.
 coverage:
 	# Recorded pre-044 figures were measured over a tree that still
 	# carried the connector crates — read them against their own

@@ -8,7 +8,8 @@ keeps `.venv` optional (the harness runs `<module>/.venv/bin/python driver.py`
 only if a venv exists, else system python3).
 
 Everything the spike pinned lives here so the two entrypoints stay thin:
-  - the runtime facts from specs/018-bench-refinement/spike/{01,02,03,05}-*.md,
+  - the runtime facts the pre-harness feasibility probes measured live
+    (this module's README.md carries them),
   - the two setup deltas (ingress scaled to 0; node pids-limit raised),
   - the port-forward supervision + short-call discipline the spike demanded.
 """
