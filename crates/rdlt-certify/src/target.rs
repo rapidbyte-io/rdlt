@@ -310,7 +310,9 @@ fn unserved_role(certified: Role) -> Role {
 
 /// What the P13 probe observed of the unserved-role spawn.
 enum RoleRefusal {
-    /// Exit code 2 with zero stdout bytes — the documented refusal.
+    /// Exit code 2 with zero stdout bytes, AND the served role's
+    /// control spawn handshaking from the same bare argv — the
+    /// documented refusal, attributed to the role.
     Refused,
     /// The spawn answered with a handshake line: the connector SERVES
     /// that role too, so there is no unserved role to judge.
@@ -327,14 +329,16 @@ enum RoleRefusal {
 /// handshake line instead means the connector serves both roles, and
 /// the clause is skipped with the reason naming them.
 pub(crate) async fn report_role_refusal(report: &mut Report, target: &Target, certified: Role) {
-    match tokio::time::timeout(
-        CLAUSE_TIMEOUT,
-        probe_role_refusal(target, unserved_role(certified)),
-    )
-    .await
-    {
-        Ok(Ok(RoleRefusal::Refused)) => report.pass("P13"),
-        Ok(Ok(RoleRefusal::Serves)) => report.skip(
+    let path = match resolve_binary(&target.requirement) {
+        Ok(path) => path,
+        Err(why) => {
+            report.fail("P13", why);
+            return;
+        }
+    };
+    match probe_role_refusal(&path, certified, CLAUSE_TIMEOUT).await {
+        Ok(RoleRefusal::Refused) => report.pass("P13"),
+        Ok(RoleRefusal::Serves) => report.skip(
             "P13",
             match certified {
                 Role::Source => SOURCE_DUAL_ROLE_SKIP,
@@ -342,30 +346,49 @@ pub(crate) async fn report_role_refusal(report: &mut Report, target: &Target, ce
             }
             .to_string(),
         ),
-        Ok(Ok(RoleRefusal::Violation(why))) | Ok(Err(why)) => report.fail("P13", why),
-        Err(_elapsed) => report.fail("P13", timed_out()),
+        Ok(RoleRefusal::Violation(why)) | Err(why) => report.fail("P13", why),
     }
 }
 
-/// The P13 probe proper: one spawn of the unserved role, the child
-/// riding the standardized [`wire::ChildSlot`] with the unconditional
-/// [`wire::reap_parked`] on the way out (the P1 probe's round-9
-/// discipline) — a dual-role connector's serving child is dead AND
-/// reaped, its advertised socket unlinked, on every exit.
-async fn probe_role_refusal(target: &Target, unserved: Role) -> Result<RoleRefusal, String> {
-    let path = resolve_binary(&target.requirement)?;
+/// The P13 probe proper: the unserved-role spawn (and, on its silent
+/// exit 2, the served-role control) under `budget`, the children
+/// riding the standardized [`wire::ChildSlot`]. The timeout wraps the
+/// probe I/O ALONE and the [`wire::reap_parked`] sits OUTSIDE it, so
+/// the reap runs on EVERY exit path — timeout included, where a reap
+/// inside the timed future would be cancelled with it, leaving a
+/// dual-role connector's serving child merely `kill_on_drop`-signalled
+/// (dying, not dead — still holding any single-writer store lock the
+/// certifier's next spawn races for) and its advertised socket
+/// linked. On return the children are dead AND reaped and any parked
+/// socket unlinked.
+async fn probe_role_refusal(
+    path: &Path,
+    certified: Role,
+    budget: Duration,
+) -> Result<RoleRefusal, String> {
     let slot = wire::ChildSlot::default();
-    let verdict = unserved_role_discipline(&path, unserved, &slot).await;
+    let verdict = match tokio::time::timeout(
+        budget,
+        unserved_role_discipline(path, certified, &slot),
+    )
+    .await
+    {
+        Ok(verdict) => verdict,
+        Err(_elapsed) => Err(timed_out()),
+    };
     wire::reap_parked(&slot).await;
     verdict
 }
 
-/// The P13 judgments proper, over one direct spawn.
+/// The P13 judgments proper, over one direct spawn of the unserved
+/// role (plus [`served_role_control`] where the refusal shape needs
+/// attribution).
 async fn unserved_role_discipline(
     path: &Path,
-    unserved: Role,
+    certified: Role,
     slot: &wire::ChildSlot,
 ) -> Result<RoleRefusal, String> {
+    let unserved = unserved_role(certified);
     let mut child = tokio::process::Command::new(path)
         .arg(role_arg(unserved))
         // The probes' shared stdio discipline: stdout is the subject,
@@ -397,16 +420,23 @@ async fn unserved_role_discipline(
 
     if first == 0 {
         let status = wait_parked(slot).await?;
-        return Ok(match status.code() {
-            Some(2) => RoleRefusal::Refused,
-            _ => RoleRefusal::Violation(role_refusal_violation(unserved, 0, &status)),
-        });
+        return match status.code() {
+            Some(2) => served_role_control(path, certified, slot).await,
+            _ => Ok(RoleRefusal::Violation(role_refusal_violation(
+                unserved, 0, &status,
+            ))),
+        };
     }
 
-    if Line::parse(line.trim_end_matches(['\n', '\r'])).is_ok() {
+    if let Ok(parsed) = Line::parse(line.trim_end_matches(['\n', '\r'])) {
         // The handshake line is written only for a role the binary
         // serves (docs/connector-authoring.md), so this spawn IS a
-        // served role — the caller's reap kills the serving child.
+        // served role — the advertised socket joins the parked state
+        // so the caller's reap kills the serving child AND unlinks
+        // the socket its line advertised.
+        slot.lock()
+            .expect("child slot lock")
+            .park_socket(parsed.socket_path);
         return Ok(RoleRefusal::Serves);
     }
 
@@ -424,6 +454,66 @@ async fn unserved_role_discipline(
         first + rest.len(),
         &status,
     )))
+}
+
+/// The evidence rule behind a P13 pass (the probe's control): exit 2
+/// with zero stdout is ALSO what a general usage error looks like —
+/// the sdk's own arg gate answers a missing required argument through
+/// clap with exactly that shape, indistinguishable on this probe's
+/// observed channels from the role refusal — so a binary requiring
+/// more argv than `--role=<x>` would mint `PASS P13` for a role it
+/// serves. Before the refusal is trusted, the SERVED role must answer
+/// a handshake line from the same bare argv. A binary whose served
+/// role cannot is FAILED, not excused: the flagless schema probe the
+/// clause exists for spawns exactly this bare shape, so the ambiguity
+/// is itself the defect. The control's child (a live server on
+/// success) parks in `slot` — the caller's reap kills it and unlinks
+/// its parked socket.
+async fn served_role_control(
+    path: &Path,
+    certified: Role,
+    slot: &wire::ChildSlot,
+) -> Result<RoleRefusal, String> {
+    // spawn_and_read_line's own error paths reap the slot before
+    // returning; its success parks the served child for the caller.
+    let line = match wire::spawn_and_read_line(path, certified, slot).await {
+        Ok((_reader, line)) => line,
+        Err(why) => {
+            return Ok(RoleRefusal::Violation(ambiguous_refusal_violation(
+                certified, &why,
+            )));
+        }
+    };
+    let trimmed = line.trim_end_matches(['\n', '\r']);
+    match Line::parse(trimmed) {
+        Ok(parsed) => {
+            slot.lock()
+                .expect("child slot lock")
+                .park_socket(parsed.socket_path);
+            Ok(RoleRefusal::Refused)
+        }
+        Err(_) if trimmed.is_empty() => Ok(RoleRefusal::Violation(ambiguous_refusal_violation(
+            certified,
+            "it wrote no stdout either",
+        ))),
+        Err(_) => Ok(RoleRefusal::Violation(ambiguous_refusal_violation(
+            certified,
+            "its first stdout line is not a handshake line",
+        ))),
+    }
+}
+
+/// The one spelling for an exit 2 the control could not attribute to
+/// the role.
+fn ambiguous_refusal_violation(certified: Role, control_outcome: &str) -> String {
+    format!(
+        "the unserved {unserved} exited with code 2 and no stdout, but the served {served} \
+         spawned from the same bare argv did not answer with a handshake line \
+         ({control_outcome}) — exit 2 cannot be attributed to a role refusal when the binary \
+         refuses the bare `--role=` argv for both roles",
+        unserved = role_arg(unserved_role(certified)),
+        served = role_arg(certified),
+    )
 }
 
 /// Claim the parked child and await its exit status.
@@ -688,10 +778,11 @@ mod tests {
         );
     }
 
-    /// Write an executable one-arm script fake for the P13 probes:
-    /// `body` is the whole script after the `#!/bin/sh` shebang — the
-    /// probe spawns only the unserved role, so the fake scripts what
-    /// THAT spawn does and nothing else.
+    /// Write an executable script fake for the P13 probes: `body` is
+    /// the whole script after the `#!/bin/sh` shebang. The probe
+    /// spawns the unserved role and — on its silent exit 2 — the
+    /// served role as the control, so a fake standing in for a
+    /// conforming single-role binary must script BOTH arms.
     fn write_role_script(dir: &Path, name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
@@ -723,15 +814,83 @@ mod tests {
     }
 
     /// The positive arm: a single-role connector refusing the unserved
-    /// role the documented way — exit code 2, zero stdout bytes —
-    /// passes P13.
+    /// role the documented way — exit code 2, zero stdout bytes, while
+    /// the served role handshakes from the same bare argv (the
+    /// control that attributes the exit to the role) — passes P13.
     #[tokio::test]
     async fn a_silent_exit_2_on_the_unserved_role_passes_p13() {
-        let report = p13_report_for("exit 2", Role::Source).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = write_role_script(
+            dir.path(),
+            "single-role",
+            &format!(
+                "case \"$1\" in\n\
+                 --role=source) echo 'rdlt-connector|1|0|0|{socket}'; exec sleep 30;;\n\
+                 *) exit 2;;\n\
+                 esac",
+                socket = dir.path().join("served.sock").display()
+            ),
+        );
+        let target = Target::resolve_path(script, serde_json::json!({}));
+        let mut report = Report::default();
+        report_role_refusal(&mut report, &target, Role::Source).await;
         assert!(
             matches!(p13_verdict(&report), Verdict::Pass),
             "P13 must Pass:\n{}",
             report.render_text()
+        );
+    }
+
+    /// The final-review red pin behind the control: an exit 2 that is
+    /// NOT the role's — the script exits 2 for EVERY argv, the shape
+    /// of a binary refusing a missing required argument (the sdk's
+    /// clap gate answers exactly so) — must FAIL P13 rather than mint
+    /// the pass: the served role cannot handshake from the same bare
+    /// argv, so the exit cannot be attributed to a role refusal.
+    #[tokio::test]
+    async fn an_unconditional_exit_2_fails_p13_as_unattributable() {
+        let report = p13_report_for("exit 2", Role::Source).await;
+        match p13_verdict(&report) {
+            Verdict::Fail(why) => assert_eq!(
+                why,
+                "the unserved --role=destination exited with code 2 and no stdout, but the \
+                 served --role=source spawned from the same bare argv did not answer with a \
+                 handshake line (it wrote no stdout either) — exit 2 cannot be attributed to \
+                 a role refusal when the binary refuses the bare `--role=` argv for both roles"
+            ),
+            other => panic!("P13 must Fail, got {other:?}:\n{}", report.render_text()),
+        }
+    }
+
+    /// Final-review fix: the reap survives the clause timeout — the
+    /// timeout wraps the probe I/O alone, so an unserved-role spawn
+    /// stalling past the budget still leaves its child dead AND reaped
+    /// when the probe returns. (The reap used to sit INSIDE the timed
+    /// future, so a timeout cancelled it, leaving the child merely
+    /// kill_on_drop-signalled — dying, not dead, while the very next
+    /// wire spawn raced it for any single-writer store it held.)
+    #[tokio::test]
+    async fn a_timed_out_probe_still_reaps_its_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("pid");
+        let script = write_role_script(
+            dir.path(),
+            "staller",
+            &format!("echo $$ > {}\nexec sleep 30", pidfile.display()),
+        );
+        let Err(error) =
+            probe_role_refusal(&script, Role::Source, Duration::from_millis(300)).await
+        else {
+            panic!("a stalled probe must time out, not conclude");
+        };
+        assert_eq!(error, timed_out());
+        let pid = std::fs::read_to_string(&pidfile)
+            .expect("the script wrote its pid before stalling")
+            .trim()
+            .to_owned();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the probe child (pid {pid}) must be dead AND reaped when the probe returns"
         );
     }
 

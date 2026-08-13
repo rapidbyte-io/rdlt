@@ -216,8 +216,12 @@ pub const CLAUSES: &[Clause] = &[
         definition: "Spawning the binary with a --role it does not serve must exit with code \
                      2 before writing any stdout byte — the handshake line is written only \
                      for a served role, and the role-less schema probe relies on exactly \
-                     this refusal signal. A connector serving both roles has no unserved \
-                     role, so the clause is skipped with the reason naming both.",
+                     this refusal signal. The evidence is controlled: exit 2 alone also \
+                     matches a general usage error, so the served role must answer a \
+                     handshake line from the same bare argv for the refusal to count — a \
+                     binary refusing the bare argv for both roles fails the clause. A \
+                     connector serving both roles has no unserved role, so the clause is \
+                     skipped with the reason naming both.",
     },
     Clause {
         id: "K-S1",
