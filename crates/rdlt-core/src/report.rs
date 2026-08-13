@@ -89,6 +89,12 @@ pub struct RunReport {
     /// Engine-driven retries of transient connector failures.
     pub retries: u64,
     /// Final committed cursor per stream.
+    ///
+    /// Cursor VALUES are source-defined and may embed sensitive
+    /// material (an offset is harmless; a resume token or signed
+    /// continuation URL is not) — so a serialized report, like the
+    /// CLI's `--report` file and stdout, is to be handled as
+    /// sensitively as the state store itself.
     pub cursors: BTreeMap<StreamName, Cursor>,
     /// How this run started relative to previous state.
     pub resumed_from: ResumedFrom,

@@ -119,6 +119,16 @@ pub struct HandshakeOutcome {
 /// checked BEFORE any payload is decoded, so a wrong connector is
 /// reported as the mismatch it is rather than as whatever decode
 /// failure its foreign payloads happen to produce.
+///
+/// The identity check is a SANITY CHECK, not authentication: it
+/// compares what the binary REPORTS against what was asked for, which
+/// catches an accidentally-wrong binary (a rename, a stale PATH entry)
+/// and never a malicious one — a hostile binary simply reports the
+/// expected id. Operators who cannot trust PATH discovery pin the
+/// binary itself: the pipeline document's `path:` override, or a
+/// provider built `with_search_path` restricted to a directory they
+/// control. A digest/signature pin is the anticipated future growth of
+/// [`ConnectorRequirement`] for stronger needs.
 pub async fn handshake(
     channel: &Channel,
     role: Role,

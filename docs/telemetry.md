@@ -32,6 +32,13 @@ way.
 | `discarded` | table, rows, values, reason | Data dropped under a Discard* policy — counted, never silent. |
 | `heartbeat` | elapsed_ms | A liveness tick (1 s) once the streams are wired (discovery, session open and WAL recovery precede the ticker). The first beat fires synchronously at wiring itself, before the 1 s ticker is even spawned, so every identified run carries at least one: events may legitimately go quiet, heartbeats may not. |
 
+Sensitivity: `committed` carries each commit's CURSORS, and the
+`RunReport` carries the final ones. Cursor values are source-defined —
+an offset is harmless, a resume token or signed continuation URL is
+not — so anything that persists the feed or the report (the CLI's
+`--events` NDJSON file, `--report`/stdout JSON, a CI artifact store)
+holds state-store material and deserves the same handling.
+
 Causal-order guarantees: `run_started` first (within an attempt — a
 `retried` announcing the next attempt precedes ITS `run_started`, and
 an attempt that fails before identification emits only that

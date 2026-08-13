@@ -42,12 +42,21 @@ pub enum Command {
         spec: PathBuf,
 
         /// Write the JSON run report here instead of stdout.
+        ///
+        /// The report includes each stream's final cursor; cursor
+        /// values are source-defined and may embed sensitive resume
+        /// material, so treat the file like the state store itself.
         #[arg(long, value_name = "path")]
         report: Option<PathBuf>,
 
         /// Also write every pipeline event as NDJSON — to a file, or
         /// to stdout with `-` (which then requires `--report`, so the
         /// two machine outputs never interleave).
+        ///
+        /// `committed` events carry each commit's cursors; cursor
+        /// values are source-defined and may embed sensitive resume
+        /// material, so treat the event log like the state store
+        /// itself.
         #[arg(long, value_name = "path|-")]
         events: Option<PathBuf>,
     },

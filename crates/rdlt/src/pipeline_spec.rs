@@ -170,19 +170,45 @@ impl std::fmt::Debug for ConfigSource {
     }
 }
 
+/// The most a config or spec document may weigh before the read is
+/// refused: hand-written YAML/JSON measures in kilobytes, so a
+/// multi-megabyte "document" is a wrong path (a data file, a dump) —
+/// better refused by size, typed, than slurped whole into memory and
+/// fed to a recursive parser. Shared with the CLI's spec read, so both
+/// document reads answer to one number.
+pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Read a document file with the [`MAX_DOCUMENT_BYTES`] cap enforced
+/// BEFORE the read — the refusal names the size and the cap.
+pub(crate) fn read_document(path: &Path) -> Result<String, String> {
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("reading {}: {e}", path.display()))?
+        .len();
+    if len > MAX_DOCUMENT_BYTES {
+        return Err(format!(
+            "reading {}: the file is {len} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
+             document cap — a pipeline or connector document is hand-written \
+             configuration, so a file this size is almost certainly not the document \
+             the path meant to name",
+            path.display()
+        ));
+    }
+    std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))
+}
+
 impl ConfigSource {
     /// Resolve to the connector's opaque config document.
     ///
     /// The path form reads its file — relative paths against `base` —
     /// and parses it as YAML, or as JSON when the extension says so;
-    /// absence and a malformed document each refuse with a typed
+    /// absence, a malformed document, and a file over
+    /// [`MAX_DOCUMENT_BYTES`] each refuse with a typed
     /// [`SpecError::Resolve`] naming the path. The inline form clones.
     pub fn resolve(&self, base: &Path) -> Result<serde_json::Value, SpecError> {
         match self {
             ConfigSource::Path(spelled) => {
                 let path = base.join(spelled);
-                let text = std::fs::read_to_string(&path)
-                    .map_err(|e| SpecError::resolve(format!("reading {}: {e}", path.display())))?;
+                let text = read_document(&path).map_err(SpecError::resolve)?;
                 if is_json(&path) {
                     serde_json::from_str(&text)
                         .map_err(|e| SpecError::resolve(format!("parsing {}: {e}", path.display())))
@@ -603,6 +629,50 @@ mod budget_tests {
             engine_budget_bytes(&spec),
             rdlt_engine::DEFAULT_BYTE_BUDGET as u64,
             "a 1 MiB dest-write threshold must leave the wire budget at the engine default"
+        );
+    }
+}
+
+#[cfg(test)]
+mod document_cap_tests {
+    use super::*;
+
+    /// A config path naming a file over the document cap refuses typed
+    /// BEFORE the read (045 external findings, KIMI 5): the length
+    /// comes from metadata, so nothing multi-megabyte is ever slurped
+    /// into memory or fed to the recursive YAML parser. The fixture is
+    /// sparse — `set_len` claims the size without writing it.
+    #[test]
+    fn an_oversized_config_file_refuses_before_the_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("big.yaml");
+        std::fs::File::create(&path)
+            .expect("fixture file")
+            .set_len(MAX_DOCUMENT_BYTES + 1)
+            .expect("sparse size");
+
+        let refused = ConfigSource::Path("big.yaml".into())
+            .resolve(dir.path())
+            .expect_err("an oversized document must refuse");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "reading {}: the file is {} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
+                 document cap — a pipeline or connector document is hand-written \
+                 configuration, so a file this size is almost certainly not the document \
+                 the path meant to name",
+                path.display(),
+                MAX_DOCUMENT_BYTES + 1
+            )
+        );
+
+        // At the cap or under it, the ordinary read proceeds.
+        let small = dir.path().join("small.yaml");
+        std::fs::write(&small, "key: value\n").expect("write");
+        assert!(
+            ConfigSource::Path("small.yaml".into())
+                .resolve(dir.path())
+                .is_ok()
         );
     }
 }
