@@ -401,14 +401,18 @@ impl From<crate::RdltError> for SpecError {
 }
 
 /// The engine byte budget a spawned connector's dial derives its flow-control
-/// windows from: the document's own batch-policy byte threshold when it names
-/// one, else the engine's channel default — the SAME constant the engine's
-/// byte channel uses, so the wire can never hold more in flight than the
-/// engine itself would buffer.
-fn engine_budget_bytes(spec: &Spec) -> u64 {
-    spec.batch_policy
-        .and_then(|policy| policy.every_bytes)
-        .unwrap_or(rdlt_engine::DEFAULT_BYTE_BUDGET as u64)
+/// windows from: the engine channel's OWN constant — the same number the
+/// engine's byte channel is actually built with, so the wire can never hold
+/// more in flight than the engine would buffer. Deliberately NOT the
+/// document's `batch_policy.every_bytes` (the pre-045 reading): that knob
+/// paces DESTINATION writes, and the facade never resizes the engine channel
+/// from it, so deriving the wire window from it silently throttled the
+/// connector wire to a write-cadence number while the engine kept buffering
+/// at its default. Takes the spec so the pin below can state the
+/// independence; a future spec-level budget knob would thread here AND
+/// through the builder's `byte_budget`, keeping the two sides one number.
+fn engine_budget_bytes(_spec: &Spec) -> u64 {
+    rdlt_engine::DEFAULT_BYTE_BUDGET as u64
 }
 
 /// The workdir a document runs under: the spelled path — relative
@@ -577,5 +581,28 @@ mod workdir_tests {
     fn an_empty_base_keeps_the_default_cwd_relative() {
         let spec = spec_from(&format!("pipeline: p\n{BODY}"));
         assert_eq!(resolved_workdir(&spec, Path::new("")), Path::new(".rdlt/p"));
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    /// The dial budget is the ENGINE CHANNEL's, never the batch policy's:
+    /// `every_bytes` is destination-write cadence, and a document tuning
+    /// its dest-flush size must not silently shrink the connector wire's
+    /// h2 windows.
+    #[test]
+    fn the_dial_budget_ignores_batch_policy() {
+        let spec: Spec = serde_yaml::from_str(
+            "pipeline: p\nbatch_policy: {every_bytes: 1048576}\n\
+             source:\n  postgres: s.yaml\ndestination:\n  duckdb: {path: out.db}\n",
+        )
+        .expect("the fixture document parses");
+        assert_eq!(
+            engine_budget_bytes(&spec),
+            rdlt_engine::DEFAULT_BYTE_BUDGET as u64,
+            "a 1 MiB dest-write threshold must leave the wire budget at the engine default"
+        );
     }
 }
