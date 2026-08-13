@@ -1,0 +1,10 @@
+# Flaky-test observations. One line per test that FAILED then PASSED on
+# retry under the `flake` nextest profile. Appended by
+# benches/record-flakes.sh; never edited by hand, never truncated.
+#
+# stamp	commit	retries	test
+2026-07-27T07:08:46Z	0a095f3	1	rdlt-connector-duckdb::differential::differential_upsert_with_hard_delete_and_dedup
+2026-07-27T07:08:46Z	0a095f3	2	rdlt-connector-file::s3_live::grown_object_rewrite_is_typed_by_tail_hash
+2026-07-27T07:08:46Z	0a095f3	1	rdlt-connector-file::s3_live::quickstart_shape_csv_gz_with_hints_and_delta
+2026-07-27T07:08:46Z	0a095f3	1	rdlt-connector-file::s3_live::range_read_returns_the_tail
+2026-07-27T07:08:46Z	0a095f3	1	rdlt-connector-postgres::cdc::ack_never_exceeds_the_least_committed_cursor

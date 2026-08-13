@@ -4,6 +4,11 @@
 .env*
 .DS_Store
 *.log
+# The flake log is COMMITTED EVIDENCE (record-flakes.sh: "never edited by
+# hand, never truncated") — the blanket *.log above silently defeated that
+# contract for the whole pre-split regime; the observations it swallowed are
+# preserved in benches/records/archive-2026-08-13/flakes.log.
+!benches/flakes.log
 .idea/
 .vscode/
 # rdlt runtime work directories (WAL etc.)

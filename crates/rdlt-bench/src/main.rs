@@ -36,7 +36,7 @@ enum Cmd {
         #[command(flatten)]
         selection: SelectionArgs,
     },
-    /// Evaluate benches/bars.toml against the latest artifacts (exit 1 on violation)
+    /// Evaluate benches/bars.toml against the recorded artifacts (exit 1 on violation)
     Gate,
     /// Regenerate RESULTS.md tables from artifacts (narrative preserved)
     Report,
@@ -309,7 +309,7 @@ fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
             "bars.toml is missing or empty — nothing to gate".into(),
         ));
     }
-    let (verdicts, all_pass) = gate::run_gate(&bars, &paths.results)?;
+    let (verdicts, all_pass) = gate::run_gate(&bars, &paths.recorded_results)?;
     for verdict in &verdicts {
         gate::print_verdict(verdict);
     }

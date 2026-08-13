@@ -12,7 +12,17 @@ pub struct Paths {
     pub cells_dir: PathBuf,
     pub fixtures_toml: PathBuf,
     pub bars_toml: PathBuf,
+    /// The live ledger: where `run` writes fresh artifacts (and `report`
+    /// reads them). Empty since the 045 history reset until a recorded
+    /// session re-mints baselines.
     pub results: PathBuf,
+    /// The RECORDED artifacts the bars bind against — what `gate` reads.
+    /// Since the 045 history reset this is the dated archive of the
+    /// pre-split recordings; `run` writes to `results`, never here, so a
+    /// live run cannot overwrite an archived recording. The next recorded
+    /// session (046) re-points this at `results` when it mints post-split
+    /// baselines under 004 governance.
+    pub recorded_results: PathBuf,
     pub cli: PathBuf,
     /// Where the connector BINARIES land (`<target>/release`) — the
     /// `{{bins}}` substitution the cells' pipeline templates
@@ -55,6 +65,7 @@ impl Paths {
             fixtures_toml: benches.join("harness/fixtures/fixtures.toml"),
             bars_toml: benches.join("bars.toml"),
             results: benches.join("results"),
+            recorded_results: benches.join("records/archive-2026-08-13"),
             cli: target.join("release/rdlt"),
             bins: target.join("release"),
             repo: dir,

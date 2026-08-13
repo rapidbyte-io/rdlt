@@ -853,6 +853,7 @@ mod tests {
             fixtures_toml: root.path().join("unused-fixtures.toml"),
             bars_toml: root.path().join("unused-bars.toml"),
             results: root.path().join("unused-results"),
+            recorded_results: root.path().join("unused-recorded-results"),
             cli,
             bins: bins.clone(),
         };
