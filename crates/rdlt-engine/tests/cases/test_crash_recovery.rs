@@ -304,6 +304,55 @@ async fn cancellation_surfaces_the_cancelled_error() {
     assert!(matches!(err, RdltError::Cancelled), "got: {err:?}");
 }
 
+/// A source PARKED between frames observes no channel closure, so
+/// cancellation must not wait on it (045 external findings, GROK 3):
+/// the read task is aborted after a bounded grace, and the advertised
+/// `cancellation_token().cancel()` returns promptly instead of hanging
+/// an embedder forever on a wire source idle between frames.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_parked_source_returns_promptly() {
+    use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+
+    /// `read` never yields, never pushes, and never watches its
+    /// channel — the wire-source-idle-between-frames shape reduced to
+    /// its essence.
+    struct Parked;
+
+    #[async_trait::async_trait]
+    impl Source for Parked {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("parked", "0")
+        }
+        async fn check(&self) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![StreamSpec::new("s")])
+        }
+        async fn read(&self, _request: ReadRequest) -> Result<(), SourceError> {
+            std::future::pending().await
+        }
+    }
+
+    let engine = Engine::new(
+        EngineConfig::new("parked"),
+        Parked,
+        MemoryDestination::new(),
+    );
+    let token = engine.cancellation_token();
+    let run = tokio::spawn(engine.run());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    token.cancel();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .expect("a cancelled run must not hang on a parked reader")
+        .expect("join");
+    assert!(
+        matches!(outcome, Err(RdltError::Cancelled)),
+        "got {outcome:?}"
+    );
+}
+
 /// Review round 2's regression pin for the RunStarted-first guarantee
 /// on the WAL-REPLAY path — the one the fresh-run pins cannot see.
 ///

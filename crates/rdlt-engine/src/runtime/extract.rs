@@ -22,6 +22,13 @@ use crate::{
 
 use super::classify::classify_source_error;
 
+/// How long an error exit waits for the reader to notice its closed
+/// channel before aborting it. Long enough for a well-behaved source
+/// to observe the closure at its next push and return on its own;
+/// short enough that the advertised `cancellation_token().cancel()`
+/// stays prompt for an embedder whose source is parked between frames.
+const READER_ABORT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Single-owner shred/passthrough state for one stream. `run_blocking`-style
 /// methods consume `self`, move it onto the blocking pool, and hand it back —
 /// so the CPU-bound work stays lock-free and single-owner WITHOUT the take/expect
@@ -145,7 +152,7 @@ pub(super) async fn stream_task(
     let read_source = Arc::clone(&source);
     let mut reader = tokio::spawn(async move { read_source.read(request).await });
 
-    let push_result: Result<(), RdltError> = loop {
+    let push_result: Result<LoopExit, RdltError> = loop {
         let push = tokio::select! {
             push = input.recv() => push,
             _ = cancel.cancelled() => {
@@ -153,7 +160,9 @@ pub(super) async fn stream_task(
                 break Err(RdltError::Cancelled);
             }
         };
-        let Some(push) = push else { break Ok(()) };
+        let Some(push) = push else {
+            break Ok(LoopExit::SourceFinished);
+        };
         let push_bytes = push.bytes;
         match push.payload {
             PushPayload::RawJson(bytes) => {
@@ -258,7 +267,7 @@ pub(super) async fn stream_task(
                     .await
                     .is_err()
                 {
-                    break Ok(());
+                    break Ok(LoopExit::LoaderGone);
                 }
             }
         }
@@ -271,19 +280,56 @@ pub(super) async fn stream_task(
     // already closed early for faster teardown.)
     input.close();
     // Surface source-side failures even when the push loop ended first.
-    let read_result = (&mut reader).await;
+    // Only the SourceFinished exit joins unconditionally: the source
+    // closed its own channel, so its result is imminent and is the
+    // run's verdict. Every OTHER exit (cancellation, a contract
+    // violation, the loader gone mid-run) bounds the join, because
+    // closing the channel only wakes a source parked ON A PUSH — a
+    // source idle between frames (a wire adapter waiting on its
+    // connector process) observes cancellation at its next push, which
+    // may never come, and one parked reader would hang the whole
+    // teardown. A bounded grace lets a well-behaved source notice the
+    // closure and finish on its own; then the reader is aborted, and
+    // the cancelled JoinError is this exit's EXPECTED outcome, never a
+    // defect to surface.
+    let read_result = match &push_result {
+        Ok(LoopExit::SourceFinished) => (&mut reader).await,
+        _ => match tokio::time::timeout(READER_ABORT_GRACE, &mut reader).await {
+            Ok(join) => join,
+            Err(_elapsed) => {
+                reader.abort();
+                (&mut reader).await
+            }
+        },
+    };
     match (push_result, read_result) {
         (Err(e), _) => Err(e),
-        (Ok(()), Ok(Ok(()))) => {
+        (Ok(_), Ok(Ok(()))) => {
             let _ = events.send(rdlt_core::PipelineEvent::StreamFinished {
                 stream: stream_name,
             });
             Ok(())
         }
-        (Ok(()), Ok(Err(e))) => Err(classify_source_error(stream_name, &e)),
-        (Ok(()), Err(join_err)) => Err(RdltError::source(
+        (Ok(_), Ok(Err(e))) => Err(classify_source_error(stream_name, &e)),
+        // The abort above is the only cancellation this join can see:
+        // the loader-gone exit resolved the run's outcome elsewhere
+        // (the loader's own error), so the reaped reader is cleanup,
+        // not a stream failure.
+        (Ok(_), Err(join_err)) if join_err.is_cancelled() => Ok(()),
+        (Ok(_), Err(join_err)) => Err(RdltError::source(
             stream_name,
             format!("source task: {join_err}"),
         )),
     }
+}
+
+/// How the push loop ended without an error — what decides whether the
+/// reader's join may be waited on unconditionally.
+enum LoopExit {
+    /// The source closed the records channel itself: its `read` is
+    /// returning now.
+    SourceFinished,
+    /// The loader hung up mid-run: the source may be parked between
+    /// frames and never observe it.
+    LoaderGone,
 }
