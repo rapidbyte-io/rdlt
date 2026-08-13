@@ -79,6 +79,28 @@ fn protocol_fatal(message: String) -> SourceError {
     SourceError::fatal(ClientError::Protocol(message))
 }
 
+/// Refuse a DECLARED stream name carrying control characters (C0
+/// including newline/tab/DEL, and C1) — the wire edge's half of the
+/// terminal-injection defense: a stream name travels into events,
+/// tracing spans, and the CLI's lines, and control bytes in it are how
+/// a hostile connector forges log lines or drives escape sequences
+/// through an operator's terminal. Refused HERE, where third-party
+/// bytes become host vocabulary, deliberately not in
+/// `StreamName::new` — the core type stays free-form for hosts by its
+/// own documented contract, and in-process embedders name their own
+/// streams. The refusal renders the name in its `{:?}` escaped form,
+/// so the message itself cannot carry the very bytes it refuses.
+fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceError> {
+    if spec.name.as_str().chars().any(char::is_control) {
+        return Err(SourceError::fatal(format!(
+            "the connector declared a stream named {:?} — control characters in a \
+             stream name are refused at the wire boundary",
+            spec.name.as_str()
+        )));
+    }
+    Ok(())
+}
+
 /// One `arrow_ipc` read frame's exactly-one record batch — the CLIENT
 /// seat of the proto's one-batch rule (the field's own doc): `Read` is
 /// server-streamed, so the refusal seat sits here — a conforming client
@@ -146,11 +168,13 @@ impl rdlt_connector::Source for Source {
                 .stream_spec_json
                 .iter()
                 .map(|bytes| {
-                    serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
+                    let spec = serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
                         protocol_fatal(format!(
                             "undecodable stream_spec_json in the streams reply: {error}"
                         ))
-                    })
+                    })?;
+                    refuse_control_characters_in_name(&spec)?;
+                    Ok(spec)
                 })
                 .collect(),
             Some(streams_reply::Outcome::Error(frame)) => Err(source_error_from_frame(&frame)),
@@ -238,6 +262,57 @@ impl rdlt_connector::Source for Source {
                 // again.
                 return Ok(());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod name_boundary_tests {
+    //! The wire edge's control-character gate on declared stream
+    //! names, pinned directly on the helper the streams decode runs
+    //! every spec through.
+
+    use super::*;
+    use rdlt_connector::StreamSpec;
+
+    /// An OSC-52-shaped name (the clipboard-write escape) refuses
+    /// fatal, and the refusal's own rendering is inert — the escaped
+    /// `{:?}` form, no raw ESC byte.
+    #[test]
+    fn a_control_character_name_refuses_with_an_inert_message() {
+        let spec = StreamSpec::new("\u{1b}]52;c;AAAA\u{7}");
+        let error = refuse_control_characters_in_name(&spec)
+            .expect_err("control characters in a declared name must refuse");
+        assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "the refusal must not itself carry the bytes it refuses: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("refused at the wire boundary"),
+            "the refusal names the gate: {rendered}"
+        );
+    }
+
+    /// A newline is a control character too — log-forging material in
+    /// a name — and refuses like the rest.
+    #[test]
+    fn a_newline_in_a_name_refuses() {
+        let spec = StreamSpec::new("orders\nFORGED LINE");
+        assert!(refuse_control_characters_in_name(&spec).is_err());
+    }
+
+    /// Ordinary names — including non-ASCII text, which is data, not
+    /// control — pass untouched.
+    #[test]
+    fn ordinary_names_pass() {
+        for name in ["orders", "Événements", "orders-v2.daily"] {
+            let spec = StreamSpec::new(name);
+            assert!(
+                refuse_control_characters_in_name(&spec).is_ok(),
+                "`{name}` must pass"
+            );
         }
     }
 }
