@@ -95,16 +95,22 @@ impl Conformance {
 
     /// The explicit escape: the caller ACKNOWLEDGES the skips by
     /// taking them separately — the only way to read failures without
-    /// the promotion.
-    pub fn tolerating_skips(self) -> (Vec<ConformanceFailure>, Vec<ConformanceSkip>) {
-        (self.failures, self.skips)
-    }
-
-    /// The clauses whose checks ran to a verdict (see the field). Read
-    /// this BEFORE consuming the outcome: a certifier folding failures
-    /// and skips must refuse to mint a pass for an asserted clause
-    /// outside this set — the suite never reached it.
-    pub fn concluded(&self) -> &[&'static str] {
-        &self.concluded
+    /// the promotion. The concluded record (see the field) rides along
+    /// as the third element so it CANNOT be left behind: a consumer
+    /// folding failures and skips must refuse to mint a pass for an
+    /// asserted clause outside that set — the suite never reached it.
+    /// (It used to be a separate `&self` accessor that had to be read
+    /// BEFORE this method consumed the outcome — an ordering trap a
+    /// doc comment had to warn about, worked around with a copy at
+    /// every certify call site; a consumer that forgot it would fold
+    /// without the record and certify an aborted suite's silence.)
+    pub fn tolerating_skips(
+        self,
+    ) -> (
+        Vec<ConformanceFailure>,
+        Vec<ConformanceSkip>,
+        Vec<&'static str>,
+    ) {
+        (self.failures, self.skips, self.concluded)
     }
 }

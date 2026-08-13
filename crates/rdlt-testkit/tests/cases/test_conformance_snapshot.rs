@@ -28,7 +28,7 @@ async fn an_honest_snapshot_stream_skips_s2_with_the_reason() {
     let outcome = verify_source(&source).await;
     // The explicit acknowledgment path — this cell's whole subject is
     // the skip's shape.
-    let (failures, raw_skips) = outcome.tolerating_skips();
+    let (failures, raw_skips, _concluded) = outcome.tolerating_skips();
 
     assert!(
         failures.is_empty(),
@@ -56,7 +56,7 @@ async fn a_cursored_stream_with_no_checkpoints_still_fails_s2() {
     let source = checkpointless(rdlt_connector::StreamSpec::new("events").with_cursor_field("a"));
 
     let outcome = verify_source(&source).await;
-    let (raw_failures, skips) = outcome.tolerating_skips();
+    let (raw_failures, skips, _concluded) = outcome.tolerating_skips();
 
     assert!(
         skips.is_empty(),

@@ -413,7 +413,7 @@ impl Report {
     }
 
     /// The S/D-reuse fold: map one conformance-suite run into clause
-    /// entries. `concluded` is the suite's own record of which clauses'
+    /// entries. [`Concluded`] is the suite's own record of which clauses'
     /// checks ran to a verdict; a pass is minted ONLY from its silence
     /// (the 042 docket's absorb hardening — silence alone used to
     /// read as a pass, so a suite dying mid-run certified its
@@ -433,9 +433,10 @@ impl Report {
         &mut self,
         failures: Vec<ConformanceFailure>,
         skips: Vec<ConformanceSkip>,
-        concluded: &[&'static str],
+        concluded: Concluded<'_>,
         asserted: &[&'static str],
     ) {
+        let Concluded(concluded) = concluded;
         for clause in asserted {
             let mut mentioned = false;
             for failure in failures.iter().filter(|f| f.clause == *clause) {
@@ -466,6 +467,14 @@ impl Report {
         }
     }
 }
+
+/// The suite's own concluded record, newtyped for [`Report::absorb`]:
+/// the fold takes two adjacent clause-set slices of the same type, and
+/// a transposed call — `(asserted, concluded)` — compiles cleanly
+/// while inverting the fold's semantics (unreached clauses minting
+/// Pass, fully-concluded ones rendering NOT-REACHED). The wrapper
+/// makes the argument order a type error instead.
+pub(crate) struct Concluded<'a>(pub(crate) &'a [&'static str]);
 
 /// The fold's own evidence line for a clause the suite neither
 /// mentioned nor concluded — suites that notice their own abort carry
@@ -620,7 +629,7 @@ mod tests {
         report.absorb(
             vec![failure("S1", "the resume law broke")],
             vec![],
-            &["S1", "S2", "S4"],
+            Concluded(&["S1", "S2", "S4"]),
             &["S1", "S2", "S4"],
         );
         assert_eq!(
@@ -637,7 +646,12 @@ mod tests {
     #[test]
     fn absorb_of_no_failures_passes_every_asserted_clause() {
         let mut report = Report::default();
-        report.absorb(vec![], vec![], &["S1", "S2", "S4"], &["S1", "S2", "S4"]);
+        report.absorb(
+            vec![],
+            vec![],
+            Concluded(&["S1", "S2", "S4"]),
+            &["S1", "S2", "S4"],
+        );
         assert_eq!(
             report.render_text(),
             "PASS S1 (checkpoint resume law)\n\
@@ -660,7 +674,7 @@ mod tests {
                 failure("D3", "a clause this fold was not asked to assert"),
             ],
             vec![],
-            &["S1", "S2"],
+            Concluded(&["S1", "S2"]),
             &["S1", "S2"],
         );
         assert_eq!(
@@ -683,7 +697,7 @@ mod tests {
         report.absorb(
             vec![],
             vec![skip("S2", "stream `events` declares no cursor_field")],
-            &["S1", "S2", "S4"],
+            Concluded(&["S1", "S2", "S4"]),
             &["S1", "S2", "S4"],
         );
         assert_eq!(
@@ -707,7 +721,7 @@ mod tests {
         report.absorb(
             vec![failure("D6", "open failed: boom")],
             vec![],
-            &[],
+            Concluded(&[]),
             &["D6", "D1", "D5"],
         );
         assert_eq!(
@@ -739,7 +753,7 @@ mod tests {
                 "D4",
                 "not run — the suite aborted at D1 before reaching it",
             )],
-            &["D6"],
+            Concluded(&["D6"]),
             &["D6", "D1", "D4"],
         );
         assert_eq!(

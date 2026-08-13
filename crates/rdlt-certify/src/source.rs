@@ -15,7 +15,7 @@ use rdlt_runtime::{ConnectorProvider, LocalBinaryConnectorProvider, Role};
 use rdlt_testkit::conformance::source::verify_source;
 use rdlt_testkit::conformance::{ConformanceFailure, ConformanceSkip};
 
-use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
+use crate::report::{CLAUSE_TIMEOUT, Concluded, Report, timed_out};
 use crate::target::{
     GENERIC_CLAUSES, SELF_PROBED_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2,
     report_p4, report_role_refusal, resolved_requirement,
@@ -177,11 +177,15 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
             // skips by name; strict promotes each through the
             // testkit's one fold spelling plus the acknowledgment
             // tail.
-            let concluded = outcome.concluded().to_vec();
-            let (mut failures, skips) = outcome.tolerating_skips();
+            let (mut failures, skips, concluded) = outcome.tolerating_skips();
             let (promoted, acknowledged) = fold_acknowledged(skips, accept_skips);
             failures.extend(promoted);
-            report.absorb(failures, acknowledged, &concluded, &SOURCE_CLAUSES)
+            report.absorb(
+                failures,
+                acknowledged,
+                Concluded(&concluded),
+                &SOURCE_CLAUSES,
+            )
         }
         Err(_elapsed) => {
             for clause in SOURCE_CLAUSES {

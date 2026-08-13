@@ -54,7 +54,7 @@ use rdlt_runtime::{
 use rdlt_testkit::conformance::destination::{TableProbe, verify_destination};
 use serde_json::Value;
 
-use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
+use crate::report::{CLAUSE_TIMEOUT, Concluded, Report, timed_out};
 use crate::target::{
     GENERIC_CLAUSES, SELF_PROBED_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2,
     report_p4, report_role_refusal, resolved_requirement,
@@ -279,10 +279,9 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                     // The report's absorb renders skips honestly, so
                     // this caller ACKNOWLEDGES them by name (round-7:
                     // the fields went private).
-                    let concluded = outcome.concluded().to_vec();
-                    let (failures, skips) = outcome.tolerating_skips();
+                    let (failures, skips, concluded) = outcome.tolerating_skips();
                     if merge {
-                        report.absorb(failures, skips, &concluded, &DEST_CLAUSES);
+                        report.absorb(failures, skips, Concluded(&concluded), &DEST_CLAUSES);
                     } else {
                         // DEST_CLAUSES minus D8, derived — the hand
                         // copy is the drift the skip arm already shed.
@@ -290,7 +289,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                             .into_iter()
                             .filter(|clause| *clause != "D8")
                             .collect();
-                        report.absorb(failures, skips, &concluded, &without_d8);
+                        report.absorb(failures, skips, Concluded(&concluded), &without_d8);
                         report.skip("D8", NO_MERGE_SKIP.to_string());
                     }
                 }
