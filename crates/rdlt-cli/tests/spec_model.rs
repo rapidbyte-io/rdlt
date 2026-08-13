@@ -97,7 +97,7 @@ fn pipeline_spec_forms_parse() {
     );
     assert!(
         bare.workdir.is_none(),
-        "workdir defaults downstream to .rdlt"
+        "workdir defaults downstream to .rdlt/<pipeline> beside the document"
     );
     let with_policies = spec(
         "pipeline: p\nbatch_policy: {every_rows: 50000}\n\

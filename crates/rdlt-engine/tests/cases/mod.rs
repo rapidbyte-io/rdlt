@@ -14,3 +14,4 @@ mod test_shred_roundtrip;
 mod test_value_fidelity;
 mod test_wal_format_pin;
 mod test_wal_lifecycle;
+mod test_workdir_isolation;

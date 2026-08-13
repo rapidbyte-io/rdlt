@@ -55,7 +55,13 @@ pub(super) async fn recover_wal(
                 ))
             })
         };
-        match crate::wal::resume::scan_off_runtime(wal_dir, capabilities.ident_rules).await {
+        match crate::wal::resume::scan_off_runtime(
+            wal_dir,
+            capabilities.ident_rules,
+            &config.pipeline,
+        )
+        .await
+        {
             crate::wal::resume::ScanOutcome::Nothing => {}
             // Nothing to replay, but something to clean: a crash before the
             // first checkpoint leaves a manifest and its segments behind, and a
@@ -76,6 +82,24 @@ pub(super) async fn recover_wal(
                 resumed_from =
                     replay_span(destination, config, wal_dir, span, capabilities).await?;
                 cleared(wal_dir)?;
+            }
+            // The ONE arm that must not clear: the workdir is another
+            // pipeline's territory. Replaying its span would commit that
+            // pipeline's rows and cursors under this one; clearing it
+            // would destroy that pipeline's recovery material. Refuse
+            // the run, leaving the directory exactly as found —
+            // configuration-class, because the fix is the operator's
+            // (each pipeline gets its own workdir).
+            crate::wal::resume::ScanOutcome::ForeignPipeline { occupant } => {
+                return Err(RdltError::config(format!(
+                    "the WAL at `{}` belongs to pipeline `{occupant}` — this run is pipeline \
+                     `{}`; replaying another pipeline's crash residue would commit its rows \
+                     and cursors under the wrong pipeline, and clearing it would destroy its \
+                     recovery material, so the run refuses: give each pipeline its own \
+                     workdir, or move or delete that directory if `{occupant}` is retired",
+                    wal_dir.display(),
+                    config.pipeline
+                )));
             }
             crate::wal::resume::ScanOutcome::Damaged(reason) => {
                 tracing::warn!(%reason, "WAL manifest damaged; re-extracting from cursors");

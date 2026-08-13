@@ -32,9 +32,13 @@ pub struct Spec {
     /// The pipeline's stable name. State and cursors are persisted under it, so
     /// renaming it starts a fresh pipeline rather than continuing this one.
     pub pipeline: String,
-    /// Where the write-ahead log lives. Absent means no WAL: recovery still
-    /// works, but degrades to re-extracting from the last committed cursor —
-    /// slower, never wrong.
+    /// Where the write-ahead log lives. Absent defaults to
+    /// `.rdlt/<pipeline>` BESIDE THE DOCUMENT — per pipeline, never
+    /// shared: the engine replays and clears whatever WAL its workdir
+    /// holds, so two pipelines over one directory would hand each other
+    /// their crashed spans (a shape the engine now refuses typed).
+    /// A relative spelling here resolves against the document's own
+    /// directory, the same rule path-form configs follow.
     #[serde(default)]
     pub workdir: Option<PathBuf>,
     // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}` /
@@ -407,6 +411,32 @@ fn engine_budget_bytes(spec: &Spec) -> u64 {
         .unwrap_or(rdlt_engine::DEFAULT_BYTE_BUDGET as u64)
 }
 
+/// The workdir a document runs under: the spelled path — relative
+/// spellings resolved against `base`, the document's own directory,
+/// exactly like path-form configs — or, when the document names none,
+/// `.rdlt/<pipeline>` under `base`.
+///
+/// Per pipeline, deliberately: the engine replays and clears whatever
+/// WAL its workdir holds, and it refuses a directory occupied by
+/// another pipeline — the per-pipeline default keeps that refusal from
+/// ever firing on defaulted documents. Resolving against `base` (not
+/// the invoking shell's working directory) means one document owns ONE
+/// workdir and one lock from wherever it is run; a spec built from a
+/// string gets whatever base its embedder passes, so a bare `Path::new("")`
+/// base stays working-directory-relative. The pipeline name is
+/// path-sanitized through the same normalization destination
+/// identifiers use, so a name carrying separators or `..` cannot
+/// escape `.rdlt/`.
+fn resolved_workdir(spec: &Spec, base: &Path) -> PathBuf {
+    match &spec.workdir {
+        Some(dir) => base.join(dir),
+        None => base.join(".rdlt").join(rdlt_core::naming::normalize_ident(
+            &spec.pipeline,
+            rdlt_core::naming::IdentRules::default(),
+        )),
+    }
+}
+
 /// Turn a parsed [`Spec`] into a runnable [`Pipeline`]. Construction only —
 /// no data moves — but BOTH arms desugar to connector requirements and are
 /// resolved through the default [`LocalBinaryConnectorProvider`]: spawn,
@@ -445,10 +475,7 @@ pub async fn build_pipeline_with(
             builder.write_mode(WriteMode::Merge { key: key.clone() })
         }
     };
-    let builder = match &spec.workdir {
-        Some(dir) => builder.workdir(dir),
-        None => builder.workdir(".rdlt"),
-    };
+    let builder = builder.workdir(resolved_workdir(spec, base));
     let builder = match &spec.batch_policy {
         Some(policy) => builder.batch_policy(*policy),
         None => builder,
@@ -480,4 +507,75 @@ pub async fn build_pipeline_with(
         .await
         .map_err(|e| SpecError::resolve(e.to_string()))?;
     Ok(builder.source(source).destination(dest).build()?)
+}
+
+#[cfg(test)]
+mod workdir_tests {
+    use super::*;
+
+    fn spec_from(yaml: &str) -> Spec {
+        serde_yaml::from_str(yaml).expect("the fixture document parses")
+    }
+
+    const BODY: &str = "source:\n  postgres: s.yaml\ndestination:\n  duckdb: {path: out.db}\n";
+
+    /// The default workdir is PER PIPELINE and lives beside the document:
+    /// two defaulted documents in one directory get two workdirs, so
+    /// neither can ever scan (or clear) the other's WAL.
+    #[test]
+    fn the_default_workdir_is_per_pipeline_under_the_spec_dir() {
+        let orders = spec_from(&format!("pipeline: orders\n{BODY}"));
+        let customers = spec_from(&format!("pipeline: customers\n{BODY}"));
+        let base = Path::new("/srv/specs");
+        assert_eq!(
+            resolved_workdir(&orders, base),
+            Path::new("/srv/specs/.rdlt/orders")
+        );
+        assert_eq!(
+            resolved_workdir(&customers, base),
+            Path::new("/srv/specs/.rdlt/customers")
+        );
+    }
+
+    /// A pipeline name is a free-form string; the workdir leaf derived
+    /// from it is normalized, so separators and dot-segments cannot
+    /// escape `.rdlt/`.
+    #[test]
+    fn the_default_workdir_leaf_is_path_sanitized() {
+        let spec = spec_from(&format!("pipeline: \"../Orders / prod\"\n{BODY}"));
+        let dir = resolved_workdir(&spec, Path::new("/srv/specs"));
+        let leaf = dir.file_name().expect("a leaf exists").to_string_lossy();
+        assert_eq!(dir.parent(), Some(Path::new("/srv/specs/.rdlt")));
+        assert!(
+            !leaf.contains('/') && !leaf.contains(".."),
+            "the leaf must not traverse: {leaf}"
+        );
+    }
+
+    /// An explicit relative `workdir:` resolves against the document's
+    /// directory — the include rule config paths already follow — so one
+    /// document owns ONE workdir and one lock from any invoking CWD. An
+    /// absolute spelling is taken as given.
+    #[test]
+    fn an_explicit_workdir_resolves_against_the_spec_dir() {
+        let relative = spec_from(&format!("pipeline: p\nworkdir: state/wd\n{BODY}"));
+        assert_eq!(
+            resolved_workdir(&relative, Path::new("/srv/specs")),
+            Path::new("/srv/specs/state/wd")
+        );
+        let absolute = spec_from(&format!("pipeline: p\nworkdir: /var/lib/rdlt\n{BODY}"));
+        assert_eq!(
+            resolved_workdir(&absolute, Path::new("/srv/specs")),
+            Path::new("/var/lib/rdlt")
+        );
+    }
+
+    /// An empty base — a spec built from a string with `Path::new("")` —
+    /// stays working-directory-relative, exactly as documented for
+    /// embedders.
+    #[test]
+    fn an_empty_base_keeps_the_default_cwd_relative() {
+        let spec = spec_from(&format!("pipeline: p\n{BODY}"));
+        assert_eq!(resolved_workdir(&spec, Path::new("")), Path::new(".rdlt/p"));
+    }
 }

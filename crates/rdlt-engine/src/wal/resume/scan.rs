@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use rdlt_core::LoadId;
+use rdlt_core::{LoadId, PipelineId};
 
 use crate::wal::WalRecord;
 
@@ -52,6 +52,16 @@ pub(crate) enum ScanOutcome {
     Discard,
     Recover(RecoverySpan),
     Damaged(String),
+    /// A Run header names ANOTHER pipeline: this workdir is occupied.
+    /// The ONE outcome recovery must never resolve by clearing — every
+    /// other resolved arm clears the WAL, and clearing here would
+    /// destroy the occupying pipeline's recovery material, while
+    /// replaying would commit its rows and cursors under the wrong
+    /// pipeline. The caller refuses the run and leaves the directory
+    /// exactly as found.
+    ForeignPipeline {
+        occupant: PipelineId,
+    },
     /// The manifest is intact and readable, but was written under a different
     /// format version, so its segments are in a container this build does not
     /// decode. Kept distinct from `Damaged` so the log — and any test — can
@@ -74,12 +84,14 @@ pub(crate) enum ScanOutcome {
 pub(crate) async fn scan_off_runtime(
     dir: &Path,
     rules: rdlt_core::naming::IdentRules,
+    pipeline: &PipelineId,
 ) -> ScanOutcome {
     let dir = dir.to_path_buf();
-    off_runtime(move || scan(&dir, rules)).await
+    let pipeline = pipeline.clone();
+    off_runtime(move || scan(&dir, rules, &pipeline)).await
 }
 
-fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
+fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId) -> ScanOutcome {
     let path = dir.join("manifest.jsonl");
     let file = match File::open(&path) {
         Ok(f) => f,
@@ -129,8 +141,20 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules) -> ScanOutcome {
             WalRecord::Run {
                 format_version,
                 load_id: id,
-                ..
+                pipeline: run_pipeline,
             } => {
+                // The occupancy gate sits ABOVE the version gate: an
+                // `Unsupported` outcome (like every resolved arm) is
+                // CLEARED by the caller, and a foreign span must never
+                // be cleared whatever its format version says. The
+                // header check widens the last-Run rule to EVERY Run
+                // header — an earlier foreign header can only be
+                // pre-isolation residue, and it is not ours to resolve.
+                if run_pipeline != *pipeline {
+                    return ScanOutcome::ForeignPipeline {
+                        occupant: run_pipeline,
+                    };
+                }
                 if format_version != crate::wal::WAL_FORMAT_VERSION {
                     // EXACT match, in both directions. A newer manifest was
                     // written by an engine whose records this build cannot be
@@ -551,7 +575,11 @@ mod tests {
                     pipeline: PipelineId::new("p"),
                 }],
             );
-            scan(dir.path(), rdlt_core::naming::IdentRules::default())
+            scan(
+                dir.path(),
+                rdlt_core::naming::IdentRules::default(),
+                &PipelineId::new("p"),
+            )
         };
         let current = crate::wal::WAL_FORMAT_VERSION;
         assert!(
@@ -585,10 +613,68 @@ mod tests {
         .expect("write manifest");
         assert!(
             matches!(
-                scan(dir.path(), rdlt_core::naming::IdentRules::default()),
+                scan(
+                    dir.path(),
+                    rdlt_core::naming::IdentRules::default(),
+                    &PipelineId::new("p")
+                ),
                 ScanOutcome::Unsupported { found: 1, .. }
             ),
             "an unversioned header is a v1 manifest"
+        );
+    }
+
+    /// A workdir whose Run header names ANOTHER pipeline refuses as
+    /// `ForeignPipeline`, carrying the occupant — never `Recover` (which
+    /// would replay the foreign span under the wrong pipeline) and never
+    /// `Damaged`/`Discard`/`Unsupported` (every one of which the caller
+    /// resolves by CLEARING the foreign pipeline's recovery material).
+    #[test]
+    fn a_manifest_written_by_another_pipeline_refuses_as_foreign() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[WalRecord::Run {
+                format_version: crate::wal::WAL_FORMAT_VERSION,
+                load_id: LoadId::new("l"),
+                pipeline: PipelineId::new("orders"),
+            }],
+        );
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("customers"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::ForeignPipeline { ref occupant }
+                if occupant.as_str() == "orders"),
+            "a foreign manifest must refuse naming the occupant: {outcome:?}"
+        );
+    }
+
+    /// The occupancy gate outranks the version gate: a foreign manifest
+    /// in a DIFFERENT format version must still refuse as foreign —
+    /// `Unsupported` is a resolved outcome the caller clears, and the
+    /// foreign span is not ours to clear.
+    #[test]
+    fn a_foreign_manifest_in_another_version_still_refuses_as_foreign() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[WalRecord::Run {
+                format_version: crate::wal::WAL_FORMAT_VERSION + 1,
+                load_id: LoadId::new("l"),
+                pipeline: PipelineId::new("orders"),
+            }],
+        );
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("customers"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::ForeignPipeline { .. }),
+            "foreign-ness outranks version skew: {outcome:?}"
         );
     }
 }
@@ -707,7 +793,7 @@ mod per_stream_coverage_tests {
     fn scan_span(records: Vec<WalRecord>) -> ScanOutcome {
         let dir = tempfile::tempdir().expect("tempdir");
         write_span(dir.path(), records, IdentRules::default());
-        scan(dir.path(), IdentRules::default())
+        scan(dir.path(), IdentRules::default(), &PipelineId::new("p"))
     }
 
     /// The segment files the outcome would replay, in span order.
@@ -1055,7 +1141,11 @@ mod per_stream_coverage_tests {
             ],
             IdentRules::default(),
         );
-        let outcome = scan(dir.path(), IdentRules { max_len: 30 });
+        let outcome = scan(
+            dir.path(),
+            IdentRules { max_len: 30 },
+            &PipelineId::new("p"),
+        );
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason)
                 if reason.contains("identifier-normalization rules")
@@ -1083,7 +1173,7 @@ mod per_stream_coverage_tests {
             IdentRules::default(),
         );
         std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
-        let outcome = scan(dir.path(), IdentRules::default());
+        let outcome = scan(dir.path(), IdentRules::default(), &PipelineId::new("p"));
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason)
                 if reason.contains("no readable `rules.json` sidecar")
@@ -1113,7 +1203,7 @@ mod per_stream_coverage_tests {
             b"not json at all",
         )
         .expect("corrupt sidecar");
-        let outcome = scan(dir.path(), IdentRules::default());
+        let outcome = scan(dir.path(), IdentRules::default(), &PipelineId::new("p"));
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason)
                 if reason.contains("does not parse")),
@@ -1221,7 +1311,12 @@ mod starvation_tests {
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let scanner = tokio::spawn(async move {
                 let _ = started_tx.send(());
-                scan_off_runtime(&path, rdlt_core::naming::IdentRules::default()).await
+                scan_off_runtime(
+                    &path,
+                    rdlt_core::naming::IdentRules::default(),
+                    &rdlt_core::PipelineId::new("p"),
+                )
+                .await
             });
             started_rx.await.expect("scan started");
             let before = ticks.load(Ordering::Relaxed);

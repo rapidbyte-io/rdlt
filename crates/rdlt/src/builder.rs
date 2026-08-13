@@ -92,7 +92,13 @@ impl<S, D> PipelineBuilder<S, D> {
         self
     }
 
-    /// Local work directory (holds the WAL). Default: `.rdlt`.
+    /// Local work directory (holds the WAL). Unset means NO WAL:
+    /// recovery still works, degrading to re-extraction from the last
+    /// committed cursor — slower, never wrong. The pipeline-document
+    /// path ([`crate::pipeline_spec`]) defaults it to
+    /// `.rdlt/<pipeline>` beside the document; embedders building here
+    /// choose their own. One workdir belongs to ONE pipeline — the
+    /// engine refuses a directory whose WAL another pipeline wrote.
     pub fn workdir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.config = self.config.with_workdir(dir.into());
         self
