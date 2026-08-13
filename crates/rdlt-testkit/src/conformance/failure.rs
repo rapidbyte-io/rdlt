@@ -61,6 +61,13 @@ pub struct Conformance {
     /// snapshot door, the destination suite's unreached-abort tail —
     /// with reasons.
     pub(crate) skips: Vec<ConformanceSkip>,
+    /// Clauses whose checks RAN TO A VERDICT — a recorded failure, an
+    /// honest could-not-exercise skip, or silence meaning "nothing
+    /// found against it". What separates "the suite found nothing" from
+    /// "the suite never got there" when a run dies mid-suite: a clause
+    /// outside this set that also reports no failure was never reached,
+    /// and a consumer minting a pass for it would certify silence.
+    pub(crate) concluded: Vec<&'static str>,
 }
 
 impl ConformanceSkip {
@@ -91,5 +98,13 @@ impl Conformance {
     /// the promotion.
     pub fn tolerating_skips(self) -> (Vec<ConformanceFailure>, Vec<ConformanceSkip>) {
         (self.failures, self.skips)
+    }
+
+    /// The clauses whose checks ran to a verdict (see the field). Read
+    /// this BEFORE consuming the outcome: a certifier folding failures
+    /// and skips must refuse to mint a pass for an asserted clause
+    /// outside this set — the suite never reached it.
+    pub fn concluded(&self) -> &[&'static str] {
+        &self.concluded
     }
 }

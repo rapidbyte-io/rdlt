@@ -22,16 +22,19 @@
 //! flag, wrong name inert, acknowledged → honest Skip) stays pinned
 //! in-process at `src/source.rs`'s own tests.
 
-use rdlt_certify::{Target, Verdict, certify_source};
+use rdlt_certify::{
+    SOURCE_DUAL_ROLE_SKIP, Target, assert_certified_all_pass_with_named_skips, certify_source,
+};
 use serde_json::json;
 
 use super::support::bins::built_bin;
 
-/// A conformant source certifies clean: every entry `Pass`, and the
-/// asserted set covers the S-reuse clauses plus the protocol clauses
-/// this task probes — TWICE in a row, same target, same fixture file
-/// (each pass spawns fresh connector processes; the shared file is the
-/// state both passes read).
+/// A conformant source certifies clean: every asserted clause `Pass`
+/// with P13 the dual-role connector's one announced skip (the
+/// reference serves both roles, so there is no unserved role to
+/// refuse) — TWICE in a row, same target, same fixture file (each pass
+/// spawns fresh connector processes; the shared file is the state both
+/// passes read).
 #[tokio::test]
 async fn the_reference_source_certifies_all_pass() {
     let bin = built_bin("rdlt-connector-reference");
@@ -40,23 +43,13 @@ async fn the_reference_source_certifies_all_pass() {
     std::fs::write(&file, "{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n").expect("the fixture file writes");
     let config = json!({ "path": file });
 
-    for attempt in 1..=2 {
+    for _attempt in 1..=2 {
         let report = certify_source(&Target::resolve_path(bin.clone(), config.clone()), &[]).await;
 
-        let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
-        for clause in ["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"] {
-            assert!(
-                clauses.contains(&clause),
-                "attempt {attempt}: clause {clause} has no entry — asserted set was {clauses:?}"
-            );
-        }
-        assert!(
-            report
-                .entries
-                .iter()
-                .all(|entry| matches!(entry.verdict, Verdict::Pass)),
-            "attempt {attempt}: a conformant source must certify all-Pass:\n{}",
-            report.render_text()
+        assert_certified_all_pass_with_named_skips(
+            &report,
+            &["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"],
+            &[("P13", SOURCE_DUAL_ROLE_SKIP)],
         );
     }
 }

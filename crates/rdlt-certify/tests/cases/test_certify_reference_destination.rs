@@ -10,7 +10,8 @@
 //! never Fail.
 
 use rdlt_certify::{
-    NO_MERGE_SKIP, Target, Verdict, assert_certified_all_pass_with_named_skips, certify_destination,
+    DESTINATION_DUAL_ROLE_SKIP, NO_MERGE_SKIP, Target, Verdict,
+    assert_certified_all_pass_with_named_skips, certify_destination,
 };
 use serde_json::json;
 
@@ -29,9 +30,10 @@ fn reference_target(out_root: &std::path::Path) -> Target {
 }
 
 /// A conformant destination certifies clean: every clause has an entry,
-/// nothing fails, and the only non-`Pass` is D8's honest skip (the
-/// reference destination declares no merge capability, so D8 cannot be
-/// exercised).
+/// nothing fails, and the only non-`Pass` entries are the two honest
+/// skips — D8 (the reference destination declares no merge capability)
+/// and P13 (the reference serves both roles, so there is no unserved
+/// role to refuse).
 #[tokio::test]
 async fn the_reference_destination_certifies_clean_with_a_probe() {
     let out = tempfile::tempdir().expect("tempdir");
@@ -47,7 +49,7 @@ async fn the_reference_destination_certifies_clean_with_a_probe() {
             "D1", "D2", "D3", "D4", "D5", "D6", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
             "P11", "P12",
         ],
-        &[("D8", NO_MERGE_SKIP)],
+        &[("D8", NO_MERGE_SKIP), ("P13", DESTINATION_DUAL_ROLE_SKIP)],
     );
 }
 
@@ -84,6 +86,17 @@ async fn a_probe_less_run_skips_the_read_back_clauses_with_the_reason() {
             "{clause} is probe-independent and must still certify:\n{}",
             report.render_text()
         );
+    }
+    // P13 is probe-independent too, but the dual-role reference earns
+    // its announced skip rather than a Pass.
+    let p13 = report
+        .entries
+        .iter()
+        .find(|entry| entry.clause == "P13")
+        .expect("clause P13 has an entry");
+    match &p13.verdict {
+        Verdict::Skip(reason) => assert_eq!(reason, DESTINATION_DUAL_ROLE_SKIP),
+        other => panic!("a dual-role connector's P13 must skip, not {other:?}"),
     }
     assert!(
         report.passed(),

@@ -161,6 +161,19 @@ impl Parked {
     pub(crate) fn park_socket(&mut self, socket: PathBuf) {
         self.socket = Some(socket);
     }
+
+    /// Park the spawned child — the P13 probe's seam (attach parks its
+    /// own inline).
+    pub(crate) fn park_child(&mut self, child: tokio::process::Child) {
+        self.child = Some(child);
+    }
+
+    /// Claim the parked child back — for a caller that must AWAIT its
+    /// exit rather than kill it (the P13 refusal arm); the eventual
+    /// [`reap_parked`] then finds nothing and no-ops.
+    pub(crate) fn claim_child(&mut self) -> Option<tokio::process::Child> {
+        self.child.take()
+    }
 }
 
 /// The shared handle to one attach's [`Parked`] state.

@@ -35,4 +35,4 @@ pub use report::{
     assert_certified_all_pass_with_named_skips, clause_title,
 };
 pub use source::{SOURCE_CLAUSES, certify_source};
-pub use target::Target;
+pub use target::{DESTINATION_DUAL_ROLE_SKIP, SOURCE_DUAL_ROLE_SKIP, Target};

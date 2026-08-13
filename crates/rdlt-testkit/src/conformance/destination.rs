@@ -444,5 +444,9 @@ pub async fn verify_destination<D: Destination>(
                 .collect()
         }
     };
-    DestinationConformance { failures, skips }
+    DestinationConformance {
+        failures,
+        skips,
+        concluded,
+    }
 }

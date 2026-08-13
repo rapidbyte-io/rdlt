@@ -1,13 +1,15 @@
-//! The report vocabulary's public semantics: `passed()` counts only
-//! `Fail` entries against certification, and the render spellings are a
+//! The report vocabulary's public semantics: `passed()` counts `Fail`
+//! and `NotReached` entries against certification (a clause the suite
+//! died before reaching proves nothing), and the render spellings are a
 //! CONTRACT — `PASS P1 (<title>)` / `FAIL S1 (<title>): <why>` /
-//! `SKIP K-D4 (<title>): <why>` are the certifier bin's stdout lines,
-//! pinned full-string here. Every clause id carries its fixed short
-//! title from the one vocabulary table (D-040-5: end users never see
-//! specs/, so a bare `FAIL P3` would be unactionable); an id outside
-//! the table renders bare rather than inventing a title. (`absorb`'s
-//! S/D-reuse fold is `pub(crate)` and pinned by the unit tests beside
-//! it in `src/report.rs`.)
+//! `SKIP K-D4 (<title>): <why>` / `NOT-REACHED D4 (<title>): <why>`
+//! are the certifier bin's stdout lines, pinned full-string here.
+//! Every clause id carries its fixed short title from the one
+//! vocabulary table (D-040-5: end users never see specs/, so a bare
+//! `FAIL P3` would be unactionable); an id outside the table renders
+//! bare rather than inventing a title. (`absorb`'s S/D-reuse fold is
+//! `pub(crate)` and pinned by the unit tests beside it in
+//! `src/report.rs`.)
 
 use rdlt_certify::{CLAUSES, Entry, Report, Verdict, clause_title};
 
@@ -79,6 +81,34 @@ fn render_text_spells_the_contract_lines() {
     );
 }
 
+/// A `NotReached` entry REFUSES certification — unlike `Skip`, nobody
+/// chose not to exercise the clause: the suite died first, and nothing
+/// was proven. Its render line is part of the stdout contract.
+#[test]
+fn a_not_reached_entry_refuses_certification_and_renders_the_contract_line() {
+    let report = Report {
+        entries: vec![
+            Entry {
+                clause: "P1",
+                verdict: Verdict::Pass,
+            },
+            Entry {
+                clause: "D4",
+                verdict: Verdict::NotReached(
+                    "not run — the suite aborted at D1 before reaching it".to_string(),
+                ),
+            },
+        ],
+    };
+    assert!(!report.passed());
+    assert_eq!(
+        report.render_text(),
+        "PASS P1 (one handshake line on stdout)\n\
+         NOT-REACHED D4 (dead-predecessor staging teardown): not run — the suite aborted \
+         at D1 before reaching it\n"
+    );
+}
+
 /// An id outside the vocabulary renders bare — the fold keeps foreign
 /// clause ids (a testkit failure naming a clause this crate does not
 /// know) rather than dropping them, and the render must not invent a
@@ -135,6 +165,10 @@ fn render_json_round_trips_in_stable_order() {
                 clause: "S2",
                 verdict: Verdict::Pass,
             },
+            Entry {
+                clause: "S4",
+                verdict: Verdict::NotReached("the suite died first".to_string()),
+            },
         ],
     };
     let value: serde_json::Value =
@@ -146,6 +180,10 @@ fn render_json_round_trips_in_stable_order() {
     );
     assert_eq!(value["entries"][1]["clause"], "S2");
     assert_eq!(value["entries"][1]["verdict"], "Pass");
+    assert_eq!(
+        value["entries"][2]["verdict"]["NotReached"],
+        "the suite died first"
+    );
 }
 
 /// An empty report passes vacuously at `passed()` — the CALLER decides

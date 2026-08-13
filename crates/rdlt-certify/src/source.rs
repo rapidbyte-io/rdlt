@@ -1,11 +1,11 @@
 //! Source certification: spawn the target's binary and certify it over
 //! the wire — the role-generic protocol clauses (P1 handshake-line
-//! discipline, P2 typed config refusal, P4 pre-handshake Spec — the
-//! probes live in [`crate::target`]), the wire clauses judged on raw
-//! frames below the adapters (P3 identity/skew, P7 the v0 state-format
-//! map, P5 one-batch, P6 error-frame shape — [`crate::wire`]), plus
-//! the testkit's source conformance clauses (S1/S2/S4) reused against
-//! the managed adapter.
+//! discipline, P2 typed config refusal, P4 pre-handshake Spec, P13 the
+//! unserved role's refusal — the probes live in [`crate::target`]),
+//! the wire clauses judged on raw frames below the adapters (P3
+//! identity/skew, P7 the v0 state-format map, P5 one-batch, P6
+//! error-frame shape — [`crate::wire`]), plus the testkit's source
+//! conformance clauses (S1/S2/S4) reused against the managed adapter.
 //!
 //! Every clause rides under [`CLAUSE_TIMEOUT`] — a stalling connector
 //! FAILS the clause, the certifier never hangs — and no failure message
@@ -17,8 +17,8 @@ use rdlt_testkit::conformance::{ConformanceFailure, ConformanceSkip};
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
-    GENERIC_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2, report_p4,
-    resolved_requirement,
+    GENERIC_CLAUSES, SELF_PROBED_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2,
+    report_p4, report_role_refusal, resolved_requirement,
 };
 use crate::wire;
 
@@ -55,6 +55,12 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
         Err(_elapsed) => report.fail("P1", timed_out()),
     }
 
+    // P13 — the unserved role's refusal, probed on its own spawn of
+    // the OTHER role's flag (a dual-role connector earns the announced
+    // skip instead); like P1, its entry is written here, before any
+    // cascade point.
+    report_role_refusal(&mut report, target, Role::Source).await;
+
     let provider = LocalBinaryConnectorProvider::new();
 
     // The Spec reply feeds P4 below — and, for a path-only target,
@@ -63,13 +69,13 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     // connector's own report.
     let spec = fetch_spec(&provider, &target.requirement, Role::Source).await;
 
-    // Everything past P1 (whose probe already wrote its entry) runs
-    // over a verified handshake; without one, every remaining clause
-    // fails with the one cause.
+    // Everything past the self-probed clauses (whose probes already
+    // wrote their entries) runs over a verified handshake; without
+    // one, every remaining clause fails with the one cause.
     let downstream = || {
         GENERIC_CLAUSES
             .into_iter()
-            .filter(|clause| *clause != "P1")
+            .filter(|clause| !SELF_PROBED_CLAUSES.contains(clause))
             .chain(SOURCE_CLAUSES)
             .chain(wire::SOURCE_WIRE_CLAUSES)
     };
@@ -171,10 +177,11 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
             // skips by name; strict promotes each through the
             // testkit's one fold spelling plus the acknowledgment
             // tail.
+            let concluded = outcome.concluded().to_vec();
             let (mut failures, skips) = outcome.tolerating_skips();
             let (promoted, acknowledged) = fold_acknowledged(skips, accept_skips);
             failures.extend(promoted);
-            report.absorb(failures, acknowledged, &SOURCE_CLAUSES)
+            report.absorb(failures, acknowledged, &concluded, &SOURCE_CLAUSES)
         }
         Err(_elapsed) => {
             for clause in SOURCE_CLAUSES {

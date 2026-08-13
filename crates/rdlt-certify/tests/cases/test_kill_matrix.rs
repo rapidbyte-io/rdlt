@@ -39,6 +39,7 @@ fn render(entries: &[Entry]) -> String {
             Verdict::Pass => format!("PASS {}\n", entry.clause),
             Verdict::Fail(why) => format!("FAIL {}: {why}\n", entry.clause),
             Verdict::Skip(why) => format!("SKIP {}: {why}\n", entry.clause),
+            Verdict::NotReached(why) => format!("NOT-REACHED {}: {why}\n", entry.clause),
         });
     }
     out

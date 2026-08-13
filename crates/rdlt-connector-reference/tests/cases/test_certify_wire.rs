@@ -7,8 +7,8 @@
 //! so neither cell ever skips.
 
 use rdlt_certify::{
-    NO_MERGE_SKIP, Target, assert_certified_all_pass, assert_certified_all_pass_with_named_skips,
-    certify_destination, certify_source,
+    DESTINATION_DUAL_ROLE_SKIP, NO_MERGE_SKIP, SOURCE_DUAL_ROLE_SKIP, Target,
+    assert_certified_all_pass_with_named_skips, certify_destination, certify_source,
 };
 use serde_json::json;
 
@@ -24,7 +24,9 @@ fn built_bin() -> std::path::PathBuf {
 
 /// THE SOURCE CELL: the built bin certifies all-Pass as a source over
 /// the wire — S1/S2/S4 against a seeded jsonl file plus every protocol
-/// clause a source can face.
+/// clause a source can face; P13 is the dual-role connector's one
+/// announced skip (both roles are served, so there is no unserved role
+/// to refuse).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_reference_source_certifies_all_pass() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -37,16 +39,18 @@ async fn the_reference_source_certifies_all_pass() {
     )
     .await;
 
-    assert_certified_all_pass(
+    assert_certified_all_pass_with_named_skips(
         &report,
         &["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"],
+        &[("P13", SOURCE_DUAL_ROLE_SKIP)],
     );
 }
 
 /// THE DESTINATION CELL: the built bin certifies over the wire against
 /// a tempdir — every clause a destination can face asserted present:
-/// D1–D6 live, D8 the honest merge-false Skip, and ALL TEN protocol
-/// clauses including the write-side P11/P12.
+/// D1–D6 live, D8 the honest merge-false Skip, ALL TEN protocol
+/// clauses including the write-side P11/P12, and P13 the dual-role
+/// connector's announced skip.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_reference_destination_certifies_all_pass_with_the_merge_skip() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -65,6 +69,6 @@ async fn the_reference_destination_certifies_all_pass_with_the_merge_skip() {
             "D1", "D2", "D3", "D4", "D5", "D6", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
             "P11", "P12",
         ],
-        &[("D8", NO_MERGE_SKIP)],
+        &[("D8", NO_MERGE_SKIP), ("P13", DESTINATION_DUAL_ROLE_SKIP)],
     );
 }

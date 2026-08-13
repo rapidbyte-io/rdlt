@@ -1,6 +1,6 @@
 //! Destination certification: spawn the target's binary and certify it
-//! over the wire — the role-generic protocol clauses (P1/P2/P4, probes
-//! in [`crate::target`]), the handshake-borne wire clauses (P3
+//! over the wire — the role-generic protocol clauses (P1/P2/P4/P13,
+//! probes in [`crate::target`]), the handshake-borne wire clauses (P3
 //! identity/skew and P7 the v0 state-format map, judged on a raw
 //! handshake below the adapters — [`crate::wire`]), the testkit's
 //! destination conformance clauses (D1–D6, D8) reused against the
@@ -56,8 +56,8 @@ use serde_json::Value;
 
 use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
 use crate::target::{
-    GENERIC_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2, report_p4,
-    resolved_requirement,
+    GENERIC_CLAUSES, SELF_PROBED_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2,
+    report_p4, report_role_refusal, resolved_requirement,
 };
 use crate::wire::{
     self, WireOpenError, WireReply, WireSession, ensure_request, expect, meta_json_for, mismatch,
@@ -125,6 +125,14 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
         Err(_elapsed) => report.fail("P1", timed_out()),
     }
 
+    // P13 — the unserved role's refusal, probed on its own spawn of
+    // the OTHER role's flag (a dual-role connector earns the announced
+    // skip instead); like P1, its entry is written here, and its child
+    // is dead-and-reaped before the wire spawn below opens any
+    // single-writer store (the probe never reaches a config handshake,
+    // so a dual-role serving child holds no store either way).
+    report_role_refusal(&mut report, target, Role::Destination).await;
+
     let provider = LocalBinaryConnectorProvider::new();
 
     // The Spec reply feeds P4 below — and, for a path-only target,
@@ -133,16 +141,17 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // connector's own report.
     let spec = fetch_spec(&provider, &target.requirement, Role::Destination).await;
 
-    // Everything past P1 (whose probe already wrote its entry) runs
-    // over a verified handshake; without one, every remaining clause
-    // fails with the one cause. `post_wire` is the same cascade AFTER
-    // the wire block has judged (or failed) P3/P7 on its own spawn —
-    // those two already carry their entries by then, and a cascade
-    // re-failing them would write a second verdict per clause.
+    // Everything past the self-probed clauses (whose probes already
+    // wrote their entries) runs over a verified handshake; without
+    // one, every remaining clause fails with the one cause.
+    // `post_wire` is the same cascade AFTER the wire block has judged
+    // (or failed) P3/P7 on its own spawn — those two already carry
+    // their entries by then, and a cascade re-failing them would write
+    // a second verdict per clause.
     let post_wire = || {
         GENERIC_CLAUSES
             .into_iter()
-            .filter(|clause| *clause != "P1")
+            .filter(|clause| !SELF_PROBED_CLAUSES.contains(clause))
             .chain(DEST_CLAUSES)
             .chain(SESSION_CLAUSES)
     };
@@ -243,11 +252,13 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
 
     // D-reuse — the testkit's destination conformance suite, verbatim,
     // against the (settling) managed adapter: the wire is certified by
-    // the SAME clauses an in-process connector answers to. The suite's
-    // own skips (clauses an abort left unreached) fold through as SKIP
-    // entries — never a vacuous Pass. D8 is asserted only when the
-    // connector declares merge — otherwise the suite never ran it, and
-    // the honest verdict is a Skip.
+    // the SAME clauses an in-process connector answers to. The fold
+    // reads the suite's concluded record: clauses an abort left
+    // unreached come out NOT-REACHED and refuse certification — never
+    // a vacuous Pass, and never a Skip that would let the run pass.
+    // D8 is asserted only when the connector declares merge —
+    // otherwise the suite never ran it, and the honest verdict is a
+    // Skip.
     match probe {
         Some(probe) => {
             let merge = managed.capabilities().merge;
@@ -268,9 +279,10 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                     // The report's absorb renders skips honestly, so
                     // this caller ACKNOWLEDGES them by name (round-7:
                     // the fields went private).
+                    let concluded = outcome.concluded().to_vec();
                     let (failures, skips) = outcome.tolerating_skips();
                     if merge {
-                        report.absorb(failures, skips, &DEST_CLAUSES);
+                        report.absorb(failures, skips, &concluded, &DEST_CLAUSES);
                     } else {
                         // DEST_CLAUSES minus D8, derived — the hand
                         // copy is the drift the skip arm already shed.
@@ -278,7 +290,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
                             .into_iter()
                             .filter(|clause| *clause != "D8")
                             .collect();
-                        report.absorb(failures, skips, &without_d8);
+                        report.absorb(failures, skips, &concluded, &without_d8);
                         report.skip("D8", NO_MERGE_SKIP.to_string());
                     }
                 }

@@ -140,16 +140,28 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
     let mut skips = Vec::new();
     let fail = |clause, message: String| ConformanceFailure { clause, message };
 
+    // Both early returns leave `concluded` EMPTY deliberately: a suite
+    // that never got past stream discovery reached NO clause's checks —
+    // S1 carries the discovery failure, and S2/S4 must read as
+    // never-reached to a consumer, not as silently passed.
     let streams = match source.streams().await {
         Ok(streams) => streams,
         Err(e) => {
             failures.push(fail("S1", format!("streams() failed: {e}")));
-            return SourceConformance { failures, skips };
+            return SourceConformance {
+                failures,
+                skips,
+                concluded: Vec::new(),
+            };
         }
     };
     if streams.is_empty() {
         failures.push(fail("S1", "source declares no streams".into()));
-        return SourceConformance { failures, skips };
+        return SourceConformance {
+            failures,
+            skips,
+            concluded: Vec::new(),
+        };
     }
 
     for spec in &streams {
@@ -253,5 +265,12 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
         }
     }
 
-    SourceConformance { failures, skips }
+    // The per-stream loop has no abort path — every stream's S1/S2/S4
+    // checks ran to a verdict once it is entered — so completion here
+    // concludes all three clauses.
+    SourceConformance {
+        failures,
+        skips,
+        concluded: vec!["S1", "S2", "S4"],
+    }
 }

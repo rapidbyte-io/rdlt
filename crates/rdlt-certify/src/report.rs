@@ -1,10 +1,10 @@
 //! The certification report vocabulary: per-clause verdicts, the pinned
 //! render spellings (`PASS P1 (<title>)` / `FAIL S1 (<title>): <why>` /
-//! `SKIP K-D4 (<title>): <why>` — the certifier bin's stdout contract),
-//! the one authoritative clause table (id, title, definition — what the
-//! titles, the bin's `--explain` and the README all speak from), and
-//! the S/D-reuse fold that maps the testkit's conformance failures into
-//! clause entries.
+//! `SKIP K-D4 (<title>): <why>` / `NOT-REACHED D4 (<title>): <why>` —
+//! the certifier bin's stdout contract), the one authoritative clause
+//! table (id, title, definition — what the titles, the bin's
+//! `--explain` and the README all speak from), and the S/D-reuse fold
+//! that maps the testkit's conformance failures into clause entries.
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -211,6 +211,15 @@ pub const CLAUSES: &[Clause] = &[
                      already-receipted publish refusals.",
     },
     Clause {
+        id: "P13",
+        title: "unserved-role refusal",
+        definition: "Spawning the binary with a --role it does not serve must exit with code \
+                     2 before writing any stdout byte — the handshake line is written only \
+                     for a served role, and the role-less schema probe relies on exactly \
+                     this refusal signal. A connector serving both roles has no unserved \
+                     role, so the clause is skipped with the reason naming both.",
+    },
+    Clause {
         id: "K-S1",
         title: "SIGKILL before the first read, then typed error not hang",
         definition: "The connector is SIGKILLed after the handshake, before any read is opened. \
@@ -292,7 +301,7 @@ pub fn clause_title(clause: &str) -> Option<&'static str> {
 
 /// One clause's verdict. `Skip` is an honest non-verdict — a clause the
 /// session could not exercise, with the reason — and does NOT count
-/// against [`Report::passed`]; only `Fail` does.
+/// against [`Report::passed`]; `Fail` and `NotReached` both do.
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum Verdict {
     /// The clause held.
@@ -302,6 +311,11 @@ pub enum Verdict {
     Fail(String),
     /// The clause was not exercised — the payload says why.
     Skip(String),
+    /// The suite that declared the clause died before the clause's
+    /// checks ran — the payload says how the fold knows. Not a pass
+    /// (nothing was proven) and not an honest skip (nobody CHOSE not
+    /// to exercise it), so certification refuses.
+    NotReached(String),
 }
 
 /// One clause's line in the report.
@@ -322,22 +336,24 @@ pub struct Report {
 }
 
 impl Report {
-    /// Certified = no `Fail` entries. Skips do not refuse — an empty
-    /// report passes vacuously, and the caller decides what an empty
-    /// entry set means.
+    /// Certified = no `Fail` and no `NotReached` entries. Skips do not
+    /// refuse — an empty report passes vacuously, and the caller
+    /// decides what an empty entry set means.
     pub fn passed(&self) -> bool {
         !self
             .entries
             .iter()
-            .any(|entry| matches!(entry.verdict, Verdict::Fail(_)))
+            .any(|entry| matches!(entry.verdict, Verdict::Fail(_) | Verdict::NotReached(_)))
     }
 
     /// One line per entry, each newline-terminated, spelled exactly
     /// `PASS P1 (<title>)` / `FAIL S1 (<title>): <why>` /
-    /// `SKIP K-D4 (<title>): <why>` — the bin's stdout contract, pinned
-    /// full-string by the report tests. The title is the clause's fixed
-    /// short name from [`CLAUSES`]; an id outside the vocabulary
-    /// renders bare (foreign ids are kept, never dressed up).
+    /// `SKIP K-D4 (<title>): <why>` /
+    /// `NOT-REACHED D4 (<title>): <why>` — the bin's stdout contract,
+    /// pinned full-string by the report tests. The title is the
+    /// clause's fixed short name from [`CLAUSES`]; an id outside the
+    /// vocabulary renders bare (foreign ids are kept, never dressed
+    /// up).
     pub fn render_text(&self) -> String {
         let mut out = String::new();
         for entry in &self.entries {
@@ -350,6 +366,7 @@ impl Report {
                 Verdict::Pass => writeln!(out, "PASS {heading}"),
                 Verdict::Fail(why) => writeln!(out, "FAIL {heading}: {why}"),
                 Verdict::Skip(why) => writeln!(out, "SKIP {heading}: {why}"),
+                Verdict::NotReached(why) => writeln!(out, "NOT-REACHED {heading}: {why}"),
             }
             .expect("writing into a String cannot fail");
         }
@@ -386,18 +403,37 @@ impl Report {
         });
     }
 
+    /// Record that the suite never reached `clause`, and how the fold
+    /// knows.
+    pub(crate) fn not_reached(&mut self, clause: &'static str, why: String) {
+        self.entries.push(Entry {
+            clause,
+            verdict: Verdict::NotReached(why),
+        });
+    }
+
     /// The S/D-reuse fold: map one conformance-suite run into clause
-    /// entries. Every clause in `asserted` gets a verdict — each failure
-    /// naming it becomes a `Fail` at that clause's position, each skip
-    /// naming it a `Skip` (the suite could not exercise it, and says
-    /// why), and an asserted clause neither mentions is a `Pass` (the
-    /// suite ran and found nothing against it). A failure or skip
-    /// naming a clause OUTSIDE `asserted` is still folded in — never
-    /// dropped.
+    /// entries. `concluded` is the suite's own record of which clauses'
+    /// checks ran to a verdict; a pass is minted ONLY from its silence
+    /// (the 042 docket's absorb hardening — silence alone used to
+    /// read as a pass, so a suite dying mid-run certified its
+    /// unreached tail).
+    ///
+    /// Every clause in `asserted` gets a verdict — each failure naming
+    /// it becomes a `Fail` at that clause's position; each skip naming
+    /// it becomes a `Skip` when the clause concluded (the suite chose
+    /// not to exercise it, and says why) and `NotReached` carrying the
+    /// same reason when it did not (the suite noticed its own abort);
+    /// a clause neither mentions is a `Pass` when it concluded (the
+    /// suite ran it and found nothing) and `NotReached` with the
+    /// fold's own [`never_reached`] evidence when it did not. A
+    /// failure or skip naming a clause OUTSIDE `asserted` is still
+    /// folded in — never dropped.
     pub(crate) fn absorb(
         &mut self,
         failures: Vec<ConformanceFailure>,
         skips: Vec<ConformanceSkip>,
+        concluded: &[&'static str],
         asserted: &[&'static str],
     ) {
         for clause in asserted {
@@ -408,10 +444,18 @@ impl Report {
             }
             for skip in skips.iter().filter(|s| s.clause == *clause) {
                 mentioned = true;
-                self.skip(clause, skip.reason.clone());
+                if concluded.contains(clause) {
+                    self.skip(clause, skip.reason.clone());
+                } else {
+                    self.not_reached(clause, skip.reason.clone());
+                }
             }
             if !mentioned {
-                self.pass(clause);
+                if concluded.contains(clause) {
+                    self.pass(clause);
+                } else {
+                    self.not_reached(clause, never_reached());
+                }
             }
         }
         for failure in failures.iter().filter(|f| !asserted.contains(&f.clause)) {
@@ -421,6 +465,16 @@ impl Report {
             self.skip(skip.clause, skip.reason.clone());
         }
     }
+}
+
+/// The fold's own evidence line for a clause the suite neither
+/// mentioned nor concluded — suites that notice their own abort carry
+/// a reason naming the aborting clause instead (the destination
+/// suite's unreached tail), so this spelling marks the silent case.
+pub(crate) fn never_reached() -> String {
+    "the suite reported no verdict for this clause and never concluded its checks — a run \
+     that dies mid-suite proves nothing about the clauses beyond its last verdict"
+        .to_string()
 }
 
 /// Assert-style certification verdict for first-party cells (round-3
@@ -558,14 +612,15 @@ mod tests {
     }
 
     /// A failure maps to `Fail` at its asserted position; asserted
-    /// clauses no failure mentions pass — here `entries[0]` is S1's
-    /// `Fail` and S2/S4 follow as `Pass`.
+    /// clauses no failure mentions but the suite CONCLUDED pass — here
+    /// `entries[0]` is S1's `Fail` and S2/S4 follow as `Pass`.
     #[test]
     fn absorb_fails_the_named_clause_and_passes_the_unmentioned() {
         let mut report = Report::default();
         report.absorb(
             vec![failure("S1", "the resume law broke")],
             vec![],
+            &["S1", "S2", "S4"],
             &["S1", "S2", "S4"],
         );
         assert_eq!(
@@ -582,7 +637,7 @@ mod tests {
     #[test]
     fn absorb_of_no_failures_passes_every_asserted_clause() {
         let mut report = Report::default();
-        report.absorb(vec![], vec![], &["S1", "S2", "S4"]);
+        report.absorb(vec![], vec![], &["S1", "S2", "S4"], &["S1", "S2", "S4"]);
         assert_eq!(
             report.render_text(),
             "PASS S1 (checkpoint resume law)\n\
@@ -606,6 +661,7 @@ mod tests {
             ],
             vec![],
             &["S1", "S2"],
+            &["S1", "S2"],
         );
         assert_eq!(
             report.render_text(),
@@ -617,17 +673,17 @@ mod tests {
         );
     }
 
-    /// A skip folds as `Skip` at its asserted position — never a
-    /// vacuous `Pass`, never dropped — and skips do not refuse: the
-    /// report still passes. The S2 snapshot door and the destination
-    /// suite's unreached-abort tail are the ones minting suite-level
-    /// skips today.
+    /// A CONCLUDED skip folds as `Skip` at its asserted position —
+    /// never a vacuous `Pass`, never dropped — and skips do not
+    /// refuse: the report still passes. The S2 snapshot door is the
+    /// one minting concluded suite-level skips today.
     #[test]
     fn absorb_folds_skips_as_skip_entries() {
         let mut report = Report::default();
         report.absorb(
             vec![],
             vec![skip("S2", "stream `events` declares no cursor_field")],
+            &["S1", "S2", "S4"],
             &["S1", "S2", "S4"],
         );
         assert_eq!(
@@ -637,6 +693,75 @@ mod tests {
              PASS S4 (prompt cancellation)\n"
         );
         assert!(report.passed(), "a skip is not a failure");
+    }
+
+    /// THE ABSORB HARDENING's red pin (042 docket: silence used to
+    /// read as a pass): a suite that dies half-way reports a failure
+    /// for the clause it died under and NOTHING for the rest — no
+    /// skip tail, no conclusions. The unmentioned, unconcluded tail
+    /// must render NOT-REACHED with the fold's own evidence, and the
+    /// report must refuse.
+    #[test]
+    fn absorb_renders_silent_unconcluded_clauses_not_reached_and_refuses() {
+        let mut report = Report::default();
+        report.absorb(
+            vec![failure("D6", "open failed: boom")],
+            vec![],
+            &[],
+            &["D6", "D1", "D5"],
+        );
+        assert_eq!(
+            report.render_text(),
+            format!(
+                "FAIL D6 (no state for fresh pipelines): open failed: boom\n\
+                 NOT-REACHED D1 (staging invisibility): {reason}\n\
+                 NOT-REACHED D5 (idempotent ensure_table): {reason}\n",
+                reason = never_reached()
+            )
+        );
+        assert!(
+            !report.passed(),
+            "an unreached clause refuses certification"
+        );
+    }
+
+    /// The suite-noticed twin: a skip whose clause never CONCLUDED is
+    /// an abort tail, not an honest could-not-exercise skip — it folds
+    /// as NOT-REACHED carrying the suite's own reason (which names the
+    /// aborting clause), and the report refuses even though the render
+    /// shows no bare `FAIL` for that clause.
+    #[test]
+    fn absorb_promotes_an_unconcluded_skip_to_not_reached() {
+        let mut report = Report::default();
+        report.absorb(
+            vec![failure("D1", "write failed: boom")],
+            vec![skip(
+                "D4",
+                "not run — the suite aborted at D1 before reaching it",
+            )],
+            &["D6"],
+            &["D6", "D1", "D4"],
+        );
+        assert_eq!(
+            report.render_text(),
+            "PASS D6 (no state for fresh pipelines)\n\
+             FAIL D1 (staging invisibility): write failed: boom\n\
+             NOT-REACHED D4 (dead-predecessor staging teardown): not run — the suite \
+             aborted at D1 before reaching it\n"
+        );
+        assert!(!report.passed());
+    }
+
+    /// The one silent-tail spelling, full-string — the fold's own
+    /// evidence line renders through this everywhere.
+    #[test]
+    fn the_never_reached_spelling_is_pinned() {
+        assert_eq!(
+            never_reached(),
+            "the suite reported no verdict for this clause and never concluded its checks — \
+             a run that dies mid-suite proves nothing about the clauses beyond its last \
+             verdict"
+        );
     }
 
     /// The named-skip helper's teeth: the named clause must be a
