@@ -293,6 +293,60 @@ async fn a_replayed_load_id_does_not_duplicate_rows() {
     );
 }
 
+/// ONE state slot means ONE pipeline per directory (045 external
+/// findings, GROK 2): a second pipeline reading the slot must refuse
+/// typed — answering `None` would read as "never committed", so the
+/// engine would re-extract from scratch, append every already-loaded
+/// row a second time, and the next publish would destroy the first
+/// pipeline's cursors.
+#[tokio::test]
+async fn another_pipelines_state_refuses_rather_than_reading_fresh() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let pipeline_a = PipelineId::new("orders");
+    let load = LoadId::new("ref-load-o");
+    let mut session = shell
+        .open(OpenContext::new(pipeline_a.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&pipeline_a, &load, 1))
+        .await
+        .expect("commit");
+    drop(session);
+
+    let mut session = shell
+        .open(OpenContext::new(
+            PipelineId::new("customers"),
+            LoadId::new("ref-load-c"),
+        ))
+        .await
+        .expect("open under the second pipeline");
+    let refused = session
+        .read_state(&PipelineId::new("customers"))
+        .await
+        .expect_err("a foreign state slot must refuse, never read fresh");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "fatal destination error: reference destination: {} carries the state of \
+             pipeline `orders` — this session is pipeline `customers`, and one directory \
+             holds ONE pipeline's state: reading it as fresh would append every \
+             already-loaded row again, and the next publish would destroy `orders`' \
+             cursors; give each pipeline its own output directory",
+            dir.path().join("_reference_state.json").display()
+        )
+    );
+}
+
 /// The config gate's refusals, full-string: the two documents share the
 /// one-field shape, reject unknown keys, and refuse an empty path with
 /// their own frozen wording.

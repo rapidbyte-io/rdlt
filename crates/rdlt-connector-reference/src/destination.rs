@@ -358,10 +358,26 @@ impl Backend for Writer {
                 path.display()
             ))
         })?;
-        // ONE state slot, latest-writer-wins: the document names its
-        // pipeline, so another pipeline's read answers None (fresh)
-        // rather than someone else's cursors.
-        Ok((state.pipeline == *pipeline).then_some(state))
+        // ONE state slot, ONE pipeline per directory: another
+        // pipeline's read REFUSES rather than answering None — `None`
+        // is the SPI's "never committed", so the engine would
+        // re-extract from scratch, append every already-loaded row a
+        // second time (receipts are per load id and cannot help across
+        // pipelines), and the next publish would overwrite the
+        // occupant's cursors in the slot.
+        if state.pipeline != *pipeline {
+            return Err(DestinationError::fatal(format!(
+                "reference destination: {} carries the state of pipeline `{}` — this \
+                 session is pipeline `{pipeline}`, and one directory holds ONE pipeline's \
+                 state: reading it as fresh would append every already-loaded row again, \
+                 and the next publish would destroy `{}`' cursors; give each pipeline its \
+                 own output directory",
+                path.display(),
+                state.pipeline,
+                state.pipeline
+            )));
+        }
+        Ok(Some(state))
     }
 
     async fn close(&mut self) -> Result<(), DestinationError> {
