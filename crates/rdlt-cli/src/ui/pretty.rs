@@ -84,7 +84,11 @@ impl Pretty {
                         .expect("static template"),
                 );
                 bar.enable_steady_tick(REDRAW);
-                bar.set_message(format!("{stream}"));
+                // The declared stream name is connector-controlled
+                // text; indicatif writes messages straight to the
+                // terminal, so it is escaped at this boundary exactly
+                // like the plain renderer's lines are at stderr_line.
+                bar.set_message(super::sanitize(stream.as_str()));
                 self.streams.insert(stream.clone(), bar);
                 self.finished.insert(stream.clone(), false);
             }
@@ -113,8 +117,11 @@ impl Pretty {
                 .copied()
                 .unwrap_or_default();
             let done = self.finished.get(stream).copied().unwrap_or(false);
+            // Escaped like the announcement above — same string, same
+            // boundary.
+            let name = super::sanitize(stream.as_str());
             let mut line = format!(
-                "{stream:<14} read {:<8} written {:<8} {:<9}",
+                "{name:<14} read {:<8} written {:<8} {:<9}",
                 format::count(read.rows_read),
                 format::count(written.rows_written),
                 format::bytes(written.bytes_written),

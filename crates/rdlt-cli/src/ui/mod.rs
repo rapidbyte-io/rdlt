@@ -3,13 +3,46 @@
 
 /// Best-effort stderr line: `eprintln!` PANICS on a closed stderr,
 /// which would turn a finished run into exit 101 — the human channel
-/// failing must never change the outcome or the exit code.
+/// failing must never change the outcome or the exit code. EVERY line
+/// is sanitized here, at the one sink: connector-controlled strings
+/// (declared stream names, error text) ride into these lines verbatim
+/// by design, and this is the boundary that keeps them from driving
+/// the terminal.
 pub fn stderr_line(line: &str) {
     use std::io::Write as _;
+    let line = sanitize(line);
     let mut stderr = std::io::stderr().lock();
     let _ = stderr
         .write_all(line.as_bytes())
         .and_then(|()| stderr.write_all(b"\n"));
+}
+
+/// Escape terminal control characters for display: C0 (except newline
+/// and tab — legitimate formatting in multi-line error text), DEL, and
+/// C1, each rendered as its visible `\u{..}` escape. The 038/044 model
+/// deliberately runs third-party connector binaries, and a declared
+/// stream name or error message is their text: unescaped, an ESC or C1
+/// byte is how a hostile connector forges log lines, moves the cursor,
+/// or drives OSC sequences (title, clipboard) through an operator's
+/// terminal. Applied at the RENDER boundary — [`stderr_line`] and the
+/// pretty renderer's messages — never to the data itself.
+pub fn sanitize(text: &str) -> String {
+    if !text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            use std::fmt::Write as _;
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 pub mod format;
@@ -45,6 +78,23 @@ pub fn select(quiet: bool, verbose: bool, no_progress: bool, is_tty: bool) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The render-boundary escape (045 external findings, GROK 10 /
+    /// KIMI 1): terminal controls become visible escapes — the OSC/CSI
+    /// and carriage-return shapes a hostile connector would drive a
+    /// terminal or forge log lines with — while plain text, newlines
+    /// and tabs pass untouched.
+    #[test]
+    fn sanitize_escapes_terminal_controls_and_keeps_text() {
+        assert_eq!(sanitize("events: +3 rows"), "events: +3 rows");
+        assert_eq!(sanitize("line\nbreak\tand tab"), "line\nbreak\tand tab");
+        // ESC-driven OSC (clipboard write) with its BEL terminator.
+        assert_eq!(sanitize("\x1b]52;c;evil\x07"), "\\u{1b}]52;c;evil\\u{7}");
+        // A C1 CSI, one byte, no ESC needed on many terminals.
+        assert_eq!(sanitize("\u{9b}31m"), "\\u{9b}31m");
+        // A bare carriage return overwrites the line it lands on.
+        assert_eq!(sanitize("a\rb"), "a\\u{d}b");
+    }
 
     /// The selection ladder: quiet beats everything; -v, a pipe, or
     /// --no-progress force plain; a bare terminal gets the live
