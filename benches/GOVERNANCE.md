@@ -143,6 +143,22 @@ through semver: the WAL segment format 1 → 2 (exact-match gate, refuses both
 directions) and the bench artifact 2 → 3 (refuses v2 with its reason). Neither
 is public API.
 
+## Feature 045 — the post-split coverage baseline (2026-08-13)
+
+The first coverage figure measured on the post-split 13-crate tree
+(`make coverage` = `cargo llvm-cov nextest --features failpoints`,
+workspace-wide, 625/625 tests passing): **81.50% lines** (functions
+80.46%, regions 81.42%) — the recorded 80% line floor is met.
+
+Read it against its own denominator, not the 87%-era records: the
+pre-split figures (023: 87.22%, 024: 87.25%, 020: 85.64%) were
+measured over a tree that still carried the first-party connector
+crates and their suites, which left for the rdlt-connectors repo in
+the feature-044 cut — crates and suites moved together, so the drop
+is the denominator changing, not tests disappearing. This entry is
+the baseline the post-split tree is read against until a later
+feature re-records it.
+
 ## The 0.2 → 0.3 window — standing as of feature 020
 
 The window recorded by feature 014 is still the next publish, and it stayed
