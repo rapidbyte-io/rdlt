@@ -171,6 +171,50 @@ async fn both_s2_and_s4_are_reported_independently() {
     }
 }
 
+/// Discovers its stream fine, then fails every read outright — the
+/// S2 checks (the snapshot door and the resume-law replays) never
+/// execute for the stream.
+struct UnreadableSource;
+
+#[async_trait]
+impl Source for UnreadableSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("unreadable", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![StreamSpec::new("events").with_cursor_field("a")])
+    }
+
+    async fn read(&self, _req: ReadRequest) -> Result<(), SourceError> {
+        Err(SourceError::fatal("the store is unreachable"))
+    }
+}
+
+/// A stream whose baseline read fails skips the whole S2 block, so S2
+/// must NOT conclude: concluding let a certifier's fold render
+/// `PASS S2` directly under the S1 read failure — a pass for checks
+/// that never executed. S1 concluded (the failed read is its verdict)
+/// and S4 concluded (its check runs for every stream regardless).
+#[tokio::test]
+async fn a_failed_baseline_read_withholds_s2_from_concluded() {
+    let (failures, _skips, concluded) = verify_source(&UnreadableSource).await.tolerating_skips();
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.clause == "S1" && f.message.contains("stream `events`")),
+        "the read failure lands at S1 naming the stream: {failures:?}"
+    );
+    assert!(
+        !concluded.contains(&"S2"),
+        "S2's checks never ran — it must not conclude: {concluded:?}"
+    );
+    assert!(
+        concluded.contains(&"S1") && concluded.contains(&"S4"),
+        "S1 and S4 reached verdicts for every stream: {concluded:?}"
+    );
+}
+
 /// A destination whose `open` always fails. Pins the second generation-1
 /// defect: every open was labelled D4, sending the author to investigate
 /// teardown semantics that were never reached — the setup failure now

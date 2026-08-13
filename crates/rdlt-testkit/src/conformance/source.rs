@@ -25,6 +25,14 @@ use super::{Conformance, ConformanceFailure, ConformanceSkip};
 /// door mints its skips.
 pub type SourceConformance = Conformance;
 
+/// Every clause this suite asserts, in module-doc order — THE one
+/// clause list (the destination suite's `ASSERTED_CLAUSES` precedent):
+/// the terminal conclusion derives from it rather than from a second
+/// inline copy, so a clause added to the suite cannot be forgotten in
+/// one place and fold as NOT-REACHED at certify for conformant
+/// connectors.
+pub const ASSERTED_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
+
 /// Byte budget for the harness's record channel — large enough that a
 /// well-behaved source never blocks on backpressure while being certified.
 const CHANNEL_BYTE_BUDGET: usize = 16 << 20;
@@ -140,30 +148,25 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
     let mut skips = Vec::new();
     let fail = |clause, message: String| ConformanceFailure { clause, message };
 
-    // Both early returns leave `concluded` EMPTY deliberately: a suite
-    // that never got past stream discovery reached NO clause's checks —
-    // S1 carries the discovery failure, and S2/S4 must read as
-    // never-reached to a consumer, not as silently passed.
     let streams = match source.streams().await {
         Ok(streams) => streams,
         Err(e) => {
             failures.push(fail("S1", format!("streams() failed: {e}")));
-            return SourceConformance {
-                failures,
-                skips,
-                concluded: Vec::new(),
-            };
+            return nothing_concluded(failures, skips);
         }
     };
     if streams.is_empty() {
         failures.push(fail("S1", "source declares no streams".into()));
-        return SourceConformance {
-            failures,
-            skips,
-            concluded: Vec::new(),
-        };
+        return nothing_concluded(failures, skips);
     }
 
+    // S2's checks — the snapshot door and the resume-law replays — live
+    // entirely inside a stream's Ok(full) arm below, so a stream whose
+    // baseline read fails skips them wholesale: S2 concludes only when
+    // they executed for EVERY stream. (S1 reaches a verdict either way —
+    // the failed read IS its failure — and S4 runs unconditionally per
+    // stream.)
+    let mut s2_ran_for_every_stream = true;
     for spec in &streams {
         // Baseline full read, feeding the resume law. S4 below runs for
         // EVERY stream regardless of this block's outcome — cancellation
@@ -174,6 +177,12 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
         match read_all(source, spec, None).await {
             Err(e) => {
                 failures.push(fail("S1", format!("stream `{}`: {e}", spec.name)));
+                // The whole Ok(full) arm is skipped for this stream, so
+                // S2 must not conclude: concluding would let a consumer
+                // mint "PASS S2" from silence while the failed read left
+                // its checks unexecuted (the silence-certified-as-pass
+                // class, one level below the fold that refuses it).
+                s2_ran_for_every_stream = false;
             }
             Ok(full) => {
                 let checkpoints = full.checkpoints();
@@ -265,12 +274,31 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
         }
     }
 
-    // The per-stream loop has no abort path — every stream's S1/S2/S4
-    // checks ran to a verdict once it is entered — so completion here
-    // concludes all three clauses.
+    // Completion concludes a clause only where its checks ran for EVERY
+    // stream: S1 reaches a verdict per stream even on a failed read, S4
+    // runs unconditionally per stream, and S2 is withheld when a failed
+    // baseline read skipped its checks above.
     SourceConformance {
         failures,
         skips,
-        concluded: vec!["S1", "S2", "S4"],
+        concluded: ASSERTED_CLAUSES
+            .into_iter()
+            .filter(|clause| *clause != "S2" || s2_ran_for_every_stream)
+            .collect(),
+    }
+}
+
+/// The early-return shape for a suite that never got past stream
+/// discovery: `concluded` EMPTY deliberately — no clause's checks ran.
+/// S1 carries the discovery failure, and S2/S4 must read as
+/// never-reached to a consumer, not as silently passed.
+fn nothing_concluded(
+    failures: Vec<ConformanceFailure>,
+    skips: Vec<ConformanceSkip>,
+) -> SourceConformance {
+    SourceConformance {
+        failures,
+        skips,
+        concluded: Vec::new(),
     }
 }
