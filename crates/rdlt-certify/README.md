@@ -29,7 +29,14 @@ title:
 PASS P3 (spec/handshake identity agreement)
 FAIL P5 (one Arrow batch per read frame): an arrow read frame carried 2 record batches — …
 SKIP K-D4 (SIGKILL between write and publish, then exactly-once on re-run): no table probe supplied — …
+NOT-REACHED D1 (staging invisibility): the suite reported no verdict for this clause and never concluded its checks — …
 ```
+
+`NOT-REACHED` is the fourth spelling: the suite that declared the
+clause died before its checks ran. It is not a pass (nothing was
+proven) and not an honest skip (nobody chose not to exercise it), so
+it refuses certification exactly like a failure — a report can exit 1
+with `NOT-REACHED` lines and no `FAIL` line at all.
 
 `--report json` emits the same entries as one JSON document on stdout
 (diagnostics stay on stderr). `--explain` prints every clause id,
@@ -47,7 +54,10 @@ Exit codes:
   merely forgot resume — and a blanket acknowledgment would fold a
   regressed co-stream green beside a genuine snapshot one; kill-matrix
   and destination probe skips never refuse);
-- **1** — at least one clause failed; the report lists each failure;
+- **1** — at least one clause failed or was never reached; the report
+  lists each failure and each `NOT-REACHED` clause (tooling acting on
+  refusals must read both spellings — grepping `^FAIL` alone misses a
+  run whose suite died mid-flight);
 - **2** — the run was refused before certification could judge
   anything: the target did not resolve or spawn (the runtime's own
   error spelling on stderr), the `--config` file was unreadable or not
