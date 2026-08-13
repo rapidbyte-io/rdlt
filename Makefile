@@ -19,8 +19,6 @@
 #                                NOTE: no CI schedule invokes this verb —
 #                                deep-checks.yml runs prop, sweep and fuzz
 #                                nightly and mutants weekly, each individually.
-#                                (The RDLT_HEAVY memory_bound claim moved to
-#                                the rdlt-connectors repo with its crate.)
 #   make bench                 shred microbench (criterion)
 #     TARGET=iai make bench      instruction-count benches + baseline comparison
 #     TARGET=cold make bench     cold-start check (<=40ms); needs hyperfine and
@@ -35,8 +33,8 @@
 #     TARGET=<cell-or-glob> make bench   one cell or a slice, e.g.
 #                                TARGET=pg-to-pg-1m or TARGET='pg-*'
 #                                (cells: cargo run -p rdlt-bench -- list)
-#   make check                 everything a PR must pass (lint + docs + test + sweep
-#                                + perf gate)
+#   make check                 everything a PR must pass (lint + docs + test + e2e
+#                                + sweep + semver + perf gates)
 #                                PREREQUISITES, and they hard-fail rather than skip
 #                                (a missing instrument must never read as a passing
 #                                gate): `hyperfine` and `python3` for the cold-start
@@ -48,6 +46,10 @@
 #                                the published surface, not a cosmetic detail
 #   make coverage              line coverage over the whole workspace; the recorded
 #                                floor is 80%, enforced at feature close-out
+#   make semver                public-surface comparison for the semver-sacred
+#                                crates against the pinned baseline
+#   make counts                report per-binary tests-run/skipped counts in the
+#                                committed baseline's shape (reports, never fails)
 #   make reclaim               remove every container AND volume this workspace
 #                                started (label rdlt-test=1). Safe to run any
 #                                time: it can only match our own label, never
@@ -61,14 +63,11 @@
 TARGET ?=
 MUTANTS_TMPDIR ?= $(CURDIR)/target/mutants-tmp
 FUZZ_SECONDS ?= 600
-# The connector-owned fuzz targets (file_config, cursor_decode,
-# pg_copy_decode, pg_pgoutput_decode) were DELETED at the 044 cut with
-# their crates' move — the rdlt-connectors repository carries no fuzz
-# harness yet (standing owner record there); what stays fuzzes the
-# engine alone.
+# These fuzz the engine alone; connector fuzz harnesses belong to the
+# rdlt-connectors repository (a standing owner record there).
 FUZZ_TARGETS := jsonl_slab arrow_schema_map shred_push
 
-.PHONY: build release connector-bins dist lint docs test bench check coverage reclaim
+.PHONY: build release connector-bins dist lint docs test bench check coverage counts semver reclaim
 
 build:
 	cargo build --workspace
@@ -77,11 +76,10 @@ release:
 	cargo build --release -p rdlt-cli
 
 # The reference connector BINARY, release — what this repo's own gates
-# (the cold-start instrument's `connector:` arms) spawn on PATH. The
-# SEVEN first-party connectors live in the sibling rdlt-connectors repo
-# now (044); their release bins are built and installed from there, and
-# any cell or run that spawns them must get them from that repo's own
-# verbs — this engine repo builds only the connector it gates on.
+# (the cold-start instrument's `connector:` arms) spawn on PATH. This
+# engine repo builds only the connector it gates on; the first-party
+# connectors' release bins come from the sibling rdlt-connectors repo's
+# own verbs.
 connector-bins:
 	cargo build --release -p rdlt-connector-reference --features bin-serve --bin rdlt-connector-reference
 
@@ -106,68 +104,76 @@ lint:
 	# would pull tonic into every OTHER crate's default clippy run too.
 	cargo clippy -p rdlt-connector-sdk --all-targets --features serve -- -D warnings
 
-# THE SPAWN-SUITE MATRIX, stated once (round-4 fix: twelve-plus lines
-# were duplicated between the full gate and TARGET=unit, and a suite
-# added to one block could silently miss the other). Expanded in BOTH
-# gate blocks — the 024 both-blocks discipline stands, the spelling
-# lives here alone. One module per invocation throughout: nextest
-# fails only a FULLY empty selection, so an OR filter with a renamed
-# module beside a live one passes green (measured) — separate lines
-# make each module fail its own line.
-define spawn-suite-matrix
-# Same class once more, the connector BINARY (039 T6): behind
-# `bin-serve` + `required-features`, so NO workspace command ever
-# compiles it — built here explicitly so a bin that stops
-# compiling fails the gate rather than rotting unseen (the
-# never-compiled-file lesson from 024). Then rdlt-runtime's
-# spawn-bins suite drives the BUILT reference bin through the
-# provider — the T6 smoke (test_spawned_bins) plus the T8 headline
-# e2e (test_e2e_spawned: a full engine run over the spawned
-# reference connector on both sides, and its one crash arm); the
-# env var tells the shared helper to (re)build the bins itself, so
-# the suite stays honest run alone. Every engine gate line below
-# spawns the reference bin alone (044): the seven first-party
-# connectors live in the sibling rdlt-connectors repo, whose own
-# gate certifies them — an engine gate anchored on them would have
-# gone dark at the cut. ONE module per invocation applies to the
-# NEXTEST lines below (empty-selection semantics), not to builds.
+# THE FAST SUITE, stated once and expanded in BOTH gate blocks — the
+# default verb and TARGET=unit (the 024 both-blocks discipline: a suite
+# spelled twice is a suite one block eventually loses; the spelling
+# lives here alone). One module per NEXTEST invocation throughout:
+# nextest fails only a FULLY empty selection, so an OR filter with a
+# renamed module beside a live one passes green (measured) — separate
+# lines make each module fail its own line.
+define fast-suite
+cargo nextest run --workspace
+# The sdk's `schema` feature gates schema_of and its test; no workspace
+# run enables it, so without this line that test had never executed
+# (the 024 zero-second-pass class). `-E 'test(schema_of)'` so an empty
+# selection — a renamed test — fails rather than passing vacuously.
+cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
+# Same class, the SPI's `store` module: no workspace member enables
+# `object-store`, so a plain workspace run compiles neither the module
+# nor its four unit tests.
+cargo nextest run -p rdlt-connector --features object-store -E 'test(store::)'
+# Same class, `serve` (038): OFF by default so a plain workspace run
+# compiles neither serve/ nor its tests. FOUR SEPARATE `-E`
+# invocations, not one combined `or` expression: measured that a
+# combined `test(a) or test(b) or ...` fails CLOSED only when EVERY
+# clause goes empty at once — renaming just one of the four modules
+# still selects the other three and exits 0, silently dropping
+# coverage. Each side's own unit tests first (`serve::common::tests`,
+# `serve::destination::tests`), then the tonic-over-UDS integration
+# suites for each half. Same binary each time (already built after the
+# first), so this costs nothing beyond the four short nextest startups.
+cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common)'
+cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
+cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
+cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
+# Same class once more, the connector BINARY: behind `bin-serve` +
+# `required-features`, so NO workspace command ever compiles it — built
+# here explicitly so a bin that stops compiling fails the gate rather
+# than rotting unseen (the never-compiled-file lesson from 024). The
+# one-module rule applies to the NEXTEST lines (empty-selection
+# semantics), not to builds.
 cargo build -p rdlt-connector-reference --features bin-serve --bin rdlt-connector-reference
 # The certifier bin rides the same discipline: behind `bin` +
-# `required-features`, built here explicitly so a CLI that stops
-# compiling fails the gate rather than rotting unseen. Its OWN
-# invocation — a different feature set (`bin`) does not batch with
-# the bin-serve group.
+# `required-features`. Its OWN invocation — a different feature set
+# (`bin`) does not batch with the bin-serve group.
 cargo build -p rdlt-certify --features bin --bin rdlt-certify
+# rdlt-runtime's spawn-bins suite drives the BUILT reference bin
+# through the provider — the T6 smoke (test_spawned_bins) plus the T8
+# headline e2e (test_e2e_spawned: a full engine run over the spawned
+# reference connector on both sides, and its one crash arm). The env
+# var tells the shared helper to (re)build the bins itself, so each
+# suite stays honest run alone.
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_spawned_bins)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-bins -E 'test(test_e2e_spawned)'
-# The D1 swap's live halves (043 T1), on the reference bin since 044:
-# the facade's `connector:` documents resolve to SPAWNED binaries, so
-# its acceptance arm (spawned_pipeline: discovery over the search
-# path, no path: override), its load-bearing e2e (the `e2e` binary:
-# build_pipeline + persisted cursor across sessions), and the CLI's
-# run/validate/events contract pins all need the real bin. Same
-# env-var discipline; own line per the one-module-per-invocation rule
-# (an empty selection — a renamed binary or module — fails its own
-# line).
+# The D1 swap's live halves, on the reference bin: the facade's
+# `connector:` documents resolve to SPAWNED binaries, so its acceptance
+# arm (spawned_pipeline: discovery over the search path, no path:
+# override), its load-bearing e2e (the `e2e` binary: build_pipeline +
+# persisted cursor across sessions), and the CLI's run/validate/events
+# contract pins all need the real bin.
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(spawned_pipeline)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(e2e)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-cli --features spawn-bins -E 'test(spawned_runs)'
-# The reference connector's OWN certification cells (044 T1): the
-# spawned reference bin faces the full clause suite over the wire,
-# BOTH roles — hermetic on tempdirs, no container runtime, never
-# skips. This is the in-gate certifier exercise that outlives the
-# connectors' move; own line per the one-module-per-invocation rule.
-# (The seven first-party connectors' spawn/certify/kill suites moved
-# with their crates: the rdlt-connectors repo's gate runs them.)
+# The reference connector's OWN certification cells: the spawned
+# reference bin faces the full clause suite over the wire, BOTH roles —
+# hermetic on tempdirs, no container runtime, never skips. (The
+# first-party connectors' spawn/certify/kill suites run in the
+# rdlt-connectors repo's own gate, beside their crates.)
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-connector-reference --features spawn-bins -E 'test(test_certify_wire)'
-# Same class, the CERTIFIER's spawn suite (040): rdlt-certify's gated
-# cases drive the REAL reference bin through the certification stack —
-# source, destination, and the kill matrix (SIGKILL at every K
-# boundary, convergence by re-run) — behind `spawn-bins` +
-# RDLT_BUILD_CONNECTOR_BINS=1 exactly like the runtime lines above
-# (same bin, already built by the build line; the env var keeps the
-# suite honest run alone). ONE module per invocation, as everywhere
-# in this block. The crate's UNGATED tests (report pins, the
+# The CERTIFIER's spawn suite (040): rdlt-certify's gated cases drive
+# the REAL reference bin through the certification stack — source,
+# destination, and the kill matrix (SIGKILL at every K boundary,
+# convergence by re-run). The crate's UNGATED tests (report pins, the
 # in-process rogue suites) carry no required-features, so the bare
 # workspace line at the top already runs them — no line here.
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_certify_reference_source)'
@@ -177,112 +183,48 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-b
 # bin itself (cargo builds it for `CARGO_BIN_EXE_`), pinning the
 # stdout/stderr/exit-code contract end to end.
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli)'
+# The Python proof connector (040): ZERO Rust — the SAME certifier
+# bin, the SAME clause vocabulary, against a pure-Python jsonl source
+# over the real wire. One compound block so the skip guard covers all
+# three steps; skips ONLY when python3 is absent — a broken venv, stub
+# drift, or a failed clause FAILS. The venv is cached under
+# target/py-certify-venv and rebuilt when requirements.txt changes
+# (hash check); the certifier bin was built by the explicit build line
+# above; prepending the venv's bin makes the launcher's `python3`
+# resolve to the pinned deps.
+@if command -v python3 >/dev/null 2>&1; then \
+	set -e; \
+	req=connectors/python/rdlt-connector-pyjsonl/requirements.txt; \
+	venv=target/py-certify-venv; \
+	if ! sha256sum --status -c "$$venv/.requirements.sha256" 2>/dev/null; then \
+		rm -rf "$$venv"; \
+		python3 -m venv "$$venv"; \
+		"$$venv/bin/pip" install --quiet -r "$$req"; \
+		sha256sum "$$req" > "$$venv/.requirements.sha256"; \
+	fi; \
+	tools/check-python-stubs.sh; \
+	PATH="$$(pwd)/$$venv/bin:$$PATH" $${CARGO_TARGET_DIR:-target}/debug/rdlt-certify --role source \
+		--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
+		connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
+else \
+	echo "SKIP: python3 absent — the Python proof-connector certification needs it"; \
+fi
 endef
 
 test:
 ifeq ($(TARGET),)
-	cargo nextest run --workspace
-	# The sdk's `schema` feature gates schema_of and its test; no workspace
-	# run enables it, so without this line that test had never executed
-	# (the 024 zero-second-pass class). `-E 'test(schema_of)'` so an empty
-	# selection — a renamed test — fails rather than passing vacuously.
-	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
-	# Same class, the SPI's `store` module (044): behind its
-	# `object-store` feature, which the file connector used to switch on
-	# for the whole workspace through feature unification — with the
-	# connectors cut out, NO workspace member enables it, so a plain
-	# workspace run compiles neither the module nor its four unit tests.
-	# Verified by the cut's by-name reconciliation, not assumed. `-E` so
-	# an empty selection (a renamed module) fails the line.
-	cargo nextest run -p rdlt-connector --features object-store -E 'test(store::)'
-	# Same class, `serve` feature (038): OFF by default so a plain
-	# workspace run compiles neither serve/ nor its tests. FOUR
-	# SEPARATE `-E` invocations, not one combined `or` expression (038
-	# T5 review, F6): measured that a combined `test(a) or test(b) or
-	# ...` fails CLOSED only when EVERY clause goes empty at once —
-	# renaming just one of the four modules still selects the other
-	# three and exits 0, silently dropping coverage exactly like the
-	# 024 zero-second-pass class. One invocation per module means a
-	# rename of ANY of them fails ITS OWN line: `serve::common::tests`
-	# and `serve::destination::tests` (each side's own unit tests — the
-	# destination one added at 038 T5 review round 1, the
-	# `part_close_reason_str` serde-parity pin), then `cases::
-	# test_serve_source` and `cases::test_serve_destination` (the
-	# tonic-over-UDS integration suites for each half). Same binary
-	# each time (already built after the first), so this costs nothing
-	# beyond the four short nextest startups.
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
-	$(spawn-suite-matrix)
-	# The Python proof connector (040): ZERO Rust — the SAME certifier
-	# bin, the SAME clause vocabulary, against a pure-Python jsonl
-	# source over the real wire. One compound block so the skip guard
-	# covers all three steps; skips ONLY when python3 is absent — a
-	# broken venv, stub drift, or a failed clause FAILS. The venv is
-	# cached under target/py-certify-venv and rebuilt when
-	# requirements.txt changes (hash check); the certifier bin was
-	# built by the explicit build line above; prepending the venv's
-	# bin makes the launcher's `python3` resolve to the pinned deps.
-	@if command -v python3 >/dev/null 2>&1; then \
-		set -e; \
-		req=connectors/python/rdlt-connector-pyjsonl/requirements.txt; \
-		venv=target/py-certify-venv; \
-		if ! sha256sum --status -c "$$venv/.requirements.sha256" 2>/dev/null; then \
-			rm -rf "$$venv"; \
-			python3 -m venv "$$venv"; \
-			"$$venv/bin/pip" install --quiet -r "$$req"; \
-			sha256sum "$$req" > "$$venv/.requirements.sha256"; \
-		fi; \
-		tools/check-python-stubs.sh; \
-		PATH="$$(pwd)/$$venv/bin:$$PATH" $${CARGO_TARGET_DIR:-target}/debug/rdlt-certify --role source \
-			--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
-			connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
-	else \
-		echo "SKIP: python3 absent — the Python proof-connector certification needs it"; \
-	fi
+	$(fast-suite)
 	cargo test --doc --workspace
 else ifeq ($(TARGET),unit)
-	cargo nextest run --workspace
-	cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
-	# The SPI's feature-gated `store` module — same line as the full gate
-	# above (no workspace member enables `object-store` since the cut).
-	cargo nextest run -p rdlt-connector --features object-store -E 'test(store::)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::common)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
-	cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'
-	$(spawn-suite-matrix)
-	# The Python proof-connector certification — the same block as the
-	# full gate above (skip ONLY on absent python3; venv cached by
-	# requirements hash; stub drift and failed clauses FAIL).
-	@if command -v python3 >/dev/null 2>&1; then \
-		set -e; \
-		req=connectors/python/rdlt-connector-pyjsonl/requirements.txt; \
-		venv=target/py-certify-venv; \
-		if ! sha256sum --status -c "$$venv/.requirements.sha256" 2>/dev/null; then \
-			rm -rf "$$venv"; \
-			python3 -m venv "$$venv"; \
-			"$$venv/bin/pip" install --quiet -r "$$req"; \
-			sha256sum "$$req" > "$$venv/.requirements.sha256"; \
-		fi; \
-		tools/check-python-stubs.sh; \
-		PATH="$$(pwd)/$$venv/bin:$$PATH" $${CARGO_TARGET_DIR:-target}/debug/rdlt-certify --role source \
-			--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
-			connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
-	else \
-		echo "SKIP: python3 absent — the Python proof-connector certification needs it"; \
-	fi
+	$(fast-suite)
 else ifeq ($(TARGET),e2e)
-	# ONE e2e binary answers this name since the cut (044): the rdlt
-	# facade's, spawn-gated behind `spawn-bins` (the load-bearing
-	# `binary(e2e)` name — build_pipeline over the spawned reference
-	# connector, persisted cursor across sessions). The feature + env
-	# var are what keep the selection NON-EMPTY: without them nextest
-	# compiles the binary empty, selects zero tests and fails — the 024
-	# empty-selection discipline. (The file crate's e2e binary moved to
-	# rdlt-connectors with its crate.)
+	# ONE e2e binary answers this name: the rdlt facade's, spawn-gated
+	# behind `spawn-bins` (the load-bearing `binary(e2e)` name —
+	# build_pipeline over the spawned reference connector, persisted
+	# cursor across sessions). The feature + env var are what keep the
+	# selection NON-EMPTY: without them nextest compiles the binary
+	# empty, selects zero tests and fails — the 024 empty-selection
+	# discipline.
 	RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(e2e)'
 else ifeq ($(TARGET),sweep)
 	# No `--no-tests=pass`, and that distinction is the point: `--no-tests`
@@ -290,8 +232,8 @@ else ifeq ($(TARGET),sweep)
 	# An empty SELECTION only ever means a binary was renamed, deleted, or
 	# misspelled here — which must fail. nextest's default is already
 	# `fail`; relying on it is deliberate. The engine sweep is the one
-	# sweep this repo owns since the cut (044): the connector sweeps run
-	# in the rdlt-connectors repo's own gate, beside their crates.
+	# sweep this repo owns; the connector sweeps run in the rdlt-connectors
+	# repo's own gate, beside their crates.
 	cargo nextest run -p rdlt-engine --features failpoints -E 'binary(crash_sweep)'
 else ifeq ($(TARGET),prop)
 	# `binary(...)`, not `test(...)`: shred_property is the BINARY; the test
@@ -390,11 +332,10 @@ else ifeq ($(TARGET),mutants)
 	  cargo mutants --iterate --jobs 2 --jobserver-tasks 16 \
 	    --minimum-test-timeout 180 --profile mutants
 else ifeq ($(TARGET),deep)
-	# The RDLT_HEAVY memory_bound claim moved with the postgres crate to
+	# The RDLT_HEAVY memory_bound claim lives with the postgres crate in
 	# the rdlt-connectors repo, where `TARGET=deep make test` runs it
 	# (that verb installs the release rdlt CLI at the repo's locked rdlt
 	# revision and builds the release connector bins the cell spawns).
-	# The (retired) Spark read-back tier died with iceberg generation 1.
 	$(MAKE) test TARGET=prop
 	$(MAKE) test TARGET=sweep
 	$(MAKE) test TARGET=mutants
@@ -417,8 +358,8 @@ else ifeq ($(TARGET),cold)
 	# machine, neither of which a shared CI runner provides. It rides `make
 	# check` locally and the recorded measurement session, never the CI perf
 	# gate — where it silently required a tool no workflow installs. The
-	# measured pipeline spawns the reference bin on both sides (044), so it
-	# is built alongside the CLI.
+	# measured pipeline spawns the reference bin on both sides, so it is
+	# built alongside the CLI.
 	$(MAKE) release
 	$(MAKE) connector-bins
 	benches/check-cold-start.sh
@@ -453,21 +394,20 @@ else
 	cargo run -q -p rdlt-bench -- run --filter '$(TARGET)'
 endif
 
-# Measured line coverage; the recorded floor is 80%, enforced at feature
-# close-out rather than per-push (no CI gate). The run is WORKSPACE-WIDE —
-# `cargo llvm-cov nextest` takes no package filter here — so the floor is read
-# against the whole tree. Numbers + exclusions live in benches/RESULTS.md.
 # `-D warnings` promotes rustdoc's lints to errors: a dead intra-doc link is a
 # defect in what consumers read, and nothing else in the gate looks at rustdoc.
 # --all-features so cfg-gated public items are documented too.
 docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
+# Measured line coverage; the recorded floor is 80%, enforced at feature
+# close-out rather than per-push (no CI gate). The run is WORKSPACE-WIDE —
+# `cargo llvm-cov nextest` takes no package filter here — so the floor is read
+# against the whole tree. Numbers + exclusions live in benches/RESULTS.md.
 coverage:
-	# The snowflake-sweep exclusion the recorded figures carried died with
-	# the crate at the 044 cut; the whole remaining tree runs here. The
-	# recorded pre-cut figures were measured over a different denominator —
-	# read them against their own tree, not this one.
+	# Recorded pre-044 figures were measured over a tree that still
+	# carried the connector crates — read them against their own
+	# denominator, not this one.
 	cargo llvm-cov nextest --features failpoints
 
 # Public-surface comparison for the two semver-sacred crates.
@@ -504,8 +444,9 @@ semver:
 check: lint
 	$(MAKE) docs
 	$(MAKE) test
-	# e2e was reachable from NO target: it is not in `deep` either, so its two
-	# suites were gated by nothing while looking like coverage in the tree.
+	# e2e is reachable from no other composed verb (it is not in `deep`
+	# either) — without this line its suite would be gated by nothing
+	# while looking like coverage in the tree.
 	$(MAKE) test TARGET=e2e
 	$(MAKE) test TARGET=sweep
 	$(MAKE) semver
