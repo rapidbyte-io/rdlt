@@ -17,7 +17,7 @@ use rdlt_bench::{
     name = "rdlt-bench",
     about = "rdlt declarative benchmark harness: cells as data -> run -> gate -> report",
     after_help = "Run from the repo root; measured runs need `make release` and a quiet machine.\n\
-                  Cells: benches/cells/*.toml · bars: benches/bars.toml · artifacts: benches/results/"
+                  Cells: benches/harness/cells/*.toml · bars: benches/bars.toml · artifacts: benches/results/"
 )]
 struct Cli {
     #[command(subcommand)]

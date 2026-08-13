@@ -65,7 +65,7 @@ id = "pg"
 kind = "postgres_container"
 port = 5439
 conn = "postgresql://postgres:postgres@127.0.0.1:5439/src"
-seed_sql = "{{benches}}/fixtures/seed_pg.sql"
+seed_sql = "{{benches}}/harness/fixtures/seed_pg.sql"
 reset_sql = "@reset_dest_schemas"
 
 # One RUSTFS object store: `raw` seeded with the flagship 200k nested jsonl;
@@ -78,7 +78,7 @@ image = "docker.io/rustfs/rustfs:1.0.0-beta.11"
 port = 19110
 container_port = 9000
 run_args = ["-e", "RUSTFS_ACCESS_KEY=rdlt-bench", "-e", "RUSTFS_SECRET_KEY=rdlt-bench-secret"]
-generate_sh = "python3 {{benches}}/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && python3 {{benches}}/fixtures/seed_s3.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret raw landed/rows.jsonl {{data}}/rows.jsonl && python3 {{benches}}/fixtures/s3_bucket.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret lake && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"landed/*.jsonl\"\n    location:\n      s3:\n        endpoint: \"http://127.0.0.1:19110\"\n        bucket: raw\n        access_key: rdlt-bench\n        secret_key: rdlt-bench-secret\n' > {{data}}/files.yaml"
+generate_sh = "python3 {{benches}}/harness/fixtures/gen_jsonl.py 200000 {{data}}/rows.jsonl && python3 {{benches}}/harness/fixtures/seed_s3.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret raw landed/rows.jsonl {{data}}/rows.jsonl && python3 {{benches}}/harness/fixtures/s3_bucket.py http://127.0.0.1:19110 rdlt-bench rdlt-bench-secret lake && printf 'streams:\n  - name: events\n    format: jsonl\n    path: \"landed/*.jsonl\"\n    location:\n      s3:\n        endpoint: \"http://127.0.0.1:19110\"\n        bucket: raw\n        access_key: rdlt-bench\n        secret_key: rdlt-bench-secret\n' > {{data}}/files.yaml"
 hash = ["{{data}}/rows.jsonl"]
 
 # One Oracle Database 23ai Free, pinned to the SAME tag the Oracle connector's
@@ -119,5 +119,5 @@ run_args = [
   "-e", "APP_USER=RDLT",
   "-e", "APP_USER_PASSWORD=rdlt-bench",
 ]
-generate_sh = "sh {{benches}}/fixtures/seed_oracle.sh rdlt-bench-oracle 15210 RDLT rdlt-bench 200000 {{data}}/oracle-identity.txt && printf 'host: 127.0.0.1\nport: 15210\nservice: FREEPDB1\nuser: RDLT\npassword: rdlt-bench\nstreams:\n  - name: events\n    table: EVENTS\n' > {{data}}/oracle.yaml"
+generate_sh = "sh {{benches}}/harness/fixtures/seed_oracle.sh rdlt-bench-oracle 15210 RDLT rdlt-bench 200000 {{data}}/oracle-identity.txt && printf 'host: 127.0.0.1\nport: 15210\nservice: FREEPDB1\nuser: RDLT\npassword: rdlt-bench\nstreams:\n  - name: events\n    table: EVENTS\n' > {{data}}/oracle.yaml"
 hash = ["{{data}}/oracle-identity.txt"]

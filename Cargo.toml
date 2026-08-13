@@ -152,7 +152,7 @@ indicatif = "0.18"
 #
 # NOTE: `[profile.bench]` deliberately does NOT pin the old codegen settings. It
 # inherits this profile, so instruction-count baselines shift once and are
-# re-recorded deliberately (benches/compare-iai.sh --record) rather than being
+# re-recorded deliberately (benches/harness/compare-iai.sh --record) rather than being
 # insulated — a divergent bench profile would stop the perf-gate job sharing build
 # artifacts with `make release`.
 [profile.release]

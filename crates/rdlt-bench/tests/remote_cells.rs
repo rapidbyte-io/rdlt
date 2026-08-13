@@ -63,7 +63,7 @@ fn pipelines_dir() -> PathBuf {
         .ancestors()
         .nth(2)
         .expect("crates/rdlt-bench sits two levels below the repo root")
-        .join("benches/cells/pipelines")
+        .join("benches/harness/cells/pipelines")
 }
 
 /// The runner's render-time substitution map with stand-in values,

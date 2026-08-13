@@ -30,8 +30,8 @@
 # hyperfine and python3 are prerequisites.
 set -eu
 
-BENCHES_DIR=$(cd "$(dirname "$0")" && pwd)
-REPO_ROOT=$(cd "$BENCHES_DIR/.." && pwd)
+HARNESS_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "$HARNESS_DIR/../.." && pwd)
 # Honour CARGO_TARGET_DIR: a contributor who redirects cargo's output (a
 # shared target dir, a faster disk) otherwise gets "release binary missing"
 # immediately after a successful `make release`.
@@ -72,7 +72,7 @@ printf '{"id":1,"name":"cold"}\n' >"$WORK/cold.jsonl"
 # Render the standalone spec for this run's paths.
 SPEC="$WORK/cold.yaml"
 sed -e "s#@FILES@#$WORK/cold.jsonl#g" -e "s#@WORK@#$WORK#g" \
-    "$BENCHES_DIR/cold-start/cold.yaml" >"$SPEC"
+    "$HARNESS_DIR/cold-start/cold.yaml" >"$SPEC"
 
 EXPORT="$WORK/hyperfine.json"
 # warmups 3, runs 20, fresh workdir+output per run (the recorded protocol); -N

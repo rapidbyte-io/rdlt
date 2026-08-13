@@ -10,7 +10,7 @@
 # shred-only-200k, rest-pg-100k, parquet-passthrough, pg-wide-duckdb-1m,
 # pg-wide-pg-1m, cold-start) are recorded in the RESULTS.md policy log with
 # their final values and the archive commit (40841ab). The cold-start absolute
-# check now lives on the instruments track (benches/check-cold-start.sh).
+# check now lives on the instruments track (benches/harness/check-cold-start.sh).
 
 # 2026-08-11 — the D1 swap (ADR 0001): the spawned-connector recordings are
 # the benchmark identity. The four bars below were minted 2026-08-10 from TWO

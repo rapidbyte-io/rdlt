@@ -1,6 +1,6 @@
 //! # rdlt-bench — the declarative benchmark harness
 //!
-//! Cells are data (`benches/cells/*.toml`); this crate is the one protocol that
+//! Cells are data (`benches/harness/cells/*.toml`); this crate is the one protocol that
 //! runs them. Library + thin binary so the harness's own logic (loaders, stats,
 //! gate verdicts, report splicing) is unit-testable under nextest without
 //! containers.

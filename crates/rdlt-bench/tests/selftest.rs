@@ -14,8 +14,8 @@ fn repo_paths() -> Paths {
         .expect("crates/rdlt-bench sits two levels below the repo root")
         .to_path_buf();
     Paths {
-        cells_dir: repo.join("benches/cells"),
-        fixtures_toml: repo.join("benches/fixtures/fixtures.toml"),
+        cells_dir: repo.join("benches/harness/cells"),
+        fixtures_toml: repo.join("benches/harness/fixtures/fixtures.toml"),
         bars_toml: repo.join("benches/bars.toml"),
         results: repo.join("benches/results"),
         cli: repo.join("target/release/rdlt"),
@@ -41,7 +41,7 @@ fn selftest_cell_runs_the_full_protocol() {
     let cell = all_cells
         .iter()
         .find(|c| c.id == "selftest-protocol")
-        .expect("selftest cell declared in benches/cells/selftest.toml");
+        .expect("selftest cell declared in benches/harness/cells/selftest.toml");
     assert_eq!(cell.runs, 3);
 
     let defs = fixtures::load_fixtures(&paths.fixtures_toml).expect("fixtures load");

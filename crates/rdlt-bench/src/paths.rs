@@ -51,8 +51,8 @@ impl Paths {
             None => dir.join("target"),
         };
         Ok(Self {
-            cells_dir: benches.join("cells"),
-            fixtures_toml: benches.join("fixtures/fixtures.toml"),
+            cells_dir: benches.join("harness/cells"),
+            fixtures_toml: benches.join("harness/fixtures/fixtures.toml"),
             bars_toml: benches.join("bars.toml"),
             results: benches.join("results"),
             cli: target.join("release/rdlt"),

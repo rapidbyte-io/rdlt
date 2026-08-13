@@ -2,7 +2,7 @@
 //!
 //! iai-callgrind measures deterministic instruction counts — stable on shared CI
 //! runners where wall time flaps. Recorded baselines live in
-//! `benches/perf-baselines.json` (lockfile discipline); `benches/compare-iai.sh`
+//! `benches/perf-baselines.json` (lockfile discipline); `benches/harness/compare-iai.sh`
 //! fails on >3% regression. Needs valgrind + a version-matched
 //! `iai-callgrind-runner`.
 

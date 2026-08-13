@@ -22,7 +22,7 @@
 [[cell]]
 id = "pg-to-pg-1m"
 fixtures = ["pg"]
-pipeline = "cells/pipelines/pg-to-pg.yaml"
+pipeline = "harness/cells/pipelines/pg-to-pg.yaml"
 note = "Postgres → Postgres, 1M×12 rows, full replace — the everyday relational table copy, connectors spawned over the connector protocol."
 [cell.verify]
 events = 1_000_000
@@ -41,20 +41,20 @@ network = "host"
 [[cell]]
 id = "pg-to-s3parquet-1m"
 fixtures = ["pg", "rustfs"]
-pipeline = "cells/pipelines/pg-to-s3parquet.yaml"
+pipeline = "harness/cells/pipelines/pg-to-s3parquet.yaml"
 note = "Postgres → Parquet on S3, 1M×12 rows, full replace — relational extract to a lake, connectors spawned over the connector protocol."
 # Bytes each arm LEFT BEHIND, next to how long it took. Without this the cell
 # compared a compressed artifact against an uncompressed one and reported it as
 # parity. Untimed, run after the timed runs, and recorded as ABSENT (never
 # zero) if it cannot reach the store.
-artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake rdlt/ rdlt-bench rdlt-bench-secret"
+artifact_bytes_sh = "python3 {{benches}}/harness/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake rdlt/ rdlt-bench rdlt-bench-secret"
 [cell.verify]
 events = 1_000_000
 [[cell.competitor]]
 variant = "dlt"
 args = ["pipeline_pg_s3parquet.py", "{{conn}}", "connectorx", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt"]
 network = "host"
-artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt/ rdlt-bench rdlt-bench-secret"
+artifact_bytes_sh = "python3 {{benches}}/harness/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt/ rdlt-bench rdlt-bench-secret"
 [[cell.competitor]]
 variant = "dlt-pyarrow"
 # Its OWN prefix. Both dlt variants used to write to lake/dlt/, so the two arms
@@ -64,7 +64,7 @@ variant = "dlt-pyarrow"
 # mean anything until the arms stopped overwriting each other.
 args = ["pipeline_pg_s3parquet.py", "{{conn}}", "pyarrow", "events", "http://127.0.0.1:19110", "rdlt-bench", "rdlt-bench-secret", "lake", "dlt-pyarrow"]
 network = "host"
-artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt-pyarrow/ rdlt-bench rdlt-bench-secret"
+artifact_bytes_sh = "python3 {{benches}}/harness/fixtures/s3_prefix_bytes.py http://127.0.0.1:19110 lake dlt-pyarrow/ rdlt-bench rdlt-bench-secret"
 
 # ---------------------------------------------------------------------------
 # s3jsonl-to-pg-200k — nested JSONL on S3 → Postgres, 200k records, replace.
@@ -72,7 +72,7 @@ artifact_bytes_sh = "python3 {{benches}}/fixtures/s3_prefix_bytes.py http://127.
 [[cell]]
 id = "s3jsonl-to-pg-200k"
 fixtures = ["rustfs", "pg"]
-pipeline = "cells/pipelines/s3jsonl-to-pg.yaml"
+pipeline = "harness/cells/pipelines/s3jsonl-to-pg.yaml"
 note = "Nested JSONL on S3 → Postgres, 200k records, full replace — semi-structured ingestion with child-table shredding, connectors spawned over the connector protocol."
 # The shred lands a child table too; declaring both is what makes the arm
 # comparable with a competitor that moves only what it claims.
@@ -90,7 +90,7 @@ network = "host"
 [[cell]]
 id = "s3jsonl-to-s3parquet-200k"
 fixtures = ["rustfs"]
-pipeline = "cells/pipelines/s3jsonl-to-s3parquet.yaml"
+pipeline = "harness/cells/pipelines/s3jsonl-to-s3parquet.yaml"
 note = "Nested JSONL on S3 → Parquet on S3, 200k records, full replace — lake file-format conversion, connectors spawned over the connector protocol."
 [cell.verify]
 events = 200_000
@@ -109,8 +109,8 @@ network = "host"
 [[cell]]
 id = "pg-to-pg-dedup-1m"
 fixtures = ["pg"]
-pipeline = "cells/pipelines/pg-to-pg-dedup.yaml"
-prepare_sh = "cd {{workdir}} && {{cli}} run {{benches}}/cells/pipelines/pg-to-pg-dedup-load1.yaml"
+pipeline = "harness/cells/pipelines/pg-to-pg-dedup.yaml"
+prepare_sh = "cd {{workdir}} && {{cli}} run {{benches}}/harness/cells/pipelines/pg-to-pg-dedup-load1.yaml"
 note = "Postgres → Postgres, 1M rows, keep-in-sync by id — LOAD 2 measured: full re-delivery with 50% of rows changed, deduped by id, connectors spawned over the connector protocol. Both products run the same full-redelivery-plus-dedup regime (research D-08)."
 [cell.verify]
 events_merged = 1_000_000

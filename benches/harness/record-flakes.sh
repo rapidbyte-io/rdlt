@@ -16,13 +16,13 @@
 # The log is committed. It is evidence, not a cache.
 #
 # Usage:
-#   benches/record-flakes.sh                     # whole suite
-#   benches/record-flakes.sh -E 'package(rdlt-engine)'   # a slice
+#   benches/harness/record-flakes.sh                     # whole suite
+#   benches/harness/record-flakes.sh -E 'package(rdlt-engine)'   # a slice
 #
 # Anything after the script name is passed to `cargo nextest run` verbatim.
 set -uo pipefail
 
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 
 LOG="benches/flakes.log"
 JUNIT="target/nextest/flake/junit.xml"
@@ -81,7 +81,7 @@ stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 header = (
     "# Flaky-test observations. One line per test that FAILED then PASSED on\n"
     "# retry under the `flake` nextest profile. Appended by\n"
-    "# benches/record-flakes.sh; never edited by hand, never truncated.\n"
+    "# benches/harness/record-flakes.sh; never edited by hand, never truncated.\n"
     "#\n"
     "# stamp\tcommit\tretries\ttest\n"
 )

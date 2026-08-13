@@ -18,7 +18,7 @@
 # podman; setup.py itself re-enforces the two cluster deltas (ingress-nginx
 # scaled to 0, node pids-limit raised).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 ENGINE=$(command -v podman || command -v docker)
 KC="${KUBECONFIG:-$HOME/.airbyte/abctl/abctl.kubeconfig}"
@@ -79,7 +79,7 @@ done
 "$ENGINE" exec rdlt-bench-pg createdb -U postgres dest_airbyte
 # Schema only (0 rows): discover reads metadata. The script owns the Oracle
 # readiness wait — the listener accepts TCP long before FREEPDB1 registers.
-sh benches/fixtures/seed_oracle.sh rdlt-bench-oracle 15210 RDLT rdlt-bench 0 \
+sh benches/harness/fixtures/seed_oracle.sh rdlt-bench-oracle 15210 RDLT rdlt-bench 0 \
   "$IDENTITY"
 
 python3 benches/competitors/airbyte/setup.py

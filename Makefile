@@ -352,7 +352,7 @@ else ifeq ($(TARGET),iai)
 	# crate; its recorded baselines stay in benches/perf-baselines.json
 	# as the dated reference (compare-iai.sh knows they are not run here).
 	cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json
-	benches/compare-iai.sh
+	benches/harness/compare-iai.sh
 else ifeq ($(TARGET),cold)
 	# Cold start is a WALL-CLOCK measurement: it needs hyperfine and a quiet
 	# machine, neither of which a shared CI runner provides. It rides `make
@@ -362,9 +362,9 @@ else ifeq ($(TARGET),cold)
 	# built alongside the CLI.
 	$(MAKE) release
 	$(MAKE) connector-bins
-	benches/check-cold-start.sh
+	benches/harness/check-cold-start.sh
 else ifeq ($(TARGET),setup)
-	benches/bench-setup.sh
+	benches/harness/bench-setup.sh
 else ifeq ($(TARGET),e2e)
 	$(MAKE) release
 	# Every cell spawns connector bins the CLI build does not produce —

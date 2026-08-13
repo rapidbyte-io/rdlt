@@ -9,7 +9,7 @@
 # `TARGET=iai make bench` does both). Baselines change only deliberately,
 # in-diff (lockfile discipline, G1.3).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 MODE="${1:-compare}"
 python3 - "$MODE" <<'PY'
@@ -125,7 +125,7 @@ if recorded and current and recorded != current:
         f"PERF GATE: toolchain mismatch — baselines recorded with '{recorded}', "
         f"current is '{current}'. Re-record deliberately in a dedicated commit: "
         f"cargo bench -p rdlt-engine --bench iai_hotpath -- --save-summary=json "
-        f"&& benches/compare-iai.sh --record"
+        f"&& benches/harness/compare-iai.sh --record"
     )
 
 # Same rule as the toolchain guard, for the same reason: a codegen change
@@ -139,7 +139,7 @@ if recorded_codegen and recorded_codegen != current_codegen:
         f"'{recorded_codegen}', current is '{current_codegen}'. Re-record "
         f"deliberately in a dedicated commit: cargo bench -p rdlt-engine "
         f"--bench iai_hotpath -- --save-summary=json "
-        f"&& benches/compare-iai.sh --record"
+        f"&& benches/harness/compare-iai.sh --record"
     )
 
 failures = []

@@ -1,7 +1,7 @@
 # Airbyte competitor module (feature 018)
 
 Airbyte is a competitor arm of the e2e matrix — today on the oracle cell
-(`oracle-to-pg-200k`, `benches/cells/oracle.toml`). Unlike dlt — a
+(`oracle-to-pg-200k`, `benches/harness/cells/oracle.toml`). Unlike dlt — a
 self-timed container the harness runs directly — Airbyte is a long-lived
 **cluster**, so this module is a `kind = driver` variant: a host-side
 `driver.py` drives pre-created connections against an already-running
@@ -39,7 +39,7 @@ harness runs the driver on system `python3`.
    TARGET=setup make bench
    ```
 
-   That verb (`benches/bench-setup.sh`) builds the dlt image, brings up the
+   That verb (`benches/harness/bench-setup.sh`) builds the dlt image, brings up the
    fixture containers with the harness seeds, runs this module's
    `setup.py` against them, and tears the fixtures down. To run `setup.py`
    directly instead, the bench postgres (`:5439`, database `dest_airbyte`)
