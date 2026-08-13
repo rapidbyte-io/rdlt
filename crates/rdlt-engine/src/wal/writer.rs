@@ -27,6 +27,34 @@ pub(crate) fn dir_in(workdir: &Path) -> PathBuf {
     workdir.join("wal")
 }
 
+/// Create `dir` (and any missing parents) PRIVATE to the operating
+/// user (0o700 on every component this call creates): the WAL holds
+/// cleartext batch data and cursors, and a default-umask directory in
+/// a shared location would let any local user read in-flight rows. An
+/// already-existing directory keeps its mode — the operator's own
+/// arrangement is not overridden. Shared with the workdir lock, so the
+/// whole workdir tree is born private, not just the WAL under it.
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+/// [`OpenOptions`] for a WAL-owned file, born owner-only (0o600) —
+/// the file-level half of the directory hardening above: the mode
+/// applies only at creation, so a file that already exists keeps
+/// whatever the operator gave it. Every file the WAL creates —
+/// manifest, rules sidecar, segments — goes through this, so none can
+/// silently fall back to the umask default.
+fn private_file() -> OpenOptions {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut options = OpenOptions::new();
+    options.mode(0o600);
+    options
+}
+
 /// The rules sidecar beside the manifest: the writer's `IdentRules`,
 /// serialized verbatim. Recovery's stream↔segment join normalizes under
 /// the resuming run's rules, and that join is only sound when they are
@@ -65,7 +93,7 @@ impl Wal {
         rules: rdlt_core::naming::IdentRules,
         tolerate_resolved_residue: bool,
     ) -> Result<Self, RdltError> {
-        std::fs::create_dir_all(&dir).map_err(|e| wal_err("creating wal dir", e))?;
+        create_private_dir(&dir).map_err(|e| wal_err("creating wal dir", e))?;
         // A fresh open expects a CLEAN directory (round-12): recovery
         // resolves and clears any prior span before this runs, so a
         // surviving manifest here is unresolved residue — writing a
@@ -89,9 +117,14 @@ impl Wal {
         // [`RULES_SIDECAR`] for why the rules must be recorded at all.
         let sidecar =
             serde_json::to_vec(&rules).map_err(|e| wal_err("encoding rules sidecar", e))?;
-        std::fs::write(dir.join(RULES_SIDECAR), sidecar)
+        private_file()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(dir.join(RULES_SIDECAR))
+            .and_then(|mut file| file.write_all(&sidecar))
             .map_err(|e| wal_err("writing rules sidecar", e))?;
-        let manifest = OpenOptions::new()
+        let manifest = private_file()
             .create(true)
             .append(true)
             .open(dir.join("manifest.jsonl"))
@@ -288,7 +321,12 @@ impl Wal {
 /// so several hundred per load, most of them tiny. Measured at 1.1% of wall on
 /// the 1M-row relational cell: small, but free.
 pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), RdltError> {
-    let file = File::create(path).map_err(|e| wal_err("create segment", e))?;
+    let file = private_file()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|e| wal_err("create segment", e))?;
     let mut writer = arrow::ipc::writer::FileWriter::try_new_buffered(file, batch.schema_ref())
         .map_err(|e| wal_err("open segment writer", e))?;
     writer

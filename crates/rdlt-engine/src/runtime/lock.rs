@@ -21,7 +21,9 @@ impl WorkdirLock {
         // Failures here are about the configured workdir being usable and
         // ownable by this run (path, permissions, contention) — not WAL damage,
         // so they classify as configuration, like the "already held" case below.
-        std::fs::create_dir_all(workdir).map_err(|e| {
+        // Created PRIVATE (see `create_private_dir`): the WAL and lock
+        // under it carry in-flight data no other local user should read.
+        crate::wal::create_private_dir(workdir).map_err(|e| {
             RdltError::config(format!("creating workdir {}: {e}", workdir.display()))
         })?;
         let path = workdir.join(".lock");

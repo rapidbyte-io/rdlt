@@ -109,3 +109,59 @@ async fn a_foreign_pipelines_wal_refuses_and_survives() {
     .expect("clean run");
     assert_eq!(without_load_id(&orders_dest), without_load_id(&clean_dest));
 }
+
+/// The workdir tree is born PRIVATE: directories 0o700, and the WAL's
+/// own files — manifest, rules sidecar, segments — 0o600. The WAL
+/// holds cleartext batch data and cursors, and default-umask modes in
+/// a shared location would let any local user read in-flight rows.
+/// Pinned on a CRASHED run, the only shape whose WAL survives to be
+/// inspected (a clean finish clears the directory).
+#[tokio::test]
+async fn the_workdir_and_wal_are_created_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workdir = dir.path().join("wd");
+    let crash = CrashDestination::new(MemoryDestination::new(), FaultPoint::BeforeCommit(2));
+    Engine::new(config("private", &workdir), source(), crash)
+        .run()
+        .await
+        .expect_err("the fixture must crash so the WAL survives");
+
+    let mode_of = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .unwrap_or_else(|e| panic!("{} must exist: {e}", path.display()))
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    let wal = workdir.join("wal");
+    for created in [&workdir, &wal] {
+        assert_eq!(
+            mode_of(created),
+            0o700,
+            "{} must be private to the operating user",
+            created.display()
+        );
+    }
+    let mut wal_files: Vec<std::path::PathBuf> = std::fs::read_dir(&wal)
+        .expect("wal dir reads")
+        .map(|entry| entry.expect("entry").path())
+        .collect();
+    wal_files.sort();
+    assert!(
+        wal_files.iter().any(|f| f.ends_with("manifest.jsonl"))
+            && wal_files
+                .iter()
+                .any(|f| f.extension().is_some_and(|extension| extension == "arrow")),
+        "the crashed WAL holds a manifest and at least one segment: {wal_files:?}"
+    );
+    for file in &wal_files {
+        assert_eq!(
+            mode_of(file),
+            0o600,
+            "{} must be owner-only (manifest, sidecar and segments alike)",
+            file.display()
+        );
+    }
+}
