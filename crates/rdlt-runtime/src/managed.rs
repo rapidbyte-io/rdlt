@@ -67,7 +67,20 @@ impl Drop for LifecycleGuard {
         // the background), and a socket that is already gone is not an
         // error worth surfacing from a destructor.
         let _ = self.child.start_kill();
-        let _ = std::fs::remove_file(&self.socket_path);
+        // Unlink ONLY a socket: the path came verbatim from the child's
+        // stdout handshake line, so a connector naming an unrelated
+        // file must not commission this host to delete it. The check
+        // rides `symlink_metadata` — a symlink AT the path is already
+        // not a socket, and following it would judge the wrong inode.
+        let is_socket = std::fs::symlink_metadata(&self.socket_path)
+            .map(|meta| {
+                use std::os::unix::fs::FileTypeExt as _;
+                meta.file_type().is_socket()
+            })
+            .unwrap_or(false);
+        if is_socket {
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
     }
 }
 

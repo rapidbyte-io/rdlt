@@ -413,7 +413,10 @@ fn process_dead(pid: u32) -> bool {
 async fn the_guard_drop_kills_the_child_and_unlinks_the_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("guarded.sock");
-    std::fs::write(&socket, b"").expect("a stand-in socket file writes");
+    // A REAL socket, not a stand-in file: the guard's unlink is
+    // deliberately socket-only (045 GROK 8), so the unlink half of
+    // this pin needs the genuine article on disk.
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("the socket binds");
 
     let child = tokio::process::Command::new("sleep")
         .arg("30")
@@ -438,6 +441,28 @@ async fn the_guard_drop_kills_the_child_and_unlinks_the_socket() {
     assert!(
         !socket.exists(),
         "the guard's drop must unlink the socket file"
+    );
+}
+
+/// The guard unlinks ONLY a socket (045 external findings, GROK 8 /
+/// KIMI 3): the path comes verbatim from the child's stdout handshake
+/// line, so a connector naming an unrelated regular file must not
+/// commission the host to delete it on cleanup.
+#[tokio::test]
+async fn the_guard_drop_leaves_a_non_socket_path_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let important = dir.path().join("important-file");
+    std::fs::write(&important, b"operator data").expect("the file writes");
+
+    let child = tokio::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("sleep spawns");
+    drop(LifecycleGuard::new(child, &important));
+
+    assert!(
+        important.exists(),
+        "a handshake line naming a non-socket must not get it deleted"
     );
 }
 
