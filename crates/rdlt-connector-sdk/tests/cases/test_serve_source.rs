@@ -18,7 +18,7 @@ use rdlt_connector_protocol::proto::{
     Classification, HandshakeRequest, ReadRequest, SpecRequest, StreamsRequest, handshake_reply,
     read_frame, streams_reply,
 };
-use rdlt_connector_sdk::serve::source::serve_on;
+use rdlt_connector_sdk::serve::source::{BYTE_FRAME_BUDGET, READ_CHANNEL_BUDGET, serve_on};
 use tonic::transport::{Channel, Endpoint};
 
 use super::support::echo::{self, EchoSource};
@@ -622,16 +622,15 @@ async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
     // More rows than any regime can admit, so admission — not the row
     // supply — is what stops the producer.
     const ROWS: u64 = 64;
-    // BYTE_FRAME_BUDGET (32 MiB, `serve::source`) for the encoded
-    // frames, plus READ_CHANNEL_BUDGET (8 MiB) for the SPI push channel
-    // feeding it, plus four frames of slack: the one the forwarding
-    // loop holds in hand, what tonic has pulled for the wire and is
-    // holding against the client's h2 window, and margin so a tonic
-    // that buffers one frame more than measured is not a failure. The
-    // recorded measurement is 7 frames (56 MiB) admitted — the slack is
-    // the only part of this ceiling that is not somebody's declared
-    // budget.
-    const CEILING: u64 = (32 * 1024 * 1024) + (8 * 1024 * 1024) + 4 * FRAME_BYTES as u64;
+    // The budgets themselves (imported, not restated — lowering either
+    // constant tightens this pin with it), plus four frames of slack:
+    // the one the forwarding loop holds in hand, what tonic has pulled
+    // for the wire and is holding against the client's h2 window, and
+    // margin so a tonic that buffers one frame more than measured is
+    // not a failure. The recorded measurement is 7 frames (56 MiB)
+    // admitted — the slack is the only part of this ceiling that is
+    // not somebody's declared budget.
+    const CEILING: u64 = (BYTE_FRAME_BUDGET + READ_CHANNEL_BUDGET + 4 * FRAME_BYTES) as u64;
 
     let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");

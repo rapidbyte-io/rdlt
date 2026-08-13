@@ -44,15 +44,35 @@ use crate::source::{Shell, SourceConnector};
 /// control between this process and whatever dials it (see
 /// `serve/common.rs`), and unrelated to the engine's own read budget,
 /// which governs the far side of that wire starting at 039's adapter.
-const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
+///
+/// Public but hidden from docs: not API — exposed so the integration
+/// pin derives its admission ceiling from this constant rather than
+/// restating it as a literal that could silently drift.
+#[doc(hidden)]
+pub const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 
-/// Budget on the frame channel one `Read` call forwards into — caps how
-/// many BYTES of already-encoded `ReadFrame`s can sit between the
-/// forwarding loop and the gRPC response stream while the CLIENT stalls
-/// reading (the connector's producer parks behind it, against
+/// Budget on the frame channel one `Read` call forwards into — caps the
+/// BYTES of already-encoded `ReadFrame`s QUEUED between the forwarding
+/// loop and the gRPC response stream while the CLIENT stalls reading
+/// (the connector's producer parks behind it, against
 /// [`READ_CHANNEL_BUDGET`]'s byte budget on the SPI push channel).
-/// Together those two budgets, plus whatever tonic holds for the wire,
-/// are a spawned connector's in-flight read memory.
+///
+/// THE WORST-CASE SUM for a spawned source's in-flight read memory —
+/// authoritative; the operator docs and `BatchPolicy::every_bytes`'s
+/// doc both delegate the arithmetic here:
+///
+/// - this budget (32 MiB) of encoded frames queued for the wire;
+/// - [`READ_CHANNEL_BUDGET`] (8 MiB) of SPI pushes queued behind them;
+/// - the ONE push the forwarding loop holds in hand while parked on
+///   this budget — as large as the connector made it (the wire refuses
+///   above `common::MAX_FRAME_BYTES`, 64 MiB), and momentarily near
+///   TWICE that for an Arrow push, whose decoded batch and encoded IPC
+///   bytes coexist while [`read_frame_of`] runs;
+/// - whatever tonic has already pulled for the wire, which this budget
+///   deliberately does NOT cover: each frame's permit drops at the
+///   handover (nothing on this side can know when tonic frees the
+///   bytes), and h2 flow control is what paces that hold — the
+///   admission pin measured it at one frame with the peer stalled.
 ///
 /// IT COUNTS BYTES BECAUSE COUNTING FRAMES PRICED THEM ALL THE SAME.
 /// This channel was bounded at 16 already-encoded frames regardless of
@@ -63,17 +83,22 @@ const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 /// connector's memory had nothing to turn. A byte budget prices a
 /// 64-byte checkpoint and an 8 MiB batch as what they are.
 ///
-/// 32 MiB (D-046-1): twice the read channel, an order of magnitude below
-/// that old worst case, and above any single frame a source in this tree
-/// produces — so the at-least-one rule below stays the exception it is
-/// meant to be rather than the normal path.
+/// 32 MiB (D-046-1): four times the read channel, an order of
+/// magnitude below that old worst case, and above any single frame a
+/// source in this tree produces — so the at-least-one rule below stays
+/// the exception it is meant to be rather than the normal path.
 ///
 /// NO OPERATOR KNOB, deliberately (YAGNI): one honest constant beats a
 /// dial nobody has a number for. Should a real workload ever need one,
 /// the door is a `with_*` builder on the serve entry points — not a
 /// config key, which would put a memory bound in the same document as
 /// connection details and make it part of the frozen config vocabulary.
-const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
+///
+/// Public but hidden from docs: not API — exposed so the integration
+/// pin derives its admission ceiling from this constant rather than
+/// restating it as a literal that could silently drift.
+#[doc(hidden)]
+pub const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
 
 /// Secondary message cap on the frame channel, for the same reason the
 /// SPI's records channel keeps one: the byte budget prices a zero-byte
@@ -99,9 +124,12 @@ const EXPECTED_ROLE: &str = "source";
 // an `async fn recv`. Any fix to the rule belongs in both places.
 
 /// One encoded frame plus the budget it was admitted under. The permit
-/// rides WITH the frame and releases only when [`FrameStream`] hands
-/// the frame to tonic, so the budget describes bytes QUEUED OR
-/// PULLED-FOR-THE-WIRE — never bytes merely sent at some point.
+/// rides WITH the frame and drops the moment [`FrameStream`] hands the
+/// frame to tonic, so the budget bounds QUEUED frames only: bytes
+/// tonic has pulled for the wire are the transport's, deliberately
+/// unbudgeted — nothing on this side of the handover can know when
+/// tonic frees them, and h2 flow control is what paces that hold.
+/// [`BYTE_FRAME_BUDGET`]'s worst-case sum names the transport term.
 struct BudgetedFrame {
     frame: Result<proto::ReadFrame, Status>,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,

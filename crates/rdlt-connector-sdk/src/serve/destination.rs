@@ -148,16 +148,23 @@ use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 /// growing this channel, so this is not a throughput budget. 16:
 /// headroom.
 ///
-/// A COUNT IS THE RIGHT UNIT HERE, unlike the source side's frame
-/// channel, which 046 re-based on BYTES after a count let 16 multi-
-/// megabyte frames pile up. Every reply this channel can carry is a
-/// small control message — five are literally empty, the receipt and
-/// state documents are cursors and identifiers, a part event is a table
-/// name plus two scalars — so 16 of them is bounded by inspection at
-/// kilobytes, and no frame size a workload picks changes that. The bulk
-/// payload on a destination session travels the OTHER way (`Write`
-/// frames carrying Arrow IPC, client to server), where it never touches
-/// this channel: h2 flow control paces it and
+/// A COUNT stays the unit here, unlike the source side's frame channel
+/// (byte-bounded by 046 after a count let 16 multi-megabyte frames
+/// pile up), because reply PRODUCTION is client-paced: a reply exists
+/// only because the client sent the frame that asked for it, so the
+/// replies queued here can never outnumber the requests the client
+/// itself chose to send before reading — the sdk's own `Session` never
+/// pipelines (one frame, one awaited reply) — plus whatever part
+/// events those calls emitted. What a count does NOT bound is bytes:
+/// most replies are small control messages (five arms are empty, a
+/// part event is a table name plus two scalars, a receipt is
+/// identifiers), but `StateReply` carries the pipeline's whole state
+/// document, which is WORKLOAD-sized — file-family cursors run to
+/// megabytes — so the worst case held here is 16 such documents,
+/// reachable only by a client that pipelines 16 `ReadState` frames and
+/// reads none of the replies. The bulk data path proper (`Write`
+/// frames carrying Arrow IPC) travels the OTHER way, client to server,
+/// and never touches this channel: h2 flow control paces it and
 /// `common::MAX_FRAME_BYTES` caps any single frame.
 const REPLY_CHANNEL_BUDGET: usize = 16;
 
