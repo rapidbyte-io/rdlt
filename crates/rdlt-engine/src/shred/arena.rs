@@ -2,10 +2,17 @@
 //!
 //! One arena per pushed slab. Parsing goes through serde_json's OWN parser via a
 //! `DeserializeSeed` — every lexical edge case (escapes, surrogates, number
-//! grammar, depth limits) behaves exactly as a `serde_json::Value` parse —
-//! but lands in three flat vectors instead of per-row allocated trees:
-//! nodes, object entries, array items. Strings and keys borrow from the slab
-//! whenever they contain no escapes.
+//! grammar) behaves exactly as a `serde_json::Value` parse — but lands in
+//! three flat vectors instead of per-row allocated trees: nodes, object
+//! entries, array items. Strings and keys borrow from the slab whenever they
+//! contain no escapes.
+//!
+//! One deliberate DIVERGENCE from serde's defaults (047 round 2, owner
+//! ruling): nesting is capped at [`rdlt_connector::channel::MAX_ARROW_DEPTH`]
+//! rather than serde's 128, so the JSONL front door and every capped walk
+//! behind it (shred inference, canonicalization, lowering) agree on ONE
+//! bound — data deeper than the cap refuses AT INGEST with a typed parse
+//! error, and no deeper structure is ever built.
 //!
 //! Object entries are stored deduplicated with IndexMap insert semantics
 //! (first-occurrence position, last-occurrence value) at parse time, so
@@ -86,7 +93,11 @@ impl<'s> Arena<'s> {
         {
             let raw = raw?;
             let mut de = serde_json::Deserializer::from_str(raw.get());
-            let node = NodeSeed { arena: self }.deserialize(&mut de)?;
+            let node = NodeSeed {
+                arena: self,
+                depth: 0,
+            }
+            .deserialize(&mut de)?;
             de.end()?;
             match self.nodes[node as usize] {
                 ArenaNode::Arr(start, end) => {
@@ -235,6 +246,9 @@ impl<'a, 's: 'a> Iterator for ArrayIter<'a, 's> {
 
 struct NodeSeed<'a, 's> {
     arena: &'a mut Arena<'s>,
+    /// Nesting level of the value this seed deserializes (root = 0) — the
+    /// ingest half of the shared depth cap; see the module doc.
+    depth: usize,
 }
 
 impl<'de, 's: 'de, 'a> DeserializeSeed<'de> for NodeSeed<'a, 's>
@@ -247,12 +261,16 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_any(NodeVisitor { arena: self.arena })
+        deserializer.deserialize_any(NodeVisitor {
+            arena: self.arena,
+            depth: self.depth,
+        })
     }
 }
 
 struct NodeVisitor<'a, 's> {
     arena: &'a mut Arena<'s>,
+    depth: usize,
 }
 
 impl<'de, 's: 'de, 'a> Visitor<'de> for NodeVisitor<'a, 's>
@@ -304,8 +322,12 @@ where
     where
         A: SeqAccess<'de>,
     {
+        refuse_past_depth_cap::<A::Error>(self.depth)?;
         let mut items: Vec<NodeId> = Vec::new();
-        while let Some(id) = seq.next_element_seed(NodeSeed { arena: self.arena })? {
+        while let Some(id) = seq.next_element_seed(NodeSeed {
+            arena: self.arena,
+            depth: self.depth + 1,
+        })? {
             items.push(id);
         }
         let start = checked_idx(self.arena.arr_items.len());
@@ -318,10 +340,14 @@ where
     where
         A: MapAccess<'de>,
     {
+        refuse_past_depth_cap::<A::Error>(self.depth)?;
         // IndexMap insert semantics AT PARSE TIME: first position, last value.
         let mut entries: Vec<(Cow<'s, str>, NodeId)> = Vec::new();
         while let Some(key) = map.next_key_seed(KeySeed(PhantomData))? {
-            let value = map.next_value_seed(NodeSeed { arena: self.arena })?;
+            let value = map.next_value_seed(NodeSeed {
+                arena: self.arena,
+                depth: self.depth + 1,
+            })?;
             match entries.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, slot)) => *slot = value,
                 None => entries.push((key, value)),
@@ -332,6 +358,22 @@ where
         let end = checked_idx(self.arena.obj_entries.len());
         Ok(self.arena.push_node(ArenaNode::Obj(start, end)))
     }
+}
+
+/// The ingest depth gate: a container OPENING at `depth` means the document
+/// already nests that many levels above it, and past the shared cap the
+/// parse refuses instead of building deeper structure. The error rides
+/// serde's own channel, so the extract seam classifies it per stream as
+/// source data — a data refusal, never an internal error.
+fn refuse_past_depth_cap<E: serde::de::Error>(depth: usize) -> Result<(), E> {
+    if depth >= rdlt_connector::channel::MAX_ARROW_DEPTH {
+        return Err(E::custom(format!(
+            "JSON nesting exceeds the {}-level cap — refused at ingest before \
+             deeper structure is built",
+            rdlt_connector::channel::MAX_ARROW_DEPTH
+        )));
+    }
+    Ok(())
 }
 
 struct KeySeed<'s>(PhantomData<&'s ()>);
@@ -528,6 +570,46 @@ mod tests {
             .map(|(k, v)| (k.to_owned(), format!("{:?}", v.kind())))
             .collect();
         assert_eq!(arena_entries, value_entries, "views agree on dup-key order");
+    }
+
+    /// 047 round 2 (owner ruling on the 65–128 band): the front door agrees
+    /// with the back half — JSON nested deeper than the shared
+    /// `MAX_ARROW_DEPTH` refuses AT INGEST with a typed parse error (the
+    /// extract seam classifies it per stream as source data, never
+    /// internal), so no deeper structure is ever built and every
+    /// downstream walk inherits the bound. serde's own 128 limit no
+    /// longer decides.
+    #[test]
+    fn nesting_deeper_than_the_shared_cap_refuses_at_ingest() {
+        let nested = |levels: usize| -> Vec<u8> {
+            let mut doc = String::new();
+            for _ in 0..levels {
+                doc.push_str("{\"k\":");
+            }
+            doc.push('1');
+            for _ in 0..levels {
+                doc.push('}');
+            }
+            doc.into_bytes()
+        };
+
+        let at_cap = nested(rdlt_connector::channel::MAX_ARROW_DEPTH);
+        let mut arena = Arena::default();
+        arena
+            .parse_rows(&at_cap)
+            .expect("nesting AT the cap still parses");
+
+        for levels in [rdlt_connector::channel::MAX_ARROW_DEPTH + 1, 100] {
+            let deep = nested(levels);
+            let mut arena = Arena::default();
+            let err = arena
+                .parse_rows(&deep)
+                .expect_err("nesting past the cap must refuse at ingest");
+            assert!(
+                err.to_string().contains("nesting"),
+                "the refusal names the nesting: {err}"
+            );
+        }
     }
 
     /// The two views must agree on canonical bytes for any input — parsing,

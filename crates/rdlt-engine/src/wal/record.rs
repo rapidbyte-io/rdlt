@@ -80,10 +80,17 @@ pub(crate) enum ManifestLine {
     /// Checksum verified, record decoded — the only arm a replay span may
     /// be built from.
     Record(WalRecord),
-    /// Provably NOT a torn tail (an append's tear only ever shortens the
-    /// line, so a complete 64-hex trailer survives no tear) yet wrong:
-    /// a mismatched digest, or a verified line this build cannot decode.
-    /// Damaged wherever it sits, the final line included.
+    /// A complete-looking trailer whose digest does not match, or a
+    /// verified line this build cannot decode. Almost always corruption
+    /// (an append's tear only ever SHORTENS the line, so a tear cannot
+    /// complete a trailer) — the one exception is content-dependent: a
+    /// record whose JSON itself contains `|` + 64 hex (real cursor shapes
+    /// like `done|<blake3>` exist) has a tear position that LOOKS
+    /// trailered, and its mismatching digest lands the torn FINAL line
+    /// here instead of the truncation arm. That is a safe-direction
+    /// misclassification, availability only: degrade to re-extraction,
+    /// never acceptance. Damaged wherever it sits, the final line
+    /// included.
     Corrupt(String),
     /// No complete checksum trailer. On the FINAL line this is the torn
     /// tail a crash mid-append leaves — truncated, as always. Anywhere
@@ -206,11 +213,14 @@ mod tests {
         );
     }
 
-    /// A tear only ever SHORTENS a line, so every proper prefix of an
-    /// encoded line must classify as Untrailered (the torn-tail arm) —
-    /// never as a verified record and never as a false Corrupt.
+    /// A tear only ever SHORTENS a line, so for a record whose content
+    /// carries no `|`+hex run every proper prefix classifies as
+    /// Untrailered (the torn-tail arm) — never as a verified record.
+    /// This is NOT a universal claim: see the companion test below for
+    /// the content-dependent exception, which misclassifies only in the
+    /// safe direction.
     #[test]
-    fn every_torn_prefix_classifies_as_untrailered() {
+    fn every_torn_prefix_of_a_hexless_record_classifies_as_untrailered() {
         let record = WalRecord::Committed { commit_seq: 7 };
         let line = String::from_utf8(encode_line(&record).expect("encode")).expect("utf8");
         for cut in 0..line.len() {
@@ -219,6 +229,39 @@ mod tests {
                 "a tear at byte {cut} must read as a torn tail"
             );
         }
+    }
+
+    /// THE CONTENT-DEPENDENT EXCEPTION (047 round 2, doc-truth pin): a
+    /// record whose JSON contains `|` + 64 hex — a real in-house cursor
+    /// shape — has ONE tear position that leaves a trailer-shaped tail.
+    /// The digest then mismatches, so the torn line classifies Corrupt
+    /// (→ Damaged → re-extraction) instead of truncating: a
+    /// SAFE-DIRECTION misclassification, degrade never acceptance, and
+    /// availability-only. No tear position may VERIFY.
+    #[test]
+    fn a_tear_inside_embedded_hex_content_degrades_never_verifies() {
+        let embedded_hex = "a".repeat(64);
+        let record = WalRecord::Checkpoint {
+            stream: StreamName::new("s"),
+            cursor: Cursor::new(serde_json::json!(format!("done|{embedded_hex}"))),
+        };
+        let line = String::from_utf8(encode_line(&record).expect("encode")).expect("utf8");
+        let mut corrupt_tears = 0;
+        for cut in 0..line.len() {
+            match decode_line(&line[..cut]) {
+                ManifestLine::Untrailered(_) => {}
+                ManifestLine::Corrupt(_) => corrupt_tears += 1,
+                ManifestLine::Record(_) => {
+                    panic!("a tear at byte {cut} must never verify as a record")
+                }
+            }
+        }
+        assert!(
+            corrupt_tears > 0,
+            "the embedded `|`+hex shape has at least one trailer-mimicking tear \
+             position — if this stops being true the Corrupt-arm doc can claim \
+             tear-proof again"
+        );
     }
 
     /// The segment-name gate accepts exactly what [`segment_file_name`]

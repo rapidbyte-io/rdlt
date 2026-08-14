@@ -29,17 +29,18 @@ use crate::core::Cursor;
 /// without limit while never touching the budget.
 const RECORDS_MESSAGE_CAPACITY: usize = 64;
 
-/// Depth cap on every recursive walk over connector-supplied Arrow
-/// structure — this crate's byte meter, and the engine's schema mapping
-/// and batch lowering share the ONE constant.
+/// Depth cap on every recursive walk over connector-supplied nesting —
+/// this crate's byte meter, the engine's schema mapping and batch
+/// lowering, and the engine's JSONL ingest parser all share the ONE
+/// constant, so the front door and every walk behind it agree on one
+/// bound.
 ///
 /// The threat: nesting depth is entirely CONNECTOR-controlled (a
 /// structured stream declares its own schema, and IPC-built child data
 /// skips arrow's validator), and a recursive walk without a cap turns a
 /// deeply nested declaration into a stack overflow — which is an ABORT
 /// of the host process, not a catchable panic, so no task containment
-/// absorbs it. 64 is orders of magnitude beyond any real schema (the
-/// JSONL ingest path's own parser stops at serde_json's 128), so
+/// absorbs it. 64 is orders of magnitude beyond any real schema, so
 /// reaching the cap is diagnostic of a hostile or broken connector,
 /// never of data.
 pub const MAX_ARROW_DEPTH: usize = 64;
@@ -336,6 +337,36 @@ pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
     })
 }
 
+/// A bit window's byte span: from `first_bit`, `bits` wide — for boolean
+/// values and validity bitmaps, whose `offset`/`len` come from IPC-decoded
+/// data that skips the validator.
+///
+/// Checked (047 round 2, the L2 siblings): unchecked, a skewed window
+/// panicked debug builds inside `send`, and in release it WRAPPED — a
+/// wrapped-small span can land inside the buffer and UNDER-count, the
+/// budget's unsafe direction. Overflow falls back to charge-everything,
+/// which the caller clamps to the buffer's real length: over-count, the
+/// budget's safe side, same posture as [`offsets_window`]'s fallback.
+fn bit_window(first_bit: usize, bits: usize) -> (usize, usize) {
+    match first_bit.checked_add(bits) {
+        Some(end_bits) => {
+            let start = first_bit / 8;
+            (start, end_bits.div_ceil(8) - start)
+        }
+        None => (0, usize::MAX),
+    }
+}
+
+/// The byte span `len` fixed-width cells view from cell `offset` — the
+/// FixedSizeBinary and primitive-width arms' arithmetic. Checked for the
+/// same reason and with the same fallback as [`bit_window`].
+fn cell_window(offset: usize, len: usize, width: usize) -> (usize, usize) {
+    match (offset.checked_mul(width), len.checked_mul(width)) {
+        (Some(start), Some(viewed)) => (start, viewed),
+        _ => (0, usize::MAX),
+    }
+}
+
 /// One node of the walk: this array's own buffers (each trimmed to the
 /// byte range the node's `offset`/`len` actually VIEW — round-7 fix: a
 /// `RecordBatch::slice` chunk used to charge its parent's whole buffer,
@@ -385,12 +416,6 @@ fn data_footprint(
     };
 
     let (offset, len) = (data.offset(), data.len());
-    // A bit window's byte span: from `first_bit`, `bits` wide.
-    let bit_window = |first_bit: usize, bits: usize| -> (usize, usize) {
-        let start = first_bit / 8;
-        let end = (first_bit + bits).div_ceil(8);
-        (start, end - start)
-    };
     let offsets_i32 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
         offsets_window(buffer, offset, len, 4, |chunk| {
             i32::from_ne_bytes(chunk.try_into().expect("a 4-byte chunk")) as usize
@@ -427,8 +452,8 @@ fn data_footprint(
             total += count_window(&buffers[0], off_start, off_len);
         }
         DataType::FixedSizeBinary(width) => {
-            let width = *width as usize;
-            total += count_window(&buffers[0], offset * width, len * width);
+            let (start, viewed) = cell_window(offset, len, *width as usize);
+            total += count_window(&buffers[0], start, viewed);
         }
         // Structs and fixed-size lists carry no buffers of their own;
         // their children recurse below.
@@ -436,7 +461,8 @@ fn data_footprint(
         other => match other.primitive_width() {
             // Fixed-width values: exactly the viewed cells.
             Some(width) => {
-                total += count_window(&buffers[0], offset * width, len * width);
+                let (start, viewed) = cell_window(offset, len, width);
+                total += count_window(&buffers[0], start, viewed);
             }
             // The documented fallback (unions, dictionaries, run-ends,
             // views): full buffer lengths — over-counts a sliced view,
@@ -887,6 +913,49 @@ mod byte_size_tests {
         assert!(
             (1..usize::MAX).contains(&shallow),
             "an ordinarily nested batch still meters its real bytes: {shallow}"
+        );
+    }
+
+    /// 047 round 2, the L2 siblings: the bit-window and fixed-width-cell
+    /// arithmetic over IPC-skewed `offset`/`len` must fall into the same
+    /// charge-everything fallback as the offsets window. Unchecked, these
+    /// panicked debug builds inside `send` — and in RELEASE they WRAP,
+    /// which can land a small bogus window inside the buffer and
+    /// UNDER-count: the budget's unsafe direction, worse than any
+    /// over-count.
+    #[test]
+    fn overflowing_bit_and_cell_windows_charge_everything_instead_of_wrapping() {
+        // Bit windows (boolean values, validity bitmaps).
+        for (first_bit, bits) in [
+            (usize::MAX, 8),
+            (usize::MAX - 3, usize::MAX),
+            (8, usize::MAX),
+        ] {
+            assert_eq!(
+                bit_window(first_bit, bits),
+                (0, usize::MAX),
+                "first_bit {first_bit}, bits {bits}: overflow must charge-everything"
+            );
+        }
+        assert_eq!(bit_window(3, 10), (0, 2), "the ordinary window is exact");
+        assert_eq!(bit_window(8, 8), (1, 1));
+
+        // Cell windows (FixedSizeBinary and primitive-width values).
+        for (offset, len, width) in [
+            (usize::MAX / 2, 3, 8),
+            (2, usize::MAX / 2, 8),
+            (usize::MAX, usize::MAX, 2),
+        ] {
+            assert_eq!(
+                cell_window(offset, len, width),
+                (0, usize::MAX),
+                "offset {offset}, len {len}, width {width}: overflow must charge-everything"
+            );
+        }
+        assert_eq!(
+            cell_window(2, 3, 8),
+            (16, 24),
+            "the ordinary window is exact"
         );
     }
 

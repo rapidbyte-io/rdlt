@@ -113,8 +113,11 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
         }
         match crate::wal::record::decode_line(&line) {
             crate::wal::record::ManifestLine::Record(record) => records.push(record),
-            // A complete trailer survives no tear, so a mismatch is
-            // corruption wherever it sits — the final line included.
+            // Almost always corruption; the one content-dependent tear
+            // shape that lands here too (see the Corrupt arm's doc)
+            // misclassifies only in the safe direction — degrade, never
+            // acceptance — so Damaged wherever it sits, the final line
+            // included.
             crate::wal::record::ManifestLine::Corrupt(reason) => {
                 damaged = Some(format!("manifest corruption: {reason}"));
                 break;
@@ -1386,9 +1389,11 @@ mod integrity_tests {
         );
     }
 
-    /// A checksum-mismatched NON-final line is Damaged even though a torn
-    /// FINAL line still tolerates: a complete 64-hex trailer cannot come
-    /// from a tear, so a mismatch is corruption wherever it sits.
+    /// A checksum-mismatched line is Damaged even though a torn FINAL
+    /// line still tolerates: a tear only shortens, so outside the
+    /// embedded-`|`+hex content shape (whose misclassification is
+    /// safe-direction, pinned in record.rs) a complete trailer means
+    /// corruption wherever it sits.
     #[test]
     fn a_torn_final_line_still_tolerates_while_a_mismatched_one_degrades() {
         // Torn tail: cut the last line mid-bytes — truncated, span survives.
