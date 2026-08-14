@@ -102,6 +102,32 @@ pub(crate) enum RawFrame {
     Empty,
 }
 
+impl RawFrame {
+    /// The bytes this frame RETAINS in the certifier's collection —
+    /// what the [`READ_RETENTION_CEILING`] meters. Carried payloads
+    /// only; the fixed collection slot is the meter's own per-frame
+    /// constant.
+    fn retained_bytes(&self) -> usize {
+        match self {
+            RawFrame::Arrow(bytes) => bytes.len(),
+            RawFrame::Error(frame) => frame.message.len(),
+            RawFrame::Json | RawFrame::Checkpoint | RawFrame::Empty => 0,
+        }
+    }
+}
+
+/// The aggregate retention ceiling on ONE read stream's collected
+/// frames: [`WireProbe::read_frames`] holds every frame to the stream's
+/// end, and while each frame is individually capped by the dial's
+/// [`MAX_FRAME_BYTES`] decode limit, the frame COUNT is not — a fast
+/// rogue could otherwise OOM the certifier inside its own clause
+/// timeout. Four frame-ceilings of room is generous for any
+/// certification stream (fixtures are rows, not datasets); a stream
+/// retaining more is refused typed. Per-frame accounting counts the
+/// carried payload plus the collection slot, so a flood of EMPTY
+/// frames is bounded by the same ceiling.
+pub(crate) const READ_RETENTION_CEILING: usize = MAX_FRAME_BYTES * 4;
+
 /// The frame census P5's evidence carries: what the read direction
 /// actually served, counted by kind — so a vacuous pass (no arrow
 /// frames at all) and a violation both say what was observed.
@@ -181,6 +207,25 @@ impl Parked {
 /// The shared handle to one attach's [`Parked`] state.
 pub(crate) type ChildSlot = std::sync::Arc<std::sync::Mutex<Parked>>;
 
+/// Unlink `path` ONLY when a socket actually sits there — every certify
+/// unlink seat's one rule, the runtime `LifecycleGuard`'s own: the path
+/// came verbatim from the connector's stdout handshake line, and rogue
+/// connectors are this tool's explicit subject, so a rogue naming an
+/// unrelated file must not commission the certifier to delete it. The
+/// check rides `symlink_metadata` — a symlink AT the path is already
+/// not a socket, and following it would judge the wrong inode.
+pub(crate) fn unlink_advertised_socket(path: &Path) {
+    let is_socket = std::fs::symlink_metadata(path)
+        .map(|meta| {
+            use std::os::unix::fs::FileTypeExt as _;
+            meta.file_type().is_socket()
+        })
+        .unwrap_or(false);
+    if is_socket {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Claim and REAP whatever `slot` still parks — the caller's move after
 /// abandoning an attach or a live probe: the child is killed and
 /// AWAITED (dead, not dying, when this returns), the advertised socket
@@ -195,7 +240,7 @@ pub(crate) async fn reap_parked(slot: &ChildSlot) {
         let _ = child.wait().await;
     }
     if let Some(socket) = socket {
-        let _ = std::fs::remove_file(&socket);
+        unlink_advertised_socket(&socket);
     }
 }
 
@@ -270,7 +315,7 @@ struct SpawnedConnector {
 
 impl Drop for SpawnedConnector {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket);
+        unlink_advertised_socket(&self.socket);
         self.slot.lock().expect("child slot lock").socket = None;
     }
 }
@@ -338,7 +383,7 @@ impl WireProbe {
         // slot means the caller abandoned this attach and reaped —
         // honor the cancellation rather than resurrect a dead pid.
         if slot.lock().expect("child slot lock").child.is_none() {
-            let _ = std::fs::remove_file(&parsed.socket_path);
+            unlink_advertised_socket(&parsed.socket_path);
             return Err("the attach was abandoned by its caller".to_owned());
         }
         Ok(Self {
@@ -472,15 +517,43 @@ impl WireProbe {
     }
 
     /// One `Read` RPC, collecting every frame as the wire carried it
-    /// until the stream ends. A mid-stream transport `Status` is an
-    /// error — the protocol's refusal shape inside a read stream is the
-    /// terminal `ErrorFrame`, never a bare status.
+    /// until the stream ends, under [`READ_RETENTION_CEILING`]. A
+    /// mid-stream transport `Status` is an error — the protocol's
+    /// refusal shape inside a read stream is the terminal `ErrorFrame`,
+    /// never a bare status.
     async fn read_frames(&mut self, stream_spec_json: Vec<u8>) -> Result<Vec<RawFrame>, String> {
+        self.read_frames_within(stream_spec_json, READ_RETENTION_CEILING)
+            .await
+    }
+
+    /// [`Self::read_frames`] under an explicit retention ceiling — the
+    /// seam the ceiling's own pin drives with a small budget, so
+    /// proving the refusal fires never needs a quarter-gigabyte rogue
+    /// stream in the suite.
+    async fn read_frames_within(
+        &mut self,
+        stream_spec_json: Vec<u8>,
+        ceiling: usize,
+    ) -> Result<Vec<RawFrame>, String> {
         let mut stream = self.open_read(stream_spec_json).await?;
         let mut frames = Vec::new();
+        let mut retained: usize = 0;
         loop {
             match stream.message().await {
-                Ok(Some(frame)) => frames.push(decode_read_frame(frame)),
+                Ok(Some(frame)) => {
+                    let frame = decode_read_frame(frame);
+                    retained = retained
+                        .saturating_add(std::mem::size_of::<RawFrame>())
+                        .saturating_add(frame.retained_bytes());
+                    if retained > ceiling {
+                        return Err(format!(
+                            "the read stream exceeded the certifier's {ceiling}-byte retention \
+                             ceiling without ending — certification observes whole streams, so \
+                             a certifiable stream must fit the ceiling"
+                        ));
+                    }
+                    frames.push(frame);
+                }
                 Ok(None) => return Ok(frames),
                 Err(status) => {
                     return Err(format!(
@@ -1386,6 +1459,44 @@ mod tests {
         assert_pass(&report, "P7");
     }
 
+    /// The retention ceiling's rogue (047 L5): a read stream carrying
+    /// more than the collector may retain is refused TYPED, with the
+    /// pinned spelling — driven through the ceiling's own seam with a
+    /// small budget so the pin costs kilobytes rather than the
+    /// production quarter-gigabyte flood. The production ceiling's
+    /// value rides the same pin: the seam and the constant together
+    /// are the whole defense.
+    #[tokio::test]
+    async fn a_flooding_read_stream_is_refused_at_the_retention_ceiling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("rogue.sock");
+        let _serving = rogue::serve_source(
+            &socket,
+            RogueSource {
+                handshake: HandshakeScript::truthful(),
+                streams: vec![StreamSpec::new("rogue_stream")],
+                read_declared: vec![rogue::json_read_frame(); 64],
+                read_undeclared: vec![],
+                read_hold_open: false,
+            },
+        );
+        let mut probe = WireProbe::attach_socket(&socket, Role::Source, &serde_json::json!({}))
+            .await
+            .expect("the rogue's socket dials");
+        let spec_json =
+            serde_json::to_vec(&StreamSpec::new("rogue_stream")).expect("a StreamSpec serializes");
+        let Err(error) = probe.read_frames_within(spec_json, 256).await else {
+            panic!("a stream flooding past the ceiling must be refused");
+        };
+        assert_eq!(
+            error,
+            "the read stream exceeded the certifier's 256-byte retention ceiling without \
+             ending — certification observes whole streams, so a certifiable stream must \
+             fit the ceiling"
+        );
+        assert_eq!(READ_RETENTION_CEILING, 4 * MAX_FRAME_BYTES);
+    }
+
     /// P6's designated rogue: an error frame whose MESSAGE begins with
     /// a client rendering fails P6 with the pinned diagnosis, and only
     /// P6 — the frame carries cause text; classification travels as
@@ -1615,6 +1726,37 @@ mod parked_tests {
         assert!(
             parked.child.is_none() && parked.socket.is_none(),
             "nothing stays parked after the reap"
+        );
+    }
+
+    /// A rogue advertising a REGULAR file's path in its handshake line
+    /// must not commission the certifier to delete it — rogue
+    /// connectors are this tool's explicit subject, so the advertised
+    /// path is squarely adversarial. Both unlink seats are judged: the
+    /// shared reap and the spawned probe's drop. (The runtime's
+    /// `LifecycleGuard` has guarded the identical operation since 039;
+    /// the certifier's seats ride the same lstat-is-socket rule.)
+    #[tokio::test]
+    async fn a_rogue_advertising_a_regular_file_does_not_get_it_deleted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let precious = dir.path().join("precious.txt");
+        std::fs::write(&precious, b"not a socket").expect("the file writes");
+
+        let slot = ChildSlot::default();
+        slot.lock().expect("lock").park_socket(precious.clone());
+        reap_parked(&slot).await;
+        assert!(
+            precious.exists(),
+            "reap_parked must not unlink a regular file"
+        );
+
+        drop(SpawnedConnector {
+            slot: slot.clone(),
+            socket: precious.clone(),
+        });
+        assert!(
+            precious.exists(),
+            "SpawnedConnector::drop must not unlink a regular file"
         );
     }
 }

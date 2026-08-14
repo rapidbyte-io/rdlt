@@ -542,3 +542,44 @@ async fn an_abort_mid_suite_still_closes_the_held_session() {
          releases its lease in close(), which the drop the abort used to take cannot do"
     );
 }
+
+/// 047 L5: the harness RETAINS every observed row (S1 is a content
+/// law), so retention is the price of the assertion — and a source
+/// flooding past the retention ceiling must fail BY NAME rather than
+/// OOM the harness. The flood is real: ~66 MiB of rows against the
+/// 64 MiB ceiling.
+struct FloodingSource;
+
+#[async_trait]
+impl Source for FloodingSource {
+    fn spec(&self) -> ConnectorSpec {
+        ConnectorSpec::new("flood", "0.0.0")
+    }
+
+    async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+        Ok(vec![StreamSpec::new("flood")])
+    }
+
+    async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
+        let row = json!({"filler": "x".repeat(1 << 20)});
+        for _ in 0..66 {
+            if req.out.rows(vec![row.clone()]).await.is_err() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_source_flooding_past_the_retention_ceiling_fails_by_name() {
+    let (failures, _skips, _concluded) = verify_source(&FloodingSource).await.tolerating_skips();
+    assert!(
+        failures.iter().any(|f| f.clause == "S1"
+            && f.message
+                == "stream `flood`: the source pushed more than 67108864 bytes of retained \
+                    rows — the harness keeps every observed row to certify the resume law \
+                    (S1), and a conformance fixture must stay well inside that ceiling"),
+        "expected the retention-ceiling S1 failure, got: {failures:?}"
+    );
+}

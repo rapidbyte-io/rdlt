@@ -37,6 +37,20 @@ pub const ASSERTED_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 /// well-behaved source never blocks on backpressure while being certified.
 const CHANNEL_BYTE_BUDGET: usize = 16 << 20;
 
+/// The most one read may RETAIN, across everything it observes. The
+/// harness keeps every row and checkpoint of a full read because S1 is
+/// a CONTENT law — `full_read == rows_covered_by(c) ++ read(since=c)`
+/// — and streaming-and-discarding would degrade it to a count check,
+/// gutting the clause for every source; retention is the price of the
+/// assertion. The channel budget above bounds only what is IN FLIGHT,
+/// so without this ceiling a flooding source OOMs the harness instead
+/// of failing. A conformance fixture is rows, not a dataset: 64 MiB
+/// (four channel budgets) is generous headroom, and a source pushing
+/// more fails by name. Metered on the pushed payloads' own sizes plus
+/// a per-push constant — an honest order-of-size proxy for what the
+/// parsed rows retain.
+const RETENTION_CEILING_BYTES: usize = 64 << 20;
+
 /// What one full read produced: row groups separated by checkpoints.
 #[derive(Debug, Default)]
 struct Observed {
@@ -83,28 +97,47 @@ async fn read_all<S: Source>(
     let mut observed = Observed::default();
     let mut current: Vec<Value> = Vec::new();
     let mut read_result: Option<Result<(), String>> = None;
+    let mut retained: usize = 0;
     loop {
         tokio::select! {
             push = input.recv() => match push {
-                Some(push) => match push.payload {
-                    PushPayload::RawJson(bytes) => {
-                        for doc in serde_json::Deserializer::from_slice(&bytes).into_iter::<Value>() {
-                            match doc.map_err(|e| format!("source pushed invalid JSON: {e}"))? {
-                                Value::Array(items) => current.extend(items),
-                                value => current.push(value),
+                Some(push) => {
+                    retained = retained
+                        .saturating_add(std::mem::size_of_val(&push.payload))
+                        .saturating_add(match &push.payload {
+                            PushPayload::RawJson(bytes) => bytes.len(),
+                            PushPayload::Arrow(batch) =>
+                                batch.num_rows().saturating_mul(std::mem::size_of::<Value>()),
+                            PushPayload::Checkpoint(_) => 0,
+                        });
+                    if retained > RETENTION_CEILING_BYTES {
+                        return Err(format!(
+                            "the source pushed more than {RETENTION_CEILING_BYTES} bytes of \
+                             retained rows — the harness keeps every observed row to certify \
+                             the resume law (S1), and a conformance fixture must stay well \
+                             inside that ceiling"
+                        ));
+                    }
+                    match push.payload {
+                        PushPayload::RawJson(bytes) => {
+                            for doc in serde_json::Deserializer::from_slice(&bytes).into_iter::<Value>() {
+                                match doc.map_err(|e| format!("source pushed invalid JSON: {e}"))? {
+                                    Value::Array(items) => current.extend(items),
+                                    value => current.push(value),
+                                }
                             }
                         }
+                        PushPayload::Arrow(batch) => {
+                            // Arrow-pushing sources degrade the row comparison to
+                            // COUNTS: each row becomes an opaque Null, so the
+                            // resume law is certified on cardinality, not content.
+                            current.extend((0..batch.num_rows()).map(|_| Value::Null));
+                        }
+                        PushPayload::Checkpoint(cursor) => {
+                            observed.groups.push((std::mem::take(&mut current), Some(cursor)));
+                        }
                     }
-                    PushPayload::Arrow(batch) => {
-                        // Arrow-pushing sources degrade the row comparison to
-                        // COUNTS: each row becomes an opaque Null, so the
-                        // resume law is certified on cardinality, not content.
-                        current.extend((0..batch.num_rows()).map(|_| Value::Null));
-                    }
-                    PushPayload::Checkpoint(cursor) => {
-                        observed.groups.push((std::mem::take(&mut current), Some(cursor)));
-                    }
-                },
+                }
                 None => break,
             },
             result = &mut reader, if read_result.is_none() => {

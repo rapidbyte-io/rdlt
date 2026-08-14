@@ -251,6 +251,13 @@ fn resolve(named: &str, config: Value) -> Target {
 /// it does not spawn; for CLI runs this tighter 20s fires first.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The most probe stdout the certifier will buffer. A conforming probe
+/// prints ONE u64 row count, so a megabyte is orders of magnitude of
+/// headroom — and without a cap, [`drain_output`]'s read-to-EOF would
+/// buffer whatever an arbitrary operator command emits until
+/// [`PROBE_TIMEOUT`], which bounds time but not memory.
+const MAX_PROBE_STDOUT_BYTES: u64 = 1024 * 1024;
+
 /// The `--probe-cmd` read-back: one shell line, run per count with
 /// `{{table}}` substituted. The template may carry credentials, so no
 /// error below ever repeats it — failures name what happened, never
@@ -339,6 +346,21 @@ impl TableProbe for ShellProbe {
             }
             Ok(Ok(stdout)) => {
                 let group_note = sweep_probe_exit(pgid, &mut child).await;
+                // The cap verdict comes BEFORE the exit-status one: a
+                // probe still writing past the cap blocks on its full
+                // pipe and dies under the sweep, and its kill signal
+                // would otherwise mask the actual problem.
+                if stdout.len() as u64 > MAX_PROBE_STDOUT_BYTES {
+                    return Err(ProbeError {
+                        message: with_note(
+                            format!(
+                                "the probe command printed more than {MAX_PROBE_STDOUT_BYTES} \
+                                 bytes of stdout — a row-count probe answers one small line"
+                            ),
+                            group_note,
+                        ),
+                    });
+                }
                 let status = match child.wait().await {
                     Ok(status) => status,
                     Err(error) => {
@@ -473,12 +495,17 @@ async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'st
 /// reap lived here, freeing the group id before the Ok arms swept, so
 /// their SIGKILL could land on a recycled group): the reap belongs to
 /// the arms, AFTER their sweep, while the unreaped child still anchors
-/// the group id.
+/// the group id. The read is capped one byte past
+/// [`MAX_PROBE_STDOUT_BYTES`] so the caller can tell at-the-cap from
+/// past-it; a probe still writing beyond the cap blocks on its full
+/// pipe until the caller's sweep kills the group.
 async fn drain_output(child: &mut tokio::process::Child) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt as _;
     let mut stdout = Vec::new();
     if let Some(pipe) = child.stdout.as_mut() {
-        pipe.read_to_end(&mut stdout).await?;
+        pipe.take(MAX_PROBE_STDOUT_BYTES + 1)
+            .read_to_end(&mut stdout)
+            .await?;
     }
     Ok(stdout)
 }
@@ -555,5 +582,50 @@ async fn preflight(target: &Target, role: Role) -> Option<String> {
         // A good Spec, a served-wire error, or a stalled pre-flight:
         // certification judges it.
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The shell probe's byte bound (047 L6): probe stdout is an
+    //! arbitrary operator command's output, so the drain is CAPPED in
+    //! bytes, not just in time — read-to-EOF buffered whatever the
+    //! command emitted until the 20s timeout, which bounds patience
+    //! but not memory.
+
+    use super::*;
+
+    /// A probe flooding stdout past [`MAX_PROBE_STDOUT_BYTES`] is
+    /// refused NAMING THE CAP — the kill signal its blocked pipe earns
+    /// under the sweep must not mask the actual problem — and the cap
+    /// itself is pinned so drifting it is a deliberate act.
+    #[tokio::test]
+    async fn probe_stdout_flood_is_refused_at_the_cap() {
+        let probe = ShellProbe {
+            template: format!("head -c {} /dev/zero", 4 * MAX_PROBE_STDOUT_BYTES),
+        };
+        let error = probe
+            .count(&TableName::new("t"))
+            .await
+            .expect_err("an over-cap stdout must be refused");
+        assert!(
+            error.message.starts_with(
+                "the probe command printed more than 1048576 bytes of stdout — a \
+                 row-count probe answers one small line"
+            ),
+            "{}",
+            error.message
+        );
+        assert_eq!(MAX_PROBE_STDOUT_BYTES, 1024 * 1024);
+    }
+
+    /// The control: a conforming one-number probe still counts under
+    /// the capped drain.
+    #[tokio::test]
+    async fn probe_stdout_one_number_still_counts_under_the_cap() {
+        let probe = ShellProbe {
+            template: "echo 42".to_string(),
+        };
+        assert_eq!(probe.count(&TableName::new("t")).await.expect("counts"), 42);
     }
 }
