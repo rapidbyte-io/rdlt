@@ -40,9 +40,9 @@ fails the cell rather than recording a bad number.
 | `competitors/airbyte/` | Driver competitor: `setup.py` + `driver.py` over an abctl kind cluster (its README carries the fairness policy and prerequisites) |
 | `harness/bench-setup.sh` | The `TARGET=setup` implementation (dlt image + Airbyte connections over throwaway seeded fixtures) |
 | `bars.toml` | Enforcement bars — ≤ 1 per cell, each below a recorded session floor, each citing a RESULTS.md policy entry; `rdlt-bench gate` enforces them |
-| `results/` | The live artifact ledger (format_version 3, one JSON per cell; `raw/` is gitignored) — empty since the 045 history reset until a recorded session re-mints baselines |
-| `history.jsonl` | Append-only per-session medians; the Trends section renders from it (starts fresh post-reset) |
-| `records/archive-2026-08-13/` | THE ARCHIVED PRE-SPLIT REGIME: the recorded artifacts, history and flake log up to the 045 reset — what `rdlt-bench gate` binds `bars.toml` against until fresh baselines exist (RESULTS.md policy log, 2026-08-13) |
+| `results/` | The live artifact ledger AND the recorded one `rdlt-bench gate`/`report` bind (format_version 3, one JSON per cell; `raw/` is gitignored scratch — selftest output routes there) — re-minted by the 2026-08-13/14 post-split session; the artifacts are tracked, so git is the guard against a casual run overwriting a recording |
+| `history.jsonl` | Append-only per-session medians; the recorded Trends feed (restarted with the post-split session; selftest cells never append) |
+| `records/archive-2026-08-13/` | THE ARCHIVED PRE-SPLIT REGIME: the recorded artifacts, history and flake log up to the 045 reset — dated history read by no command since the 046 re-point (RESULTS.md policy log, 2026-08-13 and 2026-08-14) |
 | `RESULTS.md` | Policy log, Caveats, Milestones (narrative) + GENERATED matrix/trends between `rdlt-bench` markers |
 | `GOVERNANCE.md` | Coverage/semver/exclusion records |
 | `harness/check-cold-start.sh`, `harness/compare-iai.sh`, `perf-baselines.json` | The instruments track (cold-start ≤ 40 ms + instruction-count gate) — separate from the matrix, run by `TARGET=iai make bench` |

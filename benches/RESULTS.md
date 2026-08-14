@@ -40,7 +40,7 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
   032-era in-process connector, and the fresh 878.4 ms (+5.5%) also pays
   two spawns + handshakes. **Cross-regime deltas are the identity of the
   new shape, not regressions**: against the archive the five e2e cells sit
-  within ±4% (`pg-to-pg-1m` +4.0%, `pg-to-s3parquet-1m` +1.4%,
+  within ±4.1% (`pg-to-pg-1m` +4.0%, `pg-to-s3parquet-1m` +1.4%,
   `s3jsonl-to-pg-200k` +0.6%, `s3jsonl-to-s3parquet-200k` −1.2%,
   `pg-to-pg-dedup-1m` +0.2%) — the post-split + byte-bound architecture
   costs nothing measurable on the flagship cells — and NO archived figure
@@ -48,11 +48,12 @@ classified-exclusion records live in [`GOVERNANCE.md`](GOVERNANCE.md).
   pre-split regime and live only there. The history feed restarted with
   this session, so Trends shows first-session points until the next
   recorded one. The MB/s column is the first RECORDED one rendered from
-  042's footprint meter (`06b2bc2a` closed the engine's report-total sites
-  right after the 2026-08-10 session recorded): the pg-source rows'
+  042's footprint meter (`06b2bc2a` re-pointed the engine's report-total
+  sites right after the 2026-08-10 session recorded): the pg-source rows'
   ≈12×-inflated byte totals are gone — `pg-to-pg-1m` reports 178,240,270 B
-  for the 1M×12 workload, not 2.4 GB (see the amended byte-accounting
-  caveat).
+  for the 1M×12 workload, not 2.4 GB — but the metered totals are
+  plausible rather than audited; two residuals remain unreconciled (see
+  the amended byte-accounting caveat).
 
 - **2026-08-13 — THE HISTORY RESET: the pre-split recorded regime ENDS here
   (feature 045, D-045-5)**: every recorded session above this line was
@@ -592,14 +593,22 @@ Stated so the numbers stay honest as the matrix fills:
   the MB/s column on the pg-source rows (`pg-to-pg-1m`,
   `pg-to-s3parquet-1m`, `pg-to-pg-dedup-1m`) is unreliable until the
   engine's reporting sites are closed; the file-source rows are unaffected.
-  AMENDED 2026-08-14 (the 046 re-point): the reporting half is RESOLVED in
-  the matrix as printed. 042's `06b2bc2a` closed the engine's report-total
-  sites (stage window, commit policy, report totals now meter the true
-  footprint) right after the 2026-08-10 session recorded, so the
-  2026-08-13/14 session is the first RECORDED one carrying metered totals:
-  `pg-to-pg-1m` reports 178,240,270 B for the identical 1M×12 workload
-  where the archived row reported 2,413,845,024 B. The MB/s column is
-  usable across all rows from this session on; rows in the dated archive
+  AMENDED 2026-08-14 (the 046 re-point): the matrix as printed no longer
+  carries the ≈12× figure. 042's `06b2bc2a` re-pointed the engine's
+  report-total sites at the channel's footprint meter (its own claim:
+  stage window, commit policy, report totals) right after the 2026-08-10
+  session recorded, and the 2026-08-13/14 session is the first RECORDED
+  one under it: `pg-to-pg-1m` reports 178,240,270 B for the identical
+  1M×12 workload where the archived row reported 2,413,845,024 B.
+  PLAUSIBLE, not audited — two residuals are unreconciled: that 178 MB
+  sits ≈25% above what this caveat's own arithmetic predicts for the
+  honest footprint (≈143 MB — the in-process 199.7 MB divided by the
+  ≈1.4× builder overshoot), and the file-source rows report −11% against
+  their archived byte-identical datasets (133,489,034 B vs 149,965,184 B
+  for `s3jsonl-to-pg-200k`) though neither dataset changed. Read the
+  fresh bytes/MB/s as channel-metered and roughly right, not as an
+  audited count; full confidence needs a one-cell A/B against a known
+  byte volume — an owner note, not taken here. Rows in the dated archive
   keep their inflated figures and this caveat is how to read them.
 - **Cold start** lives on the instruments track, not the matrix: a one-row
   file → duckdb pipeline that spawns both connector bins (two
