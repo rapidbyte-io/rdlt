@@ -25,9 +25,9 @@ fn config(workdir: &Path) -> EngineConfig {
     config
 }
 
-/// A v3 manifest line, re-derived independently of the engine's encoder:
+/// A manifest line, re-derived independently of the engine's encoder:
 /// `{json}|{blake3-hex-of-the-json-bytes}`.
-fn v3_line(record: &serde_json::Value) -> String {
+fn manifest_line(record: &serde_json::Value) -> String {
     let json = record.to_string();
     format!("{json}|{}\n", blake3::hash(json.as_bytes()).to_hex())
 }
@@ -151,9 +151,9 @@ async fn an_uncleanable_damaged_wal_refuses_the_run_naming_the_clear_failure() {
     let wal_dir = workdir.join("wal");
     let unlock = plant_unclearable_wal(
         &wal_dir,
-        v3_line(&serde_json::json!({
+        manifest_line(&serde_json::json!({
             "rec": "run",
-            "format_version": 3,
+            "format_version": 1,
             "load_id": "stale",
             "pipeline": "wal-lifecycle",
         })),
@@ -189,9 +189,9 @@ async fn an_uncleanable_discard_class_wal_still_runs_with_a_warning() {
     // A current-version header with no checkpoint: the Discard shape.
     let unlock = plant_unclearable_wal(
         &wal_dir,
-        v3_line(&serde_json::json!({
+        manifest_line(&serde_json::json!({
             "rec": "run",
-            "format_version": 3,
+            "format_version": 1,
             "load_id": "stale",
             "pipeline": "wal-lifecycle",
         })),

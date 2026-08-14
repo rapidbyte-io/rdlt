@@ -59,9 +59,8 @@ fn private_file() -> OpenOptions {
 /// serialized verbatim. Recovery's stream↔segment join normalizes under
 /// the resuming run's rules, and that join is only sound when they are
 /// the WRITING run's rules — the sidecar is what proves it. A workdir
-/// file beside the manifest, not a record in the manifest stream (born
-/// in the v2 era without a format bump); reclaimed with the directory
-/// by [`clear`].
+/// file beside the manifest, not a record in the manifest stream;
+/// reclaimed with the directory by [`clear`].
 pub(crate) const RULES_SIDECAR: &str = "rules.json";
 
 #[derive(Debug)]
@@ -324,7 +323,7 @@ impl Wal {
                 std::io::Error::other("injected crash"),
             ))
         );
-        // v3: every line carries its blake3 trailer — see
+        // Every line carries its blake3 trailer — see
         // [`super::record::encode_line`] for why the digest exists.
         let mut line =
             super::record::encode_line(record).map_err(|e| wal_err("encode record", e))?;

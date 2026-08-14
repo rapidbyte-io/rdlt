@@ -6,41 +6,33 @@ use rdlt_core::{
 };
 use serde::{Deserialize, Serialize};
 
-/// WAL format version, covering the manifest record shapes AND the segment
-/// container together — they are one format, because a manifest line is only
-/// meaningful if the segment it names can be decoded.
+/// WAL format version, covering the manifest record shapes, the per-line
+/// checksum trailer ([`encode_line`]) AND the segment container together —
+/// they are one format, because a manifest line is only meaningful if it
+/// verifies and the segment it names can be decoded.
 ///
-/// v1: parquet segments. v2: Arrow IPC file segments (`.arrow`). v3: the same
-/// records and segments, with every manifest line carrying a blake3 checksum
-/// trailer ([`encode_line`]) — v2's damage detection was content-blind, so
-/// corruption that yielded DIFFERENT VALID JSON (a flipped cursor digit, a
-/// forged committed sequence) was accepted silently.
+/// The format version is 1 until the public release; in the unpublished
+/// window format changes land IN PLACE — an unreadable or version-skewed
+/// WAL degrades to re-extraction, which is always safe because the WAL is
+/// a replayable buffer, never the source of truth. Version ceremony (bumps,
+/// migration notes) starts at the public release.
 ///
-/// A manifest at any other version is REFUSED, in both directions. Refusing a
-/// newer one is obvious; refusing an older one matters just as much here,
-/// because an older manifest's lines carry guarantees this build no longer
-/// grants (v1: parquet segments this build cannot read; v2: no line
-/// integrity). Recovery degrades to source re-extraction either way: slower,
-/// never wrong.
-pub(crate) const WAL_FORMAT_VERSION: u32 = 3;
-
-/// The serde fallback for a manifest whose `Run` header predates the versioned
-/// header field. Pinned to `1` FOREVER — such a manifest is by definition a v1
-/// one, so defaulting it to the current version would claim parquet segments
-/// are Arrow IPC and hand corrupt input to the reader. Deliberately not
-/// [`WAL_FORMAT_VERSION`]: that constant moves, this one describes history.
-fn initial_wal_version() -> u32 {
-    1
-}
+/// A manifest at any other version is REFUSED, exact-match in both
+/// directions: a skewed header's records cannot be trusted to mean what
+/// this build thinks they mean, in either direction. Recovery degrades to
+/// source re-extraction either way: slower, never wrong.
+pub(crate) const WAL_FORMAT_VERSION: u32 = 1;
 
 /// One manifest line. Order on disk IS the replay order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "rec", rename_all = "snake_case")]
 pub(crate) enum WalRecord {
     /// First record of each run; identifies the load for recovery commits and
-    /// carries the manifest format version.
+    /// carries the manifest format version. The version field is REQUIRED —
+    /// a header without one is not a recognized manifest (this engine is
+    /// greenfield: every writer stamps it), so it lands on the corruption
+    /// arms rather than defaulting to anything.
     Run {
-        #[serde(default = "initial_wal_version")]
         format_version: u32,
         load_id: LoadId,
         pipeline: PipelineId,
@@ -67,7 +59,7 @@ pub(crate) enum WalRecord {
 /// The checksum trailer's length: `|` plus blake3's 64 hex characters.
 const TRAILER_LEN: usize = 1 + 64;
 
-/// Encode one v3 manifest line: the record's JSON, then `|`, then the
+/// Encode one manifest line: the record's JSON, then `|`, then the
 /// blake3 hex digest of exactly those JSON bytes. The digest is what makes
 /// damage detection content-aware: JSON parseability and the segment
 /// cross-checks catch structural damage, but corruption that yields
@@ -83,7 +75,7 @@ pub(crate) fn encode_line(record: &WalRecord) -> Result<Vec<u8>, serde_json::Err
     Ok(line)
 }
 
-/// One decoded v3 manifest line, classified for the scan.
+/// One decoded manifest line, classified for the scan.
 pub(crate) enum ManifestLine {
     /// Checksum verified, record decoded — the only arm a replay span may
     /// be built from.
@@ -96,9 +88,10 @@ pub(crate) enum ManifestLine {
     /// No complete checksum trailer. On the FINAL line this is the torn
     /// tail a crash mid-append leaves — truncated, as always. Anywhere
     /// else it is corruption, EXCEPT that the whole-line decode attempt
-    /// rides along so the scan can recognize an OLDER format's Run header
-    /// (older writers never wrote trailers) and refuse it as
-    /// `Unsupported` by version rather than misreporting corruption.
+    /// rides along so the scan can recognize a Run header claiming a
+    /// DIFFERENT format version (a pre-checksum dev-window manifest wrote
+    /// bare lines) and refuse it as `Unsupported` by version rather than
+    /// misreporting corruption.
     Untrailered(Option<WalRecord>),
 }
 
@@ -175,23 +168,18 @@ pub(crate) fn verify_segment_file(load_id: &LoadId, file: &str) -> Result<(), St
 mod tests {
     use super::*;
 
-    /// `initial_wal_version` describes HISTORY: a manifest with no version field
-    /// is by definition a v1 one. Defaulting it to the current version would
-    /// claim its parquet segments are Arrow IPC and hand corrupt bytes to the
-    /// reader, so this must stay 1 even as `WAL_FORMAT_VERSION` moves.
+    /// The version field is REQUIRED: every writer stamps it, so a Run
+    /// header without one is not a recognized manifest. Defaulting it —
+    /// to the current version, or to any other number — would let an
+    /// unversioned header masquerade as a versioned one; refusing to
+    /// decode routes it to the scan's corruption arms instead.
     #[test]
-    fn a_headerless_manifest_version_defaults_to_one_forever() {
-        assert_eq!(initial_wal_version(), 1);
-        let decoded: WalRecord =
-            serde_json::from_str(r#"{"rec":"run","load_id":"l","pipeline":"p"}"#)
-                .expect("a pre-versioning header still decodes");
-        match decoded {
-            WalRecord::Run { format_version, .. } => assert_eq!(
-                format_version, 1,
-                "absent version means v1, never the current version"
-            ),
-            other => panic!("expected a Run header, got {other:?}"),
-        }
+    fn a_run_header_without_a_version_field_does_not_decode() {
+        assert!(
+            serde_json::from_str::<WalRecord>(r#"{"rec":"run","load_id":"l","pipeline":"p"}"#)
+                .is_err(),
+            "an unversioned header must not decode as a Run record"
+        );
     }
 
     /// The line envelope round-trips through its own decode, and the digest

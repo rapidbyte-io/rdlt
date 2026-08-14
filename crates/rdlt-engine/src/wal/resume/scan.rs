@@ -123,16 +123,17 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
                 if let Some(WalRecord::Run { format_version, .. }) = &parsed
                     && *format_version != crate::wal::WAL_FORMAT_VERSION
                 {
-                    // An OLDER writer's Run header never carried a trailer.
+                    // A bare Run header claiming ANOTHER format version — the
+                    // shape a pre-checksum dev-window manifest leads with.
                     // Hand exactly this one record to the fold, whose
                     // occupancy and version gates refuse every non-current
                     // header by SHAPE (`ForeignPipeline` / `Unsupported`,
                     // never acceptance), and stop reading: the rest of the
                     // file is in a format this build does not verify. A
                     // trailer-less line claiming the CURRENT version gets no
-                    // such tolerance — v3 writers always write trailers, so
-                    // accepting one would let a forger bypass the checksum
-                    // by omission.
+                    // such tolerance — this format's writers always write
+                    // trailers, so accepting one would let a forger bypass
+                    // the checksum by omission.
                     records.push(parsed.expect("matched Some above"));
                     break;
                 }
@@ -605,8 +606,10 @@ mod tests {
         );
         assert_eq!(
             crate::wal::WAL_FORMAT_VERSION,
-            3,
-            "bump deliberately, with a migration note"
+            1,
+            "the format version is 1 until the public release — in the unpublished \
+             window format changes land IN PLACE (a skewed or unreadable WAL \
+             degrades to re-extraction); version ceremony starts at the release"
         );
     }
 
@@ -652,15 +655,19 @@ mod tests {
         assert!(matches!(run(current), ScanOutcome::Discard));
     }
 
-    /// A manifest predating the versioned header defaults to v1 — and must
-    /// therefore be refused now, not treated as current. Defaulting it to the
-    /// current version would claim its parquet segments are Arrow IPC.
+    /// A manifest whose Run header carries NO version field is not a
+    /// recognized manifest at all (every writer stamps the field), so a
+    /// multi-line one lands on the corruption arm and degrades — never
+    /// decodes under a defaulted version, never replays.
     #[test]
-    fn a_headerless_manifest_defaults_to_v1_and_is_refused() {
+    fn a_versionless_manifest_is_unrecognized_and_degrades() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("manifest.jsonl"),
-            "{\"rec\":\"run\",\"load_id\":\"l\",\"pipeline\":\"p\"}\n",
+            concat!(
+                "{\"rec\":\"run\",\"load_id\":\"l\",\"pipeline\":\"p\"}\n",
+                "{\"rec\":\"committed\",\"commit_seq\":1}\n",
+            ),
         )
         .expect("write manifest");
         assert!(
@@ -670,9 +677,9 @@ mod tests {
                     rdlt_core::naming::IdentRules::default(),
                     &PipelineId::new("p")
                 ),
-                ScanOutcome::Unsupported { found: 1, .. }
+                ScanOutcome::Damaged(_)
             ),
-            "an unversioned header is a v1 manifest"
+            "an unversioned header is unrecognized — corruption arm, re-extraction"
         );
     }
 
@@ -1411,14 +1418,17 @@ mod integrity_tests {
         );
     }
 
-    /// THE v2 DEGRADE PIN (the v1→v2 precedent, re-run for v2→v3): a
-    /// hand-built v2 manifest — plain JSON lines, no checksum trailer —
-    /// refuses as `Unsupported` BY SHAPE, never `Damaged` and never
-    /// `Recover`. The caller clears it and re-extracts from cursors.
+    /// THE DEGRADE PIN for pre-checksum dev-window residue, synthesized
+    /// INLINE (owner rule: no committed legacy fixtures, no legacy
+    /// helpers): a manifest of bare JSON lines whose header claims a
+    /// different version number refuses as `Unsupported` BY SHAPE — never
+    /// `Damaged`, never `Recover` — and the caller clears it and
+    /// re-extracts from cursors. Safe because the WAL is a replayable
+    /// buffer, never the source of truth.
     #[test]
-    fn a_surviving_v2_manifest_refuses_as_unsupported_and_never_replays() {
+    fn a_bare_manifest_claiming_another_version_refuses_as_unsupported() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // Verbatim v2 lines, as a v2 writer left them: no trailers.
+        // Bare lines, no trailers — the pre-checksum dev-window shape.
         std::fs::write(
             dir.path().join("manifest.jsonl"),
             concat!(
@@ -1427,7 +1437,7 @@ mod integrity_tests {
                 "{\"rec\":\"checkpoint\",\"stream\":\"orders\",\"cursor\":41}\n",
             ),
         )
-        .expect("write v2 manifest");
+        .expect("write bare manifest");
         std::fs::write(
             dir.path().join(crate::wal::RULES_SIDECAR),
             serde_json::to_vec(&IdentRules::default()).expect("rules json"),
@@ -1439,16 +1449,16 @@ mod integrity_tests {
                 outcome,
                 ScanOutcome::Unsupported {
                     found: 2,
-                    supported: 3
+                    supported: 1
                 }
             ),
-            "a v2 manifest degrades to cursor re-extraction by VERSION, \
-             distinguishable by shape from corruption: {outcome:?}"
+            "a version-skewed bare manifest degrades to cursor re-extraction by \
+             VERSION, distinguishable by shape from corruption: {outcome:?}"
         );
     }
 
     /// A trailer-less line claiming the CURRENT version gets no such
-    /// tolerance: v3 writers always write trailers, so a stripped
+    /// tolerance: this format's writers always write trailers, so a stripped
     /// current-version Run header is a forgery or corruption — a torn
     /// FINAL header truncates, a mid-manifest one is Damaged. Accepting
     /// it would let an attacker bypass the checksum by omission.
