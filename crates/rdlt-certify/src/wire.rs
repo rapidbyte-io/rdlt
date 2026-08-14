@@ -1494,6 +1494,43 @@ mod tests {
             );
         }
     }
+
+    /// The silent-but-alive rogue: it binds, the transport is up, and
+    /// the handshake never answers — the shape the SIGKILL matrix
+    /// cannot produce (a dead socket errors out) and the one only a
+    /// deadline catches. Certification must yield the TYPED timeout
+    /// outcome on every wire clause, never a hang: the test itself is
+    /// bounded at 45s (the clause budget plus margin) so a broken
+    /// budget fails THIS test, and the paused clock auto-advances the
+    /// waits so neither bound costs wall time (the P10 hang pin's
+    /// idiom). No new clause id: silence is not a new connector
+    /// obligation — every clause already carries the budget, and the
+    /// cascade with the one timeout spelling IS the typed verdict.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_but_alive_connector_fails_every_wire_clause_typed_not_hung() {
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(45),
+            certify_rogue(
+                RogueSource {
+                    handshake: HandshakeScript::Silence,
+                    streams: vec![],
+                    read_declared: vec![],
+                    read_undeclared: vec![],
+                    read_hold_open: false,
+                },
+                "rogue",
+            ),
+        )
+        .await;
+        let report = outcome.expect("the certifier must outlive the silence — the budget fired");
+        for clause in SOURCE_WIRE_CLAUSES {
+            assert_fail(
+                &report,
+                clause,
+                "clause timed out after 30s — a connector that stalls fails the clause",
+            );
+        }
+    }
 }
 
 #[cfg(test)]

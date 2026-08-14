@@ -123,6 +123,12 @@ pub(crate) enum HandshakeScript {
     },
     /// Refuse the handshake with a FATAL error frame.
     Refuse { message: &'static str },
+    /// Never answer at all — the silent-but-alive connector: the
+    /// transport is up (the stack answers pings), the process lives,
+    /// and the reply never comes. The SIGKILL matrix cannot produce
+    /// this shape (a dead socket errors); only a deadline tells it
+    /// from a slow connector, and the clause budget is that deadline.
+    Silence,
 }
 
 impl HandshakeScript {
@@ -184,6 +190,10 @@ impl Connector for RogueSource {
             }),
             HandshakeScript::Refuse { message } => {
                 handshake_reply::Outcome::Error(error_frame(Classification::Fatal, message))
+            }
+            HandshakeScript::Silence => {
+                std::future::pending::<()>().await;
+                unreachable!("the silent rogue never answers")
             }
         };
         Ok(Response::new(proto::HandshakeReply {
