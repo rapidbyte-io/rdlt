@@ -58,6 +58,16 @@ pub fn map_arrow_type(dt: &arrow::datatypes::DataType) {
     let _ = crate::shred::passthrough::column_type_from_arrow(dt);
 }
 
+/// WAL manifest line classification over arbitrary text — the reader's
+/// own comments invite hand-corrupt input: `Record`, `Corrupt`, or
+/// `Untrailered`, never a panic. The segment-name gate rides along
+/// under a fixed load id, since a manifest's `Segment { file }` is the
+/// same untrusted text.
+pub fn wal_manifest_line(text: &str) {
+    let _ = crate::wal::record::decode_line(text);
+    let _ = crate::wal::record::verify_segment_file(&LoadId::new("fuzz-load"), text);
+}
+
 // ---- bench entry points (iai_hotpath / perf gate) ----
 
 /// Production (tape) shred path over one raw slab; returns emitted row count.

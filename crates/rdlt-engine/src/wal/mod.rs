@@ -6,7 +6,9 @@
 //! uncommitted-looking span whose replay re-commits with the SAME
 //! `(load_id, commit_seq)` — idempotence absorbs the ambiguity.
 
-mod record;
+// `pub(crate)` so the fuzz entry (`crate::fuzzing::wal_manifest_line`)
+// can reach the line decoder; nothing outside the crate sees it.
+pub(crate) mod record;
 pub(crate) mod resume;
 mod writer;
 

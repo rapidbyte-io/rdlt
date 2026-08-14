@@ -63,9 +63,21 @@
 TARGET ?=
 MUTANTS_TMPDIR ?= $(CURDIR)/target/mutants-tmp
 FUZZ_SECONDS ?= 600
-# These fuzz the engine alone; connector fuzz harnesses belong to the
-# rdlt-connectors repository (a standing owner record there).
-FUZZ_TARGETS := jsonl_slab arrow_schema_map shred_push
+# The nightly run bounds each target by wall time; the PR leg overrides
+# FUZZ_RUN_BOUND with a small `-runs=` count (deterministic, no flaky
+# timeout) so a fuzz-invariant break — including one a seed already
+# triggers, since libFuzzer replays the corpus first — surfaces on the
+# PR, not the next night.
+FUZZ_RUN_BOUND ?= -max_total_time=$(FUZZ_SECONDS)
+# The RUN set. These fuzz the engine and the wire decoders; connector
+# fuzz harnesses belong to the rdlt-connectors repository (a standing
+# owner record there). arrow_ipc_decode is BUILT (below) but not RUN:
+# it surfaced a live reachable panic in arrow-ipc's own schema
+# converter (047 M7 — the client decode path), so running it would red
+# the gate on an unfixed upstream/wire-edge defect owned by another
+# lane; it joins this list once that panic is closed.
+FUZZ_TARGETS := jsonl_slab arrow_schema_map shred_push \
+	wire_frame_decode handshake_line wal_manifest_line
 
 .PHONY: build release connector-bins dist lint docs test bench check coverage counts semver reclaim
 
@@ -244,8 +256,12 @@ else ifeq ($(TARGET),prop)
 	# here, and the run reported success having executed zero cases.
 	PROPTEST_CASES=4096 cargo nextest run -p rdlt-engine -E 'binary(shred_property)'
 else ifeq ($(TARGET),fuzz)
+	# Build EVERY target first — the compile gate covers arrow_ipc_decode
+	# even while it stays out of the RUN set (the 024 never-compiled-file
+	# lesson) — then run only FUZZ_TARGETS under the active bound.
+	cd fuzz && cargo +nightly fuzz build
 	cd fuzz && for t in $(FUZZ_TARGETS); do \
-		cargo +nightly fuzz run $$t -- -timeout=10 -max_total_time=$(FUZZ_SECONDS) || exit 1; \
+		cargo +nightly fuzz run $$t -- -timeout=10 $(FUZZ_RUN_BOUND) || exit 1; \
 	done
 else ifeq ($(TARGET),mutants)
 	# --jobs 2 + 2 test threads: runaway mutants (broken backpressure bounds)
