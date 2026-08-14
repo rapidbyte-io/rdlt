@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use rdlt_connector::{ConnectorSpec, DestinationCapabilities};
 use rdlt_connector_protocol::PROTOCOL_VERSION;
@@ -12,7 +13,28 @@ use rdlt_connector_protocol::proto::{self, handshake_reply};
 use tonic::transport::Channel;
 
 use crate::dial::connector_client;
-use crate::error::ClientError;
+use crate::error::{ClientError, TimedOutOperation, with_deadline};
+
+/// The default RPC deadline: how long any single wire await — the
+/// dial, the handshake, one read frame's quiet interval, one reply —
+/// may stay silent before it fails as the typed
+/// [`ClientError::Timeout`].
+///
+/// Ten seconds is ONE LAW spelled in three places, deliberately equal:
+/// the certifier's kill matrix gives a SIGKILLed connector ten seconds
+/// to fail the wire (`rdlt-certify`'s `KILL_ERROR_WINDOW`), the
+/// runtime's spawner gives a fresh binary ten seconds to write its
+/// handshake line (`rdlt-runtime`'s `DEFAULT_LINE_TIMEOUT`), and this
+/// deadline gives an ALIVE connector ten seconds per answer — so a
+/// dead OR silent connector yields a typed error within ten seconds,
+/// never a hang. Change one and the law fragments; equality is pinned
+/// from both sibling crates.
+///
+/// Per-await, not per-stream: the deadline bounds each QUIET interval
+/// — every frame or reply that arrives starts the next await's clock
+/// afresh — so a slow-but-flowing read of any total duration never
+/// trips it, while a stream that stalls mid-flight always does.
+pub const DEFAULT_RPC_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Which half of the SPI the handshake asks the connector to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +76,12 @@ pub struct ConnectorRequirement {
     /// Where the runtime resolved the connector executable — carried
     /// for the spawner, never read by the handshake.
     pub path: Option<PathBuf>,
+    /// The liveness half of the requirement: how long any single wire
+    /// await on this connector may stay silent before it fails as the
+    /// typed [`ClientError::Timeout`]. Defaults to
+    /// [`DEFAULT_RPC_DEADLINE`]; it bounds the quiet interval of each
+    /// await, never a whole stream (see the constant's doc).
+    pub rpc_deadline: Duration,
 }
 
 impl ConnectorRequirement {
@@ -63,6 +91,7 @@ impl ConnectorRequirement {
             id: id.into(),
             version: None,
             path: None,
+            rpc_deadline: DEFAULT_RPC_DEADLINE,
         }
     }
 
@@ -77,6 +106,18 @@ impl ConnectorRequirement {
     #[must_use = "with_path returns the requirement; it does not mutate in place"]
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.path = Some(path.into());
+        self
+    }
+
+    /// Override the per-await RPC deadline — for embedders whose
+    /// connectors legitimately think longer than
+    /// [`DEFAULT_RPC_DEADLINE`] between answers (or tests that want a
+    /// tight one). The deadline bounds each quiet interval, so a
+    /// longer stream needs no longer deadline — only a longer SILENCE
+    /// does.
+    #[must_use = "with_rpc_deadline returns the requirement; it does not mutate in place"]
+    pub fn with_rpc_deadline(mut self, deadline: Duration) -> Self {
+        self.rpc_deadline = deadline;
         self
     }
 }
@@ -136,16 +177,19 @@ pub async fn handshake(
     expected: &ConnectorRequirement,
 ) -> Result<HandshakeOutcome, ClientError> {
     let mut client = connector_client(channel.clone());
-    let reply = client
-        .handshake(proto::HandshakeRequest {
+    let reply = with_deadline(
+        expected.rpc_deadline,
+        TimedOutOperation::Handshake,
+        client.handshake(proto::HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             expected_role: role.wire_name().to_string(),
             config_json: serde_json::to_vec(config)
                 .expect("a serde_json::Value serializes to JSON infallibly"),
-        })
-        .await
-        .map_err(ClientError::Transport)?
-        .into_inner();
+        }),
+    )
+    .await?
+    .map_err(ClientError::Transport)?
+    .into_inner();
 
     let ok = match reply.outcome {
         Some(handshake_reply::Outcome::Ok(ok)) => ok,

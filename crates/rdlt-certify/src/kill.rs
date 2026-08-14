@@ -732,4 +732,17 @@ mod tests {
         assert_fail(&entries, "K-S2", exhausted);
         assert_fail(&entries, "K-S3", exhausted);
     }
+
+    /// One law, pinned from this side: the ten seconds a SIGKILLed
+    /// connector gets to fail the wire is the same ten seconds the
+    /// client gives every await on an ALIVE one — a dead OR silent
+    /// connector yields a typed error within ten seconds, never a
+    /// hang. Change either constant and this pin names the fracture.
+    #[test]
+    fn the_kill_window_is_the_client_rpc_deadline() {
+        assert_eq!(
+            KILL_ERROR_WINDOW,
+            rdlt_connector_client::DEFAULT_RPC_DEADLINE
+        );
+    }
 }

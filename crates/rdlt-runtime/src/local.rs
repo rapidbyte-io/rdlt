@@ -339,7 +339,12 @@ impl LocalBinaryConnectorProvider {
         // child and its socket die with this scope whether the RPC
         // below answers or refuses.
         let _guard = LifecycleGuard::new(child, line.socket_path.clone());
-        let channel = dial(&line.socket_path, self.engine_budget_bytes).await?;
+        let channel = dial(
+            &line.socket_path,
+            self.engine_budget_bytes,
+            requirement.rpc_deadline,
+        )
+        .await?;
         let reply = connector_client(channel)
             .spec(SpecRequest {})
             .await
@@ -444,5 +449,18 @@ mod tests {
             "rdlt-connector-reference"
         );
         assert_eq!(binary_name("reference"), "rdlt-connector-reference");
+    }
+
+    /// One law, pinned from this side: the ten seconds a spawned
+    /// binary gets to write its handshake line is the same ten seconds
+    /// the client gives every wire await after it — a dead OR silent
+    /// connector yields a typed error within ten seconds, never a
+    /// hang. Change either constant and this pin names the fracture.
+    #[test]
+    fn the_line_timeout_is_the_client_rpc_deadline() {
+        assert_eq!(
+            DEFAULT_LINE_TIMEOUT,
+            rdlt_connector_client::DEFAULT_RPC_DEADLINE
+        );
     }
 }

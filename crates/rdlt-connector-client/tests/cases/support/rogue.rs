@@ -30,6 +30,17 @@ use tonic::{Request, Response, Status, Streaming};
 pub enum ReadScript {
     /// Send these frames verbatim, then end the stream cleanly.
     Frames(Vec<proto::ReadFrame>),
+    /// Send these frames verbatim, then go SILENT — the stream never
+    /// ends and no further frame arrives: the silent-but-alive shape
+    /// the per-frame deadline exists to catch.
+    FramesThenSilence(Vec<proto::ReadFrame>),
+    /// Send these frames one by one, sleeping `interval` before each —
+    /// the slow-but-flowing shape the per-frame deadline must NOT trip
+    /// on, however long the whole stream takes. Ends cleanly.
+    Drip {
+        frames: Vec<proto::ReadFrame>,
+        interval: std::time::Duration,
+    },
     /// Send copies of `frame` for as long as the client keeps the RPC
     /// alive, adding the frame's payload size to `sent_bytes` after each
     /// send the response channel ACCEPTS — the pacing observer: an
@@ -122,6 +133,35 @@ impl SourceService for Rogue {
                 }
                 Ok(Response::new(ReceiverStream::new(frame_rx)))
             }
+            ReadScript::FramesThenSilence(frames) => {
+                // Preload, then park the sender forever: the scripted
+                // frames arrive and nothing ever follows — silence, not
+                // a clean end.
+                let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(frames.len().max(1));
+                for frame in frames {
+                    frame_tx
+                        .try_send(Ok(frame))
+                        .expect("a preloaded channel sized to its frames has capacity");
+                }
+                tokio::spawn(async move {
+                    let _held_forever = frame_tx;
+                    std::future::pending::<()>().await;
+                });
+                Ok(Response::new(ReceiverStream::new(frame_rx)))
+            }
+            ReadScript::Drip { frames, interval } => {
+                let (frame_tx, frame_rx) = tokio::sync::mpsc::channel(1);
+                tokio::spawn(async move {
+                    for frame in frames {
+                        tokio::time::sleep(interval).await;
+                        if frame_tx.send(Ok(frame)).await.is_err() {
+                            return;
+                        }
+                    }
+                    // The sender drops here: a clean end of stream.
+                });
+                Ok(Response::new(ReceiverStream::new(frame_rx)))
+            }
             ReadScript::Blast { frame, sent_bytes } => {
                 // Capacity 1 so the counter tracks the TRANSPORT's
                 // appetite, not this channel's own buffering: each send
@@ -170,6 +210,14 @@ pub enum SessionScript {
     /// which is exactly why the client reply loop's `Err` arm needs a
     /// rogue to reach it.
     OpenedThenStatus { code: tonic::Code, message: String },
+    /// Answer the `Open` frame with `Opened`, consume the NEXT request
+    /// frame, then before going SILENT emit `parts` interleaved
+    /// `part_closed` events — the stream never ends and the call's own
+    /// reply never comes. With `parts: 0` this is the bare
+    /// silent-but-alive session; with parts it proves a flood does not
+    /// defeat the quiet-interval deadline: every event resets the
+    /// clock, and the silence AFTER the flood still times out typed.
+    OpenedThenPartsThenSilence { parts: u64 },
 }
 
 /// The scripted destination server: a truthful handshake carrying a
@@ -223,7 +271,7 @@ impl DestinationService for RogueDestination {
         &self,
         request: Request<Streaming<proto::SessionRequest>>,
     ) -> Result<Response<Self::OpenSessionStream>, Status> {
-        let SessionScript::OpenedThenStatus { code, message } = self.script.clone();
+        let script = self.script.clone();
         let mut requests = request.into_inner();
         // Capacity 1 matches the client's request/reply pacing: each
         // send below completes only once tonic pulled the previous
@@ -241,10 +289,101 @@ impl DestinationService for RogueDestination {
                 }))
                 .await;
             let _ = requests.message().await;
-            let _ = reply_tx.send(Err(Status::new(code, message))).await;
+            match script {
+                SessionScript::OpenedThenStatus { code, message } => {
+                    let _ = reply_tx.send(Err(Status::new(code, message))).await;
+                }
+                SessionScript::OpenedThenPartsThenSilence { parts } => {
+                    for index in 0..parts {
+                        let _ = reply_tx
+                            .send(Ok(proto::SessionReply {
+                                reply: Some(session_reply::Reply::PartClosed(
+                                    proto::PartClosedEvent {
+                                        table: "numbers".to_string(),
+                                        encoded_bytes: index,
+                                        reason: "commit".to_string(),
+                                    },
+                                )),
+                            }))
+                            .await;
+                    }
+                    let _held_forever = reply_tx;
+                    std::future::pending::<()>().await;
+                }
+            }
         });
         Ok(Response::new(ReceiverStream::new(reply_rx)))
     }
+}
+
+/// Where the [`Mute`] connector goes silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MuteSeat {
+    /// The handshake handler never answers — the wire is up, the
+    /// connector is alive, and nothing ever comes back.
+    Handshake,
+    /// The handshake answers truthfully; `check` never does.
+    Check,
+}
+
+/// A connector that is ALIVE but silent at the scripted seat: its
+/// transport works (h2 setup completes, keep-alive pings are answered
+/// by the stack), so nothing but a deadline can tell it from a slow
+/// one — the exact shape the SIGKILL kill matrix cannot cover.
+#[derive(Debug)]
+pub struct Mute {
+    seat: MuteSeat,
+}
+
+#[tonic::async_trait]
+impl Connector for Mute {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        if self.seat == MuteSeat::Handshake {
+            std::future::pending::<()>().await;
+        }
+        let spec = ConnectorSpec::new("mute", "0.0.0");
+        Ok(Response::new(proto::HandshakeReply {
+            outcome: Some(handshake_reply::Outcome::Ok(proto::HandshakeOk {
+                connector_id: "mute".to_string(),
+                connector_version: "0.0.0".to_string(),
+                spec_json: serde_json::to_vec(&spec)
+                    .expect("a ConnectorSpec serializes to JSON infallibly"),
+                capabilities_json: Vec::new(),
+                state_format_versions: Default::default(),
+            })),
+        }))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        std::future::pending::<()>().await;
+        unreachable!("the mute connector never answers check")
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<proto::SpecReply>, Status> {
+        Err(Status::unimplemented("the mute connector serves silence"))
+    }
+}
+
+/// Bind the mute connector at `path` and serve until the returned task
+/// is dropped.
+pub fn serve_mute(path: &Path, seat: MuteSeat) -> JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(path).expect("bind the mute's socket");
+    let incoming = UnixListenerStream::new(listener);
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::new(Mute { seat }))
+        .serve_with_incoming(incoming);
+    tokio::spawn(async move {
+        let _ = serving.await;
+    })
 }
 
 /// Bind the rogue destination at `path` and serve until the returned

@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use rdlt_connector_client::{
-    Classification, ClientError, ConnectorRequirement, Role, dial, handshake,
+    Classification, ClientError, ConnectorRequirement, DEFAULT_RPC_DEADLINE, Role, dial, handshake,
 };
 use rdlt_connector_sdk::serve;
 use rdlt_connector_sdk::source::SourceConnector as _;
@@ -40,7 +40,9 @@ async fn a_source_handshake_populates_the_outcome() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES).await.expect("dial");
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
     let outcome = handshake(
         &channel,
         Role::Source,
@@ -85,7 +87,7 @@ async fn a_destination_handshake_carries_capabilities() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, 1).await.expect("dial");
+    let channel = dial(&path, 1, DEFAULT_RPC_DEADLINE).await.expect("dial");
     let outcome = handshake(
         &channel,
         Role::Destination,
@@ -116,7 +118,9 @@ async fn an_id_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES).await.expect("dial");
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
     let error = handshake(
         &channel,
         Role::Source,
@@ -144,7 +148,9 @@ async fn a_version_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES).await.expect("dial");
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
     let error = handshake(
         &channel,
         Role::Source,
@@ -173,7 +179,9 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES).await.expect("dial");
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
     let error = handshake(
         &channel,
         Role::Source,

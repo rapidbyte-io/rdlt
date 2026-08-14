@@ -15,6 +15,13 @@
 //! `rdlt-runtime` re-exports [`ConnectorRequirement`] (the client
 //! verifies, the runtime resolves).
 //!
+//! Every wire await — the dial, the handshake, each read frame's
+//! quiet interval, each reply — is bounded by the requirement's RPC
+//! deadline ([`DEFAULT_RPC_DEADLINE`], overridable through
+//! [`ConnectorRequirement::with_rpc_deadline`]): a dead OR silent
+//! connector yields a typed [`ClientError::Timeout`] within it, never
+//! a hang.
+//!
 //! The wire this crate speaks is FROZEN (2026-08-07; ADR 0001 D8's
 //! amendment): field numbers never move, evolution is additive only,
 //! and an unrecognized value from a newer peer is tolerated safe-loud
@@ -39,8 +46,10 @@ mod handshake;
 pub mod source;
 
 pub use dial::{connector_client, destination_client, dial, source_client};
-pub use error::{Classification, ClientError};
-pub use handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
+pub use error::{Classification, ClientError, TimedOutOperation};
+pub use handshake::{
+    ConnectorRequirement, DEFAULT_RPC_DEADLINE, HandshakeOutcome, Role, handshake,
+};
 
 // `error::source_error_from_frame`/`error::dest_error_from_frame` stay
 // crate-internal at their defining paths — the adapters reach them as

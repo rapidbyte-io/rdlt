@@ -3,6 +3,7 @@
 //! crate is built through.
 
 use std::path::Path;
+use std::time::Duration;
 
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::proto::connector_client::ConnectorClient;
@@ -10,7 +11,7 @@ use rdlt_connector_protocol::proto::destination_service_client::DestinationServi
 use rdlt_connector_protocol::proto::source_service_client::SourceServiceClient;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::error::ClientError;
+use crate::error::{ClientError, TimedOutOperation, with_deadline};
 
 /// h2's workable window floor. The RFC default is 64 KiB; a window
 /// below it stalls a stream on frames the peer legally sends, so a
@@ -36,21 +37,40 @@ const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 /// idiom: `tower::service_fn` supplies the connector,
 /// `hyper_util::rt::TokioIo` adapts `tokio::net::UnixStream` to
 /// hyper's IO traits.
-pub async fn dial(socket_path: &Path, engine_budget_bytes: u64) -> Result<Channel, ClientError> {
+///
+/// `rpc_deadline` bounds the WHOLE dial — a connector that accepts the
+/// socket connection but never completes the HTTP/2 setup elapses into
+/// the typed [`ClientError::Timeout`] rather than hanging the host
+/// (`Endpoint::connect_timeout` alone covers only the io connect, so
+/// the outer deadline is what makes the bound whole). The same
+/// deadline arms the channel's HTTP/2 keep-alive, so a transport whose
+/// peer dies BETWEEN awaits errors out within roughly two deadlines
+/// instead of lingering until the next RPC.
+pub async fn dial(
+    socket_path: &Path,
+    engine_budget_bytes: u64,
+    rpc_deadline: Duration,
+) -> Result<Channel, ClientError> {
     let window = engine_budget_bytes.clamp(MIN_WINDOW_BYTES, MAX_FRAME_BYTES as u64) as u32;
     let path = socket_path.to_path_buf();
-    Endpoint::try_from("http://[::1]:1")
+    let endpoint = Endpoint::try_from("http://[::1]:1")
         .expect("a static placeholder endpoint parses")
         .initial_stream_window_size(window)
         .initial_connection_window_size(window)
-        .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+        .connect_timeout(rpc_deadline)
+        .http2_keep_alive_interval(rpc_deadline)
+        .keep_alive_timeout(rpc_deadline)
+        .keep_alive_while_idle(true);
+    let connecting =
+        endpoint.connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
             let path = path.clone();
             async move {
                 let io = tokio::net::UnixStream::connect(path).await?;
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(io))
             }
-        }))
-        .await
+        }));
+    with_deadline(rpc_deadline, TimedOutOperation::Dial, connecting)
+        .await?
         .map_err(|source| ClientError::Dial {
             path: socket_path.to_path_buf(),
             source,
@@ -88,7 +108,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nothing-listens-here.sock");
 
-        let error = dial(&path, 8 * 1024 * 1024)
+        let error = dial(&path, 8 * 1024 * 1024, crate::DEFAULT_RPC_DEADLINE)
             .await
             .expect_err("nothing listens — dial must refuse");
         match &error {

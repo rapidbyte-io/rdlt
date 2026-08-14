@@ -45,7 +45,7 @@ use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector::{
     ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
 };
-use rdlt_connector_client::{destination_client, dial};
+use rdlt_connector_client::{DEFAULT_RPC_DEADLINE, destination_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::proto::SessionRequest;
 use rdlt_runtime::{
@@ -480,7 +480,7 @@ async fn probe_one_session_ceiling(socket: &Path, entropy: &str) -> Result<(), S
         .map_err(|why| format!("could not open the session that holds the slot: {why}"))?;
 
     let second = async {
-        let channel = dial(socket, MAX_FRAME_BYTES as u64)
+        let channel = dial(socket, MAX_FRAME_BYTES as u64, DEFAULT_RPC_DEADLINE)
             .await
             .map_err(|error| format!("re-dialing the live socket: {error}"))?;
         Ok::<_, String>(

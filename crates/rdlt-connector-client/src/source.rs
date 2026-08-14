@@ -12,6 +12,7 @@
 //! wire adds transport, never semantics.
 
 use std::path::Path;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -21,17 +22,20 @@ use rdlt_connector_protocol::proto::{self, check_reply, read_frame, streams_repl
 use tonic::transport::Channel;
 
 use crate::dial::{connector_client, dial, source_client};
-use crate::error::{ClientError, source_error_from_frame};
+use crate::error::{ClientError, TimedOutOperation, source_error_from_frame, with_deadline};
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
 
 /// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
-/// plus the handshake's cached spec. Constructed only through
-/// [`Source::connect`] — there is no way to hold one whose identity was
-/// not verified (D-039-2).
+/// plus the handshake's cached spec and the requirement's RPC deadline
+/// (every await below is bounded by it — a silent connector fails
+/// typed, never hangs). Constructed only through [`Source::connect`] —
+/// there is no way to hold one whose identity was not verified
+/// (D-039-2).
 #[derive(Debug)]
 pub struct Source {
     channel: Channel,
     spec: ConnectorSpec,
+    deadline: Duration,
 }
 
 impl Source {
@@ -47,12 +51,13 @@ impl Source {
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
     ) -> Result<(Source, HandshakeOutcome), ClientError> {
-        let channel = dial(socket_path, engine_budget_bytes).await?;
+        let channel = dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
         let outcome = handshake(&channel, Role::Source, config, expected).await?;
         Ok((
             Source {
                 channel,
                 spec: outcome.spec.clone(),
+                deadline: expected.rpc_deadline,
             },
             outcome,
         ))
@@ -142,11 +147,15 @@ impl rdlt_connector::Source for Source {
 
     async fn check(&self) -> Result<(), SourceError> {
         let mut client = connector_client(self.channel.clone());
-        let reply = client
-            .check(proto::CheckRequest {})
-            .await
-            .map_err(transport_fatal)?
-            .into_inner();
+        let reply = with_deadline(
+            self.deadline,
+            TimedOutOperation::Reply,
+            client.check(proto::CheckRequest {}),
+        )
+        .await
+        .map_err(SourceError::fatal)?
+        .map_err(transport_fatal)?
+        .into_inner();
         match reply.outcome {
             Some(check_reply::Outcome::Ok(_)) => Ok(()),
             Some(check_reply::Outcome::Error(frame)) => Err(source_error_from_frame(&frame)),
@@ -158,11 +167,15 @@ impl rdlt_connector::Source for Source {
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         let mut client = source_client(self.channel.clone());
-        let reply = client
-            .streams(proto::StreamsRequest {})
-            .await
-            .map_err(transport_fatal)?
-            .into_inner();
+        let reply = with_deadline(
+            self.deadline,
+            TimedOutOperation::Reply,
+            client.streams(proto::StreamsRequest {}),
+        )
+        .await
+        .map_err(SourceError::fatal)?
+        .map_err(transport_fatal)?
+        .into_inner();
         match reply.outcome {
             Some(streams_reply::Outcome::Ok(list)) => list
                 .stream_spec_json
@@ -205,14 +218,30 @@ impl rdlt_connector::Source for Source {
         };
 
         let mut client = source_client(self.channel.clone());
-        let mut frames = client
-            .read(wire_request)
-            .await
-            .map_err(transport_fatal)?
-            .into_inner();
+        let mut frames = with_deadline(
+            self.deadline,
+            TimedOutOperation::Reply,
+            client.read(wire_request),
+        )
+        .await
+        .map_err(SourceError::fatal)?
+        .map_err(transport_fatal)?
+        .into_inner();
 
         loop {
-            let frame = match frames.message().await {
+            // The deadline bounds this ONE await — the quiet interval
+            // until the next frame — never the stream's total duration:
+            // each frame that arrives starts the next wait's clock
+            // afresh, so a slow-but-flowing source of any length never
+            // trips it, while a mid-stream stall always does.
+            let next = with_deadline(
+                self.deadline,
+                TimedOutOperation::ReadFrame,
+                frames.message(),
+            )
+            .await
+            .map_err(SourceError::fatal)?;
+            let frame = match next {
                 Ok(Some(frame)) => frame,
                 // Clean end of stream: the served read returned Ok and
                 // every frame was forwarded.

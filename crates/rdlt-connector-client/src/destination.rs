@@ -39,6 +39,7 @@
 //! abandonment, matching what the in-process `Session` honestly does.
 
 use std::path::Path;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rdlt_connector::core::{
@@ -55,7 +56,7 @@ use tonic::Streaming;
 use tonic::transport::Channel;
 
 use crate::dial::{connector_client, destination_client, dial};
-use crate::error::{ClientError, dest_error_from_frame};
+use crate::error::{ClientError, TimedOutOperation, dest_error_from_frame, with_deadline};
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
 
 /// The frozen fatal for a reply stream that ends while a call is still
@@ -72,6 +73,7 @@ pub struct Destination {
     channel: Channel,
     spec: ConnectorSpec,
     capabilities: DestinationCapabilities,
+    deadline: Duration,
 }
 
 impl Destination {
@@ -86,7 +88,7 @@ impl Destination {
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
     ) -> Result<(Destination, HandshakeOutcome), ClientError> {
-        let channel = dial(socket_path, engine_budget_bytes).await?;
+        let channel = dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
         let outcome = handshake(&channel, Role::Destination, config, expected).await?;
         // The proto pins `capabilities_json` non-empty for destinations
         // — a destination handshake without one is a wire the protocol
@@ -100,6 +102,7 @@ impl Destination {
                 channel,
                 spec: outcome.spec.clone(),
                 capabilities,
+                deadline: expected.rpc_deadline,
             },
             outcome,
         ))
@@ -119,16 +122,21 @@ impl Destination {
         // next, so a slot is always free.
         let (requests, feed) = mpsc::channel::<proto::SessionRequest>(1);
         let mut client = destination_client(self.channel.clone());
-        let replies = client
-            .open_session(tokio_stream::wrappers::ReceiverStream::new(feed))
-            .await
-            .map_err(transport_fatal)?
-            .into_inner();
+        let replies = with_deadline(
+            self.deadline,
+            TimedOutOperation::Reply,
+            client.open_session(tokio_stream::wrappers::ReceiverStream::new(feed)),
+        )
+        .await
+        .map_err(DestinationError::fatal)?
+        .map_err(transport_fatal)?
+        .into_inner();
 
         let mut backend = Backend {
             requests,
             replies,
             part_events: context.part_events.clone(),
+            deadline: self.deadline,
         };
         let reply = backend
             .call(session_request::Request::Open(proto::Open {
@@ -153,11 +161,15 @@ impl rdlt_connector::Destination for Destination {
 
     async fn check(&self) -> Result<(), DestinationError> {
         let mut client = connector_client(self.channel.clone());
-        let reply = client
-            .check(proto::CheckRequest {})
-            .await
-            .map_err(transport_fatal)?
-            .into_inner();
+        let reply = with_deadline(
+            self.deadline,
+            TimedOutOperation::Reply,
+            client.check(proto::CheckRequest {}),
+        )
+        .await
+        .map_err(DestinationError::fatal)?
+        .map_err(transport_fatal)?
+        .into_inner();
         match reply.outcome {
             Some(check_reply::Outcome::Ok(_)) => Ok(()),
             Some(check_reply::Outcome::Error(frame)) => Err(dest_error_from_frame(&frame)),
@@ -238,6 +250,8 @@ pub struct Backend {
     /// The SPI telemetry seam, carried across the wire: interleaved
     /// `PartClosedEvent` replies land here.
     part_events: Option<PartEventFn>,
+    /// The requirement's RPC deadline, bounding each reply await.
+    deadline: Duration,
 }
 
 impl std::fmt::Debug for Backend {
@@ -274,6 +288,19 @@ impl Backend {
     /// and the loop continues; an `ErrorFrame` resolves as the typed
     /// error (the session stays usable); any other reply resolves as
     /// itself for the caller to match.
+    ///
+    /// Each reply await is bounded by the RPC deadline, and the bound
+    /// is per QUIET INTERVAL: every reply that arrives — a `part_closed`
+    /// included — starts the next wait's clock afresh, so a publish
+    /// that legitimately reports many parts before its own reply never
+    /// trips it, while a session that goes silent mid-call (a flood
+    /// followed by silence included) always fails typed. What the
+    /// deadline deliberately does NOT bound: a rogue that keeps
+    /// flooding `part_closed` without ever resolving the call keeps
+    /// this loop spinning for as long as it keeps sending — memory
+    /// stays bounded (one reply in flight), and the spin ends when the
+    /// host cancels or drops the session; a total-duration bound here
+    /// would instead fail legitimate long publishes.
     async fn call(
         &mut self,
         request: session_request::Request,
@@ -290,7 +317,14 @@ impl Backend {
             })
             .await;
         loop {
-            let reply = match self.replies.message().await {
+            let next = with_deadline(
+                self.deadline,
+                TimedOutOperation::Reply,
+                self.replies.message(),
+            )
+            .await
+            .map_err(DestinationError::fatal)?;
+            let reply = match next {
                 Ok(Some(proto::SessionReply { reply: Some(reply) })) => reply,
                 Ok(Some(proto::SessionReply { reply: None })) => {
                     return Err(protocol_fatal(

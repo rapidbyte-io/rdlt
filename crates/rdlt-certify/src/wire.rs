@@ -25,7 +25,9 @@ use std::process::Stdio;
 
 use rdlt_connector::core::{LoadId, PipelineId, WriteMode};
 use rdlt_connector::{ConnectorSpec, StreamSpec};
-use rdlt_connector_client::{connector_client, destination_client, dial, source_client};
+use rdlt_connector_client::{
+    DEFAULT_RPC_DEADLINE, connector_client, destination_client, dial, source_client,
+};
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::{
     self, handshake_reply, read_frame, session_reply, session_request, streams_reply,
@@ -324,7 +326,7 @@ impl WireProbe {
         // caller's abort landing mid-dial) unlinks it via reap_parked.
         slot.lock().expect("child slot lock").socket = Some(parsed.socket_path.clone());
 
-        let channel = match dial(&parsed.socket_path, budget_bytes).await {
+        let channel = match dial(&parsed.socket_path, budget_bytes, DEFAULT_RPC_DEADLINE).await {
             Ok(channel) => channel,
             Err(error) => {
                 reap_parked(slot).await;
@@ -390,7 +392,7 @@ impl WireProbe {
         role: Role,
         config: &Value,
     ) -> Result<Self, String> {
-        let channel = dial(socket, MAX_FRAME_BYTES as u64)
+        let channel = dial(socket, MAX_FRAME_BYTES as u64, DEFAULT_RPC_DEADLINE)
             .await
             .map_err(|error| format!("dialing `{}`: {error}", socket.display()))?;
         Ok(Self {
@@ -1120,7 +1122,7 @@ pub(crate) async fn open_wire_session(
     pipeline: &str,
     load_id: &str,
 ) -> Result<WireSession, WireOpenError> {
-    let channel = dial(socket, MAX_FRAME_BYTES as u64)
+    let channel = dial(socket, MAX_FRAME_BYTES as u64, DEFAULT_RPC_DEADLINE)
         .await
         .map_err(|error| WireOpenError::Other(format!("dialing the live socket: {error}")))?;
     let mut client = destination_client(channel);
