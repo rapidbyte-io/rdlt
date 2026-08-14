@@ -301,6 +301,7 @@ impl Backend for Writer {
             tables.entry(table).or_default().push(batch);
         }
         for (table, batches) in &tables {
+            part_component(table)?;
             let mut encoded = Vec::new();
             let mut writer = arrow::json::LineDelimitedWriter::new(&mut encoded);
             for batch in batches {
@@ -390,6 +391,34 @@ impl Backend for Writer {
         self.lease = None;
         Ok(())
     }
+}
+
+/// The gate on the table component of a part filename. A table name is
+/// the SOURCE's declaration — third-party input by the time it reaches
+/// a destination — and `TableName` is deliberately unvalidated, so the
+/// seat that turns one into a filename must judge it. Refused typed and
+/// FATAL (no retry changes a declared name): a name carrying a path
+/// separator, a `..` sequence, or a control character could steer the
+/// part write outside the configured output directory. Engine hosts
+/// normalize names before they get here, but a direct `Backend` driver
+/// never passes that gate — and this connector is the worked example
+/// third parties copy, so the safe pattern is modeled where the
+/// filename is built.
+fn part_component(table: &TableName) -> Result<(), DestinationError> {
+    let name = table.as_str();
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.chars().any(char::is_control)
+    {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: table name {name:?} cannot become a part filename — \
+             names carrying path separators, `..`, or control characters are refused, \
+             because a filename built from them could land outside the output directory"
+        )));
+    }
+    Ok(())
 }
 
 impl Writer {

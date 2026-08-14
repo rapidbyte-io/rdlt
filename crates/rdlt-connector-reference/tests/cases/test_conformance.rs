@@ -624,3 +624,58 @@ async fn a_corrupt_interior_receipt_line_still_refuses() {
         )
     );
 }
+
+/// 047 M6: a table name is the SOURCE's declaration — third-party
+/// input by the time it reaches a destination — and this connector is
+/// the worked example third parties copy, so the part-filename seat
+/// must refuse a name that could steer the write outside the output
+/// directory, typed and fatal (no retry changes a declared name).
+/// Before the gate, `../../evil` died as a TRANSIENT filesystem error
+/// on the staging name — a retry-forever misclassification that named
+/// no cause — and nothing may ever land outside the directory.
+#[tokio::test]
+async fn a_table_name_carrying_path_punctuation_is_refused_at_publish() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("a").join("b");
+    let shell = destination::Shell::from_value(json!({"path": dir})).expect("valid config");
+    let pipeline = PipelineId::new("ref-traversal");
+    let load = LoadId::new("ref-load-evil");
+    let table = TableName::new("../../evil");
+
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("../../evil"), &WriteMode::Append)
+        .await
+        .expect("ensure runs no DDL and stages nothing");
+    session
+        .write(&table, batch_of(&[1]))
+        .await
+        .expect("staging is in-memory");
+    let error = session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect_err("a traversal-shaped table name must be refused");
+    assert_eq!(
+        error.to_string(),
+        "fatal destination error: reference destination: table name \"../../evil\" cannot \
+         become a part filename — names carrying path separators, `..`, or control \
+         characters are refused, because a filename built from them could land outside \
+         the output directory"
+    );
+    // Nothing escaped the output directory: the tempdir root and its
+    // `a` level hold ONLY the directory chain, no part and no staging.
+    for level in [root.path().to_path_buf(), root.path().join("a")] {
+        let entries: Vec<_> = std::fs::read_dir(&level)
+            .expect("the level lists")
+            .map(|e| e.expect("entry").file_name())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the directory chain at {level:?}: {entries:?}"
+        );
+    }
+}
