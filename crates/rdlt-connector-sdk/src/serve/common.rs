@@ -384,19 +384,31 @@ fn string_values_of(config: &serde_json::Value) -> Vec<String> {
 
 /// Redact every config string value out of a connector-rendered
 /// refusal before it crosses the wire. The connector's own wording is
-/// the seam's contract — but its serde parse arms quote parsed tokens
-/// verbatim, so a secret handed to the wrong field would otherwise
-/// ride the refusal into host logs. Redaction is by VALUE, longest
-/// first (a value containing another redacts whole): wording that
-/// quotes no config value — every validate refusal that names fields
-/// rather than echoing values — crosses back untouched.
+/// the seam's contract — but its serde parse arms quote parsed tokens,
+/// so a secret handed to the wrong field would otherwise ride the
+/// refusal into host logs. Each value is hunted in every spelling a
+/// refusal can carry it: raw, its full `{:?}` Debug form (serde's
+/// `Unexpected::Str` renders tokens that way, escaping quotes,
+/// backslashes and control bytes — a raw match alone misses any secret
+/// containing one), and the Debug body without its surrounding quotes.
+/// Longest spelling first, so a form containing another redacts whole;
+/// wording that quotes no config value — every validate refusal that
+/// names fields rather than echoing values — crosses back untouched.
 fn redact_values(message: String, values: &[String]) -> String {
-    let mut ordered: Vec<&String> = values.iter().collect();
-    ordered.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    let mut spellings: Vec<(String, &'static str)> = Vec::new();
+    for value in values {
+        let debug_form = format!("{value:?}");
+        // The quoted Debug form keeps the message's own quoting shape
+        // by substituting a quoted marker.
+        spellings.push((debug_form, "\"[redacted config value]\""));
+        spellings.push((value.escape_debug().to_string(), "[redacted config value]"));
+        spellings.push((value.clone(), "[redacted config value]"));
+    }
+    spellings.sort_by_key(|(needle, _)| std::cmp::Reverse(needle.len()));
     let mut redacted = message;
-    for value in ordered {
-        if redacted.contains(value.as_str()) {
-            redacted = redacted.replace(value.as_str(), "[redacted config value]");
+    for (needle, marker) in spellings {
+        if redacted.contains(&needle) {
+            redacted = redacted.replace(&needle, marker);
         }
     }
     redacted

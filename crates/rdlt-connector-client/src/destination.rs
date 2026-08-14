@@ -322,13 +322,24 @@ impl Backend {
         // Deliberately not an error of its own: fall through to the
         // reply stream, whose terminal state carries the real diagnosis
         // (a clean end → the frozen SESSION_ENDED, a broken transport →
-        // its Status).
-        let _ = self
-            .requests
-            .send(proto::SessionRequest {
+        // its Status). The send is deadline-bounded like every other
+        // await here: a window-starving rogue that stops draining
+        // requests would otherwise wedge this await BEFORE the bounded
+        // reply read ever starts — the elapse reports as the reply
+        // that never came, which is what the caller observes either
+        // way.
+        match with_deadline(
+            self.deadline,
+            TimedOutOperation::Reply,
+            self.requests.send(proto::SessionRequest {
                 request: Some(request),
-            })
-            .await;
+            }),
+        )
+        .await
+        {
+            Ok(_sent_or_gone) => {}
+            Err(timeout) => return Err(DestinationError::fatal(timeout)),
+        }
         loop {
             let next = with_deadline(
                 self.deadline,

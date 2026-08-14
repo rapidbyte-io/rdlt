@@ -197,15 +197,17 @@ fn normalized_classification(raw: i32) -> Classification {
 /// The ceiling on a connector-supplied `retry_after_ms` wait hint —
 /// one minute. The engine honors the hint DIRECTLY as its retry
 /// pacing (`rdlt-engine`'s run loop sleeps the hinted duration in
-/// place of its own backoff), and its self-synthesized backoff tops
-/// out at 6.4 s (100 ms doubling, capped at six doublings) — so an
-/// unclamped rogue hint of `u64::MAX` would park a run for
-/// ~584 million years with no typed anything. A minute is roughly ten
-/// times the engine's own pacing ceiling: generous to every honest
-/// Retry-After a rate-limited service sends, while a clamped rogue
-/// costs at most one minute per attempt across the engine's bounded
-/// attempt budget. Clamped HERE, at the wire edge, so no host layer
-/// needs to remember to.
+/// place of its own backoff) — so an unclamped rogue hint of
+/// `u64::MAX` would park a run for ~584 million years with no typed
+/// anything. For scale: the engine's self-synthesized backoff FORMULA
+/// caps at 6.4 s (100 ms doubled, at most six doublings), and under
+/// the five-attempt run budget the reachable maximum is 1.6 s (the
+/// fourth retry's doubling — the formula's cap sits past the attempts
+/// that can use it). A minute is far above anything the engine would
+/// pace on its own: generous to every honest Retry-After a
+/// rate-limited service sends, while a clamped rogue costs at most
+/// one minute per attempt across the bounded attempt budget. Clamped
+/// HERE, at the wire edge, so no host layer needs to remember to.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// The frame's wait hint as the SPI's `retry_after` shape, clamped to

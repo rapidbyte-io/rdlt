@@ -848,3 +848,46 @@ async fn a_validate_refusal_keeps_the_connector_wording_untouched() {
         other => panic!("expected a refusal, got {other:?}"),
     }
 }
+
+/// The shield holds for serde's Debug-escaped rendering too: the
+/// `invalid type` arm renders the token through `{:?}`, so a secret
+/// carrying quotes or backslashes appears ESCAPED in the message and
+/// a raw-value match alone would miss it. Neither the raw form nor
+/// the escaped form survives the refusal.
+#[tokio::test]
+async fn a_debug_escaped_secret_is_redacted_too() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let secret = "pa\"ss\\word";
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: serde_json::to_vec(&serde_json::json!({ "rows": secret }))
+                .expect("config serializes"),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert!(
+                !error.message.contains(secret),
+                "the raw secret crossed back over the wire: {}",
+                error.message
+            );
+            assert!(
+                !error.message.contains("pa\\\"ss\\\\word"),
+                "the Debug-escaped secret crossed back over the wire: {}",
+                error.message
+            );
+            assert_eq!(
+                error.message,
+                "echo json: invalid type: string \"[redacted config value]\", expected u64"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}

@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rdlt_connector::ConnectorSpec;
-use rdlt_connector_client::{ClientError, Role, connector_client, destination, dial, source};
+use rdlt_connector_client::{
+    ClientError, Role, TimedOutOperation, connector_client, destination, dial, source,
+};
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
 use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
@@ -345,11 +347,25 @@ impl LocalBinaryConnectorProvider {
             requirement.rpc_deadline,
         )
         .await?;
-        let reply = connector_client(channel)
-            .spec(SpecRequest {})
-            .await
-            .map_err(|status| ProviderError::Client(ClientError::Transport(status)))?
-            .into_inner();
+        // Bounded by the requirement's RPC deadline: a connector that
+        // dials fine but never answers Spec is silent-but-ALIVE — its
+        // stack answers h2 pings, so the channel's keep-alive can
+        // never fire and only this deadline keeps the schema path from
+        // hanging (the same law as the client's own awaits: typed
+        // within the deadline, never a hang).
+        let reply = tokio::time::timeout(
+            requirement.rpc_deadline,
+            connector_client(channel).spec(SpecRequest {}),
+        )
+        .await
+        .map_err(|_elapsed| {
+            ProviderError::Client(ClientError::Timeout {
+                operation: TimedOutOperation::Reply,
+                deadline: requirement.rpc_deadline,
+            })
+        })?
+        .map_err(|status| ProviderError::Client(ClientError::Transport(status)))?
+        .into_inner();
         let spec: ConnectorSpec = serde_json::from_slice(&reply.spec_json).map_err(|error| {
             ProviderError::Client(ClientError::Protocol(format!(
                 "undecodable spec_json in the Spec reply: {error}"

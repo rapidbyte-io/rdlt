@@ -494,3 +494,67 @@ async fn a_protocol_range_outside_ours_refuses_before_dialing() {
          speaks protocol 0 — upgrade whichever side is behind"
     );
 }
+
+/// A connector control-plane fake whose `Spec` handler never answers —
+/// the silent-but-alive shape: the tonic stack is up and answers h2
+/// pings, so the keep-alive can never fire and only a per-reply
+/// deadline tells this connector from a slow one. (A raw listener
+/// would not do: a peer with no h2 stack at all fails the keep-alive
+/// as a transport error — measured while writing this fake.)
+#[derive(Debug)]
+struct MuteSpecServer;
+
+#[tonic::async_trait]
+impl Connector for MuteSpecServer {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        Err(Status::unimplemented("the mute fake serves silence"))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        Err(Status::unimplemented("the mute fake serves silence"))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<SpecReply>, Status> {
+        std::future::pending::<()>().await;
+        unreachable!("the mute fake never answers Spec")
+    }
+}
+
+/// A connector that dials fine but never answers `Spec` fails the
+/// schema path typed within the RPC deadline — never a hang.
+#[tokio::test]
+async fn a_silent_spec_probe_times_out_typed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("mute.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("the mute socket binds");
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::new(MuteSpecServer))
+        .serve_with_incoming(UnixListenerStream::new(listener));
+    let server = tokio::spawn(async move {
+        let _ = serving.await;
+    });
+    let bin = write_script(dir.path(), "mute-fake", &line_fake_body("source", &socket));
+
+    let provider = LocalBinaryConnectorProvider::new();
+    let requirement = ConnectorRequirement::new("io.rapidbyte.fake")
+        .with_path(&bin)
+        .with_rpc_deadline(Duration::from_millis(300));
+    let error = tokio::time::timeout(Duration::from_secs(10), provider.spec(&requirement))
+        .await
+        .expect("the probe fails within the bound — never hangs")
+        .expect_err("a silent Spec must time out");
+    match error {
+        ProviderError::Client(ClientError::Timeout { .. }) => {}
+        other => panic!("expected Client(Timeout), got {other:?}"),
+    }
+    server.abort();
+}
