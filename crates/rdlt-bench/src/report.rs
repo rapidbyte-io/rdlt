@@ -403,8 +403,8 @@ pub fn splice(results_md: &str, section: &str, body: &str) -> Result<String> {
 
 /// Regenerate the two generated regions — `matrix` (from the artifacts in
 /// `results_dir`) and `trends` (from the history feed at `history_path`) —
-/// from disk. The caller says WHICH ledger both read (the recorded archive
-/// since the 045 split — see `cmd_report`); the hand-written sections are
+/// from disk. The caller says WHICH ledger both read (the recorded ledger
+/// the gate's bars bind against — see `cmd_report`); the hand-written sections are
 /// preserved byte-for-byte. A cell with an artifact file that cannot be
 /// read (corrupt, format-version mismatch) fails loudly.
 pub fn regenerate(
@@ -535,11 +535,11 @@ mod tests {
         assert!(table.contains("+10.0%"), "{table}");
     }
 
-    /// The 045 recorded/live split's report half: regenerate renders
+    /// The recorded/live agreement's report half: regenerate renders
     /// the artifacts and history feed it is POINTED AT — cmd_report
-    /// points it at the recorded archive the gate's bars bind against,
-    /// so a report run re-renders the recorded tables rather than
-    /// splicing emptiness (the emptied live ledger) over them.
+    /// points it at the recorded ledger the gate's bars bind against,
+    /// so a report run re-renders the recorded tables the bars cite,
+    /// never some other ledger's.
     #[test]
     fn regenerate_renders_the_artifacts_and_history_it_is_pointed_at() {
         let dir = tempfile::tempdir().unwrap();

@@ -309,6 +309,10 @@ fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
             "bars.toml is missing or empty — nothing to gate".into(),
         ));
     }
+    // An absent ledger refuses with instructions BEFORE the per-bar loop —
+    // otherwise every bar fails "no artifact" and the real problem (this
+    // checkout has no recorded session) hides behind bar noise.
+    paths.require_recorded_ledger()?;
     let (verdicts, all_pass) = gate::run_gate(&bars, &paths.recorded_results)?;
     for verdict in &verdicts {
         gate::print_verdict(verdict);
@@ -327,11 +331,12 @@ fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
 fn cmd_report(paths: &Paths) -> rdlt_bench::Result<()> {
     let (all_cells, bars) = load_all(paths)?;
     let results_md = paths.benches.join("RESULTS.md");
-    // Report renders the RECORDED truth — the same archived artifacts
-    // and history feed the gate's bars bind against, never the live
-    // ledger (empty since the 045 reset until 046 re-points both):
-    // reading the emptied live paths spliced a header-only matrix and
-    // empty trends over the recorded tables the bars still cite.
+    // Report renders the RECORDED truth — the same committed artifacts
+    // and history feed the gate's bars bind against; since the 046
+    // re-point that is the live ledger itself. The refusal below keeps a
+    // checkout without a recorded session from splicing a header-only
+    // matrix and empty trends over the recorded tables the bars cite.
+    paths.require_recorded_ledger()?;
     let updated = report::regenerate(
         &results_md,
         &all_cells,

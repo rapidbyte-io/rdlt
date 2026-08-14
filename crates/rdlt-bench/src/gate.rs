@@ -277,9 +277,15 @@ mod tests {
         assert!(!evaluate(&bar, &artifact).passed());
     }
 
+    /// A barred cell with NO artifact in the recorded ledger FAILS its bar
+    /// — nothing to compare against is a violation, never a skip.
+    /// Re-derived at the 046 re-point: an entirely artifact-less ledger now
+    /// refuses upstream (`Paths::require_recorded_ledger`), so the gate-level
+    /// case is a ledger that has recordings, just not the barred cell's.
     #[test]
     fn gate_over_results_dir_reports_missing_artifacts() {
         let dir = tempfile::tempdir().unwrap();
+        crate::artifact::write(dir.path(), &crate::artifact::tests::minimal("other-cell")).unwrap();
         let bars = vec![ratio_bar(10.0, 0.0)];
         let (verdicts, all_pass) = run_gate(&bars, dir.path()).unwrap();
         assert!(!all_pass);
