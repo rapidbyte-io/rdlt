@@ -11,6 +11,13 @@ on:
   # No inputs by design: untrusted strings never reach run: commands.
   workflow_dispatch:
 
+# Least privilege: these jobs read the repo and (on failure) upload their
+# own artifacts via the pinned action's own token handling — no job here
+# writes repo contents. A `permissions:` block is required because a
+# scheduled workflow otherwise runs with the default broad token scopes.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # No RUSTFLAGS: -D warnings here (unlike ci.yml), deliberately: the deep tier
@@ -18,6 +25,9 @@ env:
   # Disk-constraint mitigation; rationale in .github/actions/free-disk/action.yml.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
+# Actions are SHA-PINNED, not tag-pinned (see ci.yml for the rationale and
+# the full tag->SHA table, resolved 2026-08-14). The trailing `# vX` /
+# `# nightly` comment records the ref each SHA came from.
 jobs:
   nightly:
     # Fuzz (1h/target toward the SC-003 24-CPU-hour budget), extended property
@@ -32,14 +42,14 @@ jobs:
           POSTGRES_PASSWORD: rdlt
         ports: ["5432:5432"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
       - uses: ./.github/actions/free-disk
       # The default toolchain (1.96.0) is governed by rust-toolchain.toml; only
       # cargo-fuzz needs nightly, so nightly is the one toolchain installed here.
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: dtolnay/rust-toolchain@7c8d7d138f5c09cef361f8214cf96882cd029cdb # nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
         with:
           tool: cargo-nextest,cargo-fuzz
       - name: Extended property runs
@@ -50,7 +60,7 @@ jobs:
         run: FUZZ_SECONDS=3600 make test TARGET=fuzz
       - name: Upload fuzz artifacts on findings
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fuzz-artifacts
           path: fuzz/artifacts/
@@ -60,20 +70,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Disk-constraint mitigation — see .github/actions/free-disk/action.yml.
       - uses: ./.github/actions/free-disk
       # Toolchain (1.96.0) governed by rust-toolchain.toml; rustup auto-installs
       # it on first cargo invocation.
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
         with:
           tool: cargo-nextest,cargo-mutants
       - name: Mutation pass
         run: make test TARGET=mutants
       - name: Upload mutants report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mutants-report
           path: mutants.out/
