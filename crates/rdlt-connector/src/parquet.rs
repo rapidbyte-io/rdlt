@@ -58,6 +58,20 @@ impl ParquetCompression {
         matches!(self, Self::Gzip | Self::Zstd | Self::Brotli)
     }
 
+    /// The inclusive level window this codec accepts — `None` for the
+    /// levelless three. The windows are the parquet library's own
+    /// (parquet 58 `GzipLevel`/`BrotliLevel`/`ZstdLevel`): its setters
+    /// PANIC one step outside them, which is why
+    /// [`ParquetOptions::validate`] refuses the range here first.
+    pub fn level_range(self) -> Option<(i32, i32)> {
+        match self {
+            Self::Gzip => Some((0, 9)),
+            Self::Brotli => Some((0, 11)),
+            Self::Zstd => Some((1, 22)),
+            Self::Uncompressed | Self::Snappy | Self::Lz4Raw => None,
+        }
+    }
+
     /// The configuration spelling, for error messages and diagnostics.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -177,6 +191,22 @@ pub enum OptionsError {
         /// The configuration spelling of the levelless codec.
         codec: &'static str,
     },
+    /// A `compression_level` outside its codec's accepted window,
+    /// which the parquet level constructors would panic on.
+    #[error(
+        "`compression_level` {level} is outside `{codec}`'s accepted range {low}..={high} — \
+         pick a level inside the range, or remove the setting to use the codec's default"
+    )]
+    LevelOutOfRange {
+        /// The configuration spelling of the codec.
+        codec: &'static str,
+        /// The refused level.
+        level: i32,
+        /// The window's inclusive low edge.
+        low: i32,
+        /// The window's inclusive high edge.
+        high: i32,
+    },
     /// `max_row_group_rows: 0`, which the parquet setter would panic on.
     #[error(
         "`max_row_group_rows` is 0 — a row group must hold at least one row; \
@@ -203,6 +233,17 @@ impl ParquetOptions {
         if self.compression_level.is_some() && !self.compression.takes_level() {
             return Err(OptionsError::LevelOnLevellessCodec {
                 codec: self.compression.as_str(),
+            });
+        }
+        if let (Some(level), Some((low, high))) =
+            (self.compression_level, self.compression.level_range())
+            && !(low..=high).contains(&level)
+        {
+            return Err(OptionsError::LevelOutOfRange {
+                codec: self.compression.as_str(),
+                level,
+                low,
+                high,
             });
         }
         if self.max_row_group_rows == Some(0) {
@@ -324,6 +365,51 @@ mod tests {
             .is_ok(),
             "with encoding off the limit is inert"
         );
+    }
+
+    /// 047 L10: each levelled codec's window edges, refused one past
+    /// each edge and accepted AT each edge — the parquet setters panic
+    /// on an out-of-window level, and a library panic is no way to
+    /// report a configuration mistake (the `ZeroRowGroupRows` rule,
+    /// applied to levels). The windows are parquet 58's own:
+    /// GzipLevel 0..=9, BrotliLevel 0..=11, ZstdLevel 1..=22.
+    #[test]
+    fn an_out_of_range_level_is_refused_per_codec_before_the_library_can_panic() {
+        for (codec, low, high) in [
+            (ParquetCompression::Gzip, 0, 9),
+            (ParquetCompression::Brotli, 0, 11),
+            (ParquetCompression::Zstd, 1, 22),
+        ] {
+            for edge in [low, high] {
+                assert!(
+                    ParquetOptions {
+                        compression: codec,
+                        compression_level: Some(edge),
+                        ..Default::default()
+                    }
+                    .validate()
+                    .is_ok(),
+                    "{} accepts its edge level {edge}",
+                    codec.as_str()
+                );
+            }
+            for outside in [low - 1, high + 1] {
+                let refused = ParquetOptions {
+                    compression: codec,
+                    compression_level: Some(outside),
+                    ..Default::default()
+                }
+                .validate()
+                .expect_err("an out-of-window level is impossible to honour")
+                .to_string();
+                assert!(
+                    refused.contains(codec.as_str())
+                        && refused.contains(&outside.to_string())
+                        && refused.contains(&format!("{low}..={high}")),
+                    "the refusal names the codec, the level, and the range: {refused}"
+                );
+            }
+        }
     }
 
     #[test]
