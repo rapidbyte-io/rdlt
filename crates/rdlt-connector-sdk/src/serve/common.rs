@@ -337,6 +337,71 @@ pub(crate) fn refuse_handshake(
     })
 }
 
+/// Render a `config_json` parse failure by KIND and location alone —
+/// never `serde_json`'s own message: its data-shaped arms quote the
+/// parsed token verbatim (`invalid type: string "…"`), and a config
+/// document's bytes may be credentials. Line and column are safe (they
+/// locate, they do not quote) and are what an operator needs to find
+/// the defect.
+fn describe_config_parse_error(error: &serde_json::Error) -> String {
+    let kind = match error.classify() {
+        serde_json::error::Category::Syntax => "syntax error",
+        serde_json::error::Category::Eof => "unexpected end of input",
+        serde_json::error::Category::Data => "document shape mismatch",
+        serde_json::error::Category::Io => "read failure",
+    };
+    format!("{kind} at line {} column {}", error.line(), error.column())
+}
+
+/// Every string LEAF the config document carries, in document order —
+/// the values [`redact_values`] shields. Values only, never keys: keys
+/// are the document's schema, and refusals legitimately name fields.
+fn string_values_of(config: &serde_json::Value) -> Vec<String> {
+    fn walk(value: &serde_json::Value, into: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if !text.is_empty() {
+                    into.push(text.clone());
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, into);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for field in fields.values() {
+                    walk(field, into);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut values = Vec::new();
+    walk(config, &mut values);
+    values
+}
+
+/// Redact every config string value out of a connector-rendered
+/// refusal before it crosses the wire. The connector's own wording is
+/// the seam's contract — but its serde parse arms quote parsed tokens
+/// verbatim, so a secret handed to the wrong field would otherwise
+/// ride the refusal into host logs. Redaction is by VALUE, longest
+/// first (a value containing another redacts whole): wording that
+/// quotes no config value — every validate refusal that names fields
+/// rather than echoing values — crosses back untouched.
+fn redact_values(message: String, values: &[String]) -> String {
+    let mut ordered: Vec<&String> = values.iter().collect();
+    ordered.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    let mut redacted = message;
+    for value in ordered {
+        if redacted.contains(value.as_str()) {
+            redacted = redacted.replace(value.as_str(), "[redacted config value]");
+        }
+    }
+    redacted
+}
+
 /// What [`handshake`] needs from a `serve()` shell to run the
 /// choreography once for either role — implemented for
 /// `crate::source::Shell<C>` and `crate::destination::Shell<C>` in
@@ -411,14 +476,28 @@ pub(crate) fn handshake<S: HandshakeShell>(
         ));
     }
 
+    // Both refusal arms below hold the protocol's secrecy rule (the
+    // proto crate's trust-model doc: no `*_json` payload is ever
+    // echoed verbatim — config documents carry credentials): the parse
+    // arm renders the error's KIND and location alone, and the typed
+    // arm redacts every config string value from the connector's own
+    // wording before it crosses back over the wire.
     let config: serde_json::Value = match serde_json::from_slice(&request.config_json) {
         Ok(config) => config,
-        Err(error) => return refuse_handshake(format!("invalid config_json: {error}")),
+        Err(error) => {
+            return refuse_handshake(format!(
+                "invalid config_json: {}",
+                describe_config_parse_error(&error)
+            ));
+        }
     };
 
+    let config_string_values = string_values_of(&config);
     let shell = match S::from_config(config) {
         Ok(shell) => shell,
-        Err(error) => return refuse_handshake(error.to_string()),
+        Err(error) => {
+            return refuse_handshake(redact_values(error.to_string(), &config_string_values));
+        }
     };
 
     let ok = proto::HandshakeOk {

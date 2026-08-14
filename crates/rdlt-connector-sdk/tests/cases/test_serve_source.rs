@@ -259,9 +259,10 @@ async fn an_invalid_config_refuses_fatal_with_the_documents_own_wording() {
 /// `config_json` that is not even valid JSON (never mind failing
 /// `Document::validate`) refuses FATAL too — the arm
 /// `serde_json::from_slice` itself trips inside `common::handshake`,
-/// before a `Document` is ever constructed. Only the frozen
-/// `invalid config_json: ` prefix is ours; the rest is `serde_json`'s
-/// own error text, so this asserts a fragment rather than full-string —
+/// before a `Document` is ever constructed. The frozen
+/// `invalid config_json: ` prefix is ours; the rest is the error's
+/// kind and location (never serde's own text, which the secrecy pins
+/// below hold), so this asserts the prefix rather than full-string —
 /// the same discipline the destination-role twin of this row uses in
 /// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`
 /// (038 T6 fix round 1: an earlier report of this task falsely claimed
@@ -745,4 +746,105 @@ async fn a_dropped_response_stream_cancels_the_connector_within_a_timeout() {
         observed.is_ok(),
         "the connector's read task must observe Break within the timeout, not hang"
     );
+}
+
+/// The refusal-secrecy pin, parse seat: `config_json` that is not
+/// valid JSON refuses with the error's KIND and location alone —
+/// never serde's own message text, and never a byte of the document
+/// (which may carry credentials; the protocol's rule is that no
+/// `*_json` payload is ever echoed verbatim).
+#[tokio::test]
+async fn a_truncated_config_refusal_never_echoes_the_document() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: br#"{"password": "hunter2-secret""#.to_vec(),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert!(
+                !error.message.contains("hunter2-secret"),
+                "a config byte crossed back over the wire: {}",
+                error.message
+            );
+            assert_eq!(
+                error.message,
+                "invalid config_json: unexpected end of input at line 1 column 29"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// The refusal-secrecy pin, typed-config seat: a WELL-FORMED document
+/// whose value has the wrong type reaches the connector's own config
+/// gate, whose serde arm quotes the parsed token verbatim — a secret
+/// handed to the wrong field would ride the refusal into host logs.
+/// The serve edge shields it: every string value the document carries
+/// is redacted from the rendered refusal before it crosses back.
+#[tokio::test]
+async fn a_wrong_typed_config_refusal_redacts_the_secret_value() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: serde_json::to_vec(&serde_json::json!({
+                "rows": "hunter2-secret-value"
+            }))
+            .expect("config serializes"),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert!(
+                !error.message.contains("hunter2-secret-value"),
+                "a config value crossed back over the wire: {}",
+                error.message
+            );
+            assert_eq!(
+                error.message,
+                "echo json: invalid type: string \"[redacted config value]\", expected u64"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// The shield redacts VALUES, not wording: a connector's own validate
+/// refusal — which quotes no config value — crosses back untouched.
+#[tokio::test]
+async fn a_validate_refusal_keeps_the_connector_wording_untouched() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: echo_config(0, false),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert_eq!(error.message, "echo: rows must be > 0");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }
