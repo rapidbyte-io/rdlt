@@ -121,19 +121,62 @@ fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceErro
 /// inventing sub-spellings would put unfrozen text in a pinned surface;
 /// the serving side's own encoder is where the two are told apart.
 fn decode_one_batch(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
-    const REFUSAL: &str = "read frame violated the one-batch rule";
+    // arrow's IPC reader PANICS on some crafted frames instead of
+    // returning Err — the schema converter aborts on e.g. an Int field
+    // declaring a negative bit width (found by the arrow_ipc_decode
+    // fuzz target; pinned below with the 160-byte reproducer). The
+    // whole decode runs under catch_unwind so this seat owns its own
+    // failure as the typed refusal, rather than leaning on the
+    // engine's task boundary to contain an unwind. The closure
+    // captures only `bytes` (a shared slice — UnwindSafe) and no
+    // mutable state escapes it, so a mid-decode unwind can leave
+    // nothing broken behind. What this cannot suppress: the process
+    // panic HOOK still writes its line to stderr before the unwind is
+    // caught — a library must not replace the global hook.
+    match std::panic::catch_unwind(|| decode_one_batch_erring(bytes)) {
+        Ok(decoded) => decoded,
+        Err(payload) => Err(SourceError::fatal(format!(
+            "{ONE_BATCH_REFUSAL}: the arrow decoder panicked: {}",
+            panic_text(payload.as_ref())
+        ))),
+    }
+}
 
-    let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-        .map_err(|error| SourceError::fatal(format!("{REFUSAL}: {error}")))?;
+/// The frozen refusal prefix of the one-batch seat — shared by the
+/// `Err`-shaped arms in [`decode_one_batch_erring`] and the
+/// caught-panic arm in [`decode_one_batch`].
+const ONE_BATCH_REFUSAL: &str = "read frame violated the one-batch rule";
+
+/// The `Err`-shaped half of the decode: every failure arrow REPORTS
+/// (as opposed to panics on) maps behind the frozen prefix here.
+fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
+    let mut reader =
+        arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+            .map_err(|error| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}")))?;
     let first = match reader.next() {
         Some(Ok(batch)) => batch,
-        Some(Err(error)) => return Err(SourceError::fatal(format!("{REFUSAL}: {error}"))),
-        None => return Err(SourceError::fatal(REFUSAL)),
+        Some(Err(error)) => {
+            return Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}")));
+        }
+        None => return Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
     };
     match reader.next() {
         None => Ok(first),
-        Some(Ok(_)) => Err(SourceError::fatal(REFUSAL)),
-        Some(Err(error)) => Err(SourceError::fatal(format!("{REFUSAL}: {error}"))),
+        Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
+        Some(Err(error)) => Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}"))),
+    }
+}
+
+/// A panic payload's message, where one is extractable — panics carry
+/// `&str` (the `panic!` literal form) or `String` (the formatted
+/// form); anything else renders as the honest placeholder.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text
+    } else {
+        "<non-text panic payload>"
     }
 }
 
@@ -420,6 +463,44 @@ mod tests {
         assert!(
             rendered.starts_with(&format!("{FROZEN}: ")),
             "the cause rides behind the frozen prefix: {rendered}"
+        );
+        assert!(
+            rendered.len() > FROZEN.len() + 2,
+            "a cause is actually appended: {rendered}"
+        );
+    }
+
+    /// The fuzzer-found panic seat (the arrow_ipc_decode target's
+    /// first catch): this 160-byte crafted frame declares an Int field
+    /// whose bit width is negative, and arrow-ipc 58.3's schema
+    /// converter PANICS on it inside `StreamReader::try_new` instead
+    /// of returning `Err`. The decode seat must own that failure — a
+    /// typed fatal behind the frozen prefix, never an unwind escaping
+    /// to the caller. Bytes embedded verbatim so the pin is hermetic.
+    #[test]
+    fn a_crafted_frame_that_panics_arrow_refuses_typed() {
+        const REPRO: [u8; 160] = [
+            0xff, 0xff, 0xff, 0xff, 0x78, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x0a, 0x00, 0x0c, 0x00, 0x06, 0x00, 0x05, 0x00, 0x08, 0x00, 0x0a, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x00, 0x00, 0x10, 0x00, 0x14, 0x00, 0x08, 0x00, 0x06, 0x00, 0x07, 0x00,
+            0x0c, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x10, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x69, 0x64, 0x00, 0x00, 0x08, 0x00, 0x0c, 0x00,
+            0x08, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x40, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x29, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            0x88, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00,
+            0x16, 0x00, 0x06, 0x00, 0x05, 0x00,
+        ];
+
+        let error = decode_one_batch(&REPRO)
+            .expect_err("a frame that panics the arrow decoder must refuse typed");
+        assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with(&format!("{FROZEN}: ")),
+            "the panic lands behind the frozen prefix: {rendered}"
         );
         assert!(
             rendered.len() > FROZEN.len() + 2,
