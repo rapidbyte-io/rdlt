@@ -171,12 +171,21 @@ def validate_config(config_json: bytes):
 
 def stream_names(directory: str):
     """The declared streams: one per *.jsonl file, named by stem, in
-    sorted order so discovery is deterministic across reads."""
+    sorted order so discovery is deterministic across reads.
+
+    Symlinks are rejected outright (isfile alone FOLLOWS them): a link
+    planted inside the configured directory could otherwise pull any
+    readable file on the host into a stream.
+    """
+
+    def plain_file(name):
+        path = os.path.join(directory, name)
+        return os.path.isfile(path) and not os.path.islink(path)
+
     return sorted(
         name[: -len(".jsonl")]
         for name in os.listdir(directory)
-        if name.endswith(".jsonl")
-        and os.path.isfile(os.path.join(directory, name))
+        if name.endswith(".jsonl") and plain_file(name)
     )
 
 
@@ -302,11 +311,30 @@ class SourceService(pb_grpc.SourceServiceServicer):
                 )
                 return
             stream.seek(offset)
-            for line in stream:
+            while True:
                 # Cancellation is observed between frames: a client that
                 # dropped the stream stops this loop at the next boundary
                 # instead of pumping frames nobody reads.
                 if not context.is_active():
+                    return
+                # One line, capped one byte past the frame ceiling: a
+                # row longer than a frame can never be sent anyway, and
+                # without the cap a single huge line is materialized
+                # whole before grpc's send ceiling aborts the RPC. A
+                # capped readline that isn't at EOF and doesn't end in
+                # a newline has read exactly cap+1 bytes, so the check
+                # below can never silently split one row into two.
+                line = stream.readline(MAX_FRAME_BYTES + 1)
+                if not line:
+                    break
+                if len(line) > MAX_FRAME_BYTES:
+                    yield pb.ReadFrame(
+                        error=fatal(
+                            f"stream `{name}` carries a line longer than "
+                            f"{MAX_FRAME_BYTES} bytes — one row must fit one "
+                            "protocol frame"
+                        )
+                    )
                     return
                 row = line.strip()
                 if row:
@@ -376,13 +404,17 @@ def main():
     pb_grpc.add_SourceServiceServicer_to_server(SourceService(session), server)
 
     # Reclaim dead predecessors' socket dirs BEFORE minting our own.
-    # rmdir-only is the WHOLE liveness check, and it is sufficient and
-    # race-free: the Rust side (probes, guards) unlinks the socket FILE
-    # on every cleanup path, so a dead sibling's dir is EMPTY and rmdir
-    # succeeds exactly then; a LIVE sibling's dir still holds its
-    # socket, so rmdir fails harmlessly; rmdir never follows symlinks;
-    # and other users' dirs fail on permissions. Failures are ignored
-    # wholesale — reclaim is best-effort hygiene, never a gate.
+    # rmdir-only is the WHOLE liveness check: the Rust side (probes,
+    # guards) unlinks the socket FILE on every cleanup path, so a dead
+    # sibling's dir is EMPTY and rmdir succeeds exactly then; a LIVE
+    # sibling's dir still holds its socket, so rmdir fails harmlessly;
+    # rmdir never follows symlinks; and other users' dirs fail on
+    # permissions. ONE race is accepted, not absent: between a
+    # sibling's own mkdtemp and its bind, its fresh dir is briefly
+    # empty and this rmdir can reclaim it — that sibling's bind then
+    # fails and it exits loudly (the bind's return is checked below)
+    # rather than serving from a vanished directory. Failures here are
+    # ignored wholesale — reclaim is best-effort hygiene, never a gate.
     for stale in glob.glob(os.path.join(tempfile.gettempdir(), "rdlt-pyjsonl-*")):
         try:
             os.rmdir(stale)
@@ -399,7 +431,13 @@ def main():
     # below are safe.
     socket_dir = tempfile.mkdtemp(prefix="rdlt-pyjsonl-")
     socket_path = os.path.join(socket_dir, "connector.sock")
-    server.add_insecure_port(f"unix:{socket_path}")
+    # add_insecure_port answers 0 on a failed bind (it does not raise);
+    # unchecked, the failure would only surface incidentally when the
+    # chmod below finds no socket. Exit loudly instead, on stderr —
+    # stdout is the machine channel and carries only the handshake line.
+    if server.add_insecure_port(f"unix:{socket_path}") == 0:
+        print(f"could not bind the connector socket at {socket_path}", file=sys.stderr)
+        sys.exit(1)
     os.chmod(socket_path, 0o600)
     server.start()
 
