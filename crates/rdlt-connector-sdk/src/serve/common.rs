@@ -394,6 +394,10 @@ fn string_values_of(config: &serde_json::Value) -> Vec<String> {
 /// Longest spelling first, so a form containing another redacts whole;
 /// wording that quotes no config value — every validate refusal that
 /// names fields rather than echoing values — crosses back untouched.
+/// STRING leaves only, a deliberate trade: numeric leaves echo
+/// through, because redacting every number a config carries would
+/// corrupt legitimate refusal wording (ports, sizes, counts) while
+/// credentials travel as strings.
 fn redact_values(message: String, values: &[String]) -> String {
     let mut spellings: Vec<(String, &'static str)> = Vec::new();
     for value in values {
