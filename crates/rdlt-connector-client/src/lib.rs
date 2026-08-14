@@ -42,6 +42,8 @@
 pub mod destination;
 mod dial;
 mod error;
+#[doc(hidden)]
+pub mod fuzzing;
 mod handshake;
 mod sanitize;
 pub mod source;

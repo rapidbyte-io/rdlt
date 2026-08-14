@@ -120,7 +120,7 @@ fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceErro
 /// render the bare rule — no arrow cause exists for either, and
 /// inventing sub-spellings would put unfrozen text in a pinned surface;
 /// the serving side's own encoder is where the two are told apart.
-fn decode_one_batch(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
+pub(crate) fn decode_one_batch(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
     // arrow's IPC reader PANICS on some crafted frames instead of
     // returning Err — the schema converter aborts on e.g. an Int field
     // declaring a negative bit width (found by the arrow_ipc_decode
@@ -506,5 +506,11 @@ mod tests {
             rendered.len() > FROZEN.len() + 2,
             "a cause is actually appended: {rendered}"
         );
+
+        // The fuzzing hook drives this same seat: returning here at
+        // all IS the assertion (an escaped unwind would fail the test)
+        // — the belt on top of the typed pin above, so the hook and
+        // the seat cannot drift apart.
+        crate::fuzzing::decode_one_batch(&REPRO);
     }
 }
