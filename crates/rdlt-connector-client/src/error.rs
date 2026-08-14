@@ -103,7 +103,9 @@ pub enum ClientError {
         /// The connector's refusal — its own wording, with control
         /// characters spelled as escapes.
         message: String,
-        /// The frame's wait hint, when the refusal carried one.
+        /// The frame's wait hint, when the refusal carried one —
+        /// clamped to the wire edge's one-minute ceiling (see
+        /// `MAX_RETRY_AFTER`).
         retry_after_ms: Option<u64>,
     },
     /// The connector reported a different identity than the requirement
@@ -165,7 +167,7 @@ impl ClientError {
         ClientError::Handshake {
             classification: normalized_classification(frame.classification),
             message: inert_message(frame),
-            retry_after_ms: frame.retry_after_ms,
+            retry_after_ms: clamped_retry_after_ms(frame),
         }
     }
 }
@@ -192,9 +194,33 @@ fn normalized_classification(raw: i32) -> Classification {
     }
 }
 
-/// The frame's wait hint as the SPI's `retry_after` shape.
+/// The ceiling on a connector-supplied `retry_after_ms` wait hint —
+/// one minute. The engine honors the hint DIRECTLY as its retry
+/// pacing (`rdlt-engine`'s run loop sleeps the hinted duration in
+/// place of its own backoff), and its self-synthesized backoff tops
+/// out at 6.4 s (100 ms doubling, capped at six doublings) — so an
+/// unclamped rogue hint of `u64::MAX` would park a run for
+/// ~584 million years with no typed anything. A minute is roughly ten
+/// times the engine's own pacing ceiling: generous to every honest
+/// Retry-After a rate-limited service sends, while a clamped rogue
+/// costs at most one minute per attempt across the engine's bounded
+/// attempt budget. Clamped HERE, at the wire edge, so no host layer
+/// needs to remember to.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// The frame's wait hint as the SPI's `retry_after` shape, clamped to
+/// [`MAX_RETRY_AFTER`].
 fn retry_after(frame: &proto::ErrorFrame) -> Option<Duration> {
-    frame.retry_after_ms.map(Duration::from_millis)
+    clamped_retry_after_ms(frame).map(Duration::from_millis)
+}
+
+/// The frame's raw millisecond hint, clamped to [`MAX_RETRY_AFTER`] —
+/// the one clamp both the SPI mappers and the handshake refusal's raw
+/// field ride.
+fn clamped_retry_after_ms(frame: &proto::ErrorFrame) -> Option<u64> {
+    frame
+        .retry_after_ms
+        .map(|ms| ms.min(MAX_RETRY_AFTER.as_millis() as u64))
 }
 
 /// Map a served source's [`proto::ErrorFrame`] back to the SPI error the
@@ -299,6 +325,50 @@ mod tests {
 
         let error = dest_error_from_frame(&frame(42, None));
         assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    }
+
+    /// The wire edge's clamp on the wait hint: a rogue `u64::MAX`
+    /// `retry_after_ms` (a ~584-million-year sleep the engine's retry
+    /// pacing would honor) arrives as MAX_RETRY_AFTER, through both
+    /// mappers and the handshake refusal alike; an honest hint inside
+    /// the cap is untouched (the 250 ms pin above).
+    #[test]
+    fn an_absurd_wait_hint_is_clamped_at_the_wire_edge() {
+        let hostile = frame(Classification::RateLimited as i32, Some(u64::MAX));
+        match source_error_from_frame(&hostile) {
+            SourceError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(MAX_RETRY_AFTER));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+        match dest_error_from_frame(&hostile) {
+            DestinationError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(MAX_RETRY_AFTER));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+        match ClientError::handshake_refusal(&hostile) {
+            ClientError::Handshake { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(MAX_RETRY_AFTER.as_millis() as u64));
+            }
+            other => panic!("expected Handshake, got {other:?}"),
+        }
+    }
+
+    /// A hint AT the cap passes exactly — the clamp bounds, it does
+    /// not distort.
+    #[test]
+    fn a_wait_hint_at_the_cap_is_untouched() {
+        let at_cap = frame(
+            Classification::RateLimited as i32,
+            Some(MAX_RETRY_AFTER.as_millis() as u64),
+        );
+        match source_error_from_frame(&at_cap) {
+            SourceError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(MAX_RETRY_AFTER));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
     }
 
     /// The wire edge's escape seat: a frame message carrying control
