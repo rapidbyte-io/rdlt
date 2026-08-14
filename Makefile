@@ -72,10 +72,13 @@ FUZZ_RUN_BOUND ?= -max_total_time=$(FUZZ_SECONDS)
 # The RUN set. These fuzz the engine and the wire decoders; connector
 # fuzz harnesses belong to the rdlt-connectors repository (a standing
 # owner record there). arrow_ipc_decode is BUILT (below) but not RUN:
-# it surfaced a live reachable panic in arrow-ipc's own schema
-# converter (047 M7 — the client decode path), so running it would red
-# the gate on an unfixed upstream/wire-edge defect owned by another
-# lane; it joins this list once that panic is closed.
+# it drives arrow-ipc's RAW reader, whose own schema converter panics
+# on a crafted frame (047 M7 — arrow's library bug, not fixable
+# in-tree). The CLIENT seat that consumes such frames is hardened
+# against it (commit 11a396ed wraps decode_one_batch in catch_unwind),
+# so running the raw-reader target would only re-find arrow's own
+# panic; it joins this set once REPOINTED at the client's hardened seat
+# via a client fuzzing hook (see the target's own doc).
 FUZZ_TARGETS := jsonl_slab arrow_schema_map shred_push \
 	wire_frame_decode handshake_line wal_manifest_line
 
