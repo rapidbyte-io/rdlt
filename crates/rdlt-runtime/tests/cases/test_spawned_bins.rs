@@ -27,7 +27,7 @@ use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use rdlt_connector_client::{connector_client, dial};
+use rdlt_connector_client::{DEFAULT_RPC_DEADLINE, connector_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
@@ -170,9 +170,13 @@ async fn the_reference_bin_answers_the_spec_rpc_before_any_handshake() {
     let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
         .expect("the bin's first stdout line is a valid handshake line");
 
-    let channel = dial(&parsed.socket_path, MAX_FRAME_BYTES as u64)
-        .await
-        .expect("the advertised socket dials");
+    let channel = dial(
+        &parsed.socket_path,
+        MAX_FRAME_BYTES as u64,
+        DEFAULT_RPC_DEADLINE,
+    )
+    .await
+    .expect("the advertised socket dials");
     let reply = connector_client(channel)
         .spec(SpecRequest {})
         .await
