@@ -19,6 +19,15 @@ pub mod runner;
 pub mod sample;
 pub mod template;
 
+/// Cells whose output is harness machinery, never a product recording —
+/// the ONE naming rule shared by the RESULTS.md matrix, the Trends table,
+/// the recorded-ledger requirement, and `run`'s output routing. A second
+/// copy of this rule is how selftest debris ends up counted as a recorded
+/// session by one consumer and filtered by another.
+pub fn is_selftest(id: &str) -> bool {
+    id.starts_with("selftest")
+}
+
 /// Harness errors: one type, offender always named in the message — a bad
 /// cell file must say which file and which cell.
 #[derive(Debug, thiserror::Error)]

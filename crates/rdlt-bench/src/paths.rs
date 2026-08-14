@@ -24,7 +24,11 @@ pub struct Paths {
     /// The pre-split recordings are dated history, byte-identical under
     /// `benches/records/archive-2026-08-13/`, read by no command. An
     /// empty ledger is a refusal, not an empty table — see
-    /// [`Self::require_recorded_ledger`].
+    /// [`Self::require_recorded_ledger`]. Against a casual `run`
+    /// overwriting a recording, GIT IS THE GUARD: the recorded artifacts
+    /// and history feed are tracked files, so an unrecorded run shows as
+    /// a dirty tree and committing is the act of recording (selftest
+    /// output never lands here at all — `run` routes it to scratch).
     pub recorded_results: PathBuf,
     /// The RECORDED history feed `report`'s Trends table renders — since
     /// the 046 re-point, the live feed (`benches/history.jsonl`, appended
@@ -90,30 +94,54 @@ impl Paths {
         })
     }
 
-    /// LOUD EMPTINESS: `gate` and `report` bind the recorded ledger, so a
-    /// checkout without one gets a refusal with instructions — never an
-    /// all-bars-fail drizzle of per-cell noise, and never a header-only
-    /// matrix spliced over the recorded tables the bars cite. A missing
-    /// ledger is an operator problem (no recorded session yet, or a
-    /// checkout that lost the committed recordings), and the message says
-    /// so by name.
-    pub fn require_recorded_ledger(&self) -> Result<()> {
-        let has_artifact = std::fs::read_dir(&self.recorded_results)
+    /// LOUD EMPTINESS, the artifacts half: `gate` binds bars against
+    /// recorded artifacts, so a checkout without any gets a refusal with
+    /// instructions — never an all-bars-fail drizzle of per-cell noise.
+    /// "Recorded" excludes harness selftest output by the shared naming
+    /// rule ([`crate::is_selftest`]): a ledger holding only selftest
+    /// debris (gitignored, present on any machine that ran the selftest
+    /// cell) is as empty as a missing one, and counting it would let
+    /// exactly the no-recorded-session state this refusal exists for pass
+    /// silently. Only real files with a `.json` extension count — a
+    /// stray directory or unreadable name is not an artifact.
+    pub fn require_recorded_artifacts(&self) -> Result<()> {
+        let has_recorded = std::fs::read_dir(&self.recorded_results)
             .map(|entries| {
-                entries
-                    .flatten()
-                    .any(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+                entries.flatten().any(|e| {
+                    let path = e.path();
+                    path.is_file()
+                        && path.extension().is_some_and(|ext| ext == "json")
+                        && path
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .is_some_and(|stem| !crate::is_selftest(stem))
+                })
             })
             .unwrap_or(false);
-        if !has_artifact {
+        if !has_recorded {
             return Err(BenchError(format!(
-                "recorded results dir {} is missing or has no artifacts — gate and report bind the recorded ledger; likely cause: no recorded bench session yet (record one on a quiet machine and commit its artifacts under 004 governance) or a checkout without the committed recordings",
+                "recorded results dir {} is missing or has no recorded artifacts (harness selftest output does not count) — gate and report bind the recorded ledger; likely cause: no recorded bench session yet (record one on a quiet machine and commit its artifacts under 004 governance) or a checkout without the committed recordings",
                 self.recorded_results.display()
             )));
         }
-        if !self.recorded_history.is_file() {
+        Ok(())
+    }
+
+    /// The FULL recorded-ledger requirement — what `report` demands: the
+    /// artifacts half plus a non-empty recorded history feed, because its
+    /// Trends table renders the feed and a missing OR empty one would
+    /// splice empty trends over the recorded table silently. `gate`
+    /// deliberately demands only [`Self::require_recorded_artifacts`]:
+    /// it never reads history, and the mid-reset state (artifacts
+    /// committed, history rotated away) must still gate.
+    pub fn require_recorded_ledger(&self) -> Result<()> {
+        self.require_recorded_artifacts()?;
+        let history_empty = std::fs::read_to_string(&self.recorded_history)
+            .map(|feed| feed.trim().is_empty())
+            .unwrap_or(true);
+        if history_empty {
             return Err(BenchError(format!(
-                "recorded history {} is missing — the report's Trends table renders the recorded feed; likely cause: no recorded bench session yet (record one on a quiet machine and commit its history under 004 governance) or a checkout without the committed recordings",
+                "recorded history {} is missing or empty — the report's Trends table renders the recorded feed; likely cause: no recorded bench session yet (record one on a quiet machine and commit its history under 004 governance) or a checkout without the committed recordings",
                 self.recorded_history.display()
             )));
         }
@@ -142,8 +170,15 @@ mod tests {
 
     fn results_refusal(paths: &Paths) -> String {
         format!(
-            "recorded results dir {} is missing or has no artifacts — gate and report bind the recorded ledger; likely cause: no recorded bench session yet (record one on a quiet machine and commit its artifacts under 004 governance) or a checkout without the committed recordings",
+            "recorded results dir {} is missing or has no recorded artifacts (harness selftest output does not count) — gate and report bind the recorded ledger; likely cause: no recorded bench session yet (record one on a quiet machine and commit its artifacts under 004 governance) or a checkout without the committed recordings",
             paths.recorded_results.display()
+        )
+    }
+
+    fn history_refusal(paths: &Paths) -> String {
+        format!(
+            "recorded history {} is missing or empty — the report's Trends table renders the recorded feed; likely cause: no recorded bench session yet (record one on a quiet machine and commit its history under 004 governance) or a checkout without the committed recordings",
+            paths.recorded_history.display()
         )
     }
 
@@ -151,18 +186,25 @@ mod tests {
     fn a_missing_recorded_results_dir_refuses_with_instructions() {
         let root = tempfile::tempdir().unwrap();
         let paths = paths_at(root.path());
-        let err = paths.require_recorded_ledger().unwrap_err();
+        let err = paths.require_recorded_artifacts().unwrap_err();
         assert_eq!(err.to_string(), results_refusal(&paths));
     }
 
+    /// The debris red: a ledger holding ONLY harness selftest output (the
+    /// gitignored state any machine that ran the selftest cell is in) plus
+    /// stray non-artifact files is a no-recorded-session checkout, and it
+    /// must refuse exactly like a missing dir — counting the debris would
+    /// resurrect the silent/noisy outcomes the refusal replaced.
     #[test]
-    fn an_artifactless_recorded_results_dir_refuses_the_same_way() {
+    fn a_ledger_holding_only_selftest_debris_refuses_the_same_way() {
         let root = tempfile::tempdir().unwrap();
         let paths = paths_at(root.path());
         std::fs::create_dir_all(&paths.recorded_results).unwrap();
-        // A dir with debris but no artifact is as empty as a missing one.
+        std::fs::write(paths.recorded_results.join("selftest-protocol.json"), "{}").unwrap();
         std::fs::write(paths.recorded_results.join("raw.txt"), "x").unwrap();
-        let err = paths.require_recorded_ledger().unwrap_err();
+        // A directory with an artifact-shaped name is not an artifact.
+        std::fs::create_dir(paths.recorded_results.join("stray.json")).unwrap();
+        let err = paths.require_recorded_artifacts().unwrap_err();
         assert_eq!(err.to_string(), results_refusal(&paths));
     }
 
@@ -173,13 +215,34 @@ mod tests {
         std::fs::create_dir_all(&paths.recorded_results).unwrap();
         std::fs::write(paths.recorded_results.join("cell.json"), "{}").unwrap();
         let err = paths.require_recorded_ledger().unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            format!(
-                "recorded history {} is missing — the report's Trends table renders the recorded feed; likely cause: no recorded bench session yet (record one on a quiet machine and commit its history under 004 governance) or a checkout without the committed recordings",
-                paths.recorded_history.display()
-            )
-        );
+        assert_eq!(err.to_string(), history_refusal(&paths));
+    }
+
+    /// The empty red: an existing-but-empty (or whitespace-only) feed is a
+    /// truncated-history state and refuses like a missing one — blessing
+    /// it would splice empty trends silently.
+    #[test]
+    fn an_empty_recorded_history_refuses_like_a_missing_one() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_at(root.path());
+        std::fs::create_dir_all(&paths.recorded_results).unwrap();
+        std::fs::write(paths.recorded_results.join("cell.json"), "{}").unwrap();
+        std::fs::write(&paths.recorded_history, "\n  \n").unwrap();
+        let err = paths.require_recorded_ledger().unwrap_err();
+        assert_eq!(err.to_string(), history_refusal(&paths));
+    }
+
+    /// The split: gate demands only the artifacts half (it never reads
+    /// history), so the mid-reset state — artifacts committed, history
+    /// rotated away — gates fine while the report still refuses.
+    #[test]
+    fn gate_needs_only_artifacts_report_needs_the_history_too() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths_at(root.path());
+        std::fs::create_dir_all(&paths.recorded_results).unwrap();
+        std::fs::write(paths.recorded_results.join("cell.json"), "{}").unwrap();
+        paths.require_recorded_artifacts().unwrap();
+        paths.require_recorded_ledger().unwrap_err();
     }
 
     #[test]
@@ -188,7 +251,7 @@ mod tests {
         let paths = paths_at(root.path());
         std::fs::create_dir_all(&paths.recorded_results).unwrap();
         std::fs::write(paths.recorded_results.join("cell.json"), "{}").unwrap();
-        std::fs::write(&paths.recorded_history, "").unwrap();
+        std::fs::write(&paths.recorded_history, "{\"ts\":\"2026-08-13\"}\n").unwrap();
         paths.require_recorded_ledger().unwrap();
     }
 }

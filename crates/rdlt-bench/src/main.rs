@@ -229,8 +229,22 @@ fn run_one_cell(
         quiet_note,
         forced,
     )?;
-    let path = artifact::write(&paths.results, &result)?;
-    report::append_history(&paths.benches.join("history.jsonl"), &result)?;
+    // Selftest output is harness machinery, never a recording: its
+    // artifact goes to the gitignored scratch raw/ dir and it never
+    // touches the recorded history feed — otherwise every TARGET=e2e run
+    // would append machinery lines to (and dirty) the committed feed.
+    // Real cells DO write the recorded ledger; that is the live-ledger
+    // design, and git is the guard (see Paths::recorded_results).
+    let is_selftest = rdlt_bench::is_selftest(&cell.id);
+    let artifact_dir = if is_selftest {
+        paths.results.join("raw")
+    } else {
+        paths.results.clone()
+    };
+    let path = artifact::write(&artifact_dir, &result)?;
+    if !is_selftest {
+        report::append_history(&paths.benches.join("history.jsonl"), &result)?;
+    }
     eprintln!(
         "   median {:.1} ms  (artifact: {})",
         result.rdlt.median_ms,
@@ -311,8 +325,10 @@ fn cmd_gate(paths: &Paths) -> rdlt_bench::Result<bool> {
     }
     // An absent ledger refuses with instructions BEFORE the per-bar loop —
     // otherwise every bar fails "no artifact" and the real problem (this
-    // checkout has no recorded session) hides behind bar noise.
-    paths.require_recorded_ledger()?;
+    // checkout has no recorded session) hides behind bar noise. The
+    // artifacts half only: gate never reads the history feed, and the
+    // mid-reset state (artifacts committed, history rotated) must gate.
+    paths.require_recorded_artifacts()?;
     let (verdicts, all_pass) = gate::run_gate(&bars, &paths.recorded_results)?;
     for verdict in &verdicts {
         gate::print_verdict(verdict);

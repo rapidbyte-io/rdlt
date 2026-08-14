@@ -9,10 +9,7 @@ use crate::artifact::{Artifact, CompetitorSide};
 use crate::cells::{Bar, BarKind, Cell};
 use crate::{BenchError, Result};
 
-/// Cells whose artifacts are harness machinery, never a product row.
-fn is_selftest(id: &str) -> bool {
-    id.starts_with("selftest")
-}
+use crate::is_selftest;
 
 pub(crate) fn begin_marker(section: &str) -> String {
     format!("<!-- rdlt-bench:BEGIN {section} -->")
@@ -332,11 +329,13 @@ fn read_history(path: &Path) -> Result<Vec<HistoryLine>> {
 
 /// Trends: the latest two recorded medians per cell×variant, and the delta
 /// between them — the "is it drifting?" view fed only by the history feed.
+/// Selftest lines are filtered by the same rule the matrix uses: harness
+/// machinery is never a product row, in either table.
 fn trends_table(history: &[HistoryLine]) -> String {
     use std::collections::BTreeMap;
     // Preserve append order (chronological) per key; keep the last two.
     let mut by_key: BTreeMap<(String, String), Vec<&HistoryLine>> = BTreeMap::new();
-    for line in history {
+    for line in history.iter().filter(|l| !is_selftest(&l.cell)) {
         by_key
             .entry((line.cell.clone(), line.variant.clone()))
             .or_default()
@@ -569,6 +568,25 @@ mod tests {
         );
         assert!(out.contains("1.23 s"), "{out}");
         assert!(!out.contains("stale"), "{out}");
+    }
+
+    /// Selftest history lines never reach the Trends table — the matrix
+    /// filters harness machinery and Trends filters by the SAME rule; a
+    /// feed carrying a selftest line renders only the product rows.
+    #[test]
+    fn selftest_history_lines_never_reach_the_trends_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        let mut product = crate::artifact::tests::minimal("pg-to-pg-1m");
+        product.rdlt.median_ms = 1000.0;
+        append_history(&path, &product).unwrap();
+        let mut machinery = crate::artifact::tests::minimal("selftest-protocol");
+        machinery.rdlt.median_ms = 22.0;
+        append_history(&path, &machinery).unwrap();
+
+        let table = trends_table(&read_history(&path).unwrap());
+        assert!(table.contains("pg-to-pg-1m"), "{table}");
+        assert!(!table.contains("selftest"), "{table}");
     }
 
     /// A cell whose scope is corrected moves fewer rows than it did before, so

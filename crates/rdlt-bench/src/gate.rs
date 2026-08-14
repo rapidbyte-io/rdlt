@@ -280,8 +280,9 @@ mod tests {
     /// A barred cell with NO artifact in the recorded ledger FAILS its bar
     /// — nothing to compare against is a violation, never a skip.
     /// Re-derived at the 046 re-point: an entirely artifact-less ledger now
-    /// refuses upstream (`Paths::require_recorded_ledger`), so the gate-level
-    /// case is a ledger that has recordings, just not the barred cell's.
+    /// refuses upstream (`Paths::require_recorded_artifacts`), so the
+    /// gate-level case is a ledger that has recordings, just not the barred
+    /// cell's.
     #[test]
     fn gate_over_results_dir_reports_missing_artifacts() {
         let dir = tempfile::tempdir().unwrap();
