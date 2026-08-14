@@ -15,6 +15,9 @@ arrow = "58.3"
 prost = "0.14"
 rdlt-engine = { path = "../crates/rdlt-engine" }
 rdlt-connector-protocol = { path = "../crates/rdlt-connector-protocol" }
+# The hardened wire-edge arrow decode seat (its doc-hidden fuzzing hook)
+# — arrow_ipc_decode drives it, not arrow's raw reader.
+rdlt-connector-client = { path = "../crates/rdlt-connector-client" }
 
 # Standalone workspace: libFuzzer needs nightly; the main build never sees this.
 [workspace]

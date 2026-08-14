@@ -1259,6 +1259,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-client"
+version = "0.3.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "hyper-util",
+ "rdlt-connector",
+ "rdlt-connector-protocol",
+ "rdlt-connector-sdk",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
+]
+
+[[package]]
 name = "rdlt-connector-protocol"
 version = "0.3.0"
 dependencies = [
@@ -1270,6 +1289,18 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "rdlt-connector-sdk"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "rdlt-connector",
+ "serde",
+ "serde_json",
+ "serde_yaml",
 ]
 
 [[package]]
@@ -1307,6 +1338,7 @@ dependencies = [
  "arrow",
  "libfuzzer-sys",
  "prost",
+ "rdlt-connector-client",
  "rdlt-connector-protocol",
  "rdlt-engine",
 ]
@@ -1422,6 +1454,19 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -1736,6 +1781,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "version_check"
