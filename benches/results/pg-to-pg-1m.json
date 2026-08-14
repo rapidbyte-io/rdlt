@@ -1,0 +1,97 @@
+{
+  "format_version": 3,
+  "cell_id": "pg-to-pg-1m",
+  "recorded_at": "2026-08-13",
+  "fingerprint": {
+    "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "kernel": "7.0.12-201.fc44.x86_64",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "competitor_pins": {
+      "dlt": "dlt 1.29.0",
+      "dlt-pyarrow": "dlt 1.29.0"
+    },
+    "dataset_hashes": {
+      "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)"
+    },
+    "loadavg_at_start": 2.47,
+    "quiet_note": null
+  },
+  "workload": {},
+  "rdlt": {
+    "runs_ms": [
+      1042.063598,
+      1063.771449,
+      1068.195805,
+      1042.5811449999999,
+      1012.4102399999999
+    ],
+    "median_ms": 1042.5811449999999,
+    "p95_ms": 1068.195805,
+    "rows": 1000000,
+    "bytes": 178240270,
+    "rows_per_s": 959157.955997756,
+    "mb_per_s": 163.0407076355821,
+    "cpu": {
+      "mean_util": 0.8790902786601605,
+      "peak_util": 1.9672131147540983,
+      "user_sys_ms": 890,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    },
+    "rss": {
+      "peak_bytes": 267563008,
+      "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
+    }
+  },
+  "competitors": {
+    "dlt": {
+      "status": "ok",
+      "runs_ms": [
+        10435.139816999254,
+        10461.974384000314,
+        10230.579652000417,
+        10311.464592000448,
+        10337.390083999708
+      ],
+      "median_ms": 10337.390083999708,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 1.1333686569515768,
+        "peak_util": null,
+        "user_sys_ms": 12802,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 723009536,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
+      },
+      "ratio_vs_rdlt": 9.915189943320632
+    },
+    "dlt-pyarrow": {
+      "status": "ok",
+      "runs_ms": [
+        17714.45600199968,
+        17956.048519999968,
+        17683.916038999996,
+        17623.369511999954,
+        17663.001644999895
+      ],
+      "median_ms": 17683.916038999996,
+      "self_timed": true,
+      "cpu": {
+        "mean_util": 1.0698885534979194,
+        "peak_util": null,
+        "user_sys_ms": 19850,
+        "note": "cgroup v2 cpu.stat, last poll before exit"
+      },
+      "rss": {
+        "peak_bytes": 447496192,
+        "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
+      },
+      "ratio_vs_rdlt": 16.96166876200317
+    }
+  },
+  "verify": {
+    "events": 1000000
+  },
+  "forced": false
+}
