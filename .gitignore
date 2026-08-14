@@ -9,6 +9,10 @@
 # contract for the whole pre-split regime; the observations it swallowed are
 # preserved in benches/records/archive-2026-08-13/flakes.log.
 !benches/flakes.log
+# A history reset rotates the live flake log into a dated archive
+# (benches/records/<date>/flakes.log); without its own negation the blanket
+# *.log swallows the rotated copy — the 045 rotation exposed the gap.
+!benches/records/*/flakes.log
 .idea/
 .vscode/
 # rdlt runtime work directories (WAL etc.)
