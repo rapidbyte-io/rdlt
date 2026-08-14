@@ -29,6 +29,21 @@ use crate::core::Cursor;
 /// without limit while never touching the budget.
 const RECORDS_MESSAGE_CAPACITY: usize = 64;
 
+/// Depth cap on every recursive walk over connector-supplied Arrow
+/// structure — this crate's byte meter, and the engine's schema mapping
+/// and batch lowering share the ONE constant.
+///
+/// The threat: nesting depth is entirely CONNECTOR-controlled (a
+/// structured stream declares its own schema, and IPC-built child data
+/// skips arrow's validator), and a recursive walk without a cap turns a
+/// deeply nested declaration into a stack overflow — which is an ABORT
+/// of the host process, not a catchable panic, so no task containment
+/// absorbs it. 64 is orders of magnitude beyond any real schema (the
+/// JSONL ingest path's own parser stops at serde_json's 128), so
+/// reaching the cap is diagnostic of a hostile or broken connector,
+/// never of data.
+pub const MAX_ARROW_DEPTH: usize = 64;
+
 /// The host closed the channel (cancellation, or a failure downstream).
 /// A source that receives this should return promptly — it is an
 /// instruction to stop, not an error to escalate.
@@ -268,8 +283,16 @@ fn offsets_window(
     width: usize,
     decode: fn(&[u8]) -> usize,
 ) -> (usize, usize, usize, usize) {
-    let start = offset * width;
-    let end = (offset + len + 1) * width;
+    // Saturating (047 L2, symmetric with the round-13 hardening below):
+    // IPC-skewed `offset`/`len` can overflow the window arithmetic, and
+    // an unchecked multiply panicked DEBUG builds inside `send` — the
+    // saturated bound lands in the same `None` over-count arm release
+    // builds only ever reached by wrapping luck.
+    let start = offset.saturating_mul(width);
+    let end = offset
+        .saturating_add(len)
+        .saturating_add(1)
+        .saturating_mul(width);
     match buffer.as_slice().get(start..end) {
         // A successful get always holds >= one `width` chunk
         // (end - start = (len + 1) * width).
@@ -305,11 +328,12 @@ fn offsets_window(
 /// accounting by exactly that factor.
 pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
     let mut seen = std::collections::HashSet::new();
-    batch
-        .columns()
-        .iter()
-        .map(|column| data_footprint(&column.to_data(), &mut seen))
-        .sum()
+    // Saturating: a column nested past [`MAX_ARROW_DEPTH`] charges
+    // `usize::MAX`, and the sum must carry that over-count through
+    // rather than overflow.
+    batch.columns().iter().fold(0usize, |total, column| {
+        total.saturating_add(data_footprint(&column.to_data(), &mut seen, 0))
+    })
 }
 
 /// One node of the walk: this array's own buffers (each trimmed to the
@@ -330,8 +354,20 @@ pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
 fn data_footprint(
     data: &arrow_data::ArrayData,
     seen: &mut std::collections::HashSet<(usize, usize)>,
+    depth: usize,
 ) -> usize {
     use arrow_schema::DataType;
+
+    // THE DEPTH CAP (047 M1): nesting is connector-controlled and a stack
+    // overflow is an abort. The meter must never error the send path, so
+    // past the cap it stops and charges `usize::MAX` — the over-count
+    // direction, the budget's safe side, exactly like the short-buffer
+    // fallback above: `send` clamps the request to the whole budget, so a
+    // hostile batch degrades to drain-the-budget-and-go, never to a
+    // deeper frame.
+    if depth > MAX_ARROW_DEPTH {
+        return usize::MAX;
+    }
 
     let mut count = |start: usize, viewed: usize| -> usize {
         if viewed > 0 && seen.insert((start, viewed)) {
@@ -416,12 +452,11 @@ fn data_footprint(
         let (start, viewed) = bit_window(nulls.offset(), nulls.len());
         total += count_window(nulls.buffer(), start, viewed);
     }
-    total
-        + data
-            .child_data()
-            .iter()
-            .map(|child| data_footprint(child, seen))
-            .sum::<usize>()
+    // Saturating for the same reason as the batch-level fold: a child past
+    // the depth cap charges `usize::MAX`.
+    data.child_data().iter().fold(total, |total, child| {
+        total.saturating_add(data_footprint(child, seen, depth + 1))
+    })
 }
 
 /// What arrived from a source, still holding its byte-budget permit; the
@@ -781,7 +816,7 @@ mod byte_size_tests {
         assert_eq!(data.buffers()[0].len(), 0, "the raw shape under test");
         let mut seen = std::collections::HashSet::new();
         assert_eq!(
-            data_footprint(&data, &mut seen),
+            data_footprint(&data, &mut seen, 0),
             0,
             "no offsets, nothing viewed — the legal empty shape meters zero"
         );
@@ -818,6 +853,63 @@ mod byte_size_tests {
             offsets_window(&empty, 0, 0, 4, decode_i32),
             (0, usize::MAX, 0, usize::MAX)
         );
+    }
+
+    /// 047 M1: the meter walks connector-controlled nesting, and a stack
+    /// overflow is an ABORT no task containment can absorb. Past
+    /// [`MAX_ARROW_DEPTH`] the walk stops and charges `usize::MAX` — the
+    /// over-count direction, the budget's safe side (`send` clamps it to
+    /// the whole budget: drain-and-go, maximal throttle, never an error
+    /// on the send path and never a deeper frame).
+    #[test]
+    fn a_batch_nested_past_the_depth_cap_meters_max_instead_of_recursing() {
+        use arrow_array::StructArray;
+
+        let deep = |levels: usize| -> RecordBatch {
+            use arrow_array::Array as _;
+            let mut array: ArrayRef = Arc::new(Int64Array::from(vec![1i64]));
+            let mut field = Field::new("leaf", DataType::Int64, true);
+            for level in 0..levels {
+                let wrapped = StructArray::new(vec![field.clone()].into(), vec![array], None);
+                field = Field::new(format!("n{level}"), wrapped.data_type().clone(), true);
+                array = Arc::new(wrapped);
+            }
+            RecordBatch::try_new(Arc::new(Schema::new(vec![field.clone()])), vec![array])
+                .expect("nested batch")
+        };
+
+        assert_eq!(
+            PushPayload::Arrow(deep(100)).byte_size(),
+            usize::MAX,
+            "past the cap the meter must stop and over-count, never recurse on"
+        );
+        let shallow = PushPayload::Arrow(deep(10)).byte_size();
+        assert!(
+            (1..usize::MAX).contains(&shallow),
+            "an ordinarily nested batch still meters its real bytes: {shallow}"
+        );
+    }
+
+    /// 047 L2: the window arithmetic over IPC-skewed `offset`/`len` values
+    /// must SATURATE into the over-count fallback — the unchecked
+    /// `(offset + len + 1) * width` panicked debug builds inside `send`
+    /// (release wrapped into the safe `None` arm by accident, not design).
+    #[test]
+    fn an_overflowing_offsets_window_saturates_into_the_overcount_fallback() {
+        let decode_i32 =
+            |chunk: &[u8]| i32::from_ne_bytes(chunk.try_into().expect("a 4-byte chunk")) as usize;
+        let backing = arrow_buffer::Buffer::from_vec(vec![0i32, 1, 3, 0]);
+        for (offset, len) in [
+            (usize::MAX, 2),
+            (usize::MAX - 1, usize::MAX - 1),
+            (0, usize::MAX),
+        ] {
+            assert_eq!(
+                offsets_window(&backing, offset, len, 4, decode_i32),
+                (0, usize::MAX, 0, usize::MAX),
+                "offset {offset}, len {len}: overflow must charge-everything, never panic"
+            );
+        }
     }
 
     #[test]

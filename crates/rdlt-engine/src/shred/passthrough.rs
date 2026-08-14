@@ -18,7 +18,7 @@ use arrow::{
     datatypes::{DataType, TimeUnit},
     record_batch::RecordBatch,
 };
-use rdlt_connector::DestinationCapabilities;
+use rdlt_connector::{DestinationCapabilities, channel::MAX_ARROW_DEPTH};
 use rdlt_core::{
     ColumnDef, ColumnType, LogicalType, PolicyAction, Provenance, RdltError, SchemaChange,
     TableName, TableSchema, naming::UniqueNamer, schema::system_columns,
@@ -58,7 +58,13 @@ pub(crate) fn passthrough_items(
     if let Some(current) = registry.get(table) {
         for column in &mut observed.columns {
             if let Some(existing) = current.columns.iter().find(|c| c.name == column.name) {
-                column.column_type = join_column_types(&existing.column_type, &column.column_type);
+                column.column_type = join_column_types(&existing.column_type, &column.column_type)
+                    .map_err(|reason| {
+                        RdltError::config(format!(
+                            "table `{table}` column `{}`: {reason}",
+                            column.name
+                        ))
+                    })?;
             }
         }
     }
@@ -212,9 +218,28 @@ fn schema_from_arrow(
 /// join on the widening lattice, lists join item-wise, structs join field-wise
 /// (new fields append), and shape conflicts land on Json — the same outcomes
 /// the shredder's observation states produce.
-fn join_column_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
+///
+/// Depth-capped like every walk over connector-controlled nesting (047 M1)
+/// — belt to `column_type_from_arrow`'s own gate, since both join inputs
+/// already passed it (or the shredder's serde depth bound): a stack
+/// overflow is an abort, so the walk refuses rather than trusts.
+fn join_column_types(a: &ColumnType, b: &ColumnType) -> Result<ColumnType, String> {
+    join_column_types_at(a, b, 0)
+}
+
+fn join_column_types_at(
+    a: &ColumnType,
+    b: &ColumnType,
+    depth: usize,
+) -> Result<ColumnType, String> {
     use rdlt_core::types::widen;
-    match (a, b) {
+    if depth > MAX_ARROW_DEPTH {
+        return Err(format!(
+            "column nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
+             the cross-batch join can overflow the stack"
+        ));
+    }
+    Ok(match (a, b) {
         _ if a == b => a.clone(),
         (ColumnType::Scalar { scalar: x }, ColumnType::Scalar { scalar: y }) => {
             ColumnType::scalar(widen(*x, *y))
@@ -228,7 +253,10 @@ fn join_column_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
             let mut joined = xs.clone();
             for y in ys {
                 match joined.iter_mut().find(|x| x.name == y.name) {
-                    Some(x) => x.column_type = join_column_types(&x.column_type, &y.column_type),
+                    Some(x) => {
+                        x.column_type =
+                            join_column_types_at(&x.column_type, &y.column_type, depth + 1)?;
+                    }
                     None => joined.push(y.clone()),
                 }
             }
@@ -236,11 +264,26 @@ fn join_column_types(a: &ColumnType, b: &ColumnType) -> ColumnType {
         }
         // Shape conflict: preserved verbatim, never dropped (lattice top).
         _ => ColumnType::scalar(LogicalType::Json),
-    }
+    })
 }
 
+/// Map one declared arrow type onto the logical lattice. Depth-capped
+/// (047 M1): the nesting of a structured stream's schema is entirely
+/// CONNECTOR-controlled, and an uncapped recursive map turns a deep
+/// declaration into a stack overflow — an ABORT, not a catchable panic,
+/// so `spawn_blocking` containment cannot absorb it.
 pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String> {
+    column_type_from_arrow_at(dt, 0)
+}
+
+fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, String> {
     use LogicalType::*;
+    if depth > MAX_ARROW_DEPTH {
+        return Err(format!(
+            "schema nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
+             the mapping walk can overflow the stack"
+        ));
+    }
     let scalar = |t| Ok(ColumnType::scalar(t));
     match dt {
         DataType::Boolean => scalar(Bool),
@@ -271,7 +314,7 @@ pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String
                 .map(|f| {
                     Ok(ColumnDef {
                         name: f.name().clone(),
-                        column_type: column_type_from_arrow(f.data_type())?,
+                        column_type: column_type_from_arrow_at(f.data_type(), depth + 1)?,
                         nullable: true,
                         provenance: Provenance::Inferred,
                     })
@@ -280,7 +323,7 @@ pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String
             Ok(ColumnType::Struct { fields: mapped? })
         }
         DataType::List(item) | DataType::LargeList(item) => {
-            match column_type_from_arrow(item.data_type())? {
+            match column_type_from_arrow_at(item.data_type(), depth + 1)? {
                 ColumnType::Scalar { scalar } => Ok(ColumnType::ScalarList { item: scalar }),
                 _ => Err("nested lists / lists of structs are not supported in v1".into()),
             }
@@ -325,5 +368,67 @@ mod tests {
         )))
         .expect_err("lists of structs are v1-unsupported");
         assert!(err.contains("not supported"), "got: {err}");
+    }
+
+    /// 047 M1: schema nesting is CONNECTOR-controlled on structured
+    /// streams, and an uncapped mapping walk turns a deep declaration into
+    /// a stack overflow — an abort no task containment absorbs. Past the
+    /// shared cap the walk refuses with a typed error.
+    #[test]
+    fn a_schema_nested_past_the_depth_cap_refuses_instead_of_recursing() {
+        use arrow::datatypes::Field;
+
+        let deep = |levels: usize| -> DataType {
+            let mut dt = DataType::Int64;
+            for _ in 0..levels {
+                dt = DataType::Struct(vec![Field::new("f", dt, true)].into());
+            }
+            dt
+        };
+        let err = column_type_from_arrow(&deep(100))
+            .expect_err("a 100-deep declared schema must refuse, not walk");
+        assert!(err.contains("nesting"), "the refusal names the cap: {err}");
+        assert!(
+            column_type_from_arrow(&deep(10)).is_ok(),
+            "ordinary nesting still maps"
+        );
+    }
+
+    /// The cross-batch join walks the SAME connector-controlled nesting
+    /// and carries the same cap — belt to `column_type_from_arrow`'s gate,
+    /// since both join inputs already passed it (or the shredder's own
+    /// serde depth bound).
+    #[test]
+    fn a_join_past_the_depth_cap_refuses_instead_of_recursing() {
+        // The two sides must DIFFER at the leaf, or the equality fast path
+        // answers before any recursion happens.
+        let deep = |levels: usize, leaf: LogicalType| -> ColumnType {
+            let mut ty = ColumnType::scalar(leaf);
+            for _ in 0..levels {
+                ty = ColumnType::Struct {
+                    fields: vec![ColumnDef {
+                        name: "f".to_owned(),
+                        column_type: ty,
+                        nullable: true,
+                        provenance: Provenance::Inferred,
+                    }],
+                };
+            }
+            ty
+        };
+        let err = join_column_types(
+            &deep(100, LogicalType::Int64),
+            &deep(100, LogicalType::Float64),
+        )
+        .expect_err("a 100-deep join must refuse, not walk");
+        assert!(err.contains("nesting"), "the refusal names the cap: {err}");
+        assert!(
+            join_column_types(
+                &deep(10, LogicalType::Int64),
+                &deep(10, LogicalType::Float64)
+            )
+            .is_ok(),
+            "ordinary nesting still joins"
+        );
     }
 }

@@ -18,7 +18,7 @@ use arrow::{
     buffer::NullBuffer,
     record_batch::RecordBatch,
 };
-use rdlt_connector::DestinationCapabilities;
+use rdlt_connector::{DestinationCapabilities, channel::MAX_ARROW_DEPTH};
 use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema, naming::UniqueNamer};
 
 fn needs_lowering(capabilities: &DestinationCapabilities) -> bool {
@@ -117,6 +117,15 @@ fn flatten_array(
     use arrow::datatypes::DataType;
     let mut full_path: Vec<&str> = path.to_vec();
     full_path.push(field.name());
+    // Batch nesting is connector-controlled (IPC-decoded child data skips
+    // arrow's validator), and a stack overflow is an ABORT no containment
+    // absorbs — refuse past the shared cap (047 M1).
+    if full_path.len() > MAX_ARROW_DEPTH {
+        return Err(RdltError::internal(format!(
+            "batch nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
+             the flatten walk can overflow the stack"
+        )));
+    }
     match field.data_type() {
         DataType::Struct(children) if !capabilities.structs => {
             let struct_array = array
@@ -125,7 +134,7 @@ fn flatten_array(
                 .ok_or_else(|| RdltError::internal("schema says struct, array is not"))?;
             let parent_nulls = struct_array.nulls().cloned();
             for (i, child_field) in children.iter().enumerate() {
-                let child = with_merged_nulls(struct_array.column(i), parent_nulls.as_ref());
+                let child = with_merged_nulls(struct_array.column(i), parent_nulls.as_ref())?;
                 flatten_array(
                     child_field,
                     &full_path,
@@ -181,10 +190,24 @@ fn flatten_array(
 }
 
 /// A struct-null row must null its flattened children too.
-fn with_merged_nulls(child: &ArrayRef, parent: Option<&NullBuffer>) -> ArrayRef {
+///
+/// A child whose length disagrees with the parent's validity buffer is
+/// impossible from the engine's own builders but reachable from an
+/// IPC-decoded batch (which skips arrow's validator) — `NullBuffer::union`
+/// panics on it, so the mismatch is refused with a typed error instead
+/// (047 L3).
+fn with_merged_nulls(child: &ArrayRef, parent: Option<&NullBuffer>) -> Result<ArrayRef, RdltError> {
     let Some(parent) = parent else {
-        return Arc::clone(child);
+        return Ok(Arc::clone(child));
     };
+    if parent.len() != child.len() {
+        return Err(RdltError::internal(format!(
+            "struct null-merge: the parent's validity buffer covers {} rows but the \
+             child array holds {} — an inconsistent batch, refused instead of unwound",
+            parent.len(),
+            child.len()
+        )));
+    }
     let merged = match child.nulls() {
         Some(own) => NullBuffer::union(Some(own), Some(parent)),
         None => Some(parent.clone()),
@@ -195,7 +218,7 @@ fn with_merged_nulls(child: &ArrayRef, parent: Option<&NullBuffer>) -> ArrayRef 
         .nulls(merged)
         .build()
         .expect("null-merge preserves layout");
-    arrow::array::make_array(data)
+    Ok(arrow::array::make_array(data))
 }
 
 fn render_decimal(raw: i128, scale: u8) -> String {
@@ -482,6 +505,60 @@ mod tests {
             "a flattened child is nullable regardless of its own flag: the parent \
              struct can be null and flattening has nowhere else to record that"
         );
+    }
+
+    /// 047 M1: batch nesting is connector-controlled (IPC-decoded child
+    /// data skips arrow's validator), and an uncapped flatten walk turns a
+    /// deep declaration into a stack overflow — an ABORT, not a panic.
+    /// Past the shared cap the walk refuses with a typed error.
+    #[test]
+    fn a_batch_nested_past_the_depth_cap_refuses_instead_of_recursing() {
+        use arrow::array::StructArray;
+        use std::sync::Arc;
+
+        let deep = |levels: usize| -> RecordBatch {
+            let mut array: ArrayRef = Arc::new(Int64Array::from(vec![1i64]));
+            let mut field = Field::new("leaf", DataType::Int64, true);
+            for level in 0..levels {
+                let wrapped = StructArray::new(vec![field.clone()].into(), vec![array], None);
+                field = Field::new(format!("n{level}"), wrapped.data_type().clone(), true);
+                array = Arc::new(wrapped);
+            }
+            RecordBatch::try_new(Arc::new(Schema::new(vec![field.clone()])), vec![array])
+                .expect("nested batch")
+        };
+
+        let error = lower_batch(&deep(100), &capabilities(false, true))
+            .expect_err("a 100-deep batch must refuse, not walk");
+        assert!(
+            error.to_string().contains("nesting"),
+            "the refusal names the nesting: {error}"
+        );
+        lower_batch(&deep(10), &capabilities(false, true)).expect("ordinary nesting still lowers");
+    }
+
+    /// 047 L3: a struct child whose length disagrees with its parent's
+    /// validity buffer is impossible from the engine's own builders but
+    /// reachable from an IPC-decoded batch — `NullBuffer::union` panicked
+    /// on it; the merge now refuses with a typed error instead.
+    #[test]
+    fn a_length_mismatched_null_merge_is_a_typed_error_not_a_panic() {
+        use arrow::buffer::NullBuffer;
+        use std::sync::Arc;
+
+        let child: ArrayRef = Arc::new(Int64Array::from(vec![1i64, 2, 3]));
+        let parent = NullBuffer::from(vec![true, false, true, true, false]);
+        let error = with_merged_nulls(&child, Some(&parent))
+            .expect_err("a 3-row child under a 5-row parent must refuse");
+        assert!(
+            error.to_string().contains("3") && error.to_string().contains("5"),
+            "the refusal names both lengths: {error}"
+        );
+
+        // The healthy shape still merges.
+        let matched = NullBuffer::from(vec![true, false, true]);
+        let merged = with_merged_nulls(&child, Some(&matched)).expect("equal lengths merge");
+        assert_eq!(merged.null_count(), 1);
     }
 
     /// Boundaries chosen so each mutant CHANGES the output. `raw < 0` → `<=`
