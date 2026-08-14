@@ -212,12 +212,14 @@ pub enum SessionScript {
     OpenedThenStatus { code: tonic::Code, message: String },
     /// Answer the `Open` frame with `Opened`, consume the NEXT request
     /// frame, then before going SILENT emit `parts` interleaved
-    /// `part_closed` events — the stream never ends and the call's own
-    /// reply never comes. With `parts: 0` this is the bare
-    /// silent-but-alive session; with parts it proves a flood does not
-    /// defeat the quiet-interval deadline: every event resets the
-    /// clock, and the silence AFTER the flood still times out typed.
-    OpenedThenPartsThenSilence { parts: u64 },
+    /// `part_closed` events naming `table` — the stream never ends and
+    /// the call's own reply never comes. With `parts: 0` this is the
+    /// bare silent-but-alive session; with parts it proves a flood
+    /// does not defeat the quiet-interval deadline: every event resets
+    /// the clock, and the silence AFTER the flood still times out
+    /// typed. A hostile `table` drives the wire edge's control-
+    /// character refusal.
+    OpenedThenPartsThenSilence { parts: u64, table: String },
 }
 
 /// The scripted destination server: a truthful handshake carrying a
@@ -293,13 +295,13 @@ impl DestinationService for RogueDestination {
                 SessionScript::OpenedThenStatus { code, message } => {
                     let _ = reply_tx.send(Err(Status::new(code, message))).await;
                 }
-                SessionScript::OpenedThenPartsThenSilence { parts } => {
+                SessionScript::OpenedThenPartsThenSilence { parts, table } => {
                     for index in 0..parts {
                         let _ = reply_tx
                             .send(Ok(proto::SessionReply {
                                 reply: Some(session_reply::Reply::PartClosed(
                                     proto::PartClosedEvent {
-                                        table: "numbers".to_string(),
+                                        table: table.clone(),
                                         encoded_bytes: index,
                                         reason: "commit".to_string(),
                                     },
@@ -371,6 +373,62 @@ impl Connector for Mute {
     ) -> Result<Response<proto::SpecReply>, Status> {
         Err(Status::unimplemented("the mute connector serves silence"))
     }
+}
+
+/// A connector whose handshake reports exactly the identity a test
+/// scripts — spec document built from the same values, so only the
+/// wire-edge gates under test judge them.
+#[derive(Debug)]
+pub struct Identity {
+    id: &'static str,
+    version: &'static str,
+}
+
+#[tonic::async_trait]
+impl Connector for Identity {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        let spec = ConnectorSpec::new(self.id, self.version);
+        Ok(Response::new(proto::HandshakeReply {
+            outcome: Some(handshake_reply::Outcome::Ok(proto::HandshakeOk {
+                connector_id: self.id.to_string(),
+                connector_version: self.version.to_string(),
+                spec_json: serde_json::to_vec(&spec)
+                    .expect("a ConnectorSpec serializes to JSON infallibly"),
+                capabilities_json: Vec::new(),
+                state_format_versions: Default::default(),
+            })),
+        }))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        Err(Status::unimplemented("the identity rogue only handshakes"))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<proto::SpecReply>, Status> {
+        Err(Status::unimplemented("the identity rogue only handshakes"))
+    }
+}
+
+/// Bind the identity rogue at `path` and serve until the returned task
+/// is dropped.
+pub fn serve_identity(path: &Path, id: &'static str, version: &'static str) -> JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(path).expect("bind the identity rogue's socket");
+    let incoming = UnixListenerStream::new(listener);
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::new(Identity { id, version }))
+        .serve_with_incoming(incoming);
+    tokio::spawn(async move {
+        let _ = serving.await;
+    })
 }
 
 /// Bind the mute connector at `path` and serve until the returned task

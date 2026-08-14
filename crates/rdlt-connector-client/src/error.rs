@@ -92,13 +92,16 @@ pub enum ClientError {
     },
     /// The connector refused the handshake with a typed [`proto::ErrorFrame`]
     /// — bad role, out-of-range protocol version, undecodable or invalid
-    /// config. The connector's own wording rides in `message` verbatim.
+    /// config. The connector's own wording rides in `message`, rendered
+    /// inert (control characters spelled as escapes — the wire edge's
+    /// escape seat).
     #[error("the connector refused the handshake: {message}")]
     Handshake {
         /// The frame's classification, normalized safe-loud: an
         /// `Unspecified` or unknown value arrives as [`Classification::Fatal`].
         classification: Classification,
-        /// The connector's refusal, verbatim.
+        /// The connector's refusal — its own wording, with control
+        /// characters spelled as escapes.
         message: String,
         /// The frame's wait hint, when the refusal carried one.
         retry_after_ms: Option<u64>,
@@ -161,10 +164,19 @@ impl ClientError {
     pub(crate) fn handshake_refusal(frame: &proto::ErrorFrame) -> Self {
         ClientError::Handshake {
             classification: normalized_classification(frame.classification),
-            message: frame.message.clone(),
+            message: inert_message(frame),
             retry_after_ms: frame.retry_after_ms,
         }
     }
+}
+
+/// The frame's message rendered inert: control characters spelled as
+/// escapes, everything else verbatim (the wire edge's escape seat —
+/// see the `sanitize` module's rule). Escaped rather than refused
+/// because a message is display text: the connector's real diagnostic
+/// should survive its own bad bytes, not vanish behind a refusal.
+fn inert_message(frame: &proto::ErrorFrame) -> String {
+    crate::sanitize::escape_control_characters(&frame.message).into_owned()
 }
 
 /// Decode a frame's raw classification, failing safe-loud: `Unspecified`
@@ -189,9 +201,10 @@ fn retry_after(frame: &proto::ErrorFrame) -> Option<Duration> {
 /// engine acts on: `TRANSIENT`→`transient`, `RATE_LIMITED`→`rate_limited`
 /// (wait hint forwarded), `FATAL`→`fatal` — and `Unspecified`/unknown
 /// values →`fatal` too (see [`normalized_classification`]'s safe-loud
-/// rationale). The frame's message becomes the cause verbatim.
+/// rationale). The frame's message becomes the cause, rendered inert
+/// ([`inert_message`]).
 pub(crate) fn source_error_from_frame(frame: &proto::ErrorFrame) -> SourceError {
-    let message = frame.message.clone();
+    let message = inert_message(frame);
     match normalized_classification(frame.classification) {
         Classification::Transient => SourceError::transient(message),
         Classification::RateLimited => SourceError::rate_limited(message, retry_after(frame)),
@@ -202,7 +215,7 @@ pub(crate) fn source_error_from_frame(frame: &proto::ErrorFrame) -> SourceError 
 /// [`source_error_from_frame`]'s destination twin — same mapping, same
 /// safe-loud rule, the SPI's [`DestinationError`] constructors.
 pub(crate) fn dest_error_from_frame(frame: &proto::ErrorFrame) -> DestinationError {
-    let message = frame.message.clone();
+    let message = inert_message(frame);
     match normalized_classification(frame.classification) {
         Classification::Transient => DestinationError::transient(message),
         Classification::RateLimited => DestinationError::rate_limited(message, retry_after(frame)),
@@ -286,6 +299,58 @@ mod tests {
 
         let error = dest_error_from_frame(&frame(42, None));
         assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    }
+
+    /// The wire edge's escape seat: a frame message carrying control
+    /// characters (the OSC 52 clipboard escape, BEL, a forged log
+    /// line) renders INERT through every mapper — the bytes arrive as
+    /// their spelled-out escapes, never raw. Escaped rather than
+    /// refused: an error message is display text, and a connector's
+    /// real diagnostic should survive its own bad bytes rather than
+    /// vanish behind a refusal.
+    #[test]
+    fn a_control_character_message_renders_inert_through_every_mapper() {
+        let hostile = "\u{1b}]52;c;AAAA\u{7}\nFORGED line";
+        let renderings = [
+            source_error_from_frame(&proto::ErrorFrame {
+                classification: Classification::Fatal as i32,
+                message: hostile.to_string(),
+                retry_after_ms: None,
+            })
+            .to_string(),
+            dest_error_from_frame(&proto::ErrorFrame {
+                classification: Classification::Fatal as i32,
+                message: hostile.to_string(),
+                retry_after_ms: None,
+            })
+            .to_string(),
+            ClientError::handshake_refusal(&proto::ErrorFrame {
+                classification: Classification::Fatal as i32,
+                message: hostile.to_string(),
+                retry_after_ms: None,
+            })
+            .to_string(),
+        ];
+        for rendered in renderings {
+            assert!(
+                !rendered.contains('\u{1b}')
+                    && !rendered.contains('\u{7}')
+                    && !rendered.contains('\n'),
+                "no raw control byte survives the mapper: {rendered:?}"
+            );
+            assert!(
+                rendered.contains("\\u{1b}]52;c;AAAA\\u{7}\\nFORGED line"),
+                "the message survives, spelled inert: {rendered:?}"
+            );
+        }
+    }
+
+    /// An ordinary message — non-ASCII included, which is data, not
+    /// control — passes through the mappers byte-identical.
+    #[test]
+    fn an_ordinary_message_is_untouched_by_the_escape_seat() {
+        let error = source_error_from_frame(&frame(Classification::Fatal as i32, None));
+        assert_eq!(error.to_string(), "fatal source error: the cause");
     }
 
     /// The handshake-refusal constructor normalizes the same way and

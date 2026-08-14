@@ -449,3 +449,58 @@ async fn a_tiny_window_bounds_an_unread_blast() {
         "cancellation is Ok(()), never an error: {outcome:?}"
     );
 }
+
+/// The cursor seat of the control-character judgment, pinned as a
+/// DECISION: a checkpoint cursor is an opaque data document, so
+/// control characters inside its string values are data, not refused
+/// — and the only render path a cursor has (JSON serialization, the
+/// WAL manifest's and state doc's form) spells them inert by
+/// construction. Gating here would refuse legitimate source data; the
+/// escape lives at the render.
+#[tokio::test]
+async fn a_control_character_cursor_value_is_data_not_refused() {
+    let (_dir, path) = socket_path();
+    let hostile_value = "last-key-\u{1b}]52;c;AAAA\u{7}";
+    let _serving = rogue::serve(
+        &path,
+        rogue::ReadScript::Frames(vec![proto::ReadFrame {
+            frame: Some(read_frame::Frame::CheckpointCursorJson(
+                serde_json::to_vec(&serde_json::json!({"k": hostile_value}))
+                    .expect("a cursor value serializes"),
+            )),
+        }]),
+    );
+    let (remote, _) = Source::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &rdlt_connector_client::ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect");
+
+    let (out, mut input) = records_channel(1 << 20);
+    let stream = StreamSpec::new("numbers");
+    tokio::time::timeout(BOUND, remote.read(ReadRequest::new(stream, None, out)))
+        .await
+        .expect("the read completes")
+        .expect("a control-character cursor value is data — never refused");
+
+    let push = input.recv().await.expect("the checkpoint arrives");
+    match &push.payload {
+        PushPayload::Checkpoint(cursor) => {
+            assert_eq!(
+                cursor.as_value(),
+                &serde_json::json!({"k": hostile_value}),
+                "the value survives byte-identical"
+            );
+            let rendered =
+                serde_json::to_string(cursor.as_value()).expect("a cursor renders as JSON");
+            assert!(
+                !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+                "the JSON render spells control bytes inert: {rendered:?}"
+            );
+        }
+        other => panic!("the frame is the checkpoint, got {other:?}"),
+    }
+}

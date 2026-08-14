@@ -85,7 +85,8 @@ fn protocol_fatal(message: String) -> SourceError {
 }
 
 /// Refuse a DECLARED stream name carrying control characters (C0
-/// including newline/tab/DEL, and C1) — the wire edge's half of the
+/// including newline/tab/DEL, and C1) — the identifier seat of the
+/// `sanitize` module's one rule, and the wire edge's half of the
 /// terminal-injection defense: a stream name travels into events,
 /// tracing spans, and the CLI's lines, and control bytes in it are how
 /// a hostile connector forges log lines or drives escape sequences
@@ -96,7 +97,7 @@ fn protocol_fatal(message: String) -> SourceError {
 /// streams. The refusal renders the name in its `{:?}` escaped form,
 /// so the message itself cannot carry the very bytes it refuses.
 fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceError> {
-    if spec.name.as_str().chars().any(char::is_control) {
+    if crate::sanitize::contains_control(spec.name.as_str()) {
         return Err(SourceError::fatal(format!(
             "the connector declared a stream named {:?} — control characters in a \
              stream name are refused at the wire boundary",

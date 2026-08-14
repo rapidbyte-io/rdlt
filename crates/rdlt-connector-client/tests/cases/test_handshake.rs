@@ -11,6 +11,7 @@ use rdlt_connector_sdk::serve;
 use rdlt_connector_sdk::source::SourceConnector as _;
 
 use super::support::echo::{EchoDestination, EchoSource};
+use super::support::rogue;
 
 /// A fresh temp directory plus a fixed socket name inside it — the
 /// directory (and the socket file in it) is reclaimed on drop, so runs
@@ -203,4 +204,67 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
         }
         other => panic!("expected a Handshake refusal, got {other:?}"),
     }
+}
+
+/// The wire edge refuses control characters in the REPORTED identity
+/// before any equality check can render it: a hostile connector_id
+/// must not reach the IdMismatch message (which quotes the reported
+/// value) — it refuses as a protocol violation whose own rendering is
+/// inert.
+#[tokio::test]
+async fn a_control_character_identity_refuses_inert_before_the_mismatch_render() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_identity(&path, "ev\u{1b}]52;c;AAAA\u{7}il", "0.0.0");
+
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
+    let error = handshake(
+        &channel,
+        Role::Source,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("clean-id"),
+    )
+    .await
+    .expect_err("a control-character identity must refuse");
+
+    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "the refusal must not itself carry the bytes it refuses: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("refused at the wire boundary"),
+        "the refusal names the gate: {rendered}"
+    );
+}
+
+/// The version field rides the same gate — a wire-reported version
+/// with control characters refuses inert even when no version is
+/// pinned (unpinned versions are carried into logs and reports as
+/// reported).
+#[tokio::test]
+async fn a_control_character_version_refuses_inert() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_identity(&path, "clean-id", "1.0\u{7}");
+
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
+    let error = handshake(
+        &channel,
+        Role::Source,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("clean-id"),
+    )
+    .await
+    .expect_err("a control-character version must refuse");
+
+    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains('\u{7}'),
+        "the refusal must not itself carry the bytes it refuses: {rendered:?}"
+    );
 }

@@ -481,3 +481,59 @@ async fn capabilities_answer_from_the_handshake_cache_without_an_rpc() {
     );
     assert_eq!(remote.spec().name, "echo-destination", "spec is cached too");
 }
+
+/// The part-event table seat of the wire edge's control-character
+/// gate: a `part_closed` naming a hostile table refuses typed and
+/// inert — the event never reaches the callback, because a table name
+/// is a filesystem-adjacent identifier on its way into host telemetry,
+/// the same class as a declared stream name.
+#[tokio::test]
+async fn a_control_character_table_in_a_part_event_refuses_typed() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::OpenedThenPartsThenSilence {
+            parts: 1,
+            table: "num\u{1b}]52;c;AAAA\u{7}bers".to_string(),
+        },
+    );
+    let remote = Destination::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let seen = Arc::new(Mutex::new(Vec::<PartClosed>::new()));
+    let sink = Arc::clone(&seen);
+    let context = context().with_part_events(Arc::new(move |part| {
+        sink.lock().expect("part log lock").push(part);
+    }));
+    let mut backend = remote.open_backend(&context).await.expect("open");
+
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.ensure_table(&schema_for("numbers"), &WriteMode::Append),
+    )
+    .await
+    .expect("the refusal answers promptly — the gate fires before any deadline")
+    .expect_err("a control-character table must refuse");
+
+    assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "the refusal must not itself carry the bytes it refuses: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("refused at the wire boundary"),
+        "the refusal names the gate: {rendered}"
+    );
+    assert!(
+        seen.lock().expect("part log lock").is_empty(),
+        "the hostile event never reaches the callback"
+    );
+}

@@ -170,6 +170,23 @@ pub struct HandshakeOutcome {
 /// provider built `with_search_path` restricted to a directory they
 /// control. A digest/signature pin is the anticipated future growth of
 /// [`ConnectorRequirement`] for stronger needs.
+/// Refuse a handshake identity field carrying control characters (C0
+/// incl. newline/tab/DEL, and C1) — an identifier seat of the
+/// `sanitize` module's one rule: these values become host vocabulary
+/// (logs, reports, mismatch refusals that quote them), and a name is
+/// either clean or refused. The refusal renders the value in its
+/// `{:?}` escaped form, so the message cannot carry the bytes it
+/// refuses.
+fn refuse_control_characters_in(field: &str, value: &str) -> Result<(), ClientError> {
+    if crate::sanitize::contains_control(value) {
+        return Err(ClientError::Protocol(format!(
+            "the handshake reported a {field} of {value:?} — control characters in an \
+             identity field are refused at the wire boundary"
+        )));
+    }
+    Ok(())
+}
+
 pub async fn handshake(
     channel: &Channel,
     role: Role,
@@ -203,6 +220,13 @@ pub async fn handshake(
         }
     };
 
+    // The identifier seats of the `sanitize` module's one rule, gated
+    // BEFORE the equality checks below: the mismatch refusals quote the
+    // reported values, so a hostile id/version must be refused inert
+    // before any message can carry it.
+    refuse_control_characters_in("connector_id", &ok.connector_id)?;
+    refuse_control_characters_in("connector_version", &ok.connector_version)?;
+
     if ok.connector_id != expected.id {
         return Err(ClientError::IdMismatch {
             expected: expected.id.clone(),
@@ -223,6 +247,11 @@ pub async fn handshake(
             "undecodable spec_json in the handshake reply: {error}"
         ))
     })?;
+    // The spec's own name/version are identifiers too — they travel
+    // into logs, reports and the certifier's identity-agreement
+    // judgment — and ride the same rule as the wire-reported pair.
+    refuse_control_characters_in("spec name", &spec.name)?;
+    refuse_control_characters_in("spec version", &spec.version)?;
     // Empty means "a source" per the proto field's own doc — only a
     // non-empty payload claims to be a capabilities document.
     let capabilities: Option<DestinationCapabilities> = if ok.capabilities_json.is_empty() {

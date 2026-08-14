@@ -284,7 +284,10 @@ async fn a_silent_session_reply_times_out_typed() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination(
         &path,
-        SessionScript::OpenedThenPartsThenSilence { parts: 0 },
+        SessionScript::OpenedThenPartsThenSilence {
+            parts: 0,
+            table: "numbers".to_string(),
+        },
     );
     let (remote, _) = Destination::connect(
         &path,
@@ -326,7 +329,10 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination(
         &path,
-        SessionScript::OpenedThenPartsThenSilence { parts: 5 },
+        SessionScript::OpenedThenPartsThenSilence {
+            parts: 5,
+            table: "numbers".to_string(),
+        },
     );
     let (remote, _) = Destination::connect(
         &path,

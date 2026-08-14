@@ -267,20 +267,33 @@ impl Backend {
     /// reason spelling (a NEWER server's variant this build does not
     /// know) skips the event rather than panicking or inventing a
     /// reason: part events are advisory telemetry, and a lossy skip is
-    /// the honest degradation for a vocabulary gap.
-    fn forward_part(&self, event: proto::PartClosedEvent) {
+    /// the honest degradation for a vocabulary gap. A table name
+    /// carrying control characters is NOT a vocabulary gap — it is the
+    /// identifier seat of the `sanitize` module's one rule (a table
+    /// name is filesystem-adjacent and travels into host telemetry),
+    /// so it refuses typed like a declared stream name, before the
+    /// event can reach the callback.
+    fn forward_part(&self, event: proto::PartClosedEvent) -> Result<(), DestinationError> {
+        if crate::sanitize::contains_control(&event.table) {
+            return Err(DestinationError::fatal(format!(
+                "the connector reported a part event for a table named {:?} — control \
+                 characters in a table name are refused at the wire boundary",
+                event.table
+            )));
+        }
         let Some(listener) = &self.part_events else {
-            return;
+            return Ok(());
         };
         let reason = serde_json::Value::String(event.reason);
         let Ok(reason) = serde_json::from_value::<PartCloseReason>(reason) else {
-            return;
+            return Ok(());
         };
         listener(PartClosed::new(
             TableName::new(event.table),
             event.encoded_bytes,
             reason,
         ));
+        Ok(())
     }
 
     /// Send one frame and read replies until its own tagged reply
@@ -335,7 +348,7 @@ impl Backend {
                 Err(status) => return Err(transport_fatal(status)),
             };
             match reply {
-                session_reply::Reply::PartClosed(event) => self.forward_part(event),
+                session_reply::Reply::PartClosed(event) => self.forward_part(event)?,
                 session_reply::Reply::Error(frame) => return Err(dest_error_from_frame(&frame)),
                 resolved => return Ok(resolved),
             }
