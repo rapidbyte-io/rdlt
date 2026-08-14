@@ -46,6 +46,14 @@ pub(crate) async fn replay(
     // the reason logged, never swallowed.
     for record in &span.records {
         if let WalRecord::Segment { file, rows, .. } = record {
+            // The scan already refused any name the writer could not have
+            // produced; re-checking here (047 M3) keeps `dir.join` safe even
+            // for a span that reached replay some other way — the name gate
+            // and the join must never separate.
+            if let Err(reason) = crate::wal::record::verify_segment_file(&span.load_id, file) {
+                tracing::warn!(%reason, "WAL manifest names a segment the writer could not have written — degrading to re-extraction");
+                return Ok(None);
+            }
             // No batch escapes pass 1, so the whole validation crosses in one
             // piece — which also means its memory stays bounded by one batch
             // without any coordination.
@@ -214,9 +222,9 @@ mod segment_format {
     #[test]
     fn a_segment_round_trips_its_rows() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("seg.arrow");
+        let path = dir.path().join("l-000000.arrow");
         write_segment(&path, &batch(1000)).expect("write");
-        let decoded: Vec<_> = open_segment(dir.path(), "seg.arrow")
+        let decoded: Vec<_> = open_segment(dir.path(), "l-000000.arrow")
             .expect("open")
             .map(|b| b.expect("decode"))
             .collect();
@@ -314,7 +322,7 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))],
         )
         .expect("batch");
-        crate::wal::write_segment(&dir.path().join("seg.arrow"), &seg).expect("write segment");
+        crate::wal::write_segment(&dir.path().join("l-000000.arrow"), &seg).expect("write segment");
 
         let schema = rdlt_core::TableSchema {
             table: TableName::new("t"),
@@ -327,7 +335,7 @@ mod tests {
             records: vec![
                 WalRecord::Segment {
                     table: TableName::new("t"),
-                    file: "seg.arrow".to_owned(),
+                    file: "l-000000.arrow".to_owned(),
                     rows,
                 },
                 WalRecord::Checkpoint {

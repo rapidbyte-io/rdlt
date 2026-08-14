@@ -23,6 +23,8 @@ version.workspace = true
 
 [dependencies]
 arrow = { workspace = true }
+# WAL v3 manifest line checksums (047 M4).
+blake3 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 fs4 = { workspace = true }
@@ -44,6 +46,9 @@ failpoints = [
 
 [dev-dependencies]
 async-trait = { workspace = true }
+# The format-pin tests re-derive the manifest line envelope independently
+# of the engine's encoder.
+blake3 = { workspace = true }
 criterion = { workspace = true }
 iai-callgrind = { workspace = true }
 proptest = { workspace = true }

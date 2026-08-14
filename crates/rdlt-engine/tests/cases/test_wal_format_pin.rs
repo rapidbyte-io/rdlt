@@ -1,8 +1,8 @@
-//! Byte-exact pin of the WAL v2 on-disk format: a committed fixture (manifest
-//! plus Arrow IPC file segments) that every future build must replay to
-//! identical rows and identical `_rdlt_id`s.
+//! Byte-exact pin of the WAL v3 on-disk format: a committed fixture (manifest
+//! with per-line blake3 trailers plus Arrow IPC file segments) that every
+//! future build must replay to identical rows and identical `_rdlt_id`s.
 //!
-//! The WAL format is PERSISTED: a process that dies mid-run leaves v2 bytes on
+//! The WAL format is PERSISTED: a process that dies mid-run leaves v3 bytes on
 //! disk, and whatever build starts next — possibly a newer one — must replay
 //! them. Every other WAL test in this crate writes and reads with the SAME
 //! build, so a format drift (a serde rename, a container change, an encoding
@@ -10,10 +10,11 @@
 //! upgrade. This fixture is the only cross-build oracle: it was captured from
 //! the shipping build and is decoded literally.
 //!
-//! The version gate is pinned in both directions through the PUBLIC surface: a
-//! v1 (headerless) manifest and a v3 manifest are both refused — recovery
-//! degrades to re-extraction and the fixture's rows must never reach the
-//! destination.
+//! The version gate is pinned in ALL directions through the PUBLIC surface: a
+//! v1 (headerless) manifest, the REAL committed v2 fixture (047 M4's bump left
+//! genuine v2 residue in the world), and a v4 manifest are all refused —
+//! recovery degrades to re-extraction and no refused fixture's rows may reach
+//! the destination.
 //!
 //! Regenerate deliberately, never reflexively — a diff here means WAL residue
 //! written by shipped builds no longer replays on this one:
@@ -36,7 +37,29 @@ use serde_json::json;
 use super::common::stream_with_batches;
 
 fn fixture_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wal_v3")
+}
+
+/// The RETIRED format's committed fixture, kept verbatim from before the
+/// v2→v3 bump — the realest possible "surviving v2 WAL" for the degrade pin.
+fn v2_fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/wal_v2")
+}
+
+/// A v3 manifest line, re-derived INDEPENDENTLY of the engine's encoder:
+/// `{json}|{blake3-hex-of-the-json-bytes}`. Tests computing the envelope by
+/// hand are the pin that the shipped encoder cannot drift.
+fn v3_line(json: &str) -> String {
+    format!("{json}|{}", blake3::hash(json.as_bytes()).to_hex())
+}
+
+/// Split one manifest line into its JSON half, tolerating the trailer-less
+/// v1/v2 fixtures.
+fn json_of(line: &str) -> &str {
+    match line.char_indices().rev().nth(64) {
+        Some((split, '|')) => &line[..split],
+        _ => line,
+    }
 }
 
 /// The corpus behind the fixture: nested rows so the segments carry child
@@ -108,16 +131,21 @@ async fn recover_into_destination(workdir: &Path) -> MemoryDestination {
     dest
 }
 
-/// The `load_id` the fixture's `Run` header names — the id replayed rows keep.
-fn fixture_load_id() -> String {
+/// The `load_id` a fixture's `Run` header names — the id replayed rows keep.
+fn load_id_of(fixture: &Path) -> String {
     let manifest =
-        std::fs::read_to_string(fixture_dir().join("manifest.jsonl")).expect("fixture manifest");
+        std::fs::read_to_string(fixture.join("manifest.jsonl")).expect("fixture manifest");
     let header: serde_json::Value =
-        serde_json::from_str(manifest.lines().next().expect("header line")).expect("header json");
+        serde_json::from_str(json_of(manifest.lines().next().expect("header line")))
+            .expect("header json");
     header["load_id"]
         .as_str()
         .expect("fixture load_id")
         .to_owned()
+}
+
+fn fixture_load_id() -> String {
+    load_id_of(&fixture_dir())
 }
 
 /// Every committed row's `_rdlt_load_id`, deduplicated.
@@ -134,13 +162,25 @@ fn committed_load_ids(dest: &MemoryDestination) -> Vec<String> {
     ids
 }
 
-/// Stage the committed fixture into a fresh workdir's `wal/` directory,
-/// optionally rewriting the manifest's `Run` header first.
-fn stage_fixture(workdir: &Path, rewrite_header: impl FnOnce(&mut serde_json::Value)) {
+/// How a staged header is written back: a CURRENT-format line carries a fresh
+/// checksum trailer; an older format's header never had one.
+enum HeaderForm {
+    Trailered,
+    Bare,
+}
+
+/// Stage a fixture into a fresh workdir's `wal/` directory, optionally
+/// rewriting the manifest's `Run` header first.
+fn stage_fixture(
+    fixture: &Path,
+    workdir: &Path,
+    form: HeaderForm,
+    rewrite_header: impl FnOnce(&mut serde_json::Value),
+) {
     let wal_dir = workdir.join("wal");
-    copy_wal(&fixture_dir(), &wal_dir);
+    copy_wal(fixture, &wal_dir);
     // Recovery refuses a manifest without its rules sidecar. The
-    // sidecar is a workdir file, not part of the frozen v2 stream this
+    // sidecar is a workdir file, not part of the frozen WAL stream this
     // fixture pins, so it is staged here rather than committed with
     // the fixture; a future RDLT_REPIN capture carries its own.
     std::fs::write(
@@ -152,9 +192,15 @@ fn stage_fixture(workdir: &Path, rewrite_header: impl FnOnce(&mut serde_json::Va
     let manifest = std::fs::read_to_string(&manifest_path).expect("read fixture manifest");
     let mut lines: Vec<String> = manifest.lines().map(str::to_owned).collect();
     let mut header: serde_json::Value =
-        serde_json::from_str(&lines[0]).expect("fixture Run header parses");
+        serde_json::from_str(json_of(&lines[0])).expect("fixture Run header parses");
     rewrite_header(&mut header);
-    lines[0] = header.to_string();
+    lines[0] = match form {
+        // Rewriting the JSON invalidates the recorded digest, so the header
+        // is re-trailered — the property under test is the VERSION gate, not
+        // the checksum gate.
+        HeaderForm::Trailered => v3_line(&header.to_string()),
+        HeaderForm::Bare => header.to_string(),
+    };
     std::fs::write(&manifest_path, lines.join("\n") + "\n").expect("write manifest");
 }
 
@@ -162,7 +208,7 @@ fn stage_fixture(workdir: &Path, rewrite_header: impl FnOnce(&mut serde_json::Va
 /// regenerated from THIS build; otherwise the committed fixture must replay to
 /// the committed rendering, byte for byte.
 #[tokio::test]
-async fn a_v2_wal_replays_to_identical_rows_and_ids() {
+async fn a_v3_wal_replays_to_identical_rows_and_ids() {
     let expected_path = fixture_dir().join("expected_rows.txt");
 
     if std::env::var_os("RDLT_REPIN").is_some() {
@@ -180,7 +226,7 @@ async fn a_v2_wal_replays_to_identical_rows_and_ids() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let workdir = dir.path().join("work");
-    stage_fixture(&workdir, |_| {});
+    stage_fixture(&fixture_dir(), &workdir, HeaderForm::Trailered, |_| {});
     let dest = recover_into_destination(&workdir).await;
     let actual = render_committed(&dest);
 
@@ -211,34 +257,48 @@ async fn a_v2_wal_replays_to_identical_rows_and_ids() {
     });
     assert_eq!(
         actual, expected,
-        "the committed v2 fixture no longer replays to its committed rows — \
+        "the committed v3 fixture no longer replays to its committed rows — \
          WAL residue from shipped builds would be misread; if this change is \
          deliberate it needs a format-version bump, not a re-pin"
     );
 }
 
-/// The fixture itself must BE a v2 manifest naming Arrow IPC segments —
-/// otherwise the replay pin above is testing something else entirely.
+/// The fixture itself must BE a v3 manifest — versioned header, a checksum
+/// trailer on EVERY line, Arrow IPC segments — otherwise the replay pin above
+/// is testing something else entirely.
 #[test]
-fn the_fixture_is_a_v2_manifest_with_arrow_segments() {
+fn the_fixture_is_a_v3_manifest_with_checksummed_lines_and_arrow_segments() {
     let manifest =
         std::fs::read_to_string(fixture_dir().join("manifest.jsonl")).expect("fixture manifest");
+    for line in manifest.lines() {
+        let json = json_of(line);
+        assert_ne!(
+            json, line,
+            "every v3 line carries a checksum trailer: {line}"
+        );
+        assert_eq!(
+            v3_line(json),
+            line,
+            "the trailer is blake3 over exactly the JSON bytes"
+        );
+    }
     let header: serde_json::Value =
-        serde_json::from_str(manifest.lines().next().expect("header line")).expect("header json");
+        serde_json::from_str(json_of(manifest.lines().next().expect("header line")))
+            .expect("header json");
     assert_eq!(header["rec"], "run");
     assert_eq!(
-        header["format_version"], 2,
-        "the fixture pins WAL format v2; a bump regenerates the fixture DELIBERATELY"
+        header["format_version"], 3,
+        "the fixture pins WAL format v3; a bump regenerates the fixture DELIBERATELY"
     );
     let segment = manifest
         .lines()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(json_of(l)).ok())
         .find(|r| r["rec"] == "segment")
         .expect("the fixture holds at least one segment record");
     let file = segment["file"].as_str().expect("segment file name");
     assert!(
         file.ends_with(".arrow"),
-        "v2 segments are Arrow IPC files: {file}"
+        "v3 segments are Arrow IPC files: {file}"
     );
     assert!(
         fixture_dir().join(file).exists(),
@@ -253,34 +313,55 @@ fn the_fixture_is_a_v2_manifest_with_arrow_segments() {
 async fn a_v1_headerless_manifest_is_refused_never_replayed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workdir = dir.path().join("work");
-    stage_fixture(&workdir, |header| {
+    // A v1 header is BARE: the version field did not exist, and neither did
+    // the checksum trailer.
+    stage_fixture(&fixture_dir(), &workdir, HeaderForm::Bare, |header| {
         header
             .as_object_mut()
             .expect("run header is an object")
             .remove("format_version");
     });
 
-    assert_refused_and_reextracted(&workdir).await;
+    assert_refused_and_reextracted(&workdir, &fixture_load_id()).await;
 }
 
-/// A v3 manifest was written by a FUTURE engine; its records cannot be trusted
-/// to mean what this build thinks they mean. Same refusal, same degradation.
+/// THE v2→v3 DEGRADE PIN (047 M4): the REAL committed v2 fixture — trailer-
+/// less lines from the shipping v2 build — must refuse by VERSION and degrade
+/// to re-extraction. This is the acceptable cost of the bump, and the same
+/// degradation the v1→v2 transition took: slower, never wrong, and never a
+/// replay of lines this build cannot verify.
 #[tokio::test]
-async fn a_v3_manifest_is_refused_never_replayed() {
+async fn a_v2_wal_is_refused_never_replayed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workdir = dir.path().join("work");
-    stage_fixture(&workdir, |header| {
-        header["format_version"] = json!(3);
+    stage_fixture(&v2_fixture_dir(), &workdir, HeaderForm::Bare, |header| {
+        assert_eq!(
+            header["format_version"], 2,
+            "the retired fixture must still be the v2 capture"
+        );
     });
 
-    assert_refused_and_reextracted(&workdir).await;
+    assert_refused_and_reextracted(&workdir, &load_id_of(&v2_fixture_dir())).await;
+}
+
+/// A v4 manifest was written by a FUTURE engine; its records cannot be trusted
+/// to mean what this build thinks they mean. Same refusal, same degradation.
+#[tokio::test]
+async fn a_v4_manifest_is_refused_never_replayed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workdir = dir.path().join("work");
+    stage_fixture(&fixture_dir(), &workdir, HeaderForm::Trailered, |header| {
+        header["format_version"] = json!(4);
+    });
+
+    assert_refused_and_reextracted(&workdir, &fixture_load_id()).await;
 }
 
 /// The refusal contract, observed through the public surface: the run still
 /// SUCCEEDS (degradation to re-extraction is slower, never wrong), the rows
 /// arrive under the NEW run's load id — proof no fixture segment replayed —
 /// and the refused WAL is cleared.
-async fn assert_refused_and_reextracted(workdir: &Path) {
+async fn assert_refused_and_reextracted(workdir: &Path, refused_load_id: &str) {
     let dest = recover_into_destination(workdir).await;
     let ids = committed_load_ids(&dest);
     assert!(
@@ -288,7 +369,7 @@ async fn assert_refused_and_reextracted(workdir: &Path) {
         "degradation must re-extract, not lose the data"
     );
     assert!(
-        !ids.contains(&fixture_load_id()),
+        !ids.iter().any(|id| id == refused_load_id),
         "no row may carry the refused fixture's load id — that would mean a \
          segment in an unsupported format was replayed: {ids:?}"
     );

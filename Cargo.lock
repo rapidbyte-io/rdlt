@@ -2422,6 +2422,7 @@ version = "0.3.0"
 dependencies = [
  "arrow",
  "async-trait",
+ "blake3",
  "bytes",
  "chrono",
  "criterion",

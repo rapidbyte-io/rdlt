@@ -58,9 +58,10 @@ fn private_file() -> OpenOptions {
 /// The rules sidecar beside the manifest: the writer's `IdentRules`,
 /// serialized verbatim. Recovery's stream↔segment join normalizes under
 /// the resuming run's rules, and that join is only sound when they are
-/// the WRITING run's rules — the sidecar is what proves it. A NEW
-/// workdir file, not a record in the frozen WAL v2 stream, so no format
-/// bump; reclaimed with the directory by [`clear`].
+/// the WRITING run's rules — the sidecar is what proves it. A workdir
+/// file beside the manifest, not a record in the manifest stream (born
+/// in the v2 era without a format bump); reclaimed with the directory
+/// by [`clear`].
 pub(crate) const RULES_SIDECAR: &str = "rules.json";
 
 #[derive(Debug)]
@@ -117,15 +118,40 @@ impl Wal {
         // [`RULES_SIDECAR`] for why the rules must be recorded at all.
         let sidecar =
             serde_json::to_vec(&rules).map_err(|e| wal_err("encoding rules sidecar", e))?;
+        // Unlink-then-create_new, NOT create+truncate (047 L4): a truncating
+        // open FOLLOWS a pre-planted symlink and clobbers its target. The
+        // unlink removes any residue (a symlink itself, never its target; a
+        // real sidecar from the crash window between sidecar write and
+        // manifest creation, or from vouched residue — both legitimately
+        // re-written here), and `create_new` (O_EXCL, which refuses to
+        // resolve through a symlink) makes the create fail LOUDLY if
+        // anything reappears in between.
+        let sidecar_path = dir.join(RULES_SIDECAR);
+        match std::fs::remove_file(&sidecar_path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(wal_err("clearing prior rules sidecar", e));
+            }
+            _ => {}
+        }
         private_file()
-            .create(true)
+            .create_new(true)
             .write(true)
-            .truncate(true)
-            .open(dir.join(RULES_SIDECAR))
+            .open(&sidecar_path)
             .and_then(|mut file| file.write_all(&sidecar))
             .map_err(|e| wal_err("writing rules sidecar", e))?;
-        let manifest = private_file()
-            .create(true)
+        // The unvouched open is `create_new` for the same symlink reason —
+        // the residue refusal above already promised the path is absent, and
+        // O_EXCL keeps that promise atomic (a DANGLING symlink passes the
+        // `exists()` check yet would be followed by a plain create). The
+        // vouched open must append to the surviving resolved manifest, so it
+        // alone keeps the plain create.
+        let mut manifest_options = private_file();
+        if tolerate_resolved_residue {
+            manifest_options.create(true);
+        } else {
+            manifest_options.create_new(true);
+        }
+        let manifest = manifest_options
             .append(true)
             .open(dir.join("manifest.jsonl"))
             .map_err(|e| wal_err("opening manifest", e))?;
@@ -183,7 +209,10 @@ impl Wal {
                         std::io::Error::other("injected crash"),
                     ))
                 );
-                let file = format!("{}-{:06}.arrow", self.load_id, self.segment_seq);
+                // The ONE name format, shared with recovery's read-side gate
+                // (`record::verify_segment_file`) so writer and checker
+                // cannot drift.
+                let file = super::record::segment_file_name(&self.load_id, self.segment_seq);
                 self.segment_seq += 1;
                 let path = self.dir.join(&file);
                 write_segment(&path, batch)?;
@@ -295,7 +324,10 @@ impl Wal {
                 std::io::Error::other("injected crash"),
             ))
         );
-        let mut line = serde_json::to_vec(record).map_err(|e| wal_err("encode record", e))?;
+        // v3: every line carries its blake3 trailer — see
+        // [`super::record::encode_line`] for why the digest exists.
+        let mut line =
+            super::record::encode_line(record).map_err(|e| wal_err("encode record", e))?;
         line.push(b'\n');
         self.manifest
             .write_all(&line)
@@ -321,10 +353,15 @@ impl Wal {
 /// so several hundred per load, most of them tiny. Measured at 1.1% of wall on
 /// the 1M-row relational cell: small, but free.
 pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), RdltError> {
+    // `create_new` (O_EXCL), not create+truncate (047 L4): a segment name is
+    // never legitimately reused — the sequence is monotonic within a run and
+    // the load id carries per-process OS entropy across runs — so an
+    // existing file here is either a pre-planted symlink (which a
+    // truncating open would FOLLOW, clobbering its target) or a writer
+    // defect, and both must fail loudly rather than overwrite.
     let file = private_file()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .open(path)
         .map_err(|e| wal_err("create segment", e))?;
     let mut writer = arrow::ipc::writer::FileWriter::try_new_buffered(file, batch.schema_ref())
@@ -370,7 +407,10 @@ mod tests {
     fn manifest_records(dir: &Path) -> Vec<WalRecord> {
         let text = std::fs::read_to_string(dir.join("manifest.jsonl")).expect("read manifest");
         text.lines()
-            .map(|line| serde_json::from_str(line).expect("manifest line"))
+            .map(|line| match crate::wal::record::decode_line(line) {
+                crate::wal::record::ManifestLine::Record(record) => record,
+                _ => panic!("every written line must carry a verifying checksum: {line}"),
+            })
             .collect()
     }
 
@@ -413,8 +453,15 @@ mod tests {
     #[test]
     fn open_with_the_residue_voucher_appends_after_the_resolved_span() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let stale =
-            "{\"rec\":\"run\",\"format_version\":2,\"load_id\":\"old\",\"pipeline\":\"p\"}\n";
+        // A resolved current-version span whose clear failed — the only
+        // shape recovery ever vouches for.
+        let mut stale = crate::wal::record::encode_line(&WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("old"),
+            pipeline: PipelineId::new("p"),
+        })
+        .expect("stale line");
+        stale.push(b'\n');
         std::fs::write(dir.path().join("manifest.jsonl"), stale).expect("residue");
         Wal::open(
             dir.path().to_path_buf(),
@@ -431,6 +478,100 @@ mod tests {
         assert!(
             lines[0].contains("\"old\"") && lines[1].contains("\"l\""),
             "the new Run header appends AFTER the resolved span: {manifest}"
+        );
+    }
+
+    /// 047 L4: a pre-planted symlink where a segment will be written must
+    /// fail LOUDLY, never be followed — a truncating open would clobber the
+    /// symlink's target with segment bytes.
+    #[tokio::test]
+    async fn a_preplanted_symlink_at_a_segment_path_fails_instead_of_following() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("victim");
+        std::fs::write(&target, b"precious").expect("victim file");
+        let mut wal = Wal::open(
+            dir.path().join("wal"),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+            false,
+        )
+        .expect("open wal");
+        // The name the next recorded batch will use, planted as a symlink.
+        std::os::unix::fs::symlink(&target, dir.path().join("wal").join("l-000000.arrow"))
+            .expect("plant symlink");
+        let error = wal
+            .record(&LoadItem::batch(TableName::new("t"), batch_of(3)))
+            .await
+            .expect_err("an occupied segment path must refuse");
+        assert!(
+            error.to_string().contains("create segment"),
+            "the refusal names the create: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&target).expect("victim survives"),
+            b"precious",
+            "the symlink's target must never be written through"
+        );
+    }
+
+    /// 047 L4's sidecar half: a pre-planted symlink at the rules sidecar
+    /// path is UNLINKED (the symlink itself, never its target) and the
+    /// sidecar written fresh — the target stays untouched.
+    #[test]
+    fn a_preplanted_symlink_at_the_sidecar_path_never_reaches_its_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("victim");
+        std::fs::write(&target, b"precious").expect("victim file");
+        let wal_dir = dir.path().join("wal");
+        create_private_dir(&wal_dir).expect("wal dir");
+        std::os::unix::fs::symlink(&target, wal_dir.join(RULES_SIDECAR)).expect("plant symlink");
+        Wal::open(
+            wal_dir.clone(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+            false,
+        )
+        .expect("open replaces the planted link");
+        assert_eq!(
+            std::fs::read(&target).expect("victim survives"),
+            b"precious",
+            "the symlink's target must never be written through"
+        );
+        let meta = std::fs::symlink_metadata(wal_dir.join(RULES_SIDECAR)).expect("sidecar");
+        assert!(
+            meta.file_type().is_file() && !meta.file_type().is_symlink(),
+            "the sidecar is a fresh regular file, not the planted link"
+        );
+    }
+
+    /// 047 L4's manifest half: a DANGLING symlink passes the residue
+    /// `exists()` check, and a plain create would follow it and mint the
+    /// manifest at the link's target. `create_new` refuses it loudly.
+    #[test]
+    fn a_dangling_symlink_at_the_manifest_path_refuses_instead_of_following() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("minted-elsewhere");
+        let wal_dir = dir.path().join("wal");
+        create_private_dir(&wal_dir).expect("wal dir");
+        std::os::unix::fs::symlink(&target, wal_dir.join("manifest.jsonl"))
+            .expect("plant dangling symlink");
+        let error = Wal::open(
+            wal_dir,
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+            false,
+        )
+        .expect_err("an occupied manifest path must refuse");
+        assert!(
+            error.to_string().contains("opening manifest"),
+            "the refusal names the open: {error}"
+        );
+        assert!(
+            !target.exists(),
+            "nothing may be minted at the symlink's target"
         );
     }
 

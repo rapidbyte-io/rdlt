@@ -111,12 +111,36 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<WalRecord>(&line) {
-            Ok(record) => records.push(record),
-            Err(e) => {
+        match crate::wal::record::decode_line(&line) {
+            crate::wal::record::ManifestLine::Record(record) => records.push(record),
+            // A complete trailer survives no tear, so a mismatch is
+            // corruption wherever it sits — the final line included.
+            crate::wal::record::ManifestLine::Corrupt(reason) => {
+                damaged = Some(format!("manifest corruption: {reason}"));
+                break;
+            }
+            crate::wal::record::ManifestLine::Untrailered(parsed) => {
+                if let Some(WalRecord::Run { format_version, .. }) = &parsed
+                    && *format_version != crate::wal::WAL_FORMAT_VERSION
+                {
+                    // An OLDER writer's Run header never carried a trailer.
+                    // Hand exactly this one record to the fold, whose
+                    // occupancy and version gates refuse every non-current
+                    // header by SHAPE (`ForeignPipeline` / `Unsupported`,
+                    // never acceptance), and stop reading: the rest of the
+                    // file is in a format this build does not verify. A
+                    // trailer-less line claiming the CURRENT version gets no
+                    // such tolerance — v3 writers always write trailers, so
+                    // accepting one would let a forger bypass the checksum
+                    // by omission.
+                    records.push(parsed.expect("matched Some above"));
+                    break;
+                }
                 // Torn tail is fine only if nothing follows it.
                 if lines.next().is_some() {
-                    damaged = Some(format!("mid-manifest corruption: {e}"));
+                    damaged = Some(
+                        "mid-manifest corruption: a line carries no checksum trailer".to_owned(),
+                    );
                 }
                 break;
             }
@@ -177,7 +201,23 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
                 max_committed_seq = max_committed_seq.max(commit_seq);
                 span.clear();
             }
-            other => span.push(other),
+            other => {
+                // THE SEGMENT-NAME GATE (047 M3): replay joins this name
+                // onto the WAL directory, and `Path::join` hands an absolute
+                // or `..`-carrying component the whole filesystem — so a
+                // name the current run's writer could not have produced
+                // refuses the manifest BEFORE anything is ever opened. The
+                // check runs against the run's own load id from its header;
+                // a segment with no header yet resolves as Discard below
+                // and never joins either.
+                if let WalRecord::Segment { file, .. } = &other
+                    && let Some(load) = &load_id
+                    && let Err(reason) = crate::wal::record::verify_segment_file(load, file)
+                {
+                    return ScanOutcome::Damaged(reason);
+                }
+                span.push(other);
+            }
         }
     }
 
@@ -202,6 +242,18 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
     let mut memo = ChainMemo::default();
     match (load_id, filter_covered(span, &schemas, rules, &mut memo)) {
         (Some(load_id), Ok(Some(records))) => {
+            // 047 L1: no writer emits `u64::MAX` (the first commit is 1 and
+            // the sequence only ever increments by one), so a committed
+            // sequence with no successor is forgery or corruption — degrade
+            // rather than overflow (debug builds panicked inside recovery;
+            // release builds wrapped the recovery commit to sequence 0).
+            let Some(next_commit_seq) = max_committed_seq.checked_add(1) else {
+                return ScanOutcome::Damaged(format!(
+                    "committed sequence {max_committed_seq} leaves no next commit \
+                     sequence — no writer emits it, so the manifest was not written \
+                     by one"
+                ));
+            };
             // REPLAY ENSURES ONLY WHAT IT WRITES (round-3 fix): the
             // segment filter can drop every one of a table's segments
             // (uncovered co-stream rows re-extract instead), and an
@@ -226,7 +278,7 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
                 .collect();
             ScanOutcome::Recover(RecoverySpan {
                 load_id,
-                next_commit_seq: max_committed_seq + 1,
+                next_commit_seq,
                 records,
                 schemas: schemas
                     .into_iter()
@@ -518,10 +570,10 @@ mod tests {
     use rdlt_core::{LoadId, PipelineId};
 
     fn write_manifest(dir: &std::path::Path, records: &[WalRecord]) {
-        let mut out = String::new();
+        let mut out: Vec<u8> = Vec::new();
         for record in records {
-            out.push_str(&serde_json::to_string(record).expect("record json"));
-            out.push('\n');
+            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("record json"));
+            out.push(b'\n');
         }
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
         // The sidecar every 042+ writer leaves beside its manifest —
@@ -553,7 +605,7 @@ mod tests {
         );
         assert_eq!(
             crate::wal::WAL_FORMAT_VERSION,
-            2,
+            3,
             "bump deliberately, with a migration note"
         );
     }
@@ -775,10 +827,10 @@ mod per_stream_coverage_tests {
             pipeline: PipelineId::new("p"),
         }];
         all.extend(records);
-        let mut out = String::new();
+        let mut out: Vec<u8> = Vec::new();
         for record in &all {
-            out.push_str(&serde_json::to_string(record).expect("record json"));
-            out.push('\n');
+            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("record json"));
+            out.push(b'\n');
         }
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
         std::fs::write(
@@ -821,13 +873,13 @@ mod per_stream_coverage_tests {
         let outcome = scan_span(vec![
             delta("events", None),
             delta("orders", None),
-            segment("events", "f0.arrow"),
-            segment("orders", "f1.arrow"),
+            segment("events", "l-000000.arrow"),
+            segment("orders", "l-000001.arrow"),
             checkpoint("orders"),
         ]);
         assert_eq!(
             replayed_files(&outcome),
-            ["f1.arrow"],
+            ["l-000001.arrow"],
             "a segment with no checkpoint of its OWN stream after it is not covered \
              by any cursor — replaying it double-applies once the source re-extracts"
         );
@@ -849,11 +901,11 @@ mod per_stream_coverage_tests {
     fn a_segment_after_its_own_streams_last_checkpoint_stays_dropped() {
         let outcome = scan_span(vec![
             delta("events", None),
-            segment("events", "f0.arrow"),
+            segment("events", "l-000000.arrow"),
             checkpoint("events"),
-            segment("events", "f1.arrow"),
+            segment("events", "l-000001.arrow"),
         ]);
-        assert_eq!(replayed_files(&outcome), ["f0.arrow"]);
+        assert_eq!(replayed_files(&outcome), ["l-000000.arrow"]);
     }
 
     /// Interleaved streams each replay exactly their covered prefix — no
@@ -863,16 +915,19 @@ mod per_stream_coverage_tests {
         let outcome = scan_span(vec![
             delta("events", None),
             delta("orders", None),
-            segment("events", "f0.arrow"),
-            segment("orders", "f1.arrow"),
+            segment("events", "l-000000.arrow"),
+            segment("orders", "l-000001.arrow"),
             checkpoint("events"),
-            segment("events", "f2.arrow"),
+            segment("events", "l-000002.arrow"),
             checkpoint("orders"),
         ]);
         // f0 precedes events' checkpoint, f1 precedes orders' — both covered.
         // f2 follows events' LAST checkpoint: uncovered, even though orders'
         // later checkpoint follows it positionally.
-        assert_eq!(replayed_files(&outcome), ["f0.arrow", "f1.arrow"]);
+        assert_eq!(
+            replayed_files(&outcome),
+            ["l-000000.arrow", "l-000001.arrow"]
+        );
     }
 
     /// Attribution follows the RECORDED parent chain, not name prefixes: a
@@ -884,12 +939,12 @@ mod per_stream_coverage_tests {
         let outcome = scan_span(vec![
             delta("orders", None),
             delta("itm_4f2a9c1b", Some("orders")),
-            segment("itm_4f2a9c1b", "f0.arrow"),
+            segment("itm_4f2a9c1b", "l-000000.arrow"),
             checkpoint("orders"),
         ]);
         assert_eq!(
             replayed_files(&outcome),
-            ["f0.arrow"],
+            ["l-000000.arrow"],
             "a child segment is covered by its ROOT stream's checkpoint via the parent link"
         );
     }
@@ -911,8 +966,8 @@ mod per_stream_coverage_tests {
     fn a_segment_with_no_recorded_schema_degrades_to_re_extraction() {
         let outcome = scan_span(vec![
             delta("orders", None),
-            segment("orders", "f0.arrow"),
-            segment("ghost", "f1.arrow"),
+            segment("orders", "l-000000.arrow"),
+            segment("ghost", "l-000001.arrow"),
             checkpoint("orders"),
         ]);
         assert!(
@@ -935,11 +990,11 @@ mod per_stream_coverage_tests {
     fn an_idle_checkpoint_beside_snapshot_orphans_recovers_when_its_root_is_recorded() {
         let outcome = scan_span(vec![
             delta("orders", None),
-            segment("orders", "f0.arrow"),
+            segment("orders", "l-000000.arrow"),
             checkpoint("orders"),
             WalRecord::Committed { commit_seq: 1 },
             delta("events", None),
-            segment("events", "f1.arrow"),
+            segment("events", "l-000001.arrow"),
             checkpoint("orders"),
         ]);
         assert_eq!(
@@ -973,11 +1028,11 @@ mod per_stream_coverage_tests {
     fn a_table_with_no_surviving_segments_is_not_ensured_by_replay() {
         let outcome = scan_span(vec![
             delta("orders", None),
-            segment("orders", "f0.arrow"),
+            segment("orders", "l-000000.arrow"),
             checkpoint("orders"),
             WalRecord::Committed { commit_seq: 1 },
             delta_with_mode("events", WriteMode::Replace),
-            segment("events", "f1.arrow"),
+            segment("events", "l-000001.arrow"),
             checkpoint("orders"),
         ]);
         assert_eq!(
@@ -1011,11 +1066,11 @@ mod per_stream_coverage_tests {
         let outcome = scan_span(vec![
             delta("events", None),
             delta("orders", None),
-            segment("events", "f0.arrow"),
-            segment("orders", "f1.arrow"),
+            segment("events", "l-000000.arrow"),
+            segment("orders", "l-000001.arrow"),
             checkpoint("orders"),
         ]);
-        assert_eq!(replayed_files(&outcome), ["f1.arrow"]);
+        assert_eq!(replayed_files(&outcome), ["l-000001.arrow"]);
         assert_eq!(
             ensured_tables(&outcome),
             ["orders"],
@@ -1031,10 +1086,10 @@ mod per_stream_coverage_tests {
         let outcome = scan_span(vec![
             delta("orders", None),
             delta("itm_4f2a9c1b", Some("orders")),
-            segment("itm_4f2a9c1b", "f0.arrow"),
+            segment("itm_4f2a9c1b", "l-000000.arrow"),
             checkpoint("orders"),
         ]);
-        assert_eq!(replayed_files(&outcome), ["f0.arrow"]);
+        assert_eq!(replayed_files(&outcome), ["l-000000.arrow"]);
         assert_eq!(
             ensured_tables(&outcome),
             ["itm_4f2a9c1b", "orders"],
@@ -1052,7 +1107,7 @@ mod per_stream_coverage_tests {
     fn an_orphan_segment_beside_an_idle_streams_checkpoint_recovers() {
         let outcome = scan_span(vec![
             delta("events", None),
-            segment("events", "f0.arrow"),
+            segment("events", "l-000000.arrow"),
             checkpoint("orders"),
         ]);
         assert_eq!(
@@ -1080,15 +1135,15 @@ mod per_stream_coverage_tests {
     fn a_productive_streams_span_survives_an_idle_co_stream_and_snapshot_orphans() {
         let outcome = scan_span(vec![
             delta("a_events", None),
-            segment("a_events", "f0.arrow"),
+            segment("a_events", "l-000000.arrow"),
             delta("c_snap", None),
-            segment("c_snap", "f1.arrow"),
+            segment("c_snap", "l-000001.arrow"),
             checkpoint("a_events"),
             checkpoint("b_idle"),
         ]);
         assert_eq!(
             replayed_files(&outcome),
-            ["f0.arrow"],
+            ["l-000000.arrow"],
             "A's covered segment replays; C's orphan drops; B's idleness is not damage"
         );
         assert_eq!(
@@ -1109,8 +1164,8 @@ mod per_stream_coverage_tests {
         let outcome = scan_span(vec![
             delta("EVENTS", None),
             delta("events", None),
-            segment("EVENTS", "f0.arrow"),
-            segment("events", "f1.arrow"),
+            segment("EVENTS", "l-000000.arrow"),
+            segment("events", "l-000001.arrow"),
             checkpoint("EVENTS"),
         ]);
         assert!(
@@ -1136,7 +1191,7 @@ mod per_stream_coverage_tests {
             dir.path(),
             vec![
                 delta("events", None),
-                segment("events", "f0.arrow"),
+                segment("events", "l-000000.arrow"),
                 checkpoint("events"),
             ],
             IdentRules::default(),
@@ -1167,7 +1222,7 @@ mod per_stream_coverage_tests {
             dir.path(),
             vec![
                 delta("events", None),
-                segment("events", "f0.arrow"),
+                segment("events", "l-000000.arrow"),
                 checkpoint("events"),
             ],
             IdentRules::default(),
@@ -1193,7 +1248,7 @@ mod per_stream_coverage_tests {
             dir.path(),
             vec![
                 delta("events", None),
-                segment("events", "f0.arrow"),
+                segment("events", "l-000000.arrow"),
                 checkpoint("events"),
             ],
             IdentRules::default(),
@@ -1218,13 +1273,316 @@ mod per_stream_coverage_tests {
     fn two_streams_normalizing_to_one_root_degrade() {
         let outcome = scan_span(vec![
             delta("orders", None),
-            segment("orders", "f0.arrow"),
+            segment("orders", "l-000000.arrow"),
             checkpoint("Orders"),
             checkpoint("orders"),
         ]);
         assert!(
             matches!(outcome, ScanOutcome::Damaged(_)),
             "an ambiguous stream→root join must not guess: {outcome:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    //! Per-line manifest integrity (047 M4/M3/L1): the scan must refuse
+    //! content-level corruption and forgery, not just unparseable bytes.
+    //! Every damage arm degrades to re-extraction — slower, never wrong.
+
+    use super::*;
+    use rdlt_core::{Cursor, LoadId, PipelineId, StreamName, TableName, naming::IdentRules};
+
+    /// A replayable one-stream span under a current-version header, written
+    /// through the writer's own line encoding — the healthy baseline the
+    /// tamper tests below corrupt.
+    fn healthy_manifest(dir: &std::path::Path) {
+        let schema = rdlt_core::TableSchema {
+            table: TableName::new("orders"),
+            parent: None,
+            columns: vec![],
+        };
+        let records = vec![
+            WalRecord::Run {
+                format_version: crate::wal::WAL_FORMAT_VERSION,
+                load_id: LoadId::new("l"),
+                pipeline: PipelineId::new("p"),
+            },
+            WalRecord::Delta {
+                delta: rdlt_core::SchemaDelta {
+                    table: schema.table.clone(),
+                    from: None,
+                    to: schema.content_hash(),
+                    changes: vec![],
+                },
+                schema,
+                mode: rdlt_core::WriteMode::Append,
+            },
+            WalRecord::Segment {
+                table: TableName::new("orders"),
+                file: "l-000000.arrow".to_owned(),
+                rows: 2,
+            },
+            WalRecord::Checkpoint {
+                stream: StreamName::new("orders"),
+                cursor: Cursor::new(serde_json::json!(41)),
+            },
+        ];
+        let mut out: Vec<u8> = Vec::new();
+        for record in &records {
+            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("encode line"));
+            out.push(b'\n');
+        }
+        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+        std::fs::write(
+            dir.join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&IdentRules::default()).expect("rules json"),
+        )
+        .expect("write sidecar");
+    }
+
+    fn scan_dir(dir: &std::path::Path) -> ScanOutcome {
+        scan(dir, IdentRules::default(), &PipelineId::new("p"))
+    }
+
+    /// THE GLM M4 SCENARIO: corruption that yields DIFFERENT VALID JSON.
+    /// A flipped digit in a Checkpoint's cursor would commit a resume
+    /// position the source never issued — the next extraction silently
+    /// skips rows, permanently. The per-line checksum makes it loud.
+    #[test]
+    fn a_flipped_cursor_digit_degrades_instead_of_committing_a_forged_position() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        healthy_manifest(dir.path());
+        let path = dir.path().join("manifest.jsonl");
+        let text = std::fs::read_to_string(&path).expect("read manifest");
+        // Flip the cursor value 41 -> 47: still valid JSON, wrong content.
+        let tampered = text.replace("41", "47");
+        assert_ne!(tampered, text, "the tamper must hit the cursor digit");
+        std::fs::write(&path, tampered).expect("write tampered manifest");
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("checksum")),
+            "valid-JSON corruption must degrade naming the checksum, never \
+             commit a cursor the source never issued: {outcome:?}"
+        );
+    }
+
+    /// The baseline: the untampered manifest recovers — the checksum gate
+    /// must not refuse the writer's own lines.
+    #[test]
+    fn the_writers_own_lines_scan_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        healthy_manifest(dir.path());
+        assert!(
+            matches!(scan_dir(dir.path()), ScanOutcome::Recover(_)),
+            "the writer's own encoding must verify"
+        );
+    }
+
+    /// A checksum-mismatched NON-final line is Damaged even though a torn
+    /// FINAL line still tolerates: a complete 64-hex trailer cannot come
+    /// from a tear, so a mismatch is corruption wherever it sits.
+    #[test]
+    fn a_torn_final_line_still_tolerates_while_a_mismatched_one_degrades() {
+        // Torn tail: cut the last line mid-bytes — truncated, span survives.
+        let dir = tempfile::tempdir().expect("tempdir");
+        healthy_manifest(dir.path());
+        let path = dir.path().join("manifest.jsonl");
+        let text = std::fs::read_to_string(&path).expect("read manifest");
+        let torn: String = text[..text.len() - 20].to_owned();
+        std::fs::write(&path, torn).expect("write torn manifest");
+        assert!(
+            matches!(scan_dir(dir.path()), ScanOutcome::Discard),
+            "a torn FINAL line truncates (the checkpoint is dropped, and \
+             with it the span's only cover — Discard, not Damaged)"
+        );
+
+        // Mismatch on the final line: full trailer, wrong digest — Damaged.
+        let dir = tempfile::tempdir().expect("tempdir");
+        healthy_manifest(dir.path());
+        let path = dir.path().join("manifest.jsonl");
+        let text = std::fs::read_to_string(&path).expect("read manifest");
+        let flipped = text.replace("41", "47");
+        std::fs::write(&path, flipped).expect("write mismatched manifest");
+        assert!(
+            matches!(scan_dir(dir.path()), ScanOutcome::Damaged(_)),
+            "a complete trailer that does not match its bytes is corruption \
+             even on the final line"
+        );
+    }
+
+    /// THE v2 DEGRADE PIN (the v1→v2 precedent, re-run for v2→v3): a
+    /// hand-built v2 manifest — plain JSON lines, no checksum trailer —
+    /// refuses as `Unsupported` BY SHAPE, never `Damaged` and never
+    /// `Recover`. The caller clears it and re-extracts from cursors.
+    #[test]
+    fn a_surviving_v2_manifest_refuses_as_unsupported_and_never_replays() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Verbatim v2 lines, as a v2 writer left them: no trailers.
+        std::fs::write(
+            dir.path().join("manifest.jsonl"),
+            concat!(
+                "{\"rec\":\"run\",\"format_version\":2,\"load_id\":\"l\",\"pipeline\":\"p\"}\n",
+                "{\"rec\":\"segment\",\"table\":\"orders\",\"file\":\"l-000000.arrow\",\"rows\":2}\n",
+                "{\"rec\":\"checkpoint\",\"stream\":\"orders\",\"cursor\":41}\n",
+            ),
+        )
+        .expect("write v2 manifest");
+        std::fs::write(
+            dir.path().join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&IdentRules::default()).expect("rules json"),
+        )
+        .expect("write sidecar");
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(
+                outcome,
+                ScanOutcome::Unsupported {
+                    found: 2,
+                    supported: 3
+                }
+            ),
+            "a v2 manifest degrades to cursor re-extraction by VERSION, \
+             distinguishable by shape from corruption: {outcome:?}"
+        );
+    }
+
+    /// A trailer-less line claiming the CURRENT version gets no such
+    /// tolerance: v3 writers always write trailers, so a stripped
+    /// current-version Run header is a forgery or corruption — a torn
+    /// FINAL header truncates, a mid-manifest one is Damaged. Accepting
+    /// it would let an attacker bypass the checksum by omission.
+    #[test]
+    fn an_untrailered_current_version_header_is_never_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        healthy_manifest(dir.path());
+        let path = dir.path().join("manifest.jsonl");
+        let text = std::fs::read_to_string(&path).expect("read manifest");
+        let mut lines: Vec<&str> = text.lines().collect();
+        // Strip the Run header's trailer, keep the rest verbatim.
+        let header = lines[0];
+        let stripped = &header[..header.rfind('|').expect("trailer separator")];
+        lines[0] = stripped;
+        std::fs::write(&path, lines.join("\n") + "\n").expect("write stripped manifest");
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(_)),
+            "an unverified current-version line mid-manifest must refuse: {outcome:?}"
+        );
+    }
+
+    /// M3: a manifest naming a path-shaped segment refuses as Damaged —
+    /// the name never reaches `dir.join`, so nothing outside the WAL
+    /// directory is ever opened.
+    #[test]
+    fn a_segment_name_with_path_punctuation_degrades_before_any_open() {
+        for evil in [
+            "../../etc/hostname",
+            "/etc/hostname",
+            "..\\..\\x.arrow",
+            "l-..0000.arrow",
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            healthy_manifest(dir.path());
+            let path = dir.path().join("manifest.jsonl");
+            let text = std::fs::read_to_string(&path).expect("read manifest");
+            // Rebuild the segment line around the evil name, re-checksummed —
+            // the forgery under test is the NAME, not the trailer.
+            let rebuilt: Vec<Vec<u8>> = text
+                .lines()
+                .map(|line| {
+                    if line.contains("l-000000.arrow") {
+                        crate::wal::record::encode_line(&WalRecord::Segment {
+                            table: TableName::new("orders"),
+                            file: evil.to_owned(),
+                            rows: 2,
+                        })
+                        .expect("encode line")
+                    } else {
+                        line.as_bytes().to_vec()
+                    }
+                })
+                .collect();
+            let mut out = Vec::new();
+            for line in rebuilt {
+                out.extend_from_slice(&line);
+                out.push(b'\n');
+            }
+            std::fs::write(&path, out).expect("write forged manifest");
+            let outcome = scan_dir(dir.path());
+            assert!(
+                matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("segment")),
+                "segment name {evil:?} must refuse as Damaged: {outcome:?}"
+            );
+        }
+    }
+
+    /// M3's shape half: even without path punctuation, a name the writer
+    /// could not have produced (wrong load prefix, short sequence) refuses.
+    /// The writer names segments `{load_id}-{seq:06}.arrow` (writer.rs
+    /// `record`), so anything else did not come from a writer.
+    #[test]
+    fn a_segment_name_off_the_writers_shape_degrades() {
+        for forged in ["other-000000.arrow", "l-0000.arrow", "l-00000a.arrow"] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            healthy_manifest(dir.path());
+            let path = dir.path().join("manifest.jsonl");
+            let text = std::fs::read_to_string(&path).expect("read manifest");
+            let rebuilt: Vec<Vec<u8>> = text
+                .lines()
+                .map(|line| {
+                    if line.contains("l-000000.arrow") {
+                        crate::wal::record::encode_line(&WalRecord::Segment {
+                            table: TableName::new("orders"),
+                            file: forged.to_owned(),
+                            rows: 2,
+                        })
+                        .expect("encode line")
+                    } else {
+                        line.as_bytes().to_vec()
+                    }
+                })
+                .collect();
+            let mut out = Vec::new();
+            for line in rebuilt {
+                out.extend_from_slice(&line);
+                out.push(b'\n');
+            }
+            std::fs::write(&path, out).expect("write forged manifest");
+            let outcome = scan_dir(dir.path());
+            assert!(
+                matches!(outcome, ScanOutcome::Damaged(_)),
+                "segment name {forged:?} is not the writer's shape and must refuse: {outcome:?}"
+            );
+        }
+    }
+
+    /// L1: a forged `Committed {{ u64::MAX }}` leaves no next commit
+    /// sequence. No writer emits it (the first commit is 1), so the scan
+    /// degrades instead of overflowing — debug builds used to panic here,
+    /// release builds wrapped the recovery commit to sequence 0.
+    #[test]
+    fn a_forged_max_committed_seq_degrades_instead_of_overflowing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        healthy_manifest(dir.path());
+        let path = dir.path().join("manifest.jsonl");
+        let mut text = std::fs::read_to_string(&path).expect("read manifest");
+        // Splice a forged Committed line (checksummed — the forgery under
+        // test is the VALUE) between the header and the replay span.
+        let forged = crate::wal::record::encode_line(&WalRecord::Committed {
+            commit_seq: u64::MAX,
+        })
+        .expect("encode line");
+        let header_end = text.find('\n').expect("header line") + 1;
+        let mut spliced = text[..header_end].to_owned();
+        spliced.push_str(&String::from_utf8(forged).expect("utf8 line"));
+        spliced.push('\n');
+        spliced.push_str(&text.split_off(header_end));
+        std::fs::write(&path, spliced).expect("write forged manifest");
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("sequence")),
+            "a committed sequence with no successor must degrade, never wrap: {outcome:?}"
         );
     }
 }
@@ -1267,10 +1625,10 @@ mod starvation_tests {
                 cursor: rdlt_core::Cursor::new(format!("c{seq}")),
             });
         }
-        let mut out = String::new();
+        let mut out: Vec<u8> = Vec::new();
         for record in &records {
-            out.push_str(&serde_json::to_string(record).expect("record json"));
-            out.push('\n');
+            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("record json"));
+            out.push(b'\n');
         }
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
         std::fs::write(

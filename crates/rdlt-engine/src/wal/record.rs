@@ -10,15 +10,19 @@ use serde::{Deserialize, Serialize};
 /// container together — they are one format, because a manifest line is only
 /// meaningful if the segment it names can be decoded.
 ///
-/// v1: parquet segments. v2: Arrow IPC file segments (`.arrow`).
+/// v1: parquet segments. v2: Arrow IPC file segments (`.arrow`). v3: the same
+/// records and segments, with every manifest line carrying a blake3 checksum
+/// trailer ([`encode_line`]) — v2's damage detection was content-blind, so
+/// corruption that yielded DIFFERENT VALID JSON (a flipped cursor digit, a
+/// forged committed sequence) was accepted silently.
 ///
 /// A manifest at any other version is REFUSED, in both directions. Refusing a
 /// newer one is obvious; refusing an older one matters just as much here,
-/// because a v1 manifest names parquet segments this build cannot read — and
-/// discovering that at segment-open time would report "unreadable segment"
-/// where the truth is "different format". Recovery degrades to source
-/// re-extraction either way: slower, never wrong.
-pub(crate) const WAL_FORMAT_VERSION: u32 = 2;
+/// because an older manifest's lines carry guarantees this build no longer
+/// grants (v1: parquet segments this build cannot read; v2: no line
+/// integrity). Recovery degrades to source re-extraction either way: slower,
+/// never wrong.
+pub(crate) const WAL_FORMAT_VERSION: u32 = 3;
 
 /// The serde fallback for a manifest whose `Run` header predates the versioned
 /// header field. Pinned to `1` FOREVER — such a manifest is by definition a v1
@@ -60,6 +64,113 @@ pub(crate) enum WalRecord {
     },
 }
 
+/// The checksum trailer's length: `|` plus blake3's 64 hex characters.
+const TRAILER_LEN: usize = 1 + 64;
+
+/// Encode one v3 manifest line: the record's JSON, then `|`, then the
+/// blake3 hex digest of exactly those JSON bytes. The digest is what makes
+/// damage detection content-aware: JSON parseability and the segment
+/// cross-checks catch structural damage, but corruption that yields
+/// DIFFERENT VALID JSON — a flipped digit in a Checkpoint cursor, a forged
+/// `Committed` sequence — reads back clean without it. `|` never needs
+/// escaping because the split is positional from the line's END
+/// ([`decode_line`]), not a search.
+pub(crate) fn encode_line(record: &WalRecord) -> Result<Vec<u8>, serde_json::Error> {
+    let mut line = serde_json::to_vec(record)?;
+    let digest = blake3::hash(&line);
+    line.push(b'|');
+    line.extend_from_slice(digest.to_hex().as_bytes());
+    Ok(line)
+}
+
+/// One decoded v3 manifest line, classified for the scan.
+pub(crate) enum ManifestLine {
+    /// Checksum verified, record decoded — the only arm a replay span may
+    /// be built from.
+    Record(WalRecord),
+    /// Provably NOT a torn tail (an append's tear only ever shortens the
+    /// line, so a complete 64-hex trailer survives no tear) yet wrong:
+    /// a mismatched digest, or a verified line this build cannot decode.
+    /// Damaged wherever it sits, the final line included.
+    Corrupt(String),
+    /// No complete checksum trailer. On the FINAL line this is the torn
+    /// tail a crash mid-append leaves — truncated, as always. Anywhere
+    /// else it is corruption, EXCEPT that the whole-line decode attempt
+    /// rides along so the scan can recognize an OLDER format's Run header
+    /// (older writers never wrote trailers) and refuse it as
+    /// `Unsupported` by version rather than misreporting corruption.
+    Untrailered(Option<WalRecord>),
+}
+
+/// Classify one manifest line. Byte-positional from the end — a cursor
+/// string is free to contain `|` (and multi-byte characters) because the
+/// trailer is fixed-width, never searched for.
+pub(crate) fn decode_line(line: &str) -> ManifestLine {
+    let bytes = line.as_bytes();
+    if bytes.len() > TRAILER_LEN {
+        let (json, trailer) = bytes.split_at(bytes.len() - TRAILER_LEN);
+        if trailer[0] == b'|'
+            && trailer[1..]
+                .iter()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            if blake3::hash(json).to_hex().as_bytes() != &trailer[1..] {
+                return ManifestLine::Corrupt(
+                    "line checksum mismatch — the recorded digest does not match the \
+                     line's bytes"
+                        .to_owned(),
+                );
+            }
+            return match serde_json::from_slice::<WalRecord>(json) {
+                Ok(record) => ManifestLine::Record(record),
+                // The digest matched, so these are the writer's bytes — a
+                // record this build cannot decode, not a tear.
+                Err(e) => ManifestLine::Corrupt(format!(
+                    "a checksum-verified line does not decode as a record: {e}"
+                )),
+            };
+        }
+    }
+    ManifestLine::Untrailered(serde_json::from_str(line).ok())
+}
+
+/// The one segment-name format, stated once for the writer and its
+/// read-side gate: `{load_id}-{seq:06}.arrow`.
+pub(crate) fn segment_file_name(load_id: &LoadId, seq: u64) -> String {
+    format!("{load_id}-{seq:06}.arrow")
+}
+
+/// The read-side gate on a manifest-supplied segment name, applied BEFORE
+/// any `dir.join`: `Path::join` replaces the base entirely when handed an
+/// absolute component, and `../` escapes it, so a forged manifest could
+/// otherwise point replay at any readable file. The check is derived from
+/// what the writer actually produces — [`segment_file_name`] under the
+/// run's own load id (minted hex-and-dash in `runtime::run::new_load_id`;
+/// the manifest's `Run` header carries it) — so path punctuation of any
+/// kind, a foreign load prefix, or a malformed sequence all mean the line
+/// did not come from a writer. `{seq:06}` is a MINIMUM width: six or more
+/// ASCII digits.
+pub(crate) fn verify_segment_file(load_id: &LoadId, file: &str) -> Result<(), String> {
+    if file.contains('/') || file.contains('\\') || file.contains("..") {
+        return Err(format!(
+            "segment name {file:?} carries path punctuation — the writer names \
+             segments `{{load_id}}-{{seq:06}}.arrow` inside the WAL directory \
+             itself, so this manifest was not written by one"
+        ));
+    }
+    let seq = file
+        .strip_prefix(load_id.as_str())
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| rest.strip_suffix(".arrow"));
+    match seq {
+        Some(seq) if seq.len() >= 6 && seq.bytes().all(|b| b.is_ascii_digit()) => Ok(()),
+        _ => Err(format!(
+            "segment name {file:?} does not match this run's \
+             `{load_id:?}-{{seq:06}}.arrow` writer shape"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +191,73 @@ mod tests {
                 "absent version means v1, never the current version"
             ),
             other => panic!("expected a Run header, got {other:?}"),
+        }
+    }
+
+    /// The line envelope round-trips through its own decode, and the digest
+    /// binds the CONTENT: any byte change lands in the Corrupt arm.
+    #[test]
+    fn a_line_round_trips_and_any_byte_flip_is_corrupt() {
+        let record = WalRecord::Checkpoint {
+            stream: StreamName::new("s"),
+            cursor: Cursor::new(serde_json::json!("wm|41")), // `|` in content is legal
+        };
+        let line = String::from_utf8(encode_line(&record).expect("encode")).expect("utf8");
+        assert!(
+            matches!(
+                decode_line(&line),
+                ManifestLine::Record(WalRecord::Checkpoint { .. })
+            ),
+            "the writer's own line must verify and decode"
+        );
+        let flipped = line.replace("41", "47");
+        assert_ne!(flipped, line);
+        assert!(
+            matches!(decode_line(&flipped), ManifestLine::Corrupt(_)),
+            "different valid JSON under a stale digest is corruption"
+        );
+    }
+
+    /// A tear only ever SHORTENS a line, so every proper prefix of an
+    /// encoded line must classify as Untrailered (the torn-tail arm) —
+    /// never as a verified record and never as a false Corrupt.
+    #[test]
+    fn every_torn_prefix_classifies_as_untrailered() {
+        let record = WalRecord::Committed { commit_seq: 7 };
+        let line = String::from_utf8(encode_line(&record).expect("encode")).expect("utf8");
+        for cut in 0..line.len() {
+            assert!(
+                matches!(decode_line(&line[..cut]), ManifestLine::Untrailered(_)),
+                "a tear at byte {cut} must read as a torn tail"
+            );
+        }
+    }
+
+    /// The segment-name gate accepts exactly what [`segment_file_name`]
+    /// produces and refuses everything else — the round trip is the proof
+    /// the two halves cannot drift.
+    #[test]
+    fn the_segment_gate_is_the_writers_inverse() {
+        let load = LoadId::new("19fb4c7c381-1d0ae5-0");
+        for seq in [0, 42, 999_999, 1_000_000] {
+            verify_segment_file(&load, &segment_file_name(&load, seq))
+                .expect("the writer's own name must verify");
+        }
+        for evil in [
+            "../../etc/hostname",
+            "/etc/hostname",
+            "..\\x.arrow",
+            "19fb4c7c381-1d0ae5-0-..0000.arrow",
+            "other-000000.arrow",
+            "19fb4c7c381-1d0ae5-0-0000.arrow",
+            "19fb4c7c381-1d0ae5-0-00000a.arrow",
+            "19fb4c7c381-1d0ae5-0-000000.parquet",
+            "",
+        ] {
+            assert!(
+                verify_segment_file(&load, evil).is_err(),
+                "{evil:?} is not the writer's shape and must refuse"
+            );
         }
     }
 }
