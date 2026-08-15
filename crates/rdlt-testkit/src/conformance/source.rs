@@ -50,11 +50,24 @@ const CHANNEL_BYTE_BUDGET: usize = 16 << 20;
 /// values; raw JSON is conservatively expansion-weighted before parse.
 const RETENTION_CEILING_BYTES: usize = 64 << 20;
 
-/// Compact JSON scalar arrays expand by roughly an order of magnitude
-/// when materialized as `serde_json::Value`s. Debit a deliberately
+/// Compact JSON expands by well over an order of magnitude when
+/// materialized as `serde_json::Value`s. Debit a deliberately
 /// conservative factor before parsing so the ceiling also bounds the
 /// parser's transient allocation, not only the retained result.
-const RAW_JSON_RETENTION_FACTOR: usize = 32;
+///
+/// The arithmetic behind 64, against a glibc-class allocator: a dense
+/// scalar array (`[0,0,0,…]`) costs ~2 wire bytes per element and
+/// materializes one 32-byte `Value` per element in the root `Vec` —
+/// and while that `Vec` doubles, the old and new allocations coexist,
+/// so the transient peak reaches ~3 slots' worth ≈ 96 bytes per
+/// element ≈ 48× the wire size. Chains of 1-element arrays
+/// (`[[[…]]]`, bounded by serde_json's 128-level recursion limit) cost
+/// ~2 wire bytes per level against a 32-byte `Value` slot plus its
+/// own 1-element `Vec` heap block, which the allocator rounds with
+/// header overhead to ~48 bytes — ~40× all told. 64 covers both with
+/// headroom, and over-counting is the safe direction here: it refuses
+/// an oversized fixture early, where an under-count OOMs the harness.
+const RAW_JSON_RETENTION_FACTOR: usize = 64;
 
 /// What one full read produced: row groups separated by checkpoints.
 #[derive(Debug, Default)]
@@ -65,10 +78,15 @@ struct Observed {
 }
 
 impl Observed {
-    fn all_rows(&self) -> Vec<Value> {
+    /// Every observed row, BY REFERENCE: the S1 fold compares reads
+    /// against each other, and cloning whole reads to do it held ~3-4×
+    /// the retention ceiling in peak (full + resumed + a materialized
+    /// expectation + this clone). Reference vectors keep the peak at
+    /// the two reads' own retention plus pointer-sized bookkeeping.
+    fn all_rows(&self) -> Vec<&Value> {
         self.groups
             .iter()
-            .flat_map(|(rows, _)| rows.iter().cloned())
+            .flat_map(|(rows, _)| rows.iter())
             .collect()
     }
 
@@ -76,11 +94,12 @@ impl Observed {
         self.groups.iter().filter_map(|(_, c)| c.clone()).collect()
     }
 
-    /// Rows covered by (pushed before) checkpoint `cursor`.
-    fn rows_covered_by(&self, cursor: &Cursor) -> Vec<Value> {
+    /// Rows covered by (pushed before) checkpoint `cursor` — by
+    /// reference, like [`Observed::all_rows`].
+    fn rows_covered_by(&self, cursor: &Cursor) -> Vec<&Value> {
         let mut covered = Vec::new();
         for (rows, checkpoint) in &self.groups {
-            covered.extend(rows.iter().cloned());
+            covered.extend(rows.iter());
             if checkpoint.as_ref() == Some(cursor) {
                 return covered;
             }
@@ -89,7 +108,44 @@ impl Observed {
     }
 }
 
+/// The overall bound on ONE conformance read: a source that parks
+/// inside `read()` without ever pushing would otherwise hang a direct
+/// harness caller forever — the 5 s post-drain join bound below only
+/// covers a source that already dropped its output handle. Generous on
+/// purpose (a conformance fixture reads in milliseconds), and
+/// deliberately ABOVE the certifier's own 30 s per-clause bound: when
+/// the harness runs under the certifier, that outer bound must keep
+/// firing first with its own framing.
+const READ_ALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
 async fn read_all<S: Source>(
+    source: &S,
+    spec: &StreamSpec,
+    since: Option<Cursor>,
+) -> Result<Observed, String> {
+    read_all_within(source, spec, since, READ_ALL_DEADLINE).await
+}
+
+/// [`read_all`] with the deadline as a parameter — the seam that lets
+/// the deadline's own pin run in test time rather than sixty seconds.
+async fn read_all_within<S: Source>(
+    source: &S,
+    spec: &StreamSpec,
+    since: Option<Cursor>,
+    deadline: std::time::Duration,
+) -> Result<Observed, String> {
+    match tokio::time::timeout(deadline, read_all_unbounded(source, spec, since)).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "source did not complete read() within the {}s conformance deadline — the whole \
+             read phase is bounded so a source parked in read() fails by name instead of \
+             hanging the harness",
+            deadline.as_secs()
+        )),
+    }
+}
+
+async fn read_all_unbounded<S: Source>(
     source: &S,
     spec: &StreamSpec,
     since: Option<Cursor>,
@@ -273,8 +329,7 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
                         }
                     };
                     let mut expected = full.rows_covered_by(cursor);
-                    let suffix = resumed.all_rows();
-                    expected.extend(suffix.iter().cloned());
+                    expected.extend(resumed.all_rows());
                     if expected != full.all_rows() {
                         failures.push(fail(
                             "S1",
@@ -353,12 +408,56 @@ mod retention_tests {
     #[test]
     fn compact_json_is_refused_before_a_large_value_graph_can_materialize() {
         let largest_preparse_payload = RETENTION_CEILING_BYTES / RAW_JSON_RETENTION_FACTOR;
-        assert_eq!(largest_preparse_payload, 2 << 20);
+        assert_eq!(largest_preparse_payload, 1 << 20);
         assert!(
             largest_preparse_payload
                 .saturating_add(1)
                 .saturating_mul(RAW_JSON_RETENTION_FACTOR)
                 > RETENTION_CEILING_BYTES
+        );
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use rdlt_connector::{ConnectorSpec, ReadRequest, SourceError};
+
+    use super::*;
+
+    /// A source that parks inside `read()` forever without pushing or
+    /// dropping its handle — the shape the overall deadline exists for:
+    /// the 5 s post-drain bound never fires because the channel never
+    /// drains.
+    struct ParkedSource;
+
+    #[async_trait::async_trait]
+    impl Source for ParkedSource {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("parked", "0.0.0")
+        }
+
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![StreamSpec::new("parked")])
+        }
+
+        async fn read(&self, _req: ReadRequest) -> Result<(), SourceError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_source_parked_in_read_fails_the_deadline_by_name() {
+        let failed = read_all_within(
+            &ParkedSource,
+            &StreamSpec::new("parked"),
+            None,
+            std::time::Duration::from_millis(50),
+        )
+        .await
+        .expect_err("a parked read must fail the deadline, not hang");
+        assert!(
+            failed.contains("did not complete read() within"),
+            "the failure names the read phase: {failed}"
         );
     }
 }
