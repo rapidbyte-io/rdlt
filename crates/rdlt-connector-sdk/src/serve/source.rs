@@ -462,6 +462,17 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         };
         let since = match &request.since_cursor_json {
             None => None,
+            // The size gate runs BEFORE the parse, like the handshake's
+            // config gate: a compact document materializes as an
+            // untyped `Value` at many times its wire size, and this one
+            // is RETAINED inside the `Cursor` for the read's lifetime —
+            // see `common::MAX_DOCUMENT_BYTES`.
+            Some(bytes) if bytes.len() > common::MAX_DOCUMENT_BYTES => {
+                return Ok(error_stream(common::oversized_document(
+                    "since_cursor_json",
+                    bytes.len(),
+                )));
+            }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
                 Ok(value) => Some(rdlt_connector::Cursor::new(value)),
                 Err(error) => {
