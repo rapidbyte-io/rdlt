@@ -78,6 +78,7 @@ pub mod capabilities;
 pub mod channel;
 pub mod destination;
 pub mod error;
+pub mod ipc;
 pub mod parquet;
 pub mod pem;
 pub mod secret;
@@ -132,3 +133,16 @@ pub use stream::StreamSpec;
 /// high-water mark, an offset, a resume token) rather than embedding
 /// the data.
 pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The most a persisted CURSOR may weigh, in bytes — the effective
+/// cursor contract (5M1/5L3): TIGHTER than [`MAX_DOCUMENT_BYTES`],
+/// because a cursor is not only parsed and sent but recorded in the
+/// engine's WAL, whose per-line metadata cap is sized to carry one
+/// maximal cursor line. A cursor over this bound is refused typed at
+/// every seat — the client's inbound frame decode and its pre-send
+/// check, the serve gate's `since_cursor_json` refusal, and the WAL's
+/// write-time line cap — so an over-scale cursor fails LOUDLY at first
+/// contact (the connector must summarize: a high-water mark, an offset,
+/// a resume token) rather than crash-looping a resume against a line
+/// its own recovery could never scan back.
+pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;

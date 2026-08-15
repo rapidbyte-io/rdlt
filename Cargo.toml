@@ -78,6 +78,7 @@ arrow-schema = "58.3"
 arrow-array = "58.3"
 arrow-buffer = "58.3"
 arrow-data = "58.3"
+arrow-ipc = "58.3"
 
 # `process` (039): rdlt-runtime spawns connector binaries and supervises
 # them through its lifecycle guard.

@@ -100,7 +100,12 @@ pub(crate) async fn validate(spec_path: PathBuf, verbosity: Verbosity) -> Result
     let (spec, pipeline_name) = load_spec(&spec_path)?;
     let _pipeline = pipeline_spec::build_pipeline(&spec, spec_base(&spec_path)).await?;
     if verbosity != Verbosity::Quiet {
-        crate::ui::stderr_line(&format!("ok: pipeline {pipeline_name} is valid"));
+        // The pipeline name is document text — render it through the
+        // identifier escape like every other name seat (6.9).
+        crate::ui::stderr_line(&format!(
+            "ok: pipeline {} is valid",
+            crate::ui::sanitize_identifier(&pipeline_name)
+        ));
     }
     Ok(())
 }

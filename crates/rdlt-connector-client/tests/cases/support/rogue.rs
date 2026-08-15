@@ -228,6 +228,9 @@ pub enum SessionScript {
 #[derive(Debug)]
 pub struct RogueDestination {
     script: SessionScript,
+    /// Overrides the handshake's capabilities sheet when `Some` — the
+    /// 5M6 rogue declares an out-of-range `ident_rules.max_len`.
+    capabilities: Option<DestinationCapabilities>,
 }
 
 #[tonic::async_trait]
@@ -243,7 +246,7 @@ impl Connector for RogueDestination {
                 connector_version: "0.0.0".to_string(),
                 spec_json: serde_json::to_vec(&spec)
                     .expect("a ConnectorSpec serializes to JSON infallibly"),
-                capabilities_json: serde_json::to_vec(&DestinationCapabilities::default())
+                capabilities_json: serde_json::to_vec(&self.capabilities.unwrap_or_default())
                     .expect("a capabilities sheet serializes to JSON infallibly"),
                 state_format_versions: Default::default(),
             })),
@@ -447,9 +450,21 @@ pub fn serve_mute(path: &Path, seat: MuteSeat) -> JoinHandle<()> {
 /// Bind the rogue destination at `path` and serve until the returned
 /// task is dropped — [`serve`]'s destination twin.
 pub fn serve_destination(path: &Path, script: SessionScript) -> JoinHandle<()> {
+    serve_destination_with_capabilities(path, script, None)
+}
+
+/// [`serve_destination`] with a caller-declared capabilities sheet.
+pub fn serve_destination_with_capabilities(
+    path: &Path,
+    script: SessionScript,
+    capabilities: Option<DestinationCapabilities>,
+) -> JoinHandle<()> {
     let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");
     let incoming = UnixListenerStream::new(listener);
-    let rogue = Arc::new(RogueDestination { script });
+    let rogue = Arc::new(RogueDestination {
+        script,
+        capabilities,
+    });
     let serving = tonic::transport::Server::builder()
         .add_service(ConnectorServer::from_arc(Arc::clone(&rogue)))
         .add_service(DestinationServiceServer::from_arc(rogue))

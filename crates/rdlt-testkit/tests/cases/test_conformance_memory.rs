@@ -22,6 +22,26 @@ async fn memory_source_is_conformant() {
     assert_conformant(verify_source(&source).await.expecting_no_skips());
 }
 
+/// 5M7's honest side: a read carrying several MiB of ordinary JSON —
+/// past the flat factor's ~256 KiB false-negative line, nowhere near the
+/// 64 MiB ACTUAL-retention ceiling — must certify. (The flood negative
+/// beside this one proves the ceiling still bites.)
+#[tokio::test]
+async fn an_honest_multi_mib_read_is_conformant() {
+    let row = || json!({"filler": "x".repeat(1 << 16), "n": 1});
+    let source = MemorySource::new(vec![MemoryStream::new(
+        rdlt_connector::StreamSpec::new("events"),
+        (1..=8)
+            .map(|i| {
+                // 8 rows × 64 KiB per batch ≈ 512 KiB of wire per push,
+                // ~4 MiB retained across the read.
+                MemoryBatch::new((0..8).map(|_| row()).collect()).with_checkpoint(i)
+            })
+            .collect(),
+    )]);
+    assert_conformant(verify_source(&source).await.expecting_no_skips());
+}
+
 struct MemoryProbe(MemoryDestination);
 
 #[async_trait]

@@ -311,6 +311,7 @@ async fn run_once(
             records_budget: records_budget.clone(),
             load_id: load_id.clone(),
             policy: config.schema_policy.clone(),
+            max_batch_cells: config.max_batch_cells,
         };
         stream_tasks.spawn(tracing::Instrument::instrument(
             stream_task(

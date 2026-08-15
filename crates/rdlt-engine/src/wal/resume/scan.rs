@@ -14,15 +14,20 @@ use super::blocking::off_runtime;
 
 use crate::wal::record::MAX_MANIFEST_LINE_BYTES;
 
-/// The scan's whole-file budget (047 wave 5, 4M1): the per-line cap bounds
-/// ONE line, but the fold accumulates every line into memory, so a hostile
-/// multi-gigabyte manifest of small legal lines is the same unbounded
-/// allocation one size up. 256 MiB of manifest text is ~1.7 M checkpoint
-/// lines — orders of magnitude past any honest span (a manifest is cleared
-/// per successful run, so it only ever holds one run's span plus vouched
-/// residue) — and past it the scan degrades to re-extraction like every
-/// other damage arm.
-const MAX_MANIFEST_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+/// The scan's whole-file budget (047 wave 5, 4M1; re-sized in wave 6, 5L2):
+/// the per-line cap bounds ONE line, but the fold accumulates every line
+/// into memory, so a hostile multi-gigabyte manifest of small legal lines
+/// is the same unbounded allocation one size up. The honest arithmetic,
+/// stated so the ceiling stays honest about it: a manifest is cleared per
+/// successful run, so it holds ONE run's span plus vouched residue — and
+/// at the stream cap a busy run writes ~1024 checkpoint lines/sec ≈
+/// ~150 KB/s, so 1 GiB is ~2 hours of never-committing multi-stream run.
+/// A longer run's crash recovery then degrades to cursor re-extraction —
+/// the safe direction, but a real availability cost for exactly the big
+/// runs; the budget exists so a corrupted WAL cannot make recovery
+/// materialize (and read) unboundedly, and 1 GiB is where "honest span"
+/// and "bounded recovery work" meet.
+const MAX_MANIFEST_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// The rules sidecar is the writer's `IdentRules` verbatim — a ~100-byte
 /// JSON document. It is read whole, so it gets a small cap of its own
@@ -139,6 +144,19 @@ pub(crate) async fn scan_off_runtime(
 }
 
 fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId) -> ScanOutcome {
+    scan_with_budget(dir, rules, pipeline, MAX_MANIFEST_TOTAL_BYTES)
+}
+
+/// [`scan`] with the whole-file budget as a parameter — the seam that lets
+/// the budget's own pin run against a small fixture (the constant and the
+/// seam together are the defense; see the 047 L5 retention-ceiling
+/// precedent in the testkit).
+fn scan_with_budget(
+    dir: &Path,
+    rules: rdlt_core::naming::IdentRules,
+    pipeline: &PipelineId,
+    total_budget: u64,
+) -> ScanOutcome {
     // 4L4: the read side matched the write side's per-FILE gates, but not
     // its directory gate — `ensure_owned_dir` refuses a symlinked `wal`
     // leaf while the scan here would happily follow one, reading a foreign
@@ -191,9 +209,9 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
         // The whole-file budget (4M1): the per-line cap bounds one line;
         // this bounds their SUM, which is what the fold below accumulates.
         total_bytes += line.len() as u64 + 1;
-        if total_bytes > MAX_MANIFEST_TOTAL_BYTES {
+        if total_bytes > total_budget {
             damaged = Some(format!(
-                "manifest exceeds the {MAX_MANIFEST_TOTAL_BYTES}-byte total budget — the \
+                "manifest exceeds the {total_budget}-byte total budget — the \
                  per-line cap bounds one line, but recovery accumulates every line"
             ));
             break;
@@ -442,6 +460,15 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<Str
         }
     };
     match serde_json::from_str::<rdlt_core::naming::IdentRules>(&text) {
+        // 5M6: a recorded rules value must be SANE as well as matching —
+        // an out-of-range `max_len` in the sidecar is not a state this
+        // engine's writer produces (its rules were validated at plan
+        // time), so refuse the span rather than feed it to the namer.
+        Ok(recorded) if recorded.validate().is_err() => Some(format!(
+            "the `{}` sidecar carries out-of-range identifier-normalization rules — no \
+             validated writer produces them, so segment attribution cannot be proven",
+            crate::wal::RULES_SIDECAR
+        )),
         Ok(recorded) if recorded == rules => None,
         Ok(recorded) => Some(format!(
             "the WAL was written under identifier-normalization rules {recorded:?} but this \
@@ -701,6 +728,27 @@ mod tests {
         .expect("write sidecar");
     }
 
+    /// The cursor half of the same face (5L3): a Checkpoint line carrying a
+    /// maximal-contract cursor (4 MiB, `rdlt_connector::MAX_CURSOR_BYTES`)
+    /// plus its envelope and trailer must fit the cap — the cursor contract
+    /// is only honest if the WAL can actually record one.
+    #[test]
+    fn the_line_cap_admits_a_maximal_cursor_line() {
+        let cursor = rdlt_core::Cursor::new(serde_json::Value::String(
+            "x".repeat(rdlt_connector::MAX_CURSOR_BYTES as usize),
+        ));
+        let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
+            stream: rdlt_core::StreamName::new("s"),
+            cursor,
+        })
+        .expect("encode");
+        assert!(
+            line.len() <= MAX_MANIFEST_LINE_BYTES,
+            "a maximal cursor line ({} bytes) must fit the {MAX_MANIFEST_LINE_BYTES}-byte cap",
+            line.len()
+        );
+    }
+
     /// The line cap's other face: it must sit ABOVE anything this engine's
     /// own writer can append, or a run's own WAL becomes unscannable. This
     /// builds the largest Delta the shred-time bounds admit — 4,096 columns
@@ -786,15 +834,20 @@ mod tests {
     }
 
     /// 4M1's whole-file half: the per-line cap bounds ONE line; this pins
-    /// the SUM. Enough individually-legal lines to pass the total budget
-    /// must degrade, not accumulate.
+    /// the SUM. Enough individually-legal lines to pass the budget must
+    /// degrade, not accumulate. Driven through the budget SEAM with a
+    /// small budget so the pin costs kilobytes rather than the production
+    /// gibibyte — whose value is asserted alongside (the seam and the
+    /// constant together are the whole defense).
     #[test]
     fn a_manifest_past_the_total_budget_degrades() {
+        assert_eq!(
+            MAX_MANIFEST_TOTAL_BYTES,
+            1024 * 1024 * 1024,
+            "the production whole-file budget (see its doc for the honest arithmetic)"
+        );
         let dir = tempfile::tempdir().expect("tempdir");
-        // Individually-legal lines of ~1 MiB each: 257 of them pass the
-        // 256 MiB total budget. (Written through the real encoder so each
-        // line verifies.)
-        let cursor = rdlt_core::Cursor::new(serde_json::Value::String("x".repeat(1 << 20)));
+        let cursor = rdlt_core::Cursor::new(serde_json::Value::String("x".repeat(1000)));
         let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
             stream: rdlt_core::StreamName::new("s"),
             cursor,
@@ -807,8 +860,9 @@ mod tests {
         })
         .expect("encode header");
         out.push(b'\n');
+        // 1 KiB lines against a 16 KiB seam budget.
         let mut total = out.len() as u64;
-        while total <= MAX_MANIFEST_TOTAL_BYTES {
+        while total <= 16 * 1024 {
             out.extend_from_slice(&line);
             out.push(b'\n');
             total += line.len() as u64 + 1;
@@ -819,14 +873,29 @@ mod tests {
             serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
-        let outcome = scan(
+        let outcome = scan_with_budget(
             dir.path(),
             rdlt_core::naming::IdentRules::default(),
             &PipelineId::new("p"),
+            16 * 1024,
         );
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("total budget")),
             "the total budget refuses, naming itself: {outcome:?}"
+        );
+        // And under the seam budget a small manifest still scans — the
+        // budget, not the content, is what refused above.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(dir.path(), &[]);
+        let outcome = scan_with_budget(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+            16 * 1024,
+        );
+        assert!(
+            !matches!(outcome, ScanOutcome::Damaged(_)),
+            "a small manifest under the seam budget scans: {outcome:?}"
         );
     }
 
@@ -851,6 +920,29 @@ mod tests {
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("sidecar")),
             "an oversized sidecar degrades the scan: {outcome:?}"
+        );
+    }
+
+    /// 5M6's sidecar seat: a recorded rules value that parses but is out
+    /// of range is damage, not a mismatch — no validated writer produces
+    /// it, so the span is refused rather than fed to the namer.
+    #[test]
+    fn a_sidecar_with_out_of_range_rules_is_damage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(dir.path(), &[]);
+        std::fs::write(
+            dir.path().join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&rdlt_core::naming::IdentRules { max_len: 2 }).expect("rules json"),
+        )
+        .expect("plant insane sidecar");
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("out-of-range")),
+            "an out-of-range sidecar degrades the scan: {outcome:?}"
         );
     }
 

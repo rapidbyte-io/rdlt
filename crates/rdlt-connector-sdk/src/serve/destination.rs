@@ -256,14 +256,20 @@ fn destination_error_frame(error: &DestinationError) -> ErrorFrame {
 }
 
 /// A malformed `*_json` payload on an otherwise well-formed request
-/// frame: a FATAL refusal naming which field failed to decode and the
-/// serde error verbatim. Not part of the frozen-spelling surface (no
-/// test pins its exact text) — a client sending undecodable JSON is a
-/// protocol-level bug in whatever built the frame, not a data outcome.
-fn decode_error_reply(field: &str, error: impl std::fmt::Display) -> session_reply::Reply {
+/// frame: a FATAL refusal naming which field failed to decode, with the
+/// error rendered KIND-AND-LOCATION (5L6 — serde's verbatim Display can
+/// quote the parsed value, so an oversized or sensitive fragment no
+/// longer rides the refusal back over the wire). Not part of the
+/// frozen-spelling surface (no test pins its exact text) — a client
+/// sending undecodable JSON is a protocol-level bug in whatever built
+/// the frame, not a data outcome.
+fn decode_error_reply(field: &str, error: serde_json::Error) -> session_reply::Reply {
     session_reply::Reply::Error(common::error_frame(
         Classification::Fatal,
-        format!("invalid {field}: {error}"),
+        format!(
+            "invalid {field}: {}",
+            super::common::describe_config_parse_error(&error)
+        ),
         None,
     ))
 }
@@ -324,7 +330,15 @@ fn part_close_reason_str(reason: PartCloseReason) -> String {
 /// measured as the defect this refusal exists to prevent, not a
 /// hypothetical).
 fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
-    match std::panic::catch_unwind(|| decode_arrow_ipc_erring(bytes)) {
+    contained_decode(|| decode_arrow_ipc_erring(bytes))
+}
+
+/// The seat's panic belt. `catch_unwind` contains PANICS only; the
+/// declared-length abort class is closed upstream by the framing
+/// pre-pass inside `decode_arrow_ipc_erring` (5H1 — the two defenses
+/// are disjoint).
+fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
         Ok(decoded) => decoded,
         Err(payload) => Err(format!(
             "write carried no decodable record batch: the Arrow decoder panicked: {}",
@@ -336,6 +350,13 @@ fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String>
 fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
 
+    // The shared framing pre-pass (SPI `ipc` module, 5H1): the panic belt
+    // above catches arrow's unwinds, but the DECLARED-length arms — a
+    // 2 GiB metadata memset, a `bodyLength` allocation whose failure
+    // ABORTS — are neither panics nor errors, so the declarations are
+    // held against the frame's real bytes before the reader runs.
+    rdlt_connector::ipc::refuse_overdeclared_ipc_framing(bytes)
+        .map_err(|reason| format!("{REFUSAL}: {reason}"))?;
     let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
         .map_err(|error| format!("{REFUSAL}: {error}"))?;
     let first = match reader.next() {
@@ -913,8 +934,13 @@ mod tests {
         }
     }
 
+    /// The 160-byte fuzz reproducer, served as a Write: the pinned
+    /// property is the TYPED refusal — today this input refuses at the
+    /// framing pre-pass (its declared framing is already over the
+    /// frame's end), which is exactly the division of labor 5H1 wants:
+    /// the pre-pass first, the belt for what the pre-pass cannot see.
     #[test]
-    fn a_crafted_write_that_panics_arrow_is_a_typed_decode_refusal() {
+    fn a_crafted_write_is_a_typed_decode_refusal_never_an_escape() {
         const REPRO: [u8; 160] = [
             0xff, 0xff, 0xff, 0xff, 0x78, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x0a, 0x00, 0x0c, 0x00, 0x06, 0x00, 0x05, 0x00, 0x08, 0x00, 0x0a, 0x00, 0x00, 0x00,
@@ -930,7 +956,115 @@ mod tests {
             0x16, 0x00, 0x06, 0x00, 0x05, 0x00,
         ];
 
-        let error = decode_arrow_ipc(&REPRO).expect_err("the panic is contained");
+        let error = decode_arrow_ipc(&REPRO).expect_err("crafted bytes refuse typed");
+        assert!(
+            error.starts_with("write carried no decodable record batch: "),
+            "the seat's refusal vocabulary, never an escape: {error}"
+        );
+    }
+
+    /// The belt pinned DIRECTLY (synthetic, because every live input that
+    /// once reached it now refuses earlier at the pre-pass): an unwind
+    /// inside the decode is classified as a typed refusal, never an
+    /// escape — the same pattern the WAL seat's belt pin uses.
+    #[test]
+    fn a_decoder_panic_is_contained_as_a_typed_refusal() {
+        let error = contained_decode::<()>(|| panic!("crafted metadata"))
+            .expect_err("the unwind is contained");
         assert!(error.contains("Arrow decoder panicked"), "{error}");
+        assert!(error.contains("crafted metadata"), "{error}");
+    }
+
+    /// 5H1 at THIS seat: the panic belt above cannot contain the
+    /// DECLARED-length arms — a 4-byte word declaring ~2 GiB of metadata
+    /// makes arrow's reader commit-and-zero the size before discovering
+    /// the bytes are missing. The shared pre-pass must refuse first; the
+    /// refusal spelling is the pre-pass's own, which is the structural
+    /// proof the reader (and its allocation) never ran.
+    #[test]
+    fn a_write_declaring_a_huge_metadata_length_refuses_before_arrow_allocates() {
+        let mut frame = vec![0xff, 0xff, 0xff, 0xff];
+        frame.extend_from_slice(&0x7fff_fff0_i32.to_le_bytes());
+        frame.extend_from_slice(&[0u8; 16]);
+        let error = decode_arrow_ipc(&frame).expect_err("an overdeclared write refuses typed");
+        assert_eq!(
+            error,
+            "write carried no decodable record batch: a declared metadata length of \
+             2147483632 bytes exceeds the 24-byte frame"
+        );
+    }
+
+    /// The body-length sibling: a real one-batch stream whose
+    /// record-batch message is patched to declare a ~2 GiB body — the
+    /// allocation whose failure ABORTS, which no belt contains. The
+    /// patch locates `bodyLength` structurally (root table offset →
+    /// vtable → the field's slot), self-verified against the decoded
+    /// value before patching.
+    #[test]
+    fn a_write_declaring_a_huge_body_length_refuses_before_arrow_allocates() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let batch = rdlt_connector::RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+        )
+        .expect("batch");
+        let mut writer =
+            arrow::ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+        writer.write(&batch).expect("write");
+        let mut bytes = writer.into_inner().expect("finish");
+        assert!(
+            decode_arrow_ipc(&bytes).is_ok(),
+            "the unpatched stream decodes"
+        );
+
+        // Walk to the second message (the record batch); patch its
+        // declared bodyLength.
+        let (meta_start, meta_end) = {
+            let mut pos = 0usize;
+            let mut spans = Vec::new();
+            while spans.len() < 2 {
+                assert_eq!(&bytes[pos..pos + 4], [0xff; 4], "continuation marker");
+                let meta_len =
+                    i32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().expect("4 bytes"))
+                        as usize;
+                let start = pos + 8;
+                spans.push((start, start + meta_len));
+                let body = usize::try_from(
+                    arrow::ipc::root_as_message(&bytes[start..start + meta_len])
+                        .expect("valid metadata")
+                        .bodyLength(),
+                )
+                .expect("non-negative body");
+                pos = start + meta_len + body;
+            }
+            spans[1]
+        };
+        let meta = &bytes[meta_start..meta_end];
+        let root = u32::from_le_bytes(meta[0..4].try_into().expect("4 bytes")) as i64;
+        let soffset = i32::from_le_bytes(
+            meta[root as usize..root as usize + 4]
+                .try_into()
+                .expect("4 bytes"),
+        ) as i64;
+        let vtable = usize::try_from(root - soffset).expect("in-bounds vtable");
+        let slot =
+            u16::from_le_bytes(meta[vtable + 10..vtable + 12].try_into().expect("2 bytes")) as i64;
+        assert_ne!(slot, 0, "bodyLength is present in the message");
+        let field_pos = meta_start + usize::try_from(root + slot).expect("in-bounds field");
+        bytes[field_pos..field_pos + 8].copy_from_slice(&0x7fff_fff0_i64.to_le_bytes());
+
+        let frame_len = bytes.len();
+        let error = decode_arrow_ipc(&bytes).expect_err("an overdeclared body refuses typed");
+        assert_eq!(
+            error,
+            format!(
+                "write carried no decodable record batch: a declared body length of \
+                 2147483632 bytes exceeds the {frame_len}-byte frame"
+            )
+        );
     }
 }

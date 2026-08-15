@@ -68,20 +68,23 @@ pub(crate) enum ParseRowsError {
     /// exceeds the cap, so the caller renders its own typed refusal instead
     /// of a parse error.
     RowCap,
+    /// More values (object entries + nested array elements) than the
+    /// caller's parse budget (5M5): the arena's memory tracks values, not
+    /// rows, so value count carries its own progressive bound.
+    ValueCap,
 }
 
-/// The remaining-row allowance one `parse_rows` call spends, with the flag
-/// that lets the caller tell a cap refusal apart from a serde error after
-/// the fact (inside a visitor only serde's error type can travel). Spent
-/// per root AND per array element at any depth — see [`NodeSeed`]'s
-/// `row_budget` for why nested elements count.
-struct RowBudget {
+/// One remaining-allowance counter, with the flag that lets the caller tell
+/// a cap refusal apart from a serde error after the fact (inside a visitor
+/// only serde's error type can travel).
+#[derive(Default)]
+struct ParseBudget {
     remaining: usize,
     exhausted: bool,
 }
 
-impl RowBudget {
-    /// Spend one row, or mark the budget exhausted and refuse.
+impl ParseBudget {
+    /// Spend one unit, or mark the budget exhausted and refuse.
     fn take_one(&mut self) -> Result<(), ()> {
         if self.remaining == 0 {
             self.exhausted = true;
@@ -90,6 +93,19 @@ impl RowBudget {
         self.remaining -= 1;
         Ok(())
     }
+}
+
+/// The two allowances one `parse_rows` call spends (5M4/5M5): ROWS (roots —
+/// documents, or elements of a top-level array) bound lineage and per-row
+/// output; VALUES (object entries and nested array elements, at any depth)
+/// bound the arena itself — each costs its node at parse, whether or not it
+/// ever becomes a row. The split is what lets an honest list-carrying push
+/// pass (its elements spend values, not rows) while a dense frame still
+/// refuses before materializing a ~22× arena.
+#[derive(Default)]
+struct ParseBudgets {
+    rows: ParseBudget,
+    values: ParseBudget,
 }
 
 impl<'s> Arena<'s> {
@@ -119,25 +135,33 @@ impl<'s> Arena<'s> {
         }
     }
 
-    /// Parse a slab into row nodes, refusing PROGRESSIVELY past `max_rows`.
+    /// Parse a slab into row nodes, refusing PROGRESSIVELY past `max_rows`
+    /// and `max_values`.
     ///
-    /// The bound is enforced where rows are first observed — per document
-    /// here, and per array element at ANY depth: top-level elements become
-    /// rows, and nested elements become child-table rows or list cells, both
-    /// of which materialize per-element state downstream. A slab dense
-    /// enough to carry tens of millions of values in a legal frame would
-    /// otherwise materialize a ~22× arena (an int array is ~2 wire bytes
-    /// per node) before a post-parse check could refuse it; counting at
-    /// observation stops the build at the cap instead (4H3).
+    /// The bounds are enforced where spending is first observed: ROWS per
+    /// document and per top-level array element (each becomes a row);
+    /// VALUES per object entry and per nested array element — each costs
+    /// its arena node at parse whether or not it becomes a row, so a slab
+    /// dense enough to carry tens of millions of values in a legal frame
+    /// (~2 wire bytes per node against ~40 arena bytes) would otherwise
+    /// materialize a ~22× arena before any post-parse check could refuse
+    /// (4H3 arrays; 5M5 objects).
     pub(crate) fn parse_rows(
         &mut self,
         bytes: &'s [u8],
         max_rows: usize,
+        max_values: usize,
     ) -> Result<Vec<NodeId>, ParseRowsError> {
         let mut rows = Vec::new();
-        let mut budget = RowBudget {
-            remaining: max_rows,
-            exhausted: false,
+        let mut budgets = ParseBudgets {
+            rows: ParseBudget {
+                remaining: max_rows,
+                exhausted: false,
+            },
+            values: ParseBudget {
+                remaining: max_values,
+                exhausted: false,
+            },
         };
         for raw in serde_json::Deserializer::from_slice(bytes)
             .into_iter::<&'s serde_json::value::RawValue>()
@@ -147,15 +171,17 @@ impl<'s> Arena<'s> {
             let parsed = NodeSeed {
                 arena: self,
                 depth: 0,
-                row_budget: Some(&mut budget),
+                budgets: &mut budgets,
             }
             .deserialize(&mut de);
-            // The budget rides serde's error channel out of the element loop
-            // (the visitor can return no other type), so the flag is what
-            // distinguishes "over the cap" from genuinely invalid JSON.
+            // The budgets ride serde's error channel out of the visitor
+            // loops (a visitor can return no other type), so the flags are
+            // what distinguish "over a cap" from genuinely invalid JSON.
             let node = parsed.map_err(|e| {
-                if budget.exhausted {
+                if budgets.rows.exhausted {
                     ParseRowsError::RowCap
+                } else if budgets.values.exhausted {
+                    ParseRowsError::ValueCap
                 } else {
                     ParseRowsError::Json(e)
                 }
@@ -164,13 +190,13 @@ impl<'s> Arena<'s> {
             match self.nodes[node as usize] {
                 ArenaNode::Arr(start, end) => {
                     // Elements were already counted as they parsed (the
-                    // depth-0 seed carried the budget into `visit_seq`).
+                    // depth-0 seed spends ROWS in `visit_seq`).
                     for i in start..end {
                         rows.push(self.arr_items[i as usize]);
                     }
                 }
                 _ => {
-                    if budget.take_one().is_err() {
+                    if budgets.rows.take_one().is_err() {
                         return Err(ParseRowsError::RowCap);
                     }
                     rows.push(node);
@@ -318,14 +344,11 @@ struct NodeSeed<'a, 's> {
     /// Nesting level of the value this seed deserializes (root = 0) — the
     /// ingest half of the shared depth cap; see the module doc.
     depth: usize,
-    /// The per-push row budget, carried at EVERY depth (GLM round-4, 4H3):
-    /// a top-level array's elements each become a row, and a NESTED array's
-    /// elements each become either a child-table row or a scalar-list cell —
-    /// both materialize downstream state per element. Counting nested
-    /// elements at PARSE time is what stops a dense nested slab (an int
-    /// array is ~2 bytes per node against ~40 bytes of arena) from
-    /// materializing a ~22× arena before the traversal budget could refuse.
-    row_budget: Option<&'a mut RowBudget>,
+    /// Both per-push allowances, carried at every depth (see
+    /// [`ParseBudgets`]): which one a visitor spends depends on the
+    /// container — a top-level array's elements are rows; everything
+    /// nested, and every object entry, is values.
+    budgets: &'a mut ParseBudgets,
 }
 
 impl<'de, 's: 'de, 'a> DeserializeSeed<'de> for NodeSeed<'a, 's>
@@ -341,7 +364,7 @@ where
         deserializer.deserialize_any(NodeVisitor {
             arena: self.arena,
             depth: self.depth,
-            row_budget: self.row_budget,
+            budgets: self.budgets,
         })
     }
 }
@@ -349,7 +372,7 @@ where
 struct NodeVisitor<'a, 's> {
     arena: &'a mut Arena<'s>,
     depth: usize,
-    row_budget: Option<&'a mut RowBudget>,
+    budgets: &'a mut ParseBudgets,
 }
 
 impl<'de, 's: 'de, 'a> Visitor<'de> for NodeVisitor<'a, 's>
@@ -397,7 +420,7 @@ where
             .push_node(ArenaNode::Str(Cow::Owned(s.to_owned()))))
     }
 
-    fn visit_seq<A>(mut self, mut seq: A) -> Result<NodeId, A::Error>
+    fn visit_seq<A>(self, mut seq: A) -> Result<NodeId, A::Error>
     where
         A: SeqAccess<'de>,
     {
@@ -406,24 +429,27 @@ where
         while let Some(id) = seq.next_element_seed(NodeSeed {
             arena: self.arena,
             depth: self.depth + 1,
-            row_budget: self.row_budget.as_deref_mut(),
+            budgets: self.budgets,
         })? {
-            // Every array element spends from the budget at EVERY depth:
-            // top-level elements become rows, nested elements become
-            // child-table rows or scalar-list cells — both materialize
-            // per-element state downstream, so both count here, AS they
-            // parse, before the rest of a dense slab becomes arena nodes.
-            // The scalar-list arm deliberately over-counts (an element
-            // that ends up a cell in a list column was never a row): the
-            // alternative — a 64 MiB frame building a multi-hundred-MB
-            // arena of list elements the budget never saw — is the worse
-            // direction, and a source near the bound splits its pushes.
-            if let Some(budget) = self.row_budget.as_deref_mut()
-                && budget.take_one().is_err()
-            {
-                return Err(serde::de::Error::custom(
-                    "array elements exceed the caller's per-push row budget",
-                ));
+            // Which allowance an element spends depends on WHERE the array
+            // sits (5M4): at depth 0 each element becomes a ROW (the
+            // top-level-array form), so it spends the row allowance;
+            // nested elements become child-table rows or list cells —
+            // both materialize their arena node at parse, so they spend
+            // the value allowance (the arena's own bound), never the
+            // rows'. Either way the spend happens AS the element parses,
+            // before the rest of a dense slab becomes arena nodes.
+            let unit = if self.depth == 0 {
+                &mut self.budgets.rows
+            } else {
+                &mut self.budgets.values
+            };
+            if unit.take_one().is_err() {
+                return Err(serde::de::Error::custom(if self.depth == 0 {
+                    "top-level array exceeds the caller's row cap"
+                } else {
+                    "array elements exceed the caller's per-push value budget"
+                }));
             }
             items.push(id);
         }
@@ -433,22 +459,54 @@ where
         Ok(self.arena.push_node(ArenaNode::Arr(start, end)))
     }
 
-    fn visit_map<A>(mut self, mut map: A) -> Result<NodeId, A::Error>
+    fn visit_map<A>(self, mut map: A) -> Result<NodeId, A::Error>
     where
         A: MapAccess<'de>,
     {
         refuse_past_depth_cap::<A::Error>(self.depth)?;
         // IndexMap insert semantics AT PARSE TIME: first position, last value.
+        //
+        // The duplicate scan is O(1) amortized past a 16-entry linear
+        // prelude (5H2): a flat mega-object's `Vec::find` per entry was
+        // N²/2 string comparisons of pure CPU inside `spawn_blocking` —
+        // uninterruptible for the duration, and hours of it from one
+        // 64 MiB frame. Small objects stay linear (cheaper than hashing);
+        // the index is built lazily the moment an object outgrows the
+        // prelude.
         let mut entries: Vec<(Cow<'s, str>, NodeId)> = Vec::new();
+        let mut index: Option<std::collections::HashMap<Cow<'s, str>, usize>> = None;
         while let Some(key) = map.next_key_seed(KeySeed(PhantomData))? {
+            // Every entry spends from the value budget AS IT PARSES (5M5):
+            // object entries are arena nodes the row budget never saw.
+            if self.budgets.values.take_one().is_err() {
+                return Err(serde::de::Error::custom(
+                    "object entries exceed the caller's per-push value budget",
+                ));
+            }
             let value = map.next_value_seed(NodeSeed {
                 arena: self.arena,
                 depth: self.depth + 1,
-                row_budget: self.row_budget.as_deref_mut(),
+                budgets: self.budgets,
             })?;
-            match entries.iter_mut().find(|(k, _)| *k == key) {
-                Some((_, slot)) => *slot = value,
-                None => entries.push((key, value)),
+            let existing = match &index {
+                Some(index) => index.get(key.as_ref()).copied(),
+                None => entries.iter().position(|(k, _)| *k == key),
+            };
+            match existing {
+                Some(i) => entries[i].1 = value,
+                None => {
+                    if index.is_none() && entries.len() >= 16 {
+                        let mut built = std::collections::HashMap::with_capacity(entries.len() * 2);
+                        for (i, (k, _)) in entries.iter().enumerate() {
+                            built.insert(k.clone(), i);
+                        }
+                        index = Some(built);
+                    }
+                    if let Some(index) = &mut index {
+                        index.insert(key.clone(), entries.len());
+                    }
+                    entries.push((key, value));
+                }
             }
         }
         let start = checked_idx(self.arena.obj_entries.len());
@@ -521,7 +579,7 @@ mod tests {
     use super::*;
     use crate::shred::canon::canonical_json_bytes;
     use crate::shred::view::JsonView;
-    use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
+    use rdlt_connector::channel::{MAX_JSON_VALUES_PER_PUSH, MAX_RECORD_BATCH_ROWS};
     use serde_json::Value;
 
     /// Independent `serde_json::Value`-based parse of a raw slab (NDJSON /
@@ -580,7 +638,7 @@ mod tests {
         let input = br#"{"xs":[10,20,30]}"#;
         let mut arena = Arena::default();
         let rows = arena
-            .parse_rows(input, MAX_RECORD_BATCH_ROWS)
+            .parse_rows(input, MAX_RECORD_BATCH_ROWS, MAX_JSON_VALUES_PER_PUSH)
             .expect("parse");
         let (_, xs) = arena
             .node(rows[0])
@@ -621,7 +679,7 @@ mod tests {
         let input = br#"{"a\nb":"x\ty","plain":"z"}"#;
         let mut arena = Arena::default();
         let rows = arena
-            .parse_rows(input, MAX_RECORD_BATCH_ROWS)
+            .parse_rows(input, MAX_RECORD_BATCH_ROWS, MAX_JSON_VALUES_PER_PUSH)
             .expect("parse");
         let node = arena.node(rows[0]);
         let entries: Vec<(String, String)> = node
@@ -653,7 +711,7 @@ mod tests {
         let input = br#"{"dup":1,"other":2,"dup":3}"#;
         let mut arena = Arena::default();
         let rows = arena
-            .parse_rows(input, MAX_RECORD_BATCH_ROWS)
+            .parse_rows(input, MAX_RECORD_BATCH_ROWS, MAX_JSON_VALUES_PER_PUSH)
             .expect("parse");
         let node = arena.node(rows[0]);
         let arena_entries: Vec<(String, String)> = node
@@ -701,14 +759,14 @@ mod tests {
         let at_cap = nested(rdlt_connector::channel::MAX_ARROW_DEPTH);
         let mut arena = Arena::default();
         arena
-            .parse_rows(&at_cap, MAX_RECORD_BATCH_ROWS)
+            .parse_rows(&at_cap, MAX_RECORD_BATCH_ROWS, MAX_JSON_VALUES_PER_PUSH)
             .expect("nesting AT the cap still parses");
 
         for levels in [rdlt_connector::channel::MAX_ARROW_DEPTH + 1, 100] {
             let deep = nested(levels);
             let mut arena = Arena::default();
             let err = arena
-                .parse_rows(&deep, MAX_RECORD_BATCH_ROWS)
+                .parse_rows(&deep, MAX_RECORD_BATCH_ROWS, MAX_JSON_VALUES_PER_PUSH)
                 .expect_err("nesting past the cap must refuse at ingest");
             let ParseRowsError::Json(err) = err else {
                 panic!("a depth refusal is a parse error, not a row-cap one");
@@ -720,12 +778,13 @@ mod tests {
         }
     }
 
-    /// 4H3: NESTED array elements spend from the same budget, at parse time.
-    /// One root carrying a dense nested list would otherwise materialize the
-    /// whole ~22× arena before the traversal budget ever saw the elements —
-    /// the parse-time count refuses with the arena still at the cap.
+    /// 4H3's array half, under the wave-6 split (5M4): NESTED array
+    /// elements spend the VALUE budget at parse time — never the rows' —
+    /// so a dense nested list refuses with the arena still small, while
+    /// the row cap is not charged for values that may become list cells
+    /// rather than rows.
     #[test]
-    fn nested_array_elements_count_against_the_budget_at_parse_time() {
+    fn nested_array_elements_count_against_the_value_budget_at_parse_time() {
         let mut slab = Vec::new();
         slab.extend_from_slice(b"[[");
         for i in 0..8 {
@@ -737,11 +796,11 @@ mod tests {
         slab.extend_from_slice(b"]]");
         let mut arena = Arena::default();
         let err = arena
-            .parse_rows(&slab, 3)
-            .expect_err("nested elements past the budget must refuse");
+            .parse_rows(&slab, usize::MAX, 3)
+            .expect_err("nested elements past the value budget must refuse");
         assert!(
-            matches!(err, ParseRowsError::RowCap),
-            "the typed budget arm, not a parse error: {err:?}"
+            matches!(err, ParseRowsError::ValueCap),
+            "the typed value-budget arm, not a parse error or the row cap: {err:?}"
         );
         assert!(
             arena.nodes.len() <= 6,
@@ -749,12 +808,75 @@ mod tests {
             arena.nodes.len()
         );
 
-        // At the budget it parses: two inner arrays + three inner elements
-        // spend exactly five.
+        // …and the row budget is untouched by nested elements: the same
+        // slab with a tiny ROW cap and value headroom parses — its ONE
+        // inner array becomes exactly one row, its eight nested elements
+        // charging nothing to the rows' allowance.
         let mut arena = Arena::default();
-        arena
-            .parse_rows(b"[[1,2],[3]]", 5)
-            .expect("inner arrays and their elements at the budget parse");
+        let rows = arena
+            .parse_rows(&slab, 2, usize::MAX)
+            .expect("the outer array's single element is one row");
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// 5M5: object entries spend the value budget too — the object-only
+    /// slab was the hole: a flat mega-object parsed its whole arena with
+    /// the row budget seeing a single document.
+    #[test]
+    fn object_entries_count_against_the_value_budget_at_parse_time() {
+        let mut slab = Vec::new();
+        slab.extend_from_slice(b"{");
+        for i in 0..8 {
+            if i > 0 {
+                slab.push(b',');
+            }
+            slab.extend_from_slice(format!("\"k{i}\":0").as_bytes());
+        }
+        slab.extend_from_slice(b"}");
+        let mut arena = Arena::default();
+        let err = arena
+            .parse_rows(&slab, usize::MAX, 3)
+            .expect_err("a flat object past the value budget must refuse");
+        assert!(
+            matches!(err, ParseRowsError::ValueCap),
+            "the value-budget arm: {err:?}"
+        );
+        assert!(
+            arena.nodes.len() <= 6,
+            "the parse stopped at the budget: {} nodes",
+            arena.nodes.len()
+        );
+    }
+
+    /// 5H2's CPU half: the duplicate-key scan is O(N) past a 16-entry
+    /// linear prelude. A 200K-entry object parses AND dedups correctly —
+    /// without the index this test is ~2×10¹⁰ string comparisons.
+    #[test]
+    fn a_wide_object_dedups_in_linear_time_with_first_position_last_value() {
+        let mut doc = String::from("{");
+        for i in 0..200_000 {
+            if i > 0 {
+                doc.push(',');
+            }
+            doc.push_str(&format!("\"k{i}\":{i}"));
+        }
+        // Duplicates on BOTH sides of the prelude: first position kept,
+        // last value wins.
+        doc.push_str(",\"k0\":-1,\"k199999\":-2}");
+        let mut arena = Arena::default();
+        let rows = arena
+            .parse_rows(doc.as_bytes(), usize::MAX, usize::MAX)
+            .expect("the wide object parses");
+        let node = arena.node(rows[0]);
+        let entries: Vec<_> = node.obj_entries().collect();
+        assert_eq!(entries.len(), 200_000, "duplicates collapse");
+        let first = entries[0].1.kind();
+        assert!(
+            matches!(first, ValueKind::Int(-1)),
+            "first position, last value: {first:?}"
+        );
+        let last = entries[entries.len() - 1].1.kind();
+        assert!(matches!(last, ValueKind::Int(-2)), "{last:?}");
     }
 
     /// The row bound is PROGRESSIVE at both row-observation sites: per
@@ -767,7 +889,9 @@ mod tests {
         // At the cap: fine, from either shape.
         for slab in [b"1\n2\n3".as_slice(), b"[1,2,3]".as_slice()] {
             let mut arena = Arena::default();
-            let rows = arena.parse_rows(slab, 3).expect("at the cap parses");
+            let rows = arena
+                .parse_rows(slab, 3, usize::MAX)
+                .expect("at the cap parses");
             assert_eq!(rows.len(), 3);
         }
         // One over: the typed row-cap refusal, not a parse error — and the
@@ -779,7 +903,7 @@ mod tests {
         ] {
             let mut arena = Arena::default();
             let err = arena
-                .parse_rows(slab, 3)
+                .parse_rows(slab, 3, usize::MAX)
                 .expect_err("one row past the cap must refuse");
             assert!(
                 matches!(err, ParseRowsError::RowCap),
@@ -810,7 +934,7 @@ mod tests {
             let bytes = case.as_bytes();
             let mut arena = Arena::default();
             let arena_rows = arena
-                .parse_rows(bytes, MAX_RECORD_BATCH_ROWS)
+                .parse_rows(bytes, MAX_RECORD_BATCH_ROWS, MAX_JSON_VALUES_PER_PUSH)
                 .expect("arena parse");
             let value_rows = oracle_rows(bytes).expect("value parse");
             assert_eq!(arena_rows.len(), value_rows.len(), "row count for {case}");

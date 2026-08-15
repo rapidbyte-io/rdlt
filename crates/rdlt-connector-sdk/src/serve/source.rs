@@ -457,7 +457,12 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let stream_spec = match serde_json::from_slice(&request.stream_spec_json) {
             Ok(spec) => spec,
             Err(error) => {
-                return Ok(error_stream(format!("invalid stream_spec_json: {error}")));
+                // Kind-and-location, not serde's verbatim Display (5L6 —
+                // it can quote the parsed fragment back over the wire).
+                return Ok(error_stream(format!(
+                    "invalid stream_spec_json: {}",
+                    common::describe_config_parse_error(&error)
+                )));
             }
         };
         let since = match &request.since_cursor_json {
@@ -465,18 +470,25 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             // The size gate runs BEFORE the parse, like the handshake's
             // config gate: a compact document materializes as an
             // untyped `Value` at many times its wire size, and this one
-            // is RETAINED inside the `Cursor` for the read's lifetime —
-            // see `common::MAX_DOCUMENT_BYTES`.
-            Some(bytes) if bytes.len() > common::MAX_DOCUMENT_BYTES => {
+            // is RETAINED inside the `Cursor` for the read's lifetime.
+            // The bound is the cursor contract's
+            // (`rdlt_connector::MAX_CURSOR_BYTES`, 5L3) — deliberately
+            // tighter than the config ceiling, and the same constant the
+            // client enforces pre-send, so the two ends cannot disagree.
+            Some(bytes) if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES => {
                 return Ok(error_stream(common::oversized_document(
                     "since_cursor_json",
                     bytes.len(),
+                    rdlt_connector::MAX_CURSOR_BYTES,
                 )));
             }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
                 Ok(value) => Some(rdlt_connector::Cursor::new(value)),
                 Err(error) => {
-                    return Ok(error_stream(format!("invalid since_cursor_json: {error}")));
+                    return Ok(error_stream(format!(
+                        "invalid since_cursor_json: {}",
+                        common::describe_config_parse_error(&error)
+                    )));
                 }
             },
         };

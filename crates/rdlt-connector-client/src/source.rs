@@ -95,10 +95,11 @@ fn protocol_fatal(message: String) -> SourceError {
 /// bytes become host vocabulary, deliberately not in
 /// `StreamName::new` — the core type stays free-form for hosts by its
 /// own documented contract, and in-process embedders name their own
-/// streams. The refusal renders the name in its `{:?}` escaped form,
-/// so the message itself cannot carry the very bytes it refuses.
+/// streams. The refusal renders the name through the shared escape
+/// (`{:?}` leaves the inventory's Lo-category fillers raw, 5L4), so
+/// the message itself cannot carry the very bytes it refuses.
 fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceError> {
-    let hostile = std::iter::once(("stream name", spec.name.as_str()))
+    let seats = std::iter::once(("stream name", spec.name.as_str()))
         .chain(
             spec.primary_key
                 .iter()
@@ -114,13 +115,26 @@ fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceErro
             spec.type_hints
                 .keys()
                 .map(|field| ("type-hint field", field.as_str())),
-        )
-        .find(|(_, value)| crate::sanitize::contains_control(value));
-    if let Some((seat, value)) = hostile {
-        return Err(SourceError::fatal(format!(
-            "the connector declared a {seat} of {value:?} — control or invisible formatting \
-             characters in identifiers are refused at the wire boundary"
-        )));
+        );
+    for (seat, value) in seats {
+        if crate::sanitize::contains_control(value) {
+            return Err(SourceError::fatal(format!(
+                "the connector declared a {seat} of `{}` — control or invisible formatting \
+                 characters in identifiers are refused at the wire boundary",
+                // The shared escape, not `{:?}` — the latter leaves the
+                // inventory's Lo-category fillers raw (5L4).
+                crate::sanitize::escape_control_characters(value)
+            )));
+        }
+        if crate::sanitize::is_oversized_identifier(value) {
+            return Err(SourceError::fatal(format!(
+                "the connector declared a {seat} of {} bytes — over the {}-byte wire \
+                 identifier ceiling, refused at the wire boundary (no real name approaches \
+                 it; the destinations' own limits are 63–255)",
+                value.len(),
+                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
+            )));
+        }
     }
     Ok(())
 }
@@ -136,9 +150,9 @@ fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), 
     while let Some(field) = pending.pop() {
         if crate::sanitize::contains_control(field.name()) {
             return Err(SourceError::fatal(format!(
-                "the connector sent an Arrow field named {:?} — control or invisible formatting \
+                "the connector sent an Arrow field named `{}` — control or invisible formatting \
                  characters in identifiers are refused at the wire boundary",
-                field.name()
+                crate::sanitize::escape_control_characters(field.name())
             )));
         }
         // A dictionary encodes another type without a field of its own,
@@ -215,7 +229,11 @@ const ONE_BATCH_REFUSAL: &str = "read frame violated the one-batch rule";
 /// The `Err`-shaped half of the decode: every failure arrow REPORTS
 /// (as opposed to panics on) maps behind the frozen prefix here.
 fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
-    refuse_overdeclared_framing(bytes)?;
+    // The shared framing pre-pass (SPI `ipc` module, 5H1): one
+    // implementation for every wire decode seat; this seat wraps its
+    // reasons in the frozen one-batch prefix.
+    rdlt_connector::ipc::refuse_overdeclared_ipc_framing(bytes)
+        .map_err(|reason| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {reason}")))?;
     let mut reader =
         arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
             .map_err(|error| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}")))?;
@@ -233,103 +251,6 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         }
         Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
         Some(Err(error)) => Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}"))),
-    }
-}
-
-/// The framing pre-pass ahead of arrow's stream reader: walk the
-/// encapsulated-message framing — optional continuation marker, an
-/// `i32` metadata length, the metadata bytes, then the metadata's own
-/// declared `bodyLength` of body bytes — and refuse any message whose
-/// DECLARED lengths exceed what the frame actually carries.
-///
-/// arrow-ipc 58.3 trusts both declarations before verifying them
-/// against the input: its reader `resize`s the metadata buffer to the
-/// declared length (`Vec::resize` zero-fills every new slot — a commit
-/// and memset of the full size) and allocates `bodyLength` zeroed
-/// bytes for the body, in each case BEFORE `read_exact` discovers the
-/// bytes are missing. So a ~30-byte frame declaring ~2 GiB forces a
-/// 2 GiB allocate-and-memset in the host per frame — not a panic, so
-/// the `catch_unwind` above is no defense, and under a memory limit it
-/// is an OOM kill. A negative `bodyLength` is the sibling: cast to
-/// `usize` it wraps huge, and the failing allocation aborts. Checking
-/// every declaration against `bytes.len()` first kills both vectors;
-/// the read `frames` arrive whole (one gRPC field each), so a valid
-/// frame can never declare past its own end.
-///
-/// All arithmetic is checked: a walk this refuses is malformed by
-/// construction, and the refusal is typed behind the frozen prefix,
-/// never a panic. Truncation SHORT of a declaration (too few bytes for
-/// a length word) is left for the reader's own EOF handling — nothing
-/// oversized gets allocated on that path.
-///
-/// Compression note (4I3): arrow-ipc's `decompress_to_buffer` does an
-/// unbounded `Vec::with_capacity` from a body-declared length — the same
-/// class this pre-pass kills, one layer down. It is unreachable today
-/// (no `ipc_compression` feature and no lz4/zstd anywhere in the
-/// lockfile); if compression is ever enabled, this walk must ALSO bound
-/// the decompressed length.
-fn refuse_overdeclared_framing(bytes: &[u8]) -> Result<(), SourceError> {
-    const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
-    let refuse = |what: &str, declared: u64| {
-        SourceError::fatal(format!(
-            "{ONE_BATCH_REFUSAL}: a declared {what} length of {declared} bytes exceeds \
-             the {}-byte frame",
-            bytes.len()
-        ))
-    };
-    let mut pos = 0usize;
-    loop {
-        let Some(word) = bytes.get(pos..pos + 4) else {
-            return Ok(());
-        };
-        let word: [u8; 4] = word.try_into().expect("a 4-byte slice");
-        let length_word = if word == CONTINUATION_MARKER {
-            pos += 4;
-            match bytes.get(pos..pos + 4) {
-                Some(next) => next.try_into().expect("a 4-byte slice"),
-                None => return Ok(()),
-            }
-        } else {
-            word
-        };
-        pos += 4;
-        let declared_meta = i32::from_le_bytes(length_word);
-        if declared_meta == 0 {
-            // The stream's end-of-stream marker.
-            return Ok(());
-        }
-        let meta_len = usize::try_from(declared_meta).map_err(|_| {
-            SourceError::fatal(format!(
-                "{ONE_BATCH_REFUSAL}: a negative declared metadata length ({declared_meta})"
-            ))
-        })?;
-        let meta_end = pos
-            .checked_add(meta_len)
-            .filter(|&end| end <= bytes.len())
-            .ok_or_else(|| refuse("metadata", meta_len as u64))?;
-        // The metadata really is present — now hold its own body
-        // declaration to the same standard. The flatbuffer runs the
-        // same verifier the reader itself would, so an unverifiable
-        // message refuses here with the verifier's diagnostic.
-        let message = arrow::ipc::root_as_message(&bytes[pos..meta_end]).map_err(|error| {
-            SourceError::fatal(format!(
-                "{ONE_BATCH_REFUSAL}: unverifiable message metadata: {error}"
-            ))
-        })?;
-        // A negative declaration renders SIGNED (4I4) — casting to u64
-        // first would print the wrapped value, a diagnostic that lies
-        // about what the frame actually declared.
-        let body_len = u64::try_from(message.bodyLength()).map_err(|_| {
-            SourceError::fatal(format!(
-                "{ONE_BATCH_REFUSAL}: a negative declared body length ({})",
-                message.bodyLength()
-            ))
-        })?;
-        pos = usize::try_from(body_len)
-            .ok()
-            .and_then(|body| meta_end.checked_add(body))
-            .filter(|&end| end <= bytes.len())
-            .ok_or_else(|| refuse("body", body_len))?;
     }
 }
 
@@ -421,10 +342,30 @@ impl rdlt_connector::Source for Source {
         let wire_request = proto::ReadRequest {
             stream_spec_json: serde_json::to_vec(&stream)
                 .expect("a StreamSpec serializes to JSON infallibly"),
-            since_cursor_json: since.as_ref().map(|cursor| {
-                serde_json::to_vec(cursor.as_value())
-                    .expect("a Cursor's value serializes to JSON infallibly")
-            }),
+            since_cursor_json: match &since {
+                Some(cursor) => {
+                    let bytes = serde_json::to_vec(cursor.as_value())
+                        .expect("a Cursor's value serializes to JSON infallibly");
+                    // The cursor contract, enforced pre-send (5M1): the
+                    // serve gate would refuse an over-bound cursor after
+                    // receiving it; refusing here names the cause before
+                    // the request exists. An over-bound cursor came from
+                    // this connector's own earlier checkpoint (or persisted
+                    // state) — the refusal tells it to summarize.
+                    if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES {
+                        return Err(SourceError::fatal(format!(
+                            "the resumed cursor serializes to {} bytes, over the {}-byte \
+                             cursor contract — the connector must summarize its state (a \
+                             high-water mark, an offset, a resume token) rather than embed \
+                             the data",
+                            bytes.len(),
+                            rdlt_connector::MAX_CURSOR_BYTES
+                        )));
+                    }
+                    Some(bytes)
+                }
+                None => None,
+            },
         };
 
         let mut client = source_client(self.channel.clone());
@@ -464,6 +405,21 @@ impl rdlt_connector::Source for Source {
                     out.arrow(decode_one_batch(&bytes)?).await
                 }
                 Some(read_frame::Frame::CheckpointCursorJson(bytes)) => {
+                    // The cursor contract, enforced at the trust boundary
+                    // (5M1): this is the one UNTYPED inbound document seat
+                    // — a compact 64 MiB frame would otherwise materialize
+                    // several hundred MB of `Value` here, and the oversized
+                    // cursor would then poison persisted state (every later
+                    // resume refused at the gates that DO cap).
+                    if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES {
+                        return Err(protocol_fatal(format!(
+                            "a checkpoint cursor of {} bytes exceeds the {}-byte cursor \
+                             contract — the connector must summarize its state rather than \
+                             embed the data",
+                            bytes.len(),
+                            rdlt_connector::MAX_CURSOR_BYTES
+                        )));
+                    }
                     let value: serde_json::Value =
                         serde_json::from_slice(&bytes).map_err(|error| {
                             protocol_fatal(format!(
@@ -540,6 +496,21 @@ mod name_boundary_tests {
     fn a_newline_in_a_name_refuses() {
         let spec = StreamSpec::new("orders\nFORGED LINE");
         assert!(refuse_control_characters_in_name(&spec).is_err());
+    }
+
+    /// 5L5: the length half — a control-free but absurdly long name
+    /// refuses at the same seat, and the boundary is exact.
+    #[test]
+    fn an_oversized_name_refuses_and_the_boundary_is_exact() {
+        let at = "a".repeat(crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES);
+        assert!(refuse_control_characters_in_name(&StreamSpec::new(at)).is_ok());
+        let over = "a".repeat(crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES + 1);
+        let error = refuse_control_characters_in_name(&StreamSpec::new(over))
+            .expect_err("one byte over the ceiling refuses");
+        assert!(
+            error.to_string().contains("identifier ceiling"),
+            "the refusal names the ceiling: {error}"
+        );
     }
 
     #[test]

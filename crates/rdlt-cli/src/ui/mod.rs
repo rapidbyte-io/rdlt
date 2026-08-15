@@ -19,23 +19,25 @@ pub fn stderr_line(line: &str) {
 
 /// Escape terminal control characters for display: C0 (except newline
 /// and tab — legitimate formatting in multi-line error text), DEL, and
-/// C1, each rendered as its visible `\u{..}` escape. The 038/044 model
-/// deliberately runs third-party connector binaries, and a declared
-/// stream name or error message is their text: unescaped, an ESC or C1
-/// byte is how a hostile connector forges log lines, moves the cursor,
-/// or drives OSC sequences (title, clipboard) through an operator's
-/// terminal. Applied at the RENDER boundary — [`stderr_line`] and the
-/// pretty renderer's messages — never to the data itself.
+/// C1, each rendered as its visible `\u{..}` escape — plus the shared
+/// inventory's invisible/formatting characters (5L14: the joiners the
+/// identifier gates deliberately ADMIT still render invisibly, so a
+/// stream name differing from its twin only by a ZWNJ must not display
+/// as its twin). The 038/044 model deliberately runs third-party
+/// connector binaries, and a declared stream name or error message is
+/// their text: unescaped, an ESC or C1 byte is how a hostile connector
+/// forges log lines, moves the cursor, or drives OSC sequences (title,
+/// clipboard) through an operator's terminal. Applied at the RENDER
+/// boundary — [`stderr_line`] and the pretty renderer's messages —
+/// never to the data itself.
 pub fn sanitize(text: &str) -> String {
-    if !text
-        .chars()
-        .any(|c| c.is_control() && c != '\n' && c != '\t')
-    {
+    use rdlt_connector_protocol::sanitize::is_control_or_invisible as hostile;
+    if !text.chars().any(|c| hostile(c) && c != '\n' && c != '\t') {
         return text.to_owned();
     }
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if c.is_control() && c != '\n' && c != '\t' {
+        if hostile(c) && c != '\n' && c != '\t' {
             use std::fmt::Write as _;
             let _ = write!(out, "\\u{{{:x}}}", c as u32);
         } else {
@@ -123,6 +125,20 @@ mod tests {
             sanitize_identifier("pipeline\nFORGED\u{202e}"),
             "pipeline\\u{a}FORGED\\u{202e}"
         );
+    }
+
+    /// 5L14: the display escape covers the FULL inventory — the joiners
+    /// the identifier gates deliberately admit (ZWNJ/ZWJ, orthography in
+    /// Persian/Malayalam/Devanagari names) must still be SPELLED OUT in
+    /// rendered text, or two names differing only by an invisible joiner
+    /// display as the same name. Newline and tab stay (multi-line error
+    /// formatting).
+    #[test]
+    fn the_display_escape_spells_the_invisible_inventory() {
+        assert_eq!(sanitize("a\u{200c}b"), "a\\u{200c}b");
+        assert_eq!(sanitize("a\u{3164}b"), "a\\u{3164}b");
+        assert_eq!(sanitize("line\nbreak\ttab"), "line\nbreak\ttab");
+        assert_eq!(sanitize("Événements"), "Événements", "text is data");
     }
 
     /// The selection ladder: quiet beats everything; -v, a pipe, or

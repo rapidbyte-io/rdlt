@@ -65,21 +65,20 @@ const TRAILER_LEN: usize = 1 + 64;
 ///
 /// The cap must sit ABOVE anything this engine's own writer can legitimately
 /// append, or a run's own WAL becomes unscannable (`Damaged` — safe direction,
-/// but a pure availability loss). The largest legitimate line is a Delta for a
-/// maximal table create, MEASURED at 1,352,213 bytes: the shred-time bounds
-/// allow 4,096 source columns per table with identifiers normalized to the
-/// destination's `IdentRules` length (63 by default), each column costing
-/// ~150 JSON bytes, and a CreateTable delta serializes that schema TWICE
-/// (once as the record's `schema`, once inside the change) — ~1.3 MiB. Four
-/// mebibytes covers it with headroom for longer destination ident rules while
-/// still bounding what a hostile line can make recovery allocate. Checkpoint
-/// lines carry a source-controlled cursor with NO shred-time bound; a cursor
-/// past this cap is REFUSED AT WRITE TIME (see `Wal::append`), so an honest
-/// run can never write a line its own recovery would refuse.
+/// but a pure availability loss). The largest legitimate lines: a Delta for a
+/// maximal table create, MEASURED at 1,352,213 bytes (the shred-time bounds
+/// allow 4,096 source columns with identifiers at the destination's
+/// `IdentRules` length, ~150 JSON bytes each, the schema serialized TWICE —
+/// ~1.3 MiB); and a Checkpoint carrying a maximal cursor — the SPI's cursor
+/// contract (`rdlt_connector::MAX_CURSOR_BYTES`, 4 MiB) plus the record
+/// envelope and checksum trailer. Five mebibytes covers both with headroom
+/// while still bounding what a hostile line can make recovery allocate. A
+/// record past this cap is REFUSED AT WRITE TIME (see `Wal::append`), so an
+/// honest run can never write a line its own recovery would refuse.
 ///
 /// The constant lives HERE, beside the encoder, so the writer's refusal and
 /// the scan's cap cannot drift apart (047 wave 5, 4L6).
-pub(crate) const MAX_MANIFEST_LINE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_MANIFEST_LINE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Encode one manifest line: the record's JSON, then `|`, then the
 /// blake3 hex digest of exactly those JSON bytes. This is an UNKEYED

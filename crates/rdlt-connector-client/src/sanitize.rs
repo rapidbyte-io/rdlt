@@ -45,6 +45,20 @@ pub(crate) fn contains_control(text: &str) -> bool {
         .any(sanitize::is_control_or_invisible_in_identifier)
 }
 
+/// The most BYTES a wire identifier may carry (5L5): the content gates
+/// refuse hostile CHARACTERS, but nothing priced the LENGTH — a
+/// 60 MiB control-free stream name passed every gate within the frame
+/// cap (log swelling, plan noise). Real identifiers are bounded by the
+/// destinations' own limits (postgres 63, snowflake 255); a KiB is
+/// already absurd for a name, and the socket path's 107-byte gate is
+/// the in-tree precedent for bounding vocabulary at the wire edge.
+pub(crate) const MAX_WIRE_IDENTIFIER_BYTES: usize = 1024;
+
+/// Is `text` longer than a wire identifier may be? See the constant.
+pub(crate) fn is_oversized_identifier(text: &str) -> bool {
+    text.len() > MAX_WIRE_IDENTIFIER_BYTES
+}
+
 /// Render `text` inert for display: each control or invisible
 /// character — the FULL inventory, joiners included, so rendered text
 /// cannot hide one — becomes its spelled-out escape (`\n`, `\u{1b}`,
@@ -150,5 +164,26 @@ mod tests {
     fn the_hangul_fillers_escaped_raw_get_spelled_out() {
         assert_eq!(escape_control_characters("a\u{3164}b"), "a\\u{3164}b");
         assert_eq!(escape_control_characters("a\u{ffa0}b"), "a\\u{ffa0}b");
+    }
+
+    /// 5L4: the invariant at the REFUSAL seats too — every inventory
+    /// character renders spelled-out through the shared escape, so a
+    /// refusal quoting a hostile value cannot carry the bytes it
+    /// refuses. (Mechanical sweep across the whole table, not a sample.)
+    #[test]
+    fn no_inventory_character_survives_the_escape_raw() {
+        let inventory: Vec<char> = ('\u{0}'..='\u{10FFFF}')
+            .filter(|c| rdlt_connector_protocol::sanitize::is_control_or_invisible(*c))
+            .collect();
+        assert!(inventory.len() > 100, "the sweep covers the inventory");
+        for character in inventory {
+            let input = character.to_string();
+            let escaped = escape_control_characters(&input);
+            assert_ne!(
+                escaped, input,
+                "U+{:04X} must not survive the escape raw",
+                character as u32
+            );
+        }
     }
 }

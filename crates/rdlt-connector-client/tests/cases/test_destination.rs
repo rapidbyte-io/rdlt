@@ -62,6 +62,38 @@ fn context() -> OpenContext {
     OpenContext::new(PipelineId::new("pipe"), LoadId::new("load-1"))
 }
 
+/// 5M6: a destination declaring an out-of-range `ident_rules.max_len`
+/// is refused at the handshake — the field drives the engine's naming
+/// probe loop, so the trust boundary validates it before any engine
+/// ever sees it.
+#[tokio::test]
+async fn an_out_of_range_ident_rules_declaration_refuses_the_handshake() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination_with_capabilities(
+        &path,
+        SessionScript::OpenedThenStatus {
+            code: tonic::Code::Unavailable,
+            message: "unused".to_string(),
+        },
+        Some(
+            rdlt_connector::DestinationCapabilities::default()
+                .with_ident_rules(rdlt_connector::core::naming::IdentRules { max_len: 2 }),
+        ),
+    );
+    let error = Destination::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect_err("an exhaustible max_len must refuse the handshake");
+    assert!(
+        error.to_string().contains("identifier rules"),
+        "the refusal names the field: {error}"
+    );
+}
+
 /// The one-column `id: Int64` logical schema, hand-built (this crate's
 /// test support imports nothing cross-crate).
 fn schema_for(table: &str) -> TableSchema {

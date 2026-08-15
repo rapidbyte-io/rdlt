@@ -17,6 +17,40 @@ pub struct IdentRules {
     pub max_len: usize,
 }
 
+/// The legal range for [`IdentRules::max_len`] (GLM round-5, 5M6/6.3).
+/// Below the FLOOR the collision-suffix machinery degenerates: every
+/// over-long name normalizes to the same prefix, the candidate space is
+/// `16^(max_len-1)`, and the probe loop in `UniqueNamer::name_for` either
+/// false-positives or exhausts — a connector-declared `max_len` is
+/// untrusted wire input (SECURITY.md), so a tiny one must never reach the
+/// namer. Above the CEILING the length is pure bloat (real destinations
+/// top out at 255) and per-name work scales with it. 8 admits 16⁷ ≈
+/// 2.7×10⁸ candidate suffixes — effectively inexhaustible; 4096 is
+/// arbitrary but far past every real engine.
+pub const MIN_IDENT_MAX_LEN: usize = 8;
+/// See [`MIN_IDENT_MAX_LEN`].
+pub const MAX_IDENT_MAX_LEN: usize = 4096;
+
+impl IdentRules {
+    /// Validate a rules value that arrived over a trust boundary (the
+    /// handshake's `capabilities_json`, the WAL's rules sidecar): the
+    /// field is a plain `usize` because serde fills it, and anything
+    /// outside [`MIN_IDENT_MAX_LEN`]..=[`MAX_IDENT_MAX_LEN`] is refused
+    /// typed rather than allowed to drive the naming probe loop.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(MIN_IDENT_MAX_LEN..=MAX_IDENT_MAX_LEN).contains(&self.max_len) {
+            return Err(format!(
+                "identifier max_len {} is outside [{MIN_IDENT_MAX_LEN}, {MAX_IDENT_MAX_LEN}] \
+                 — below the floor the collision-suffix space is exhaustible (a host panic \
+                 path), above the ceiling is pure per-name bloat; no real destination's \
+                 limit leaves this range (postgres 63, snowflake 255)",
+                self.max_len
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for IdentRules {
     fn default() -> Self {
         // Postgres' 63-byte limit is the tightest among v1 destinations; using it
@@ -28,9 +62,17 @@ impl Default for IdentRules {
 /// Hex characters of source hash appended to a truncated identifier.
 const HASH_LEN: usize = 8;
 
+/// The hash-suffix sizing for a length bound, spelled ONCE (6.10 — the
+/// two callers drifted apart once already, 4L9). The bound is clamped to
+/// ≥ 1 first: a zero `max_len` is degenerate (5L13), and "never exceeds
+/// the bound" then holds against the clamp, the smallest legal identifier.
+fn hash_len_for(max_len: usize) -> usize {
+    HASH_LEN.min(max_len.max(1).saturating_sub(1))
+}
+
 /// Normalize a source name into a destination-safe identifier: lowercase,
 /// `[a-z0-9_]` charset, no leading digit, truncated (with a disambiguating hash
-/// suffix) to `rules.max_len`.
+/// suffix) to `rules.max_len` (clamped to ≥ 1 — the smallest legal identifier).
 pub fn normalize_ident(source: &str, rules: IdentRules) -> String {
     let mut out = String::with_capacity(source.len());
     for c in source.chars() {
@@ -46,7 +88,8 @@ pub fn normalize_ident(source: &str, rules: IdentRules) -> String {
     if out.as_bytes()[0].is_ascii_digit() {
         out.insert(0, '_');
     }
-    if out.len() > rules.max_len {
+    let bound = rules.max_len.max(1);
+    if out.len() > bound {
         // Truncation can merge distinct names; the hash of the *source* keeps them apart.
         //
         // The suffix is SIZED TO THE BOUND, not fixed: with a `max_len` below the
@@ -57,8 +100,8 @@ pub fn normalize_ident(source: &str, rules: IdentRules) -> String {
         // Sliced locally rather than asking `ident_hash` for a shorter digest:
         // that helper clamps to 4..64 for its own callers and must keep doing
         // so, and the clamp is exactly what would push this past the bound.
-        let hash_len = HASH_LEN.min(rules.max_len.saturating_sub(1));
-        out.truncate(rules.max_len.saturating_sub(hash_len + 1));
+        let hash_len = hash_len_for(bound);
+        out.truncate(bound.saturating_sub(hash_len + 1));
         out.push('_');
         out.push_str(&short_hash(source)[..hash_len]);
     }
@@ -163,10 +206,12 @@ fn suffixed(base: &str, source: &str, rules: IdentRules) -> String {
     // names for any `max_len` ≤ 9, breaking the documented contract at the
     // small bounds only an embedder can set). Degradation is graceful: a
     // shorter hash buys weaker collision resistance, never an over-bound
-    // name.
-    let hash_len = HASH_LEN.min(rules.max_len.saturating_sub(1));
+    // name. The sizing is [`hash_len_for`]'s, shared so the two cannot
+    // drift apart again (6.10).
+    let bound = rules.max_len.max(1);
+    let hash_len = hash_len_for(bound);
     let mut out = base.to_owned();
-    out.truncate(rules.max_len.saturating_sub(hash_len + 1).min(out.len()));
+    out.truncate(bound.saturating_sub(hash_len + 1).min(out.len()));
     out.push('_');
     out.push_str(&short_hash(source)[..hash_len]);
     out
@@ -344,6 +389,84 @@ mod tests {
                 assert!(!name.is_empty(), "a name is never empty");
             }
             assert_ne!(first, second, "distinct sources stay distinct");
+        }
+    }
+
+    /// 5M6: the rules range gate, at its edges — the floor admits 16⁷
+    /// candidate suffixes (effectively inexhaustible), the ceiling is
+    /// arbitrary but past every real destination.
+    #[test]
+    fn ident_rules_validate_at_their_range_edges() {
+        assert!(IdentRules { max_len: 0 }.validate().is_err());
+        assert!(
+            IdentRules {
+                max_len: MIN_IDENT_MAX_LEN - 1
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            IdentRules {
+                max_len: MIN_IDENT_MAX_LEN
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(IdentRules { max_len: 63 }.validate().is_ok());
+        assert!(
+            IdentRules {
+                max_len: MAX_IDENT_MAX_LEN
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            IdentRules {
+                max_len: MAX_IDENT_MAX_LEN + 1
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            IdentRules {
+                max_len: usize::MAX
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    /// 5L13: a zero `max_len` is degenerate, and both writers clamp it to
+    /// the smallest legal identifier rather than producing a name LONGER
+    /// than the stated bound.
+    #[test]
+    fn a_zero_max_len_clamps_to_the_smallest_legal_identifier() {
+        let rules = IdentRules { max_len: 0 };
+        let out = normalize_ident("anything at all", rules);
+        assert_eq!(out, "_", "the clamped bound is 1");
+        let mut namer = UniqueNamer::new(rules);
+        let first = namer.name_for("a long colliding source name");
+        assert_eq!(first, "_");
+    }
+
+    /// 6.11: the exhaustion regime directly — tight bounds with many
+    /// colliding sources stay distinct AND in-bound, and terminate (the
+    /// probe bound is the loud answer when the space genuinely runs out,
+    /// which these bounds never reach).
+    #[test]
+    fn tight_bounds_keep_colliding_sources_distinct_and_terminating() {
+        for max_len in 8..=12usize {
+            let rules = IdentRules { max_len };
+            let mut namer = UniqueNamer::new(rules);
+            let sources: Vec<String> = (0..24)
+                .map(|i| format!("a very long colliding column name {i}"))
+                .collect();
+            let names: Vec<String> = sources.iter().map(|s| namer.name_for(s)).collect();
+            let unique: std::collections::BTreeSet<&String> = names.iter().collect();
+            assert_eq!(unique.len(), sources.len(), "max_len={max_len}: no merges");
+            for name in &names {
+                assert!(name.len() <= max_len, "max_len={max_len} produced `{name}`");
+            }
         }
     }
 }

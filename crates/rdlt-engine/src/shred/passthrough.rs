@@ -57,6 +57,7 @@ pub(crate) fn passthrough_items(
         load_id,
         mode,
         policy,
+        max_batch_cells,
     } = ctx;
     // ---- Map the arrow schema onto the logical schema ----
     let (mut observed, normalized_to_index) = schema_from_arrow(batch, table, capabilities)?;
@@ -67,8 +68,17 @@ pub(crate) fn passthrough_items(
     // a narrowing delta into the registry (found by the cross-batch narrowing
     // test: debug builds assert, release builds would shrink the schema).
     if let Some(current) = registry.get(table) {
+        // Map-backed lookups (5L8): the join, the merge and the assembly
+        // each walked a per-column linear find — O(columns²) of string
+        // compares per push on a wide table, the same class 4M3 removed
+        // from the shredder side.
+        let current_by_name: std::collections::HashMap<&str, &rdlt_core::ColumnDef> = current
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
         for column in &mut observed.columns {
-            if let Some(existing) = current.columns.iter().find(|c| c.name == column.name) {
+            if let Some(existing) = current_by_name.get(column.name.as_str()) {
                 column.column_type = join_column_types(&existing.column_type, &column.column_type)
                     .map_err(|reason| {
                         RdltError::config(format!(
@@ -89,11 +99,17 @@ pub(crate) fn passthrough_items(
         // assembly already null-fills absent columns; this keeps the registry
         // itself append-only. The shredder's JSONL path needs no such merge:
         // its observation states accumulate across pushes by construction.
-        for existing in &current.columns {
-            if !observed.columns.iter().any(|c| c.name == existing.name) {
-                observed.columns.push(existing.clone());
-            }
-        }
+        let missing: Vec<rdlt_core::ColumnDef> = {
+            let observed_names: std::collections::HashSet<&str> =
+                observed.columns.iter().map(|c| c.name.as_str()).collect();
+            current
+                .columns
+                .iter()
+                .filter(|existing| !observed_names.contains(existing.name.as_str()))
+                .cloned()
+                .collect()
+        };
+        observed.columns.extend(missing);
     }
 
     // ---- Re-count breadth AFTER the join ----
@@ -167,6 +183,20 @@ pub(crate) fn passthrough_items(
         registry.diff(&observed)
     };
 
+    // The cell budget (4H3) fires BEFORE the registry apply (5L10): a
+    // refused push must not leave its schema mutation behind — the
+    // registry would desync from the destination's DDL the moment an error
+    // path ever learned to continue past it. Assembly pays columns × rows
+    // — null-filled for every column this batch omits — so the product is
+    // refused before any array is built, not metered after. `observed`'s
+    // width IS the post-apply registry width.
+    crate::shred::refuse_over_cell_budget(
+        table,
+        observed.columns.len(),
+        batch.num_rows(),
+        max_batch_cells,
+    )?;
+
     if let Some((delta, current)) = registry.apply(observed, changes) {
         items.push(LoadItem::Delta {
             schema: current,
@@ -178,10 +208,10 @@ pub(crate) fn passthrough_items(
     // ---- Assemble the outgoing batch against the CURRENT registry schema ----
     let current = registry.get(table).expect("registered above");
     let rows = batch.num_rows();
-    // The cell budget (4H3): assembly pays columns × rows — null-filled for
-    // every column this batch omits — so the product is refused BEFORE any
-    // array is built, not metered after.
-    crate::shred::refuse_over_cell_budget(table, current.columns.len(), rows)?;
+    let index_by_name: std::collections::HashMap<&str, usize> = normalized_to_index
+        .iter()
+        .map(|(normalized, idx)| (normalized.as_str(), *idx))
+        .collect();
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(current.columns.len());
     for column in &current.columns {
         if column.name == system_columns::LOAD_ID {
@@ -189,11 +219,8 @@ pub(crate) fn passthrough_items(
             continue;
         }
         let target_type = arrow_column_type(&column.column_type);
-        let array = match normalized_to_index
-            .iter()
-            .find(|(normalized, _)| normalized == &column.name)
-        {
-            Some((_, idx)) => {
+        let array = match index_by_name.get(column.name.as_str()) {
+            Some(idx) => {
                 let source = batch.column(*idx);
                 if source.data_type() == &target_type {
                     Arc::clone(source) // the common zero-copy path
@@ -471,6 +498,7 @@ mod tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
             DestinationCapabilities::default(),
         )
@@ -497,6 +525,7 @@ mod tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
             DestinationCapabilities::default(),
         )
@@ -543,6 +572,7 @@ mod tests {
                     load_id,
                     mode,
                     policy,
+                    max_batch_cells: crate::shred::MAX_BATCH_CELLS,
                 },
                 DestinationCapabilities::default(),
             )
@@ -671,6 +701,7 @@ mod tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
             DestinationCapabilities::default(),
         )
@@ -769,6 +800,7 @@ mod tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
             DestinationCapabilities::default(),
         )
@@ -781,6 +813,7 @@ mod tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
             DestinationCapabilities::default(),
         )

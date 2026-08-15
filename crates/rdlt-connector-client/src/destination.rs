@@ -276,9 +276,11 @@ impl Backend {
     fn forward_part(&self, event: proto::PartClosedEvent) -> Result<(), DestinationError> {
         if crate::sanitize::contains_control(&event.table) {
             return Err(DestinationError::fatal(format!(
-                "the connector reported a part event for a table named {:?} — control \
+                "the connector reported a part event for a table named `{}` — control \
                  characters in a table name are refused at the wire boundary",
-                event.table
+                // The shared escape, not `{:?}` — the latter leaves the
+                // inventory's Lo-category fillers raw (5L4).
+                crate::sanitize::escape_control_characters(&event.table)
             )));
         }
         let Some(listener) = &self.part_events else {

@@ -34,20 +34,6 @@ fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str)
 /// wiring, the loader, and the recovery scan all build on it.
 pub(super) use crate::coverage::root_table;
 
-/// The most streams one source may declare for a single run (GLM round-4,
-/// 4H2). Every declared stream costs plan-time validation and — during the
-/// run — its own shred state and in-flight budget share, so the stream list
-/// is the one discovery axis a source controls DIRECTLY, and it must be
-/// bounded like every other axis (rows, columns, tables, frame bytes). A
-/// `streams()` reply is one gRPC message capped at 64 MiB, which a rogue
-/// connector can fill with ~10⁶ minimal specs; without a cap the collision
-/// checks below — even the sub-quadratic ones — and the per-stream run
-/// wiring turn that one reply into unbounded CPU before any budget,
-/// deadline, or cancellation can engage. 1,024 is far past every honest
-/// discovery (a relational database's table list), and refusal is typed at
-/// plan time, before any session opens.
-pub(super) const MAX_STREAMS_PER_SOURCE: usize = 1024;
-
 /// The mixed cursor-less/cursored advisory — CONDITIONAL truth, by
 /// design (round-4 fix): a stream declaring no `cursor_field` MAY be a
 /// snapshot stream that never checkpoints, but it may equally
@@ -130,15 +116,29 @@ pub(super) fn validate_streams(
         )));
     }
 
+    // 5M6: `ident_rules.max_len` drives the naming probe loop — an
+    // exhaustible bound makes its assert a data-reachable host panic.
+    // The client validates wire-declared capabilities at the handshake;
+    // this seat covers IN-PROCESS destinations, so every path into the
+    // engine validates once.
+    if let Err(reason) = capabilities.ident_rules.validate() {
+        return Err(RdltError::config(format!(
+            "destination `{}` declares out-of-range identifier rules: {reason}",
+            destination.spec().name
+        )));
+    }
+
     // The stream-count cap (4H2) sits BEFORE everything per-stream: nothing
     // below may scale unboundedly with a source-declared list length.
-    if streams.len() > MAX_STREAMS_PER_SOURCE {
+    if streams.len() > config.max_streams_per_source {
         return Err(RdltError::config(format!(
-            "source declares {} streams, over the {MAX_STREAMS_PER_SOURCE}-stream cap — \
-             every declared stream costs plan-time validation and its own share of the \
-             run's in-flight budget, so the one discovery axis a source controls directly \
-             is bounded like every other",
-            streams.len()
+            "source declares {} streams, over the {}-stream cap — every declared stream \
+             costs plan-time validation and its own share of the run's in-flight budget, \
+             so the one discovery axis a source controls directly is bounded like every \
+             other; an honestly larger discovery can raise the cap with \
+             `EngineConfig::with_max_streams_per_source`",
+            streams.len(),
+            config.max_streams_per_source
         )));
     }
 
@@ -408,7 +408,7 @@ mod hint_validation_tests {
     /// plan-time refusal, before any per-stream work.
     #[test]
     fn a_source_declaring_more_streams_than_the_cap_is_refused() {
-        let specs: Vec<_> = (0..MAX_STREAMS_PER_SOURCE + 1)
+        let specs: Vec<_> = (0..crate::DEFAULT_MAX_STREAMS_PER_SOURCE + 1)
             .map(|index| StreamSpec::new(format!("s{index}")))
             .collect();
         let dest = MemoryDestination::new();
@@ -425,11 +425,15 @@ mod hint_validation_tests {
             "the refusal names the cap: {text}"
         );
         assert!(
-            text.contains(&(MAX_STREAMS_PER_SOURCE + 1).to_string()),
+            text.contains(&(crate::DEFAULT_MAX_STREAMS_PER_SOURCE + 1).to_string()),
             "the refusal reports the declared count: {text}"
         );
+        assert!(
+            text.contains("with_max_streams_per_source"),
+            "the refusal names the operator override (5L9): {text}"
+        );
 
-        let at_cap: Vec<_> = (0..MAX_STREAMS_PER_SOURCE)
+        let at_cap: Vec<_> = (0..crate::DEFAULT_MAX_STREAMS_PER_SOURCE)
             .map(|index| StreamSpec::new(format!("s{index}")))
             .collect();
         validate_streams(
@@ -439,6 +443,14 @@ mod hint_validation_tests {
             &dest,
         )
         .expect("exactly the cap validates");
+
+        // 5L9: the cap is a knob — an honestly larger discovery raises it.
+        let raised = EngineConfig::new("streams").with_max_streams_per_source(2048);
+        let over_default: Vec<_> = (0..crate::DEFAULT_MAX_STREAMS_PER_SOURCE + 1)
+            .map(|index| StreamSpec::new(format!("s{index}")))
+            .collect();
+        validate_streams(&raised, &over_default, dest.capabilities(), &dest)
+            .expect("a raised cap admits the larger discovery");
     }
 
     /// The membership formulation of rules 1 and 2 must decide EXACTLY what
@@ -556,6 +568,32 @@ mod hint_validation_tests {
             "a single stream has no co-stream to defer against"
         );
         assert!(mixed_snapshot_advisory(&[]).is_none());
+    }
+
+    /// 5M6's engine seat: an IN-PROCESS destination declaring an
+    /// exhaustible `max_len` refuses at plan time — the wire seat
+    /// validates at the handshake, this one covers destinations that
+    /// never cross a wire.
+    #[test]
+    fn an_out_of_range_ident_rules_declaration_is_refused() {
+        let dest = MemoryDestination::new().with_capabilities(
+            DestinationCapabilities::default()
+                .with_ident_rules(rdlt_core::naming::IdentRules { max_len: 2 }),
+        );
+        let error = check_with(no_workdir_config(), dest)
+            .expect_err("an exhaustible max_len refuses at plan time");
+        assert!(
+            error.to_string().contains("identifier rules"),
+            "the refusal names the rules: {error}"
+        );
+        // The edges: the floor and the default are both fine.
+        for max_len in [rdlt_core::naming::MIN_IDENT_MAX_LEN, 63, 255] {
+            let dest = MemoryDestination::new().with_capabilities(
+                DestinationCapabilities::default()
+                    .with_ident_rules(rdlt_core::naming::IdentRules { max_len }),
+            );
+            check_with(no_workdir_config(), dest).expect("in-range rules validate");
+        }
     }
 
     #[test]

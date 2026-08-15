@@ -44,7 +44,9 @@ mod schema;
 mod shred;
 mod wal;
 
-pub use config::{DEFAULT_BYTE_BUDGET, EngineConfig};
+pub use config::{
+    DEFAULT_BYTE_BUDGET, DEFAULT_MAX_BATCH_CELLS, DEFAULT_MAX_STREAMS_PER_SOURCE, EngineConfig,
+};
 pub use engine::{Engine, EventStream};
 pub use rdlt_core::{Metrics, MetricsSnapshot, PartClose, PipelineEvent, RdltError, RunReport};
 

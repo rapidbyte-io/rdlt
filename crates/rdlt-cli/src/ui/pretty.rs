@@ -87,8 +87,11 @@ impl Pretty {
                 // The declared stream name is connector-controlled
                 // text; indicatif writes messages straight to the
                 // terminal, so it is escaped at this boundary exactly
-                // like the plain renderer's lines are at stderr_line.
-                bar.set_message(super::sanitize(stream.as_str()));
+                // like the plain renderer's lines are at stderr_line —
+                // and with the IDENTIFIER predicate (5L14), so even an
+                // admitted joiner can't render the name invisibly or a
+                // line break forge display lines.
+                bar.set_message(super::sanitize_identifier(stream.as_str()));
                 self.streams.insert(stream.clone(), bar);
                 self.finished.insert(stream.clone(), false);
             }
@@ -119,7 +122,7 @@ impl Pretty {
             let done = self.finished.get(stream).copied().unwrap_or(false);
             // Escaped like the announcement above — same string, same
             // boundary.
-            let name = super::sanitize(stream.as_str());
+            let name = super::sanitize_identifier(stream.as_str());
             let mut line = format!(
                 "{name:<14} read {:<8} written {:<8} {:<9}",
                 format::count(read.rows_read),

@@ -578,10 +578,9 @@ async fn a_source_flooding_past_the_retention_ceiling_fails_by_name() {
     assert!(
         failures.iter().any(|f| f.clause == "S1"
             && f.message
-                == "stream `flood`: the source exceeded the 67108864-byte conservative \
-                    retained-row budget — raw JSON is charged at 256× its wire size before \
-                    parsing because serde_json values expand in memory; a conformance fixture \
-                    must stay well inside that ceiling"),
+                == "stream `flood`: the source exceeded the 67108864-byte retained-row \
+                    budget — retention is metered post-parse at the values' real heap \
+                    size; a conformance fixture must stay well inside that ceiling"),
         "expected the retention-ceiling S1 failure, got: {failures:?}"
     );
 }

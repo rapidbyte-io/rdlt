@@ -174,14 +174,24 @@ pub struct HandshakeOutcome {
 /// incl. newline/tab/DEL, and C1) — an identifier seat of the
 /// `sanitize` module's one rule: these values become host vocabulary
 /// (logs, reports, mismatch refusals that quote them), and a name is
-/// either clean or refused. The refusal renders the value in its
-/// `{:?}` escaped form, so the message cannot carry the bytes it
-/// refuses.
+/// either clean or refused. The refusal renders the value through the
+/// shared escape — `{:?}` leaves the inventory's two Lo-category
+/// Hangul fillers raw (5L4), and the message must not carry the very
+/// bytes it refuses.
 fn refuse_control_characters_in(field: &str, value: &str) -> Result<(), ClientError> {
     if crate::sanitize::contains_control(value) {
         return Err(ClientError::Protocol(format!(
-            "the handshake reported a {field} of {value:?} — control characters in an \
-             identity field are refused at the wire boundary"
+            "the handshake reported a {field} of `{}` — control characters in an \
+             identity field are refused at the wire boundary",
+            crate::sanitize::escape_control_characters(value)
+        )));
+    }
+    if crate::sanitize::is_oversized_identifier(value) {
+        return Err(ClientError::Protocol(format!(
+            "the handshake reported a {field} of {} bytes — over the {}-byte wire \
+             identifier ceiling, refused at the wire boundary",
+            value.len(),
+            crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
         )));
     }
     Ok(())
@@ -269,6 +279,18 @@ pub async fn handshake(
     // judgment — and ride the same rule as the wire-reported pair.
     refuse_control_characters_in("spec name", &spec.name)?;
     refuse_control_characters_in("spec version", &spec.version)?;
+    // 5L5: count caps beside the content gates — a state-format map of
+    // millions of keys passes every content gate within the frame cap
+    // otherwise. v0 servers send an empty map; 64 kinds is far past any
+    // honest negotiation.
+    const MAX_STATE_FORMAT_KINDS: usize = 64;
+    if ok.state_format_versions.len() > MAX_STATE_FORMAT_KINDS {
+        return Err(ClientError::Protocol(format!(
+            "the handshake reported {} state-format kinds — over the {MAX_STATE_FORMAT_KINDS}-kind \
+             ceiling, refused at the wire boundary",
+            ok.state_format_versions.len()
+        )));
+    }
     for state_format_name in ok.state_format_versions.keys() {
         refuse_control_characters_in("state format name", state_format_name)?;
     }
@@ -277,13 +299,22 @@ pub async fn handshake(
     let capabilities: Option<DestinationCapabilities> = if ok.capabilities_json.is_empty() {
         None
     } else {
-        Some(
-            serde_json::from_slice(&ok.capabilities_json).map_err(|error| {
-                ClientError::Protocol(format!(
-                    "undecodable capabilities_json in the handshake reply: {error}"
-                ))
-            })?,
-        )
+        let capabilities: DestinationCapabilities = serde_json::from_slice(&ok.capabilities_json)
+            .map_err(|error| {
+            ClientError::Protocol(format!(
+                "undecodable capabilities_json in the handshake reply: {error}"
+            ))
+        })?;
+        // 5M6: the declared `ident_rules.max_len` is untrusted wire input
+        // and drives the engine's naming probe loop — validate it HERE, at
+        // the trust boundary, so an exhaustible bound can never reach the
+        // namer's release-active assert.
+        capabilities.ident_rules.validate().map_err(|reason| {
+            ClientError::Protocol(format!(
+                "the connector's declared identifier rules are out of range: {reason}"
+            ))
+        })?;
+        Some(capabilities)
     };
 
     Ok(HandshakeOutcome {

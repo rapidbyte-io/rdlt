@@ -50,31 +50,48 @@ const CHANNEL_BYTE_BUDGET: usize = 16 << 20;
 /// values; raw JSON is conservatively expansion-weighted before parse.
 const RETENTION_CEILING_BYTES: usize = 64 << 20;
 
-/// Compact JSON expands by well over an order of magnitude when
-/// materialized as `serde_json::Value`s. Debit a deliberately
-/// conservative factor before parsing so the ceiling also bounds the
-/// parser's transient allocation, not only the retained result.
-///
-/// The arithmetic behind 256, against a glibc-class allocator and THIS
-/// workspace's serde_json: the `preserve_order` feature is enabled, so a
-/// `Value` is much larger than the 32 bytes of the default map
-/// (IndexMap-backed objects; measured 72 in this lockfile) — the 4L7
-/// catch, since the 64 figure was derived from 32. A dense scalar array
-/// (`[0,0,0,…]`) costs ~2 wire bytes per element and materializes one
-/// ~72-byte `Value` per element in the root `Vec` — and while that
-/// `Vec` doubles, old and new allocations coexist, so the transient
-/// peak reaches ~3 slots' worth ≈ 216 bytes per element ≈ 108× the
-/// wire size. Chains of 1-element arrays (`[[[…]]]`, bounded by
-/// serde_json's 128-level recursion limit) cost ~2 wire bytes per level
-/// against a ~72-byte `Value` slot plus its own 1-element `Vec` heap
-/// block, which the allocator rounds with header overhead to ~150 bytes
-/// — ~75× all told. 256 covers both with headroom, and over-counting is
-/// the safe direction here: it refuses an oversized fixture early,
-/// where an under-count OOMs the harness. The layout the arithmetic
-/// rests on is pinned below, so a feature change (say, dropping
-/// `preserve_order`) fails the pin rather than silently re-opening the
-/// gap.
-const RAW_JSON_RETENTION_FACTOR: usize = 256;
+/// The most ONE raw-JSON push may weigh on the wire. Retention is
+/// metered ACTUALLY (post-parse, see [`retained_bytes`]) — so the 5M7
+/// false negatives are gone — but the PARSER'S transient still needs a
+/// bound, and it is this one: the worst whole-push expansion is the
+/// chain form, ~376 bytes per level for ~2 wire bytes (a 72-byte
+/// `Value` plus its one-element `Vec` heap block, capacity-4 and
+/// align-16 rounded, under this lockfile's 72-byte preserve_order
+/// layout) ≈ 188× — so 4 MiB of wire keeps the parse transient under
+/// ~1 GiB with the 256 factor covering it (the dense-array form, ~3
+/// coexisting slots per element during `Vec` doubling, is ~108× —
+/// lower). A source under certification streams fixtures in ordinary
+/// row pushes; a single push past this bound fails by name rather
+/// than materializing the transient.
+const MAX_SINGLE_PUSH_BYTES: usize = 4 * 1024 * 1024;
+
+/// The transient factor's derivation, asserted in the pins below:
+/// `TRANSIENT_FACTOR ≥` the chain form's per-wire-byte expansion.
+const TRANSIENT_FACTOR: usize = 256;
+
+/// The heap bytes one parsed value actually retains (5M7 — replacing the
+/// flat wire×factor charge that refused honest >256 KiB reads): one
+/// `Value` slot each, strings at capacity, containers at length times
+/// slot size, recursing. An approximation (Vec/IndexMap capacity slack,
+/// index bytes and allocator rounding are not modeled — the 64 MiB
+/// ceiling it feeds is the flood guard, not an accountant).
+fn retained_bytes(value: &Value) -> usize {
+    const SLOT: usize = std::mem::size_of::<Value>();
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => SLOT,
+        Value::String(s) => SLOT + s.capacity(),
+        Value::Array(items) => {
+            SLOT + items.len() * SLOT + items.iter().map(retained_bytes).sum::<usize>()
+        }
+        Value::Object(map) => {
+            SLOT + map.len() * (SLOT + std::mem::size_of::<String>() + 16)
+                + map
+                    .iter()
+                    .map(|(k, v)| k.len() + retained_bytes(v))
+                    .sum::<usize>()
+        }
+    }
+}
 
 /// What one full read produced: row groups separated by checkpoints.
 #[derive(Debug, Default)]
@@ -170,45 +187,61 @@ async fn read_all_unbounded<S: Source>(
         tokio::select! {
             push = input.recv() => match push {
                 Some(push) => {
-                    retained = retained.saturating_add(match &push.payload {
-                        PushPayload::RawJson(bytes) => bytes
-                            .len()
-                            .saturating_mul(RAW_JSON_RETENTION_FACTOR),
-                        PushPayload::Arrow(batch) => batch
-                            .num_rows()
-                            .saturating_mul(std::mem::size_of::<Value>()),
-                        PushPayload::Checkpoint(cursor) => serde_json::to_vec(cursor.as_value())
-                            .expect("a cursor Value serializes infallibly")
-                            .len()
-                            .saturating_mul(RAW_JSON_RETENTION_FACTOR),
-                    });
-                    if retained > RETENTION_CEILING_BYTES {
-                        return Err(format!(
-                            "the source exceeded the {RETENTION_CEILING_BYTES}-byte conservative \
-                             retained-row budget — raw JSON is charged at \
-                             {RAW_JSON_RETENTION_FACTOR}× its wire size before parsing because \
-                             serde_json values expand in memory; a conformance fixture must stay \
-                             well inside that ceiling"
-                        ));
-                    }
+                    // 5M7: retention is metered ACTUALLY, post-parse —
+                    // the flat pre-parse factor refused honest multi-MiB
+                    // reads. The parser's transient is bounded separately,
+                    // per push, by the single-push wire bound above.
                     match push.payload {
                         PushPayload::RawJson(bytes) => {
+                            if bytes.len() > MAX_SINGLE_PUSH_BYTES {
+                                return Err(format!(
+                                    "a single raw-JSON push of {} bytes exceeds the {}-byte \
+                                     per-push bound — the conformance parser's transient \
+                                     expansion (~{TRANSIENT_FACTOR}×) stays under ~1 GiB at \
+                                     that size; stream the fixture in smaller pushes",
+                                    bytes.len(),
+                                    MAX_SINGLE_PUSH_BYTES
+                                ));
+                            }
                             for doc in serde_json::Deserializer::from_slice(&bytes).into_iter::<Value>() {
                                 match doc.map_err(|e| format!("source pushed invalid JSON: {e}"))? {
-                                    Value::Array(items) => current.extend(items),
-                                    value => current.push(value),
+                                    Value::Array(items) => {
+                                        retained = retained.saturating_add(
+                                            items.iter().map(retained_bytes).sum::<usize>(),
+                                        );
+                                        current.extend(items);
+                                    }
+                                    value => {
+                                        retained =
+                                            retained.saturating_add(retained_bytes(&value));
+                                        current.push(value);
+                                    }
                                 }
                             }
                         }
                         PushPayload::Arrow(batch) => {
+                            retained = retained.saturating_add(
+                                batch
+                                    .num_rows()
+                                    .saturating_mul(std::mem::size_of::<Value>()),
+                            );
                             // Arrow-pushing sources degrade the row comparison to
                             // COUNTS: each row becomes an opaque Null, so the
                             // resume law is certified on cardinality, not content.
                             current.extend((0..batch.num_rows()).map(|_| Value::Null));
                         }
                         PushPayload::Checkpoint(cursor) => {
+                            retained =
+                                retained.saturating_add(retained_bytes(cursor.as_value()));
                             observed.groups.push((std::mem::take(&mut current), Some(cursor)));
                         }
+                    }
+                    if retained > RETENTION_CEILING_BYTES {
+                        return Err(format!(
+                            "the source exceeded the {RETENTION_CEILING_BYTES}-byte retained-row \
+                             budget — retention is metered post-parse at the values' real heap \
+                             size; a conformance fixture must stay well inside that ceiling"
+                        ));
                     }
                 }
                 None => break,
@@ -412,40 +445,56 @@ fn nothing_concluded(
 mod retention_tests {
     use super::*;
 
+    /// 5L12: the transient factor must cover the BINDING worst case,
+    /// computed from the real layout — the chain form (`(size +
+    /// align16(4·size + 8)) / 2` per wire byte: one `Value` plus its
+    /// capacity-4 first `Vec` block, align-16 rounded). The earlier pin
+    /// asserted the dense-array bound, which is NOT the binding case; a
+    /// `Value` growth would have re-opened the under-count while the pin
+    /// stayed green.
     #[test]
-    fn compact_json_is_refused_before_a_large_value_graph_can_materialize() {
-        let largest_preparse_payload = RETENTION_CEILING_BYTES / RAW_JSON_RETENTION_FACTOR;
-        assert_eq!(largest_preparse_payload, 1 << 18);
+    fn the_transient_factor_covers_the_binding_chain_form() {
+        let size = std::mem::size_of::<serde_json::Value>();
         assert!(
-            largest_preparse_payload
-                .saturating_add(1)
-                .saturating_mul(RAW_JSON_RETENTION_FACTOR)
-                > RETENTION_CEILING_BYTES
+            size > 32,
+            "a 32-byte Value means preserve_order was toggled OFF — re-derive \
+             the transient factor before trusting it (measured: {size})"
         );
+        let align16 = |x: usize| (x + 15) & !15;
+        let chain_form = (size + align16(4 * size + 8)) / 2;
+        assert!(
+            TRANSIENT_FACTOR >= chain_form,
+            "the factor ({TRANSIENT_FACTOR}) no longer covers the chain worst case \
+             ({chain_form}) against the real {size}-byte layout — re-derive it"
+        );
+        // The dense-array form (~3 coexisting slots per 2-wire-byte
+        // element) is lower — asserted so a swap of which form binds is
+        // noticed.
+        let dense_form = 3 * size / 2;
+        assert!(
+            chain_form >= dense_form,
+            "the chain form binds at {chain_form}, dense at {dense_form}"
+        );
+        // And the per-push bound keeps the worst transient under ~1 GiB.
+        const { assert!(MAX_SINGLE_PUSH_BYTES * TRANSIENT_FACTOR <= (1 << 30) + (1 << 28)) };
     }
 
-    /// 4L7: the retention factor's arithmetic rests on THIS workspace's
-    /// `serde_json::Value` layout — `preserve_order` makes it much larger
-    /// than the 32 bytes of the default map (IndexMap-backed objects; the
-    /// finding measured 80, this lock measures 72 — either way, not 32,
-    /// which is what the original 64× derivation assumed). Pin the
-    /// INVARIANT, computed from the real layout, so a feature change or a
-    /// dependency bump fails loudly here instead of silently re-opening
-    /// the under-counting gap.
+    /// The post-parse metering is REAL: a megabyte of retained string
+    /// charges ≈ a megabyte, not 256× its wire size (5M7's false-negative
+    /// fix, pinned at the walk's own granularity).
     #[test]
-    fn the_retention_factor_rests_on_the_real_value_layout() {
-        let value_size = std::mem::size_of::<serde_json::Value>();
+    fn retained_bytes_measures_the_heap_not_the_wire() {
+        let big = Value::String("x".repeat(1 << 20));
+        let charged = retained_bytes(&big);
         assert!(
-            value_size > 32,
-            "a 32-byte Value means preserve_order was toggled OFF — re-derive \
-             RAW_JSON_RETENTION_FACTOR before trusting it (measured: {value_size})"
+            ((1 << 20)..(1 << 21)).contains(&charged),
+            "a 1 MiB string charges its real retention, not a factor of its wire: {charged}"
         );
-        // The densest transient: ~3 coexisting Value slots per ~2-wire-byte
-        // array element while the root Vec doubles mid-parse.
+        let arr = Value::Array((0..1000).map(Value::from).collect::<Vec<_>>());
+        let charged = retained_bytes(&arr);
         assert!(
-            RAW_JSON_RETENTION_FACTOR >= 3 * value_size / 2,
-            "the factor no longer covers the densest transient against the \
-             real {value_size}-byte layout — re-derive it"
+            charged >= 1000 * std::mem::size_of::<Value>(),
+            "the container's slots are charged: {charged}"
         );
     }
 }

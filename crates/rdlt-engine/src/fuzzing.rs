@@ -10,7 +10,11 @@ use rdlt_core::{LoadId, SchemaPolicy, TableName, WriteMode};
 /// errors are the only acceptable failure.
 pub fn parse_slab(bytes: &[u8]) {
     let mut arena = crate::shred::arena::Arena::default();
-    let _ = arena.parse_rows(bytes, rdlt_connector::channel::MAX_RECORD_BATCH_ROWS);
+    let _ = arena.parse_rows(
+        bytes,
+        rdlt_connector::channel::MAX_RECORD_BATCH_ROWS,
+        rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH,
+    );
 }
 
 /// The FULL (tape) shred path over arbitrary bytes: parse, observe, resolve,
@@ -37,6 +41,7 @@ pub fn shred_slab(bytes: &[u8]) {
             load_id: &load_id,
             mode: &mode,
             policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
     );
     let Ok(items) = items else { return };
@@ -103,6 +108,7 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
         )
         .unwrap_or_else(|_| panic!("bench shred succeeds"));
@@ -131,6 +137,7 @@ pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
             load_id: &load_id,
             mode: &mode,
             policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
         DestinationCapabilities::default(),
     )

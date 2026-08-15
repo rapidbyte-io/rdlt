@@ -97,22 +97,33 @@ pub mod sanitize;
 /// [`SourceService`]: proto::source_service_server::SourceService
 /// [`DestinationService`]: proto::destination_service_server::DestinationService
 ///
-/// ## The document ceiling and the cursor contract (4L10)
+/// ## The document ceilings and the cursor contract (4L10, 5M1)
 ///
-/// Every `*_json` DOCUMENT payload (the handshake's `config_json`, a
-/// read's `since_cursor_json`) is capped at **8 MiB** — spelled ONCE as
-/// `rdlt_connector::MAX_DOCUMENT_BYTES` (the SPI crate, the one
-/// dependency every implementing seat already shares; this crate stays
-/// a leaf for foreign integrators, so the constant lives there). The
-/// serve side refuses an oversized document before parsing it (an
-/// untyped JSON document expands many-fold over its wire size inside
-/// the connector), and the client refuses to SEND one (a host-side cap
-/// on the YAML source does not bound the re-serialized JSON — YAML→JSON
-/// expansion can push a just-legal file past the ceiling, and the
-/// pre-send refusal names exactly that). For cursor authors: persisted
-/// state MUST serialize under the document ceiling — a connector whose
-/// state can outgrow it summarizes (a high-water mark, an offset, a
-/// resume token) instead of embedding the data.
+/// The UNTYPED `*_json` document payloads are size-capped at both ends,
+/// spelled ONCE each in the SPI crate (this crate stays a leaf for
+/// foreign integrators, so the constants live there):
+///
+/// - `config_json`: **8 MiB** (`rdlt_connector::MAX_DOCUMENT_BYTES`).
+///   The serve side refuses an oversized document before parsing it (an
+///   untyped JSON document expands many-fold over its wire size inside
+///   the connector), and the client refuses to SEND one (a host-side
+///   cap on the YAML source does not bound the re-serialized JSON —
+///   YAML→JSON expansion can push a just-legal file past the ceiling,
+///   and the pre-send refusal names exactly that).
+/// - cursors (`since_cursor_json`, `checkpoint_cursor_json`): **4 MiB**
+///   (`rdlt_connector::MAX_CURSOR_BYTES`) — deliberately tighter,
+///   because a cursor is also recorded in the engine's WAL, whose
+///   per-line cap is sized to carry one maximal cursor line. Enforced
+///   at the serve gate, at the client's inbound frame decode, and at
+///   its pre-send check. Persisted state MUST serialize under this
+///   bound — a connector whose state can outgrow it summarizes (a
+///   high-water mark, an offset, a resume token) instead of embedding
+///   the data.
+///
+/// Typed `*_json` fields (stream specs, schemas, receipts) ride typed
+/// serde structs with a ≈1× parse factor and are deliberately outside
+/// the document ceilings, which exist to bound untyped-`Value`
+/// expansion.
 pub mod proto {
     include!("generated.rs");
 }

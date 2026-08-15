@@ -515,7 +515,7 @@ mod identity_cross_view {
             let (slab, values) = views(&values);
             let bytes = slab.as_bytes();
             let mut arena = Arena::default();
-            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS).expect("the slab we just serialized must parse");
+            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS, rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH).expect("the slab we just serialized must parse");
             prop_assert_eq!(rows.len(), values.len());
             for (node, value) in rows.into_iter().zip(&values) {
                 let (mut a, mut b) = (Vec::new(), Vec::new());
@@ -537,7 +537,7 @@ mod identity_cross_view {
             let (slab, values) = views(&values);
             let bytes = slab.as_bytes();
             let mut arena = Arena::default();
-            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS).expect("the slab we just serialized must parse");
+            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS, rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH).expect("the slab we just serialized must parse");
             for (node, value) in rows.into_iter().zip(&values) {
                 let keys: Vec<String> = value
                     .as_object()

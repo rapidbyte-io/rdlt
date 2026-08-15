@@ -36,16 +36,27 @@ pub(crate) enum PushError {
 }
 
 /// The one refusal both halves of the per-push row bound share: the
-/// parse-time count (roots plus EVERY array element at any depth — each is a
-/// child row or a list cell to be, and counting at parse keeps a dense
-/// nested slab from becoming a multi-gigabyte arena before refusal, 4H3)
-/// and the traversal-time total spend from the same cap and speak with one
-/// voice.
+/// parse-time root count and the traversal-time total (roots plus the child
+/// rows their lists fan out into) spend from the same cap and speak with
+/// one voice.
 fn row_cap_refusal() -> RdltError {
     RdltError::config(format!(
-        "JSON push exceeds the {MAX_RECORD_BATCH_ROWS}-row cap across root rows and array \
-         elements — row count is bounded separately from encoded bytes to prevent per-row \
-         lineage and load-id amplification"
+        "JSON push exceeds the {MAX_RECORD_BATCH_ROWS}-row cap across root and child rows — \
+         row count is bounded separately from encoded bytes to prevent per-row lineage \
+         and load-id amplification"
+    ))
+}
+
+/// The value-budget refusal (5M5): object entries and nested array
+/// elements each cost an arena node at parse, so their count is bounded
+/// separately from rows — a dense slab refuses typed instead of
+/// materializing a ~22× arena before any traversal check could run.
+fn value_cap_refusal() -> RdltError {
+    RdltError::config(format!(
+        "JSON push exceeds the {}-value parse budget across object fields and array \
+         elements — value count bounds the parse arena separately from row count; split \
+         the push into smaller slabs",
+        rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH
     ))
 }
 
@@ -133,14 +144,20 @@ impl TapeShredder {
         }
 
         let mut arena = Arena::sized_for(bytes.len());
-        // The parse enforces the root half of the row cap PROGRESSIVELY —
-        // a slab dense enough to exceed it stops parsing at the cap instead
-        // of materializing the whole arena first.
+        // The parse enforces both allowances PROGRESSIVELY — the row cap at
+        // roots and the value budget at every object entry and nested array
+        // element — so a dense slab stops parsing at the cap instead of
+        // materializing the whole arena first.
         let roots = arena
-            .parse_rows(bytes, MAX_RECORD_BATCH_ROWS)
+            .parse_rows(
+                bytes,
+                MAX_RECORD_BATCH_ROWS,
+                rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH,
+            )
             .map_err(|e| match e {
                 ParseRowsError::Json(e) => PushError::Json(e),
                 ParseRowsError::RowCap => PushError::Engine(row_cap_refusal()),
+                ParseRowsError::ValueCap => PushError::Engine(value_cap_refusal()),
             })?;
 
         // Buffered rows per table, index-aligned with `self.tables`.
@@ -390,6 +407,7 @@ mod cardinality_tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
         )
     }
@@ -504,6 +522,42 @@ mod cardinality_tests {
             ),
             Err(PushError::Json(e)) => panic!("must refuse typed, not as a parse error: {e}"),
             Ok(_) => panic!("cap struct fields beside one column must refuse"),
+        }
+    }
+
+    /// 5L11: the cell budget pinned through the DRAIN seat (the mod-level
+    /// pin proves the arithmetic; this one proves the seat consults it):
+    /// a maximal-width table times enough rows refuses before assembly.
+    #[test]
+    fn a_wide_table_times_many_rows_refuses_at_the_cell_budget() {
+        let mut shredder = shredder();
+        // Establish a 4,096-column root table with one wide document.
+        let mut wide = String::from("{");
+        for index in 0..super::super::MAX_SOURCE_COLUMNS_PER_TABLE {
+            if index > 0 {
+                wide.push(',');
+            }
+            wide.push_str(&format!("\"f{index}\":1"));
+        }
+        wide.push('}');
+        push(&mut shredder, wide.as_bytes())
+            .unwrap_or_else(|_| panic!("the establishing push shreds"));
+
+        // Rows needed to trip the product at 4,098 columns (4,096 source +
+        // 2 root system): floor(budget / width) + 1 is the first refusal.
+        let width = super::super::MAX_SOURCE_COLUMNS_PER_TABLE + 2;
+        let rows_needed = crate::shred::MAX_BATCH_CELLS / width + 1;
+        let mut slab = Vec::with_capacity(rows_needed * 9);
+        for _ in 0..rows_needed {
+            slab.extend_from_slice(b"{\"f0\":1}\n");
+        }
+        match push(&mut shredder, &slab) {
+            Err(PushError::Engine(e)) => assert!(
+                e.to_string().contains("cell"),
+                "the refusal names the cell budget: {e}"
+            ),
+            Err(PushError::Json(e)) => panic!("must refuse typed, not as a parse error: {e}"),
+            Ok(_) => panic!("a columns × rows product past the budget must refuse"),
         }
     }
 

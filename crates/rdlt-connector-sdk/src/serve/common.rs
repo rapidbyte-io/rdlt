@@ -50,11 +50,13 @@ pub(super) use rdlt_connector_protocol::MAX_FRAME_BYTES;
 pub(super) const MAX_DOCUMENT_BYTES: usize = rdlt_connector::MAX_DOCUMENT_BYTES as usize;
 
 /// The typed size refusal for an oversized `*_json` document payload —
-/// one spelling for every seat that enforces [`MAX_DOCUMENT_BYTES`], so
-/// the config and cursor refusals cannot drift apart.
-pub(super) fn oversized_document(field: &str, len: usize) -> String {
+/// one spelling for every seat that enforces a document ceiling
+/// ([`MAX_DOCUMENT_BYTES`] for config, `rdlt_connector::MAX_CURSOR_BYTES`
+/// for cursors — the cursor contract is deliberately tighter, 5L3), so
+/// the refusals cannot drift apart.
+pub(super) fn oversized_document(field: &str, len: usize, ceiling: u64) -> String {
     format!(
-        "{field} is {len} bytes — larger than the {MAX_DOCUMENT_BYTES}-byte document \
+        "{field} is {len} bytes — larger than the {ceiling}-byte document \
          ceiling; a config or cursor document measures in kilobytes, so a payload this \
          size is a wrong path, refused before it can expand in memory"
     )
@@ -381,7 +383,7 @@ pub(crate) fn refuse_handshake(
 /// document's bytes may be credentials. Line and column are safe (they
 /// locate, they do not quote) and are what an operator needs to find
 /// the defect.
-fn describe_config_parse_error(error: &serde_json::Error) -> String {
+pub(super) fn describe_config_parse_error(error: &serde_json::Error) -> String {
     let kind = match error.classify() {
         serde_json::error::Category::Syntax => "syntax error",
         serde_json::error::Category::Eof => "unexpected end of input",
@@ -550,7 +552,11 @@ pub(crate) fn handshake<S: HandshakeShell>(
     // into an untyped `Value` multiplies them many times over in this
     // process — see `MAX_DOCUMENT_BYTES`.
     if request.config_json.len() > MAX_DOCUMENT_BYTES {
-        return refuse_handshake(oversized_document("config_json", request.config_json.len()));
+        return refuse_handshake(oversized_document(
+            "config_json",
+            request.config_json.len(),
+            MAX_DOCUMENT_BYTES as u64,
+        ));
     }
 
     // Both refusal arms below hold the protocol's secrecy rule (the

@@ -93,6 +93,16 @@ pub(crate) fn oversized_read_frame() -> proto::ReadFrame {
     }
 }
 
+/// One `arrow_ipc` read frame carrying the GIVEN bytes — the 5H1
+/// rogues' seat: bytes a real encoder would never emit (overdeclared
+/// lengths, panic-driving metadata) need a rogue that serves them
+/// verbatim.
+pub(crate) fn raw_arrow_read_frame(bytes: Vec<u8>) -> proto::ReadFrame {
+    proto::ReadFrame {
+        frame: Some(read_frame::Frame::ArrowIpc(bytes)),
+    }
+}
+
 /// One `raw_json` read frame — a boundary frame for the kill-matrix
 /// rogue (K-S2 breaks on the first non-checkpoint frame).
 pub(crate) fn json_read_frame() -> proto::ReadFrame {

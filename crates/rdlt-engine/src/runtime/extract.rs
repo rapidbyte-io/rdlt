@@ -52,6 +52,7 @@ impl ShredOwner {
         load_id: LoadId,
         mode: WriteMode,
         policy: SchemaPolicy,
+        max_batch_cells: usize,
         stream: StreamName,
     ) -> Result<(Self, Result<Vec<LoadItem>, RdltError>), RdltError> {
         tokio::task::spawn_blocking(move || {
@@ -62,6 +63,7 @@ impl ShredOwner {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells,
             };
             let items = self
                 .shredder
@@ -81,6 +83,7 @@ impl ShredOwner {
     /// Pass one already-structured batch through on the blocking pool: the common
     /// path is cheap (schema map + one constant column), but a widened column
     /// casts real data — that work must not sit on the async executor.
+    #[allow(clippy::too_many_arguments)]
     async fn passthrough(
         mut self,
         batch: arrow::record_batch::RecordBatch,
@@ -88,6 +91,7 @@ impl ShredOwner {
         load_id: LoadId,
         mode: WriteMode,
         policy: SchemaPolicy,
+        max_batch_cells: usize,
         capabilities: DestinationCapabilities,
     ) -> Result<(Self, Result<Vec<LoadItem>, RdltError>), RdltError> {
         tokio::task::spawn_blocking(move || {
@@ -98,6 +102,7 @@ impl ShredOwner {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
+                max_batch_cells,
             };
             let items =
                 crate::shred::passthrough::passthrough_items(&batch, &table, ctx, capabilities);
@@ -122,6 +127,8 @@ pub(super) struct StreamPlan {
     pub(super) records_budget: SharedBudget,
     pub(super) load_id: LoadId,
     pub(super) policy: SchemaPolicy,
+    /// The batch-assembly cell budget (`EngineConfig::with_max_batch_cells`).
+    pub(super) max_batch_cells: usize,
 }
 
 /// One stream's task: read from the source, shred (or pass structured batches
@@ -144,6 +151,7 @@ pub(super) async fn stream_task(
         records_budget,
         load_id,
         policy,
+        max_batch_cells,
     } = plan;
     let stream_name = spec.name.clone();
 
@@ -190,6 +198,7 @@ pub(super) async fn stream_task(
                         load_id.clone(),
                         mode.clone(),
                         policy.clone(),
+                        max_batch_cells,
                         stream_name.clone(),
                     )
                     .await
@@ -280,6 +289,7 @@ pub(super) async fn stream_task(
                         load_id.clone(),
                         mode.clone(),
                         policy.clone(),
+                        max_batch_cells,
                         capabilities,
                     )
                     .await

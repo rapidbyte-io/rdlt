@@ -784,7 +784,34 @@ fn retain_p5_violation(
 }
 
 /// The record batches one `arrow_ipc` payload carries.
+///
+/// 5H1: this seat decodes a CONNECTOR UNDER CERTIFICATION's frames — the
+/// primary adversary — so it gets both halves of the decode defense: the
+/// shared framing pre-pass (SPI `ipc` module) holds every declared
+/// length against the frame's real bytes before arrow's reader can
+/// allocate from them (the memset and `handle_alloc_error` → abort arms
+/// are neither panics nor errors), and `catch_unwind` contains arrow's
+/// panic arms, so a crafted frame fails the clause TYPED instead of
+/// killing the certifier.
 pub(crate) fn count_batches(bytes: &[u8]) -> Result<usize, String> {
+    rdlt_connector::ipc::refuse_overdeclared_ipc_framing(bytes)?;
+    caught_decode(|| count_batches_decoding(bytes))
+}
+
+/// Contain one Arrow decode's unwind as a typed failure. `catch_unwind`
+/// contains PANICS only — the allocation-abort class is closed upstream
+/// by the framing pre-pass (same division of labor as the WAL seat's).
+fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|payload| {
+        Err(format!(
+            "the Arrow decoder panicked: {}",
+            panic_text(payload.as_ref())
+        ))
+    })
+}
+
+/// The decode half of [`count_batches`], behind its belt.
+fn count_batches_decoding(bytes: &[u8]) -> Result<usize, String> {
     let reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
         .map_err(|error| error.to_string())?;
     let mut count = 0;
@@ -793,6 +820,35 @@ pub(crate) fn count_batches(bytes: &[u8]) -> Result<usize, String> {
         count += 1;
     }
     Ok(count)
+}
+
+/// A panic payload's message, where one is extractable.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text
+    } else {
+        "<non-text panic payload>"
+    }
+}
+
+#[cfg(test)]
+mod decode_belt_tests {
+    //! The belt pinned DIRECTLY: a synthetic panic inside the decode
+    /// closure must surface as the typed failure, never an escaped
+    /// unwind — the live inputs that once reached this arm now refuse
+    /// earlier at the pre-pass, so the belt's proof is synthetic (the
+    /// same pattern the WAL seat's belt pin uses).
+    use super::caught_decode;
+
+    #[test]
+    fn a_decoder_panic_is_contained_as_a_typed_failure() {
+        let error = caught_decode::<()>(|| panic!("crafted metadata"))
+            .expect_err("a decoder unwind must be contained");
+        assert!(error.contains("decoder panicked"), "{error}");
+        assert!(error.contains("crafted metadata"), "{error}");
+    }
 }
 
 /// P6 — error-frame shape, on an induced refusal: reading
@@ -1567,6 +1623,81 @@ mod tests {
         assert_pass(&report, "P3");
         assert_pass(&report, "P5");
         assert_pass(&report, "P7");
+    }
+
+    /// 5H1 at THIS seat: a rogue serving an Arrow frame whose declared
+    /// metadata length dwarfs the frame must fail P5 TYPED — the shared
+    /// pre-pass's refusal — rather than memsetting gigabytes or aborting
+    /// the certifier process mid-clause. (The pin returning at all is
+    /// the no-abort proof; an abort kills this test's process.)
+    #[tokio::test]
+    async fn an_overdeclared_arrow_frame_fails_p5_typed() {
+        let mut crafted = vec![0xff, 0xff, 0xff, 0xff];
+        crafted.extend_from_slice(&0x7fff_fff0_i32.to_le_bytes());
+        crafted.extend_from_slice(&[0u8; 16]);
+        let report = certify_rogue(
+            RogueSource {
+                handshake: HandshakeScript::truthful(),
+                streams: vec![StreamSpec::new("rogue_stream")],
+                read_declared: vec![rogue::raw_arrow_read_frame(crafted)],
+                read_undeclared: shaped_refusal(),
+                read_hold_open: false,
+            },
+            "rogue",
+        )
+        .await;
+        assert_fail(
+            &report,
+            "P5",
+            "an arrow read frame does not decode as one Arrow IPC stream (stream \
+             `rogue_stream`): a declared metadata length of 2147483632 bytes exceeds the \
+             24-byte frame; frame census: 1 arrow, 0 raw_json, 0 checkpoint, 0 error, 0 empty",
+        );
+        assert_pass(&report, "P3");
+        assert_pass(&report, "P6");
+        assert_pass(&report, "P7");
+    }
+
+    /// The seat's second defense-in-depth arm: the client lane's
+    /// 160-byte fuzz reproducer, served raw. (Today this input refuses
+    /// at the pre-pass — its declared framing is already over the
+    /// frame's end — which is still the pinned property: a crafted
+    /// frame fails P5 TYPED, never an abort or an escaped unwind. The
+    /// belt's own synthetic pin sits beside [`caught_decode`].)
+    #[tokio::test]
+    async fn a_decoder_panicking_frame_fails_p5_typed() {
+        const REPRO: [u8; 160] = [
+            0xff, 0xff, 0xff, 0xff, 0x78, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x0a, 0x00, 0x0c, 0x00, 0x06, 0x00, 0x05, 0x00, 0x08, 0x00, 0x0a, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x00, 0x00, 0x10, 0x00, 0x14, 0x00, 0x08, 0x00, 0x06, 0x00, 0x07, 0x00,
+            0x0c, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x10, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x69, 0x64, 0x00, 0x00, 0x08, 0x00, 0x0c, 0x00,
+            0x08, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x40, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x29, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            0x88, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00,
+            0x16, 0x00, 0x06, 0x00, 0x05, 0x00,
+        ];
+        let report = certify_rogue(
+            RogueSource {
+                handshake: HandshakeScript::truthful(),
+                streams: vec![StreamSpec::new("rogue_stream")],
+                read_declared: vec![rogue::raw_arrow_read_frame(REPRO.to_vec())],
+                read_undeclared: shaped_refusal(),
+                read_hold_open: false,
+            },
+            "rogue",
+        )
+        .await;
+        match verdict(&report, "P5") {
+            Verdict::Fail(why) => assert!(
+                why.starts_with("an arrow read frame does not decode as one Arrow IPC stream"),
+                "the typed refusal, never an escaped unwind: {why}"
+            ),
+            other => panic!("P5 must fail typed on a panicking frame: {other:?}"),
+        }
     }
 
     /// P6's terminality arm (GLM round-4, 4L8 — previously unpinned): a

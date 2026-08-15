@@ -12,6 +12,22 @@ use rdlt_core::{CommitPolicy, PipelineId, SchemaPolicy, StreamName, WriteMode};
 /// second literal that could drift.
 pub const DEFAULT_BYTE_BUDGET: usize = 64 << 20;
 
+/// The default bound on batch-assembly CELLS — `columns × rows` per
+/// outgoing batch (5M3, made configurable): assembly null-fills absent
+/// columns and stamps lineage per cell, so the product bounds the
+/// engine-side expansion transient independently of the input's encoded
+/// size. 2²⁸ cells ≈ 1 GiB of null-fill worst case. Honest maximal
+/// pipelines (≤ ~260 columns at the 1M-row cap) sit under it; wider
+/// shapes raise it here.
+pub const DEFAULT_MAX_BATCH_CELLS: usize = 1 << 28;
+
+/// The default bound on streams one source may declare for a run (5L9,
+/// made configurable): every stream costs plan-time validation and its
+/// own shred state, and discovery's list length is the one axis a source
+/// controls directly. 1,024 is far past every honest discovery; a
+/// pipeline that genuinely reads more raises it here.
+pub const DEFAULT_MAX_STREAMS_PER_SOURCE: usize = 1024;
+
 /// Configuration for an [`Engine`](crate::Engine).
 ///
 /// [`EngineConfig::new`] provides working defaults for everything except the pipeline
@@ -27,6 +43,8 @@ pub struct EngineConfig {
     pub(crate) batch_policy: rdlt_core::BatchPolicy,
     pub(crate) workdir: Option<PathBuf>,
     pub(crate) byte_budget: usize,
+    pub(crate) max_batch_cells: usize,
+    pub(crate) max_streams_per_source: usize,
 }
 
 impl EngineConfig {
@@ -40,6 +58,8 @@ impl EngineConfig {
             batch_policy: rdlt_core::BatchPolicy::default(),
             workdir: None,
             byte_budget: DEFAULT_BYTE_BUDGET,
+            max_batch_cells: DEFAULT_MAX_BATCH_CELLS,
+            max_streams_per_source: DEFAULT_MAX_STREAMS_PER_SOURCE,
         }
     }
 
@@ -95,6 +115,25 @@ impl EngineConfig {
         // asking for no buffering instead receives the smallest enforceable
         // window; the memory ceiling is never silently switched off.
         self.byte_budget = bytes.max(1);
+        self
+    }
+
+    /// Sets the batch-assembly cell budget (`columns × rows`, see
+    /// [`DEFAULT_MAX_BATCH_CELLS`]). Raise it for honestly wide × large
+    /// batches; lowering tightens the engine-side expansion ceiling. Zero
+    /// clamps to one cell, never off — the budget is what refuses the
+    /// 16 GiB null-fill amplification.
+    pub fn with_max_batch_cells(mut self, cells: usize) -> Self {
+        self.max_batch_cells = cells.max(1);
+        self
+    }
+
+    /// Sets the most streams one source may declare for a run (see
+    /// [`DEFAULT_MAX_STREAMS_PER_SOURCE`]). Raise it for genuinely huge
+    /// discoveries; the bound exists because the stream list is the one
+    /// discovery axis a source controls directly.
+    pub fn with_max_streams_per_source(mut self, streams: usize) -> Self {
+        self.max_streams_per_source = streams.max(1);
         self
     }
 

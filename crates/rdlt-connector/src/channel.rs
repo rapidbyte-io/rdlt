@@ -54,6 +54,18 @@ pub const MAX_ARROW_DEPTH: usize = 64;
 /// frame from amplifying into multi-gigabyte allocations downstream.
 pub const MAX_RECORD_BATCH_ROWS: usize = 1_000_000;
 
+/// The most JSON VALUES one raw push may carry — every object entry and
+/// every nested array element counts one (GLM round-5, 5M5/5M4). Distinct
+/// from the row cap, deliberately: rows materialize lineage and per-row
+/// output, while each VALUE spends its ~40-byte arena node at parse — a
+/// 64 MiB frame of dense values would otherwise build a ~22× arena before
+/// any traversal-time check could refuse. The value budget caps the arena
+/// transient at the same order an honest maximal push already pays:
+/// sixteen units per row covers a full-row-cap push of fifteen fields or
+/// list elements per row, so no honest shape is refused, while a frame
+/// denser than ~4 bytes per value refuses typed instead of ballooning.
+pub const MAX_JSON_VALUES_PER_PUSH: usize = 16 * MAX_RECORD_BATCH_ROWS;
+
 /// The host closed the channel (cancellation, or a failure downstream).
 /// A source that receives this should return promptly — it is an
 /// instruction to stop, not an error to escalate.
@@ -493,7 +505,11 @@ pub fn records_channel(byte_budget: usize) -> (RecordsOut, RecordsIn) {
 ///
 /// - Backpressure is shared: one stream's unconsumed bytes park EVERY
 ///   stream's producer once the pool is spent. That is the point — the
-///   ceiling prices the run, not the stream.
+///   ceiling prices the run, not the stream. A rogue stream's expensive
+///   payload can thus starve its siblings for the duration of one
+///   push's processing — a degradation, never a hang (FIFO ordering,
+///   zero-byte checkpoints exempt, and the parse/build paths are
+///   budget-bounded so the duration is finite).
 /// - Closing one channel's receiver does NOT close the shared semaphore
 ///   (that would cascade a failure into every sibling channel's parked
 ///   producer). A producer parked on the shared pool is woken by its own

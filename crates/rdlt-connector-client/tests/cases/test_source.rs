@@ -371,6 +371,90 @@ async fn a_malformed_checkpoint_is_refused_typed() {
     );
 }
 
+/// 5M1's inbound half, wire-level: a checkpoint frame whose cursor
+/// document exceeds the cursor contract is refused FATAL at the decode
+/// seat — the one untyped inbound document — before its `Value` ever
+/// materializes (and before it could poison persisted state, which every
+/// later resume would then refuse).
+#[tokio::test]
+async fn an_oversized_checkpoint_cursor_is_refused_at_the_decode_seat() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve(
+        &path,
+        ReadScript::Frames(vec![proto::ReadFrame {
+            frame: Some(read_frame::Frame::CheckpointCursorJson(vec![
+                b'x';
+                rdlt_connector::MAX_CURSOR_BYTES
+                    as usize
+                    + 1
+            ])),
+        }]),
+    );
+    let (remote, _) = Source::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect");
+
+    let (out, _input) = records_channel(1 << 20);
+    let error = tokio::time::timeout(
+        BOUND,
+        remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
+    )
+    .await
+    .expect("the refusal is prompt")
+    .expect_err("an over-bound cursor must refuse");
+
+    assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("cursor contract"),
+        "the refusal names the contract: {rendered}"
+    );
+}
+
+/// 5M1's outbound half: a stored cursor over the contract bound is
+/// refused BEFORE the re-send — the server is live and would serve, so
+/// the refusal proves the document never crossed the wire.
+#[tokio::test]
+async fn an_oversized_stored_cursor_is_refused_before_resend() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve(&path, ReadScript::Frames(vec![]));
+    let (remote, _) = Source::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect");
+
+    let oversized = rdlt_connector::Cursor::new(serde_json::Value::String(
+        "x".repeat(rdlt_connector::MAX_CURSOR_BYTES as usize),
+    ));
+    let (out, _input) = records_channel(1 << 20);
+    let error = tokio::time::timeout(
+        BOUND,
+        remote.read(ReadRequest::new(
+            StreamSpec::new("scripted"),
+            Some(oversized),
+            out,
+        )),
+    )
+    .await
+    .expect("the refusal is prompt")
+    .expect_err("an over-bound stored cursor must refuse pre-send");
+
+    assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("cursor contract"),
+        "the refusal names the contract: {error}"
+    );
+}
+
 /// The pacing observation the dial-time window clamp exists for: a
 /// producer with NO in-connector byte budget (the rogue's blast) against
 /// a client dialed at the tiniest budget and a host that never drains.

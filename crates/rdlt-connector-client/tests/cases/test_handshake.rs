@@ -110,6 +110,41 @@ async fn a_destination_handshake_carries_capabilities() {
     );
 }
 
+/// 6.8: the pre-send gate's exact-boundary acceptance — a config whose
+/// serialized form IS the ceiling must pass both ends (the refusal is
+/// `>`, and the serve gate shares the constant, so an at-cap document
+/// completes the handshake).
+#[tokio::test]
+async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+        .await
+        .expect("bind");
+
+    let mut config = serde_json::json!({ "rows": 3, "pad": "" });
+    let base = serde_json::to_vec(&config).expect("serialize").len();
+    let ceiling = rdlt_connector_sdk::spi::MAX_DOCUMENT_BYTES as usize;
+    // Lengthening the string by N grows the document by exactly N.
+    config["pad"] = serde_json::Value::String("x".repeat(ceiling - base));
+    assert_eq!(
+        serde_json::to_vec(&config).expect("serialize").len(),
+        ceiling,
+        "the fixture IS the ceiling"
+    );
+
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
+    handshake(
+        &channel,
+        Role::Source,
+        &config,
+        &ConnectorRequirement::new("echo-source"),
+    )
+    .await
+    .expect("an exactly-at-cap document passes both ends");
+}
+
 /// 4L10: a config whose SERIALIZED form exceeds the document ceiling is
 /// refused before SEND — the serve side's post-receive refusal would
 /// fire anyway, but the host-side refusal names the real cause (the
@@ -299,5 +334,33 @@ async fn a_control_character_version_refuses_inert() {
     assert!(
         !rendered.contains('\u{7}'),
         "the refusal must not itself carry the bytes it refuses: {rendered:?}"
+    );
+}
+
+/// 5L5: the LENGTH gate — a control-free but absurdly long identity is
+/// refused at the wire boundary like the content hostiles. (Content
+/// gates alone priced nothing about size within the frame cap.)
+#[tokio::test]
+async fn an_oversized_identity_refuses_at_the_wire_boundary() {
+    let (_dir, path) = socket_path();
+    let oversized: &'static str = Box::leak("a".repeat(1025).into_boxed_str());
+    let _serving = rogue::serve_identity(&path, oversized, "0.0.0");
+
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
+    let error = handshake(
+        &channel,
+        Role::Source,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("clean-id"),
+    )
+    .await
+    .expect_err("an over-length identity must refuse");
+
+    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("identifier ceiling"),
+        "the refusal names the ceiling: {error}"
     );
 }

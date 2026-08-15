@@ -81,8 +81,23 @@ fn open_segment(
 /// enabled, this pre-pass must ALSO bound the decompressed length.
 fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> {
     use std::io::{Read as _, Seek as _, SeekFrom};
+    use std::os::unix::fs::MetadataExt as _;
 
-    let file_len = segment.metadata().map_err(|e| e.to_string())?.len();
+    // 5L1: the pre-pass reads trailer+footer, then the FileReader re-reads
+    // the same regions — a same-user writer rewriting the footer BETWEEN
+    // the two would re-open the very abort class the pre-pass closes.
+    // fstat-compare (size + mtime) around the pre-pass: a concurrent
+    // rewrite flips one of them and the segment degrades to re-extraction
+    // like every other damage arm. The residual is a rewrite landing
+    // entirely between this check and the reader's first read —
+    // microseconds, and the reader's own footer verification catches any
+    // incomplete swap (typed, safe direction). Unpinned live: the window
+    // can't be deterministically fixtured without a test-only hook, and
+    // the failure direction is typed refusal either way (the same honesty
+    // trade `Wal::sync_for_commit` records for fsync).
+    let stat = segment.metadata().map_err(|e| e.to_string())?;
+    let file_len = stat.len();
+    let mtime = stat.mtime();
     // The smallest IPC file is leading magic (8) + footer + trailer (10).
     if file_len < 18 {
         return Err(format!(
@@ -120,31 +135,69 @@ fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> 
     // deep-schema guard the `flatbuffer_verification_rejects_a_deep_schema…`
     // pin holds fires here, before arrow's recursive schema conversion.
     let footer = arrow::ipc::root_as_footer(&footer_bytes).map_err(|e| e.to_string())?;
-    for blocks in [footer.dictionaries(), footer.recordBatches()] {
-        for block in blocks.iter().flatten() {
-            let (offset, meta, body) = (block.offset(), block.metaDataLength(), block.bodyLength());
-            let end = (offset >= 0 && meta >= 0 && body >= 0)
-                .then(|| {
-                    (offset as u64)
-                        .checked_add(meta as u64)?
-                        .checked_add(body as u64)
-                })
-                .flatten();
-            match end {
-                Some(end) if end <= file_len => {}
-                _ => {
-                    return Err(format!(
-                        "segment declares a block at offset {offset} spanning metadata \
-                         {meta} + body {body} bytes — outside its own {file_len}-byte file; \
-                         crafted lengths refuse before the decoder can allocate them"
-                    ));
-                }
-            }
-        }
+    let blocks = [footer.dictionaries(), footer.recordBatches()]
+        .into_iter()
+        .flat_map(|blocks| blocks.into_iter().flatten())
+        .map(|block| (block.offset(), block.metaDataLength(), block.bodyLength()));
+    extents_within_file(file_len, blocks)?;
+    let after = segment.metadata().map_err(|e| e.to_string())?;
+    if after.len() != file_len || after.mtime() != mtime {
+        return Err(
+            "segment changed under the layout pre-pass (size or mtime moved) — degrading \
+             rather than decoding a footer nobody checked"
+                .to_string(),
+        );
     }
     segment
         .seek(SeekFrom::Start(0))
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The block-extent rule, one function so the pin drives it directly
+/// (5M2): every block's `offset + metaDataLength + bodyLength` must fit
+/// INSIDE the file that declares it (4H1's per-extent bound), AND their
+/// SUM may not exceed twice the file length. The sum rule is what bounds
+/// TIME: a `Block` is a 24-byte struct, so a max-size footer can declare
+/// ~700 K blocks each pointing at the whole file (overlaps unrestricted),
+/// turning one crafted ~100 MiB segment into ~70 TB of `read_exact`/
+/// memcpy during recovery. An honest segment declares exactly ONE block
+/// (the writer emits one batch per segment) whose extent sits inside the
+/// file, so even `Σ ≤ 2 × file_len` is generous headroom for any honest
+/// multi-block future.
+fn extents_within_file(
+    file_len: u64,
+    blocks: impl Iterator<Item = (i64, i32, i64)>,
+) -> Result<(), String> {
+    let mut total = 0u64;
+    for (offset, meta, body) in blocks {
+        let end = (offset >= 0 && meta >= 0 && body >= 0)
+            .then(|| {
+                (offset as u64)
+                    .checked_add(meta as u64)?
+                    .checked_add(body as u64)
+            })
+            .flatten();
+        let end = match end {
+            Some(end) if end <= file_len => end,
+            _ => {
+                return Err(format!(
+                    "segment declares a block at offset {offset} spanning metadata \
+                     {meta} + body {body} bytes — outside its own {file_len}-byte file; \
+                     crafted lengths refuse before the decoder can allocate them"
+                ));
+            }
+        };
+        let extent = end - offset as u64;
+        total = total.saturating_add(extent);
+    }
+    if total > 2 * file_len {
+        return Err(format!(
+            "segment declares block extents summing to {total} bytes against its own \
+             {file_len}-byte file — overlapping extents would multiply recovery's \
+             read work past any honest shape (one block per segment)"
+        ));
+    }
     Ok(())
 }
 
@@ -670,6 +723,66 @@ mod segment_format {
             error.contains("crafted lengths refuse"),
             "the layout pre-pass is the refusal: {error}"
         );
+    }
+
+    /// 5M2: per-extent bounds without a sum bound let one crafted footer
+    /// multiply recovery's read work without limit (overlapping extents
+    /// each re-read the file). The rule pins: one honest block passes;
+    /// overlapping extents past twice the file refuse.
+    #[test]
+    fn block_extents_are_bounded_per_block_and_in_sum() {
+        use super::extents_within_file;
+        // Honest: one block inside the file.
+        extents_within_file(1000, [(0, 8, 900)].into_iter()).expect("one honest block");
+        // Two non-overlapping blocks summing within the file pass too.
+        extents_within_file(1000, [(0, 8, 400), (500, 8, 400)].into_iter())
+            .expect("non-overlapping extents within the file");
+        // Overlapping extents whose SUM crosses twice the file refuse.
+        let error = extents_within_file(1000, [(0, 8, 900), (0, 8, 900), (0, 8, 900)].into_iter())
+            .expect_err("overlapping extents past 2x refuse");
+        assert!(error.contains("summing"), "{error}");
+        // The per-block rule still fires on its own.
+        let error = extents_within_file(1000, [(0, 8, 2000)].into_iter())
+            .expect_err("a block past the file refuses");
+        assert!(error.contains("outside its own"), "{error}");
+        // Negative declarations refuse, never wrap.
+        extents_within_file(1000, [(0, 8, -1)].into_iter()).expect_err("a negative body refuses");
+    }
+
+    /// 6.1: the honest side of the 16 MiB footer cap. A maximal segment —
+    /// 4,096 columns, one batch — writes a footer measured HERE, so a
+    /// growth of the column cap or an arrow encoding change that would
+    /// flip honest segments into refusals fails this pin first.
+    #[test]
+    fn an_honest_maximal_segments_footer_sits_far_under_the_cap() {
+        use arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(
+            (0..crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE)
+                .map(|index| Field::new(format!("c{index}"), DataType::Int64, true))
+                .collect::<Vec<_>>(),
+        ));
+        let batch = RecordBatch::new_empty(schema);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("wide.arrow");
+        write_segment(&path, &batch).expect("write");
+        let bytes = std::fs::read(&path).expect("read");
+        let len = bytes.len();
+        let footer_len =
+            i32::from_le_bytes(bytes[len - 10..len - 6].try_into().expect("trailer")) as u64;
+        assert!(
+            footer_len * 4 <= super::MAX_SEGMENT_FOOTER_BYTES,
+            "the maximal honest footer ({footer_len} bytes) must sit at <= 1/4 of the \
+             {}-byte cap — the headroom IS the pin",
+            super::MAX_SEGMENT_FOOTER_BYTES
+        );
+        // And it round-trips through the gated open — the pre-pass accepts
+        // the honest shape, not merely refuses the crafted ones.
+        let decoded: Vec<_> = open_segment(dir.path(), "wide.arrow")
+            .expect("the maximal segment opens")
+            .map(|b| b.expect("decode"))
+            .collect();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].num_columns(), 4096);
     }
 
     /// 4I6: a DIRECTORY planted at a segment path passes the name gate and

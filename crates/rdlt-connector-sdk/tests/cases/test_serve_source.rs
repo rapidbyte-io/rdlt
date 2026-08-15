@@ -625,9 +625,12 @@ async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
         .await
         .expect("handshake rpc");
 
+    // 5L3: the cursor gate is the cursor contract's own bound
+    // (`MAX_CURSOR_BYTES`, 4 MiB) — deliberately tighter than the config
+    // ceiling, and the same constant the client enforces pre-send.
     let mut cursor_json = Vec::new();
     cursor_json.push(b'"');
-    cursor_json.resize(8 * 1024 * 1024 + 1, b'x');
+    cursor_json.resize(4 * 1024 * 1024 + 1, b'x');
     cursor_json.push(b'"');
     assert!(serde_json::from_slice::<serde_json::Value>(&cursor_json).is_ok());
     let len = cursor_json.len();
@@ -652,7 +655,7 @@ async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
             assert_eq!(
                 error.message,
                 format!(
-                    "since_cursor_json is {len} bytes — larger than the 8388608-byte document \
+                    "since_cursor_json is {len} bytes — larger than the 4194304-byte document \
                      ceiling; a config or cursor document measures in kilobytes, so a payload \
                      this size is a wrong path, refused before it can expand in memory"
                 )

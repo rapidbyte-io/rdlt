@@ -17,15 +17,17 @@ use crate::{
 use super::{build, infer::ColumnState, table, table::TableBuffer, view::JsonView};
 
 /// The per-batch shred context: the mutable schema registry plus the run-scoped
-/// load id, write mode, and schema policy. One bundle, one field order — shared
-/// by the tape shred path (`TapeShredder::push_and_drain`) and the structured
-/// passthrough path (`passthrough::passthrough_items`), which previously threaded
-/// these same four values in two different argument orders.
+/// load id, write mode, schema policy, and the batch-assembly cell budget
+/// (`EngineConfig::with_max_batch_cells`, 5M3). One bundle, one field order —
+/// shared by the tape shred path (`TapeShredder::push_and_drain`) and the
+/// structured passthrough path (`passthrough::passthrough_items`), which
+/// previously threaded these same four values in two different argument orders.
 pub(crate) struct ShredContext<'a> {
     pub(crate) registry: &'a mut SchemaRegistry,
     pub(crate) load_id: &'a LoadId,
     pub(crate) mode: &'a WriteMode,
     pub(crate) policy: &'a SchemaPolicy,
+    pub(crate) max_batch_cells: usize,
 }
 
 /// One row inside the drain: a view value + lineage + the DiscardValue overlay.
@@ -81,6 +83,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         load_id,
         mode,
         policy,
+        max_batch_cells,
     } = ctx;
     let mut items = Vec::new();
     // Rows discarded in earlier (parent) tables cascade into their descendants.
@@ -240,6 +243,23 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             (observed, changes)
         };
 
+        // The cell budget (4H3) fires BEFORE the registry apply (5L10): a
+        // refused push must not leave its schema mutation behind — the
+        // registry would desync from the destination's DDL the moment an
+        // error path ever learned to continue past it. The builder
+        // materializes every schema column for every row — nulls where a
+        // row lacks the field — so the columns × rows product is refused
+        // before any array is built, not metered after the gigabytes are
+        // resident. `observed`'s width IS the post-apply registry width.
+        if !d.rows.is_empty() {
+            crate::shred::refuse_over_cell_budget(
+                &d.buffer.table,
+                observed.columns.len(),
+                d.rows.len(),
+                max_batch_cells,
+            )?;
+        }
+
         if let Some((delta, current)) = registry.apply(observed, kept) {
             items.push(LoadItem::Delta {
                 schema: current,
@@ -252,15 +272,6 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             let schema = registry
                 .get(&d.buffer.table)
                 .expect("schema registered before building");
-            // The cell budget (4H3): the builder materializes every schema
-            // column for every row — nulls where a row lacks the field — so
-            // the columns × rows product is refused before any array is
-            // built, not metered after the gigabytes are resident.
-            crate::shred::refuse_over_cell_budget(
-                &d.buffer.table,
-                schema.columns.len(),
-                d.rows.len(),
-            )?;
             let (batch, misfits) = build::build_batch(
                 schema,
                 d.buffer.normalized_to_source(),
