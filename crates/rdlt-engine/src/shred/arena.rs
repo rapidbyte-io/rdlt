@@ -59,6 +59,37 @@ pub(crate) struct Arena<'s> {
     arr_items: Vec<NodeId>,
 }
 
+/// Why a slab refused to parse into rows.
+#[derive(Debug)]
+pub(crate) enum ParseRowsError {
+    /// Invalid JSON — classified per stream at the call site as source data.
+    Json(serde_json::Error),
+    /// More rows than the caller's cap. Raised progressively, at the row that
+    /// exceeds the cap, so the caller renders its own typed refusal instead
+    /// of a parse error.
+    RowCap,
+}
+
+/// The remaining-row allowance one `parse_rows` call spends, with the flag
+/// that lets the caller tell a cap refusal apart from a serde error after
+/// the fact (inside a visitor only serde's error type can travel).
+struct RowBudget {
+    remaining: usize,
+    exhausted: bool,
+}
+
+impl RowBudget {
+    /// Spend one row, or mark the budget exhausted and refuse.
+    fn take_one(&mut self) -> Result<(), ()> {
+        if self.remaining == 0 {
+            self.exhausted = true;
+            return Err(());
+        }
+        self.remaining -= 1;
+        Ok(())
+    }
+}
+
 impl<'s> Arena<'s> {
     /// Pre-size for a slab of `bytes` bytes.
     ///
@@ -86,26 +117,60 @@ impl<'s> Arena<'s> {
         }
     }
 
-    pub(crate) fn parse_rows(&mut self, bytes: &'s [u8]) -> Result<Vec<NodeId>, serde_json::Error> {
+    /// Parse a slab into row nodes, refusing PROGRESSIVELY past `max_rows`.
+    ///
+    /// The bound is enforced where rows are first observed — per document
+    /// here, per element inside a top-level array (each element becomes a
+    /// row) — not after the parse. A slab dense enough to carry tens of
+    /// millions of rows in a legal frame would otherwise materialize a
+    /// multi-hundred-MB arena before a post-parse check could refuse it;
+    /// counting at observation stops the build at the cap instead.
+    pub(crate) fn parse_rows(
+        &mut self,
+        bytes: &'s [u8],
+        max_rows: usize,
+    ) -> Result<Vec<NodeId>, ParseRowsError> {
         let mut rows = Vec::new();
+        let mut budget = RowBudget {
+            remaining: max_rows,
+            exhausted: false,
+        };
         for raw in serde_json::Deserializer::from_slice(bytes)
             .into_iter::<&'s serde_json::value::RawValue>()
         {
-            let raw = raw?;
+            let raw = raw.map_err(ParseRowsError::Json)?;
             let mut de = serde_json::Deserializer::from_str(raw.get());
-            let node = NodeSeed {
+            let parsed = NodeSeed {
                 arena: self,
                 depth: 0,
+                row_budget: Some(&mut budget),
             }
-            .deserialize(&mut de)?;
-            de.end()?;
+            .deserialize(&mut de);
+            // The budget rides serde's error channel out of the element loop
+            // (the visitor can return no other type), so the flag is what
+            // distinguishes "over the cap" from genuinely invalid JSON.
+            let node = parsed.map_err(|e| {
+                if budget.exhausted {
+                    ParseRowsError::RowCap
+                } else {
+                    ParseRowsError::Json(e)
+                }
+            })?;
+            de.end().map_err(ParseRowsError::Json)?;
             match self.nodes[node as usize] {
                 ArenaNode::Arr(start, end) => {
+                    // Elements were already counted as they parsed (the
+                    // depth-0 seed carried the budget into `visit_seq`).
                     for i in start..end {
                         rows.push(self.arr_items[i as usize]);
                     }
                 }
-                _ => rows.push(node),
+                _ => {
+                    if budget.take_one().is_err() {
+                        return Err(ParseRowsError::RowCap);
+                    }
+                    rows.push(node);
+                }
             }
         }
         // Wrap AFTER parsing (arena mutation is safe on plain ids).
@@ -249,6 +314,10 @@ struct NodeSeed<'a, 's> {
     /// Nesting level of the value this seed deserializes (root = 0) — the
     /// ingest half of the shared depth cap; see the module doc.
     depth: usize,
+    /// `Some` only on the depth-0 seed: a top-level array's elements each
+    /// become a row, so `visit_seq` counts them against this as they parse.
+    /// Child seeds carry `None` — nested arrays are values, not rows.
+    row_budget: Option<&'a mut RowBudget>,
 }
 
 impl<'de, 's: 'de, 'a> DeserializeSeed<'de> for NodeSeed<'a, 's>
@@ -264,6 +333,7 @@ where
         deserializer.deserialize_any(NodeVisitor {
             arena: self.arena,
             depth: self.depth,
+            row_budget: self.row_budget,
         })
     }
 }
@@ -271,6 +341,7 @@ where
 struct NodeVisitor<'a, 's> {
     arena: &'a mut Arena<'s>,
     depth: usize,
+    row_budget: Option<&'a mut RowBudget>,
 }
 
 impl<'de, 's: 'de, 'a> Visitor<'de> for NodeVisitor<'a, 's>
@@ -318,7 +389,7 @@ where
             .push_node(ArenaNode::Str(Cow::Owned(s.to_owned()))))
     }
 
-    fn visit_seq<A>(self, mut seq: A) -> Result<NodeId, A::Error>
+    fn visit_seq<A>(mut self, mut seq: A) -> Result<NodeId, A::Error>
     where
         A: SeqAccess<'de>,
     {
@@ -327,7 +398,19 @@ where
         while let Some(id) = seq.next_element_seed(NodeSeed {
             arena: self.arena,
             depth: self.depth + 1,
+            row_budget: None,
         })? {
+            // Only the depth-0 seed carries a budget: each element of a
+            // top-level array becomes a row, and counting here — as elements
+            // parse — is what makes the row cap fire before the rest of a
+            // dense slab is materialized into the arena.
+            if let Some(budget) = self.row_budget.as_deref_mut()
+                && budget.take_one().is_err()
+            {
+                return Err(serde::de::Error::custom(
+                    "top-level array exceeds the caller's row cap",
+                ));
+            }
             items.push(id);
         }
         let start = checked_idx(self.arena.arr_items.len());
@@ -347,6 +430,7 @@ where
             let value = map.next_value_seed(NodeSeed {
                 arena: self.arena,
                 depth: self.depth + 1,
+                row_budget: None,
             })?;
             match entries.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, slot)) => *slot = value,
@@ -423,6 +507,7 @@ mod tests {
     use super::*;
     use crate::shred::canon::canonical_json_bytes;
     use crate::shred::view::JsonView;
+    use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
     use serde_json::Value;
 
     /// Independent `serde_json::Value`-based parse of a raw slab (NDJSON /
@@ -480,7 +565,9 @@ mod tests {
         // `[[…]]` would not leave an array node at the row.
         let input = br#"{"xs":[10,20,30]}"#;
         let mut arena = Arena::default();
-        let rows = arena.parse_rows(input).expect("parse");
+        let rows = arena
+            .parse_rows(input, MAX_RECORD_BATCH_ROWS)
+            .expect("parse");
         let (_, xs) = arena
             .node(rows[0])
             .obj_entries()
@@ -519,7 +606,9 @@ mod tests {
         // owned String instead of borrowing from the slab.
         let input = br#"{"a\nb":"x\ty","plain":"z"}"#;
         let mut arena = Arena::default();
-        let rows = arena.parse_rows(input).expect("parse");
+        let rows = arena
+            .parse_rows(input, MAX_RECORD_BATCH_ROWS)
+            .expect("parse");
         let node = arena.node(rows[0]);
         let entries: Vec<(String, String)> = node
             .obj_entries()
@@ -549,7 +638,9 @@ mod tests {
     fn duplicate_keys_keep_first_position_last_value() {
         let input = br#"{"dup":1,"other":2,"dup":3}"#;
         let mut arena = Arena::default();
-        let rows = arena.parse_rows(input).expect("parse");
+        let rows = arena
+            .parse_rows(input, MAX_RECORD_BATCH_ROWS)
+            .expect("parse");
         let node = arena.node(rows[0]);
         let arena_entries: Vec<(String, String)> = node
             .obj_entries()
@@ -596,18 +687,57 @@ mod tests {
         let at_cap = nested(rdlt_connector::channel::MAX_ARROW_DEPTH);
         let mut arena = Arena::default();
         arena
-            .parse_rows(&at_cap)
+            .parse_rows(&at_cap, MAX_RECORD_BATCH_ROWS)
             .expect("nesting AT the cap still parses");
 
         for levels in [rdlt_connector::channel::MAX_ARROW_DEPTH + 1, 100] {
             let deep = nested(levels);
             let mut arena = Arena::default();
             let err = arena
-                .parse_rows(&deep)
+                .parse_rows(&deep, MAX_RECORD_BATCH_ROWS)
                 .expect_err("nesting past the cap must refuse at ingest");
+            let ParseRowsError::Json(err) = err else {
+                panic!("a depth refusal is a parse error, not a row-cap one");
+            };
             assert!(
                 err.to_string().contains("nesting"),
                 "the refusal names the nesting: {err}"
+            );
+        }
+    }
+
+    /// The row bound is PROGRESSIVE at both row-observation sites: per
+    /// document for a stream of documents, per element inside a top-level
+    /// array. A small cap makes both directions cheap to prove; production
+    /// passes the real `MAX_RECORD_BATCH_ROWS`, and the tape suite trips
+    /// that constant with full-size slabs.
+    #[test]
+    fn parse_refuses_progressively_past_the_row_cap() {
+        // At the cap: fine, from either shape.
+        for slab in [b"1\n2\n3".as_slice(), b"[1,2,3]".as_slice()] {
+            let mut arena = Arena::default();
+            let rows = arena.parse_rows(slab, 3).expect("at the cap parses");
+            assert_eq!(rows.len(), 3);
+        }
+        // One over: the typed row-cap refusal, not a parse error — and the
+        // arena stops near the cap instead of holding every remaining row
+        // (the count is what proves the check ran DURING the parse).
+        for slab in [
+            b"1\n2\n3\n4\n5\n6\n7\n8".as_slice(),
+            b"[1,2,3,4,5,6,7,8]".as_slice(),
+        ] {
+            let mut arena = Arena::default();
+            let err = arena
+                .parse_rows(slab, 3)
+                .expect_err("one row past the cap must refuse");
+            assert!(
+                matches!(err, ParseRowsError::RowCap),
+                "expected the row-cap arm, got a parse error"
+            );
+            assert!(
+                arena.nodes.len() <= 5,
+                "the parse must stop at the cap, not materialize the slab: {} nodes",
+                arena.nodes.len()
             );
         }
     }
@@ -628,7 +758,9 @@ mod tests {
         for case in cases {
             let bytes = case.as_bytes();
             let mut arena = Arena::default();
-            let arena_rows = arena.parse_rows(bytes).expect("arena parse");
+            let arena_rows = arena
+                .parse_rows(bytes, MAX_RECORD_BATCH_ROWS)
+                .expect("arena parse");
             let value_rows = oracle_rows(bytes).expect("value parse");
             assert_eq!(arena_rows.len(), value_rows.len(), "row count for {case}");
             for (node, value) in arena_rows.iter().zip(&value_rows) {

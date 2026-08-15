@@ -285,6 +285,7 @@ mod identity_cross_view {
     //! AGREEMENT across the two views, over arbitrary documents.
 
     use proptest::prelude::*;
+    use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
     use serde_json::Value;
 
     use super::{content_hash_with, row_identity};
@@ -353,7 +354,7 @@ mod identity_cross_view {
             let (slab, values) = views(&values);
             let bytes = slab.as_bytes();
             let mut arena = Arena::default();
-            let rows = arena.parse_rows(bytes).expect("the slab we just serialized must parse");
+            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS).expect("the slab we just serialized must parse");
             prop_assert_eq!(rows.len(), values.len());
             for (node, value) in rows.into_iter().zip(&values) {
                 let (mut a, mut b) = (Vec::new(), Vec::new());
@@ -375,7 +376,7 @@ mod identity_cross_view {
             let (slab, values) = views(&values);
             let bytes = slab.as_bytes();
             let mut arena = Arena::default();
-            let rows = arena.parse_rows(bytes).expect("the slab we just serialized must parse");
+            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS).expect("the slab we just serialized must parse");
             for (node, value) in rows.into_iter().zip(&values) {
                 let keys: Vec<String> = value
                     .as_object()

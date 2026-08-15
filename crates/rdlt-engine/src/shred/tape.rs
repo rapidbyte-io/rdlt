@@ -20,7 +20,7 @@ use rdlt_core::{
 
 use super::{
     DrainRow, MAX_CHILD_TABLES_PER_PARENT, ShredContext,
-    arena::{Arena, NodeId},
+    arena::{Arena, NodeId, ParseRowsError},
     drain_tables,
     infer::{ColumnState, ScalarState},
     table::{TableBuffer, content_hash_with, row_identity},
@@ -33,6 +33,26 @@ use crate::load::LoadItem;
 pub(crate) enum PushError {
     Json(serde_json::Error),
     Engine(RdltError),
+}
+
+/// The one refusal both halves of the per-push row bound share: the parse-time
+/// root count and the traversal-time total (roots plus the child rows their
+/// lists fan out into) spend from the same cap and speak with one voice.
+fn row_cap_refusal() -> RdltError {
+    RdltError::config(format!(
+        "JSON push exceeds the {MAX_RECORD_BATCH_ROWS}-row cap across root and child rows — \
+         row count is bounded separately from encoded bytes to prevent per-row lineage \
+         and load-id amplification"
+    ))
+}
+
+/// Spend one row from the per-push budget, refusing typed at exhaustion.
+fn take_row(remaining: &mut usize) -> Result<(), RdltError> {
+    if *remaining == 0 {
+        return Err(row_cap_refusal());
+    }
+    *remaining -= 1;
+    Ok(())
 }
 
 /// One buffered row awaiting the drain (tape path: arena node id).
@@ -98,21 +118,27 @@ impl TapeShredder {
             self.tables.iter().map(|t| t.columns.clone()).collect();
 
         let mut arena = Arena::sized_for(bytes.len());
-        let roots = arena.parse_rows(bytes).map_err(PushError::Json)?;
-        if roots.len() > MAX_RECORD_BATCH_ROWS {
-            return Err(PushError::Engine(RdltError::config(format!(
-                "JSON push carries {} rows, over the {MAX_RECORD_BATCH_ROWS}-row cap — \
-                 row count is bounded separately from encoded bytes to prevent per-row \
-                 lineage and load-id amplification",
-                roots.len()
-            ))));
-        }
+        // The parse enforces the root half of the row cap PROGRESSIVELY —
+        // a slab dense enough to exceed it stops parsing at the cap instead
+        // of materializing the whole arena first.
+        let roots = arena
+            .parse_rows(bytes, MAX_RECORD_BATCH_ROWS)
+            .map_err(|e| match e {
+                ParseRowsError::Json(e) => PushError::Json(e),
+                ParseRowsError::RowCap => PushError::Engine(row_cap_refusal()),
+            })?;
 
         // Buffered rows per table, index-aligned with `self.tables`.
         let mut rows: Vec<Vec<TapeRow>> = self.tables.iter().map(|_| Vec::new()).collect();
 
         let lists_as_columns = self.capabilities.scalar_lists;
         let mut hash_scratch = Vec::new();
+        // The whole-push half of the row cap: EVERY buffered row spends from
+        // this — roots and the child rows their lists fan out into — because
+        // each one materializes lineage identities and per-table state. Roots
+        // alone were bounded at parse; one root carrying millions of children
+        // is what this budget refuses.
+        let mut row_budget = MAX_RECORD_BATCH_ROWS;
         for root in roots {
             self.shred_root(
                 &mut arena,
@@ -120,6 +146,7 @@ impl TapeShredder {
                 lists_as_columns,
                 &mut rows,
                 &mut hash_scratch,
+                &mut row_budget,
             )
             .map_err(PushError::Engine)?;
         }
@@ -155,12 +182,14 @@ impl TapeShredder {
         lists_as_columns: bool,
         rows: &mut Vec<Vec<TapeRow>>,
         hash_scratch: &mut Vec<u8>,
+        row_budget: &mut usize,
     ) -> Result<(), RdltError> {
         let root_id = row_identity(
             self.spec.primary_key.as_deref(),
             arena.node(root),
             hash_scratch,
         );
+        take_row(row_budget)?;
         let mut queue: VecDeque<Queued> = VecDeque::new();
         queue.push_back(Queued {
             table_idx: 0,
@@ -185,7 +214,15 @@ impl TapeShredder {
                 }
             }
 
-            self.enqueue_children(child_lists, &entry, arena, rows, &mut queue, hash_scratch)?;
+            self.enqueue_children(
+                child_lists,
+                &entry,
+                arena,
+                rows,
+                &mut queue,
+                hash_scratch,
+                row_budget,
+            )?;
 
             rows[entry.table_idx].push(TapeRow {
                 node: entry.node,
@@ -201,6 +238,7 @@ impl TapeShredder {
     /// Enqueue the child rows discovered under one node: each non-null list item
     /// becomes a queued row in its child table (scalar items wrapped as
     /// `{"value": …}`), position counting null slots.
+    #[allow(clippy::too_many_arguments)]
     fn enqueue_children(
         &mut self,
         child_lists: Vec<(String, Vec<NodeId>)>,
@@ -209,6 +247,7 @@ impl TapeShredder {
         rows: &mut Vec<Vec<TapeRow>>,
         queue: &mut VecDeque<Queued>,
         hash_scratch: &mut Vec<u8>,
+        row_budget: &mut usize,
     ) -> Result<(), RdltError> {
         for (key, items) in child_lists {
             let child_idx = self.child_table_idx(entry.table_idx, &key, rows)?;
@@ -216,6 +255,10 @@ impl TapeShredder {
                 if arena.node(item).is_null() {
                     continue;
                 }
+                // Every enqueued child becomes a buffered row with its own
+                // lineage identity, so it spends from the same per-push row
+                // budget as its root.
+                take_row(row_budget)?;
                 // Scalar list items in a child table become {"value": …} rows.
                 let child_node = if arena.node(item).is_object() {
                     item
@@ -300,6 +343,79 @@ impl TapeShredder {
 #[cfg(test)]
 mod cardinality_tests {
     use super::*;
+    use crate::schema::registry::SchemaRegistry;
+    use rdlt_core::{LoadId, SchemaPolicy, WriteMode};
+
+    /// Drive one slab through the full push path with a throwaway context.
+    fn push(shredder: &mut TapeShredder, bytes: &[u8]) -> Result<Vec<LoadItem>, PushError> {
+        let mut registry = SchemaRegistry::default();
+        let (load_id, mode, policy) = (
+            LoadId::new("test-load"),
+            WriteMode::Append,
+            SchemaPolicy::evolve(),
+        );
+        shredder.push_and_drain(
+            bytes,
+            ShredContext {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+            },
+        )
+    }
+
+    fn shredder() -> TapeShredder {
+        TapeShredder::new(
+            StreamSpec::new("events"),
+            DestinationCapabilities::default(),
+            TableName::new("events"),
+        )
+        .expect("shredder")
+    }
+
+    fn expect_row_cap(result: Result<Vec<LoadItem>, PushError>) {
+        match result {
+            Err(PushError::Engine(e)) => assert!(
+                e.to_string().contains("row cap"),
+                "the refusal names the row cap: {e}"
+            ),
+            Err(PushError::Json(e)) => {
+                panic!("row-cap refusal must be typed, not a parse error: {e}")
+            }
+            Ok(_) => panic!("a push over the row cap must refuse"),
+        }
+    }
+
+    /// More root documents than the row cap refuse with the typed row-cap
+    /// error — and the refusal is progressive: the parse stops at the cap
+    /// instead of materializing every remaining root into the arena first.
+    #[test]
+    fn a_push_with_more_roots_than_the_row_cap_refuses_typed() {
+        let mut slab = Vec::with_capacity((MAX_RECORD_BATCH_ROWS + 1) * 2);
+        for _ in 0..=MAX_RECORD_BATCH_ROWS {
+            slab.extend_from_slice(b"0\n");
+        }
+        expect_row_cap(push(&mut shredder(), &slab));
+    }
+
+    /// One legal root can carry an unbounded child list, and every child
+    /// becomes a buffered row with lineage identities — so child rows count
+    /// toward the SAME per-push row cap as roots. One root with cap children
+    /// is cap+1 rows observed: refused, before any batch is built.
+    #[test]
+    fn child_rows_count_toward_the_row_cap() {
+        let mut slab = Vec::with_capacity(MAX_RECORD_BATCH_ROWS * 3 + 16);
+        slab.extend_from_slice(b"{\"a\":[");
+        for i in 0..MAX_RECORD_BATCH_ROWS {
+            if i > 0 {
+                slab.push(b',');
+            }
+            slab.extend_from_slice(b"{}");
+        }
+        slab.extend_from_slice(b"]}");
+        expect_row_cap(push(&mut shredder(), &slab));
+    }
 
     #[test]
     fn a_parent_refuses_a_new_child_key_at_the_child_table_cap() {
