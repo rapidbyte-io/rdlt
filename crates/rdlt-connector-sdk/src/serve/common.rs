@@ -545,10 +545,7 @@ pub(crate) fn handshake<S: HandshakeShell>(
     // into an untyped `Value` multiplies them many times over in this
     // process — see `MAX_DOCUMENT_BYTES`.
     if request.config_json.len() > MAX_DOCUMENT_BYTES {
-        return refuse_handshake(oversized_document(
-            "config_json",
-            request.config_json.len(),
-        ));
+        return refuse_handshake(oversized_document("config_json", request.config_json.len()));
     }
 
     // Both refusal arms below hold the protocol's secrecy rule (the

@@ -325,7 +325,10 @@ async fn a_retried_publish_after_a_transient_failure_re_persists_the_rows() {
         .ensure_table(&schema_for("zz_events"), &WriteMode::Append)
         .await
         .expect("ensure second");
-    session.write(&first, batch_of(&[1, 2])).await.expect("write first");
+    session
+        .write(&first, batch_of(&[1, 2]))
+        .await
+        .expect("write first");
     session
         .write(&second, batch_of(&[3, 4, 5]))
         .await

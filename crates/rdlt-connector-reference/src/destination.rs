@@ -551,8 +551,7 @@ impl Writer {
             )),
         };
         let file = std::fs::File::create(&temp).map_err(|error| framed("write", &temp, &error))?;
-        let mut writer =
-            arrow::json::LineDelimitedWriter::new(std::io::BufWriter::new(file));
+        let mut writer = arrow::json::LineDelimitedWriter::new(std::io::BufWriter::new(file));
         for batch in batches {
             writer.write(batch).map_err(arrow_framed)?;
         }
@@ -564,8 +563,7 @@ impl Writer {
         file.sync_all()
             .map_err(|error| framed("sync", &temp, &error))?;
         drop(file);
-        std::fs::rename(&temp, &target)
-            .map_err(|error| framed("publish", &target, &error))?;
+        std::fs::rename(&temp, &target).map_err(|error| framed("publish", &target, &error))?;
         self.sync_dir()?;
         Ok(())
     }
