@@ -39,7 +39,10 @@
 //! connector prints before it starts serving; [`proto`] is the generated
 //! gRPC/protobuf types and services compiled at build time from
 //! `proto/rdlt_connector_v0.proto` (hermetically — `build.rs` vendors its
-//! own `protoc`, so no system install is required).
+//! own `protoc`, so no system install is required). Beside them,
+//! [`sanitize`] carries the wire's shared control-and-invisible
+//! codepoint inventory — the one table the handshake's socket-path gate
+//! and the client's identifier/display seats all refuse and escape by.
 //!
 //! ## Trust model (owner decision D-038-1)
 //!
@@ -82,6 +85,7 @@
 //! actually needs.
 
 pub mod handshake;
+pub mod sanitize;
 
 /// Generated protobuf/gRPC types for `rdlt.connector.v0`: [`Connector`],
 /// [`SourceService`], [`DestinationService`] and every request/reply

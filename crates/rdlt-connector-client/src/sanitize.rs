@@ -4,10 +4,12 @@
 //! tracing lines, the CLI's output, filesystem-adjacent identifiers —
 //! and control bytes in it are how a hostile connector forges log
 //! lines or drives escape sequences (OSC 52 clipboard writes, ANSI
-//! resets) through an operator's terminal. The rule: a control
-//! character is anything `char::is_control` names — C0 including
-//! newline, tab and DEL, plus C1 — or an invisible Unicode formatting
-//! character that can reorder or conceal identifier text.
+//! resets) through an operator's terminal. The character inventory
+//! itself lives in `rdlt_connector_protocol::sanitize` — the protocol
+//! crate's handshake gate refuses by the same table, and this crate
+//! depends on it, so the two sides of the wire cannot drift. This
+//! module owns the DISPOSITIONS: which seats refuse, which escape,
+//! and which deliberately do neither.
 //!
 //! Three dispositions, by what the text IS:
 //!
@@ -30,39 +32,32 @@
 
 use std::borrow::Cow;
 
-/// Does `text` carry any control or invisible formatting character?
-/// The one predicate every refusal seat asks.
+use rdlt_connector_protocol::sanitize;
+
+/// Does `text` carry any character an IDENTIFIER refuses? The one
+/// predicate every refusal seat asks — the shared inventory's
+/// identifier form, which admits the two joiners U+200C/U+200D (ZWNJ/
+/// ZWJ are load-bearing orthography in Persian, Malayalam and
+/// Devanagari names; the trade-off is recorded on the predicate
+/// itself) and refuses everything else invisible.
 pub(crate) fn contains_control(text: &str) -> bool {
-    text.chars().any(is_unsafe_display_character)
+    text.chars()
+        .any(sanitize::is_control_or_invisible_in_identifier)
 }
 
-fn is_unsafe_display_character(character: char) -> bool {
-    character.is_control()
-        || matches!(
-            character,
-            '\u{00ad}'
-                | '\u{061c}'
-                | '\u{180e}'
-                | '\u{200b}'..='\u{200f}'
-                | '\u{2028}'..='\u{202e}'
-                | '\u{2060}'..='\u{206f}'
-                | '\u{feff}'
-                | '\u{fff9}'..='\u{fffb}'
-        )
-}
-
-/// Render `text` inert for display: each control character becomes its
-/// spelled-out escape (`\n`, `\u{1b}`, …) while every other character
-/// — quotes, backslashes, non-ASCII text, which are data — passes
-/// byte-identical. Borrowed unchanged when there is nothing to escape,
-/// which is every honest message.
+/// Render `text` inert for display: each control or invisible
+/// character — the FULL inventory, joiners included, so rendered text
+/// cannot hide one — becomes its spelled-out escape (`\n`, `\u{1b}`,
+/// …) while every other character — quotes, backslashes, non-ASCII
+/// text, which are data — passes byte-identical. Borrowed unchanged
+/// when there is nothing to escape, which is every honest message.
 pub(crate) fn escape_control_characters(text: &str) -> Cow<'_, str> {
-    if !contains_control(text) {
+    if !text.chars().any(sanitize::is_control_or_invisible) {
         return Cow::Borrowed(text);
     }
     let mut escaped = String::with_capacity(text.len() + 8);
     for character in text.chars() {
-        if is_unsafe_display_character(character) {
+        if sanitize::is_control_or_invisible(character) {
             escaped.extend(character.escape_debug());
         } else {
             escaped.push(character);
@@ -75,8 +70,10 @@ pub(crate) fn escape_control_characters(text: &str) -> Cow<'_, str> {
 mod tests {
     use super::*;
 
-    /// The rule's edges: C0, DEL, and C1 are control; ordinary text —
-    /// non-ASCII included — is not.
+    /// The rule's edges: C0, DEL, and C1 are control; the shared
+    /// inventory's format characters (the Arabic number signs and the
+    /// tag block included) refuse; ordinary text — non-ASCII included —
+    /// is not.
     #[test]
     fn the_predicate_covers_controls_and_invisible_formatting() {
         for hostile in [
@@ -88,12 +85,31 @@ mod tests {
             "a\u{200b}b",
             "a\u{2028}b",
             "a\u{202e}b",
+            "a\u{0600}b",
+            "a\u{e0041}b",
+            "a\u{3164}b",
         ] {
             assert!(contains_control(hostile), "{hostile:?} is control");
         }
         for clean in ["orders", "Événements", "naïve — text", ""] {
             assert!(!contains_control(clean), "{clean:?} is data");
         }
+    }
+
+    /// The joiners are orthography, not reordering controls: a Persian
+    /// name spelled with ZWNJ passes the IDENTIFIER predicate, while
+    /// display escaping still spells the joiner out so rendered names
+    /// cannot hide it.
+    #[test]
+    fn the_joiners_pass_identifiers_but_still_escape_in_display() {
+        for name in ["می\u{200c}خواهم", "a\u{200d}b"] {
+            assert!(!contains_control(name), "{name:?} is a legal identifier");
+        }
+        assert_eq!(
+            escape_control_characters("a\u{200c}b"),
+            "a\\u{200c}b",
+            "display text spells the joiner out"
+        );
     }
 
     /// Escaping spells control bytes out and touches nothing else —

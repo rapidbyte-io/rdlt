@@ -141,7 +141,17 @@ fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), 
                 field.name()
             )));
         }
-        match field.data_type() {
+        // A dictionary encodes another type without a field of its own,
+        // but its VALUE type can carry named fields (a struct, a list,
+        // another dictionary) — unwrap before matching, or those inner
+        // names bypass the gate. The unwrap loop is bounded by the
+        // schema's finite type depth, and a dictionary's key type is
+        // always a bare integer carrying no fields.
+        let mut data_type = field.data_type();
+        while let DataType::Dictionary(_, value) = data_type {
+            data_type = value;
+        }
+        match data_type {
             DataType::Struct(fields) => pending.extend(fields.iter().cloned()),
             DataType::List(child)
             | DataType::LargeList(child)
@@ -205,6 +215,7 @@ const ONE_BATCH_REFUSAL: &str = "read frame violated the one-batch rule";
 /// The `Err`-shaped half of the decode: every failure arrow REPORTS
 /// (as opposed to panics on) maps behind the frozen prefix here.
 fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
+    refuse_overdeclared_framing(bytes)?;
     let mut reader =
         arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
             .map_err(|error| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}")))?;
@@ -222,6 +233,89 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         }
         Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
         Some(Err(error)) => Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}"))),
+    }
+}
+
+/// The framing pre-pass ahead of arrow's stream reader: walk the
+/// encapsulated-message framing — optional continuation marker, an
+/// `i32` metadata length, the metadata bytes, then the metadata's own
+/// declared `bodyLength` of body bytes — and refuse any message whose
+/// DECLARED lengths exceed what the frame actually carries.
+///
+/// arrow-ipc 58.3 trusts both declarations before verifying them
+/// against the input: its reader `resize`s the metadata buffer to the
+/// declared length (`Vec::resize` zero-fills every new slot — a commit
+/// and memset of the full size) and allocates `bodyLength` zeroed
+/// bytes for the body, in each case BEFORE `read_exact` discovers the
+/// bytes are missing. So a ~30-byte frame declaring ~2 GiB forces a
+/// 2 GiB allocate-and-memset in the host per frame — not a panic, so
+/// the `catch_unwind` above is no defense, and under a memory limit it
+/// is an OOM kill. A negative `bodyLength` is the sibling: cast to
+/// `usize` it wraps huge, and the failing allocation aborts. Checking
+/// every declaration against `bytes.len()` first kills both vectors;
+/// the read `frames` arrive whole (one gRPC field each), so a valid
+/// frame can never declare past its own end.
+///
+/// All arithmetic is checked: a walk this refuses is malformed by
+/// construction, and the refusal is typed behind the frozen prefix,
+/// never a panic. Truncation SHORT of a declaration (too few bytes for
+/// a length word) is left for the reader's own EOF handling — nothing
+/// oversized gets allocated on that path.
+fn refuse_overdeclared_framing(bytes: &[u8]) -> Result<(), SourceError> {
+    const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
+    let refuse = |what: &str, declared: u64| {
+        SourceError::fatal(format!(
+            "{ONE_BATCH_REFUSAL}: a declared {what} length of {declared} bytes exceeds \
+             the {}-byte frame",
+            bytes.len()
+        ))
+    };
+    let mut pos = 0usize;
+    loop {
+        let Some(word) = bytes.get(pos..pos + 4) else {
+            return Ok(());
+        };
+        let word: [u8; 4] = word.try_into().expect("a 4-byte slice");
+        let length_word = if word == CONTINUATION_MARKER {
+            pos += 4;
+            match bytes.get(pos..pos + 4) {
+                Some(next) => next.try_into().expect("a 4-byte slice"),
+                None => return Ok(()),
+            }
+        } else {
+            word
+        };
+        pos += 4;
+        let declared_meta = i32::from_le_bytes(length_word);
+        if declared_meta == 0 {
+            // The stream's end-of-stream marker.
+            return Ok(());
+        }
+        let meta_len = usize::try_from(declared_meta).map_err(|_| {
+            SourceError::fatal(format!(
+                "{ONE_BATCH_REFUSAL}: a negative declared metadata length ({declared_meta})"
+            ))
+        })?;
+        let meta_end = pos
+            .checked_add(meta_len)
+            .filter(|&end| end <= bytes.len())
+            .ok_or_else(|| refuse("metadata", meta_len as u64))?;
+        // The metadata really is present — now hold its own body
+        // declaration to the same standard. The flatbuffer runs the
+        // same verifier the reader itself would, so an unverifiable
+        // message refuses here with the verifier's diagnostic.
+        let message = arrow::ipc::root_as_message(&bytes[pos..meta_end]).map_err(|error| {
+            SourceError::fatal(format!(
+                "{ONE_BATCH_REFUSAL}: unverifiable message metadata: {error}"
+            ))
+        })?;
+        let body_len = u64::try_from(message.bodyLength())
+            .map_err(|_| refuse("body", message.bodyLength() as u64))?;
+        pos = usize::try_from(body_len)
+            .ok()
+            .and_then(|body| meta_end.checked_add(body))
+            .filter(|&end| end <= bytes.len())
+            .ok_or_else(|| refuse("body", body_len))?;
     }
 }
 
@@ -523,6 +617,30 @@ mod tests {
         assert!(error.to_string().contains("Arrow field"));
     }
 
+    /// A dictionary-encoded nested container carries field names too:
+    /// `Dictionary(Int32, Struct([...]))` is encodable by arrow's own
+    /// writer, and without a Dictionary arm the walk never reached the
+    /// inner struct's names.
+    #[test]
+    fn dictionary_inner_field_names_are_gated_too() {
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "outer",
+            DataType::Dictionary(
+                Box::new(DataType::Int32),
+                Box::new(DataType::Struct(
+                    vec![Field::new("inner\u{202e}", DataType::Int64, true)].into(),
+                )),
+            ),
+            true,
+        )]));
+        let batch = RecordBatch::new_empty(schema);
+        let error = refuse_control_characters_in_arrow_fields(&batch)
+            .expect_err("field names inside a dictionary's value type use the identifier gate");
+        assert!(error.to_string().contains("Arrow field"));
+    }
+
     /// Zero batches (a schema-only stream) refuse with the bare frozen
     /// spelling — full-string: no cause exists to append.
     #[test]
@@ -601,6 +719,130 @@ mod tests {
         // — the belt on top of the typed pin above, so the hook and
         // the seat cannot drift apart.
         crate::fuzzing::decode_one_batch(&REPRO);
+    }
+
+    /// A ~24-byte frame whose 4-byte length field declares ~2 GiB of
+    /// metadata. arrow-ipc 58.3's stream reader `resize`s its metadata
+    /// buffer to the DECLARED size — committing and zero-filling the
+    /// full 2 GiB — before `read_exact` discovers the frame holds no
+    /// such bytes. The framing pre-pass must refuse first: the refusal
+    /// spelling is the pre-pass's own, which is the structural proof
+    /// arrow's reader (and its allocation) was never entered.
+    #[test]
+    fn a_frame_declaring_a_huge_metadata_length_refuses_before_arrow_allocates() {
+        let mut frame = vec![0xff, 0xff, 0xff, 0xff];
+        frame.extend_from_slice(&0x7fff_fff0_i32.to_le_bytes());
+        frame.extend_from_slice(&[0u8; 16]);
+
+        let error = decode_one_batch(&frame)
+            .expect_err("a declared length past the frame's end must refuse");
+        assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+        let rendered = error.to_string();
+        assert_eq!(
+            rendered,
+            format!(
+                "{FROZEN}: a declared metadata length of 2147483632 bytes exceeds \
+                 the 24-byte frame"
+            ),
+            "the pre-pass's own spelling proves the arrow reader never ran"
+        );
+    }
+
+    /// The body-length sibling: a real one-batch stream whose
+    /// record-batch message is patched to declare a ~2 GiB body. The
+    /// reader allocates `bodyLength` zeroed bytes on trust before
+    /// reading; the pre-pass must refuse the declaration against the
+    /// frame's actual size instead.
+    #[test]
+    fn a_frame_declaring_a_huge_body_length_refuses_before_arrow_allocates() {
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        // Two Int64 columns, three rows — any small real batch works;
+        // the patch locates `bodyLength` structurally, not by value.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(arrow::array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(arrow::array::Int64Array::from(vec![4, 5, 6])),
+            ],
+        )
+        .expect("a matching batch constructs");
+        let mut writer =
+            arrow::ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("ipc writer");
+        writer.write(&batch).expect("ipc write");
+        let mut bytes = writer.into_inner().expect("ipc finish");
+        assert!(
+            decode_one_batch(&bytes).is_ok(),
+            "the unpatched stream decodes"
+        );
+
+        // Walk to the second message (the record batch), read its true
+        // declared bodyLength, and overwrite that i64's little-endian
+        // spelling inside the metadata with ~2 GiB.
+        let (meta_start, meta_end) = {
+            let mut pos = 0usize;
+            let mut spans = Vec::new();
+            while spans.len() < 2 {
+                assert_eq!(&bytes[pos..pos + 4], [0xff; 4], "continuation marker");
+                let meta_len =
+                    i32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().expect("4 bytes"))
+                        as usize;
+                let start = pos + 8;
+                let end = start + meta_len;
+                let message =
+                    arrow::ipc::root_as_message(&bytes[start..end]).expect("valid metadata");
+                let body = usize::try_from(message.bodyLength()).expect("non-negative body");
+                spans.push((start, end));
+                pos = end + body;
+            }
+            spans[1]
+        };
+        let true_body = arrow::ipc::root_as_message(&bytes[meta_start..meta_end])
+            .expect("valid metadata")
+            .bodyLength();
+        // The field's byte position comes from the flatbuffer's own
+        // structure: root table offset, its vtable, and the vtable's
+        // slot for `bodyLength` (VT_BODYLENGTH = 10 in the generated
+        // Message table) — self-verified against the decoded value
+        // before patching.
+        let field_pos = {
+            let meta = &bytes[meta_start..meta_end];
+            let root = u32::from_le_bytes(meta[0..4].try_into().expect("4 bytes")) as i64;
+            let soffset = i32::from_le_bytes(
+                meta[root as usize..root as usize + 4]
+                    .try_into()
+                    .expect("4 bytes"),
+            ) as i64;
+            let vtable = usize::try_from(root - soffset).expect("in-bounds vtable");
+            let slot =
+                u16::from_le_bytes(meta[vtable + 10..vtable + 12].try_into().expect("2 bytes"))
+                    as i64;
+            assert_ne!(slot, 0, "bodyLength is present in the message");
+            meta_start + usize::try_from(root + slot).expect("in-bounds field")
+        };
+        assert_eq!(
+            i64::from_le_bytes(bytes[field_pos..field_pos + 8].try_into().expect("8 bytes")),
+            true_body,
+            "the located field really is bodyLength"
+        );
+        bytes[field_pos..field_pos + 8].copy_from_slice(&0x7fff_fff0_i64.to_le_bytes());
+
+        let frame_len = bytes.len();
+        let error =
+            decode_one_batch(&bytes).expect_err("a declared body past the frame's end must refuse");
+        assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{FROZEN}: a declared body length of 2147483632 bytes exceeds \
+                 the {frame_len}-byte frame"
+            ),
+            "the pre-pass's own spelling proves the arrow reader never ran"
+        );
     }
 
     #[test]

@@ -240,27 +240,26 @@ impl ByteSized for PushPayload {
     ///
     /// The Arrow arm meters the batch's buffer tree itself rather than
     /// calling `RecordBatch::get_array_memory_size()`, because that
-    /// method sums each buffer's `capacity()` — the whole underlying
-    /// ALLOCATION, not the slice the buffer views. Arrow's IPC reader
-    /// allocates an entire message body as ONE buffer and hands every
-    /// column a zero-copy slice of it, so under capacity-summing a
-    /// decoded batch charges the body once PER BUFFER (measured ≈10-17×
-    /// its footprint), and a wire source burns its budget that many
-    /// times too fast. Summing slice LENGTHS instead makes a decoded
-    /// batch meter ≈ the body it decodes from.
+    /// method sums each buffer's `capacity()` — once PER BUFFER. Arrow's
+    /// IPC reader allocates an entire message body as ONE buffer and
+    /// hands every column a zero-copy slice of it, so per-buffer
+    /// capacity-summing charges the body once per buffer (measured
+    /// ≈10-17× its footprint), and a wire source burns its budget that
+    /// many times too fast. [`arrow_batch_footprint`] charges each
+    /// distinct ALLOCATION once instead, so a decoded batch meters ≈
+    /// the body it decodes from.
     ///
-    /// THE OTHER DIRECTION IS THE ACCEPTED TRADE (D-042-4, judged by
-    /// measurement): a builder-built batch's buffers carry
-    /// capacity-doubling slack (`capacity ≈ 1.4x len` in the recorded
-    /// arithmetic, up to 2x worst case), and len-summing deliberately
-    /// does NOT count it — the budget is a THROUGHPUT WINDOW bound,
-    /// not a resident-set accountant. The T4 review named this
-    /// len-vs-resident caveat explicitly, and T11's recorded session
-    /// judged it on the benches' own measurement: peak RSS fell a net
-    /// −31 MB across the five remote twins with the builder slack
-    /// presented in the arithmetic. Do not "fix" this back toward
-    /// capacity-summing without a new RSS measurement that overturns
-    /// that record.
+    /// A HISTORY NOTE so the intermediate design does not return: the
+    /// meter previously summed slice lengths (D-042-4 deliberately
+    /// excluded builder capacity slack, judged on a recorded −31 MB RSS
+    /// measurement). Length-summing turned out to be an under-counting
+    /// hole, not a refinement — arrow's typed wrappers trim a
+    /// fixed-width values buffer to its node window while the trimmed
+    /// slice keeps the whole allocation resident, so a crafted 64 MiB
+    /// frame metered 8 bytes and the budget was uncapped. Charging
+    /// allocations whole closes that; the builder slack it re-admits is
+    /// bounded (≤2× by `Vec` growth) and errs on the throttling side,
+    /// which outranks the RSS nicety the length-sum bought.
     fn byte_size(&self) -> usize {
         match self {
             PushPayload::RawJson(bytes) => bytes.len(),
@@ -270,64 +269,21 @@ impl ByteSized for PushPayload {
     }
 }
 
-/// The i32/i64 offsets window `[offset ..= offset + len]` of a
-/// variable-width array's offsets buffer, and the data-byte range
-/// those offsets span — decoded from the buffer's RAW BYTES, never
-/// `typed_data` (round-13 fix: `typed_data` ASSERTS an exact
-/// length-multiple and alignment, so a merely-large-enough offsets
-/// buffer — 13 bytes for a 2-element array, legal by Arrow's minimum-
-/// size rule and reachable through IPC-built child data, which skips
-/// the validator — panicked the meter inside `send`). Only the exact
-/// window the array views is read: the first and last offsets come out
-/// of it as native-endian fixed-width chunks (what `typed_data` read,
-/// minus its asserts), and a buffer too short for even the window —
-/// the legal empty-offsets shape included (round-10) — falls back to
-/// charging `usize::MAX`, which [`data_footprint`]'s window counter
-/// clamps to each buffer's real length: over-count, the budget's safe
-/// side, NEVER a panic (the meter's contract; the subtraction
-/// saturates for the same reason).
-fn offsets_window(
-    buffer: &arrow_buffer::Buffer,
-    offset: usize,
-    len: usize,
-    width: usize,
-    decode: fn(&[u8]) -> usize,
-) -> (usize, usize, usize, usize) {
-    // Saturating (047 L2, symmetric with the round-13 hardening below):
-    // IPC-skewed `offset`/`len` can overflow the window arithmetic, and
-    // an unchecked multiply panicked DEBUG builds inside `send` — the
-    // saturated bound lands in the same `None` over-count arm release
-    // builds only ever reached by wrapping luck.
-    let start = offset.saturating_mul(width);
-    let end = offset
-        .saturating_add(len)
-        .saturating_add(1)
-        .saturating_mul(width);
-    match buffer.as_slice().get(start..end) {
-        // A successful get always holds >= one `width` chunk
-        // (end - start = (len + 1) * width).
-        Some(window) => (
-            start,
-            (len + 1) * width,
-            decode(&window[..width]),
-            decode(&window[window.len() - width..]).saturating_sub(decode(&window[..width])),
-        ),
-        None => (0, usize::MAX, 0, usize::MAX),
-    }
-}
-
-/// The bytes an Arrow batch holds: the summed lengths of the distinct
-/// buffer slices reachable from its columns (values, offsets, nulls, and
-/// nested child data, recursively).
+/// The bytes an Arrow batch holds resident: the summed sizes of the
+/// distinct underlying ALLOCATIONS reachable from its columns (values,
+/// offsets, nulls, and nested child data, recursively), each counted
+/// once.
 ///
-/// Distinctness is by exact slice identity — start pointer plus length.
-/// Two disjoint slices of one allocation both count, because they hold
-/// different bytes; the identical slice reachable twice (one `Arc`'d
-/// array as two columns, a shared dictionary) counts once. Slices that
-/// overlap without coinciding double-charge the overlap — accepted: the
+/// Distinctness is by allocation identity — the allocation's base
+/// pointer plus its size. Any number of buffers slicing one allocation
+/// (every column of an IPC-decoded batch slices the one message body)
+/// charge it once, because ONE allocation is what stays resident; the
+/// identical array reachable twice (one `Arc`'d array as two columns,
+/// a shared dictionary) likewise counts its allocations once. The
 /// budget's failure directions are asymmetric (over-counting narrows a
-/// healthy window, under-counting uncaps memory), so ties break toward
-/// counting. arrow 58 exposes no slice-footprint API, hence the walk.
+/// healthy window, under-counting uncaps memory), so every ambiguity
+/// here breaks toward counting. arrow 58 exposes no footprint API with
+/// these semantics, hence the walk.
 ///
 /// Public because this is the ONE byte meter for Arrow batches wherever
 /// a budget, commit policy, or report counts them: batches decoded from
@@ -346,152 +302,67 @@ pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
     })
 }
 
-/// A bit window's byte span: from `first_bit`, `bits` wide — for boolean
-/// values and validity bitmaps, whose `offset`/`len` come from IPC-decoded
-/// data that skips the validator.
+/// One node of the walk: this array's own buffers — each charged as
+/// its whole underlying ALLOCATION, once per walk — then its children.
 ///
-/// Checked (047 round 2, the L2 siblings): unchecked, a skewed window
-/// panicked debug builds inside `send`, and in release it WRAPPED — a
-/// wrapped-small span can land inside the buffer and UNDER-count, the
-/// budget's unsafe direction. Overflow falls back to charge-everything,
-/// which the caller clamps to the buffer's real length: over-count, the
-/// budget's safe side, same posture as [`offsets_window`]'s fallback.
-fn bit_window(first_bit: usize, bits: usize) -> (usize, usize) {
-    match first_bit.checked_add(bits) {
-        Some(end_bits) => {
-            let start = first_bit / 8;
-            (start, end_bits.div_ceil(8) - start)
-        }
-        None => (0, usize::MAX),
-    }
-}
-
-/// The byte span `len` fixed-width cells view from cell `offset` — the
-/// FixedSizeBinary and primitive-width arms' arithmetic. Checked for the
-/// same reason and with the same fallback as [`bit_window`].
-fn cell_window(offset: usize, len: usize, width: usize) -> (usize, usize) {
-    match (offset.checked_mul(width), len.checked_mul(width)) {
-        (Some(start), Some(viewed)) => (start, viewed),
-        _ => (0, usize::MAX),
-    }
-}
-
-/// One node of the walk: this array's own buffers (each trimmed to the
-/// byte range the node's `offset`/`len` actually VIEW — round-7 fix: a
-/// `RecordBatch::slice` chunk used to charge its parent's whole buffer,
-/// so n chunks metered ~n× the parent), then its children.
-///
-/// The viewed range is computed per layout where the arithmetic is
-/// cheap and exact — fixed-width values, boolean and validity bitmaps,
-/// offset buffers, and variable-width data through its offsets window —
-/// and falls back to the buffer's full length for the exotic layouts
-/// (unions, dictionaries, run-ends, views), which errs only in the
-/// OVER-count direction, the budget's safe side. A sliced List's child
-/// likewise meters its full extent (trimming it would need the offsets
-/// window applied to the child) — over-count again, accepted. Dedup
-/// keys on the exact viewed slice (start pointer + viewed length), so
-/// two chunks re-viewing one range still count it once per batch walk.
+/// Allocation-level charging is deliberate, and it superseded the
+/// earlier per-layout node-length windows: arrow-data validates buffer
+/// sizes only as a MINIMUM and the IPC reader preserves wire-declared
+/// buffer lengths, so any layout can carry far more resident bytes
+/// than its node length references — a 64 MiB `Int64` values buffer
+/// with node length 1 metered 8 bytes, and with the meter neutralized
+/// a slow consumer queues gigabytes against a 64 MiB budget
+/// (under-count uncaps memory, the budget's one unsafe direction).
+/// Buffer LENGTHS cannot answer this either: arrow's typed wrappers
+/// trim a fixed-width values buffer to its node window on
+/// construction (`ScalarBuffer::new` slices it), while the trimmed
+/// slice keeps the entire allocation alive — length-summing still
+/// meters 8 bytes against 64 MiB resident. So the meter charges what
+/// is actually RESIDENT: each distinct allocation (identity =
+/// `data_ptr()`, the allocation's base), once, at its full
+/// `capacity()`. An IPC-decoded batch's columns are all slices of the
+/// one message-body allocation, so an honest frame meters ≈ the body
+/// it decodes from — the dedup is exactly what keeps the measured
+/// 10-17× per-buffer capacity-summing pathology dead. The remaining
+/// costs sit on the over-count side only: builder-built buffers'
+/// capacity slack now counts (bounded ≤2× by `Vec` growth), and a
+/// `RecordBatch::slice` chunk charges its parent's allocations whole
+/// (they remain resident through the chunk). No buffer content or
+/// window arithmetic is read at all, so IPC-skewed `offset`/`len`
+/// values cannot overflow, wrap, or panic the send path.
 fn data_footprint(
     data: &arrow_data::ArrayData,
     seen: &mut std::collections::HashSet<(usize, usize)>,
     depth: usize,
 ) -> usize {
-    use arrow_schema::DataType;
-
     // THE DEPTH CAP (047 M1): nesting is connector-controlled and a stack
     // overflow is an abort. The meter must never error the send path, so
     // past the cap it stops and charges `usize::MAX` — the over-count
-    // direction, the budget's safe side, exactly like the short-buffer
-    // fallback above: `send` clamps the request to the whole budget, so a
-    // hostile batch degrades to drain-the-budget-and-go, never to a
-    // deeper frame.
+    // direction, the budget's safe side: `send` clamps the request to
+    // the whole budget, so a hostile batch degrades to
+    // drain-the-budget-and-go, never to a deeper frame.
     if depth > MAX_ARROW_DEPTH {
         return usize::MAX;
     }
 
-    let mut count = |start: usize, viewed: usize| -> usize {
-        if viewed > 0 && seen.insert((start, viewed)) {
-            viewed
+    let mut count = |buffer: &arrow_buffer::Buffer| -> usize {
+        // `capacity()` answers 0 for externally owned allocations (FFI
+        // imports, which never arrive off this crate's wire) — the
+        // slice length is the honest floor there.
+        let size = buffer.capacity().max(buffer.len());
+        if size > 0 && seen.insert((buffer.data_ptr().as_ptr() as usize, size)) {
+            size
         } else {
             0
         }
     };
-    // The window `[start_byte, start_byte + viewed)` of `buffer` this
-    // node views, clamped into the buffer.
-    let mut count_window = |buffer: &arrow_buffer::Buffer, start_byte: usize, viewed: usize| {
-        let start_byte = start_byte.min(buffer.len());
-        let viewed = viewed.min(buffer.len() - start_byte);
-        count(buffer.as_ptr() as usize + start_byte, viewed)
-    };
 
-    let (offset, len) = (data.offset(), data.len());
-    let offsets_i32 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
-        offsets_window(buffer, offset, len, 4, |chunk| {
-            i32::from_ne_bytes(chunk.try_into().expect("a 4-byte chunk")) as usize
-        })
-    };
-    let offsets_i64 = |buffer: &arrow_buffer::Buffer| -> (usize, usize, usize, usize) {
-        offsets_window(buffer, offset, len, 8, |chunk| {
-            i64::from_ne_bytes(chunk.try_into().expect("an 8-byte chunk")) as usize
-        })
-    };
-    let buffers = data.buffers();
-    let mut total = 0;
-    match data.data_type() {
-        DataType::Boolean => {
-            let (start, viewed) = bit_window(offset, len);
-            total += count_window(&buffers[0], start, viewed);
-        }
-        DataType::Utf8 | DataType::Binary => {
-            let (off_start, off_len, _, _) = offsets_i32(&buffers[0]);
-            total += count_window(&buffers[0], off_start, off_len);
-            // An IPC-decoded values buffer may legally be larger than the
-            // offsets reference. The whole allocation remains resident, so
-            // charging only `last_offset - first_offset` lets a valid frame
-            // retain almost 64 MiB while consuming almost no budget. Charge
-            // the complete values buffer; slices can consequently over-count
-            // a shared allocation, which is the budget's safe direction.
-            total += count_window(&buffers[1], 0, buffers[1].len());
-        }
-        DataType::LargeUtf8 | DataType::LargeBinary => {
-            let (off_start, off_len, _, _) = offsets_i64(&buffers[0]);
-            total += count_window(&buffers[0], off_start, off_len);
-            total += count_window(&buffers[1], 0, buffers[1].len());
-        }
-        DataType::List(_) | DataType::Map(_, _) => {
-            let (off_start, off_len, _, _) = offsets_i32(&buffers[0]);
-            total += count_window(&buffers[0], off_start, off_len);
-        }
-        DataType::LargeList(_) => {
-            let (off_start, off_len, _, _) = offsets_i64(&buffers[0]);
-            total += count_window(&buffers[0], off_start, off_len);
-        }
-        DataType::FixedSizeBinary(width) => {
-            let (start, viewed) = cell_window(offset, len, *width as usize);
-            total += count_window(&buffers[0], start, viewed);
-        }
-        // Structs and fixed-size lists carry no buffers of their own;
-        // their children recurse below.
-        DataType::Struct(_) | DataType::FixedSizeList(_, _) | DataType::Null => {}
-        other => match other.primitive_width() {
-            // Fixed-width values: exactly the viewed cells.
-            Some(width) => {
-                let (start, viewed) = cell_window(offset, len, width);
-                total += count_window(&buffers[0], start, viewed);
-            }
-            // The documented fallback (unions, dictionaries, run-ends,
-            // views): full buffer lengths — over-counts a sliced view,
-            // never under.
-            None => {
-                for buffer in buffers {
-                    total += count_window(buffer, 0, buffer.len());
-                }
-            }
-        },
+    let mut total = 0usize;
+    for buffer in data.buffers() {
+        total = total.saturating_add(count(buffer));
     }
     if let Some(nulls) = data.nulls() {
-        let (start, viewed) = bit_window(nulls.offset(), nulls.len());
-        total += count_window(nulls.buffer(), start, viewed);
+        total = total.saturating_add(count(nulls.buffer()));
     }
     // Saturating for the same reason as the batch-level fold: a child past
     // the depth cap charges `usize::MAX`.
@@ -785,10 +656,12 @@ mod byte_size_tests {
         );
     }
 
-    /// Fixed-width slices keep their precise window accounting. Variable-width
-    /// values deliberately charge their full backing allocation, so this
-    /// fixture (which contains one string column) may over-count across chunks;
-    /// the important invariant is that it never under-counts the parent.
+    /// Every layout deliberately charges its full backing buffers, so a
+    /// `slice()` chunk meters its parent's whole buffers (they stay
+    /// resident through the chunk) and n chunks may meter up to n× the
+    /// parent — the over-count direction, the budget's safe side. The
+    /// load-bearing invariant is the floor: the chunks together must
+    /// never under-count the parent's resident bytes.
     #[test]
     fn slicing_a_batch_never_undercounts_the_parent() {
         let batch = built_batch();
@@ -842,6 +715,48 @@ mod byte_size_tests {
         );
     }
 
+    /// The 2H3 sibling for every other layout: arrow-data validates
+    /// buffer sizes as a MINIMUM and the IPC reader preserves
+    /// wire-declared buffer lengths, so a fixed-width column can carry
+    /// a values buffer (or validity bitmap) far larger than its node
+    /// length references — and arrow's typed wrappers then TRIM the
+    /// values buffer to its 8-byte node window while the trimmed slice
+    /// keeps the whole allocation alive. Those bytes stay resident;
+    /// metering the node window (or the trimmed slice length)
+    /// neutralizes the budget exactly the way the variable-width
+    /// values gap did.
+    #[test]
+    fn an_oversized_fixed_width_buffer_and_bitmap_are_charged_in_full() {
+        let retained = 8 * 1024 * 1024;
+        // Bit 0 cleared so the one row is null: a bitmap with no nulls
+        // may be normalized away, and this pin needs it to survive to
+        // the meter.
+        let mut bitmap = vec![0xffu8; retained];
+        bitmap[0] = 0xfe;
+        let data = arrow_data::ArrayData::try_new(
+            DataType::Int64,
+            1,
+            Some(arrow_buffer::Buffer::from_vec(bitmap)),
+            0,
+            vec![arrow_buffer::Buffer::from_vec(vec![0u8; retained])],
+            vec![],
+        )
+        .expect("arrow validates buffer sizes as a minimum, not an exact fit");
+        let array = arrow_array::make_array(data);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)])),
+            vec![array],
+        )
+        .expect("matching batch");
+
+        let metered = arrow_batch_footprint(&batch);
+        assert!(
+            metered >= 2 * retained,
+            "all resident bytes — the oversized values buffer AND the oversized \
+             validity bitmap — must be charged: retained 2×{retained}, got {metered}"
+        );
+    }
+
     #[test]
     fn byte_size_of_a_builder_built_batch_stays_between_payload_and_double() {
         let metered = PushPayload::Arrow(built_batch()).byte_size();
@@ -857,18 +772,18 @@ mod byte_size_tests {
         );
     }
 
-    /// THE EMPTY-OFFSETS PIN (round-10 fix): Arrow permits a
-    /// zero-length variable-width array to carry an EMPTY offsets
-    /// buffer — arrow-data 58's own validation allows 0 offsets
-    /// ("An empty list-like array can have 0 offsets") — and the
-    /// unguarded window read (`values[offset]`) panicked on it inside
-    /// the byte meter. The walk is driven on the RAW `ArrayData` here,
-    /// deliberately: arrow-array 58's typed wrappers happen to
-    /// normalize the empty buffer to a single `0` on construction
-    /// (measured — `make_array` + `to_data` yields a 4-byte offsets
-    /// buffer), so a batch-level fixture cannot carry the shape today,
-    /// but the meter walks `child_data` trees and validated foreign
-    /// constructions where nothing promises that normalization.
+    /// THE EMPTY-OFFSETS PIN (round-10 fix, kept through whole-buffer
+    /// charging): Arrow permits a zero-length variable-width array to
+    /// carry an EMPTY offsets buffer — arrow-data 58's own validation
+    /// allows 0 offsets ("An empty list-like array can have 0
+    /// offsets") — and an earlier windowed meter panicked reading it.
+    /// The walk is driven on the RAW `ArrayData` here, deliberately:
+    /// arrow-array 58's typed wrappers happen to normalize the empty
+    /// buffer to a single `0` on construction (measured: `make_array`
+    /// then `to_data` yields a 4-byte offsets buffer), so a batch-level
+    /// fixture cannot carry the shape today, but the meter walks
+    /// `child_data` trees and validated foreign constructions where
+    /// nothing promises that normalization.
     #[test]
     fn an_empty_offsets_buffer_meters_zero_instead_of_panicking() {
         let data = arrow_data::ArrayData::try_new(
@@ -892,38 +807,16 @@ mod byte_size_tests {
         );
     }
 
-    /// THE OVERSIZED-OFFSETS PIN (round-13 fix): Arrow sizes an
-    /// offsets buffer by MINIMUM (>= (len+1)*4), so a 13-byte buffer
-    /// for a 2-element array can reach the meter through IPC-built
-    /// child data (which skips the validator — arrow's own `try_new`
-    /// validation ASSERTS on this shape even before the meter would,
-    /// measured, which is why this pin drives the window fn directly).
-    /// `typed_data` panicked on it; the window read must answer the
-    /// true footprint, never panic.
-    #[test]
-    fn an_oversized_offsets_buffer_meters_without_panicking() {
-        let decode_i32 =
-            |chunk: &[u8]| i32::from_ne_bytes(chunk.try_into().expect("a 4-byte chunk")) as usize;
-        // [0, 1, 3] as native-endian i32 plus one trailing byte:
-        // 13 bytes, 4-aligned via the slice of a Vec<i32> allocation.
-        let backing = arrow_buffer::Buffer::from_vec(vec![0i32, 1, 3, 0]);
-        let oversized = backing.slice_with_length(0, 13);
-        assert_eq!(
-            offsets_window(&oversized, 0, 2, 4, decode_i32),
-            (0, 12, 0, 3),
-            "the exact window: 3 offsets x 4 bytes viewed, data bytes 0..3 spanned — \
-             the trailing byte beyond the window is never read, and nothing panics"
-        );
-
-        // The round-10 legal empty-offsets shape stays a non-panicking
-        // fallback: too short for even one offset, charge-everything
-        // (the caller clamps MAX to the real buffer lengths).
-        let empty = arrow_buffer::Buffer::from_vec(Vec::<i32>::new());
-        assert_eq!(
-            offsets_window(&empty, 0, 0, 4, decode_i32),
-            (0, usize::MAX, 0, usize::MAX)
-        );
-    }
+    // NOTE on a retired pin: the round-13 "oversized offsets buffer"
+    // test (a 13-byte offsets buffer for a 2-element array, legal by
+    // Arrow's minimum-size rule) guarded the windowed meter's offsets
+    // DECODE against a `typed_data` panic. The allocation walk reads
+    // no buffer content at all — only `data_ptr`/`len`/`capacity` —
+    // so the code path the pin guarded no longer exists, and the shape
+    // cannot be constructed for a batch-level pin without `unsafe`
+    // (`ArrayData::try_new` asserts on it; the workspace denies
+    // unsafe). The empty-offsets pin below keeps the
+    // hostile-shape-never-panics posture on a constructible shape.
 
     /// 047 M1: the meter walks connector-controlled nesting, and a stack
     /// overflow is an ABORT no task containment can absorb. Past
@@ -958,71 +851,6 @@ mod byte_size_tests {
             (1..usize::MAX).contains(&shallow),
             "an ordinarily nested batch still meters its real bytes: {shallow}"
         );
-    }
-
-    /// 047 round 2, the L2 siblings: the bit-window and fixed-width-cell
-    /// arithmetic over IPC-skewed `offset`/`len` must fall into the same
-    /// charge-everything fallback as the offsets window. Unchecked, these
-    /// panicked debug builds inside `send` — and in RELEASE they WRAP,
-    /// which can land a small bogus window inside the buffer and
-    /// UNDER-count: the budget's unsafe direction, worse than any
-    /// over-count.
-    #[test]
-    fn overflowing_bit_and_cell_windows_charge_everything_instead_of_wrapping() {
-        // Bit windows (boolean values, validity bitmaps).
-        for (first_bit, bits) in [
-            (usize::MAX, 8),
-            (usize::MAX - 3, usize::MAX),
-            (8, usize::MAX),
-        ] {
-            assert_eq!(
-                bit_window(first_bit, bits),
-                (0, usize::MAX),
-                "first_bit {first_bit}, bits {bits}: overflow must charge-everything"
-            );
-        }
-        assert_eq!(bit_window(3, 10), (0, 2), "the ordinary window is exact");
-        assert_eq!(bit_window(8, 8), (1, 1));
-
-        // Cell windows (FixedSizeBinary and primitive-width values).
-        for (offset, len, width) in [
-            (usize::MAX / 2, 3, 8),
-            (2, usize::MAX / 2, 8),
-            (usize::MAX, usize::MAX, 2),
-        ] {
-            assert_eq!(
-                cell_window(offset, len, width),
-                (0, usize::MAX),
-                "offset {offset}, len {len}, width {width}: overflow must charge-everything"
-            );
-        }
-        assert_eq!(
-            cell_window(2, 3, 8),
-            (16, 24),
-            "the ordinary window is exact"
-        );
-    }
-
-    /// 047 L2: the window arithmetic over IPC-skewed `offset`/`len` values
-    /// must SATURATE into the over-count fallback — the unchecked
-    /// `(offset + len + 1) * width` panicked debug builds inside `send`
-    /// (release wrapped into the safe `None` arm by accident, not design).
-    #[test]
-    fn an_overflowing_offsets_window_saturates_into_the_overcount_fallback() {
-        let decode_i32 =
-            |chunk: &[u8]| i32::from_ne_bytes(chunk.try_into().expect("a 4-byte chunk")) as usize;
-        let backing = arrow_buffer::Buffer::from_vec(vec![0i32, 1, 3, 0]);
-        for (offset, len) in [
-            (usize::MAX, 2),
-            (usize::MAX - 1, usize::MAX - 1),
-            (0, usize::MAX),
-        ] {
-            assert_eq!(
-                offsets_window(&backing, offset, len, 4, decode_i32),
-                (0, usize::MAX, 0, usize::MAX),
-                "offset {offset}, len {len}: overflow must charge-everything, never panic"
-            );
-        }
     }
 
     #[test]
