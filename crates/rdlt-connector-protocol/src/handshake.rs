@@ -107,9 +107,17 @@ impl Line {
                 socket_path.len()
             )));
         }
-        if socket_path.chars().any(char::is_control) {
+        // The full shared inventory, joiners included: a socket path is
+        // filesystem material, not human orthography, so nothing
+        // invisible has a legitimate seat in it — and the same table
+        // gating the client's identifier seats gates the path here, so
+        // the two sides of the wire cannot drift.
+        if socket_path
+            .chars()
+            .any(crate::sanitize::is_control_or_invisible)
+        {
             return Err(LineError::Malformed(
-                "socket_path contains control characters".to_string(),
+                "socket_path contains control or invisible formatting characters".to_string(),
             ));
         }
 
@@ -188,6 +196,13 @@ mod tests {
                 "x".repeat(MAX_SOCKET_PATH_BYTES)
             ),
             "rdlt-connector|1|0|0|/tmp/evil\u{1b}.sock".to_string(),
+            // The invisible set is refused too, by the same shared
+            // inventory the client applies — a right-to-left override
+            // or zero-width space in a path is spoofing material even
+            // where the render escapes it.
+            "rdlt-connector|1|0|0|/tmp/evil\u{202e}.sock".to_string(),
+            "rdlt-connector|1|0|0|/tmp/evil\u{200b}.sock".to_string(),
+            "rdlt-connector|1|0|0|/tmp/evil\u{200d}.sock".to_string(),
         ] {
             assert!(Line::parse(&line).is_err(), "must refuse {line:?}");
         }
