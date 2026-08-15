@@ -215,8 +215,8 @@ impl TapeShredder {
             // arena; table state is disjoint, so both borrows coexist.
             let mut child_lists: Vec<(String, Vec<NodeId>)> = Vec::new();
             for (key, value) in arena.node(entry.node).obj_entries() {
-                let state = self.tables[entry.table_idx].state_mut(key)?;
-                state.observe(value, lists_as_columns);
+                let state =
+                    self.tables[entry.table_idx].observe_value(key, value, lists_as_columns)?;
                 if state.is_child_table() && value.is_array() {
                     child_lists.push((key.to_owned(), value.arr_items().map(|n| n.id()).collect()));
                 }
@@ -438,6 +438,32 @@ mod cardinality_tests {
         }
         slab.extend_from_slice(b"]}");
         expect_row_cap(push(&mut shredder(), &slab));
+    }
+
+    /// Nested-object fields accumulate in a struct column OUTSIDE the
+    /// top-level column bookkeeping, so without counting them a single
+    /// column smuggles unbounded breadth past the source-column cap — and
+    /// the registry then retains and re-clones it every batch. Struct fields
+    /// spend from the same per-table budget as columns.
+    #[test]
+    fn nested_struct_fields_count_toward_the_source_column_cap() {
+        let mut slab = Vec::new();
+        slab.extend_from_slice(b"{\"s\":{");
+        for index in 0..super::super::MAX_SOURCE_COLUMNS_PER_TABLE {
+            if index > 0 {
+                slab.push(b',');
+            }
+            slab.extend_from_slice(format!("\"f{index}\":1").as_bytes());
+        }
+        slab.extend_from_slice(b"}}");
+        match push(&mut shredder(), &slab) {
+            Err(PushError::Engine(e)) => assert!(
+                e.to_string().contains("source-column cap"),
+                "the refusal names the cap: {e}"
+            ),
+            Err(PushError::Json(e)) => panic!("must refuse typed, not as a parse error: {e}"),
+            Ok(_) => panic!("cap struct fields beside one column must refuse"),
+        }
     }
 
     /// The per-parent child cap leaves the TOTAL unbounded (nesting multiplies
