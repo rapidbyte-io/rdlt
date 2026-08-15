@@ -9,8 +9,14 @@ in place; legacy formats and compatibility shims are not supported.
 ## Trust boundaries
 
 - Pipeline and connector configuration documents may be attacker-influenced.
-  Their raw size, YAML graph syntax, and materialized cardinality are bounded
-  before they can drive allocation.
+  Documents are size-capped (8 MiB) before they are read, and a raw-text
+  token-start scanner refuses YAML anchors and aliases — plus the few
+  spellings it cannot decide line-locally (quoted scalars spanning lines,
+  quote/tag/block-scalar indicators where a plain scalar may continue,
+  verbatim tags) — before any deserialization, at both the pipeline-spec
+  parse and the connector SDK's `Document::from_yaml`. An accepted document
+  is therefore a tree, and what the parser materializes is bounded by the
+  text that spells it.
 - Installing or selecting a connector binary is an operator trust decision. A
   spawned connector executes with the operator's OS identity, but receives a
   scrubbed environment and a dedicated process group. Its wire frames,
@@ -29,7 +35,10 @@ in place; legacy formats and compatibility shims are not supported.
 
 ## Reporting a vulnerability
 
-Please report suspected vulnerabilities privately to the repository owners
-before opening a public issue. Include the affected revision, reachable input
+Please report suspected vulnerabilities privately through GitHub's private
+vulnerability reporting on the `rapidbyte-io/rdlt` repository (Security →
+"Report a vulnerability", or
+<https://github.com/rapidbyte-io/rdlt/security/advisories/new>) rather than
+opening a public issue. Include the affected revision, reachable input
 boundary, impact, and a minimal reproducer when possible. Do not include live
 credentials or production data.

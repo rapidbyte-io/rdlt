@@ -48,6 +48,7 @@ pub mod destination;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod source;
+pub mod yaml;
 
 /// The connector SPI, re-exported: one dependency authors a connector.
 pub use rdlt_connector as spi;

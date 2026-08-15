@@ -88,7 +88,31 @@ pub trait Document: DeserializeOwned + Sized {
     fn validate(&self) -> Result<(), Self::Error>;
 
     /// Parse from YAML text and validate.
+    ///
+    /// Two raw-text security gates run BEFORE the parser sees the
+    /// text, because YAML deserialization allocates while it parses:
+    /// documents over [`crate::yaml::MAX_DOCUMENT_BYTES`] are refused
+    /// by size, and YAML anchors/aliases are refused outright
+    /// ([`crate::yaml::reject_graph_syntax`] — alias expansion
+    /// materializes quadratically, so a byte cap alone cannot bound
+    /// it). Both refusals arrive through the YAML arm of
+    /// [`Document::Error`], rendered in the connector's own wording
+    /// around the gate's one-line reason.
     fn from_yaml(yaml: &str) -> Result<Self, Self::Error> {
+        if yaml.len() as u64 > crate::yaml::MAX_DOCUMENT_BYTES {
+            let refusal = <serde_yaml::Error as serde::de::Error>::custom(format!(
+                "the document is {} bytes, over the {}-byte cap — connector configuration \
+                 is hand-written, so a document this size is almost certainly not the \
+                 configuration it was passed as",
+                yaml.len(),
+                crate::yaml::MAX_DOCUMENT_BYTES
+            ));
+            return Err(refusal.into());
+        }
+        if let Err(reason) = crate::yaml::reject_graph_syntax(yaml) {
+            let refusal = <serde_yaml::Error as serde::de::Error>::custom(reason);
+            return Err(refusal.into());
+        }
         let document: Self = serde_yaml::from_str(yaml)?;
         document.validate()?;
         Ok(document)
@@ -213,6 +237,46 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(refused, "probe config: `limit` is 101 — the maximum is 100");
+    }
+
+    /// The YAML entry point is a security seat, not just a parser: the
+    /// graph gate runs before deserialization, so anchors and aliases
+    /// refuse instead of expanding — through the connector's own YAML
+    /// error wording, since the seam still renders no text of its own.
+    #[test]
+    fn from_yaml_refuses_graph_syntax_before_parsing() {
+        let refused = Probe::from_yaml("name: &n probe\nalias: *n\n").unwrap_err();
+        assert!(matches!(refused, ProbeError::Yaml(_)));
+        let rendered = refused.to_string();
+        assert!(rendered.starts_with("probe yaml: "), "{rendered}");
+        assert!(rendered.contains("anchors and aliases"), "{rendered}");
+
+        // The blinding shape: an apostrophe inside a plain scalar must
+        // not disarm the gate for the anchors after it.
+        let refused = Probe::from_yaml("name: it's\nbig: &b [x]\nboom: *b\n").unwrap_err();
+        assert!(
+            refused.to_string().contains("anchors and aliases"),
+            "{refused}"
+        );
+
+        // And the gate stays a gate, not a filter: ordinary documents
+        // with indicator characters as data still parse.
+        let parsed = Probe::from_yaml("name: don't#stop&go\n").expect("data indicators parse");
+        assert_eq!(parsed.name, "don't#stop&go");
+    }
+
+    /// The YAML entry point refuses over-sized documents before any
+    /// parsing — configuration is hand-written and measures in
+    /// kilobytes, so a multi-megabyte document is a wrong input, not a
+    /// big config.
+    #[test]
+    fn from_yaml_refuses_documents_over_the_size_cap() {
+        let mut oversized = String::from("name: ");
+        oversized.push_str(&"a".repeat(crate::yaml::MAX_DOCUMENT_BYTES as usize));
+        let refused = Probe::from_yaml(&oversized).unwrap_err();
+        assert!(matches!(refused, ProbeError::Yaml(_)));
+        let rendered = refused.to_string();
+        assert!(rendered.contains("over the 8388608-byte cap"), "{rendered}");
     }
 
     /// The generated schema is the parser's own shape.
