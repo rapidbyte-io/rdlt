@@ -97,6 +97,44 @@ pub fn refuse_overdeclared_ipc_framing(bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+/// The most bytes of a panic payload any decode belt will render (6L9):
+/// arrow's own panics are static strings, but a payload is arbitrary
+/// attacker-adjacent text, and an evidence line is not a firehose — the
+/// certifier's P5 violations, the client's refusal messages, and the
+/// serve side's typed decode refusals all end up in reports and logs.
+pub const PANIC_TEXT_CAP: usize = 4096;
+
+/// A panic payload's message, bounded for rendering beside a decode
+/// refusal: `&str` (the `panic!` literal form) and `String` (the
+/// formatted form) render truncated to [`PANIC_TEXT_CAP`] bytes at a
+/// char boundary; anything else renders as the honest placeholder.
+///
+/// One implementation for every `catch_unwind` belt around Arrow decode
+/// (the client read seat, the serve write seat, the certifier's P5) —
+/// the module that owns the decode-seat discipline owns the
+/// panic-rendering discipline, so the three belts cannot drift.
+pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    let text: &str = if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text
+    } else {
+        return "<non-text panic payload>".to_string();
+    };
+    if text.len() <= PANIC_TEXT_CAP {
+        return text.to_string();
+    }
+    let mut cut = PANIC_TEXT_CAP;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!(
+        "{cut}-byte prefix of a {}-byte payload: {}",
+        text.len(),
+        &text[..cut]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +160,30 @@ mod tests {
             refuse_overdeclared_ipc_framing(&frame).expect_err("negative meta refuses"),
             "a negative declared metadata length (-1)"
         );
+    }
+
+    /// 6L9: the belt's rendering is bounded — a text payload renders in
+    /// full under the cap, truncates at a char boundary over it, and a
+    /// non-text payload renders the honest placeholder.
+    #[test]
+    fn panic_text_is_bounded_and_char_safe() {
+        assert_eq!(panic_text(&"crafted metadata"), "crafted metadata");
+        assert_eq!(
+            panic_text(&String::from("formatted panic")),
+            "formatted panic"
+        );
+        assert_eq!(panic_text(&7usize), "<non-text panic payload>");
+        // A multi-byte char straddling the cut must not split: an ASCII
+        // lead byte shifts the cap into the middle of an `é`. (The owned
+        // `String` payload exercises the same truncation path as `&str`.)
+        let long = format!("x{}", "é".repeat(PANIC_TEXT_CAP));
+        let rendered = panic_text(&long);
+        assert!(rendered.starts_with("4095-byte prefix"), "{rendered}");
+        assert!(
+            rendered.ends_with('é'),
+            "the cut is char-safe: …{rendered:?}"
+        );
+        assert!(rendered.len() < long.len() + 64, "bounded, not doubled");
     }
 
     /// The walk's honest-pass property: a real one-batch stream, an

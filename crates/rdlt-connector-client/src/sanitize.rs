@@ -16,9 +16,10 @@
 //! - IDENTIFIERS refuse — a stream name, a part event's table, the
 //!   handshake's reported id/version and spec name/version become host
 //!   names for things, and a name is either clean or refused. Each
-//!   seat renders its own typed refusal, quoting the value in its
-//!   `{:?}` escaped form so the refusal cannot carry the bytes it
-//!   refuses.
+//!   seat renders its own typed refusal, quoting the value through
+//!   the shared escape so the refusal cannot carry the bytes it
+//!   refuses (`{:?}` alone leaves the inventory's Lo-category fillers
+//!   raw — 5L4).
 //! - DISPLAY TEXT escapes — an error frame's message is a diagnostic,
 //!   and a connector's real cause should survive its own bad bytes
 //!   rather than vanish behind a refusal: control characters render as
@@ -45,14 +46,12 @@ pub(crate) fn contains_control(text: &str) -> bool {
         .any(sanitize::is_control_or_invisible_in_identifier)
 }
 
-/// The most BYTES a wire identifier may carry (5L5): the content gates
-/// refuse hostile CHARACTERS, but nothing priced the LENGTH — a
-/// 60 MiB control-free stream name passed every gate within the frame
-/// cap (log swelling, plan noise). Real identifiers are bounded by the
-/// destinations' own limits (postgres 63, snowflake 255); a KiB is
-/// already absurd for a name, and the socket path's 107-byte gate is
-/// the in-tree precedent for bounding vocabulary at the wire edge.
-pub(crate) const MAX_WIRE_IDENTIFIER_BYTES: usize = 1024;
+/// The most BYTES a wire identifier may carry — the SPI's constant
+/// (5L5), re-exported here so the client's seats read it beside the
+/// predicate they pair it with. The engine's in-process validation
+/// imports the same spelling from `rdlt_connector`, so the wire gate
+/// and its mirror cannot drift.
+pub(crate) use rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES;
 
 /// Is `text` longer than a wire identifier may be? See the constant.
 pub(crate) fn is_oversized_identifier(text: &str) -> bool {

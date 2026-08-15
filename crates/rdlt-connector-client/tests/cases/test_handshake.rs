@@ -364,3 +364,43 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
         "the refusal names the ceiling: {error}"
     );
 }
+
+/// 6M2: `spec_json` is a typed shell around one UNTYPED value — its
+/// `config_schema` is a free-form document the host caches for the
+/// session's lifetime — so the seat gets the document ceiling every
+/// untyped parse runs, on the RAW bytes before the parse whose
+/// materialization it bounds. A rogue's oversized spec refuses typed
+/// at the handshake, never materializing.
+#[tokio::test]
+async fn an_oversized_spec_json_is_refused_at_the_handshake() {
+    let (_dir, path) = socket_path();
+    let spec = rdlt_connector::ConnectorSpec::new("rogue", "0.0.0");
+    let mut ok = rdlt_connector_protocol::proto::HandshakeOk {
+        connector_id: "rogue".to_string(),
+        connector_version: "0.0.0".to_string(),
+        spec_json: serde_json::to_vec(&spec).expect("a spec serializes"),
+        capabilities_json: Vec::new(),
+        state_format_versions: Default::default(),
+    };
+    ok.spec_json = vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1];
+    let _serving = rogue::serve_handshake_ok(&path, ok);
+
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
+    let error = handshake(
+        &channel,
+        Role::Source,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect_err("an oversized spec_json must refuse at the handshake");
+
+    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("document ceiling"),
+        "the refusal names the ceiling: {rendered}"
+    );
+}

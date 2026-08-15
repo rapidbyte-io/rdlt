@@ -1666,3 +1666,85 @@ async fn handshake_refusal_matrix_pins_every_remaining_arm() {
         run_row(&mut connector, row).await;
     }
 }
+
+/// 6M3: row count is the memory dimension the framing pre-pass cannot
+/// see — Null columns carry millions of rows in almost no body bytes,
+/// and the batch goes straight to the connector's own backend. A tiny
+/// Write frame over the shared row cap refuses typed, naming the cap.
+#[tokio::test]
+async fn a_write_over_the_row_cap_refuses_typed() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    // A boolean-column batch: eight rows per byte — a million-row
+    // frame that costs ~125 KiB, the shape the byte-derived defenses
+    // cannot price.
+    let rows = rdlt_connector::channel::MAX_RECORD_BATCH_ROWS + 1;
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Boolean, false),
+    ]));
+    let batch = rdlt_connector::RecordBatch::try_new(
+        schema,
+        vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
+            false; rows
+        ]))],
+    )
+    .expect("a boolean-column batch constructs");
+    let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
+        .expect("open an arrow ipc stream writer");
+    writer.write(&batch).expect("write the wide-row batch");
+    let arrow_ipc = writer
+        .into_inner()
+        .expect("close an arrow ipc stream writer");
+    assert!(
+        arrow_ipc.len() < 256 * 1024,
+        "the fixture is tiny for its row count — eight rows per byte"
+    );
+
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Write(proto::Write {
+                table: ECHOED_TABLE.to_string(),
+                arrow_ipc,
+            })),
+        })
+        .await
+        .expect("send the over-cap write");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("over the 1000000-row wire cap"),
+                "the refusal names the row cap: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the row-cap refusal, got {other:?}"),
+    }
+}

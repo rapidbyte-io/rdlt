@@ -382,15 +382,11 @@ pub(crate) fn refuse_handshake(
 /// parsed token verbatim (`invalid type: string "…"`), and a config
 /// document's bytes may be credentials. Line and column are safe (they
 /// locate, they do not quote) and are what an operator needs to find
-/// the defect.
+/// the defect. The implementation is the SPI's ONE shared renderer
+/// (6L7): the client's decode seats import the same function, so the
+/// two sides of the wire cannot drift.
 pub(super) fn describe_config_parse_error(error: &serde_json::Error) -> String {
-    let kind = match error.classify() {
-        serde_json::error::Category::Syntax => "syntax error",
-        serde_json::error::Category::Eof => "unexpected end of input",
-        serde_json::error::Category::Data => "document shape mismatch",
-        serde_json::error::Category::Io => "read failure",
-    };
-    format!("{kind} at line {} column {}", error.line(), error.column())
+    rdlt_connector::json::describe_parse_error(error)
 }
 
 /// Every non-null scalar LEAF the config document carries, in document order —

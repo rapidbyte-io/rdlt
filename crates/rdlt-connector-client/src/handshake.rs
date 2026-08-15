@@ -269,9 +269,24 @@ pub async fn handshake(
         });
     }
 
+    // 6M2: the spec is a typed shell around one UNTYPED value —
+    // `config_schema` is a free-form `serde_json::Value` that the host
+    // caches for the session's lifetime — so the document ceiling every
+    // untyped parse runs applies here too, on the RAW bytes before the
+    // parse whose materialization it bounds. A hand-authored config
+    // schema measures in kilobytes; a multi-megabyte one embedded data.
+    if ok.spec_json.len() as u64 > rdlt_connector::MAX_DOCUMENT_BYTES {
+        return Err(ClientError::Protocol(format!(
+            "an inbound spec_json of {} bytes exceeds the {}-byte document ceiling — the \
+             spec's config schema is a hand-authored document, not a data channel",
+            ok.spec_json.len(),
+            rdlt_connector::MAX_DOCUMENT_BYTES
+        )));
+    }
     let spec: ConnectorSpec = serde_json::from_slice(&ok.spec_json).map_err(|error| {
         ClientError::Protocol(format!(
-            "undecodable spec_json in the handshake reply: {error}"
+            "undecodable spec_json in the handshake reply: {}",
+            rdlt_connector::json::describe_parse_error(&error)
         ))
     })?;
     // The spec's own name/version are identifiers too — they travel
@@ -302,7 +317,8 @@ pub async fn handshake(
         let capabilities: DestinationCapabilities = serde_json::from_slice(&ok.capabilities_json)
             .map_err(|error| {
             ClientError::Protocol(format!(
-                "undecodable capabilities_json in the handshake reply: {error}"
+                "undecodable capabilities_json in the handshake reply: {}",
+                rdlt_connector::json::describe_parse_error(&error)
             ))
         })?;
         // 5M6: the declared `ident_rules.max_len` is untrusted wire input

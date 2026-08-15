@@ -118,3 +118,35 @@ destination:
     let spec: Spec = serde_yaml_ng::from_str(&none).expect("parses");
     assert!(spec.commit_policy.is_none());
 }
+
+/// 6L6: the engine's escape-hatch knobs are reachable from the facade —
+/// a cell budget tightened through the builder refuses a batch the
+/// default would pass, with the refusal naming the knob the builder
+/// just set (the honest remedy for wide-and-large tables is raising it
+/// HERE, not dropping to raw `EngineConfig`).
+#[tokio::test]
+async fn the_builder_plumbs_the_engine_knobs() {
+    let source = MemorySource::single_stream(
+        rdlt_connector::StreamSpec::new("users"),
+        vec![
+            json!({"id": 1, "name": "ada"}),
+            json!({"id": 2, "name": "grace"}),
+        ],
+    );
+    let dest = MemoryDestination::new();
+
+    let error = Pipeline::builder("knob-demo")
+        .source(source)
+        .destination(dest)
+        .max_batch_cells(1)
+        .build()
+        .expect("valid config")
+        .run()
+        .await
+        .expect_err("a one-cell budget refuses any real batch");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("with_max_batch_cells") || rendered.contains("cell"),
+        "the refusal names the knob or its axis: {rendered}"
+    );
+}

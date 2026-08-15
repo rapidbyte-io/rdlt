@@ -588,3 +588,87 @@ async fn a_control_character_cursor_value_is_data_not_refused() {
         other => panic!("the frame is the checkpoint, got {other:?}"),
     }
 }
+
+/// 6L1, wire-level: a checkpoint frame whose WIRE bytes sit under the
+/// cursor contract but whose RE-SERIALIZED form inflates past it (the
+/// float-notation shape: `1e15` parses compact, serde re-serializes
+/// `1000000000000000.0`) is refused on the serialized measurement —
+/// the form the WAL line cap receives. Without this gate the run would
+/// crash-loop against the write-time line cap on every resume.
+#[tokio::test]
+async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
+    // ~1.4 MiB of compact wire bytes — well under the 4 MiB raw gate —
+    // whose re-serialization crosses it.
+    let floats = format!("[{}]", vec!["1e15"; 300_000].join(","));
+    assert!(floats.len() < rdlt_connector::MAX_CURSOR_BYTES as usize);
+
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve(
+        &path,
+        ReadScript::Frames(vec![proto::ReadFrame {
+            frame: Some(read_frame::Frame::CheckpointCursorJson(floats.into_bytes())),
+        }]),
+    );
+    let (remote, _) = Source::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect");
+
+    let (out, _input) = records_channel(1 << 20);
+    let error = tokio::time::timeout(
+        BOUND,
+        remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
+    )
+    .await
+    .expect("the refusal is prompt")
+    .expect_err("an inflating cursor must refuse on serialization");
+
+    assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("cursor contract"),
+        "the refusal names the contract: {rendered}"
+    );
+}
+
+/// 6.5: the inbound cursor gate is inclusive at its boundary — a
+/// checkpoint frame of EXACTLY the contract's bytes parses and the
+/// checkpoint reaches the records channel.
+#[tokio::test]
+async fn a_checkpoint_at_exactly_the_cursor_ceiling_is_accepted() {
+    // A JSON string whose serialized length is exactly the ceiling
+    // (2 quote bytes around the padding).
+    let cursor = "c".repeat(rdlt_connector::MAX_CURSOR_BYTES as usize - 2);
+    let frame = format!("\"{cursor}\"").into_bytes();
+    assert_eq!(frame.len() as u64, rdlt_connector::MAX_CURSOR_BYTES);
+
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve(
+        &path,
+        ReadScript::Frames(vec![proto::ReadFrame {
+            frame: Some(read_frame::Frame::CheckpointCursorJson(frame)),
+        }]),
+    );
+    let (remote, _) = Source::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect");
+
+    let (out, mut input) = records_channel(1 << 20);
+    remote
+        .read(ReadRequest::new(StreamSpec::new("scripted"), None, out))
+        .await
+        .expect("a checkpoint at the ceiling reads cleanly");
+    match input.recv().await.expect("the checkpoint arrives").payload {
+        PushPayload::Checkpoint(_) => {}
+        other => panic!("expected a checkpoint, got {other:?}"),
+    }
+}

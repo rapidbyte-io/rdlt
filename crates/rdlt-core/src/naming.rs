@@ -469,4 +469,23 @@ mod tests {
             }
         }
     }
+
+    /// 6L5: the probe bound's OWN answer, pinned. At `max_len = 2` every
+    /// long source truncates to the empty base and the suffixed
+    /// candidates are `_` + one hex digit — sixteen of them. The
+    /// seventeenth distinct colliding source exhausts the space, and the
+    /// loud failure IS the assert (release-active, embedder-reachable
+    /// only: the wire seats validate `max_len ≥ 8`, where the space is
+    /// 16⁷ and every in-tree namer feeds at most ~4,100 names). This
+    /// pin is the "regime pinned" the wave-6 commit claimed.
+    #[test]
+    #[should_panic(expected = "identifier probe exhausted")]
+    fn an_exhausted_candidate_space_panics_loudly_rather_than_spinning() {
+        let rules = IdentRules { max_len: 2 };
+        let mut namer = UniqueNamer::new(rules);
+        for i in 0..18u32 {
+            let _ = namer.name_for(&format!("distinct long colliding source {i}"));
+        }
+        unreachable!("the sixteenth collision must exhaust the one-hex space first");
+    }
 }

@@ -39,6 +39,7 @@
 //!
 //! [`proto::ErrorFrame`]: rdlt_connector_protocol::proto::ErrorFrame
 
+mod contract;
 pub mod destination;
 mod dial;
 mod error;

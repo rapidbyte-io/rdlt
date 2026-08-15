@@ -284,7 +284,7 @@ async fn a_silent_session_reply_times_out_typed() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination(
         &path,
-        SessionScript::OpenedThenPartsThenSilence {
+        SessionScript::FloodPartsThenSilence {
             parts: 0,
             table: "numbers".to_string(),
         },
@@ -329,7 +329,7 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination(
         &path,
-        SessionScript::OpenedThenPartsThenSilence {
+        SessionScript::FloodPartsThenSilence {
             parts: 5,
             table: "numbers".to_string(),
         },

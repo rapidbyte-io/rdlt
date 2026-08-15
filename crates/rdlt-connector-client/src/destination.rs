@@ -210,8 +210,28 @@ fn protocol_fatal(message: String) -> DestinationError {
 /// receive — a protocol violation, not a data outcome. Not a frozen
 /// spelling: a conforming server never produces it.
 fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationError {
+    // The shared escape over a BOUNDED Debug rendering (6.7 + 6L5's
+    // length rationale): `Debug` escapes control bytes but leaves the
+    // inventory's Lo-category fillers raw, and a wrong-variant reply can
+    // carry a workload-sized document — a diagnostic line is not a
+    // firehose, so the render truncates at a char boundary.
+    const REPLY_RENDER_CAP: usize = 2048;
+    let debug = format!("{reply:?}");
+    let bounded = if debug.len() <= REPLY_RENDER_CAP {
+        crate::sanitize::escape_control_characters(&debug).into_owned()
+    } else {
+        let mut cut = REPLY_RENDER_CAP;
+        while !debug.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!(
+            "{}…[truncated from {} bytes]",
+            crate::sanitize::escape_control_characters(&debug[..cut]),
+            debug.len()
+        )
+    };
     protocol_fatal(format!(
-        "the connector answered {method} with an unexpected reply: {reply:?}"
+        "the connector answered {method} with an unexpected reply: {bounded}"
     ))
 }
 
@@ -281,6 +301,17 @@ impl Backend {
                 // The shared escape, not `{:?}` — the latter leaves the
                 // inventory's Lo-category fillers raw (5L4).
                 crate::sanitize::escape_control_characters(&event.table)
+            )));
+        }
+        // 6L2: the length half of the identifier rule, at the seat the
+        // round-5 cap missed — a multi-megabyte control-free table name
+        // would ride into host telemetry within the frame cap.
+        if crate::sanitize::is_oversized_identifier(&event.table) {
+            return Err(DestinationError::fatal(format!(
+                "the connector reported a part event for a table name of {} bytes — over \
+                 the {}-byte wire identifier ceiling, refused at the wire boundary",
+                event.table.len(),
+                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
             )));
         }
         let Some(listener) = &self.part_events else {
@@ -427,7 +458,8 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                 .map(|bytes| {
                     serde_json::from_slice::<CommitReceipt>(&bytes).map_err(|error| {
                         protocol_fatal(format!(
-                            "undecodable receipt_json in a session reply: {error}"
+                            "undecodable receipt_json in a session reply: {}",
+                            rdlt_connector::json::describe_parse_error(&error)
                         ))
                     })
                 })
@@ -466,7 +498,8 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
             session_reply::Reply::Published(published) => {
                 serde_json::from_slice::<CommitReceipt>(&published.receipt_json).map_err(|error| {
                     protocol_fatal(format!(
-                        "undecodable receipt_json in a session reply: {error}"
+                        "undecodable receipt_json in a session reply: {}",
+                        rdlt_connector::json::describe_parse_error(&error)
                     ))
                 })
             }
@@ -487,11 +520,37 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
             session_reply::Reply::State(state) => state
                 .state_doc_json
                 .map(|bytes| {
-                    serde_json::from_slice::<StateDoc>(&bytes).map_err(|error| {
+                    // 6M1: `StateDoc` is a typed shell around UNTYPED
+                    // cursor values, so this seat gets the document
+                    // ceiling every untyped parse runs — BEFORE the
+                    // parse whose materialization it bounds. An honest
+                    // state document is summarized cursors measured in
+                    // kilobytes; a multi-megabyte one embedded data.
+                    crate::contract::refuse_oversized_document("state_doc_json", &bytes)
+                        .map_err(protocol_fatal)?;
+                    let doc = serde_json::from_slice::<StateDoc>(&bytes).map_err(|error| {
                         protocol_fatal(format!(
-                            "undecodable state_doc_json in a session reply: {error}"
+                            "undecodable state_doc_json in a session reply: {}",
+                            rdlt_connector::json::describe_parse_error(&error)
                         ))
-                    })
+                    })?;
+                    // And every cursor it carries honors the cursor
+                    // contract on its SERIALIZED form (6L1) — the same
+                    // re-serialized gate the checkpoint seat runs, so a
+                    // cursor that parses inside the document ceiling
+                    // cannot still inflate past the contract the WAL
+                    // line cap is sized for.
+                    for (stream, cursor) in &doc.cursors {
+                        crate::contract::cursor_within_contract(cursor.as_value()).map_err(
+                            |reason| {
+                                protocol_fatal(format!(
+                                    "the state document's cursor for `{stream}` violates \
+                                     the cursor contract: {reason}"
+                                ))
+                            },
+                        )?;
+                    }
+                    Ok(doc)
                 })
                 .transpose(),
             other => Err(unexpected_reply("ReadState", &other)),

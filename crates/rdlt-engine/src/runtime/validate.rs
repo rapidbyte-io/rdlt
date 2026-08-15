@@ -148,6 +148,18 @@ pub(super) fn validate_streams(
 
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
     for spec in streams {
+        // 6.3: the wire gate caps declared stream names at the shared
+        // identifier ceiling; this seat mirrors it for in-process
+        // sources, so an embedded mega-name cannot ride into plan
+        // diagnostics (and the WAL lines that name streams) unbounded.
+        if spec.name.as_str().len() > rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES {
+            return Err(RdltError::config(format!(
+                "stream name of {} bytes exceeds the {}-byte identifier ceiling — a \
+                 name is vocabulary, not a data channel",
+                spec.name.as_str().len(),
+                rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES
+            )));
+        }
         let table = root_table(&spec.name, capabilities.ident_rules);
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
             // Clause E2: exactly one stream owns a table.
@@ -617,5 +629,27 @@ mod hint_validation_tests {
             .expect_err("per-run check fires even with empty streams");
         let text = error.to_string();
         assert!(text.contains("requires a workdir"), "{text}");
+    }
+
+    /// 6.3: the wire gate caps declared stream names at the shared
+    /// identifier ceiling; this seat mirrors it for in-process sources
+    /// — an embedded mega-name refuses at plan time with the same
+    /// vocabulary the wire edge uses.
+    #[test]
+    fn an_in_process_stream_name_past_the_identifier_ceiling_refuses() {
+        let spec = StreamSpec::new("n".repeat(rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES + 1));
+        let dest = MemoryDestination::new();
+        let error = validate_streams(
+            &EngineConfig::new("names"),
+            std::slice::from_ref(&spec),
+            dest.capabilities(),
+            &dest,
+        )
+        .expect_err("an over-ceiling stream name must refuse");
+        let text = error.to_string();
+        assert!(
+            text.contains("identifier ceiling"),
+            "the refusal names the ceiling: {text}"
+        );
     }
 }

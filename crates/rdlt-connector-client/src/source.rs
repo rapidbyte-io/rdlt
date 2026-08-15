@@ -99,6 +99,30 @@ fn protocol_fatal(message: String) -> SourceError {
 /// (`{:?}` leaves the inventory's Lo-category fillers raw, 5L4), so
 /// the message itself cannot carry the very bytes it refuses.
 fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceError> {
+    // 6L3: count caps beside the content and length gates — a spec with
+    // hundreds of thousands of tiny keys passes every per-value gate
+    // within one 64 MiB frame otherwise, and the cost lands at plan
+    // time. An honest primary key names one to a few columns; honest
+    // type hints cover at most the stream's columns, and the engine's
+    // own per-table column cap is 4,096.
+    const MAX_PRIMARY_KEY_FIELDS: usize = 64;
+    const MAX_TYPE_HINT_FIELDS: usize = 4096;
+    if let Some(key) = &spec.primary_key
+        && key.len() > MAX_PRIMARY_KEY_FIELDS
+    {
+        return Err(SourceError::fatal(format!(
+            "the connector declared {} primary-key fields — over the {MAX_PRIMARY_KEY_FIELDS}-field \
+             ceiling, refused at the wire boundary (no honest key approaches it)",
+            key.len()
+        )));
+    }
+    if spec.type_hints.len() > MAX_TYPE_HINT_FIELDS {
+        return Err(SourceError::fatal(format!(
+            "the connector declared {} type-hint fields — over the {MAX_TYPE_HINT_FIELDS}-field \
+             ceiling, refused at the wire boundary (hints cover at most the stream's columns)",
+            spec.type_hints.len()
+        )));
+    }
     let seats = std::iter::once(("stream name", spec.name.as_str()))
         .chain(
             spec.primary_key
@@ -153,6 +177,18 @@ fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), 
                 "the connector sent an Arrow field named `{}` — control or invisible formatting \
                  characters in identifiers are refused at the wire boundary",
                 crate::sanitize::escape_control_characters(field.name())
+            )));
+        }
+        // 6L2: the length half of the identifier rule, at the seat the
+        // round-5 cap missed — a multi-megabyte control-free field name
+        // would ride into engine column names (and the WAL's Delta
+        // lines) within the frame cap otherwise.
+        if crate::sanitize::is_oversized_identifier(field.name()) {
+            return Err(SourceError::fatal(format!(
+                "the connector sent an Arrow field name of {} bytes — over the {}-byte wire \
+                 identifier ceiling, refused at the wire boundary",
+                field.name().len(),
+                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
             )));
         }
         // A dictionary encodes another type without a field of its own,
@@ -216,7 +252,7 @@ pub(crate) fn decode_one_batch(bytes: &[u8]) -> Result<RecordBatch, SourceError>
         Ok(decoded) => decoded,
         Err(payload) => Err(SourceError::fatal(format!(
             "{ONE_BATCH_REFUSAL}: the arrow decoder panicked: {}",
-            panic_text(payload.as_ref())
+            rdlt_connector::ipc::panic_text(payload.as_ref())
         ))),
     }
 }
@@ -244,6 +280,19 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         }
         None => return Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
     };
+    // 6M3: row count is the memory dimension the framing pre-pass
+    // cannot see — it bounds declared LENGTHS, not a RecordBatch's
+    // `length` field, and Null/run-end-encoded columns carry millions
+    // of rows in almost no bytes. The engine enforces this cap at its
+    // own ingress; this seat serves it to every host.
+    if first.num_rows() > rdlt_connector::channel::MAX_RECORD_BATCH_ROWS {
+        return Err(SourceError::fatal(format!(
+            "{ONE_BATCH_REFUSAL}: the batch carries {} rows, over the {}-row wire cap — \
+             row count is bounded separately from encoded bytes",
+            first.num_rows(),
+            rdlt_connector::channel::MAX_RECORD_BATCH_ROWS
+        )));
+    }
     match reader.next() {
         None => {
             refuse_control_characters_in_arrow_fields(&first)?;
@@ -251,19 +300,6 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         }
         Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
         Some(Err(error)) => Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}"))),
-    }
-}
-
-/// A panic payload's message, where one is extractable — panics carry
-/// `&str` (the `panic!` literal form) or `String` (the formatted
-/// form); anything else renders as the honest placeholder.
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
-    if let Some(text) = payload.downcast_ref::<&str>() {
-        text
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text
-    } else {
-        "<non-text panic payload>"
     }
 }
 
@@ -314,7 +350,8 @@ impl rdlt_connector::Source for Source {
                 .map(|bytes| {
                     let spec = serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
                         protocol_fatal(format!(
-                            "undecodable stream_spec_json in the streams reply: {error}"
+                            "undecodable stream_spec_json in the streams reply: {}",
+                            rdlt_connector::json::describe_parse_error(&error)
                         ))
                     })?;
                     refuse_control_characters_in_name(&spec)?;
@@ -344,25 +381,16 @@ impl rdlt_connector::Source for Source {
                 .expect("a StreamSpec serializes to JSON infallibly"),
             since_cursor_json: match &since {
                 Some(cursor) => {
-                    let bytes = serde_json::to_vec(cursor.as_value())
-                        .expect("a Cursor's value serializes to JSON infallibly");
-                    // The cursor contract, enforced pre-send (5M1): the
-                    // serve gate would refuse an over-bound cursor after
-                    // receiving it; refusing here names the cause before
-                    // the request exists. An over-bound cursor came from
-                    // this connector's own earlier checkpoint (or persisted
-                    // state) — the refusal tells it to summarize.
-                    if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES {
-                        return Err(SourceError::fatal(format!(
-                            "the resumed cursor serializes to {} bytes, over the {}-byte \
-                             cursor contract — the connector must summarize its state (a \
-                             high-water mark, an offset, a resume token) rather than embed \
-                             the data",
-                            bytes.len(),
-                            rdlt_connector::MAX_CURSOR_BYTES
-                        )));
-                    }
-                    Some(bytes)
+                    // The cursor contract, enforced pre-send (5M1) on the
+                    // SERIALIZED form — the bytes about to cross the wire
+                    // are exactly the bytes the shared helper measures.
+                    // An over-bound cursor came from this connector's own
+                    // earlier checkpoint (or persisted state); the
+                    // refusal tells it to summarize.
+                    Some(
+                        crate::contract::cursor_within_contract(cursor.as_value())
+                            .map_err(SourceError::fatal)?,
+                    )
                 }
                 None => None,
             },
@@ -423,9 +451,18 @@ impl rdlt_connector::Source for Source {
                     let value: serde_json::Value =
                         serde_json::from_slice(&bytes).map_err(|error| {
                             protocol_fatal(format!(
-                                "undecodable checkpoint_cursor_json in a read frame: {error}"
+                                "undecodable checkpoint_cursor_json in a read frame: {}",
+                                rdlt_connector::json::describe_parse_error(&error)
                             ))
                         })?;
+                    // 6L1: the contract is on the form the host PERSISTS,
+                    // so the gate measures the RE-SERIALIZED value — serde's
+                    // own number rendering inflates a wire-legal cursor
+                    // (`1e15` becomes `1000000000000000.0`), and the WAL
+                    // line that receives the inflated spelling is capped
+                    // tighter than the wire frame. Refusing here keeps the
+                    // run from crash-looping against the write-time cap.
+                    crate::contract::cursor_within_contract(&value).map_err(protocol_fatal)?;
                     out.checkpoint(Cursor::new(value)).await
                 }
                 // Terminal by the proto's own contract: the frame IS
@@ -541,6 +578,42 @@ mod name_boundary_tests {
             );
         }
     }
+
+    /// 6L3: count caps beside the content gates — a spec with an
+    /// absurd number of tiny keys passes every per-value gate within
+    /// one frame otherwise, and the cost lands at plan time. At the
+    /// caps themselves the spec is legal (the boundaries are honest).
+    #[test]
+    fn key_and_hint_counts_are_capped_at_the_wire_edge() {
+        // Over the primary-key field cap.
+        let mut spec = StreamSpec::new("orders");
+        spec.primary_key = Some((0..65).map(|i| format!("k{i}")).collect());
+        let error =
+            refuse_control_characters_in_name(&spec).expect_err("65 primary-key fields refuse");
+        assert!(
+            error.to_string().contains("primary-key fields"),
+            "the refusal names the seat: {error}"
+        );
+        // Over the type-hint field cap.
+        let mut spec = StreamSpec::new("orders");
+        for i in 0..4097 {
+            spec.type_hints
+                .insert(format!("c{i}"), rdlt_connector::core::LogicalType::Int64);
+        }
+        let error = refuse_control_characters_in_name(&spec).expect_err("4097 type hints refuse");
+        assert!(
+            error.to_string().contains("type-hint fields"),
+            "the refusal names the seat: {error}"
+        );
+        // At both caps: legal.
+        let mut spec = StreamSpec::new("orders");
+        spec.primary_key = Some((0..64).map(|i| format!("k{i}")).collect());
+        for i in 0..4096 {
+            spec.type_hints
+                .insert(format!("c{i}"), rdlt_connector::core::LogicalType::Int64);
+        }
+        refuse_control_characters_in_name(&spec).expect("a spec at both count caps is legal");
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +658,74 @@ mod tests {
         let decoded =
             decode_one_batch(&ipc_bytes(std::slice::from_ref(&sent))).expect("one batch decodes");
         assert_eq!(decoded, sent);
+    }
+
+    /// 6M3: row count is the memory dimension the framing pre-pass
+    /// cannot see — a boolean column packs eight rows per byte, so a
+    /// ~125 KiB frame over the row cap must refuse at THIS seat
+    /// (the engine enforces the same cap at its own ingress; this seat
+    /// serves every host).
+    #[test]
+    fn an_over_cap_row_count_refuses_at_the_decode_seat() {
+        fn boolean_batch(rows: usize) -> RecordBatch {
+            let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+                arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Boolean, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![Arc::new(arrow::array::BooleanArray::from(vec![
+                    false;
+                    rows
+                ]))],
+            )
+            .expect("a boolean-column batch constructs")
+        }
+
+        let sent = boolean_batch(rdlt_connector::channel::MAX_RECORD_BATCH_ROWS + 1);
+        // This test's own writer: the shared `ipc_bytes` helper bakes in
+        // the Int64 fixture schema, and this batch's is Boolean.
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), sent.schema_ref())
+            .expect("ipc writer");
+        writer.write(&sent).expect("ipc write");
+        let bytes = writer.into_inner().expect("ipc finish");
+        assert!(
+            bytes.len() < 256 * 1024,
+            "the fixture is tiny for its row count — eight rows per byte: {}",
+            bytes.len()
+        );
+        let error =
+            decode_one_batch(&bytes).expect_err("a row count over the wire cap must refuse typed");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("over the 1000000-row wire cap"),
+            "the refusal names the cap: {rendered}"
+        );
+        // At the cap itself: a legal batch decodes.
+        let at_cap = boolean_batch(rdlt_connector::channel::MAX_RECORD_BATCH_ROWS);
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), at_cap.schema_ref())
+            .expect("ipc writer");
+        writer.write(&at_cap).expect("ipc write");
+        decode_one_batch(&writer.into_inner().expect("ipc finish"))
+            .expect("a batch at exactly the row cap decodes");
+    }
+
+    /// 6L2's Arrow half: a multi-megabyte control-FREE field name is
+    /// still vocabulary abuse — the length gate applies at this seat
+    /// beside the content gate.
+    #[test]
+    fn an_oversized_arrow_field_name_refuses_at_the_decode_seat() {
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        let long = "f".repeat(crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES + 1);
+        let schema = Arc::new(Schema::new(vec![Field::new(long, DataType::Int64, true)]));
+        let batch = RecordBatch::new_empty(schema);
+        let error = refuse_control_characters_in_arrow_fields(&batch)
+            .expect_err("an over-length field name refuses");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("identifier ceiling"),
+            "the refusal names the ceiling: {rendered}"
+        );
     }
 
     #[test]

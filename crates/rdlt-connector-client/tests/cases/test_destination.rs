@@ -71,7 +71,7 @@ async fn an_out_of_range_ident_rules_declaration_refuses_the_handshake() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination_with_capabilities(
         &path,
-        SessionScript::OpenedThenStatus {
+        SessionScript::FailNextCallWithStatus {
             code: tonic::Code::Unavailable,
             message: "unused".to_string(),
         },
@@ -439,7 +439,7 @@ async fn a_mid_stream_status_fails_the_in_flight_call_transport_fatal() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination(
         &path,
-        SessionScript::OpenedThenStatus {
+        SessionScript::FailNextCallWithStatus {
             code: tonic::Code::Unavailable,
             message: "rogue: induced mid-session failure".to_string(),
         },
@@ -524,7 +524,7 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination(
         &path,
-        SessionScript::OpenedThenPartsThenSilence {
+        SessionScript::FloodPartsThenSilence {
             parts: 1,
             table: "num\u{1b}]52;c;AAAA\u{7}bers".to_string(),
         },
@@ -563,6 +563,205 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
     assert!(
         rendered.contains("refused at the wire boundary"),
         "the refusal names the gate: {rendered}"
+    );
+    assert!(
+        seen.lock().expect("part log lock").is_empty(),
+        "the hostile event never reaches the callback"
+    );
+}
+
+/// 6M1's document half, wire-level: a `ReadState` reply whose document
+/// exceeds the document ceiling is refused FATAL before its `Value`
+/// materializes — `StateDoc` is a typed shell around UNTYPED cursor
+/// values, so the seat gets the same ceiling every untyped parse runs.
+#[tokio::test]
+async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::AnswerReadStateWith {
+            state_doc_json: vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1],
+        },
+    );
+    let remote = Destination::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let mut backend = remote.open_backend(&context()).await.expect("open");
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.read_state(&rdlt_connector::core::PipelineId::new("p")),
+    )
+    .await
+    .expect("the refusal answers promptly")
+    .expect_err("an oversized state document must refuse");
+
+    assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("document ceiling"),
+        "the refusal names the ceiling: {rendered}"
+    );
+}
+
+/// 6M1's cursor half + 6L1: a state document inside the ceiling whose
+/// CURSOR inflates past the cursor contract on re-serialization (the
+/// float-notation shape: `1e15` parses compact and re-serializes as
+/// `1000000000000000.0`) is refused naming the per-stream contract —
+/// the persisted form is what the WAL line cap receives.
+#[tokio::test]
+async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization() {
+    // A document well under the 8 MiB document ceiling whose one cursor
+    // serializes past the 4 MiB cursor contract — built through the real
+    // `StateDoc` so the shape is the wire's own.
+    let floats = format!("[{}]", vec!["1e15"; 300_000].join(","));
+    let mut doc =
+        rdlt_connector::core::StateDoc::new(rdlt_connector::core::PipelineId::new("p"), "test");
+    doc.cursors.insert(
+        rdlt_connector::core::StreamName::new("s"),
+        rdlt_connector::core::Cursor::new({
+            let inflated: serde_json::Value =
+                serde_json::from_str(&floats).expect("compact exponent notation parses");
+            inflated
+        }),
+    );
+    let doc = serde_json::to_vec(&doc).expect("a StateDoc serializes");
+    assert!(doc.len() < rdlt_connector::MAX_DOCUMENT_BYTES as usize);
+
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::AnswerReadStateWith {
+            state_doc_json: doc,
+        },
+    );
+    let remote = Destination::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let mut backend = remote.open_backend(&context()).await.expect("open");
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.read_state(&rdlt_connector::core::PipelineId::new("p")),
+    )
+    .await
+    .expect("the refusal answers promptly")
+    .expect_err("an inflating cursor must refuse");
+
+    assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("cursor contract") && rendered.contains("`s`"),
+        "the refusal names the stream and the contract: {rendered}"
+    );
+}
+
+/// 6M1's render quality: a malformed state document's refusal carries
+/// KIND and LOCATION, never the document's own bytes (6L7 — serde's
+/// data arms quote the parsed token, and state docs run to megabytes).
+#[tokio::test]
+async fn a_malformed_state_document_refusal_never_echoes_the_document() {
+    // A document whose `format_version` carries a string: serde's data
+    // error quotes the parsed token verbatim — the renderer must not.
+    // Built from a real StateDoc so only the one field is hostile.
+    let mut value = serde_json::to_value(rdlt_connector::core::StateDoc::new(
+        rdlt_connector::core::PipelineId::new("p"),
+        "test",
+    ))
+    .expect("a StateDoc serializes");
+    value["format_version"] = serde_json::json!("TOCTOKEN");
+    let doc = serde_json::to_vec(&value).expect("a JSON value serializes to JSON infallibly");
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::AnswerReadStateWith {
+            state_doc_json: doc,
+        },
+    );
+    let remote = Destination::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let mut backend = remote.open_backend(&context()).await.expect("open");
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.read_state(&rdlt_connector::core::PipelineId::new("p")),
+    )
+    .await
+    .expect("the refusal answers promptly")
+    .expect_err("a malformed state document must refuse");
+
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains("TOCTOKEN"),
+        "kind and location, never the value: {rendered}"
+    );
+    assert!(
+        rendered.contains("undecodable state_doc_json"),
+        "the refusal names the field: {rendered}"
+    );
+}
+
+/// 6L2's part-event half: a `part_closed` naming an over-length table
+/// (clean of control characters — length alone is the abuse) refuses
+/// typed before the event reaches the callback.
+#[tokio::test]
+async fn an_oversized_table_in_a_part_event_refuses_typed() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::FloodPartsThenSilence {
+            parts: 1,
+            table: "t".repeat(1025),
+        },
+    );
+    let remote = Destination::connect(
+        &path,
+        ENGINE_BUDGET_BYTES,
+        &serde_json::json!({}),
+        &ConnectorRequirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let seen = Arc::new(Mutex::new(Vec::<PartClosed>::new()));
+    let sink = Arc::clone(&seen);
+    let context = context().with_part_events(Arc::new(move |part| {
+        sink.lock().expect("part log lock").push(part);
+    }));
+    let mut backend = remote.open_backend(&context).await.expect("open");
+
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.ensure_table(&schema_for("numbers"), &WriteMode::Append),
+    )
+    .await
+    .expect("the refusal answers promptly")
+    .expect_err("an oversized table must refuse");
+
+    assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("identifier ceiling"),
+        "the refusal names the ceiling: {error}"
     );
     assert!(
         seen.lock().expect("part log lock").is_empty(),

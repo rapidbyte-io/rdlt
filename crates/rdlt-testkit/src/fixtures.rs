@@ -126,6 +126,12 @@ pub mod ipc_fixture {
     /// (the honest comparator — it carries the whole message body the
     /// decoded batch's buffers are slices of), the decoded batch, and
     /// the raw row payload.
+    ///
+    /// The bare `StreamReader` below is the one decode in this crate
+    /// OUTSIDE the shared pre-pass discipline (6.12) — deliberately:
+    /// it decodes the bytes this same function just encoded, so there
+    /// is no adversary between the writer and the reader. It joins the
+    /// discipline the day it ever decodes foreign bytes.
     pub fn ipc_round_trip() -> (usize, RecordBatch, usize) {
         let (batch, row_payload) = wide_batch();
         let mut stream = Vec::new();

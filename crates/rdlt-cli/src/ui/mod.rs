@@ -10,14 +10,15 @@
 /// the terminal.
 pub fn stderr_line(line: &str) {
     use std::io::Write as _;
-    let line = sanitize(line);
+    let line = sanitize_display_text(line);
     let mut stderr = std::io::stderr().lock();
     let _ = stderr
         .write_all(line.as_bytes())
         .and_then(|()| stderr.write_all(b"\n"));
 }
 
-/// Escape terminal control characters for display: C0 (except newline
+/// Escape terminal-control and invisible characters for MULTI-LINE display
+/// text: C0 (except newline
 /// and tab — legitimate formatting in multi-line error text), DEL, and
 /// C1, each rendered as its visible `\u{..}` escape — plus the shared
 /// inventory's invisible/formatting characters (5L14: the joiners the
@@ -30,7 +31,7 @@ pub fn stderr_line(line: &str) {
 /// clipboard) through an operator's terminal. Applied at the RENDER
 /// boundary — [`stderr_line`] and the pretty renderer's messages —
 /// never to the data itself.
-pub fn sanitize(text: &str) -> String {
+pub fn sanitize_display_text(text: &str) -> String {
     use rdlt_connector_protocol::sanitize::is_control_or_invisible as hostile;
     if !text.chars().any(|c| hostile(c) && c != '\n' && c != '\t') {
         return text.to_owned();
@@ -109,14 +110,20 @@ mod tests {
     /// and tabs pass untouched.
     #[test]
     fn sanitize_escapes_terminal_controls_and_keeps_text() {
-        assert_eq!(sanitize("events: +3 rows"), "events: +3 rows");
-        assert_eq!(sanitize("line\nbreak\tand tab"), "line\nbreak\tand tab");
+        assert_eq!(sanitize_display_text("events: +3 rows"), "events: +3 rows");
+        assert_eq!(
+            sanitize_display_text("line\nbreak\tand tab"),
+            "line\nbreak\tand tab"
+        );
         // ESC-driven OSC (clipboard write) with its BEL terminator.
-        assert_eq!(sanitize("\x1b]52;c;evil\x07"), "\\u{1b}]52;c;evil\\u{7}");
+        assert_eq!(
+            sanitize_display_text("\x1b]52;c;evil\x07"),
+            "\\u{1b}]52;c;evil\\u{7}"
+        );
         // A C1 CSI, one byte, no ESC needed on many terminals.
-        assert_eq!(sanitize("\u{9b}31m"), "\\u{9b}31m");
+        assert_eq!(sanitize_display_text("\u{9b}31m"), "\\u{9b}31m");
         // A bare carriage return overwrites the line it lands on.
-        assert_eq!(sanitize("a\rb"), "a\\u{d}b");
+        assert_eq!(sanitize_display_text("a\rb"), "a\\u{d}b");
     }
 
     #[test]
@@ -135,10 +142,17 @@ mod tests {
     /// formatting).
     #[test]
     fn the_display_escape_spells_the_invisible_inventory() {
-        assert_eq!(sanitize("a\u{200c}b"), "a\\u{200c}b");
-        assert_eq!(sanitize("a\u{3164}b"), "a\\u{3164}b");
-        assert_eq!(sanitize("line\nbreak\ttab"), "line\nbreak\ttab");
-        assert_eq!(sanitize("Événements"), "Événements", "text is data");
+        assert_eq!(sanitize_display_text("a\u{200c}b"), "a\\u{200c}b");
+        assert_eq!(sanitize_display_text("a\u{3164}b"), "a\\u{3164}b");
+        assert_eq!(
+            sanitize_display_text("line\nbreak\ttab"),
+            "line\nbreak\ttab"
+        );
+        assert_eq!(
+            sanitize_display_text("Événements"),
+            "Événements",
+            "text is data"
+        );
     }
 
     /// The selection ladder: quiet beats everything; -v, a pipe, or

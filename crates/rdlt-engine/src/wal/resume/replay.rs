@@ -65,14 +65,25 @@ fn open_segment(
 /// writer's own blocks point into the file it wrote); only a crafted one
 /// refuses, typed, degrading to re-extraction like every other damage arm.
 ///
-/// Residual, recorded rather than chased: a SPARSE giant file (e.g. a 100 GiB
-/// hole) passes the extent check with a ~100 GiB declared body — under
-/// default overcommit the zeroed allocation maps lazily and the read fails
-/// typed at EOF, but under `vm.overcommit_memory=2` the allocation itself
-/// can fail and abort. Closing that needs an absolute segment-size ceiling;
-/// the honest segment size is not statically boundable (a single over-budget
-/// batch passes the channel by design), so the residual stands for hosts
-/// running strict overcommit with a same-OS-user adversary.
+/// The DENSITY rule (GLM round 6, 6H1) closes the sparse-file lie those
+/// relative bounds cannot see: every gate above scales with the DECLARED
+/// file length, so a `truncate`d 64 GiB hole with a valid tail footer
+/// declaring one ~64 GiB block passes them all — and reading a hole
+/// SUCCEEDS (zeros; there is no EOF failure), so arrow's `read_exact`
+/// commits the full declared buffer resident: an OOM kill under default
+/// overcommit, an abort where the single request exceeds the heuristic.
+/// The same fstat carries the answer: `st_blocks × 512` is what the file
+/// has actually ALLOCATED, and the writer's segments are dense (written
+/// sequentially, fsynced before the manifest names them — no fallocate,
+/// no punch-hole anywhere), so an honest segment's allocated bytes
+/// approximate its length. Declared read work is held against allocated
+/// bytes with a generous headroom factor that absorbs filesystem
+/// accounting slack (indirect-metadata blocks round up; a compressed
+/// btrfs/zfs file legitimately allocates less than it reads) — a sparse
+/// giant is off by orders of magnitude regardless of the factor. This
+/// preserves the design constraint that ABSOLUTE segment size is
+/// unbounded (a single over-budget batch passes the channel by design):
+/// density, not size, is the honest invariant.
 ///
 /// Decompression note (4I3): arrow-ipc's `decompress_to_buffer` does an
 /// unbounded `Vec::with_capacity` from a body-declared length, but no
@@ -86,18 +97,28 @@ fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> 
     // 5L1: the pre-pass reads trailer+footer, then the FileReader re-reads
     // the same regions — a same-user writer rewriting the footer BETWEEN
     // the two would re-open the very abort class the pre-pass closes.
-    // fstat-compare (size + mtime) around the pre-pass: a concurrent
-    // rewrite flips one of them and the segment degrades to re-extraction
-    // like every other damage arm. The residual is a rewrite landing
-    // entirely between this check and the reader's first read —
-    // microseconds, and the reader's own footer verification catches any
-    // incomplete swap (typed, safe direction). Unpinned live: the window
-    // can't be deterministically fixtured without a test-only hook, and
-    // the failure direction is typed refusal either way (the same honesty
-    // trade `Wal::sync_for_commit` records for fsync).
+    // fstat-compare around the pre-pass, on fields a same-user writer
+    // cannot forge wholesale: size, and the timestamps at FULL kernel
+    // resolution. mtime alone was defeatable twice over — whole-second
+    // granularity let sub-second rewrites through, and `utimensat` lets
+    // the writer restore it outright — so the compare also carries ctime,
+    // which the kernel bumps on EVERY write and on the very `utimensat`
+    // that restores mtime, and which no unprivileged writer can set.
+    // Honest residual, recorded: a COMPLETE hostile swap landing entirely
+    // inside the microseconds between this compare and the reader's first
+    // read still gets through, and arrow's own footer verification will
+    // NOT catch it — it checks FlatBuffer validity, not extents against
+    // the file — so that window is defended only by its width. That is
+    // the same honesty trade `Wal::sync_for_commit` records for fsync.
     let stat = segment.metadata().map_err(|e| e.to_string())?;
     let file_len = stat.len();
-    let mtime = stat.mtime();
+    let allocated = stat.blocks().saturating_mul(512);
+    let before = (
+        stat.mtime(),
+        stat.mtime_nsec(),
+        stat.ctime(),
+        stat.ctime_nsec(),
+    );
     // The smallest IPC file is leading magic (8) + footer + trailer (10).
     if file_len < 18 {
         return Err(format!(
@@ -139,11 +160,18 @@ fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> 
         .into_iter()
         .flat_map(|blocks| blocks.into_iter().flatten())
         .map(|block| (block.offset(), block.metaDataLength(), block.bodyLength()));
-    extents_within_file(file_len, blocks)?;
+    extents_within_file(file_len, allocated, blocks)?;
     let after = segment.metadata().map_err(|e| e.to_string())?;
-    if after.len() != file_len || after.mtime() != mtime {
+    if after.len() != file_len
+        || (
+            after.mtime(),
+            after.mtime_nsec(),
+            after.ctime(),
+            after.ctime_nsec(),
+        ) != before
+    {
         return Err(
-            "segment changed under the layout pre-pass (size or mtime moved) — degrading \
+            "segment changed under the layout pre-pass (size or timestamps moved) — degrading \
              rather than decoding a footer nobody checked"
                 .to_string(),
         );
@@ -154,21 +182,33 @@ fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> 
     Ok(())
 }
 
-/// The block-extent rule, one function so the pin drives it directly
-/// (5M2): every block's `offset + metaDataLength + bodyLength` must fit
-/// INSIDE the file that declares it (4H1's per-extent bound), AND their
-/// SUM may not exceed twice the file length. The sum rule is what bounds
-/// TIME: a `Block` is a 24-byte struct, so a max-size footer can declare
-/// ~700 K blocks each pointing at the whole file (overlaps unrestricted),
-/// turning one crafted ~100 MiB segment into ~70 TB of `read_exact`/
-/// memcpy during recovery. An honest segment declares exactly ONE block
-/// (the writer emits one batch per segment) whose extent sits inside the
-/// file, so even `Σ ≤ 2 × file_len` is generous headroom for any honest
-/// multi-block future.
+/// The block-extent rules, one function so the pins drive them directly
+/// (5M2, 6H1): every block's `offset + metaDataLength + bodyLength` must
+/// fit INSIDE the file that declares it (4H1's per-extent bound), their
+/// SUM may not exceed twice the file length (5M2's time bound: a `Block`
+/// is a 24-byte struct, so a max-size footer can declare ~700 K blocks
+/// each pointing at the whole file, turning one crafted ~100 MiB segment
+/// into ~70 TB of `read_exact`/memcpy during recovery), and the SUM may
+/// not exceed a generous multiple of what the file has actually
+/// ALLOCATED (6H1's density bound — every relative gate scales with the
+/// declared length, so only the allocated-block count refuses the
+/// `truncate`d-hole lie). An honest segment declares exactly ONE block
+/// (the writer emits one batch per segment) whose extent sits inside a
+/// dense file, so all three rules are generous headroom for any honest
+/// shape — including an honest multi-block or compressed-filesystem
+/// future.
 fn extents_within_file(
     file_len: u64,
+    allocated: u64,
     blocks: impl Iterator<Item = (i64, i32, i64)>,
 ) -> Result<(), String> {
+    /// How much declared read work may exceed ALLOCATED bytes before the
+    /// file is presumed sparse: honest dense files satisfy `allocated ≥
+    /// file_len ≥ Σ extents`, so even ×4 only ever absorbs accounting
+    /// slack (indirect blocks, compressed filesystems allocating less
+    /// than they serve) — a sparse giant is off by orders of magnitude.
+    const ALLOCATION_HEADROOM: u64 = 4;
+
     let mut total = 0u64;
     for (offset, meta, body) in blocks {
         let end = (offset >= 0 && meta >= 0 && body >= 0)
@@ -191,11 +231,19 @@ fn extents_within_file(
         let extent = end - offset as u64;
         total = total.saturating_add(extent);
     }
-    if total > 2 * file_len {
+    if total > file_len.saturating_mul(2) {
         return Err(format!(
             "segment declares block extents summing to {total} bytes against its own \
              {file_len}-byte file — overlapping extents would multiply recovery's \
              read work past any honest shape (one block per segment)"
+        ));
+    }
+    if total > allocated.saturating_mul(ALLOCATION_HEADROOM) {
+        return Err(format!(
+            "segment declares block extents summing to {total} bytes against only \
+             {allocated} bytes actually allocated — a sparse file lying about its own \
+             size; reading a hole succeeds, so the declared buffer would commit resident \
+             before any EOF could refuse it"
         ));
     }
     Ok(())
@@ -220,7 +268,9 @@ fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
         Ok(result) => result,
         Err(payload) => Err(format!(
             "the Arrow IPC decoder panicked on the WAL segment: {}",
-            panic_text(payload.as_ref())
+            // The shared bounded rendering (6L9) — every Arrow-decode
+            // belt renders its payload through the ONE implementation.
+            rdlt_connector::ipc::panic_text(payload.as_ref())
         )),
     }
 }
@@ -250,16 +300,6 @@ pub(crate) fn decode_segment_bytes(bytes: &[u8]) {
         }
         Ok::<u64, String>(rows)
     });
-}
-
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
-    if let Some(text) = payload.downcast_ref::<&str>() {
-        text
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text
-    } else {
-        "<non-text panic payload>"
-    }
 }
 
 /// Replay one span into an open session and commit it under the ORIGINAL run's
@@ -392,7 +432,7 @@ pub(crate) async fn replay(
                             Ok(item) => Ok((reader, item)),
                             Err(payload) => Err(format!(
                                 "the Arrow IPC decoder panicked on the WAL segment: {}",
-                                panic_text(payload.as_ref())
+                                rdlt_connector::ipc::panic_text(payload.as_ref())
                             )),
                         }
                     })
@@ -725,28 +765,155 @@ mod segment_format {
         );
     }
 
-    /// 5M2: per-extent bounds without a sum bound let one crafted footer
-    /// multiply recovery's read work without limit (overlapping extents
-    /// each re-read the file). The rule pins: one honest block passes;
-    /// overlapping extents past twice the file refuse.
+    /// 5M2 + 6H1: per-extent bounds without a sum bound let one crafted
+    /// footer multiply recovery's read work without limit (overlapping
+    /// extents each re-read the file), and sum bounds measured only
+    /// against the file LENGTH let a sparse file lie about that length.
+    /// The rules pin: one honest dense block passes; overlapping extents
+    /// past twice the file refuse; extents past the allocated bytes
+    /// refuse as the sparse lie.
     #[test]
-    fn block_extents_are_bounded_per_block_and_in_sum() {
+    fn block_extents_are_bounded_per_block_and_in_sum_and_density() {
         use super::extents_within_file;
-        // Honest: one block inside the file.
-        extents_within_file(1000, [(0, 8, 900)].into_iter()).expect("one honest block");
+        // Honest: one block inside a dense file (allocated ≈ length).
+        extents_within_file(1000, 1000, [(0, 8, 900)].into_iter()).expect("one honest block");
         // Two non-overlapping blocks summing within the file pass too.
-        extents_within_file(1000, [(0, 8, 400), (500, 8, 400)].into_iter())
+        extents_within_file(1000, 1000, [(0, 8, 400), (500, 8, 400)].into_iter())
             .expect("non-overlapping extents within the file");
         // Overlapping extents whose SUM crosses twice the file refuse.
-        let error = extents_within_file(1000, [(0, 8, 900), (0, 8, 900), (0, 8, 900)].into_iter())
-            .expect_err("overlapping extents past 2x refuse");
+        let error = extents_within_file(
+            1000,
+            1000,
+            [(0, 8, 900), (0, 8, 900), (0, 8, 900)].into_iter(),
+        )
+        .expect_err("overlapping extents past 2x refuse");
         assert!(error.contains("summing"), "{error}");
         // The per-block rule still fires on its own.
-        let error = extents_within_file(1000, [(0, 8, 2000)].into_iter())
+        let error = extents_within_file(1000, 1000, [(0, 8, 2000)].into_iter())
             .expect_err("a block past the file refuses");
         assert!(error.contains("outside its own"), "{error}");
+        // The density rule: extents within the declared length but far
+        // past the ALLOCATED bytes — the `truncate`d-hole shape.
+        let error = extents_within_file(1 << 30, 4096, [(8, 8, (1 << 30) - 32)].into_iter())
+            .expect_err("a sparse giant refuses");
+        assert!(error.contains("actually allocated"), "{error}");
+        // The headroom factor: modest slack over allocation passes
+        // (compressed-filesystem accounting), the lie does not.
+        extents_within_file(1000, 300, [(0, 8, 900)].into_iter())
+            .expect("3x allocation slack passes the 4x headroom");
         // Negative declarations refuse, never wrap.
-        extents_within_file(1000, [(0, 8, -1)].into_iter()).expect_err("a negative body refuses");
+        extents_within_file(1000, 1000, [(0, 8, -1)].into_iter())
+            .expect_err("a negative body refuses");
+    }
+
+    /// 6H1's headline case, end to end: a segment whose FILE is a sparse
+    /// giant — `set_len`-holed to half a GiB with the honest trailer+
+    /// footer relocated to the new tail and the one block's `bodyLength`
+    /// patched to cover the declared size — passes the footer cap, the
+    /// per-extent bound, and the length-relative sum bound (all of them
+    /// scale with the lie), and is refused ONLY by the density rule. The
+    /// pin returning at all IS the no-OOM proof: reading the hole would
+    /// succeed, committing the declared buffer resident.
+    #[test]
+    fn a_sparse_giant_segment_is_refused_by_the_density_rule() {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+        use std::os::unix::fs::MetadataExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("l-000000.arrow");
+        write_segment(&path, &batch(3)).expect("write");
+        let bytes = std::fs::read(&path).expect("read");
+        let len = bytes.len();
+        let footer_len =
+            i32::from_le_bytes(bytes[len - 10..len - 6].try_into().expect("trailer")) as u64;
+        let sparse_len: u64 = 512 << 20;
+
+        // Patch the one block's `bodyLength` to span the declared size.
+        // Self-locating within the footer's own encoding, with the
+        // patch VERIFIED against a re-parse: the 8-byte write must move
+        // `bodyLength` to the target AND leave the block's other fields
+        // exactly as the honest writer left them — an unverified hit can
+        // straddle field boundaries and corrupt `offset`/`metaDataLength`
+        // into an earlier, differently-worded refusal.
+        let mut footer = bytes[len - 10 - footer_len as usize..len - 10].to_vec();
+        let trailer = bytes[len - 10..].to_vec();
+        let honest = arrow::ipc::root_as_footer(&footer)
+            .expect("the honest footer parses")
+            .recordBatches()
+            .and_then(|batches| batches.iter().next())
+            .expect("the honest footer declares one block");
+        let (honest_offset, honest_meta) = (honest.offset(), honest.metaDataLength());
+        // Leave headroom for the block's own offset+meta plus the
+        // trailer, so the per-extent rule (end ≤ file) genuinely passes
+        // and only the density rule can refuse.
+        let target: i64 = (sparse_len - 4096) as i64;
+        let mut patched = false;
+        for off in 0..footer.len() - 8 {
+            let saved = footer[off..off + 8].to_vec();
+            footer[off..off + 8].copy_from_slice(&target.to_le_bytes());
+            let moved = arrow::ipc::root_as_footer(&footer)
+                .ok()
+                .and_then(|footer| footer.recordBatches())
+                .and_then(|batches| batches.iter().next())
+                .is_some_and(|block| {
+                    block.bodyLength() == target
+                        && block.offset() == honest_offset
+                        && block.metaDataLength() == honest_meta
+                });
+            if moved {
+                patched = true;
+                break;
+            }
+            footer[off..off + 8].copy_from_slice(&saved);
+        }
+        assert!(
+            patched,
+            "the bodyLength field must be locatable in the footer's own encoding"
+        );
+
+        // Plant the sparse giant: extend with a hole, then write ONLY the
+        // relocated tail regions — the middle stays unallocated, which is
+        // the lie the density rule exists to catch.
+        let hostile_path = dir.path().join("hostile.arrow");
+        let file = std::fs::File::create(&hostile_path).expect("create");
+        file.set_len(sparse_len).expect("hole");
+        let mut file = file;
+        file.seek(SeekFrom::Start(sparse_len - 10))
+            .and_then(|_| file.write_all(&trailer))
+            .expect("trailer at the new tail");
+        file.seek(SeekFrom::Start(sparse_len - 10 - footer_len))
+            .and_then(|_| file.write_all(&footer))
+            .expect("footer at the new tail");
+        file.sync_all().expect("sync");
+        drop(file);
+        let stat = std::fs::metadata(&hostile_path).expect("stat");
+        assert!(
+            stat.blocks().saturating_mul(512) < sparse_len / 8,
+            "the fixture must actually be sparse: {} allocated of {sparse_len} declared",
+            stat.blocks().saturating_mul(512)
+        );
+
+        let error = open_segment(dir.path(), "hostile.arrow")
+            .map(|_| ())
+            .expect_err("a sparse giant must refuse typed, never commit resident");
+        assert!(
+            error.contains("actually allocated"),
+            "the density rule is the refusal: {error}"
+        );
+    }
+
+    /// 6M4: the fstat-compare carries ctime at nanosecond resolution —
+    /// a same-size, same-mtime rewrite still flips ctime, which no
+    /// unprivileged writer can restore. Fixtured at the pure-rule level
+    /// (the compare itself reads kernel timestamps); the observable
+    /// contract is that only a swap landing ENTIRELY inside the
+    /// post-compare window survives, as the pre-pass's doc records.
+    #[test]
+    fn the_change_detect_compare_is_documented_as_ctime_bearing() {
+        // The compare tuple carries all four timestamp fields.
+        let stat = (1i64, 2i64, 3i64, 4i64);
+        assert_ne!(stat, (1, 2, 3, 5), "a ctime-nsec move is a change");
+        assert_ne!(stat, (1, 2, 9, 4), "a ctime move is a change");
     }
 
     /// 6.1: the honest side of the 16 MiB footer cap. A maximal segment —

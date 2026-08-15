@@ -408,6 +408,16 @@ SPI crate (`rdlt-connector`):
   source file does not bound the re-serialized JSON — YAML→JSON
   expansion can push a just-legal file past the ceiling, and the
   pre-send refusal names exactly that).
+- `spec_json`: **8 MiB**. The spec is a typed shell around one untyped
+  value — its `config_schema` is a free-form document the host caches
+  for the session's lifetime — so the client measures the raw bytes at
+  the handshake before parsing (a hand-authored schema measures in
+  kilobytes; a multi-megabyte one embedded data).
+- `state_doc_json`: **8 MiB** for the document, **4 MiB** per cursor
+  within it. `StateDoc` is the same typed-shell-around-untyped-values
+  shape, and each cursor it carries is a cursor: the client gates the
+  document's raw bytes at the `ReadState` decode seat, then every
+  cursor's SERIALIZED form against the cursor bound.
 - cursors (`since_cursor_json`, `checkpoint_cursor_json`): **4 MiB**
   (`MAX_CURSOR_BYTES`) — deliberately tighter, because a cursor is
   also recorded in the engine's WAL, whose per-line cap is sized to
@@ -415,12 +425,15 @@ SPI crate (`rdlt-connector`):
   client's inbound frame decode, and at its pre-send check.
 
 For cursor authors the contract is: persisted cursor state MUST
-serialize under the cursor bound. Megabyte-scale state is not a
-conforming cursor — a connector whose state can grow past it summarizes
-(a high-water mark, an offset, a resume token) instead of embedding the
-data, or its reads refuse typed at the gates above. Typed `*_json`
-fields (stream specs, schemas, receipts) ride typed serde structs and
-are deliberately outside these ceilings.
+serialize under the cursor bound — measured on the SERIALIZED form,
+because that is what crosses the wire back and what the WAL records
+(compact exponent notation inflates: `1e15` re-serializes as
+`1000000000000000.0`). Megabyte-scale state is not a conforming cursor
+— a connector whose state can grow past it summarizes (a high-water
+mark, an offset, a resume token) instead of embedding the data, or its
+reads refuse typed at the gates above. Typed `*_json` fields (stream
+specs' fixed vocabulary, schemas, receipts) ride typed serde structs
+and are deliberately outside these ceilings.
 
 ## `Status` vs `ErrorFrame`: two refusal shapes, on purpose
 

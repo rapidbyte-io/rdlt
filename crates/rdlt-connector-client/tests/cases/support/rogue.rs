@@ -209,7 +209,7 @@ pub enum SessionScript {
     /// refusals are `ErrorFrame` replies and its endings are clean),
     /// which is exactly why the client reply loop's `Err` arm needs a
     /// rogue to reach it.
-    OpenedThenStatus { code: tonic::Code, message: String },
+    FailNextCallWithStatus { code: tonic::Code, message: String },
     /// Answer the `Open` frame with `Opened`, consume the NEXT request
     /// frame, then before going SILENT emit `parts` interleaved
     /// `part_closed` events naming `table` — the stream never ends and
@@ -219,7 +219,14 @@ pub enum SessionScript {
     /// the clock, and the silence AFTER the flood still times out
     /// typed. A hostile `table` drives the wire edge's control-
     /// character refusal.
-    OpenedThenPartsThenSilence { parts: u64, table: String },
+    FloodPartsThenSilence { parts: u64, table: String },
+    /// Answer the `Open` frame with `Opened`, consume the NEXT request
+    /// frame (a `ReadState` in the pins that use this arm), and answer
+    /// it with a `State` reply carrying exactly these bytes — including
+    /// hostile ones: an oversized document, a cursor that inflates past
+    /// its contract on re-serialization, a malformed body whose parse
+    /// error must render kind-and-location. The stream then ends.
+    AnswerReadStateWith { state_doc_json: Vec<u8> },
 }
 
 /// The scripted destination server: a truthful handshake carrying a
@@ -295,10 +302,10 @@ impl DestinationService for RogueDestination {
                 .await;
             let _ = requests.message().await;
             match script {
-                SessionScript::OpenedThenStatus { code, message } => {
+                SessionScript::FailNextCallWithStatus { code, message } => {
                     let _ = reply_tx.send(Err(Status::new(code, message))).await;
                 }
-                SessionScript::OpenedThenPartsThenSilence { parts, table } => {
+                SessionScript::FloodPartsThenSilence { parts, table } => {
                     for index in 0..parts {
                         let _ = reply_tx
                             .send(Ok(proto::SessionReply {
@@ -314,6 +321,15 @@ impl DestinationService for RogueDestination {
                     }
                     let _held_forever = reply_tx;
                     std::future::pending::<()>().await;
+                }
+                SessionScript::AnswerReadStateWith { state_doc_json } => {
+                    let _ = reply_tx
+                        .send(Ok(proto::SessionReply {
+                            reply: Some(session_reply::Reply::State(proto::StateReply {
+                                state_doc_json: Some(state_doc_json),
+                            })),
+                        }))
+                        .await;
                 }
             }
         });
@@ -428,6 +444,53 @@ pub fn serve_identity(path: &Path, id: &'static str, version: &'static str) -> J
     let incoming = UnixListenerStream::new(listener);
     let serving = tonic::transport::Server::builder()
         .add_service(ConnectorServer::new(Identity { id, version }))
+        .serve_with_incoming(incoming);
+    tokio::spawn(async move {
+        let _ = serving.await;
+    })
+}
+
+/// A connector whose handshake answers with exactly the `Ok` payload a
+/// test built — including hostile ones: an oversized `spec_json`, a
+/// schema document that must not survive the document ceiling.
+#[derive(Debug)]
+pub struct RawHandshake {
+    ok: proto::HandshakeOk,
+}
+
+#[tonic::async_trait]
+impl Connector for RawHandshake {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        Ok(Response::new(proto::HandshakeReply {
+            outcome: Some(handshake_reply::Outcome::Ok(self.ok.clone())),
+        }))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        Err(Status::unimplemented("the raw rogue only handshakes"))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<proto::SpecReply>, Status> {
+        Err(Status::unimplemented("the raw rogue only handshakes"))
+    }
+}
+
+/// Bind the raw-handshake rogue at `path` and serve until the returned
+/// task is dropped.
+pub fn serve_handshake_ok(path: &Path, ok: proto::HandshakeOk) -> JoinHandle<()> {
+    let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");
+    let incoming = UnixListenerStream::new(listener);
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::new(RawHandshake { ok }))
         .serve_with_incoming(incoming);
     tokio::spawn(async move {
         let _ = serving.await;

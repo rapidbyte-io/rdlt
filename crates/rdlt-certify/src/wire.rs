@@ -805,7 +805,11 @@ fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|payload| {
         Err(format!(
             "the Arrow decoder panicked: {}",
-            panic_text(payload.as_ref())
+            // The shared bounded rendering (6L9): the violation COUNT is
+            // capped at `MAX_P5_VIOLATIONS`, but the count cap never
+            // bounded each string's LENGTH — a payload embedding
+            // frame-derived text would ride the report file whole.
+            rdlt_connector::ipc::panic_text(payload.as_ref())
         ))
     })
 }
@@ -820,17 +824,6 @@ fn count_batches_decoding(bytes: &[u8]) -> Result<usize, String> {
         count += 1;
     }
     Ok(count)
-}
-
-/// A panic payload's message, where one is extractable.
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
-    if let Some(text) = payload.downcast_ref::<&str>() {
-        text
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text
-    } else {
-        "<non-text panic payload>"
-    }
 }
 
 #[cfg(test)]

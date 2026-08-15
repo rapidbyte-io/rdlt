@@ -79,6 +79,7 @@ pub mod channel;
 pub mod destination;
 pub mod error;
 pub mod ipc;
+pub mod json;
 pub mod parquet;
 pub mod pem;
 pub mod secret;
@@ -146,3 +147,14 @@ pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
 /// a resume token) rather than crash-looping a resume against a line
 /// its own recovery could never scan back.
 pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The most BYTES a wire-declared identifier may carry (5L5, hoisted to
+/// the SPI in round 6 so the engine's in-process validation mirrors the
+/// client's wire gate): content gates refuse hostile CHARACTERS, but
+/// nothing priced the LENGTH — a 60 MiB control-free stream name passed
+/// every gate within the frame cap (log swelling, plan noise). Real
+/// identifiers are bounded by the destinations' own limits (postgres
+/// 63, snowflake 255); a KiB is already absurd for a name, and the
+/// socket path's 107-byte gate is the in-tree precedent for bounding
+/// vocabulary at the wire edge.
+pub const MAX_WIRE_IDENTIFIER_BYTES: usize = 1024;

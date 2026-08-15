@@ -109,6 +109,25 @@ impl<S, D> PipelineBuilder<S, D> {
         self.config = self.config.with_byte_budget(bytes);
         self
     }
+
+    /// Cap on `columns × rows` in one assembled output batch (6L6): the
+    /// memory bound for the assembly step, which materializes every
+    /// null-filled absent column. Wide-and-large honest tables that
+    /// cross the default raise it here — the same knob the assembly
+    /// seat's refusal names.
+    pub fn max_batch_cells(mut self, cells: usize) -> Self {
+        self.config = self.config.with_max_batch_cells(cells);
+        self
+    }
+
+    /// Cap on streams one source may declare (6L6): every declared
+    /// stream costs plan-time validation and its own share of the run's
+    /// in-flight budget. An honestly larger discovery raises it here —
+    /// the same knob the plan-time refusal names.
+    pub fn max_streams_per_source(mut self, streams: usize) -> Self {
+        self.config = self.config.with_max_streams_per_source(streams);
+        self
+    }
 }
 
 impl<S: Source, D: Destination> PipelineBuilder<S, D> {

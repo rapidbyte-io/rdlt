@@ -342,7 +342,9 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
         Ok(decoded) => decoded,
         Err(payload) => Err(format!(
             "write carried no decodable record batch: the Arrow decoder panicked: {}",
-            panic_text(payload.as_ref())
+            // The shared bounded rendering (6L9) — a panic payload is
+            // attacker-adjacent text, and an evidence line is bounded.
+            rdlt_connector::ipc::panic_text(payload.as_ref())
         )),
     }
 }
@@ -364,6 +366,20 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, 
         Some(Err(error)) => return Err(format!("{REFUSAL}: {error}")),
         None => return Err(REFUSAL.to_string()),
     };
+    // 6M3: row count is the memory dimension the framing pre-pass
+    // cannot see — Null and run-end-encoded columns carry millions of
+    // rows in almost no body bytes, and the batch goes straight to the
+    // connector's own backend. The engine enforces this cap at its
+    // ingress for the read direction; this is the write-direction
+    // mirror, from the SPI's own shared vocabulary.
+    if first.num_rows() > rdlt_connector::channel::MAX_RECORD_BATCH_ROWS {
+        return Err(format!(
+            "{REFUSAL}: the batch carries {} rows, over the {}-row wire cap — row count is \
+             bounded separately from encoded bytes",
+            first.num_rows(),
+            rdlt_connector::channel::MAX_RECORD_BATCH_ROWS
+        ));
+    }
     match reader.next() {
         Some(Ok(_)) => Err(
             "write carried more than one record batch; a Write frame is exactly one batch"
@@ -371,16 +387,6 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, 
         ),
         Some(Err(error)) => Err(format!("{REFUSAL}: {error}")),
         None => Ok(first),
-    }
-}
-
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
-    if let Some(text) = payload.downcast_ref::<&str>() {
-        text
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text
-    } else {
-        "<non-text panic payload>"
     }
 }
 

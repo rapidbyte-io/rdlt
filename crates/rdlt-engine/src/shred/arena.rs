@@ -143,9 +143,10 @@ impl<'s> Arena<'s> {
     /// VALUES per object entry and per nested array element — each costs
     /// its arena node at parse whether or not it becomes a row, so a slab
     /// dense enough to carry tens of millions of values in a legal frame
-    /// (~2 wire bytes per node against ~40 arena bytes) would otherwise
-    /// materialize a ~22× arena before any post-parse check could refuse
-    /// (4H3 arrays; 5M5 objects).
+    /// (~2 wire bytes per node against ~40 arena bytes for an array
+    /// element, ~80 for an object entry — its node plus its `(key, id)`
+    /// tuple) would otherwise materialize a ~20× arena before any
+    /// post-parse check could refuse (4H3 arrays; 5M5 objects).
     pub(crate) fn parse_rows(
         &mut self,
         bytes: &'s [u8],

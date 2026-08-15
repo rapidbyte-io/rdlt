@@ -447,11 +447,14 @@ mod retention_tests {
 
     /// 5L12: the transient factor must cover the BINDING worst case,
     /// computed from the real layout — the chain form (`(size +
-    /// align16(4·size + 8)) / 2` per wire byte: one `Value` plus its
-    /// capacity-4 first `Vec` block, align-16 rounded). The earlier pin
-    /// asserted the dense-array bound, which is NOT the binding case; a
-    /// `Value` growth would have re-opened the under-count while the pin
-    /// stayed green.
+    /// align16(cap·size + 8)) / 2` per wire byte: one `Value` plus its
+    /// first `Vec` block, align-16 rounded). The earlier pin asserted
+    /// the dense-array bound, which is NOT the binding case; a `Value`
+    /// growth would have re-opened the under-count while the pin stayed
+    /// green. The `Vec`'s first-allocation capacity is MEASURED (6L8),
+    /// not assumed: hardcoding 4 would let a std/allocator change to 8
+    /// double the real chain form while the pin stayed green — the same
+    /// "asserts the model, not the layout" drift one layer down.
     #[test]
     fn the_transient_factor_covers_the_binding_chain_form() {
         let size = std::mem::size_of::<serde_json::Value>();
@@ -460,12 +463,24 @@ mod retention_tests {
             "a 32-byte Value means preserve_order was toggled OFF — re-derive \
              the transient factor before trusting it (measured: {size})"
         );
+        // Probe the allocator: a one-element array parsed from text
+        // exercises exactly the capacity the chain form pays per level.
+        let probe: serde_json::Value = serde_json::from_str("[0]").expect("probe parses");
+        let serde_json::Value::Array(items) = probe else {
+            panic!("the probe must parse to an array");
+        };
+        let first_vec_capacity = items.capacity();
+        assert!(
+            first_vec_capacity >= 1,
+            "a parsed array holds at least its elements"
+        );
         let align16 = |x: usize| (x + 15) & !15;
-        let chain_form = (size + align16(4 * size + 8)) / 2;
+        let chain_form = (size + align16(first_vec_capacity * size + 8)) / 2;
         assert!(
             TRANSIENT_FACTOR >= chain_form,
             "the factor ({TRANSIENT_FACTOR}) no longer covers the chain worst case \
-             ({chain_form}) against the real {size}-byte layout — re-derive it"
+             ({chain_form}) against the real {size}-byte layout and capacity-{first_vec_capacity} \
+             first Vec block — re-derive it"
         );
         // The dense-array form (~3 coexisting slots per 2-wire-byte
         // element) is lower — asserted so a swap of which form binds is

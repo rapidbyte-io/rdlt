@@ -18,15 +18,16 @@ use crate::wal::record::MAX_MANIFEST_LINE_BYTES;
 /// the per-line cap bounds ONE line, but the fold accumulates every line
 /// into memory, so a hostile multi-gigabyte manifest of small legal lines
 /// is the same unbounded allocation one size up. The honest arithmetic,
-/// stated so the ceiling stays honest about it: a manifest is cleared per
-/// successful run, so it holds ONE run's span plus vouched residue — and
-/// at the stream cap a busy run writes ~1024 checkpoint lines/sec ≈
-/// ~150 KB/s, so 1 GiB is ~2 hours of never-committing multi-stream run.
-/// A longer run's crash recovery then degrades to cursor re-extraction —
-/// the safe direction, but a real availability cost for exactly the big
-/// runs; the budget exists so a corrupted WAL cannot make recovery
-/// materialize (and read) unboundedly, and 1 GiB is where "honest span"
-/// and "bounded recovery work" meet.
+/// stated as a RATE so the ceiling stays honest at any policy (6.4): a
+/// manifest is cleared per successful run, so it holds ONE run's span
+/// plus vouched residue — and at the stream cap a busy run writes
+/// ~1024 checkpoint lines ≈ ~150 KB per checkpoint sweep, so the budget
+/// divides by the sweep rate: ~2 hours at one sweep per second, ~12
+/// minutes at ten. A longer run's crash recovery then degrades to
+/// cursor re-extraction — the safe direction, but a real availability
+/// cost for exactly the big runs; the budget exists so a corrupted WAL
+/// cannot make recovery materialize (and read) unboundedly, and 1 GiB
+/// is where "honest span" and "bounded recovery work" meet.
 const MAX_MANIFEST_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// The rules sidecar is the writer's `IdentRules` verbatim — a ~100-byte
@@ -36,7 +37,18 @@ const MAX_MANIFEST_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 /// unbounded.
 const MAX_RULES_SIDECAR_BYTES: u64 = 8 * 1024;
 
-fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<String>, String> {
+/// One scanned manifest line: its content, and how many TERMINATOR bytes
+/// preceded the next line on disk (`1` for `\n`, `2` for `\r\n`, `0`
+/// for an unterminated final line). The budget counts both, so a
+/// CRLF-hostile manifest cannot double the bytes recovery reads past
+/// the bytes it accounts for (6L4).
+#[derive(Debug)]
+struct ReadLine {
+    text: String,
+    terminator: u64,
+}
+
+fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<ReadLine>, String> {
     let mut bytes = Vec::new();
     let read = reader
         .take((MAX_MANIFEST_LINE_BYTES + 2) as u64)
@@ -49,10 +61,13 @@ fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<String>, Strin
     // exactly `\n` per line, and counting it against the cap made the
     // effective bound MAX−1 while the pins measured MAX. A line of exactly
     // MAX content bytes plus its newline is legal and must scan.
+    let mut terminator = 0u64;
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
+        terminator += 1;
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
+            terminator += 1;
         }
     }
     if bytes.len() > MAX_MANIFEST_LINE_BYTES {
@@ -61,7 +76,7 @@ fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<String>, Strin
         ));
     }
     String::from_utf8(bytes)
-        .map(Some)
+        .map(|text| Some(ReadLine { text, terminator }))
         .map_err(|e| format!("manifest line is not UTF-8: {e}"))
 }
 
@@ -208,7 +223,10 @@ fn scan_with_budget(
         };
         // The whole-file budget (4M1): the per-line cap bounds one line;
         // this bounds their SUM, which is what the fold below accumulates.
-        total_bytes += line.len() as u64 + 1;
+        // Content plus the real on-disk terminator (6L4): counting a
+        // flat +1 let a CRLF-hostile manifest read twice the bytes it
+        // accounted for.
+        total_bytes += line.text.len() as u64 + line.terminator;
         if total_bytes > total_budget {
             damaged = Some(format!(
                 "manifest exceeds the {total_budget}-byte total budget — the \
@@ -216,10 +234,10 @@ fn scan_with_budget(
             ));
             break;
         }
-        if line.trim().is_empty() {
+        if line.text.trim().is_empty() {
             continue;
         }
-        match crate::wal::record::decode_line(&line) {
+        match crate::wal::record::decode_line(&line.text) {
             crate::wal::record::ManifestLine::Record(record) => records.push(record),
             // Almost always corruption; the one content-dependent tear
             // shape that lands here too (see the Corrupt arm's doc)
@@ -824,7 +842,17 @@ mod tests {
         let line = read_manifest_line(&mut reader)
             .expect("a line at exactly the cap scans")
             .expect("a line, not EOF");
-        assert_eq!(line.len(), MAX_MANIFEST_LINE_BYTES);
+        assert_eq!(line.text.len(), MAX_MANIFEST_LINE_BYTES);
+        assert_eq!(line.terminator, 1, "the writer's `\\n` terminator");
+        // 6L4: a CRLF terminator reports TWO on-disk bytes, so the
+        // whole-file budget counts what recovery actually reads.
+        let crlf = b"line\r\n".to_vec();
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(crlf));
+        let line = read_manifest_line(&mut reader)
+            .expect("a CRLF line scans")
+            .expect("a line, not EOF");
+        assert_eq!(line.text, "line");
+        assert_eq!(line.terminator, 2, "CRLF counts both bytes");
 
         let mut over_cap = vec![b'x'; MAX_MANIFEST_LINE_BYTES + 1];
         over_cap.push(b'\n');
