@@ -141,7 +141,17 @@ fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), 
                 field.name()
             )));
         }
-        match field.data_type() {
+        // A dictionary encodes another type without a field of its own,
+        // but its VALUE type can carry named fields (a struct, a list,
+        // another dictionary) — unwrap before matching, or those inner
+        // names bypass the gate. The unwrap loop is bounded by the
+        // schema's finite type depth, and a dictionary's key type is
+        // always a bare integer carrying no fields.
+        let mut data_type = field.data_type();
+        while let DataType::Dictionary(_, value) = data_type {
+            data_type = value;
+        }
+        match data_type {
             DataType::Struct(fields) => pending.extend(fields.iter().cloned()),
             DataType::List(child)
             | DataType::LargeList(child)
@@ -604,6 +614,30 @@ mod tests {
         let batch = RecordBatch::new_empty(schema);
         let error = refuse_control_characters_in_arrow_fields(&batch)
             .expect_err("nested field names use the identifier gate");
+        assert!(error.to_string().contains("Arrow field"));
+    }
+
+    /// A dictionary-encoded nested container carries field names too:
+    /// `Dictionary(Int32, Struct([...]))` is encodable by arrow's own
+    /// writer, and without a Dictionary arm the walk never reached the
+    /// inner struct's names.
+    #[test]
+    fn dictionary_inner_field_names_are_gated_too() {
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "outer",
+            DataType::Dictionary(
+                Box::new(DataType::Int32),
+                Box::new(DataType::Struct(
+                    vec![Field::new("inner\u{202e}", DataType::Int64, true)].into(),
+                )),
+            ),
+            true,
+        )]));
+        let batch = RecordBatch::new_empty(schema);
+        let error = refuse_control_characters_in_arrow_fields(&batch)
+            .expect_err("field names inside a dictionary's value type use the identifier gate");
         assert!(error.to_string().contains("Arrow field"));
     }
 
