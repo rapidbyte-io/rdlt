@@ -81,6 +81,15 @@ FUZZ_RUN_BOUND ?= -max_total_time=$(FUZZ_SECONDS)
 # panic this target found) still reads as a libFuzzer crash under the
 # harness. The target stays compiled (the reproducer's home and the
 # coverage door); its containment proof lives in the client suite.
+# wal_segment_decode (047 3L6) is EXCLUDED for the same reason,
+# measured, not assumed: within 60 s it found arrow-buffer 58.3's own
+# panic on a crafted record-batch buffer length (one flipped byte in a
+# real segment), which the WAL replay seat contains under caught_decode
+# in production — pinned by the engine's own one-byte-flip unit test —
+# but which abort()s under the libfuzzer hook before containment can
+# run. Its corpus carries real writer-produced segments plus that
+# crash input, so a future arrow bump can be probed by hand:
+#   cd fuzz && cargo +nightly fuzz run wal_segment_decode
 FUZZ_TARGETS := jsonl_slab arrow_schema_map shred_push \
 	wire_frame_decode handshake_line wal_manifest_line
 

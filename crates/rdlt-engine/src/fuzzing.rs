@@ -70,6 +70,14 @@ pub fn wal_manifest_line(text: &str) {
     let _ = crate::wal::record::verify_segment_file(&LoadId::new("fuzz-load"), text);
 }
 
+/// WAL segment decode over arbitrary bytes — the Arrow IPC
+/// FileReader+footer+`next()` path replay drives, with panics contained
+/// the way replay contains them (caught and folded into the damage
+/// channel): a typed error or a caught unwind, never an escape.
+pub fn wal_segment_decode(bytes: &[u8]) {
+    crate::wal::resume::decode_segment_bytes(bytes);
+}
+
 // ---- bench entry points (iai_hotpath / perf gate) ----
 
 /// Production (tape) shred path over one raw slab; returns emitted row count.

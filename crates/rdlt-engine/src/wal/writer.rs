@@ -43,6 +43,59 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
         .create(dir)
 }
 
+/// Open a WAL-path file for reading, refusing anything that is not a plain
+/// regular file — the READ side of the WAL's file-type boundary, shared by
+/// every seat that opens a manifest, sidecar, segment or marker.
+///
+/// Two flags close two different plants at the same boundary, race-free
+/// because the verdict comes from the opened HANDLE, never a stat beside it:
+///
+/// - `O_NONBLOCK`: a plain read-open of a writerless FIFO blocks until a
+///   writer appears — which for a planted FIFO is never — so one `mkfifo`
+///   at a WAL path would hang recovery forever (nothing up that stack has a
+///   timeout). With the flag the open returns immediately and the handle
+///   check below refuses the FIFO. On a regular file the flag is a no-op:
+///   regular-file reads never report "would block", so the descriptor
+///   behaves exactly as an ordinary one and needs no flag-clearing (which
+///   would take an `fcntl` this workspace's unsafe ban rules out anyway).
+/// - `O_NOFOLLOW`: a symlink at a WAL path reads FOREIGN content into scan
+///   verdicts — the write side already refuses symlinks everywhere, and the
+///   read side must match or the weaker side decides. The resulting ELOOP
+///   is re-worded so refusal logs name the plant, not a loop.
+///
+/// The handle check catches what the flags do not (a planted socket or
+/// device node). Callers classify the error as damage/refusal, never crash.
+pub(crate) fn open_wal_read(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing WAL file `{}` because it is a symlink",
+                    path.display()
+                ),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing WAL file `{}` because it is not a regular file",
+                path.display()
+            ),
+        ));
+    }
+    Ok(file)
+}
+
 /// [`OpenOptions`] for a WAL-owned file, born owner-only (0o600) —
 /// the file-level half of the directory hardening above: the mode
 /// applies only at creation, so a file that already exists keeps
@@ -85,7 +138,11 @@ fn ensure_owned_dir(dir: &Path) -> std::io::Result<()> {
     let marker = dir.join(OWNERSHIP_MARKER);
     match std::fs::symlink_metadata(&marker) {
         Ok(meta) if meta.file_type().is_file() && !meta.file_type().is_symlink() => {
-            let bytes = std::fs::read(&marker)?;
+            // The read goes through the gated open, not `fs::read`: the stat
+            // above and the read are two syscalls, and a FIFO swapped into
+            // the gap would block a plain open forever. The handle-side
+            // re-check closes that window.
+            let bytes = read_via_gated_open(&marker)?;
             if bytes == OWNERSHIP_MARKER_BYTES {
                 return Ok(());
             }
@@ -126,6 +183,15 @@ fn ensure_owned_dir(dir: &Path) -> std::io::Result<()> {
         .write_all(OWNERSHIP_MARKER_BYTES)
 }
 
+/// Read a small WAL file whole through [`open_wal_read`]'s gate — the
+/// marker reads' replacement for `fs::read`, which opens ungated.
+fn read_via_gated_open(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    open_wal_read(path)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 fn verify_owned_dir(dir: &Path) -> std::io::Result<()> {
     let dir_meta = std::fs::symlink_metadata(dir)?;
     if !dir_meta.file_type().is_dir() || dir_meta.file_type().is_symlink() {
@@ -139,9 +205,11 @@ fn verify_owned_dir(dir: &Path) -> std::io::Result<()> {
     }
     let marker = dir.join(OWNERSHIP_MARKER);
     let meta = std::fs::symlink_metadata(&marker)?;
+    // Gated open for the same stat-to-read race as `ensure_owned_dir`'s
+    // marker read: a FIFO swapped in after the stat must refuse, not block.
     if !meta.file_type().is_file()
         || meta.file_type().is_symlink()
-        || std::fs::read(&marker)? != OWNERSHIP_MARKER_BYTES
+        || read_via_gated_open(&marker)? != OWNERSHIP_MARKER_BYTES
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -365,16 +433,28 @@ impl Wal {
         let dir = self.dir.clone();
         tokio::task::spawn_blocking(move || {
             for path in pending {
-                File::open(&path)
+                // Re-opened through the read-side gate: the writer created
+                // this segment as a regular file, but the name could have
+                // been swapped for a FIFO since, and a plain open would
+                // then block the commit forever.
+                open_wal_read(&path)
                     .and_then(|f| f.sync_all())
                     .map_err(|e| wal_err("fsync segment", e))?;
             }
             // Persist directory entries for the sidecar, manifest and all
             // newly-created segments. File fsync alone does not make those
-            // names survive power loss.
-            File::open(&dir)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| wal_err("fsync wal directory", e))?;
+            // names survive power loss. `O_DIRECTORY` refuses anything that
+            // is not a directory during the open itself — a FIFO swapped in
+            // at this path fails with ENOTDIR instead of blocking.
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                    .open(&dir)
+                    .and_then(|f| f.sync_all())
+                    .map_err(|e| wal_err("fsync wal directory", e))?;
+            }
             Ok::<(), RdltError>(())
         })
         .await

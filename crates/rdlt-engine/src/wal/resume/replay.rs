@@ -1,12 +1,7 @@
 //! Replay of one uncommitted span into an open session, committing under the
 //! ORIGINAL run's identity — with every damage arm degrading to re-extraction.
 
-use std::{
-    fs::{File, OpenOptions},
-    io::BufReader,
-    os::unix::fs::OpenOptionsExt as _,
-    path::Path,
-};
+use std::{fs::File, io::BufReader, path::Path};
 
 use rdlt_connector::LoadSession;
 use rdlt_core::{CommitMeta, RdltError, StateDoc};
@@ -27,10 +22,11 @@ fn open_segment(
     file: &str,
 ) -> Result<arrow::ipc::reader::FileReader<BufReader<File>>, String> {
     let path = dir.join(file);
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
+    // The shared gated open ([`crate::wal::open_wal_read`]): O_NOFOLLOW as
+    // before, plus O_NONBLOCK and a regular-file check on the handle — a
+    // FIFO planted at a segment name would otherwise block this open until
+    // a writer appears, hanging replay forever.
+    crate::wal::open_wal_read(&path)
         .map_err(|e| e.to_string())
         .and_then(|f| {
             arrow::ipc::reader::FileReader::try_new_buffered(f, None).map_err(|e| e.to_string())
@@ -50,6 +46,25 @@ fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
             panic_text(payload.as_ref())
         )),
     }
+}
+
+/// The fuzz seat over the segment decode (reached through
+/// `crate::fuzzing::wal_segment_decode`): the same Arrow IPC
+/// FileReader construction, footer verification and per-batch `next()`
+/// replay performs on a WAL segment, driven over in-memory bytes so the
+/// fuzzer pays no filesystem round trip, with panics contained exactly
+/// as replay contains them — a typed error or a caught unwind, never an
+/// escape.
+pub(crate) fn decode_segment_bytes(bytes: &[u8]) {
+    let _ = caught_decode(|| {
+        let reader = arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
+            .map_err(|e| e.to_string())?;
+        let mut rows: u64 = 0;
+        for batch in reader {
+            rows += batch.map_err(|e| e.to_string())?.num_rows() as u64;
+        }
+        Ok::<u64, String>(rows)
+    });
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
@@ -345,6 +360,112 @@ mod segment_format {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("nothing.arrow"), b"").expect("write");
         assert!(open_segment(dir.path(), "nothing.arrow").is_err());
+    }
+
+    /// A FIFO planted at a segment path: a plain open blocks until a writer
+    /// appears — which is never — so replay would hang forever with nothing
+    /// up the stack carrying a timeout. The open must refuse it as damage,
+    /// promptly; the deadline turns a regression into a loud failure rather
+    /// than an eternal hang. The blocked thread of a red run is reclaimed by
+    /// the per-test process boundary.
+    #[test]
+    fn a_fifo_planted_as_a_segment_refuses_promptly_instead_of_hanging() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("l-000000.arrow");
+        match std::process::Command::new("mkfifo").arg(&fifo).status() {
+            Ok(status) if status.success() => {}
+            _ => {
+                eprintln!("skipping: no mkfifo binary on this host");
+                return;
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = dir.path().to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_segment(&path, "l-000000.arrow").map(|_| ()));
+        });
+        let opened = match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(result) => result,
+            Err(_) => panic!("replay hung: the segment open blocked on a writerless FIFO"),
+        };
+        let error = opened.expect_err("a FIFO at a segment path must refuse");
+        assert!(error.contains("not a regular file"), "{error}");
+    }
+
+    /// The wal_segment_decode fuzz target's first catch, pinned hermetically:
+    /// the writer's own empty-batch segment with ONE byte flipped (offset
+    /// 399, 0x00 → 0xFE — a record-batch buffer length becoming
+    /// 0xFE00000000000000) drives arrow-buffer 58.3 into its own `panic!`
+    /// ("offset of the new Buffer cannot exceed the existing length") inside
+    /// `next()`. The decode seat contains it: `caught_decode` folds the
+    /// unwind into the damage channel, so replay degrades to re-extraction
+    /// instead of crashing recovery. The byte offset is tied to arrow 58.3's
+    /// segment layout; if an arrow bump moves it, re-derive the flip from
+    /// the fuzz corpus seed `segment-crafted-buffer-length-panic` (which
+    /// carries these exact bytes) — the property pinned is that the crafted
+    /// length REFUSES, caught or typed, and never escapes as an unwind.
+    #[test]
+    fn a_crafted_buffer_length_that_panics_arrow_is_contained_as_damage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("seed.arrow");
+        write_segment(&path, &batch(0)).expect("write");
+        let mut bytes = std::fs::read(&path).expect("read");
+        assert_eq!(bytes.len(), 762, "arrow 58.3's empty-batch segment layout");
+        bytes[399] = 0xFE;
+        let error = super::caught_decode(|| {
+            let reader =
+                arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(&bytes[..]), None)
+                    .map_err(|e| e.to_string())?;
+            for batch in reader {
+                batch.map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+        .expect_err("a crafted buffer length must refuse, caught or typed");
+        assert!(
+            error.contains("decoder panicked"),
+            "today the refusal is arrow's own panic, caught: {error}"
+        );
+        // The fuzzing hook drives this same seat; returning at all IS the
+        // assertion (an escaped unwind would fail the test) — the belt that
+        // keeps the hook and the seat from drifting apart.
+        crate::fuzzing::wal_segment_decode(&bytes);
+    }
+
+    /// The flatbuffers depth guard, pinned at THIS seat. The verifier arrow
+    /// runs over a file footer defaults to `max_depth: 64`, refusing deeply
+    /// nested schema metadata before the recursive schema converter can
+    /// overflow the stack — but that guard is dependency-owned, and an
+    /// arrow/flatbuffers bump relaxing verification would silently
+    /// reintroduce the abort class here while the client's own pin (the
+    /// same 80-level shape against its StreamReader seat) stayed green.
+    /// The refusal lands as `open_segment`'s typed error — the footer is
+    /// verified inside `FileReader::try_new` — and degrades to
+    /// re-extraction like every other damage arm.
+    #[test]
+    fn flatbuffer_verification_rejects_a_deep_schema_before_arrow_conversion() {
+        use arrow::datatypes::Schema;
+
+        let mut data_type = DataType::Int64;
+        for _ in 0..80 {
+            data_type = DataType::Struct(vec![Field::new("nested", data_type, true)].into());
+        }
+        let schema = Schema::new(vec![Field::new("root", data_type, true)]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("deep.arrow");
+        {
+            let file = std::fs::File::create(&path).expect("create fixture");
+            let mut writer = arrow::ipc::writer::FileWriter::try_new(file, &schema)
+                .expect("the writer can encode the adversarial schema fixture");
+            writer.finish().expect("finish schema-only segment");
+        }
+        let error = super::caught_decode(|| open_segment(dir.path(), "deep.arrow"))
+            .map(|_| ())
+            .expect_err("the depth guard must refuse before the recursive converter runs");
+        assert!(
+            error.to_ascii_lowercase().contains("depth"),
+            "the dependency-level depth guard is the refusal: {error}"
+        );
     }
 }
 
