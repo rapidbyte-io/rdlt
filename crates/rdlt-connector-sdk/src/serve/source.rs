@@ -462,6 +462,17 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         };
         let since = match &request.since_cursor_json {
             None => None,
+            // The size gate runs BEFORE the parse, like the handshake's
+            // config gate: a compact document materializes as an
+            // untyped `Value` at many times its wire size, and this one
+            // is RETAINED inside the `Cursor` for the read's lifetime —
+            // see `common::MAX_DOCUMENT_BYTES`.
+            Some(bytes) if bytes.len() > common::MAX_DOCUMENT_BYTES => {
+                return Ok(error_stream(common::oversized_document(
+                    "since_cursor_json",
+                    bytes.len(),
+                )));
+            }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
                 Ok(value) => Some(rdlt_connector::Cursor::new(value)),
                 Err(error) => {
@@ -470,7 +481,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             },
         };
 
-        let (out, mut records_in) = records_channel(READ_CHANNEL_BUDGET);
+        let (out, records_in) = records_channel(READ_CHANNEL_BUDGET);
         let read_request = rdlt_connector::ReadRequest::new(stream_spec, since, out);
 
         let read_task: JoinHandle<Result<(), SourceError>> =
@@ -478,95 +489,125 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
 
         let (frame_tx, frame_rx) = frame_channel(BYTE_FRAME_BUDGET, FRAME_MESSAGE_CAPACITY);
 
-        tokio::spawn(async move {
-            // Whether the encode-failure arm below has already emitted
-            // its ErrorFrame. The proto calls the Error frame TERMINAL,
-            // so once one is on the stream nothing may follow it — in
-            // particular the read task's own eventual `Err` (its push
-            // observed the closed channel and the connector may return
-            // an error rather than `Ok`) must not append a second
-            // "terminal" frame behind the first.
-            let mut terminal_sent = false;
-            let mut abort_reader = false;
-            loop {
-                let push = tokio::select! {
-                    push = records_in.recv() => push,
-                    () = frame_tx.stream_gone() => {
-                        records_in.close();
-                        abort_reader = true;
-                        break;
-                    }
-                };
-                let Some(push) = push else {
-                    break;
-                };
-                let frame = match read_frame_of(push.payload) {
-                    Ok(frame) => frame,
-                    Err(message) => {
-                        // An Arrow batch that failed to encode must not
-                        // just vanish: silently dropping it here would
-                        // make a truncated read look identical to a
-                        // clean end of stream to whatever is on the
-                        // other end. Send ONE terminal error frame
-                        // instead, then close the SPI channel exactly
-                        // like a client hang-up below — the connector's
-                        // read task winds down via Break rather than
-                        // continuing to push into a channel nobody
-                        // drains.
-                        let frame = proto::ReadFrame {
-                            frame: Some(read_frame::Frame::Error(common::error_frame(
-                                Classification::Fatal,
-                                message,
-                                None,
-                            ))),
-                        };
-                        let _ = frame_tx.send(Ok(frame)).await;
-                        terminal_sent = true;
-                        abort_reader = true;
-                        records_in.close();
-                        break;
-                    }
-                };
-                if frame_tx.send(Ok(frame)).await.is_err() {
-                    // The client hung up (or the stream errored out from
-                    // under us): closing BOTH halves of the SPI channel
-                    // — the message queue and the byte-budget semaphore
-                    // a producer may be parked on — turns that into the
-                    // Break the connector's next push observes, per the
-                    // SPI's closed-channel-is-cancellation contract.
-                    records_in.close();
-                    abort_reader = true;
-                    break;
-                }
-            }
-
-            if abort_reader {
-                read_task.abort();
-            }
-
-            match read_task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) if !terminal_sent => {
-                    let frame = proto::ReadFrame {
-                        frame: Some(read_frame::Frame::Error(source_error_frame(&error))),
-                    };
-                    let _ = frame_tx.send(Ok(frame)).await;
-                }
-                // A terminal ErrorFrame is already on the stream — the
-                // encode failure it reported is the diagnosis; the read
-                // task's follow-on error is downstream noise.
-                Ok(Err(_)) => {}
-                Err(join_error) => {
-                    let _ = frame_tx
-                        .send(Err(Status::internal(format!(
-                            "connector read task did not complete: {join_error}"
-                        ))))
-                        .await;
-                }
-            }
-        });
+        tokio::spawn(forward_read_frames(
+            records_in,
+            frame_tx,
+            read_task,
+            read_frame_of,
+        ));
 
         Ok(Response::new(frame_rx))
+    }
+}
+
+/// The forwarding loop between the connector's SPI pushes and the gRPC
+/// response stream: translate every push through `encode`, park on the
+/// frame channel's byte budget, and wind the read task down on every
+/// exit path — client hang-up, encode failure, or the connector's own
+/// end of stream.
+///
+/// `encode` is the push-to-frame translation ([`read_frame_of`] in
+/// production). It is a parameter, not a hardcoded call, because its
+/// failure arm cannot be reached from data: a well-formed batch encodes
+/// its own schema infallibly, so the suite injects a failing encoder to
+/// drive the encode-failure interleavings deterministically.
+async fn forward_read_frames(
+    mut records_in: rdlt_connector::RecordsIn,
+    frame_tx: FrameSender,
+    read_task: JoinHandle<Result<(), SourceError>>,
+    encode: fn(PushPayload) -> Result<proto::ReadFrame, String>,
+) {
+    // Whether the encode-failure arm below has already emitted
+    // its ErrorFrame. The proto calls the Error frame TERMINAL,
+    // so once one is on the stream nothing may follow it — in
+    // particular the read task's own eventual `Err` (its push
+    // observed the closed channel and the connector may return
+    // an error rather than `Ok`) must not append a second
+    // "terminal" frame behind the first.
+    let mut terminal_sent = false;
+    let mut abort_reader = false;
+    loop {
+        let push = tokio::select! {
+            push = records_in.recv() => push,
+            () = frame_tx.stream_gone() => {
+                records_in.close();
+                abort_reader = true;
+                break;
+            }
+        };
+        let Some(push) = push else {
+            break;
+        };
+        let frame = match encode(push.payload) {
+            Ok(frame) => frame,
+            Err(message) => {
+                // An Arrow batch that failed to encode must not
+                // just vanish: silently dropping it here would
+                // make a truncated read look identical to a
+                // clean end of stream to whatever is on the
+                // other end. Send ONE terminal error frame
+                // instead, then close the SPI channel exactly
+                // like a client hang-up below — the connector's
+                // read task winds down via Break rather than
+                // continuing to push into a channel nobody
+                // drains.
+                let frame = proto::ReadFrame {
+                    frame: Some(read_frame::Frame::Error(common::error_frame(
+                        Classification::Fatal,
+                        message,
+                        None,
+                    ))),
+                };
+                let _ = frame_tx.send(Ok(frame)).await;
+                terminal_sent = true;
+                abort_reader = true;
+                records_in.close();
+                break;
+            }
+        };
+        if frame_tx.send(Ok(frame)).await.is_err() {
+            // The client hung up (or the stream errored out from
+            // under us): closing BOTH halves of the SPI channel
+            // — the message queue and the byte-budget semaphore
+            // a producer may be parked on — turns that into the
+            // Break the connector's next push observes, per the
+            // SPI's closed-channel-is-cancellation contract.
+            records_in.close();
+            abort_reader = true;
+            break;
+        }
+    }
+
+    if abort_reader {
+        read_task.abort();
+    }
+
+    match read_task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) if !terminal_sent => {
+            let frame = proto::ReadFrame {
+                frame: Some(read_frame::Frame::Error(source_error_frame(&error))),
+            };
+            let _ = frame_tx.send(Ok(frame)).await;
+        }
+        // A terminal ErrorFrame is already on the stream — the
+        // encode failure it reported is the diagnosis; the read
+        // task's follow-on error is downstream noise.
+        Ok(Err(_)) => {}
+        // Gated exactly like the arm above: when the encode-failure arm
+        // already ended the stream with the protocol's TERMINAL
+        // ErrorFrame, the abort this loop itself requested turns the
+        // read task's completion into a cancelled JoinError — transport
+        // noise behind a diagnosis already delivered, and nothing may
+        // follow the terminal frame.
+        Err(join_error) if !terminal_sent => {
+            let _ = frame_tx
+                .send(Err(Status::internal(format!(
+                    "connector read task did not complete: {join_error}"
+                ))))
+                .await;
+        }
+        Err(_) => {}
     }
 }
 
@@ -849,6 +890,60 @@ mod tests {
             stream.next().await.unwrap().unwrap().frame,
             Some(read_frame::Frame::Error(_))
         ));
+    }
+
+    /// The encode-failure arm ends the stream AT its terminal
+    /// ErrorFrame even when the connector's read task is still running:
+    /// the loop aborts that task, the abort surfaces as a `JoinError`,
+    /// and the join arm must NOT append a transport `Status` behind the
+    /// terminal frame — the proto's contract is that nothing follows
+    /// it. The encoder is injected because a well-formed batch cannot
+    /// make the production encoder fail (see [`forward_read_frames`]).
+    #[tokio::test]
+    async fn an_encode_failure_while_the_reader_runs_ends_the_stream_at_the_terminal_frame() {
+        fn refuse(_: PushPayload) -> Result<proto::ReadFrame, String> {
+            Err("induced encode failure".to_string())
+        }
+        let (mut out, records_in) = records_channel(1 << 20);
+        // The reader is STILL RUNNING when the encode fails: a task
+        // parked forever stands in for a connector mid-read, so the
+        // loop's abort turns its completion into a cancelled JoinError —
+        // exactly the interleaving under test.
+        let read_task: tokio::task::JoinHandle<Result<(), rdlt_connector::SourceError>> =
+            tokio::spawn(async { std::future::pending().await });
+        out.rows([serde_json::json!({"n": 1})])
+            .await
+            .expect("the push is admitted");
+
+        let (frame_tx, mut stream) = frame_channel(1 << 20, ROOMY);
+        let loop_task = tokio::spawn(forward_read_frames(records_in, frame_tx, read_task, refuse));
+
+        let first = tokio::time::timeout(BOUND, stream.next())
+            .await
+            .expect("the terminal frame arrives")
+            .expect("the stream is not empty")
+            .expect("a frame, not a transport Status");
+        match first.frame {
+            Some(read_frame::Frame::Error(error)) => {
+                assert_eq!(error.message, "induced encode failure");
+                assert_eq!(error.classification, Classification::Fatal as i32);
+            }
+            other => panic!("expected the terminal ErrorFrame, got {other:?}"),
+        }
+        // Nothing may follow the terminal frame: the aborted read
+        // task's JoinError must not become a trailing Status.
+        let after = tokio::time::timeout(BOUND, stream.next())
+            .await
+            .expect("the stream ends rather than hanging");
+        assert!(
+            after.is_none(),
+            "a transport Status followed the terminal ErrorFrame: {after:?}"
+        );
+        tokio::time::timeout(BOUND, loop_task)
+            .await
+            .expect("the forwarding loop winds down")
+            .expect("the forwarding loop does not panic");
+        drop(out);
     }
 
     #[tokio::test]

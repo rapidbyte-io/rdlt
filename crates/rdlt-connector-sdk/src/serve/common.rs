@@ -31,6 +31,30 @@ use tokio::net::UnixListener;
 /// `common::MAX_FRAME_BYTES` unchanged.
 pub(super) use rdlt_connector_protocol::MAX_FRAME_BYTES;
 
+/// The most a `*_json` DOCUMENT payload (a handshake's `config_json`, a
+/// read's `since_cursor_json`) may weigh before the RPC refuses it
+/// typed. The 64 MiB frame cap bounds WIRE bytes, and an untyped
+/// `serde_json::Value` materializes at many times its wire size (a
+/// compact `[0,0,0,…]` document is ~2 wire bytes per element but ~tens
+/// of heap bytes per node) — so the frame cap alone lets one legal-size
+/// frame expand past 2 GB inside the connector process, repeatably (a
+/// refused handshake leaves the session slot unset). Documents are
+/// hand-written config measured in kilobytes; 8 MiB matches the ceiling
+/// the host side already enforces on its own document reads before
+/// anything is sent, so a conforming host can never hit this refusal.
+pub(super) const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+
+/// The typed size refusal for an oversized `*_json` document payload —
+/// one spelling for every seat that enforces [`MAX_DOCUMENT_BYTES`], so
+/// the config and cursor refusals cannot drift apart.
+pub(super) fn oversized_document(field: &str, len: usize) -> String {
+    format!(
+        "{field} is {len} bytes — larger than the {MAX_DOCUMENT_BYTES}-byte document \
+         ceiling; a config or cursor document measures in kilobytes, so a payload this \
+         size is a wrong path, refused before it can expand in memory"
+    )
+}
+
 /// Failures standing up or running a `serve()` listener itself — never a
 /// connector's own classified failure, which rides [`proto::ErrorFrame`]
 /// over the wire instead of ending the process.
@@ -363,8 +387,25 @@ fn describe_config_parse_error(error: &serde_json::Error) -> String {
 }
 
 /// Every non-null scalar LEAF the config document carries, in document order —
-/// the values [`redact_values`] shields. Values only, never keys: keys
-/// are the document's schema, and refusals legitimately name fields.
+/// the values [`redact_values`] shields. Computed from the RAW BYTES by
+/// re-parsing them, deliberately: the refusal arm that needs these
+/// values no longer holds the parsed document (it was consumed by the
+/// failed construction), and handing the sweep the bytes instead is
+/// what lets a SUCCESSFUL handshake skip both this parse and the
+/// per-leaf clones entirely — the sweep clones every scalar into a
+/// `String`, a whole-document expansion that belongs on the failure
+/// path alone. The bytes parsed once already, so the re-parse cannot
+/// fail; the empty fallback is belt only.
+fn scalar_values_of_bytes(config_json: &[u8]) -> Vec<String> {
+    serde_json::from_slice::<serde_json::Value>(config_json)
+        .map(|config| scalar_values_of(&config))
+        .unwrap_or_default()
+}
+
+/// Every non-null scalar LEAF of an already-parsed document — see
+/// [`scalar_values_of_bytes`], the entry point the refusal arm uses.
+/// Values only, never keys: keys are the document's schema, and
+/// refusals legitimately name fields.
 fn scalar_values_of(config: &serde_json::Value) -> Vec<String> {
     fn walk(value: &serde_json::Value, into: &mut Vec<String>) {
         match value {
@@ -499,6 +540,14 @@ pub(crate) fn handshake<S: HandshakeShell>(
         ));
     }
 
+    // The size gate runs BEFORE the parse: the wire's 64 MiB frame cap
+    // bounds only the bytes on the wire, and parsing a compact document
+    // into an untyped `Value` multiplies them many times over in this
+    // process — see `MAX_DOCUMENT_BYTES`.
+    if request.config_json.len() > MAX_DOCUMENT_BYTES {
+        return refuse_handshake(oversized_document("config_json", request.config_json.len()));
+    }
+
     // Both refusal arms below hold the protocol's secrecy rule (the
     // proto crate's trust-model doc: no `*_json` payload is ever
     // echoed verbatim — config documents carry credentials): the parse
@@ -515,10 +564,14 @@ pub(crate) fn handshake<S: HandshakeShell>(
         }
     };
 
-    let config_scalar_values = scalar_values_of(&config);
     let shell = match S::from_config(config) {
         Ok(shell) => shell,
         Err(error) => {
+            // The redaction sweep lives lexically INSIDE this refusal
+            // arm, and only here: it clones every scalar leaf of the
+            // document, a whole-document expansion a successful
+            // handshake must never pay.
+            let config_scalar_values = scalar_values_of_bytes(&request.config_json);
             return refuse_handshake(redact_values(error.to_string(), &config_scalar_values));
         }
     };

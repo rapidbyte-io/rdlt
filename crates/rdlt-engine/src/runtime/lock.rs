@@ -5,6 +5,7 @@
 
 use std::{
     fs::{File, OpenOptions},
+    os::unix::fs::OpenOptionsExt as _,
     path::Path,
 };
 
@@ -27,12 +28,28 @@ impl WorkdirLock {
             RdltError::config(format!("creating workdir {}: {e}", workdir.display()))
         })?;
         let path = workdir.join(".lock");
+        // The lock file legitimately persists between runs, so this open
+        // must accept an existing regular file (`create`, not
+        // `create_new`) — which is exactly why it needs O_NOFOLLOW, the
+        // WAL manifest's own discipline: a plain create-or-open follows
+        // a pre-planted symlink at the final component and would open
+        // (and lock) whatever file it points at outside the workdir.
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(&path)
-            .map_err(|e| RdltError::config(format!("opening lock {}: {e}", path.display())))?;
+            .map_err(|e| {
+                if e.raw_os_error() == Some(libc::ELOOP) {
+                    return RdltError::config(format!(
+                        "opening lock {}: the path is a symlink — refusing to follow it out \
+                         of the workdir",
+                        path.display()
+                    ));
+                }
+                RdltError::config(format!("opening lock {}: {e}", path.display()))
+            })?;
         if !file
             .try_lock_exclusive()
             .map_err(|e| RdltError::config(format!("locking {}: {e}", path.display())))?
@@ -61,5 +78,31 @@ mod tests {
         );
         drop(first);
         WorkdirLock::acquire(dir.path()).expect("lock reacquirable after drop");
+    }
+
+    /// A pre-planted symlink at the lock path refuses typed and the
+    /// victim it points at is never opened or locked — the WAL
+    /// manifest's O_NOFOLLOW discipline, applied to the one workdir
+    /// file that legitimately persists (and is therefore opened
+    /// create-or-existing) across runs.
+    #[test]
+    fn a_symlink_at_the_lock_path_refuses_and_never_touches_the_victim() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"innocent bytes").expect("victim file");
+        std::os::unix::fs::symlink(&victim, dir.path().join(".lock")).expect("planted symlink");
+
+        let refused = WorkdirLock::acquire(dir.path())
+            .expect_err("a symlinked lock path must refuse, not follow");
+        assert!(
+            refused
+                .to_string()
+                .contains("the path is a symlink — refusing to follow it out of the workdir"),
+            "expected the symlink refusal, got: {refused}"
+        );
+        assert_eq!(
+            std::fs::read(&victim).expect("victim survives"),
+            b"innocent bytes"
+        );
     }
 }

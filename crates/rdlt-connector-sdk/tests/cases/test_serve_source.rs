@@ -299,6 +299,58 @@ async fn an_undecodable_config_json_refuses_fatal_with_the_frozen_prefix() {
     }
 }
 
+/// A `config_json` above the 8 MiB document ceiling refuses FATAL by
+/// SIZE, before any parse: the 64 MiB frame cap bounds only wire bytes,
+/// and a compact document materializes as an untyped `Value` at many
+/// times its wire size inside the connector process. The payload is
+/// deliberately VALID JSON — a parse error here would mean the parse
+/// arm refused it, not the ceiling.
+#[tokio::test]
+async fn an_oversized_config_json_refuses_fatal_by_size_before_any_parse() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    // One byte past the ceiling: `[0,0,0,…]`, padded to exact size with
+    // a trailing string element.
+    let ceiling = 8 * 1024 * 1024;
+    let mut config_json = Vec::with_capacity(ceiling + 1);
+    config_json.push(b'[');
+    while config_json.len() < ceiling - 8 {
+        config_json.extend_from_slice(b"0,");
+    }
+    config_json.push(b'"');
+    config_json.resize(ceiling, b'x');
+    config_json.extend_from_slice(b"\"]");
+    assert!(config_json.len() > ceiling);
+    assert!(serde_json::from_slice::<serde_json::Value>(&config_json).is_ok());
+
+    let len = config_json.len();
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json,
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert_eq!(
+                error.message,
+                format!(
+                    "config_json is {len} bytes — larger than the 8388608-byte document \
+                     ceiling; a config or cursor document measures in kilobytes, so a payload \
+                     this size is a wrong path, refused before it can expand in memory"
+                )
+            );
+        }
+        other => panic!("expected a size refusal, got {other:?}"),
+    }
+}
+
 /// A protocol version outside `[proto_min, proto_max]` refuses FATAL —
 /// the message pinned byte-exact, like its three siblings above. (No
 /// "below min" sibling exists — see
@@ -540,6 +592,70 @@ async fn an_undecodable_since_cursor_answers_a_terminal_error_frame_not_a_status
                 error.message.starts_with("invalid since_cursor_json: "),
                 "expected the frozen prefix, got: {}",
                 error.message
+            );
+        }
+        other => panic!("expected a terminal error frame, got {other:?}"),
+    }
+    assert!(
+        frames.message().await.expect("stream ends").is_none(),
+        "nothing follows the terminal error"
+    );
+}
+
+/// A `since_cursor_json` above the 8 MiB document ceiling answers a
+/// terminal error frame by SIZE, before any parse — the cursor is
+/// retained inside the read for its whole lifetime, so the ceiling
+/// guards a RESIDENT expansion, not just a transient one. Valid JSON,
+/// like the config twin: the parse arm must provably not be the one
+/// that refused.
+#[tokio::test]
+async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let mut cursor_json = Vec::new();
+    cursor_json.push(b'"');
+    cursor_json.resize(8 * 1024 * 1024 + 1, b'x');
+    cursor_json.push(b'"');
+    assert!(serde_json::from_slice::<serde_json::Value>(&cursor_json).is_ok());
+    let len = cursor_json.len();
+
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: numbers_stream_spec_json(),
+            since_cursor_json: Some(cursor_json),
+        })
+        .await
+        .expect("the Read RPC completes normally — the refusal is IN the stream")
+        .into_inner();
+
+    let frame = frames
+        .message()
+        .await
+        .expect("frame")
+        .expect("one terminal frame");
+    match frame.frame {
+        Some(read_frame::Frame::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert_eq!(
+                error.message,
+                format!(
+                    "since_cursor_json is {len} bytes — larger than the 8388608-byte document \
+                     ceiling; a config or cursor document measures in kilobytes, so a payload \
+                     this size is a wrong path, refused before it can expand in memory"
+                )
             );
         }
         other => panic!("expected a terminal error frame, got {other:?}"),

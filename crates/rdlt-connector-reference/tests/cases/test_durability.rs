@@ -52,20 +52,38 @@ fn assert_in_order(haystack: &str, needles: &[&str], subject: &str) {
     }
 }
 
-/// `publish` persists the parts, then the state document, and only
-/// THEN appends the receipt — the barrier that makes a durable receipt
-/// PROOF of durable data.
+/// `publish` persists the parts, then the state document, then appends
+/// the receipt — the barrier that makes a durable receipt PROOF of
+/// durable data — and only after ALL of that does staging clear: a
+/// clear anywhere earlier hands a retried-after-transient-failure
+/// commit empty staging, and its zero-part publish would mint a receipt
+/// for rows that are gone (pinned behaviorally by
+/// `a_retried_publish_after_a_transient_failure_re_persists_the_rows`).
 #[test]
 fn publish_persists_parts_and_state_before_the_receipt_append() {
     let source = destination_source();
     assert_in_order(
         body_of(&source, "publish"),
         &[
-            "self.persist(&part",
+            "self.persist_part(&part",
             "self.persist(STATE_FILE",
             "self.append_receipt(",
+            "self.staged.clear()",
         ],
         "publish",
+    );
+}
+
+/// `persist_part` is the same atomic-durable shape as `persist` —
+/// stream-encoded, but the barrier is identical: file fsync BEFORE the
+/// rename, directory fsync after.
+#[test]
+fn persist_part_syncs_the_file_before_the_rename_and_the_directory_after() {
+    let source = destination_source();
+    assert_in_order(
+        body_of(&source, "persist_part"),
+        &["sync_all", "rename", "sync_dir"],
+        "persist_part",
     );
 }
 

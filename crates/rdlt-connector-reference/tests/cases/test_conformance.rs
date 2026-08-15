@@ -293,6 +293,96 @@ async fn a_replayed_load_id_does_not_duplicate_rows() {
     );
 }
 
+/// A transiently failed publish leaves staging INTACT, so retrying the
+/// SAME commit on the same session re-persists every row. The
+/// drain-before-persist shape this pins against was silent loss: the
+/// failed attempt emptied staging, and the retry then published ZERO
+/// parts yet still wrote state and appended the receipt — after which
+/// `existing_receipt` vouched for a commit whose rows were partially
+/// absent, forever.
+#[tokio::test]
+async fn a_retried_publish_after_a_transient_failure_re_persists_the_rows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let probe = DirProbe(dir.path().to_path_buf());
+    let pipeline = PipelineId::new("ref-retry");
+    let load = LoadId::new("ref-load-retry");
+    // Two tables, and publish walks them in name order — so a blocker
+    // under the SECOND name lands the failure MID-publish: after
+    // `aa_events` persisted, before `zz_events` could.
+    let first = TableName::new("aa_events");
+    let second = TableName::new("zz_events");
+
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("aa_events"), &WriteMode::Append)
+        .await
+        .expect("ensure first");
+    session
+        .ensure_table(&schema_for("zz_events"), &WriteMode::Append)
+        .await
+        .expect("ensure second");
+    session
+        .write(&first, batch_of(&[1, 2]))
+        .await
+        .expect("write first");
+    session
+        .write(&second, batch_of(&[3, 4, 5]))
+        .await
+        .expect("write second");
+
+    // The injected IO failure: a directory squatting the part's staging
+    // path makes its file creation fail — a transient refusal, exactly
+    // the disk-full class mid-publish failures classify as.
+    let blocker = dir.path().join("_staged-zz_events-ref-load-retry-1.jsonl");
+    std::fs::create_dir(&blocker).expect("blocker dir");
+
+    let refused = session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect_err("the blocked part write must fail the commit");
+    assert!(
+        refused
+            .to_string()
+            .starts_with("transient destination error: reference destination: write "),
+        "expected the transient write refusal, got: {refused}"
+    );
+    assert!(
+        !dir.path().join("_reference_receipts.json").exists(),
+        "a failed publish must never leave a receipt behind"
+    );
+
+    // The client retries the SAME commit WITHOUT re-writing — the shape
+    // a transient classification invites.
+    std::fs::remove_dir(&blocker).expect("unblock");
+    session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("the retried commit re-persists from intact staging");
+    assert_eq!(probe.count(&first).await.expect("count"), 2);
+    assert_eq!(
+        probe.count(&second).await.expect("count"),
+        3,
+        "the retry must re-persist the rows the failed attempt staged"
+    );
+
+    // Staging cleared on the SUCCESSFUL publish only: the next commit
+    // has nothing left to double-publish.
+    session
+        .commit(commit_meta_for(&pipeline, &load, 2))
+        .await
+        .expect("next commit");
+    assert_eq!(probe.count(&first).await.expect("count"), 2);
+    assert_eq!(
+        probe.count(&second).await.expect("count"),
+        3,
+        "successfully published staging must not leak into a later commit"
+    );
+}
+
 /// ONE state slot means ONE pipeline per directory (045 external
 /// findings, GROK 2): a second pipeline reading the slot must refuse
 /// typed — answering `None` would read as "never committed", so the
