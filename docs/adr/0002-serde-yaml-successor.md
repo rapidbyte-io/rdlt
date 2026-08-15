@@ -1,8 +1,9 @@
 # ADR 0002 — serde_yaml successor (047 L11 decision by proof)
 
-Status: RECORDED (2026-08-14). Decision for the security-hardening
-feature 047, finding L11. Recommends a migration target; the swap
-itself is an owner trigger (see Decision). Amendments recorded here.
+Status: EXECUTED (2026-08-15; recorded 2026-08-14). Decision for the
+security-hardening feature 047, finding L11. The owner pulled the
+named trigger and the honest rename landed — see Executed, below.
+Amendments recorded here.
 
 ## 2026-08-15 security amendment
 
@@ -133,3 +134,59 @@ is the escalation point.
 The proof stands on its own: a wrong migration (serde_yml's silent
 public-trait bound) is worse than a watched deprecated dependency, and
 this record is what keeps the swap from being a guess later.
+
+## Executed (2026-08-15)
+
+The owner pulled the named trigger; the honest rename landed on the
+migration worktree off main @ c4441a1f.
+
+- **Resolved version:** `serde_yaml_ng 0.10.0` (workspace entry
+  `serde_yaml_ng = "0.10"`, exact version pinned by both lockfiles;
+  0.10.0 is the crate's current release).
+- **What the rename touched:** the workspace manifest plus all eight
+  consuming crates' manifests (rdlt-core, rdlt-cli, rdlt, rdlt-bench,
+  rdlt-runtime, rdlt-connector-sdk, rdlt-connector-client,
+  rdlt-connector-reference), every `serde_yaml::` use path including
+  the string-form serde attributes
+  (`with = "serde_yaml_ng::with::singleton_map"`), and the sdk
+  `Document` trait's public `From<serde_yaml_ng::Error>` bound. No
+  `package =` alias, per this record's own rejection of the
+  naming-indirection debt. The deprecated `serde_yaml` is absent from
+  both `Cargo.lock` and `fuzz/Cargo.lock` — no transitive holdout.
+- **Byte-identical re-verified, not inherited:** the full workspace
+  suite ran 842/842 green after the rename with zero error-spelling
+  drift — every full-string config-refusal pin passed unchanged, so
+  the 2026-08-14 proof holds on the release actually shipped.
+- **The event-guard hope did NOT materialize:** `serde_yaml_ng`
+  0.10.0's `lib.rs` keeps `mod loader;` and `mod libyaml;` private,
+  unchanged from the `serde_yaml` 0.9.34 it continues; its public
+  surface is only `de`/`error`/`ser`/`value`/`mapping`/`with`. A
+  first-graph-event refusal is therefore still not available from the
+  dependency, and `rdlt_connector_sdk::yaml::reject_graph_syntax`
+  remains the token-start scanner, deliberately unchanged (a forced
+  worse guard was not substituted for the absent better one). The
+  saphyr front-end remains the recorded event-level door, and the
+  prefix-expansion amendment above still binds it: refuse on the FIRST
+  graph event, never on the document failing to parse. The scanner's
+  honest over-refusals (multiline quoted scalars, opener indicators at
+  plain-scalar continuation positions, verbatim tags) accordingly
+  stand; the 3L12 residue closes only when an event-level parser
+  arrives.
+- **Seed-repo next bump (`rdlt-connectors`, adjusts when it takes the
+  sdk at this commit or later):** workspace `Cargo.toml` line
+  `serde_yaml = "0.9"` → `serde_yaml_ng = "0.10"`; the eight member
+  manifests carrying `serde_yaml = { workspace = true }` (rest,
+  duckdb, file, iceberg, oracle, postgres, snowflake, examples-gate)
+  → `serde_yaml_ng`; and every `serde_yaml::` path — the rest
+  vocabulary's `with::singleton_map` serialize/deserialize calls and
+  `Value`/`Value::Tagged` match (`source/config/vocabulary.rs`), the
+  iceberg singleton_map string attribute
+  (`destination/config.rs:249`), the six `#[from] serde_yaml::Error`
+  config-error arms (rest, duckdb, file source+destination, oracle,
+  postgres source+destination), snowflake's hand-written
+  `From<serde_yaml::Error>` impl and its parser-text probe
+  (`destination/config.rs`), and the test-side `from_str`/`to_string`
+  uses (file format/config/options, iceberg test_document, rest
+  test_robustness, examples-gate). The sdk's `Document` trait bound is
+  now `From<serde_yaml_ng::Error>`, so the bump is compile-forced, not
+  optional.
