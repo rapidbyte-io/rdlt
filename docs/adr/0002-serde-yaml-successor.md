@@ -14,6 +14,39 @@ cap is now enforced by a bounded read rather than a stat-then-read check. A
 future parser migration must preserve both gates; dependency replacement is
 not a substitute for them.
 
+## 2026-08-15 second security amendment — the graph gate rebuilt, and where it lives
+
+The first amendment's guard was a character scanner tracking quote state
+alone, and one apostrophe inside a plain scalar (`pipeline: john's orders`)
+misread as quote-open blinded it to every anchor and alias after it —
+restoring the quadratic alias expansion it existed to refuse. Two facts
+found while fixing it are recorded here because they bind the migration:
+
+- The pinned `serde_yaml 0.9.34` keeps its event stream private (`mod
+  loader`, `mod libyaml` — items inside are `pub` but the modules are not),
+  so a pre-deserialization refusal on `Anchor`/`Alias` events is not
+  available from the pinned crate. The replacement guard is therefore still
+  a raw-text scanner — now a token-start tracker modeled on libyaml's own
+  scanner dispatch (verified against the vendored `unsafe-libyaml` source),
+  refusing `&`/`*` only where a token can start and refusing outright the
+  spellings it cannot decide line-locally (quoted scalars spanning lines,
+  quote/tag/block-scalar indicators where a plain scalar may continue,
+  verbatim tags). Adversarial and acceptance pins live with it.
+- `serde_yaml` deserializes the event prefix BEFORE surfacing a document's
+  parse error (`de.rs` checks `document.error` after the visitor runs), so
+  aliases parsed ahead of a late syntax error still expand. Any future
+  event-based guard must refuse on the first graph event, not rely on the
+  document failing to parse.
+
+The guard moved from a private function in `rdlt`'s `pipeline_spec` to
+`rdlt_connector_sdk::yaml` (`reject_graph_syntax`, plus the shared
+`MAX_DOCUMENT_BYTES`), because the facade depends on the sdk and the sdk's
+`Document::from_yaml` was itself an unguarded, uncapped serde_yaml seat —
+both parse surfaces now answer to the one scanner. A successor crate that
+exposes parser events publicly would allow replacing the scanner with a
+true event-stream refusal; that remains the preferred shape and rides the
+same owner trigger as the migration itself.
+
 ## Context
 
 `serde_yaml` is pinned at `0.9.34+deprecated` — the crate's terminal,

@@ -183,68 +183,20 @@ impl std::fmt::Debug for ConfigSource {
 /// refused: hand-written YAML/JSON measures in kilobytes, so a
 /// multi-megabyte "document" is a wrong path (a data file, a dump) —
 /// better refused by size, typed, than slurped whole into memory and
-/// fed to a recursive parser. Shared with the CLI's spec read, so both
-/// document reads answer to one number.
-pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
-
-/// Reject YAML graph syntax before deserialization. `serde_yaml` expands
-/// anchors and aliases while constructing the target value, so an input-byte
-/// cap cannot bound the resulting allocation. Pipeline and connector config
-/// documents are trees; graph aliases are unnecessary and are refused at the
-/// raw-text boundary.
-fn reject_yaml_graph_syntax(text: &str) -> Result<(), String> {
-    #[derive(Clone, Copy)]
-    enum State {
-        Plain,
-        SingleQuoted,
-        DoubleQuoted,
-        Comment,
-    }
-
-    let mut state = State::Plain;
-    let mut chars = text.char_indices().peekable();
-    while let Some((offset, ch)) = chars.next() {
-        match state {
-            State::Plain => match ch {
-                '\'' => state = State::SingleQuoted,
-                '"' => state = State::DoubleQuoted,
-                '#' => state = State::Comment,
-                '&' | '*' => {
-                    return Err(format!(
-                        "YAML anchors and aliases are refused (graph indicator `{ch}` at byte \
-                         {offset}) — configuration documents must be trees"
-                    ));
-                }
-                _ => {}
-            },
-            State::SingleQuoted => {
-                if ch == '\'' {
-                    if chars.peek().is_some_and(|(_, next)| *next == '\'') {
-                        chars.next();
-                    } else {
-                        state = State::Plain;
-                    }
-                }
-            }
-            State::DoubleQuoted => match ch {
-                '\\' => {
-                    chars.next();
-                }
-                '"' => state = State::Plain,
-                _ => {}
-            },
-            State::Comment => {
-                if ch == '\n' {
-                    state = State::Plain;
-                }
-            }
-        }
-    }
-    Ok(())
-}
+/// fed to a recursive parser. Shared with the CLI's spec read AND with
+/// the connector sdk's own `Document::from_yaml` gate, so every
+/// document read answers to one number.
+pub const MAX_DOCUMENT_BYTES: u64 = rdlt_connector_sdk::yaml::MAX_DOCUMENT_BYTES;
 
 fn parse_yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
-    reject_yaml_graph_syntax(text)?;
+    // The raw-text graph gate runs BEFORE deserialization: `serde_yaml`
+    // expands anchors and aliases while constructing the target value,
+    // so an input-byte cap cannot bound the resulting allocation.
+    // Pipeline and connector config documents are trees; graph syntax
+    // is refused. The gate lives in the sdk (`rdlt_connector_sdk::yaml`)
+    // so this parse and every connector's `Document::from_yaml` answer
+    // to the same scanner.
+    rdlt_connector_sdk::yaml::reject_graph_syntax(text)?;
     serde_yaml::from_str(text).map_err(|error| error.to_string())
 }
 
@@ -768,6 +720,21 @@ mod yaml_graph_tests {
     }
 
     #[test]
+    fn mid_scalar_apostrophe_does_not_blind_the_graph_guard() {
+        // A plain scalar may contain an apostrophe (`john's`) — a quote
+        // character is a YAML indicator only at the start of a scalar.
+        // A guard that misreads it as quote-open goes blind to every
+        // anchor and alias after it, restoring unbounded alias
+        // expansion. The graph refusal must still fire.
+        let yaml = "pipeline: john's orders\n\
+                    big: &big [a, b, c]\n\
+                    boom: [*big, *big]\n";
+        let error = parse_yaml::<serde_json::Value>(yaml)
+            .expect_err("anchors after a mid-scalar apostrophe must still refuse");
+        assert!(error.contains("anchors and aliases"), "{error}");
+    }
+
+    #[test]
     fn quoted_indicators_and_comments_remain_plain_data() {
         let value: serde_json::Value = parse_yaml(
             "literal_alias: '*not-an-alias'\nliteral_anchor: \"&not-an-anchor\"\n# *comment\n",
@@ -775,5 +742,45 @@ mod yaml_graph_tests {
         .expect("indicators in scalars and comments are data");
         assert_eq!(value["literal_alias"], "*not-an-alias");
         assert_eq!(value["literal_anchor"], "&not-an-anchor");
+    }
+
+    /// The spellings the character-scanner generation of the guard
+    /// over-rejected: indicator characters as scalar DATA. These are
+    /// availability pins on the primary config surface — a graph guard
+    /// that refuses `val#ue` is a parser bug wearing a security badge.
+    #[test]
+    fn indicator_characters_as_data_parse_on_the_config_surface() {
+        let value: serde_json::Value = parse_yaml(
+            "hash: val#ue\n\
+             amp: a&b\n\
+             star: a*b\n\
+             apostrophe: don't\n\
+             block: |\n  this & that\n  * bullet point\n\
+             folded: >\n  more & data\n",
+        )
+        .expect("indicator characters as data must parse");
+        assert_eq!(value["hash"], "val#ue");
+        assert_eq!(value["amp"], "a&b");
+        assert_eq!(value["star"], "a*b");
+        assert_eq!(value["apostrophe"], "don't");
+        assert_eq!(value["block"], "this & that\n* bullet point\n");
+        assert_eq!(value["folded"], "more & data\n");
+    }
+
+    /// Hostile positions beyond the value slot: the refusal fires
+    /// wherever the parser would see a live anchor or alias.
+    #[test]
+    fn anchors_and_aliases_refuse_in_sequence_flow_and_merge_positions() {
+        for doc in [
+            "items:\n  - &x v\n",
+            "items: [a, *x]\n",
+            "map: {k: &x v}\n",
+            "base:\n  <<: *defaults\n",
+            "--- &doc\nkey: v\n",
+        ] {
+            let error = parse_yaml::<serde_json::Value>(doc)
+                .expect_err("graph syntax must refuse in every position");
+            assert!(error.contains("anchors and aliases"), "{doc:?}: {error}");
+        }
     }
 }
