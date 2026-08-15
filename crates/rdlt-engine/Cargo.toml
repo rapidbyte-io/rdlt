@@ -28,6 +28,7 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 fs4 = { workspace = true }
+libc = { workspace = true }
 rdlt-connector = { workspace = true }
 rdlt-core = { workspace = true }
 serde = { workspace = true }

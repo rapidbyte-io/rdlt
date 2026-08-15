@@ -21,19 +21,11 @@ use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
 
-/// Flips true the moment a `read_stream` push observes `ControlFlow::Break`
-/// — the signal a dropped response stream (or any other closed SPI
-/// channel) produces. Process-global rather than per-instance: nextest
-/// runs each test as its own OS process, so one test's read can never
-/// share this flag with another's, and there is no `EchoSource` handle
-/// left after `serve_on` moves it into the shell for the cancellation
-/// test to poll instead.
-static BREAK_OBSERVED: AtomicBool = AtomicBool::new(false);
+static READ_TASK_DROPPED: AtomicBool = AtomicBool::new(false);
 
-/// Whether the most recent `EchoSource::read_stream` call observed
-/// cancellation — polled by the `serve::source` cancellation-chain test.
-pub fn break_observed() -> bool {
-    BREAK_OBSERVED.load(Ordering::SeqCst)
+/// Whether the most recent `EchoSource::read_stream` task was dropped.
+pub fn read_task_dropped() -> bool {
+    READ_TASK_DROPPED.load(Ordering::SeqCst)
 }
 
 /// Bytes this process's `read_stream` pushes have been ADMITTED for
@@ -43,7 +35,7 @@ pub fn break_observed() -> bool {
 /// push parked on backpressure is deliberately not counted: that makes
 /// this counter a direct readout of how much a stalled reader lets the
 /// serve layer buffer, which is exactly what the frame channel's budget
-/// bounds. Process-global for the same reason [`BREAK_OBSERVED`] is —
+/// bounds. Process-global for the same reason [`READ_TASK_DROPPED`] is —
 /// the connector lives inside the served process with no handle a test
 /// could hold.
 static PUSHED_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -65,6 +57,8 @@ pub struct EchoConfig {
     /// frame-COUNT bound to price wrongly.
     #[serde(default)]
     pub push_bytes: usize,
+    #[serde(default)]
+    pub park_after_first: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +90,7 @@ pub struct EchoSource {
     rows: u64,
     fail_read: bool,
     push_bytes: usize,
+    park_after_first: bool,
 }
 
 /// One NDJSON document of exactly `bytes` bytes carrying `n` — a real
@@ -125,6 +120,7 @@ impl SourceConnector for EchoSource {
             rows: config.rows,
             fail_read: config.fail_read,
             push_bytes: config.push_bytes,
+            park_after_first: config.park_after_first,
         })
     }
 
@@ -138,6 +134,13 @@ impl SourceConnector for EchoSource {
         _since: Option<Cursor>,
         feed: &mut Feed,
     ) -> Result<(), SourceError> {
+        struct DropSignal;
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                READ_TASK_DROPPED.store(true, Ordering::SeqCst);
+            }
+        }
+        let _drop_signal = DropSignal;
         if self.fail_read {
             return Err(SourceError::fatal("echo: induced read failure"));
         }
@@ -152,10 +155,12 @@ impl SourceConnector for EchoSource {
                 (feed.rows([serde_json::json!({"n": n})]).await, 0)
             };
             if flow.is_break() {
-                BREAK_OBSERVED.store(true, Ordering::SeqCst);
                 return Ok(());
             }
             PUSHED_BYTES.fetch_add(bytes, Ordering::SeqCst);
+            if self.park_after_first {
+                std::future::pending::<()>().await;
+            }
         }
         let _ = feed
             .checkpoint(Cursor::new(serde_json::json!({"n": last})))
@@ -171,7 +176,7 @@ pub const ECHOED_TABLE: &str = "echoed";
 /// The shared call log every `EchoBackend` instance in THIS PROCESS
 /// writes to — read by the `serve::destination` tests to pin the SDK
 /// session choreography's exact call order. Process-global for the same
-/// reason `BREAK_OBSERVED` is above: the `EchoDestination` a wire test
+/// reason `READ_TASK_DROPPED` is above: the `EchoDestination` a wire test
 /// drives lives entirely inside the served connector, built fresh from
 /// the handshake's config bytes, so there is no other handle a test
 /// could hold onto.

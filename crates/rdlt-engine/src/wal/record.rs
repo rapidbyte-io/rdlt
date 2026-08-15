@@ -60,13 +60,14 @@ pub(crate) enum WalRecord {
 const TRAILER_LEN: usize = 1 + 64;
 
 /// Encode one manifest line: the record's JSON, then `|`, then the
-/// blake3 hex digest of exactly those JSON bytes. The digest is what makes
-/// damage detection content-aware: JSON parseability and the segment
-/// cross-checks catch structural damage, but corruption that yields
-/// DIFFERENT VALID JSON — a flipped digit in a Checkpoint cursor, a forged
-/// `Committed` sequence — reads back clean without it. `|` never needs
-/// escaping because the split is positional from the line's END
-/// ([`decode_line`]), not a search.
+/// blake3 hex digest of exactly those JSON bytes. This is an UNKEYED
+/// damage detector, not authentication: it catches accidental/torn bit
+/// changes that remain valid JSON, but a process able to write the WAL
+/// directory can recompute it and can reorder intact lines. WAL directory
+/// ownership is therefore the security boundary; checksums only support
+/// safe recovery from storage damage. `|` never needs escaping because
+/// the split is positional from the line's END ([`decode_line`]), not a
+/// search.
 pub(crate) fn encode_line(record: &WalRecord) -> Result<Vec<u8>, serde_json::Error> {
     let mut line = serde_json::to_vec(record)?;
     let digest = blake3::hash(&line);

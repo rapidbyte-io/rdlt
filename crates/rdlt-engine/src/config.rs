@@ -91,7 +91,10 @@ impl EngineConfig {
 
     /// Sets the bound on in-flight bytes per stage channel — the resident-memory cap.
     pub fn with_byte_budget(mut self, bytes: usize) -> Self {
-        self.byte_budget = bytes;
+        // Zero used to disable every semaphore-backed byte bound. A caller
+        // asking for no buffering instead receives the smallest enforceable
+        // window; the memory ceiling is never silently switched off.
+        self.byte_budget = bytes.max(1);
         self
     }
 
@@ -110,5 +113,15 @@ impl EngineConfig {
             .get(stream)
             .cloned()
             .unwrap_or_else(|| self.write_mode.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_byte_budget_clamps_to_the_smallest_enforceable_window() {
+        assert_eq!(EngineConfig::new("p").with_byte_budget(0).byte_budget, 1);
     }
 }

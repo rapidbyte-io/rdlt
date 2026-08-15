@@ -3,7 +3,7 @@
 
 use std::{
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read as _},
     path::Path,
 };
 
@@ -12,6 +12,36 @@ use rdlt_core::{LoadId, PipelineId};
 use crate::wal::WalRecord;
 
 use super::blocking::off_runtime;
+
+/// A manifest record is metadata, not a data container. Bound each line before
+/// allocating it so a corrupted WAL cannot make recovery materialize an
+/// arbitrarily large line.
+const MAX_MANIFEST_LINE_BYTES: usize = 1024 * 1024;
+
+fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<String>, String> {
+    let mut bytes = Vec::new();
+    let read = reader
+        .take((MAX_MANIFEST_LINE_BYTES + 1) as u64)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|e| format!("manifest read: {e}"))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_MANIFEST_LINE_BYTES {
+        return Err(format!(
+            "manifest line exceeds the {MAX_MANIFEST_LINE_BYTES}-byte metadata cap"
+        ));
+    }
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|e| format!("manifest line is not UTF-8: {e}"))
+}
 
 /// The scan's accumulated per-table record: latest schema + write
 /// mode, keyed by table — one alias (round-12) for the map every scan
@@ -99,12 +129,13 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
     };
     let mut records: Vec<WalRecord> = Vec::new();
     let mut damaged: Option<String> = None;
-    let mut lines = BufReader::new(file).lines();
-    while let Some(line) = lines.next() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                damaged = Some(format!("manifest read: {e}"));
+    let mut reader = BufReader::new(file);
+    loop {
+        let line = match read_manifest_line(&mut reader) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(reason) => {
+                damaged = Some(reason);
                 break;
             }
         };
@@ -141,10 +172,15 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
                     break;
                 }
                 // Torn tail is fine only if nothing follows it.
-                if lines.next().is_some() {
-                    damaged = Some(
-                        "mid-manifest corruption: a line carries no checksum trailer".to_owned(),
-                    );
+                match read_manifest_line(&mut reader) {
+                    Ok(Some(_)) => {
+                        damaged = Some(
+                            "mid-manifest corruption: a line carries no checksum trailer"
+                                .to_owned(),
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(reason) => damaged = Some(reason),
                 }
                 break;
             }
@@ -587,6 +623,22 @@ mod tests {
             serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
+    }
+
+    #[test]
+    fn an_oversized_manifest_line_degrades_without_reading_it_unbounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("manifest.jsonl"),
+            vec![b'x'; MAX_MANIFEST_LINE_BYTES + 1],
+        )
+        .expect("fixture manifest");
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(matches!(outcome, ScanOutcome::Damaged(reason) if reason.contains("metadata cap")));
     }
 
     /// Mutation-report closure: the on-disk Run header must SERIALIZE the

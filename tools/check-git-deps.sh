@@ -37,12 +37,17 @@ if ! python3 -c 'import tomllib' 2>/dev/null; then
 fi
 
 cd "$REPO_ROOT"
-cargo metadata --format-version 1 --all-features 2>/dev/null > /tmp/rdlt-git-deps-meta.json || {
+META_FILE=$(mktemp "${TMPDIR:-/tmp}/rdlt-git-deps-meta.XXXXXX") || {
+    echo "git-deps: could not create a temporary metadata file" >&2
+    exit 2
+}
+trap 'rm -f "$META_FILE"' EXIT HUP INT TERM
+cargo metadata --format-version 1 --all-features 2>/dev/null > "$META_FILE" || {
     echo "git-deps: cargo metadata failed" >&2
     exit 2
 }
 
-python3 - "$REPO_ROOT" /tmp/rdlt-git-deps-meta.json <<'PY'
+python3 - "$REPO_ROOT" "$META_FILE" <<'PY'
 import json, pathlib, sys, tomllib
 
 repo = pathlib.Path(sys.argv[1])

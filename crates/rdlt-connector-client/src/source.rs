@@ -12,6 +12,7 @@
 //! wire adds transport, never semantics.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -97,12 +98,66 @@ fn protocol_fatal(message: String) -> SourceError {
 /// streams. The refusal renders the name in its `{:?}` escaped form,
 /// so the message itself cannot carry the very bytes it refuses.
 fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceError> {
-    if crate::sanitize::contains_control(spec.name.as_str()) {
+    let hostile = std::iter::once(("stream name", spec.name.as_str()))
+        .chain(
+            spec.primary_key
+                .iter()
+                .flatten()
+                .map(|field| ("primary-key field", field.as_str())),
+        )
+        .chain(
+            spec.cursor_field
+                .iter()
+                .map(|field| ("cursor field", field.as_str())),
+        )
+        .chain(
+            spec.type_hints
+                .keys()
+                .map(|field| ("type-hint field", field.as_str())),
+        )
+        .find(|(_, value)| crate::sanitize::contains_control(value));
+    if let Some((seat, value)) = hostile {
         return Err(SourceError::fatal(format!(
-            "the connector declared a stream named {:?} — control characters in a \
-             stream name are refused at the wire boundary",
-            spec.name.as_str()
+            "the connector declared a {seat} of {value:?} — control or invisible formatting \
+             characters in identifiers are refused at the wire boundary"
         )));
+    }
+    Ok(())
+}
+
+/// Validate every Arrow field name, including nested container fields.
+/// The walk is iterative so an attacker-controlled schema cannot add a
+/// second recursive traversal after Arrow's own verified decoder.
+fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), SourceError> {
+    use arrow::datatypes::DataType;
+
+    let schema = batch.schema();
+    let mut pending: Vec<Arc<arrow::datatypes::Field>> = schema.fields().iter().cloned().collect();
+    while let Some(field) = pending.pop() {
+        if crate::sanitize::contains_control(field.name()) {
+            return Err(SourceError::fatal(format!(
+                "the connector sent an Arrow field named {:?} — control or invisible formatting \
+                 characters in identifiers are refused at the wire boundary",
+                field.name()
+            )));
+        }
+        match field.data_type() {
+            DataType::Struct(fields) => pending.extend(fields.iter().cloned()),
+            DataType::List(child)
+            | DataType::LargeList(child)
+            | DataType::ListView(child)
+            | DataType::LargeListView(child)
+            | DataType::FixedSizeList(child, _)
+            | DataType::Map(child, _) => pending.push(Arc::clone(child)),
+            DataType::Union(fields, _) => {
+                pending.extend(fields.iter().map(|(_, child)| Arc::clone(child)));
+            }
+            DataType::RunEndEncoded(run_ends, values) => {
+                pending.push(Arc::clone(run_ends));
+                pending.push(Arc::clone(values));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -161,7 +216,10 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         None => return Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
     };
     match reader.next() {
-        None => Ok(first),
+        None => {
+            refuse_control_characters_in_arrow_fields(&first)?;
+            Ok(first)
+        }
         Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
         Some(Err(error)) => Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}"))),
     }
@@ -376,6 +434,22 @@ mod name_boundary_tests {
         assert!(refuse_control_characters_in_name(&spec).is_err());
     }
 
+    #[test]
+    fn every_stream_metadata_identifier_seat_uses_the_same_gate() {
+        let cases = [
+            StreamSpec::new("orders").with_primary_key(["id\u{202e}"]),
+            StreamSpec::new("orders").with_cursor_field("cursor\nforged"),
+            StreamSpec::new("orders")
+                .with_type_hint("amount\u{200b}", rdlt_connector::core::LogicalType::Int64),
+        ];
+        for spec in cases {
+            assert!(
+                refuse_control_characters_in_name(&spec).is_err(),
+                "all connector-authored field identifiers are gated: {spec:?}"
+            );
+        }
+    }
+
     /// Ordinary names — including non-ASCII text, which is data, not
     /// control — pass untouched.
     #[test]
@@ -432,6 +506,21 @@ mod tests {
         let decoded =
             decode_one_batch(&ipc_bytes(std::slice::from_ref(&sent))).expect("one batch decodes");
         assert_eq!(decoded, sent);
+    }
+
+    #[test]
+    fn nested_arrow_field_names_are_gated_after_decode() {
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "outer",
+            DataType::Struct(vec![Field::new("inner\u{202e}", DataType::Int64, true)].into()),
+            true,
+        )]));
+        let batch = RecordBatch::new_empty(schema);
+        let error = refuse_control_characters_in_arrow_fields(&batch)
+            .expect_err("nested field names use the identifier gate");
+        assert!(error.to_string().contains("Arrow field"));
     }
 
     /// Zero batches (a schema-only stream) refuse with the bare frozen
@@ -512,5 +601,30 @@ mod tests {
         // — the belt on top of the typed pin above, so the hook and
         // the seat cannot drift apart.
         crate::fuzzing::decode_one_batch(&REPRO);
+    }
+
+    #[test]
+    fn flatbuffer_verification_rejects_deep_schema_before_arrow_conversion() {
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        let mut data_type = DataType::Int64;
+        for _ in 0..80 {
+            data_type = DataType::Struct(vec![Field::new("nested", data_type, true)].into());
+        }
+        let schema = Schema::new(vec![Field::new("root", data_type, true)]);
+        let mut bytes = Vec::new();
+        {
+            let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut bytes, &schema)
+                .expect("the writer can encode the adversarial schema fixture");
+            writer.finish().expect("finish schema-only stream");
+        }
+
+        let error = decode_one_batch(&bytes).expect_err(
+            "FlatBuffers' verifier must reject nesting before Arrow's recursive converter",
+        );
+        assert!(
+            error.to_string().to_ascii_lowercase().contains("depth"),
+            "the dependency-level depth guard is the refusal: {error}"
+        );
     }
 }

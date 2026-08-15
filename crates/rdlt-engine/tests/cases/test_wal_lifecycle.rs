@@ -122,6 +122,7 @@ async fn a_wal_open_failure_after_session_recovery_still_closes_the_session() {
 fn plant_unclearable_wal(wal_dir: &Path, manifest: String) -> impl FnOnce() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(wal_dir).expect("wal dir");
+    std::fs::write(wal_dir.join(".rdlt-wal"), b"rdlt-wal-v1\n").expect("ownership marker");
     std::fs::write(wal_dir.join("manifest.jsonl"), manifest).expect("manifest");
     std::fs::write(
         wal_dir.join("rules.json"),

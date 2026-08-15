@@ -48,6 +48,11 @@ const STATE_FILE: &str = "_reference_state.json";
 /// process death, so a crashed run never blocks its own recovery.
 const LEASE_FILE: &str = "_reference_lease.lock";
 
+/// A reference connector must model a bounded staging posture. Four
+/// maximum-size wire frames leave ample room for ordinary commits while
+/// preventing a client from retaining an unbounded session in memory.
+const STAGING_CEILING_BYTES: usize = 256 << 20;
+
 /// The reference destination document: ONE output directory.
 /// `{ "path": "out/dir" }`
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -137,6 +142,7 @@ impl DestinationConnector for Reference {
             dir: self.dir.clone(),
             load_id: context.load_id.clone(),
             staged: Vec::new(),
+            staged_bytes: 0,
             lease: Some(lease),
         })
     }
@@ -183,6 +189,7 @@ pub struct Writer {
     dir: PathBuf,
     load_id: LoadId,
     staged: Vec<(TableName, RecordBatch)>,
+    staged_bytes: usize,
     lease: Option<std::fs::File>,
 }
 
@@ -229,6 +236,9 @@ impl Backend for Writer {
         table: &TableName,
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
+        let batch_bytes = rdlt_connector_sdk::spi::channel::arrow_batch_footprint(&batch);
+        let next = next_staging_bytes(self.staged_bytes, batch_bytes)?;
+        self.staged_bytes = next;
         self.staged.push((table.clone(), batch));
         Ok(())
     }
@@ -285,6 +295,7 @@ impl Backend for Writer {
         // dropping its staging is what keeps a LATER commit from
         // publishing it a second time.
         self.staged.clear();
+        self.staged_bytes = 0;
         Ok(())
     }
 
@@ -297,6 +308,7 @@ impl Backend for Writer {
         // for a commit whose rows are gone: replay would drop the
         // redelivered staging and the loss would be silent.
         let mut tables: BTreeMap<TableName, Vec<RecordBatch>> = BTreeMap::new();
+        self.staged_bytes = 0;
         for (table, batch) in self.staged.drain(..) {
             tables.entry(table).or_default().push(batch);
         }
@@ -317,6 +329,7 @@ impl Backend for Writer {
                 ))
             })?;
             let part = format!("{table}-{}-{}.jsonl", self.load_id, meta.commit_seq);
+            part_filename(&part)?;
             self.persist(&part, &encoded)?;
         }
 
@@ -388,9 +401,26 @@ impl Backend for Writer {
         // predecessor whose handle is still in scope. Dropping the
         // file releases the advisory lock; an unclosed drop (crash,
         // error path) releases it the same way.
+        self.staged.clear();
+        self.staged_bytes = 0;
         self.lease = None;
         Ok(())
     }
+}
+
+fn next_staging_bytes(current: usize, batch: usize) -> Result<usize, DestinationError> {
+    let next = current.checked_add(batch).ok_or_else(|| {
+        DestinationError::fatal(
+            "reference destination: staged Arrow footprint overflowed usize".to_string(),
+        )
+    })?;
+    if next > STAGING_CEILING_BYTES {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: staged Arrow data would exceed the \
+             {STAGING_CEILING_BYTES}-byte session ceiling"
+        )));
+    }
+    Ok(next)
 }
 
 /// The gate on the table component of a part filename. A table name is
@@ -416,6 +446,24 @@ fn part_component(table: &TableName) -> Result<(), DestinationError> {
             "reference destination: table name {name:?} cannot become a part filename — \
              names carrying path separators, `..`, or control characters are refused, \
              because a filename built from them could land outside the output directory"
+        )));
+    }
+    Ok(())
+}
+
+/// Gate the complete generated filename as well as its table component:
+/// `load_id` is supplied by the host and must not become an accidental
+/// path capability if the filename layout is ever refactored.
+fn part_filename(name: &str) -> Result<(), DestinationError> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.chars().any(char::is_control)
+    {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: generated part filename {name:?} is unsafe — path \
+             separators, `..`, and control characters are refused"
         )));
     }
     Ok(())
@@ -540,3 +588,25 @@ impl Writer {
 /// The canonical face: `Shell::from_yaml(text)?` / `Shell::new(config)?`
 /// is a running SPI destination in one call.
 pub type Shell = rdlt_connector_sdk::destination::Shell<Reference>;
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn generated_parts_gate_the_load_id_and_every_filename_component() {
+        assert!(part_filename("orders-load-1.jsonl").is_ok());
+        assert!(part_filename("orders-load/escape-1.jsonl").is_err());
+        assert!(part_filename("orders-load..escape-1.jsonl").is_err());
+    }
+
+    #[test]
+    fn staging_refuses_before_crossing_its_memory_ceiling() {
+        assert_eq!(
+            next_staging_bytes(STAGING_CEILING_BYTES - 1, 1).expect("the boundary passes"),
+            STAGING_CEILING_BYTES
+        );
+        assert!(next_staging_bytes(STAGING_CEILING_BYTES, 1).is_err());
+        assert!(next_staging_bytes(usize::MAX, 1).is_err());
+    }
+}

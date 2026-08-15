@@ -128,6 +128,10 @@ impl RawFrame {
 /// frames is bounded by the same ceiling.
 pub(crate) const READ_RETENTION_CEILING: usize = MAX_FRAME_BYTES * 4;
 
+/// Keep P5 evidence useful without letting a fast rogue turn one
+/// bounded read probe into millions of retained report strings.
+const MAX_P5_VIOLATIONS: usize = 100;
+
 /// The frame census P5's evidence carries: what the read direction
 /// actually served, counted by kind — so a vacuous pass (no arrow
 /// frames at all) and a violation both say what was observed.
@@ -726,6 +730,7 @@ async fn p5_violations(probe: &mut WireProbe) -> Result<Vec<String>, String> {
     let streams = probe.streams_raw().await?;
     let mut census = Census::default();
     let mut violations = Vec::new();
+    let mut omitted = 0usize;
     for spec_json in streams {
         // The stream's own name, for the evidence line — undecodable
         // spec bytes still get read (the connector declared them).
@@ -737,22 +742,45 @@ async fn p5_violations(probe: &mut WireProbe) -> Result<Vec<String>, String> {
             if let RawFrame::Arrow(bytes) = &frame {
                 match count_batches(bytes) {
                     Ok(1) => {}
-                    Ok(count) => violations.push(format!(
-                        "an arrow read frame carried {count} record batches — the one-batch \
-                         rule requires exactly one (stream `{name}`)"
-                    )),
-                    Err(error) => violations.push(format!(
-                        "an arrow read frame does not decode as one Arrow IPC stream \
-                         (stream `{name}`): {error}"
-                    )),
+                    Ok(count) => retain_p5_violation(&mut violations, &mut omitted, || {
+                        format!(
+                            "an arrow read frame carried {count} record batches — the one-batch \
+                             rule requires exactly one (stream `{name}`)"
+                        )
+                    }),
+                    Err(error) => retain_p5_violation(&mut violations, &mut omitted, || {
+                        format!(
+                            "an arrow read frame does not decode as one Arrow IPC stream \
+                             (stream `{name}`): {error}"
+                        )
+                    }),
                 }
             }
         }
     }
-    Ok(violations
+    let mut violations: Vec<String> = violations
         .into_iter()
         .map(|violation| format!("{violation}; frame census: {census}"))
-        .collect())
+        .collect();
+    if omitted != 0 {
+        violations.push(format!(
+            "and {omitted} more one-batch violations were omitted after the first \
+             {MAX_P5_VIOLATIONS}; frame census: {census}"
+        ));
+    }
+    Ok(violations)
+}
+
+fn retain_p5_violation(
+    violations: &mut Vec<String>,
+    omitted: &mut usize,
+    message: impl FnOnce() -> String,
+) {
+    if violations.len() < MAX_P5_VIOLATIONS {
+        violations.push(message());
+    } else {
+        *omitted = omitted.saturating_add(1);
+    }
 }
 
 /// The record batches one `arrow_ipc` payload carries.
@@ -1257,6 +1285,18 @@ mod tests {
     use crate::report::Verdict;
     use crate::rogue::{self, HandshakeScript, RogueSource};
     use proto::Classification;
+
+    #[test]
+    fn p5_retains_only_the_first_bounded_set_of_violation_strings() {
+        let mut violations = Vec::new();
+        let mut omitted = 0usize;
+        for index in 0..(MAX_P5_VIOLATIONS + 7) {
+            retain_p5_violation(&mut violations, &mut omitted, || index.to_string());
+        }
+        assert_eq!(violations.len(), MAX_P5_VIOLATIONS);
+        assert_eq!(omitted, 7);
+        assert_eq!(violations.first().map(String::as_str), Some("0"));
+    }
 
     /// Serve `rogue` in-process and run the full source wire-clause
     /// sequence against it, requiring identity `required_id`.

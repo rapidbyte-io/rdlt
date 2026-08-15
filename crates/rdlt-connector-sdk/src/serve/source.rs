@@ -27,7 +27,7 @@ use rdlt_connector_protocol::proto::{
     self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeReply, HandshakeRequest,
     StreamList, StreamsReply, StreamsRequest, check_reply, read_frame, streams_reply,
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::UnixListenerStream;
@@ -146,9 +146,18 @@ struct FrameSender {
     frames: mpsc::Sender<BudgetedFrame>,
     budget: Arc<Semaphore>,
     budget_total: usize,
+    gone: watch::Receiver<bool>,
 }
 
 impl FrameSender {
+    async fn stream_gone(&self) {
+        let mut gone = self.gone.clone();
+        if *gone.borrow() {
+            return;
+        }
+        let _ = gone.changed().await;
+    }
+
     /// Send one frame, parking until its encoded bytes fit inside the
     /// budget (and a message slot is free).
     ///
@@ -196,6 +205,7 @@ impl FrameSender {
 struct FrameStream {
     frames: mpsc::Receiver<BudgetedFrame>,
     budget: Arc<Semaphore>,
+    gone: watch::Sender<bool>,
 }
 
 impl Stream for FrameStream {
@@ -229,6 +239,7 @@ impl Drop for FrameStream {
     /// this cancellation path should be built on: the connector's read
     /// task hanging forever is the failure at the other end of it.
     fn drop(&mut self) {
+        let _ = self.gone.send(true);
         self.frames.close();
         self.budget.close();
     }
@@ -240,15 +251,18 @@ impl Drop for FrameStream {
 fn frame_channel(byte_budget: usize, message_capacity: usize) -> (FrameSender, FrameStream) {
     let budget = Arc::new(Semaphore::new(byte_budget));
     let (frames_tx, frames_rx) = mpsc::channel(message_capacity);
+    let (gone_tx, gone_rx) = watch::channel(false);
     (
         FrameSender {
             frames: frames_tx,
             budget: Arc::clone(&budget),
             budget_total: byte_budget,
+            gone: gone_rx,
         },
         FrameStream {
             frames: frames_rx,
             budget,
+            gone: gone_tx,
         },
     )
 }
@@ -473,8 +487,17 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             // an error rather than `Ok`) must not append a second
             // "terminal" frame behind the first.
             let mut terminal_sent = false;
+            let mut abort_reader = false;
             loop {
-                let Some(push) = records_in.recv().await else {
+                let push = tokio::select! {
+                    push = records_in.recv() => push,
+                    () = frame_tx.stream_gone() => {
+                        records_in.close();
+                        abort_reader = true;
+                        break;
+                    }
+                };
+                let Some(push) = push else {
                     break;
                 };
                 let frame = match read_frame_of(push.payload) {
@@ -499,6 +522,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
                         };
                         let _ = frame_tx.send(Ok(frame)).await;
                         terminal_sent = true;
+                        abort_reader = true;
                         records_in.close();
                         break;
                     }
@@ -511,8 +535,13 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
                     // Break the connector's next push observes, per the
                     // SPI's closed-channel-is-cancellation contract.
                     records_in.close();
+                    abort_reader = true;
                     break;
                 }
+            }
+
+            if abort_reader {
+                read_task.abort();
             }
 
             match read_task.await {
@@ -631,11 +660,13 @@ pub async fn serve_on<C: SourceConnector>(
     let serving = tonic::transport::Server::builder()
         .add_service(
             ConnectorServer::from_arc(Arc::clone(&server))
-                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(common::MAX_FRAME_BYTES)
+                .max_encoding_message_size(common::MAX_FRAME_BYTES),
         )
         .add_service(
             SourceServiceServer::from_arc(server)
-                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(common::MAX_FRAME_BYTES)
+                .max_encoding_message_size(common::MAX_FRAME_BYTES),
         )
         .serve_with_incoming(incoming);
 

@@ -10,6 +10,7 @@ use rdlt_core::{
 };
 
 use super::{
+    MAX_SOURCE_COLUMNS_PER_TABLE,
     canon::{canonical_json_bytes, render_scalar},
     infer::ColumnState,
     view::JsonView,
@@ -123,13 +124,23 @@ impl TableBuffer {
         normalized
     }
 
-    pub(crate) fn state_mut(&mut self, source_key: &str) -> &mut ColumnState {
+    pub(crate) fn state_mut(
+        &mut self,
+        source_key: &str,
+    ) -> Result<&mut ColumnState, rdlt_core::RdltError> {
         if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
-            &mut self.columns[idx].1
+            Ok(&mut self.columns[idx].1)
         } else {
+            if self.columns.len() >= MAX_SOURCE_COLUMNS_PER_TABLE {
+                return Err(rdlt_core::RdltError::config(format!(
+                    "table `{}` exceeds the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap \
+                     while observing key {source_key:?}",
+                    self.table
+                )));
+            }
             self.columns
                 .push((source_key.to_owned(), ColumnState::Unknown));
-            &mut self.columns.last_mut().expect("just pushed").1
+            Ok(&mut self.columns.last_mut().expect("just pushed").1)
         }
     }
 }
@@ -232,6 +243,29 @@ pub(crate) fn resolve_schema(buffer: &mut TableBuffer) -> TableSchema {
         table: buffer.table.clone(),
         parent: buffer.parent.clone(),
         columns,
+    }
+}
+
+#[cfg(test)]
+mod cardinality_tests {
+    use super::*;
+
+    #[test]
+    fn cumulative_distinct_keys_stop_at_the_source_column_cap() {
+        let mut table = TableBuffer::new(
+            TableName::new("events"),
+            None,
+            rdlt_core::naming::IdentRules::default(),
+        );
+        for index in 0..MAX_SOURCE_COLUMNS_PER_TABLE {
+            table
+                .state_mut(&format!("field-{index}"))
+                .expect("within the cap");
+        }
+        let error = table
+            .state_mut("one-too-many")
+            .expect_err("the cumulative cap must refuse");
+        assert!(error.to_string().contains("source-column cap"));
     }
 }
 

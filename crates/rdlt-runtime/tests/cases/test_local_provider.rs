@@ -175,6 +175,63 @@ async fn discovery_resolves_the_convention_and_consumes_the_line() {
     assert_eq!(dial_path(error), socket);
 }
 
+#[tokio::test]
+async fn spawned_connectors_do_not_inherit_the_hosts_home_or_secret_environment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("never-bound.sock");
+    let body = format!(
+        "#!/bin/sh\n[ \"$1\" = \"--role=source\" ] || exit 3\n\
+         [ -z \"${{HOME+x}}\" ] || exit 9\n\
+         echo 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
+        socket.display()
+    );
+    write_script(dir.path(), "rdlt-connector-fake", &body);
+
+    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let error = provider
+        .source(
+            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("the fake reaches its deliberately unbound socket");
+    assert_eq!(dial_path(error), socket);
+}
+
+#[tokio::test]
+async fn a_handshake_failure_kills_forked_connector_descendants() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let grandchild_pid = dir.path().join("grandchild.pid");
+    let body = format!(
+        "#!/bin/sh\nsleep 30 &\necho $! > '{}'\necho 'not a handshake'\nwait\n",
+        grandchild_pid.display()
+    );
+    let binary = write_script(dir.path(), "forking-fake", &body);
+    let provider = LocalBinaryConnectorProvider::new();
+
+    let error = provider
+        .source(
+            &ConnectorRequirement::new("io.rapidbyte.fake").with_path(binary),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("the malformed line refuses");
+    assert!(matches!(error, ProviderError::HandshakeLine { .. }));
+
+    let pid: u32 = std::fs::read_to_string(&grandchild_pid)
+        .expect("the script recorded its child before writing the line")
+        .trim()
+        .parse()
+        .expect("pid");
+    for _ in 0..100 {
+        if process_dead(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("forked connector descendant {pid} survived lifecycle teardown");
+}
+
 /// The destination half spawns with `--role=destination` — the fake
 /// exits without a line for any other argument, so reaching the dial
 /// proves the role was passed.

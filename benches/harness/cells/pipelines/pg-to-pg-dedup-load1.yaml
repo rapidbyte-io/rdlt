@@ -7,7 +7,10 @@
 # stream may not share a name with any table reflected from the source schema,
 # and LOAD 2's stream must land in the table LOAD 1 populated.
 pipeline: bench-pg-to-pg-dedup-load1
-workdir: .rdlt-load1
+# Resolve under target/, not beside this committed spec: the spec is not
+# template-rendered, so a relative leaf would retain its lock/WAL residue in
+# benches/harness/cells/pipelines after every benchmark.
+workdir: ../../../../target/bench/pg-to-pg-dedup-load1
 write_mode:
   merge:
     key: [id]

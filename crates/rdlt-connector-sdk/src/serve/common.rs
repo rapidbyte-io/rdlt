@@ -14,7 +14,7 @@
 //! configure, only the accept side of the same connection.
 
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -236,6 +236,15 @@ pub fn bind_uds(path: &Path) -> Result<UnixListener, ServeError> {
                     source,
                 });
             }
+            let is_socket = std::fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_socket())
+                .unwrap_or(false);
+            if !is_socket {
+                return Err(ServeError::Bind {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
             // TOCTOU: between the failed probe-connect above and this
             // unlink, another process *could* bind this same path and have
             // its live socket removed — safe in practice because
@@ -353,10 +362,10 @@ fn describe_config_parse_error(error: &serde_json::Error) -> String {
     format!("{kind} at line {} column {}", error.line(), error.column())
 }
 
-/// Every string LEAF the config document carries, in document order —
+/// Every non-null scalar LEAF the config document carries, in document order —
 /// the values [`redact_values`] shields. Values only, never keys: keys
 /// are the document's schema, and refusals legitimately name fields.
-fn string_values_of(config: &serde_json::Value) -> Vec<String> {
+fn scalar_values_of(config: &serde_json::Value) -> Vec<String> {
     fn walk(value: &serde_json::Value, into: &mut Vec<String>) {
         match value {
             serde_json::Value::String(text) => {
@@ -364,6 +373,8 @@ fn string_values_of(config: &serde_json::Value) -> Vec<String> {
                     into.push(text.clone());
                 }
             }
+            serde_json::Value::Number(number) => into.push(number.to_string()),
+            serde_json::Value::Bool(boolean) => into.push(boolean.to_string()),
             serde_json::Value::Array(items) => {
                 for item in items {
                     walk(item, into);
@@ -382,7 +393,7 @@ fn string_values_of(config: &serde_json::Value) -> Vec<String> {
     values
 }
 
-/// Redact every config string value out of a connector-rendered
+/// Redact every config scalar value out of a connector-rendered
 /// refusal before it crosses the wire. The connector's own wording is
 /// the seam's contract — but its serde parse arms quote parsed tokens,
 /// so a secret handed to the wrong field would otherwise ride the
@@ -394,10 +405,6 @@ fn string_values_of(config: &serde_json::Value) -> Vec<String> {
 /// Longest spelling first, so a form containing another redacts whole;
 /// wording that quotes no config value — every validate refusal that
 /// names fields rather than echoing values — crosses back untouched.
-/// STRING leaves only, a deliberate trade: numeric leaves echo
-/// through, because redacting every number a config carries would
-/// corrupt legitimate refusal wording (ports, sizes, counts) while
-/// credentials travel as strings.
 fn redact_values(message: String, values: &[String]) -> String {
     let mut spellings: Vec<(String, &'static str)> = Vec::new();
     for value in values {
@@ -496,7 +503,7 @@ pub(crate) fn handshake<S: HandshakeShell>(
     // proto crate's trust-model doc: no `*_json` payload is ever
     // echoed verbatim — config documents carry credentials): the parse
     // arm renders the error's KIND and location alone, and the typed
-    // arm redacts every config string value from the connector's own
+    // arm redacts every config scalar value from the connector's own
     // wording before it crosses back over the wire.
     let config: serde_json::Value = match serde_json::from_slice(&request.config_json) {
         Ok(config) => config,
@@ -508,11 +515,11 @@ pub(crate) fn handshake<S: HandshakeShell>(
         }
     };
 
-    let config_string_values = string_values_of(&config);
+    let config_scalar_values = scalar_values_of(&config);
     let shell = match S::from_config(config) {
         Ok(shell) => shell,
         Err(error) => {
-            return refuse_handshake(redact_values(error.to_string(), &config_string_values));
+            return refuse_handshake(redact_values(error.to_string(), &config_scalar_values));
         }
     };
 
@@ -544,6 +551,21 @@ pub(crate) fn handshake<S: HandshakeShell>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_and_boolean_config_values_are_redacted_too() {
+        let config = serde_json::json!({"password": 12345, "enabled": true});
+        let values = scalar_values_of(&config);
+        let redacted = redact_values(
+            "invalid type: integer `12345`; unexpected boolean `true`".to_string(),
+            &values,
+        );
+        assert_eq!(
+            redacted,
+            "invalid type: integer `[redacted config value]`; unexpected boolean \
+             `[redacted config value]`"
+        );
+    }
 
     /// The private socket directory is owner-only from birth and its
     /// name is minted fresh per call — the two properties that close
@@ -600,26 +622,36 @@ mod tests {
         );
     }
 
-    /// A stale socket file at the same path does not block a fresh
-    /// bind — the AddrInUse-on-existing-path behavior `bind_uds` exists
-    /// to route around. `#[tokio::test]`, not `#[test]`: binding a
-    /// `UnixListener` registers with tokio's reactor, which only exists
-    /// inside a running runtime.
+    /// An unrelated regular file is never treated as stale socket
+    /// residue: the failed bind preserves both its bytes and path.
     #[tokio::test]
-    async fn a_stale_socket_file_does_not_block_a_fresh_bind() {
+    async fn a_regular_file_at_the_socket_path_is_refused_and_preserved() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("stale.sock");
         std::fs::write(&path, b"not a socket").expect("write stale file");
 
-        let listener = bind_uds(&path).expect("bind despite the stale file");
-        drop(listener);
+        let error = bind_uds(&path).expect_err("a regular file is never stale socket residue");
+        assert!(matches!(error, ServeError::Bind { .. }));
+        assert_eq!(
+            std::fs::read(&path).expect("file survives"),
+            b"not a socket"
+        );
+    }
 
-        let mode = std::fs::metadata(&path)
-            .expect("socket metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600, "the socket is owner-only");
+    #[tokio::test]
+    async fn an_actual_stale_socket_is_reclaimed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("stale.sock");
+        drop(std::os::unix::net::UnixListener::bind(&path).expect("fixture socket"));
+
+        let listener = bind_uds(&path).expect("stale socket residue is reclaimable");
+        drop(listener);
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .expect("replacement socket")
+                .file_type()
+                .is_socket()
+        );
     }
 
     /// A path a LIVE listener already owns is a real collision, not a

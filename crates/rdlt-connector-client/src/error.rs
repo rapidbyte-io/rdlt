@@ -82,7 +82,7 @@ pub(crate) async fn with_deadline<F: std::future::Future>(
 #[non_exhaustive]
 pub enum ClientError {
     /// Connecting to the connector's Unix domain socket failed.
-    #[error("dialing the connector socket at {path}: {source}")]
+    #[error("dialing the connector socket at {path:?}: {source}")]
     Dial {
         /// The socket path that refused.
         path: PathBuf,

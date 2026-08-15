@@ -61,6 +61,10 @@ CURSOR_FORMAT_VERSION = 1
 # The protocol's frame ceiling (64 MiB), mirrored on this server so a
 # legally large frame is never refused by a stale 4 MiB default.
 MAX_FRAME_BYTES = 64 * 1024 * 1024
+# `raw_json` is nested inside a protobuf ReadFrame, whose tag and
+# length prefix must fit the gRPC send ceiling too. Keep deliberate
+# headroom rather than relying on the current varint width.
+MAX_RAW_JSON_BYTES = MAX_FRAME_BYTES - 16
 
 # The frozen pre-handshake refusal: every RPC but Handshake and the
 # config-free Spec answers this FAILED_PRECONDITION status until a
@@ -299,7 +303,11 @@ class SourceService(pb_grpc.SourceServiceServicer):
                 return
 
         path = os.path.join(directory, name + ".jsonl")
-        with open(path, "rb") as stream:
+        # Open and reject symlinks atomically. The earlier directory
+        # discovery is only a snapshot; O_NOFOLLOW closes the swap
+        # window between that check and this read.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
             size = os.fstat(stream.fileno()).st_size
             if offset > size:
                 yield pb.ReadFrame(
@@ -324,14 +332,15 @@ class SourceService(pb_grpc.SourceServiceServicer):
                 # capped readline that isn't at EOF and doesn't end in
                 # a newline has read exactly cap+1 bytes, so the check
                 # below can never silently split one row into two.
-                line = stream.readline(MAX_FRAME_BYTES + 1)
+                line = stream.readline(MAX_RAW_JSON_BYTES + 1)
                 if not line:
                     break
-                if len(line) > MAX_FRAME_BYTES:
+                if len(line) > MAX_RAW_JSON_BYTES:
                     yield pb.ReadFrame(
                         error=fatal(
                             f"stream `{name}` carries a line longer than "
-                            f"{MAX_FRAME_BYTES} bytes — one row must fit one "
+                            f"{MAX_RAW_JSON_BYTES} bytes — one row plus its "
+                            "protocol framing must fit one "
                             "protocol frame"
                         )
                     )

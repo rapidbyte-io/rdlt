@@ -43,6 +43,7 @@ tokio = { workspace = true, features = ["io-util"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+rustix = { workspace = true }
 
 [dev-dependencies]
 # The T8 headline e2e drives the FACADE's build_pipeline over this

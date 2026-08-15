@@ -19,3 +19,10 @@ pub(crate) mod view;
 
 pub(crate) use drain::{DrainRow, ShredContext, drain_tables};
 pub(crate) use tape::TapeShredder;
+
+/// Cumulative source columns retained for one logical table. System columns
+/// sit outside this count.
+pub(crate) const MAX_SOURCE_COLUMNS_PER_TABLE: usize = 4096;
+
+/// Distinct child-table source keys retained beneath one parent table.
+pub(crate) const MAX_CHILD_TABLES_PER_PARENT: usize = 1024;

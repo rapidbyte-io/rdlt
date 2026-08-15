@@ -546,8 +546,9 @@ async fn an_abort_mid_suite_still_closes_the_held_session() {
 /// 047 L5: the harness RETAINS every observed row (S1 is a content
 /// law), so retention is the price of the assertion — and a source
 /// flooding past the retention ceiling must fail BY NAME rather than
-/// OOM the harness. The flood is real: ~66 MiB of rows against the
-/// 64 MiB ceiling.
+/// OOM the harness. Raw JSON is conservatively charged before parsing,
+/// so a few compact wire MiB are enough to cross the 64 MiB retained
+/// value-graph ceiling.
 struct FloodingSource;
 
 #[async_trait]
@@ -577,9 +578,10 @@ async fn a_source_flooding_past_the_retention_ceiling_fails_by_name() {
     assert!(
         failures.iter().any(|f| f.clause == "S1"
             && f.message
-                == "stream `flood`: the source pushed more than 67108864 bytes of retained \
-                    rows — the harness keeps every observed row to certify the resume law \
-                    (S1), and a conformance fixture must stay well inside that ceiling"),
+                == "stream `flood`: the source exceeded the 67108864-byte conservative \
+                    retained-row budget — raw JSON is charged at 32× its wire size before \
+                    parsing because serde_json values expand in memory; a conformance fixture \
+                    must stay well inside that ceiling"),
         "expected the retention-ceiling S1 failure, got: {failures:?}"
     );
 }

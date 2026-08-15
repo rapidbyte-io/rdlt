@@ -353,6 +353,50 @@ async fn cancelling_a_parked_source_returns_promptly() {
     );
 }
 
+/// The subtler parked shape: the source first drops its output, making
+/// the host observe SourceFinished, and only then parks inside read().
+/// Cancellation must still win over the longer clean-finish grace.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
+    use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+
+    struct CloseThenPark(std::sync::Arc<tokio::sync::Notify>);
+
+    #[async_trait::async_trait]
+    impl Source for CloseThenPark {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("close-then-park", "0")
+        }
+        async fn check(&self) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![StreamSpec::new("s")])
+        }
+        async fn read(&self, request: ReadRequest) -> Result<(), SourceError> {
+            drop(request);
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    let closed = std::sync::Arc::new(tokio::sync::Notify::new());
+    let engine = Engine::new(
+        EngineConfig::new("close-then-park"),
+        CloseThenPark(std::sync::Arc::clone(&closed)),
+        MemoryDestination::new(),
+    );
+    let token = engine.cancellation_token();
+    let run = tokio::spawn(engine.run());
+    closed.notified().await;
+    token.cancel();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), run)
+        .await
+        .expect("SourceFinished teardown remains cancellable")
+        .expect("join");
+    assert!(matches!(outcome, Err(RdltError::Cancelled)), "{outcome:?}");
+}
+
 /// Review round 2's regression pin for the RunStarted-first guarantee
 /// on the WAL-REPLAY path — the one the fresh-run pins cannot see.
 ///

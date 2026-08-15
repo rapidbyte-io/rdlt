@@ -1,7 +1,12 @@
 //! Replay of one uncommitted span into an open session, committing under the
 //! ORIGINAL run's identity — with every damage arm degrading to re-extraction.
 
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    fs::{File, OpenOptions},
+    io::BufReader,
+    os::unix::fs::OpenOptionsExt as _,
+    path::Path,
+};
 
 use rdlt_connector::LoadSession;
 use rdlt_core::{CommitMeta, RdltError, StateDoc};
@@ -22,9 +27,39 @@ fn open_segment(
     file: &str,
 ) -> Result<arrow::ipc::reader::FileReader<BufReader<File>>, String> {
     let path = dir.join(file);
-    File::open(&path).map_err(|e| e.to_string()).and_then(|f| {
-        arrow::ipc::reader::FileReader::try_new_buffered(f, None).map_err(|e| e.to_string())
-    })
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|f| {
+            arrow::ipc::reader::FileReader::try_new_buffered(f, None).map_err(|e| e.to_string())
+        })
+}
+
+/// Arrow's schema converter contains panic arms for malformed but
+/// FlatBuffer-valid metadata. WAL bytes are external recovery input, so an
+/// unwind is damaged data and must follow the same degrade-to-re-extraction
+/// path as an ordinary decode error. `AssertUnwindSafe` is confined to decoder
+/// state that is immediately discarded after a panic.
+fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+        Ok(result) => result,
+        Err(payload) => Err(format!(
+            "the Arrow IPC decoder panicked on the WAL segment: {}",
+            panic_text(payload.as_ref())
+        )),
+    }
+}
+
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text
+    } else {
+        "<non-text panic payload>"
+    }
 }
 
 /// Replay one span into an open session and commit it under the ORIGINAL run's
@@ -59,12 +94,14 @@ pub(crate) async fn replay(
             // without any coordination.
             let (dir_owned, file_owned) = (dir.to_path_buf(), file.clone());
             let decoded = match off_runtime(move || {
-                let reader = open_segment(&dir_owned, &file_owned)?;
-                let mut decoded: u64 = 0;
-                for batch in reader {
-                    decoded += batch.map_err(|e| e.to_string())?.num_rows() as u64;
-                }
-                Ok::<u64, String>(decoded)
+                caught_decode(|| {
+                    let reader = open_segment(&dir_owned, &file_owned)?;
+                    let mut decoded: u64 = 0;
+                    for batch in reader {
+                        decoded += batch.map_err(|e| e.to_string())?.num_rows() as u64;
+                    }
+                    Ok::<u64, String>(decoded)
+                })
             })
             .await
             {
@@ -131,7 +168,7 @@ pub(crate) async fn replay(
                 let dir_owned = dir.to_path_buf();
                 let opened = {
                     let file = file.clone();
-                    off_runtime(move || open_segment(&dir_owned, &file)).await
+                    off_runtime(move || caught_decode(|| open_segment(&dir_owned, &file))).await
                 };
                 let mut reader = match opened {
                     Ok(reader) => reader,
@@ -148,11 +185,25 @@ pub(crate) async fn replay(
                 // to start using twice the memory. Per-batch handoff costs a task
                 // switch on a path that only runs after a crash.
                 loop {
-                    let (returned, item) = off_runtime(move || {
-                        let item = reader.next();
-                        (reader, item)
+                    let stepped = off_runtime(move || {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            reader.next()
+                        })) {
+                            Ok(item) => Ok((reader, item)),
+                            Err(payload) => Err(format!(
+                                "the Arrow IPC decoder panicked on the WAL segment: {}",
+                                panic_text(payload.as_ref())
+                            )),
+                        }
                     })
                     .await;
+                    let (returned, item) = match stepped {
+                        Ok(step) => step,
+                        Err(reason) => {
+                            tracing::warn!(segment = %file, %reason, "WAL segment panicked during replay — degrading to re-extraction");
+                            return Ok(None);
+                        }
+                    };
                     reader = returned;
                     let Some(batch) = item else { break };
                     let Ok(batch) = batch else {
@@ -199,6 +250,14 @@ mod segment_format {
 
     use super::open_segment;
     use crate::wal::write_segment;
+
+    #[test]
+    fn a_decoder_panic_is_classified_as_segment_damage() {
+        let error = super::caught_decode::<()>(|| panic!("crafted metadata"))
+            .expect_err("a decoder unwind must be contained");
+        assert!(error.contains("decoder panicked"), "{error}");
+        assert!(error.contains("crafted metadata"), "{error}");
+    }
 
     fn batch(rows: usize) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![

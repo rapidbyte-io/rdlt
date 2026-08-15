@@ -46,10 +46,15 @@ const CHANNEL_BYTE_BUDGET: usize = 16 << 20;
 /// so without this ceiling a flooding source OOMs the harness instead
 /// of failing. A conformance fixture is rows, not a dataset: 64 MiB
 /// (four channel budgets) is generous headroom, and a source pushing
-/// more fails by name. Metered on the pushed payloads' own sizes plus
-/// a per-push constant — an honest order-of-size proxy for what the
-/// parsed rows retain.
+/// more fails by name. Arrow rows are charged by their retained opaque
+/// values; raw JSON is conservatively expansion-weighted before parse.
 const RETENTION_CEILING_BYTES: usize = 64 << 20;
+
+/// Compact JSON scalar arrays expand by roughly an order of magnitude
+/// when materialized as `serde_json::Value`s. Debit a deliberately
+/// conservative factor before parsing so the ceiling also bounds the
+/// parser's transient allocation, not only the retained result.
+const RAW_JSON_RETENTION_FACTOR: usize = 32;
 
 /// What one full read produced: row groups separated by checkpoints.
 #[derive(Debug, Default)]
@@ -102,20 +107,25 @@ async fn read_all<S: Source>(
         tokio::select! {
             push = input.recv() => match push {
                 Some(push) => {
-                    retained = retained
-                        .saturating_add(std::mem::size_of_val(&push.payload))
-                        .saturating_add(match &push.payload {
-                            PushPayload::RawJson(bytes) => bytes.len(),
-                            PushPayload::Arrow(batch) =>
-                                batch.num_rows().saturating_mul(std::mem::size_of::<Value>()),
-                            PushPayload::Checkpoint(_) => 0,
-                        });
+                    retained = retained.saturating_add(match &push.payload {
+                        PushPayload::RawJson(bytes) => bytes
+                            .len()
+                            .saturating_mul(RAW_JSON_RETENTION_FACTOR),
+                        PushPayload::Arrow(batch) => batch
+                            .num_rows()
+                            .saturating_mul(std::mem::size_of::<Value>()),
+                        PushPayload::Checkpoint(cursor) => serde_json::to_vec(cursor.as_value())
+                            .expect("a cursor Value serializes infallibly")
+                            .len()
+                            .saturating_mul(RAW_JSON_RETENTION_FACTOR),
+                    });
                     if retained > RETENTION_CEILING_BYTES {
                         return Err(format!(
-                            "the source pushed more than {RETENTION_CEILING_BYTES} bytes of \
-                             retained rows — the harness keeps every observed row to certify \
-                             the resume law (S1), and a conformance fixture must stay well \
-                             inside that ceiling"
+                            "the source exceeded the {RETENTION_CEILING_BYTES}-byte conservative \
+                             retained-row budget — raw JSON is charged at \
+                             {RAW_JSON_RETENTION_FACTOR}× its wire size before parsing because \
+                             serde_json values expand in memory; a conformance fixture must stay \
+                             well inside that ceiling"
                         ));
                     }
                     match push.payload {
@@ -333,5 +343,22 @@ fn nothing_concluded(
         failures,
         skips,
         concluded: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[test]
+    fn compact_json_is_refused_before_a_large_value_graph_can_materialize() {
+        let largest_preparse_payload = RETENTION_CEILING_BYTES / RAW_JSON_RETENTION_FACTOR;
+        assert_eq!(largest_preparse_payload, 2 << 20);
+        assert!(
+            largest_preparse_payload
+                .saturating_add(1)
+                .saturating_mul(RAW_JSON_RETENTION_FACTOR)
+                > RETENTION_CEILING_BYTES
+        );
     }
 }

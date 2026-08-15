@@ -10,6 +10,7 @@
 use std::{
     fs::{File, OpenOptions},
     io::Write,
+    os::unix::fs::OpenOptionsExt as _,
     path::{Path, PathBuf},
 };
 
@@ -49,7 +50,6 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 /// manifest, rules sidecar, segments — goes through this, so none can
 /// silently fall back to the umask default.
 fn private_file() -> OpenOptions {
-    use std::os::unix::fs::OpenOptionsExt as _;
     let mut options = OpenOptions::new();
     options.mode(0o600);
     options
@@ -62,6 +62,97 @@ fn private_file() -> OpenOptions {
 /// file beside the manifest, not a record in the manifest stream;
 /// reclaimed with the directory by [`clear`].
 pub(crate) const RULES_SIDECAR: &str = "rules.json";
+
+/// Proof that the `wal` leaf was created or explicitly adopted by rdlt. The
+/// marker is intentionally inside the leaf that cleanup removes; an explicit
+/// workdir pointing at a non-empty foreign `wal` directory can no longer turn
+/// that spelling into authority for `remove_dir_all`.
+pub(crate) const OWNERSHIP_MARKER: &str = ".rdlt-wal";
+const OWNERSHIP_MARKER_BYTES: &[u8] = b"rdlt-wal-v1\n";
+
+fn ensure_owned_dir(dir: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing WAL path `{}` because it is not a real directory",
+                dir.display()
+            ),
+        ));
+    }
+
+    let marker = dir.join(OWNERSHIP_MARKER);
+    match std::fs::symlink_metadata(&marker) {
+        Ok(meta) if meta.file_type().is_file() && !meta.file_type().is_symlink() => {
+            let bytes = std::fs::read(&marker)?;
+            if bytes == OWNERSHIP_MARKER_BYTES {
+                return Ok(());
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "WAL ownership marker `{}` has unrecognized contents",
+                    marker.display()
+                ),
+            ));
+        }
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "WAL ownership marker `{}` is not a regular file",
+                    marker.display()
+                ),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    if std::fs::read_dir(dir)?.next().is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to adopt non-empty directory `{}` as a WAL without `{OWNERSHIP_MARKER}`",
+                dir.display()
+            ),
+        ));
+    }
+    private_file()
+        .create_new(true)
+        .write(true)
+        .open(marker)?
+        .write_all(OWNERSHIP_MARKER_BYTES)
+}
+
+fn verify_owned_dir(dir: &Path) -> std::io::Result<()> {
+    let dir_meta = std::fs::symlink_metadata(dir)?;
+    if !dir_meta.file_type().is_dir() || dir_meta.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to clear non-directory WAL path `{}`",
+                dir.display()
+            ),
+        ));
+    }
+    let marker = dir.join(OWNERSHIP_MARKER);
+    let meta = std::fs::symlink_metadata(&marker)?;
+    if !meta.file_type().is_file()
+        || meta.file_type().is_symlink()
+        || std::fs::read(&marker)? != OWNERSHIP_MARKER_BYTES
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to clear `{}` without a valid rdlt WAL ownership marker",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub(crate) struct Wal {
@@ -94,6 +185,7 @@ impl Wal {
         tolerate_resolved_residue: bool,
     ) -> Result<Self, RdltError> {
         create_private_dir(&dir).map_err(|e| wal_err("creating wal dir", e))?;
+        ensure_owned_dir(&dir).map_err(|e| wal_err("proving wal directory ownership", e))?;
         // A fresh open expects a CLEAN directory (round-12): recovery
         // resolves and clears any prior span before this runs, so a
         // surviving manifest here is unresolved residue — writing a
@@ -150,6 +242,10 @@ impl Wal {
         } else {
             manifest_options.create_new(true);
         }
+        // The vouched path opens an existing manifest, so `create_new` cannot
+        // provide its usual symlink protection there. O_NOFOLLOW closes both
+        // paths atomically at the final component.
+        manifest_options.custom_flags(libc::O_NOFOLLOW);
         let manifest = manifest_options
             .append(true)
             .open(dir.join("manifest.jsonl"))
@@ -266,12 +362,19 @@ impl Wal {
             ))
         );
         let pending = std::mem::take(&mut self.pending_sync);
+        let dir = self.dir.clone();
         tokio::task::spawn_blocking(move || {
             for path in pending {
                 File::open(&path)
                     .and_then(|f| f.sync_all())
                     .map_err(|e| wal_err("fsync segment", e))?;
             }
+            // Persist directory entries for the sidecar, manifest and all
+            // newly-created segments. File fsync alone does not make those
+            // names survive power loss.
+            File::open(&dir)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| wal_err("fsync wal directory", e))?;
             Ok::<(), RdltError>(())
         })
         .await
@@ -303,6 +406,23 @@ impl Wal {
     /// Step (3): the destination acknowledged `commit_seq` — mark and reclaim.
     pub(crate) async fn mark_committed(&mut self, commit_seq: u64) -> Result<(), RdltError> {
         self.append(&WalRecord::Committed { commit_seq })?;
+        self.manifest
+            .flush()
+            .map_err(|e| wal_err("flush committed marker", e))?;
+        let manifest = self
+            .manifest
+            .try_clone()
+            .map_err(|e| wal_err("fsync committed marker", e))?;
+        tokio::task::spawn_blocking(move || {
+            manifest
+                .sync_all()
+                .map_err(|e| wal_err("fsync committed marker", e))
+        })
+        .await
+        .map_err(|e| wal_err("committed marker fsync task", e))??;
+
+        // Only a durable Committed marker licenses segment reclamation. If the
+        // fsync above fails, `pending_gc` remains intact for a later retry.
         let reclaim = std::mem::take(&mut self.pending_gc);
         // Best-effort: a survivor just gets replay-skipped via the Committed
         // record, so unlinking never blocks the commit's completion.
@@ -382,8 +502,32 @@ pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Rdlt
 /// success for an error, and the residue resolves as an ordinary
 /// committed-manifest Discard on the next run's scan.
 pub(crate) fn clear(dir: &Path) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    verify_owned_dir(dir)?;
     match std::fs::remove_dir_all(dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            // A partial removal may have taken the ownership marker
+            // while leaving residue it could not delete (a
+            // write-protected subdirectory, say). Ownership was
+            // verified at entry, so the surviving directory is still
+            // ours — re-stamp it, or the tolerated-residue arm
+            // (Discard's failed clear WARNS and the run proceeds)
+            // would be refused adoption of its own WAL directory by
+            // `ensure_owned_dir`'s non-empty-without-marker gate.
+            if dir.exists() {
+                let _ = private_file()
+                    .create_new(true)
+                    .write(true)
+                    .open(dir.join(OWNERSHIP_MARKER))
+                    .and_then(|mut f| {
+                        use std::io::Write as _;
+                        f.write_all(OWNERSHIP_MARKER_BYTES)
+                    });
+            }
+            Err(e)
+        }
         _ => Ok(()),
     }
 }
@@ -429,6 +573,7 @@ mod tests {
     #[test]
     fn open_refuses_a_directory_already_carrying_a_manifest() {
         let dir = tempfile::tempdir().expect("tempdir");
+        ensure_owned_dir(dir.path()).expect("adopt fixture dir");
         std::fs::write(dir.path().join("manifest.jsonl"), b"{}\n").expect("residue");
         let error = Wal::open(
             dir.path().to_path_buf(),
@@ -452,6 +597,7 @@ mod tests {
     #[test]
     fn open_with_the_residue_voucher_appends_after_the_resolved_span() {
         let dir = tempfile::tempdir().expect("tempdir");
+        ensure_owned_dir(dir.path()).expect("adopt fixture dir");
         // A resolved current-version span whose clear failed — the only
         // shape recovery ever vouches for.
         let mut stale = crate::wal::record::encode_line(&WalRecord::Run {
@@ -478,6 +624,30 @@ mod tests {
             lines[0].contains("\"old\"") && lines[1].contains("\"l\""),
             "the new Run header appends AFTER the resolved span: {manifest}"
         );
+    }
+
+    /// 2M7: recovery's residue voucher never licenses following a symlink at
+    /// the manifest path.
+    #[test]
+    fn residue_voucher_refuses_a_manifest_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_dir = dir.path().join("wal");
+        create_private_dir(&wal_dir).expect("wal dir");
+        ensure_owned_dir(&wal_dir).expect("adopt fixture dir");
+        let target = dir.path().join("victim");
+        std::fs::write(&target, b"precious").expect("victim");
+        std::os::unix::fs::symlink(&target, wal_dir.join("manifest.jsonl")).expect("plant symlink");
+
+        let error = Wal::open(
+            wal_dir,
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+            true,
+        )
+        .expect_err("the vouched open must still refuse a symlink");
+        assert!(error.to_string().contains("opening manifest"), "{error}");
+        assert_eq!(std::fs::read(target).expect("victim survives"), b"precious");
     }
 
     /// 047 L4: a pre-planted symlink where a segment will be written must
@@ -524,6 +694,7 @@ mod tests {
         std::fs::write(&target, b"precious").expect("victim file");
         let wal_dir = dir.path().join("wal");
         create_private_dir(&wal_dir).expect("wal dir");
+        ensure_owned_dir(&wal_dir).expect("adopt fixture dir");
         std::os::unix::fs::symlink(&target, wal_dir.join(RULES_SIDECAR)).expect("plant symlink");
         Wal::open(
             wal_dir.clone(),
@@ -545,6 +716,32 @@ mod tests {
         );
     }
 
+    /// 2L16: naming an existing non-empty `wal` leaf is not ownership proof.
+    /// Without the marker, neither opening nor later cleanup may adopt it.
+    #[test]
+    fn a_nonempty_foreign_wal_directory_is_not_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal_dir = dir.path().join("wal");
+        std::fs::create_dir(&wal_dir).expect("foreign wal dir");
+        let important = wal_dir.join("important");
+        std::fs::write(&important, b"keep").expect("foreign data");
+
+        let error = Wal::open(
+            wal_dir.clone(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+            false,
+        )
+        .expect_err("non-empty foreign directories must not be adopted");
+        assert!(error.to_string().contains("ownership"), "{error}");
+        assert_eq!(
+            std::fs::read(important).expect("foreign data survives"),
+            b"keep"
+        );
+        assert!(!wal_dir.join(OWNERSHIP_MARKER).exists());
+    }
+
     /// 047 L4's manifest half: a DANGLING symlink passes the residue
     /// `exists()` check, and a plain create would follow it and mint the
     /// manifest at the link's target. `create_new` refuses it loudly.
@@ -554,6 +751,7 @@ mod tests {
         let target = dir.path().join("minted-elsewhere");
         let wal_dir = dir.path().join("wal");
         create_private_dir(&wal_dir).expect("wal dir");
+        ensure_owned_dir(&wal_dir).expect("adopt fixture dir");
         std::os::unix::fs::symlink(&target, wal_dir.join("manifest.jsonl"))
             .expect("plant dangling symlink");
         let error = Wal::open(

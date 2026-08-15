@@ -29,13 +29,15 @@ use tokio::process::Child;
 /// line names a socket, so every later failure path kills and unlinks
 /// by the same drop.
 ///
-/// The spawning `Command` also sets `kill_on_drop` as a belt beside
-/// this guard's own `start_kill` — a child that never reaches a guard
-/// (a failure between spawn and line) dies with its `Child`.
+/// Provider-spawned children head a dedicated process group; their
+/// crate-private constructor makes this guard kill the whole group so
+/// forked descendants cannot outlive teardown. The public constructor
+/// retains direct-child semantics for arbitrary embedder-owned children.
 #[derive(Debug)]
 pub struct LifecycleGuard {
     child: Child,
     socket_path: PathBuf,
+    process_group: Option<u32>,
 }
 
 impl LifecycleGuard {
@@ -44,6 +46,41 @@ impl LifecycleGuard {
         Self {
             child,
             socket_path: socket_path.into(),
+            process_group: None,
+        }
+    }
+
+    /// Guard a provider-spawned process that heads its own process
+    /// group. Kept crate-private: arbitrary children passed to the
+    /// public constructor may share the host's group and must never
+    /// trigger a group-wide signal.
+    pub(crate) fn new_process_group(child: Child) -> Self {
+        let process_group = child.id();
+        Self {
+            child,
+            socket_path: PathBuf::new(),
+            process_group,
+        }
+    }
+
+    pub(crate) fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    pub(crate) fn set_socket_path(&mut self, socket_path: impl Into<PathBuf>) {
+        self.socket_path = socket_path.into();
+    }
+
+    /// Signal and disarm the owned process group while the direct
+    /// child's pid is still anchored. Call before any explicit reap.
+    pub(crate) fn kill_process_group(&mut self) {
+        if let Some(pgid) = self
+            .process_group
+            .take()
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL);
         }
     }
 
@@ -66,6 +103,10 @@ impl Drop for LifecycleGuard {
         // SENDS the signal (no await, no wait — tokio reaps the exit in
         // the background), and a socket that is already gone is not an
         // error worth surfacing from a destructor.
+        // The direct child remains owned and unreaped here, so its
+        // pid/pgid cannot have been recycled between capture and
+        // signal.
+        self.kill_process_group();
         let _ = self.child.start_kill();
         // Unlink ONLY a socket: the path came verbatim from the child's
         // stdout handshake line, so a connector naming an unrelated

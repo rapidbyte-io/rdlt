@@ -4,6 +4,16 @@ Status: RECORDED (2026-08-14). Decision for the security-hardening
 feature 047, finding L11. Recommends a migration target; the swap
 itself is an owner trigger (see Decision). Amendments recorded here.
 
+## 2026-08-15 security amendment
+
+The maintained-fork decision does not address YAML graph expansion: both the
+deprecated crate and its continuation materialize aliases into the target
+value. Production pipeline and path-form connector-config parsing therefore
+rejects anchors and aliases in raw YAML before deserialization. The 8 MiB read
+cap is now enforced by a bounded read rather than a stat-then-read check. A
+future parser migration must preserve both gates; dependency replacement is
+not a substitute for them.
+
 ## Context
 
 `serde_yaml` is pinned at `0.9.34+deprecated` — the crate's terminal,

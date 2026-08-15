@@ -324,6 +324,16 @@ fn part_close_reason_str(reason: PartCloseReason) -> String {
 /// measured as the defect this refusal exists to prevent, not a
 /// hypothetical).
 fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
+    match std::panic::catch_unwind(|| decode_arrow_ipc_erring(bytes)) {
+        Ok(decoded) => decoded,
+        Err(payload) => Err(format!(
+            "write carried no decodable record batch: the Arrow decoder panicked: {}",
+            panic_text(payload.as_ref())
+        )),
+    }
+}
+
+fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
 
     let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
@@ -340,6 +350,16 @@ fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String>
         ),
         Some(Err(error)) => Err(format!("{REFUSAL}: {error}")),
         None => Ok(first),
+    }
+}
+
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text
+    } else {
+        "<non-text panic payload>"
     }
 }
 
@@ -825,11 +845,13 @@ pub async fn serve_on<C: DestinationConnector>(
     let serving = tonic::transport::Server::builder()
         .add_service(
             ConnectorServer::from_arc(Arc::clone(&server))
-                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(common::MAX_FRAME_BYTES)
+                .max_encoding_message_size(common::MAX_FRAME_BYTES),
         )
         .add_service(
             DestinationServiceServer::from_arc(server)
-                .max_decoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(common::MAX_FRAME_BYTES)
+                .max_encoding_message_size(common::MAX_FRAME_BYTES),
         )
         .serve_with_incoming(incoming);
 
@@ -889,5 +911,26 @@ mod tests {
                 "part_close_reason_str diverged from PartCloseReason's own Serialize for {reason:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_crafted_write_that_panics_arrow_is_a_typed_decode_refusal() {
+        const REPRO: [u8; 160] = [
+            0xff, 0xff, 0xff, 0xff, 0x78, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x0a, 0x00, 0x0c, 0x00, 0x06, 0x00, 0x05, 0x00, 0x08, 0x00, 0x0a, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x00, 0x00, 0x10, 0x00, 0x14, 0x00, 0x08, 0x00, 0x06, 0x00, 0x07, 0x00,
+            0x0c, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x10, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x69, 0x64, 0x00, 0x00, 0x08, 0x00, 0x0c, 0x00,
+            0x08, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x40, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x29, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            0x88, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00,
+            0x16, 0x00, 0x06, 0x00, 0x05, 0x00,
+        ];
+
+        let error = decode_arrow_ipc(&REPRO).expect_err("the panic is contained");
+        assert!(error.contains("Arrow decoder panicked"), "{error}");
     }
 }

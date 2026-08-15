@@ -83,21 +83,9 @@ fn spec_base(spec_path: &std::path::Path) -> &std::path::Path {
 /// path (a data file, a dump), refused typed rather than slurped whole
 /// into memory and fed to a recursive parser.
 fn load_spec(spec_path: &std::path::Path) -> Result<(Spec, String), CliError> {
-    let len = std::fs::metadata(spec_path)
-        .map_err(|e| CliError::Io(format!("reading {}: {e}", spec_path.display())))?
-        .len();
-    if len > pipeline_spec::MAX_DOCUMENT_BYTES {
-        return Err(CliError::Usage(format!(
-            "{} is {len} bytes, over the {}-byte document cap — is this really a \
-             pipeline document?",
-            spec_path.display(),
-            pipeline_spec::MAX_DOCUMENT_BYTES
-        )));
-    }
-    let raw = std::fs::read_to_string(spec_path)
-        .map_err(|e| CliError::Io(format!("reading {}: {e}", spec_path.display())))?;
-    let spec: Spec =
-        serde_yaml::from_str(&raw).map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
+    let raw = pipeline_spec::read_document(spec_path).map_err(CliError::Io)?;
+    let spec: Spec = pipeline_spec::parse_spec(&raw)
+        .map_err(|e| CliError::Usage(format!("parsing spec: {e}")))?;
     let name = spec.pipeline.clone();
     Ok((spec, name))
 }

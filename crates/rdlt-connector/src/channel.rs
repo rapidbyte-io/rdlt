@@ -45,6 +45,15 @@ const RECORDS_MESSAGE_CAPACITY: usize = 64;
 /// never of data.
 pub const MAX_ARROW_DEPTH: usize = 64;
 
+/// The largest row count one pushed batch may carry.
+///
+/// Row count is an independent memory dimension from encoded bytes: a
+/// boolean column can describe eight rows per byte, while the engine must
+/// still build offsets, lineage, and the constant load-id value for every
+/// row. Capping rows at the shared ingress vocabulary keeps a small valid
+/// frame from amplifying into multi-gigabyte allocations downstream.
+pub const MAX_RECORD_BATCH_ROWS: usize = 1_000_000;
+
 /// The host closed the channel (cancellation, or a failure downstream).
 /// A source that receives this should return promptly — it is an
 /// instruction to stop, not an error to escalate.
@@ -434,14 +443,20 @@ fn data_footprint(
             total += count_window(&buffers[0], start, viewed);
         }
         DataType::Utf8 | DataType::Binary => {
-            let (off_start, off_len, data_start, data_len) = offsets_i32(&buffers[0]);
+            let (off_start, off_len, _, _) = offsets_i32(&buffers[0]);
             total += count_window(&buffers[0], off_start, off_len);
-            total += count_window(&buffers[1], data_start, data_len);
+            // An IPC-decoded values buffer may legally be larger than the
+            // offsets reference. The whole allocation remains resident, so
+            // charging only `last_offset - first_offset` lets a valid frame
+            // retain almost 64 MiB while consuming almost no budget. Charge
+            // the complete values buffer; slices can consequently over-count
+            // a shared allocation, which is the budget's safe direction.
+            total += count_window(&buffers[1], 0, buffers[1].len());
         }
         DataType::LargeUtf8 | DataType::LargeBinary => {
-            let (off_start, off_len, data_start, data_len) = offsets_i64(&buffers[0]);
+            let (off_start, off_len, _, _) = offsets_i64(&buffers[0]);
             total += count_window(&buffers[0], off_start, off_len);
-            total += count_window(&buffers[1], data_start, data_len);
+            total += count_window(&buffers[1], 0, buffers[1].len());
         }
         DataType::List(_) | DataType::Map(_, _) => {
             let (off_start, off_len, _, _) = offsets_i32(&buffers[0]);
@@ -770,13 +785,12 @@ mod byte_size_tests {
         );
     }
 
-    /// THE SLICE PIN (round-7 fix): a batch cut into n chunks meters
-    /// ≈ the parent ONCE across the chunks — each chunk charges only
-    /// the byte range it views, so the sum tracks the parent (small
-    /// per-chunk overlap at offsets/validity boundaries allowed), and
-    /// never ~n× the parent as full-buffer accounting produced.
+    /// Fixed-width slices keep their precise window accounting. Variable-width
+    /// values deliberately charge their full backing allocation, so this
+    /// fixture (which contains one string column) may over-count across chunks;
+    /// the important invariant is that it never under-counts the parent.
     #[test]
-    fn slicing_a_batch_meters_the_parent_once_not_once_per_chunk() {
+    fn slicing_a_batch_never_undercounts_the_parent() {
         let batch = built_batch();
         let whole = PushPayload::Arrow(batch.clone()).byte_size();
         let chunks = 4;
@@ -791,10 +805,40 @@ mod byte_size_tests {
             "the chunks together must still account the parent's bytes: sum {sum}, whole {whole}"
         );
         assert!(
-            sum <= whole + whole / 4,
-            "n chunks must meter ≈ the parent once, never ~n×: sum {sum}, whole {whole} \
-             (full-buffer accounting would land near {})",
-            chunks * whole
+            sum <= chunks * whole,
+            "no chunk may charge more than the complete parent: sum {sum}, whole {whole}"
+        );
+    }
+
+    /// 2H3: Arrow permits a values buffer to contain bytes no offset
+    /// references. Those bytes still remain resident in the decoded batch and
+    /// therefore belong to the byte budget in full.
+    #[test]
+    fn an_unreferenced_variable_width_buffer_is_charged_in_full() {
+        let retained = 1024 * 1024;
+        let data = arrow_data::ArrayData::try_new(
+            DataType::Utf8,
+            1,
+            None,
+            0,
+            vec![
+                arrow_buffer::Buffer::from_vec(vec![0i32, 0]),
+                arrow_buffer::Buffer::from_vec(vec![b'x'; retained]),
+            ],
+            vec![],
+        )
+        .expect("zero offsets may legally leave the values buffer unreferenced");
+        let array = arrow_array::make_array(data);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)])),
+            vec![array],
+        )
+        .expect("matching batch");
+
+        let metered = arrow_batch_footprint(&batch);
+        assert!(
+            metered >= retained,
+            "all {retained} resident values bytes must be charged, got {metered}"
         );
     }
 

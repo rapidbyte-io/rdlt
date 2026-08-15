@@ -301,6 +301,7 @@ async fn a_bare_manifest_claiming_another_version_is_refused_never_replayed() {
     let workdir = dir.path().join("work");
     let wal_dir = workdir.join("wal");
     std::fs::create_dir_all(&wal_dir).expect("wal dir");
+    std::fs::write(wal_dir.join(".rdlt-wal"), b"rdlt-wal-v1\n").expect("ownership marker");
     // Hand-built bare lines: the shape a pre-checksum dev-window writer left.
     std::fs::write(
         wal_dir.join("manifest.jsonl"),

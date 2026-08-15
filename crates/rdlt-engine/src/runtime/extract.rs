@@ -29,6 +29,11 @@ use super::classify::classify_source_error;
 /// stays prompt for an embedder whose source is parked between frames.
 const READER_ABORT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// A source that closes its output has longer to finish its own teardown, but
+/// the promise is still enforced rather than trusted. Cancellation remains
+/// prompt during this grace.
+const READER_FINISH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Single-owner shred/passthrough state for one stream. `run_blocking`-style
 /// methods consume `self`, move it onto the blocking pool, and hand it back —
 /// so the CPU-bound work stays lock-free and single-owner WITHOUT the take/expect
@@ -143,7 +148,7 @@ pub(super) async fn stream_task(
     // Single-owner by construction: each blocking method consumes the owner and
     // returns it, so it is moved out and reassigned in place — never absent.
     let mut owner = ShredOwner {
-        shredder: TapeShredder::new(spec.clone(), capabilities, root_table),
+        shredder: TapeShredder::new(spec.clone(), capabilities, root_table)?,
         registry: SchemaRegistry::default(),
     };
 
@@ -280,10 +285,11 @@ pub(super) async fn stream_task(
     // already closed early for faster teardown.)
     input.close();
     // Surface source-side failures even when the push loop ended first.
-    // Only the SourceFinished exit joins unconditionally: the source
-    // closed its own channel, so its result is imminent and is the
-    // run's verdict. Every OTHER exit (cancellation, a contract
-    // violation, the loader gone mid-run) bounds the join, because
+    // Every exit bounds the join. A source that closed its own channel gets a
+    // longer grace, but that close is only a promise that `read` will return,
+    // not a mechanism that can be awaited forever. Every OTHER exit
+    // (cancellation, a contract violation, the loader gone mid-run) uses the
+    // short cleanup grace, because
     // closing the channel only wakes a source parked ON A PUSH — a
     // source idle between frames (a wire adapter waiting on its
     // connector process) observes cancellation at its next push, which
@@ -293,7 +299,25 @@ pub(super) async fn stream_task(
     // the cancelled JoinError is this exit's EXPECTED outcome, never a
     // defect to surface.
     let read_result = match &push_result {
-        Ok(LoopExit::SourceFinished) => (&mut reader).await,
+        Ok(LoopExit::SourceFinished) => {
+            tokio::select! {
+                joined = &mut reader => joined,
+                _ = cancel.cancelled() => {
+                    reader.abort();
+                    let _ = (&mut reader).await;
+                    return Err(RdltError::Cancelled);
+                }
+                _ = tokio::time::sleep(READER_FINISH_GRACE) => {
+                    reader.abort();
+                    let _ = (&mut reader).await;
+                    return Err(RdltError::source(
+                        stream_name,
+                        "source closed its output channel but did not return from read() \
+                         within the bounded teardown grace",
+                    ));
+                }
+            }
+        }
         _ => match tokio::time::timeout(READER_ABORT_GRACE, &mut reader).await {
             Ok(join) => join,
             Err(_elapsed) => {

@@ -170,9 +170,8 @@ async fn a_version_mismatch_refuses_typed() {
     }
 }
 
-/// A connector-side config refusal (the echo's `rows must be > 0`
-/// gate) surfaces as `ClientError::Handshake` — FATAL, carrying the
-/// connector's own message verbatim, no wait hint.
+/// A connector-side config refusal surfaces as `ClientError::Handshake`
+/// — FATAL, with scalar config values redacted and no wait hint.
 #[tokio::test]
 async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
     let (_dir, path) = socket_path();
@@ -199,7 +198,7 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
             retry_after_ms,
         } => {
             assert_eq!(classification, Classification::Fatal);
-            assert_eq!(message, "echo: rows must be > 0");
+            assert_eq!(message, "echo: rows must be > [redacted config value]");
             assert_eq!(retry_after_ms, None);
         }
         other => panic!("expected a Handshake refusal, got {other:?}"),

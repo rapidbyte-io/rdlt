@@ -18,7 +18,10 @@ use arrow::{
     datatypes::{DataType, TimeUnit},
     record_batch::RecordBatch,
 };
-use rdlt_connector::{DestinationCapabilities, channel::MAX_ARROW_DEPTH};
+use rdlt_connector::{
+    DestinationCapabilities,
+    channel::{MAX_ARROW_DEPTH, MAX_RECORD_BATCH_ROWS},
+};
 use rdlt_core::{
     ColumnDef, ColumnType, LogicalType, PolicyAction, Provenance, RdltError, SchemaChange,
     TableName, TableSchema, naming::UniqueNamer, schema::system_columns,
@@ -28,7 +31,7 @@ use crate::{
     load::LoadItem,
     schema::contracts::{change_column, violation_for},
     shred::{
-        ShredContext,
+        MAX_SOURCE_COLUMNS_PER_TABLE, ShredContext,
         build::{arrow_column_type, arrow_schema},
     },
 };
@@ -41,6 +44,14 @@ pub(crate) fn passthrough_items(
     ctx: ShredContext,
     capabilities: DestinationCapabilities,
 ) -> Result<Vec<LoadItem>, RdltError> {
+    if batch.num_rows() > MAX_RECORD_BATCH_ROWS {
+        return Err(RdltError::config(format!(
+            "table `{table}`: Arrow batch carries {} rows, over the \
+             {MAX_RECORD_BATCH_ROWS}-row cap — row count is bounded separately from \
+             encoded bytes to prevent per-row column amplification",
+            batch.num_rows()
+        )));
+    }
     let ShredContext {
         registry,
         load_id,
@@ -176,6 +187,13 @@ fn schema_from_arrow(
     table: &TableName,
     capabilities: DestinationCapabilities,
 ) -> Result<(TableSchema, Vec<(String, usize)>), RdltError> {
+    if batch.num_columns() > MAX_SOURCE_COLUMNS_PER_TABLE {
+        return Err(RdltError::config(format!(
+            "table `{table}` carries {} Arrow fields, over the \
+             {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap",
+            batch.num_columns()
+        )));
+    }
     let mut namer = UniqueNamer::new(capabilities.ident_rules);
     namer.reserve(system_columns::LOAD_ID); // even a literal `_rdlt_load_id` input suffixes
 
@@ -304,10 +322,14 @@ fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, 
         DataType::Time32(_) | DataType::Time64(TimeUnit::Microsecond | TimeUnit::Nanosecond) => {
             scalar(Time)
         }
-        DataType::Decimal128(precision, scale) if *scale >= 0 => Ok(ColumnType::scalar(Decimal {
-            precision: *precision,
-            scale: *scale as u8,
-        })),
+        DataType::Decimal128(precision, scale)
+            if (1..=38).contains(precision) && *scale >= 0 && *scale <= *precision as i8 =>
+        {
+            Ok(ColumnType::scalar(Decimal {
+                precision: *precision,
+                scale: *scale as u8,
+            }))
+        }
         DataType::Struct(fields) => {
             let mapped: Result<Vec<ColumnDef>, String> = fields
                 .iter()
@@ -336,6 +358,58 @@ fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, 
 mod tests {
     use super::*;
 
+    /// 2H4: a bit-packed boolean frame can describe enormous row counts in a
+    /// small byte payload. Refuse it before allocating the constant load-id
+    /// column or any other per-row output.
+    #[test]
+    fn a_batch_over_the_row_cap_refuses_before_amplification() {
+        let rows = MAX_RECORD_BATCH_ROWS + 1;
+        let batch = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![
+                arrow::datatypes::Field::new("flag", DataType::Boolean, false),
+            ])),
+            vec![Arc::new(arrow::array::BooleanArray::from(vec![true; rows]))],
+        )
+        .expect("valid compact boolean batch");
+        let mut registry = crate::schema::registry::SchemaRegistry::default();
+        let load_id = rdlt_core::LoadId::new("load");
+        let mode = rdlt_core::WriteMode::Append;
+        let policy = rdlt_core::SchemaPolicy::default();
+        let error = passthrough_items(
+            &batch,
+            &TableName::new("events"),
+            ShredContext {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+            },
+            DestinationCapabilities::default(),
+        )
+        .expect_err("oversized row count must refuse");
+
+        assert!(
+            error.to_string().contains("row cap"),
+            "the refusal names the independent bound: {error}"
+        );
+        assert!(registry.is_empty(), "nothing was registered before refusal");
+    }
+
+    #[test]
+    fn a_structured_schema_refuses_above_the_source_column_cap() {
+        let fields = (0..=MAX_SOURCE_COLUMNS_PER_TABLE)
+            .map(|index| arrow::datatypes::Field::new(format!("f{index}"), DataType::Null, true))
+            .collect::<Vec<_>>();
+        let batch = RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::new(fields)));
+        let error = schema_from_arrow(
+            &batch,
+            &TableName::new("events"),
+            DestinationCapabilities::default(),
+        )
+        .expect_err("one field beyond the cap must refuse");
+        assert!(error.to_string().contains("source-column cap"));
+    }
+
     /// Mutation-report closure: `Decimal128 { scale >= 0 }` guard — a negative
     /// scale must be a typed error, never a silent mapping.
     #[test]
@@ -344,6 +418,23 @@ mod tests {
         let err = column_type_from_arrow(&DataType::Decimal128(10, -2))
             .expect_err("negative scale must not map");
         assert!(err.contains("no logical mapping"), "got: {err}");
+    }
+
+    /// 2L6: the Arrow path must enforce the same decimal domain the JSON
+    /// hint path and destination-facing logical schema require.
+    #[test]
+    fn invalid_decimal_precision_and_scale_are_typed_errors() {
+        for invalid in [
+            DataType::Decimal128(0, 0),
+            DataType::Decimal128(39, 0),
+            DataType::Decimal128(10, 11),
+        ] {
+            assert!(
+                column_type_from_arrow(&invalid).is_err(),
+                "{invalid} must not enter the registry"
+            );
+        }
+        assert!(column_type_from_arrow(&DataType::Decimal128(38, 38)).is_ok());
     }
 
     /// Mutation-report closure: the List arm's inner-scalar match — a list of

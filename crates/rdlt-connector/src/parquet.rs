@@ -121,7 +121,7 @@ const fn default_dictionary_page_size_limit() -> usize {
 /// FIELD TYPE, so an omitted `dictionary_enabled` would come back `false`
 /// and omitted limits `0`. The struct's own `Default` impl delegates to
 /// the same functions so the two paths cannot drift.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ParquetOptions {
@@ -160,6 +160,42 @@ pub struct ParquetOptions {
     /// [`ParquetOptions::validate`] before it can reach the panic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_row_group_rows: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawParquetOptions {
+    #[serde(default = "default_compression")]
+    compression: ParquetCompression,
+    #[serde(default)]
+    compression_level: Option<i32>,
+    #[serde(default = "default_dictionary_enabled")]
+    dictionary_enabled: bool,
+    #[serde(default = "default_dictionary_page_size_limit")]
+    dictionary_page_size_limit: usize,
+    #[serde(default)]
+    data_page_size_limit: Option<usize>,
+    #[serde(default)]
+    max_row_group_rows: Option<usize>,
+}
+
+impl<'de> Deserialize<'de> for ParquetOptions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawParquetOptions::deserialize(deserializer)?;
+        let options = Self {
+            compression: raw.compression,
+            compression_level: raw.compression_level,
+            dictionary_enabled: raw.dictionary_enabled,
+            dictionary_page_size_limit: raw.dictionary_page_size_limit,
+            data_page_size_limit: raw.data_page_size_limit,
+            max_row_group_rows: raw.max_row_group_rows,
+        };
+        options.validate().map_err(serde::de::Error::custom)?;
+        Ok(options)
+    }
 }
 
 impl Default for ParquetOptions {
@@ -295,6 +331,19 @@ mod tests {
         let error = serde_json::from_str::<ParquetOptions>(r#"{"compresion": "zstd"}"#)
             .expect_err("typos must not be dropped");
         assert!(error.to_string().contains("compresion"), "{error}");
+    }
+
+    #[test]
+    fn invalid_options_are_refused_during_deserialization_without_a_caller_gate() {
+        let zero_rows = serde_json::from_str::<ParquetOptions>(r#"{"max_row_group_rows": 0}"#)
+            .expect_err("deserialization itself enforces the invariant");
+        assert!(zero_rows.to_string().contains("max_row_group_rows"));
+
+        let bad_level = serde_json::from_str::<ParquetOptions>(
+            r#"{"compression": "snappy", "compression_level": 3}"#,
+        )
+        .expect_err("levelless codecs refuse during deserialization");
+        assert!(bad_level.to_string().contains("snappy"));
     }
 
     #[test]

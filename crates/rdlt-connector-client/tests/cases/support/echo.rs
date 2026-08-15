@@ -37,9 +37,8 @@ use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
 
-/// The one config error both echo halves report through. `Display` is
-/// what a refused handshake carries verbatim over the wire — the
-/// client-side test pins `echo: rows must be > 0` against it.
+/// The one config error both echo halves report through. The serving
+/// boundary redacts any config value repeated in its `Display` text.
 #[derive(Debug, thiserror::Error)]
 pub enum EchoError {
     #[error("echo yaml: {0}")]

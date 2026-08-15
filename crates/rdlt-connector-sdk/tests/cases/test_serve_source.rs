@@ -230,10 +230,10 @@ async fn unrecognized_role_handshake_refuses_with_its_own_spelling() {
     }
 }
 
-/// An invalid config document refuses FATAL, carrying the `Document`'s
-/// own validate wording verbatim — nothing the serve layer adds.
+/// An invalid config document refuses FATAL, preserving the validation
+/// wording while redacting scalar values repeated from the document.
 #[tokio::test]
-async fn an_invalid_config_refuses_fatal_with_the_documents_own_wording() {
+async fn an_invalid_config_refuses_fatal_with_scalar_values_redacted() {
     let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
@@ -250,7 +250,10 @@ async fn an_invalid_config_refuses_fatal_with_the_documents_own_wording() {
     match reply.outcome {
         Some(handshake_reply::Outcome::Error(error)) => {
             assert_eq!(error.classification, Classification::Fatal as i32);
-            assert_eq!(error.message, "echo: rows must be > 0");
+            assert_eq!(
+                error.message,
+                "echo: rows must be > [redacted config value]"
+            );
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -693,14 +696,11 @@ async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
 /// must not leave the connector's producer running forever.
 /// `rows: 10_000_000` keeps `EchoSource` producing well past the drop;
 /// pulling a few frames first proves the producer is actually running
-/// ahead of the client (not merely parked before its first push) when
-/// the drop happens. `EchoSource` flips `echo::break_observed()` the
-/// moment its push observes `ControlFlow::Break` — this is what makes
-/// the forwarder's `records_in.close()` on a failed send deletion-red:
-/// remove that close and this test hangs to its timeout instead of
-/// passing.
+/// ahead of the client when the drop happens. Cancellation may either
+/// let an in-flight push observe `ControlFlow::Break` or abort the read
+/// immediately; the durable contract is that the task is dropped.
 #[tokio::test]
-async fn a_dropped_response_stream_cancels_the_connector_within_a_timeout() {
+async fn a_dropped_response_stream_drops_the_connector_task_within_a_timeout() {
     let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
@@ -736,7 +736,7 @@ async fn a_dropped_response_stream_cancels_the_connector_within_a_timeout() {
     drop(frames);
 
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !echo::break_observed() {
+        while !echo::read_task_dropped() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
@@ -744,8 +744,52 @@ async fn a_dropped_response_stream_cancels_the_connector_within_a_timeout() {
 
     assert!(
         observed.is_ok(),
-        "the connector's read task must observe Break within the timeout, not hang"
+        "the connector's read task must be dropped within the timeout, not hang"
     );
+}
+
+#[tokio::test]
+async fn a_dropped_response_stream_aborts_a_connector_parked_between_pushes() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: serde_json::to_vec(&serde_json::json!({
+                "rows": 2,
+                "park_after_first": true
+            }))
+            .expect("config"),
+        })
+        .await
+        .expect("handshake");
+
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: numbers_stream_spec_json(),
+            since_cursor_json: None,
+        })
+        .await
+        .expect("read")
+        .into_inner();
+    frames
+        .message()
+        .await
+        .expect("frame transport")
+        .expect("the first frame arrives");
+    drop(frames);
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !echo::read_task_dropped() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the forwarding task aborts a reader parked between pushes");
 }
 
 /// The refusal-secrecy pin, parse seat: `config_json` that is not
@@ -824,10 +868,10 @@ async fn a_wrong_typed_config_refusal_redacts_the_secret_value() {
     }
 }
 
-/// The shield redacts VALUES, not wording: a connector's own validate
-/// refusal — which quotes no config value — crosses back untouched.
+/// The shield applies to connector validation messages too: a scalar
+/// config value repeated by the connector is still removed.
 #[tokio::test]
-async fn a_validate_refusal_keeps_the_connector_wording_untouched() {
+async fn a_validate_refusal_redacts_a_repeated_scalar_value() {
     let (_dir, path) = socket_path();
     let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
@@ -843,7 +887,10 @@ async fn a_validate_refusal_keeps_the_connector_wording_untouched() {
         .into_inner();
     match reply.outcome {
         Some(handshake_reply::Outcome::Error(error)) => {
-            assert_eq!(error.message, "echo: rows must be > 0");
+            assert_eq!(
+                error.message,
+                "echo: rows must be > [redacted config value]"
+            );
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

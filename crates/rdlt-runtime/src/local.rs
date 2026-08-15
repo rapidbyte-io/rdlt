@@ -16,7 +16,7 @@ use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
 use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
 use crate::managed::{LifecycleGuard, ManagedDestination, ManagedSource};
 use crate::provider::{ConnectorProvider, ProviderError};
@@ -49,6 +49,33 @@ const MAX_LINE_BYTES: u64 = 64 * 1024;
 /// — and on the flagless dual-role probe, skip the destination retry
 /// keyed to the exit code — so the grace errs far toward waiting.
 const EOF_EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Observe child exit without reaping it. `WNOWAIT` keeps the direct pid
+/// anchored until the process-group kill has run, avoiding a group-id reuse
+/// race before descendants are swept.
+async fn exited_without_reaping(pid: u32, deadline: tokio::time::Instant) -> bool {
+    let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return false;
+    };
+    loop {
+        let options = rustix::process::WaitIdOptions::EXITED
+            | rustix::process::WaitIdOptions::NOHANG
+            | rustix::process::WaitIdOptions::NOWAIT;
+        if matches!(
+            rustix::process::waitid(rustix::process::WaitId::Pid(pid), options),
+            Ok(Some(_))
+        ) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
 
 /// Spawns connector binaries and manages their lifecycle (D-039-1).
 ///
@@ -168,10 +195,9 @@ impl LocalBinaryConnectorProvider {
     }
 
     /// Spawn `path` for `role` and read EXACTLY ONE stdout line under
-    /// the line timeout. Every error path lets the just-spawned `Child`
-    /// drop, and the spawn sets `kill_on_drop` — so a binary that
-    /// times out or writes garbage is killed here, before any guard
-    /// exists to do it.
+    /// the line timeout. A lifecycle guard owns the new process group
+    /// immediately, so every error kills the direct child and anything
+    /// it forked even before a socket path is known.
     ///
     /// `quiet_stderr` nulls the child's stderr instead of inheriting
     /// it — for [`Self::spec`]'s role probing, where a wrong-role
@@ -183,12 +209,13 @@ impl LocalBinaryConnectorProvider {
         binary: &str,
         role: &str,
         quiet_stderr: bool,
-    ) -> Result<(Child, Line), ProviderError> {
+    ) -> Result<(LifecycleGuard, Line), ProviderError> {
         let spawn_error = |source| ProviderError::Spawn {
             binary: binary.to_string(),
             source,
         };
-        let mut child = Command::new(path)
+        let mut command = Command::new(path);
+        command
             // The T6 bin contract's spelling: `--role=source|destination`.
             .arg(format!("--role={role}"))
             // stdout is the machine channel (the one handshake line);
@@ -202,13 +229,28 @@ impl LocalBinaryConnectorProvider {
                 Stdio::inherit()
             })
             .stdin(Stdio::null())
-            // Belt beside the guard's own start_kill: a child dropped
-            // before a guard exists dies with its `Child`.
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(spawn_error)?;
+            // Connector configuration is explicit; the host process's
+            // ambient credentials are not an implicit second config
+            // channel. Retain only locale/temp/process-discovery data.
+            .env_clear()
+            // Belt beside the guard's group kill.
+            .process_group(0)
+            .kill_on_drop(true);
+        for key in [
+            "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let child = command.spawn().map_err(spawn_error)?;
+        // Own the process group immediately: every line-read/parse
+        // failure below now kills descendants too, before a socket path
+        // is even known.
+        let mut guard = LifecycleGuard::new_process_group(child);
 
-        let stdout = child
+        let stdout = guard
+            .child_mut()
             .stdout
             .take()
             .expect("stdout was piped at spawn, so the child carries it");
@@ -234,18 +276,20 @@ impl LocalBinaryConnectorProvider {
                     // empty line falls through to the parse refusal
                     // below (the still-running child dies with its
                     // kill_on_drop handle).
-                    let grace = tokio::time::Instant::now() + EOF_EXIT_GRACE;
-                    match tokio::time::timeout_at(deadline.min(grace), child.wait()).await {
-                        Err(_elapsed) => {}
-                        Ok(Err(source)) => return Err(spawn_error(source)),
-                        Ok(Ok(status)) if !status.success() => {
+                    let grace = deadline.min(tokio::time::Instant::now() + EOF_EXIT_GRACE);
+                    let pid = guard.pid();
+                    if let Some(pid) = pid
+                        && exited_without_reaping(pid, grace).await
+                    {
+                        guard.kill_process_group();
+                        let status = guard.child_mut().wait().await.map_err(spawn_error)?;
+                        if !status.success() {
                             return Err(ProviderError::ExitedBeforeHandshake {
                                 binary: binary.to_string(),
                                 role: role.to_string(),
                                 status,
                             });
                         }
-                        Ok(Ok(_status)) => {}
                     }
                 }
                 if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE_BYTES {
@@ -274,7 +318,8 @@ impl LocalBinaryConnectorProvider {
                         ours: PROTOCOL_VERSION,
                     });
                 }
-                Ok((child, parsed))
+                guard.set_socket_path(parsed.socket_path.clone());
+                Ok((guard, parsed))
             }
         }
     }
@@ -336,11 +381,11 @@ impl LocalBinaryConnectorProvider {
             Role::Source => "source",
             Role::Destination => "destination",
         };
-        let (child, line) = self.spawn_and_read_line(&path, &binary, role, true).await?;
+        let (guard, line) = self.spawn_and_read_line(&path, &binary, role, true).await?;
         // The guard exists from the moment a socket path is known — the
         // child and its socket die with this scope whether the RPC
         // below answers or refuses.
-        let _guard = LifecycleGuard::new(child, line.socket_path.clone());
+        let _guard = guard;
         let channel = dial(
             &line.socket_path,
             self.engine_budget_bytes,
@@ -405,13 +450,12 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
         config: &serde_json::Value,
     ) -> Result<ManagedSource, ProviderError> {
         let (path, binary) = self.resolve(requirement)?;
-        let (child, line) = self
+        let (guard, line) = self
             .spawn_and_read_line(&path, &binary, "source", false)
             .await?;
         // The guard exists from the moment a socket path is known: any
         // failure below drops it, which kills the child AND unlinks
         // whatever the connector may already have bound.
-        let guard = LifecycleGuard::new(child, line.socket_path.clone());
         let (adapter, outcome) = source::Source::connect(
             &line.socket_path,
             self.engine_budget_bytes,
@@ -433,10 +477,9 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
         config: &serde_json::Value,
     ) -> Result<ManagedDestination, ProviderError> {
         let (path, binary) = self.resolve(requirement)?;
-        let (child, line) = self
+        let (guard, line) = self
             .spawn_and_read_line(&path, &binary, "destination", false)
             .await?;
-        let guard = LifecycleGuard::new(child, line.socket_path.clone());
         let (adapter, outcome) = destination::Destination::connect(
             &line.socket_path,
             self.engine_budget_bytes,

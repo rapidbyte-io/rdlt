@@ -13,13 +13,13 @@
 
 use std::collections::VecDeque;
 
-use rdlt_connector::{DestinationCapabilities, StreamSpec};
+use rdlt_connector::{DestinationCapabilities, StreamSpec, channel::MAX_RECORD_BATCH_ROWS};
 use rdlt_core::{
     ParentLink, RdltError, RowId, TableName, identity::child_row_id, naming::child_table_name,
 };
 
 use super::{
-    DrainRow, ShredContext,
+    DrainRow, MAX_CHILD_TABLES_PER_PARENT, ShredContext,
     arena::{Arena, NodeId},
     drain_tables,
     infer::{ColumnState, ScalarState},
@@ -72,17 +72,17 @@ impl TapeShredder {
         spec: StreamSpec,
         capabilities: DestinationCapabilities,
         root_table: TableName,
-    ) -> Self {
+    ) -> Result<Self, RdltError> {
         let mut root = TableBuffer::new(root_table, None, capabilities.ident_rules);
         // Hints pin root-level scalar columns (they win over inference).
         for (column, ty) in &spec.type_hints {
-            *root.state_mut(column) = ColumnState::Scalar(ScalarState::pinned(*ty));
+            *root.state_mut(column)? = ColumnState::Scalar(ScalarState::pinned(*ty));
         }
-        Self {
+        Ok(Self {
             spec,
             capabilities,
             tables: vec![root],
-        }
+        })
     }
 
     /// Shred one raw push END-TO-END: parse into a slab arena, traverse and
@@ -99,6 +99,14 @@ impl TapeShredder {
 
         let mut arena = Arena::sized_for(bytes.len());
         let roots = arena.parse_rows(bytes).map_err(PushError::Json)?;
+        if roots.len() > MAX_RECORD_BATCH_ROWS {
+            return Err(PushError::Engine(RdltError::config(format!(
+                "JSON push carries {} rows, over the {MAX_RECORD_BATCH_ROWS}-row cap — \
+                 row count is bounded separately from encoded bytes to prevent per-row \
+                 lineage and load-id amplification",
+                roots.len()
+            ))));
+        }
 
         // Buffered rows per table, index-aligned with `self.tables`.
         let mut rows: Vec<Vec<TapeRow>> = self.tables.iter().map(|_| Vec::new()).collect();
@@ -112,7 +120,8 @@ impl TapeShredder {
                 lists_as_columns,
                 &mut rows,
                 &mut hash_scratch,
-            );
+            )
+            .map_err(PushError::Engine)?;
         }
 
         // Lower into the shared drain representation and run the ONE pipeline.
@@ -146,7 +155,7 @@ impl TapeShredder {
         lists_as_columns: bool,
         rows: &mut Vec<Vec<TapeRow>>,
         hash_scratch: &mut Vec<u8>,
-    ) {
+    ) -> Result<(), RdltError> {
         let root_id = row_identity(
             self.spec.primary_key.as_deref(),
             arena.node(root),
@@ -169,14 +178,14 @@ impl TapeShredder {
             // arena; table state is disjoint, so both borrows coexist.
             let mut child_lists: Vec<(String, Vec<NodeId>)> = Vec::new();
             for (key, value) in arena.node(entry.node).obj_entries() {
-                let state = self.tables[entry.table_idx].state_mut(key);
+                let state = self.tables[entry.table_idx].state_mut(key)?;
                 state.observe(value, lists_as_columns);
                 if state.is_child_table() && value.is_array() {
                     child_lists.push((key.to_owned(), value.arr_items().map(|n| n.id()).collect()));
                 }
             }
 
-            self.enqueue_children(child_lists, &entry, arena, rows, &mut queue, hash_scratch);
+            self.enqueue_children(child_lists, &entry, arena, rows, &mut queue, hash_scratch)?;
 
             rows[entry.table_idx].push(TapeRow {
                 node: entry.node,
@@ -186,6 +195,7 @@ impl TapeShredder {
                 pos: entry.pos,
             });
         }
+        Ok(())
     }
 
     /// Enqueue the child rows discovered under one node: each non-null list item
@@ -199,9 +209,9 @@ impl TapeShredder {
         rows: &mut Vec<Vec<TapeRow>>,
         queue: &mut VecDeque<Queued>,
         hash_scratch: &mut Vec<u8>,
-    ) {
+    ) -> Result<(), RdltError> {
         for (key, items) in child_lists {
-            let child_idx = self.child_table_idx(entry.table_idx, &key, rows);
+            let child_idx = self.child_table_idx(entry.table_idx, &key, rows)?;
             for (i, item) in items.into_iter().enumerate() {
                 if arena.node(item).is_null() {
                     continue;
@@ -224,6 +234,7 @@ impl TapeShredder {
                 });
             }
         }
+        Ok(())
     }
 
     fn child_table_idx(
@@ -231,7 +242,7 @@ impl TapeShredder {
         parent_idx: usize,
         source_key: &str,
         rows: &mut Vec<Vec<TapeRow>>,
-    ) -> usize {
+    ) -> Result<usize, RdltError> {
         // Memo hit: this parent has resolved this exact source key before.
         // Every document in a push repeats its keys, so after the first one
         // this replaces a normalized-name construction (which formats, and may
@@ -242,7 +253,14 @@ impl TapeShredder {
             .find(|(key, _)| key == source_key)
             .map(|(_, idx)| *idx)
         {
-            return idx;
+            return Ok(idx);
+        }
+        if self.tables[parent_idx].child_tables.len() >= MAX_CHILD_TABLES_PER_PARENT {
+            return Err(RdltError::config(format!(
+                "table `{}` exceeds the {MAX_CHILD_TABLES_PER_PARENT}-child-table cap \
+                 while observing key {source_key:?}",
+                self.tables[parent_idx].table
+            )));
         }
         let parent_table = self.tables[parent_idx].table.clone();
         let parent_depth = self.tables[parent_idx]
@@ -275,6 +293,28 @@ impl TapeShredder {
         self.tables[parent_idx]
             .child_tables
             .push((source_key.to_owned(), idx));
-        idx
+        Ok(idx)
+    }
+}
+
+#[cfg(test)]
+mod cardinality_tests {
+    use super::*;
+
+    #[test]
+    fn a_parent_refuses_a_new_child_key_at_the_child_table_cap() {
+        let mut shredder = TapeShredder::new(
+            StreamSpec::new("events"),
+            DestinationCapabilities::default(),
+            TableName::new("events"),
+        )
+        .expect("shredder");
+        shredder.tables[0].child_tables = (0..MAX_CHILD_TABLES_PER_PARENT)
+            .map(|index| (format!("child-{index}"), 0))
+            .collect();
+        let error = shredder
+            .child_table_idx(0, "one-too-many", &mut vec![Vec::new()])
+            .expect_err("the child-table cap must refuse");
+        assert!(error.to_string().contains("child-table cap"));
     }
 }

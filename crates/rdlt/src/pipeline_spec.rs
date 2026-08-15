@@ -18,7 +18,10 @@
 //! refusal arrives in the connector's own wording, never a facade
 //! paraphrase.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read as _,
+    path::{Path, PathBuf},
+};
 
 use rdlt_runtime::{ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider};
 use serde::Deserialize;
@@ -184,12 +187,81 @@ impl std::fmt::Debug for ConfigSource {
 /// document reads answer to one number.
 pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Reject YAML graph syntax before deserialization. `serde_yaml` expands
+/// anchors and aliases while constructing the target value, so an input-byte
+/// cap cannot bound the resulting allocation. Pipeline and connector config
+/// documents are trees; graph aliases are unnecessary and are refused at the
+/// raw-text boundary.
+fn reject_yaml_graph_syntax(text: &str) -> Result<(), String> {
+    #[derive(Clone, Copy)]
+    enum State {
+        Plain,
+        SingleQuoted,
+        DoubleQuoted,
+        Comment,
+    }
+
+    let mut state = State::Plain;
+    let mut chars = text.char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
+        match state {
+            State::Plain => match ch {
+                '\'' => state = State::SingleQuoted,
+                '"' => state = State::DoubleQuoted,
+                '#' => state = State::Comment,
+                '&' | '*' => {
+                    return Err(format!(
+                        "YAML anchors and aliases are refused (graph indicator `{ch}` at byte \
+                         {offset}) — configuration documents must be trees"
+                    ));
+                }
+                _ => {}
+            },
+            State::SingleQuoted => {
+                if ch == '\'' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                        chars.next();
+                    } else {
+                        state = State::Plain;
+                    }
+                }
+            }
+            State::DoubleQuoted => match ch {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => state = State::Plain,
+                _ => {}
+            },
+            State::Comment => {
+                if ch == '\n' {
+                    state = State::Plain;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    reject_yaml_graph_syntax(text)?;
+    serde_yaml::from_str(text).map_err(|error| error.to_string())
+}
+
+/// Parse one pipeline document through the raw-text security gates.
+pub fn parse_spec(text: &str) -> Result<Spec, String> {
+    parse_yaml(text)
+}
+
 /// Read a document file with the [`MAX_DOCUMENT_BYTES`] cap enforced
 /// BEFORE the read — the refusal names the size and the cap.
-pub(crate) fn read_document(path: &Path) -> Result<String, String> {
-    let len = std::fs::metadata(path)
-        .map_err(|e| format!("reading {}: {e}", path.display()))?
-        .len();
+pub fn read_document(path: &Path) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let mut text = String::new();
+    file.take(MAX_DOCUMENT_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let len = text.len() as u64;
     if len > MAX_DOCUMENT_BYTES {
         return Err(format!(
             "reading {}: the file is {len} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
@@ -199,7 +271,7 @@ pub(crate) fn read_document(path: &Path) -> Result<String, String> {
             path.display()
         ));
     }
-    std::fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))
+    Ok(text)
 }
 
 impl ConfigSource {
@@ -219,7 +291,7 @@ impl ConfigSource {
                     serde_json::from_str(&text)
                         .map_err(|e| SpecError::resolve(format!("parsing {}: {e}", path.display())))
                 } else {
-                    serde_yaml::from_str(&text)
+                    parse_yaml(&text)
                         .map_err(|e| SpecError::resolve(format!("parsing {}: {e}", path.display())))
                 }
             }
@@ -550,7 +622,7 @@ mod workdir_tests {
     use super::*;
 
     fn spec_from(yaml: &str) -> Spec {
-        serde_yaml::from_str(yaml).expect("the fixture document parses")
+        parse_spec(yaml).expect("the fixture document parses")
     }
 
     const BODY: &str = "source:\n  postgres: s.yaml\ndestination:\n  duckdb: {path: out.db}\n";
@@ -644,10 +716,9 @@ mod document_cap_tests {
     use super::*;
 
     /// A config path naming a file over the document cap refuses typed
-    /// BEFORE the read (045 external findings, KIMI 5): the length
-    /// comes from metadata, so nothing multi-megabyte is ever slurped
-    /// into memory or fed to the recursive YAML parser. The fixture is
-    /// sparse — `set_len` claims the size without writing it.
+    /// through a bounded `MAX+1` read (045 external findings, KIMI 5): a
+    /// concurrent grow cannot race a prior metadata check and feed extra bytes
+    /// to the parser. The sparse fixture proves the read itself owns the cap.
     #[test]
     fn an_oversized_config_file_refuses_before_the_read() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -680,5 +751,29 @@ mod document_cap_tests {
                 .resolve(dir.path())
                 .is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod yaml_graph_tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_anchors_and_aliases_refuse_before_deserialization() {
+        let yaml = "pipeline: p\n\
+                    source:\n  connector:\n    id: io.example.source\n    config: &shared {token: secret}\n\
+                    destination:\n  connector:\n    id: io.example.destination\n    config: *shared\n";
+        let error = parse_spec(yaml).expect_err("YAML graph syntax must refuse");
+        assert!(error.contains("anchors and aliases"), "{error}");
+    }
+
+    #[test]
+    fn quoted_indicators_and_comments_remain_plain_data() {
+        let value: serde_json::Value = parse_yaml(
+            "literal_alias: '*not-an-alias'\nliteral_anchor: \"&not-an-anchor\"\n# *comment\n",
+        )
+        .expect("indicators in scalars and comments are data");
+        assert_eq!(value["literal_alias"], "*not-an-alias");
+        assert_eq!(value["literal_anchor"], "&not-an-anchor");
     }
 }

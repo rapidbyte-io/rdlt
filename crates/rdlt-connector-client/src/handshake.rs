@@ -252,6 +252,9 @@ pub async fn handshake(
     // judgment — and ride the same rule as the wire-reported pair.
     refuse_control_characters_in("spec name", &spec.name)?;
     refuse_control_characters_in("spec version", &spec.version)?;
+    for state_format_name in ok.state_format_versions.keys() {
+        refuse_control_characters_in("state format name", state_format_name)?;
+    }
     // Empty means "a source" per the proto field's own doc — only a
     // non-empty payload claims to be a capabilities document.
     let capabilities: Option<DestinationCapabilities> = if ok.capabilities_json.is_empty() {

@@ -92,8 +92,9 @@ blake3 = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 tokio-util = "0.7"
 fs4 = "0.13"
-# CLI-only: the mallopt FFI (rdlt-cli) — the sole sanctioned unsafe in the tree.
+# Unix open flags (engine) and the CLI's mallopt FFI.
 libc = "0.2"
+rustix = { version = "1.1", features = ["process"] }
 
 # Out-of-process connector protocol (038): rdlt-connector-protocol is a LEAF
 # crate. rdlt-connector-sdk also reaches tonic, but ONLY behind its `serve`
@@ -208,4 +209,3 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
-

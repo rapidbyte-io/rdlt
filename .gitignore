@@ -46,4 +46,6 @@ connectors/python/rdlt-connector-pyjsonl/__pycache__/
 # Run artifacts at the repo root (workdirs from ad-hoc pipeline runs),
 # and the on-disk TMPDIR the gate uses to stay off the RAM tmpfs.
 /.rdlt*/
+# Nested benchmark/example workdirs, including per-load spellings.
+**/.rdlt*/
 /.tmp-real/

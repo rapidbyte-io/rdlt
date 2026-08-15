@@ -34,7 +34,7 @@ impl Pretty {
         let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(10));
         let header = multi.add(ProgressBar::no_length());
         header.set_style(ProgressStyle::with_template("  {msg}").expect("static template"));
-        header.set_message(format!("pipeline {pipeline}"));
+        header.set_message(format!("pipeline {}", super::sanitize_identifier(pipeline)));
         let totals = multi.add(ProgressBar::no_length());
         totals.set_style(ProgressStyle::with_template("  {msg}").expect("static template"));
         Self {

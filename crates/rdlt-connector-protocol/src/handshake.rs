@@ -21,6 +21,11 @@ const LINE_FORMAT_VERSION: u32 = 1;
 
 const LEADING_TOKEN: &str = "rdlt-connector";
 
+/// Linux `sockaddr_un.sun_path` holds 108 bytes including the terminating NUL.
+/// The project currently supports pathname sockets, not the Linux abstract
+/// namespace, so 107 UTF-8 bytes is the portable wire ceiling used here.
+const MAX_SOCKET_PATH_BYTES: usize = 107;
+
 /// A parsed (or about-to-be-rendered) handshake line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
@@ -91,6 +96,22 @@ impl Line {
         if socket_path.is_empty() {
             return Err(LineError::Malformed("socket_path is empty".to_string()));
         }
+        if !std::path::Path::new(socket_path).is_absolute() {
+            return Err(LineError::Malformed(
+                "socket_path is not absolute".to_string(),
+            ));
+        }
+        if socket_path.len() > MAX_SOCKET_PATH_BYTES {
+            return Err(LineError::Malformed(format!(
+                "socket_path is {} bytes, over the {MAX_SOCKET_PATH_BYTES}-byte Unix socket cap",
+                socket_path.len()
+            )));
+        }
+        if socket_path.chars().any(char::is_control) {
+            return Err(LineError::Malformed(
+                "socket_path contains control characters".to_string(),
+            ));
+        }
 
         Ok(Line {
             socket_path: PathBuf::from(socket_path),
@@ -156,5 +177,24 @@ mod tests {
             Line::parse("rdlt-connector|9|0|0|/x").is_err(),
             "unknown line-format version refuses"
         );
+    }
+
+    #[test]
+    fn socket_paths_are_absolute_bounded_and_control_free() {
+        for line in [
+            "rdlt-connector|1|0|0|relative.sock".to_string(),
+            format!(
+                "rdlt-connector|1|0|0|/{}",
+                "x".repeat(MAX_SOCKET_PATH_BYTES)
+            ),
+            "rdlt-connector|1|0|0|/tmp/evil\u{1b}.sock".to_string(),
+        ] {
+            assert!(Line::parse(&line).is_err(), "must refuse {line:?}");
+        }
+        let longest = format!(
+            "rdlt-connector|1|0|0|/{}",
+            "x".repeat(MAX_SOCKET_PATH_BYTES - 1)
+        );
+        assert!(Line::parse(&longest).is_ok(), "107-byte path remains valid");
     }
 }

@@ -6,7 +6,8 @@
 //! lines or drives escape sequences (OSC 52 clipboard writes, ANSI
 //! resets) through an operator's terminal. The rule: a control
 //! character is anything `char::is_control` names — C0 including
-//! newline, tab and DEL, plus C1.
+//! newline, tab and DEL, plus C1 — or an invisible Unicode formatting
+//! character that can reorder or conceal identifier text.
 //!
 //! Three dispositions, by what the text IS:
 //!
@@ -29,10 +30,25 @@
 
 use std::borrow::Cow;
 
-/// Does `text` carry any control character (C0 incl. newline/tab/DEL,
-/// or C1)? The one predicate every refusal seat asks.
+/// Does `text` carry any control or invisible formatting character?
+/// The one predicate every refusal seat asks.
 pub(crate) fn contains_control(text: &str) -> bool {
-    text.chars().any(char::is_control)
+    text.chars().any(is_unsafe_display_character)
+}
+
+fn is_unsafe_display_character(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{00ad}'
+                | '\u{061c}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
+        )
 }
 
 /// Render `text` inert for display: each control character becomes its
@@ -46,7 +62,7 @@ pub(crate) fn escape_control_characters(text: &str) -> Cow<'_, str> {
     }
     let mut escaped = String::with_capacity(text.len() + 8);
     for character in text.chars() {
-        if character.is_control() {
+        if is_unsafe_display_character(character) {
             escaped.extend(character.escape_debug());
         } else {
             escaped.push(character);
@@ -62,8 +78,17 @@ mod tests {
     /// The rule's edges: C0, DEL, and C1 are control; ordinary text —
     /// non-ASCII included — is not.
     #[test]
-    fn the_predicate_covers_c0_del_and_c1() {
-        for hostile in ["a\u{1b}b", "a\nb", "a\tb", "a\u{7f}b", "a\u{85}b"] {
+    fn the_predicate_covers_controls_and_invisible_formatting() {
+        for hostile in [
+            "a\u{1b}b",
+            "a\nb",
+            "a\tb",
+            "a\u{7f}b",
+            "a\u{85}b",
+            "a\u{200b}b",
+            "a\u{2028}b",
+            "a\u{202e}b",
+        ] {
             assert!(contains_control(hostile), "{hostile:?} is control");
         }
         for clean in ["orders", "Événements", "naïve — text", ""] {

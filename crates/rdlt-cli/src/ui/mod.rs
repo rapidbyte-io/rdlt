@@ -45,6 +45,37 @@ pub fn sanitize(text: &str) -> String {
     out
 }
 
+/// Escape every character unsafe in a one-line identifier seat. Unlike
+/// [`sanitize`], newlines and tabs are not formatting here: accepting
+/// them would let a pipeline/table name mint additional terminal lines.
+pub fn sanitize_identifier(text: &str) -> String {
+    fn unsafe_character(character: char) -> bool {
+        character.is_control()
+            || matches!(
+                character,
+                '\u{00ad}'
+                    | '\u{061c}'
+                    | '\u{180e}'
+                    | '\u{200b}'..='\u{200f}'
+                    | '\u{2028}'..='\u{202e}'
+                    | '\u{2060}'..='\u{206f}'
+                    | '\u{feff}'
+                    | '\u{fff9}'..='\u{fffb}'
+            )
+    }
+
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        if unsafe_character(character) {
+            use std::fmt::Write as _;
+            let _ = write!(out, "\\u{{{:x}}}", character as u32);
+        } else {
+            out.push(character);
+        }
+    }
+    out
+}
+
 pub mod format;
 pub mod plain;
 pub mod pretty;
@@ -94,6 +125,14 @@ mod tests {
         assert_eq!(sanitize("\u{9b}31m"), "\\u{9b}31m");
         // A bare carriage return overwrites the line it lands on.
         assert_eq!(sanitize("a\rb"), "a\\u{d}b");
+    }
+
+    #[test]
+    fn identifier_sanitizing_refuses_line_breaks_and_bidi_formatting() {
+        assert_eq!(
+            sanitize_identifier("pipeline\nFORGED\u{202e}"),
+            "pipeline\\u{a}FORGED\\u{202e}"
+        );
     }
 
     /// The selection ladder: quiet beats everything; -v, a pipe, or

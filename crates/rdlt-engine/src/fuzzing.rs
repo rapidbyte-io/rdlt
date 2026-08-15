@@ -17,11 +17,13 @@ pub fn parse_slab(bytes: &[u8]) {
 /// build. Asserts the cheap invariants inline (unique destination names).
 pub fn shred_slab(bytes: &[u8]) {
     let capabilities = DestinationCapabilities::default();
-    let mut shredder = crate::shred::TapeShredder::new(
+    let Ok(mut shredder) = crate::shred::TapeShredder::new(
         StreamSpec::new("fuzz"),
         capabilities,
         TableName::new("fuzz"),
-    );
+    ) else {
+        return;
+    };
     let mut registry = crate::schema::registry::SchemaRegistry::default();
     let (load_id, mode, policy) = (
         LoadId::new("fuzz-load"),
@@ -77,7 +79,8 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
         StreamSpec::new("bench"),
         capabilities,
         TableName::new("bench"),
-    );
+    )
+    .expect("bench shredder constructs");
     let mut registry = crate::schema::registry::SchemaRegistry::default();
     let (load_id, mode, policy) = (
         LoadId::new("bench-load"),

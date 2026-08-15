@@ -24,6 +24,7 @@ pub fn render(report: &RunReport) -> String {
     let total_rows: u64 = report.tables.values().map(|t| t.rows).sum();
     let total_bytes: u64 = report.tables.values().map(|t| t.bytes).sum();
     let mut out = String::new();
+    let pipeline = super::sanitize_identifier(report.pipeline.as_str());
 
     let resumed = match &report.resumed_from {
         ResumedFrom::Fresh => "fresh".to_owned(),
@@ -38,7 +39,7 @@ pub fn render(report: &RunReport) -> String {
     out.push_str(&format!(
         "\n  {} {} · {} · {} · {} · {resumed}\n",
         style("✔").green().bold(),
-        style(report.pipeline.as_str()).bold(),
+        style(pipeline).bold(),
         format::duration(elapsed),
         style("exactly-once").dim(),
         format::commits(report.commits),
@@ -49,10 +50,14 @@ pub fn render(report: &RunReport) -> String {
     // on SQL destinations would imply a measurement that never
     // happened.
     let any_output = report.tables.values().any(|t| t.output_bytes > 0);
-    let name_width = report
+    let safe_table_names: Vec<String> = report
         .tables
         .keys()
-        .map(|t| t.as_str().len())
+        .map(|table| super::sanitize_identifier(table.as_str()))
+        .collect();
+    let name_width = safe_table_names
+        .iter()
+        .map(String::len)
         .max()
         .unwrap_or(5)
         .max("table".len());
@@ -69,7 +74,7 @@ pub fn render(report: &RunReport) -> String {
         style("rate").dim(),
     ));
     let elapsed_secs = elapsed.as_secs_f64();
-    for (table, totals) in &report.tables {
+    for ((_, totals), table) in report.tables.iter().zip(safe_table_names) {
         let rate = if elapsed_secs > f64::EPSILON && totals.rows > 0 {
             format::rate(totals.rows as f64 / elapsed_secs)
         } else {
@@ -82,7 +87,7 @@ pub fn render(report: &RunReport) -> String {
         };
         out.push_str(&format!(
             "  {:<name_width$}  {:>10}  {:>10}{output}  {:>10}\n",
-            table.as_str(),
+            table,
             format::count(totals.rows),
             format::bytes(totals.bytes),
             rate,
