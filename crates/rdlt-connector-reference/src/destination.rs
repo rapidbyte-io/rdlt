@@ -2,17 +2,21 @@
 //! output directory.
 //!
 //! Staging is in-memory (a crashed session's staging simply vanishes —
-//! the open contract by construction); publish writes each table's
-//! staged rows to `<table>-<load_id>-<part>.jsonl`, persists the state
-//! document, and appends a receipt line LAST — each step fsynced, so
-//! the receipt can only be durable after the parts and state it
-//! acknowledges are. The part number IS the commit sequence,
+//! the open contract by construction); publish stream-encodes each
+//! table's staged rows to `<table>-<load_id>-<part>.jsonl`, persists
+//! the state document, and appends a receipt line LAST — each step
+//! fsynced, so the receipt can only be durable after the parts and
+//! state it acknowledges are. The part number IS the commit sequence,
 //! deliberately: a crash after the parts but before the receipt leaves
 //! no receipt, so the retried commit re-publishes — and deterministic
 //! names make that re-publish overwrite its own files instead of
-//! duplicating them. One session at a time: connect takes an OS
-//! advisory lease beside the state slot, released on drop and on
-//! process death.
+//! duplicating them. Staging clears only after the receipt append:
+//! a mid-publish failure (transient by classification) leaves it
+//! intact, so a client retrying the SAME commit without re-writing
+//! re-persists every row over those same deterministic names instead
+//! of minting a receipt for an empty publish. One session at a time:
+//! connect takes an OS advisory lease beside the state slot, released
+//! on drop and on process death.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -307,30 +311,25 @@ impl Backend for Writer {
         // page cache would, after power loss, answer `existing_receipt`
         // for a commit whose rows are gone: replay would drop the
         // redelivered staging and the loss would be silent.
-        let mut tables: BTreeMap<TableName, Vec<RecordBatch>> = BTreeMap::new();
-        self.staged_bytes = 0;
-        for (table, batch) in self.staged.drain(..) {
+        //
+        // Staging is read BY REFERENCE and cleared only after the
+        // receipt append — never drained up front. Mid-publish failures
+        // classify transient, and a client retrying the SAME commit
+        // without re-writing is exactly what that classification
+        // invites: a drain would hand that retry EMPTY staging, and the
+        // zero-part publish would still write state and append a
+        // receipt `existing_receipt` then vouches for — rows silently
+        // gone. With staging intact, the retry re-persists everything
+        // convergently over the same deterministic part names.
+        let mut tables: BTreeMap<&TableName, Vec<&RecordBatch>> = BTreeMap::new();
+        for (table, batch) in &self.staged {
             tables.entry(table).or_default().push(batch);
         }
         for (table, batches) in &tables {
             part_component(table)?;
-            let mut encoded = Vec::new();
-            let mut writer = arrow::json::LineDelimitedWriter::new(&mut encoded);
-            for batch in batches {
-                writer.write(batch).map_err(|error| {
-                    DestinationError::fatal(format!(
-                        "reference destination: encode `{table}` as jsonl: {error}"
-                    ))
-                })?;
-            }
-            writer.finish().map_err(|error| {
-                DestinationError::fatal(format!(
-                    "reference destination: encode `{table}` as jsonl: {error}"
-                ))
-            })?;
             let part = format!("{table}-{}-{}.jsonl", self.load_id, meta.commit_seq);
             part_filename(&part)?;
-            self.persist(&part, &encoded)?;
+            self.persist_part(&part, table, batches)?;
         }
 
         // State BEFORE receipt: a crash between the two re-publishes the
@@ -348,6 +347,11 @@ impl Backend for Writer {
             commit_seq: meta.commit_seq,
         };
         self.append_receipt(&receipt)?;
+
+        // The commit is fully durable — only now does its staging
+        // retire, so no later commit can publish it a second time.
+        self.staged.clear();
+        self.staged_bytes = 0;
         Ok(receipt)
     }
 
@@ -509,6 +513,60 @@ impl Writer {
                 path.display()
             ))
         })?;
+        Ok(())
+    }
+
+    /// Persist one table's part with [`persist`]'s exact atomic-durable
+    /// shape — temporary, fsync, rename, directory fsync — but
+    /// STREAM-ENCODED: the jsonl encoder writes straight into the
+    /// buffered temporary file instead of one in-memory `Vec`. The
+    /// staging ceiling meters the Arrow footprint of what a session
+    /// retains; a whole-part jsonl buffer at publish time would be a
+    /// second, unmetered copy at several times that footprint for
+    /// struct- and json-heavy schemas.
+    ///
+    /// Failure classification splits by CAUSE: an IO failure (disk
+    /// full, permissions — arrow surfaces it as its `IoError` arm)
+    /// stays a transient `write` refusal like every other IO failure
+    /// here; a genuine encode failure is fatal — no retry re-encodes
+    /// the same batch differently.
+    fn persist_part(
+        &self,
+        name: &str,
+        table: &TableName,
+        batches: &[&RecordBatch],
+    ) -> Result<(), DestinationError> {
+        let temp = self.dir.join(format!("_staged-{name}"));
+        let target = self.dir.join(name);
+        let framed = |verb: &str, path: &PathBuf, error: &std::io::Error| {
+            DestinationError::transient(format!(
+                "reference destination: {verb} {}: {error}",
+                path.display()
+            ))
+        };
+        let arrow_framed = |error: arrow::error::ArrowError| match error {
+            arrow::error::ArrowError::IoError(_, io_error) => framed("write", &temp, &io_error),
+            error => DestinationError::fatal(format!(
+                "reference destination: encode `{table}` as jsonl: {error}"
+            )),
+        };
+        let file = std::fs::File::create(&temp).map_err(|error| framed("write", &temp, &error))?;
+        let mut writer =
+            arrow::json::LineDelimitedWriter::new(std::io::BufWriter::new(file));
+        for batch in batches {
+            writer.write(batch).map_err(arrow_framed)?;
+        }
+        writer.finish().map_err(arrow_framed)?;
+        let file = writer
+            .into_inner()
+            .into_inner()
+            .map_err(|error| framed("write", &temp, error.error()))?;
+        file.sync_all()
+            .map_err(|error| framed("sync", &temp, &error))?;
+        drop(file);
+        std::fs::rename(&temp, &target)
+            .map_err(|error| framed("publish", &target, &error))?;
+        self.sync_dir()?;
         Ok(())
     }
 
