@@ -45,7 +45,9 @@ impl Source for ArrowOnUnstructured {
 /// the reader task after the refusal, the task's `Arc<dyn Source>` keeps
 /// this alive and the probe still upgrades after the run has returned.
 struct RefusalThenParked {
-    alive: std::sync::Arc<()>,
+    /// Held, never read: its whole job is to be kept alive (or not) by
+    /// whoever still owns this source when the run is over.
+    _alive: std::sync::Arc<()>,
 }
 
 #[async_trait]
@@ -85,7 +87,7 @@ async fn a_typed_refusal_still_reaps_the_reader_task() {
         std::time::Duration::from_secs(10),
         Engine::new(
             EngineConfig::new("refusal-cleanup"),
-            RefusalThenParked { alive },
+            RefusalThenParked { _alive: alive },
             MemoryDestination::new(),
         )
         .run(),
