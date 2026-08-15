@@ -11,7 +11,7 @@
 //! and the
 //! hazard cases in `arena.rs`/`tests/cases/test_passthrough.rs`.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use rdlt_connector::{DestinationCapabilities, StreamSpec, channel::MAX_RECORD_BATCH_ROWS};
 use rdlt_core::{
@@ -19,7 +19,7 @@ use rdlt_core::{
 };
 
 use super::{
-    DrainRow, MAX_CHILD_TABLES_PER_PARENT, ShredContext,
+    DrainRow, MAX_CHILD_TABLES_PER_PARENT, MAX_TABLES_PER_STREAM, ShredContext,
     arena::{Arena, NodeId, ParseRowsError},
     drain_tables,
     infer::{ColumnState, ScalarState},
@@ -85,6 +85,13 @@ pub(crate) struct TapeShredder {
     capabilities: DestinationCapabilities,
     /// Root first, children after, in first-seen order.
     tables: Vec<TableBuffer>,
+    /// Normalized table name → index into `tables`, maintained beside the
+    /// vector (which stays the drain-order truth — the map is lookup only).
+    /// This is what resolves a per-parent memo MISS: distinct source keys can
+    /// normalize to ONE table, so the miss path must go through the
+    /// normalized name — but a linear scan of every table there turned a
+    /// stream minting many tables into quadratic work per push.
+    index_by_name: BTreeMap<TableName, usize>,
 }
 
 impl TapeShredder {
@@ -93,7 +100,7 @@ impl TapeShredder {
         capabilities: DestinationCapabilities,
         root_table: TableName,
     ) -> Result<Self, RdltError> {
-        let mut root = TableBuffer::new(root_table, None, capabilities.ident_rules);
+        let mut root = TableBuffer::new(root_table.clone(), None, capabilities.ident_rules);
         // Hints pin root-level scalar columns (they win over inference).
         for (column, ty) in &spec.type_hints {
             *root.state_mut(column)? = ColumnState::Scalar(ScalarState::pinned(*ty));
@@ -102,6 +109,7 @@ impl TapeShredder {
             spec,
             capabilities,
             tables: vec![root],
+            index_by_name: BTreeMap::from([(root_table, 0)]),
         })
     }
 
@@ -289,7 +297,7 @@ impl TapeShredder {
         // Memo hit: this parent has resolved this exact source key before.
         // Every document in a push repeats its keys, so after the first one
         // this replaces a normalized-name construction (which formats, and may
-        // hash and truncate) plus a linear scan of every known table.
+        // hash and truncate) plus the by-name index lookup.
         if let Some(idx) = self.tables[parent_idx]
             .child_tables
             .iter()
@@ -316,13 +324,26 @@ impl TapeShredder {
             self.capabilities.ident_rules,
         );
         let table = TableName::new(name);
-        // On a miss the scan still runs: distinct source keys can normalize to
-        // one table, so "not in the memo" does not mean "not yet created".
-        let idx = match self.tables.iter().position(|t| t.table == table) {
-            Some(idx) => idx,
+        // On a miss the by-name lookup still runs: distinct source keys can
+        // normalize to one table, so "not in the memo" does not mean "not yet
+        // created" — but the lookup is the index, never a scan of every table.
+        let idx = match self.index_by_name.get(&table) {
+            Some(idx) => *idx,
             None => {
+                // Total-table bound, refused BEFORE the new buffer exists.
+                // The per-parent cap alone cannot bound this: nesting
+                // multiplies parents, and every push pays per-table
+                // bookkeeping, so an unbounded total turns one crafted frame
+                // into unbounded memory and quadratic work.
+                if self.tables.len() >= MAX_TABLES_PER_STREAM {
+                    return Err(RdltError::config(format!(
+                        "stream `{}` exceeds the {MAX_TABLES_PER_STREAM}-table cap \
+                         while observing key {source_key:?} under table `{parent_table}`",
+                        self.spec.name
+                    )));
+                }
                 self.tables.push(TableBuffer::new(
-                    table,
+                    table.clone(),
                     Some(ParentLink {
                         parent: parent_table,
                         depth: parent_depth + 1,
@@ -330,7 +351,9 @@ impl TapeShredder {
                     self.capabilities.ident_rules,
                 ));
                 rows.push(Vec::new());
-                self.tables.len() - 1
+                let idx = self.tables.len() - 1;
+                self.index_by_name.insert(table, idx);
+                idx
             }
         };
         self.tables[parent_idx]
@@ -415,6 +438,56 @@ mod cardinality_tests {
         }
         slab.extend_from_slice(b"]}");
         expect_row_cap(push(&mut shredder(), &slab));
+    }
+
+    /// The per-parent child cap leaves the TOTAL unbounded (nesting multiplies
+    /// parents), and every push pays per-table bookkeeping — so the stream
+    /// carries a total-table cap of its own. Seeded directly, like the sibling
+    /// cap pins: constructing 64Ki tables from JSON would dwarf the assertion.
+    #[test]
+    fn the_stream_refuses_a_new_table_at_the_total_table_cap() {
+        let mut shredder = shredder();
+        for index in 1..MAX_TABLES_PER_STREAM {
+            shredder.tables.push(TableBuffer::new(
+                TableName::new(format!("t{index}")),
+                None,
+                DestinationCapabilities::default().ident_rules,
+            ));
+        }
+        let mut rows: Vec<Vec<TapeRow>> = shredder.tables.iter().map(|_| Vec::new()).collect();
+        let error = shredder
+            .child_table_idx(0, "one-too-many", &mut rows)
+            .expect_err("the total-table cap must refuse");
+        assert!(
+            error.to_string().contains("table cap"),
+            "the refusal names the cap: {error}"
+        );
+    }
+
+    /// Two DISTINCT source keys can normalize to ONE destination table
+    /// (`a-b` and `a b` both become `a_b`), and they must share one buffer —
+    /// the invariant that forbids resolving a memo miss by name construction
+    /// alone. Guards the by-name index against regressing into per-key tables.
+    #[test]
+    fn distinct_source_keys_normalizing_alike_share_one_table() {
+        let mut shredder = shredder();
+        let items = push(&mut shredder, br#"{"a-b":[{"x":1}],"a b":[{"y":2}]}"#)
+            .unwrap_or_else(|_| panic!("a small two-key push must shred"));
+        assert_eq!(
+            shredder.tables.len(),
+            2,
+            "root plus ONE shared child table, not one per source key"
+        );
+        let child_batch = items
+            .iter()
+            .find_map(|item| match item {
+                LoadItem::Batch { table, batch, .. } if table.as_str() == "events__a_b" => {
+                    Some(batch)
+                }
+                _ => None,
+            })
+            .expect("the shared child table emits one batch");
+        assert_eq!(child_batch.num_rows(), 2, "both keys' rows land in it");
     }
 
     #[test]

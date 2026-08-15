@@ -29,12 +29,12 @@ pub(crate) struct TableBuffer {
     names: Vec<(String, String)>,
     /// Source key → index of the child table it resolves to, memoized.
     ///
-    /// A CACHE IN FRONT OF the name-build-then-scan in `child_table_idx`,
+    /// A CACHE IN FRONT OF the name-build-then-lookup in `child_table_idx`,
     /// never a replacement for it: a miss must still build the normalized name
-    /// and scan, because two different source keys can normalize to the SAME
-    /// child table (`"a-b"` and `"a b"`) and a key at one depth can alias a
-    /// table created at another. Skipping the scan on a miss would create a
-    /// duplicate `TableName`.
+    /// and consult the shredder's by-name index, because two different source
+    /// keys can normalize to the SAME child table (`"a-b"` and `"a b"`) and a
+    /// key at one depth can alias a table created at another. Skipping that
+    /// lookup on a miss would create a duplicate `TableName`.
     ///
     /// Deliberately NOT in `rollback_snapshot` and NOT cleared by
     /// `revert_column`: it maps keys to positions in an append-only table
