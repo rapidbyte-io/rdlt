@@ -832,8 +832,8 @@ mod tests {
         bytes[field_pos..field_pos + 8].copy_from_slice(&0x7fff_fff0_i64.to_le_bytes());
 
         let frame_len = bytes.len();
-        let error = decode_one_batch(&bytes)
-            .expect_err("a declared body past the frame's end must refuse");
+        let error =
+            decode_one_batch(&bytes).expect_err("a declared body past the frame's end must refuse");
         assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
         assert_eq!(
             error.to_string(),

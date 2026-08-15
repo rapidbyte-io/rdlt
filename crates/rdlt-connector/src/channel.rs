@@ -779,8 +779,8 @@ mod byte_size_tests {
     /// offsets") — and an earlier windowed meter panicked reading it.
     /// The walk is driven on the RAW `ArrayData` here, deliberately:
     /// arrow-array 58's typed wrappers happen to normalize the empty
-    /// buffer to a single `0` on construction (measured — `make_array`
-    /// + `to_data` yields a 4-byte offsets buffer), so a batch-level
+    /// buffer to a single `0` on construction (measured: `make_array`
+    /// then `to_data` yields a 4-byte offsets buffer), so a batch-level
     /// fixture cannot carry the shape today, but the meter walks
     /// `child_data` trees and validated foreign constructions where
     /// nothing promises that normalization.
