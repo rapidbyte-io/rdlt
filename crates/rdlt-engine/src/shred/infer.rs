@@ -97,6 +97,12 @@ impl ScalarState {
     }
 }
 
+/// A struct-field budget ran out mid-observation. A marker, not a message:
+/// the table layer owns the column vocabulary and renders the typed refusal
+/// with the table and key in hand.
+#[derive(Debug)]
+pub(crate) struct FieldCapExceeded;
+
 /// Observation state for one column position, tracking shape as well as type.
 #[derive(Debug, Clone)]
 pub(crate) enum ColumnState {
@@ -113,14 +119,24 @@ pub(crate) enum ColumnState {
 }
 
 impl ColumnState {
-    pub(crate) fn observe<'a, V: JsonView<'a>>(&mut self, value: V, lists_as_columns: bool) {
+    /// Observe one value into this state. `field_budget` is the caller's
+    /// remaining struct-field allowance: every NEW nested-object field this
+    /// observation retains spends one, and exhaustion refuses — nested
+    /// breadth otherwise accumulates outside every column-count check, and
+    /// whatever is retained here the registry re-clones every batch.
+    pub(crate) fn observe<'a, V: JsonView<'a>>(
+        &mut self,
+        value: V,
+        lists_as_columns: bool,
+        field_budget: &mut usize,
+    ) -> Result<(), FieldCapExceeded> {
         if value.is_null() {
-            return;
+            return Ok(());
         }
         match self {
             ColumnState::Json => {}
             ColumnState::Unknown => {
-                *self = Self::fresh(value, lists_as_columns);
+                *self = Self::fresh(value, lists_as_columns, field_budget)?;
             }
             // A shape conflict widens an inferred column to Json — but a PINNED
             // column was declared by the user, and a value that does not fit the
@@ -145,10 +161,13 @@ impl ColumnState {
                 ValueKind::Object => {
                     for (key, item) in value.obj_entries() {
                         match fields.iter_mut().find(|(name, _)| name == key) {
-                            Some((_, state)) => state.observe(item, lists_as_columns),
+                            Some((_, state)) => {
+                                state.observe(item, lists_as_columns, field_budget)?;
+                            }
                             None => {
+                                take_field(field_budget)?;
                                 let mut state = ColumnState::Unknown;
-                                state.observe(item, lists_as_columns);
+                                state.observe(item, lists_as_columns, field_budget)?;
                                 fields.push((key.to_owned(), state));
                             }
                         }
@@ -165,7 +184,7 @@ impl ColumnState {
                         for item in value.arr_items() {
                             if item.is_array() {
                                 *self = ColumnState::Json; // nested lists: v1 escape hatch
-                                return;
+                                return Ok(());
                             }
                             item_state.observe(item);
                         }
@@ -186,6 +205,7 @@ impl ColumnState {
                 }
             }
         }
+        Ok(())
     }
 
     /// Decide an initial state from the FIRST non-null value.
@@ -195,13 +215,18 @@ impl ColumnState {
     /// would be unreachable code, and its mutant unkillable for that reason
     /// rather than for lack of a test. A null leaves the column `Unknown` by
     /// never calling this at all, which is the same outcome by a shorter route.
-    fn fresh<'a, V: JsonView<'a>>(value: V, lists_as_columns: bool) -> Self {
-        match value.kind() {
+    fn fresh<'a, V: JsonView<'a>>(
+        value: V,
+        lists_as_columns: bool,
+        field_budget: &mut usize,
+    ) -> Result<Self, FieldCapExceeded> {
+        Ok(match value.kind() {
             ValueKind::Object => {
                 let mut fields = Vec::new();
                 for (key, item) in value.obj_entries() {
+                    take_field(field_budget)?;
                     let mut state = ColumnState::Unknown;
-                    state.observe(item, lists_as_columns);
+                    state.observe(item, lists_as_columns, field_budget)?;
                     fields.push((key.to_owned(), state));
                 }
                 ColumnState::Struct(fields)
@@ -227,7 +252,7 @@ impl ColumnState {
                 state.observe(value);
                 ColumnState::Scalar(state)
             }
-        }
+        })
     }
 
     /// Resolve to a schema column type; `None` for positions that are not columns
@@ -264,6 +289,27 @@ impl ColumnState {
     pub(crate) fn is_child_table(&self) -> bool {
         matches!(self, ColumnState::ChildTable)
     }
+
+    /// Nested struct fields retained under this state, recursively — what the
+    /// table layer re-derives after a policy rollback removes or reverts a
+    /// column, so its running field count stays honest.
+    pub(crate) fn nested_field_count(&self) -> usize {
+        match self {
+            ColumnState::Struct(fields) => fields.iter().fold(fields.len(), |total, (_, state)| {
+                total.saturating_add(state.nested_field_count())
+            }),
+            _ => 0,
+        }
+    }
+}
+
+/// Spend one struct field from the caller's budget, refusing at exhaustion.
+fn take_field(field_budget: &mut usize) -> Result<(), FieldCapExceeded> {
+    if *field_budget == 0 {
+        return Err(FieldCapExceeded);
+    }
+    *field_budget -= 1;
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -307,8 +353,11 @@ mod tests {
 
     fn observe_all(values: &[Value]) -> ColumnState {
         let mut state = ColumnState::Unknown;
+        let mut budget = crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE;
         for v in values {
-            state.observe(v, true);
+            state
+                .observe(v, true, &mut budget)
+                .expect("these fixtures sit far under the field cap");
         }
         state
     }
@@ -392,9 +441,16 @@ mod tests {
         // is the half that a `!state.is_pinned()` guard forced false would
         // destroy — the object would rewrite a type the user declared.
         let mut pinned = ColumnState::Scalar(ScalarState::pinned(LogicalType::Int64));
-        pinned.observe(&json!({"a": 1}), true);
-        pinned.observe(&json!([1, 2]), true);
-        pinned.observe(&json!("text"), true);
+        let mut budget = crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE;
+        pinned
+            .observe(&json!({"a": 1}), true, &mut budget)
+            .expect("under the cap");
+        pinned
+            .observe(&json!([1, 2]), true, &mut budget)
+            .expect("under the cap");
+        pinned
+            .observe(&json!("text"), true, &mut budget)
+            .expect("under the cap");
         assert_eq!(
             pinned.resolve(),
             Some(ColumnType::scalar(LogicalType::Int64)),

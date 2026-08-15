@@ -80,6 +80,25 @@ pub(crate) fn passthrough_items(
         }
     }
 
+    // ---- Re-count breadth AFTER the join ----
+    // The join APPENDS fields a batch declares that the registry has not
+    // seen, so per-batch caps alone would let a stream accumulate unbounded
+    // struct breadth one batch at a time — and the registry retains and
+    // re-clones whatever it accepts, every batch, for the stream's lifetime.
+    let source_fields: usize = observed
+        .columns
+        .iter()
+        .filter(|column| column.provenance != Provenance::System)
+        .map(|column| 1 + nested_struct_fields(&column.column_type))
+        .sum();
+    if source_fields > MAX_SOURCE_COLUMNS_PER_TABLE {
+        return Err(RdltError::config(format!(
+            "table `{table}`: cross-batch schema growth reaches {source_fields} columns \
+             and nested struct fields, over the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column \
+             cap — struct breadth counts toward the same bound as columns"
+        )));
+    }
+
     // ---- Policy resolution (same rules as the shredder) ----
     let changes = registry.diff(&observed);
     let mut dropped_columns: Vec<String> = Vec::new();
@@ -204,7 +223,21 @@ fn schema_from_arrow(
         provenance: Provenance::System,
     }];
     let mut normalized_to_index = Vec::new();
+    // Struct-field breadth spends from the SAME budget as top-level columns.
+    // Counted BEFORE each field is mapped — a declared million-field struct
+    // must refuse without first materializing a million `ColumnDef`s, and
+    // without rendering the offending schema back into the error.
+    let mut source_fields = batch.num_columns();
     for (idx, field) in batch.schema().fields().iter().enumerate() {
+        source_fields = source_fields.saturating_add(declared_struct_fields(field.data_type(), 0));
+        if source_fields > MAX_SOURCE_COLUMNS_PER_TABLE {
+            return Err(RdltError::config(format!(
+                "table `{table}` column `{}`: declared struct fields push the schema over \
+                 the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap — struct breadth \
+                 counts toward the same bound as columns",
+                field.name()
+            )));
+        }
         let ty = column_type_from_arrow(field.data_type()).map_err(|reason| {
             RdltError::config(format!(
                 "table `{table}` column `{}`: unmappable arrow type {} ({reason}) — \
@@ -230,6 +263,37 @@ fn schema_from_arrow(
         },
         normalized_to_index,
     ))
+}
+
+/// Struct fields a declared arrow type carries, recursively — a pure count,
+/// so a hostile breadth refuses before any `ColumnDef` is built. Descent
+/// stops at the shared depth cap (the mapping walk right behind this refuses
+/// there with its own typed error); saturating, never panicking.
+fn declared_struct_fields(dt: &DataType, depth: usize) -> usize {
+    if depth > MAX_ARROW_DEPTH {
+        return 0;
+    }
+    match dt {
+        DataType::Struct(fields) => fields.iter().fold(fields.len(), |total, field| {
+            total.saturating_add(declared_struct_fields(field.data_type(), depth + 1))
+        }),
+        DataType::List(item) | DataType::LargeList(item) => {
+            declared_struct_fields(item.data_type(), depth + 1)
+        }
+        _ => 0,
+    }
+}
+
+/// Struct fields a MAPPED column type carries, recursively. Bounded by
+/// construction: every input passed the declared-breadth budget, so this walk
+/// touches at most a cap's worth of nodes per column.
+fn nested_struct_fields(ty: &ColumnType) -> usize {
+    match ty {
+        ColumnType::Struct { fields } => fields.iter().fold(fields.len(), |total, field| {
+            total.saturating_add(nested_struct_fields(&field.column_type))
+        }),
+        _ => 0,
+    }
 }
 
 /// Least upper bound of two column types for cross-batch evolution: scalars
@@ -393,6 +457,114 @@ mod tests {
             "the refusal names the independent bound: {error}"
         );
         assert!(registry.is_empty(), "nothing was registered before refusal");
+    }
+
+    /// Struct-field BREADTH counts toward the same source-column cap as
+    /// top-level columns: one declared column carrying a struct of cap
+    /// fields is retained by the registry and re-cloned per batch, so a
+    /// small wire schema must not smuggle in an unbounded field count.
+    #[test]
+    fn declared_struct_fields_count_toward_the_source_column_cap() {
+        use arrow::datatypes::Field;
+        let wide = DataType::Struct(
+            (0..MAX_SOURCE_COLUMNS_PER_TABLE)
+                .map(|index| Field::new(format!("f{index}"), DataType::Int64, true))
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        let batch =
+            RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "s", wide, true,
+            )])));
+        let error = schema_from_arrow(
+            &batch,
+            &TableName::new("events"),
+            DestinationCapabilities::default(),
+        )
+        .expect_err("cap struct fields beside one column exceed the cap");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("source-column cap"),
+            "the refusal names the cap: {rendered}"
+        );
+        assert!(
+            rendered.len() < 1024,
+            "the refusal must not render the offending schema back: {} chars",
+            rendered.len()
+        );
+
+        // A modest struct still maps — the count is a cap, not a struct ban.
+        let modest = DataType::Struct(
+            (0..8)
+                .map(|index| Field::new(format!("f{index}"), DataType::Int64, true))
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        let batch =
+            RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "s", modest, true,
+            )])));
+        schema_from_arrow(
+            &batch,
+            &TableName::new("events"),
+            DestinationCapabilities::default(),
+        )
+        .expect("ordinary struct breadth still maps");
+    }
+
+    /// The cross-batch join APPENDS unseen struct fields, so per-batch caps
+    /// alone still let a stream accumulate unbounded breadth one batch at a
+    /// time. The joined schema is re-counted before it reaches the registry.
+    #[test]
+    fn cross_batch_struct_growth_refuses_at_the_source_column_cap() {
+        use arrow::datatypes::Field;
+        let struct_of = |prefix: &str, count: usize| {
+            DataType::Struct(
+                (0..count)
+                    .map(|index| Field::new(format!("{prefix}{index}"), DataType::Int64, true))
+                    .collect::<Vec<_>>()
+                    .into(),
+            )
+        };
+        let batch_with = |dt: DataType| {
+            RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "s", dt, true,
+            )])))
+        };
+        let mut registry = crate::schema::registry::SchemaRegistry::default();
+        let load_id = rdlt_core::LoadId::new("load");
+        let mode = rdlt_core::WriteMode::Append;
+        let policy = rdlt_core::SchemaPolicy::default();
+        let table = TableName::new("events");
+        let half = MAX_SOURCE_COLUMNS_PER_TABLE / 2 + 1;
+        passthrough_items(
+            &batch_with(struct_of("a", half)),
+            &table,
+            ShredContext {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+            },
+            DestinationCapabilities::default(),
+        )
+        .expect("the first batch sits under the cap");
+        let error = passthrough_items(
+            &batch_with(struct_of("b", half)),
+            &table,
+            ShredContext {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+            },
+            DestinationCapabilities::default(),
+        )
+        .expect_err("disjoint fields join past the cap and must refuse");
+        assert!(
+            error.to_string().contains("source-column cap"),
+            "the refusal names the cap: {error}"
+        );
     }
 
     #[test]

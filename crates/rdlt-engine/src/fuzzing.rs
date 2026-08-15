@@ -10,7 +10,7 @@ use rdlt_core::{LoadId, SchemaPolicy, TableName, WriteMode};
 /// errors are the only acceptable failure.
 pub fn parse_slab(bytes: &[u8]) {
     let mut arena = crate::shred::arena::Arena::default();
-    let _ = arena.parse_rows(bytes);
+    let _ = arena.parse_rows(bytes, rdlt_connector::channel::MAX_RECORD_BATCH_ROWS);
 }
 
 /// The FULL (tape) shred path over arbitrary bytes: parse, observe, resolve,

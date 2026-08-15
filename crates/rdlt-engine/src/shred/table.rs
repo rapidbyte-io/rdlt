@@ -29,12 +29,12 @@ pub(crate) struct TableBuffer {
     names: Vec<(String, String)>,
     /// Source key → index of the child table it resolves to, memoized.
     ///
-    /// A CACHE IN FRONT OF the name-build-then-scan in `child_table_idx`,
+    /// A CACHE IN FRONT OF the name-build-then-lookup in `child_table_idx`,
     /// never a replacement for it: a miss must still build the normalized name
-    /// and scan, because two different source keys can normalize to the SAME
-    /// child table (`"a-b"` and `"a b"`) and a key at one depth can alias a
-    /// table created at another. Skipping the scan on a miss would create a
-    /// duplicate `TableName`.
+    /// and consult the shredder's by-name index, because two different source
+    /// keys can normalize to the SAME child table (`"a-b"` and `"a b"`) and a
+    /// key at one depth can alias a table created at another. Skipping that
+    /// lookup on a miss would create a duplicate `TableName`.
     ///
     /// Deliberately NOT in `rollback_snapshot` and NOT cleared by
     /// `revert_column`: it maps keys to positions in an append-only table
@@ -42,6 +42,11 @@ pub(crate) struct TableBuffer {
     /// snapshot would change that struct's shape and its positional alignment
     /// with `self.tables`.
     pub(crate) child_tables: Vec<(String, usize)>,
+    /// Nested struct fields retained across all columns — they spend from the
+    /// SAME per-table budget as top-level columns, because a single struct
+    /// column can otherwise smuggle unbounded breadth past the column cap
+    /// (and the registry re-clones whatever is retained, every batch).
+    nested_fields: usize,
 }
 
 impl TableBuffer {
@@ -65,7 +70,42 @@ impl TableBuffer {
             namer,
             names: Vec::new(),
             child_tables: Vec::new(),
+            nested_fields: 0,
         }
+    }
+
+    /// Observe one value under a source key: ensure the column exists (bounded
+    /// by the column cap), then feed the value to its state with the table's
+    /// REMAINING struct-field allowance — top-level columns and nested struct
+    /// fields spend from one budget, so breadth refuses typed wherever it
+    /// hides. Returns the observed state so the caller can inspect its shape.
+    pub(crate) fn observe_value<'a, V: JsonView<'a>>(
+        &mut self,
+        source_key: &str,
+        value: V,
+        lists_as_columns: bool,
+    ) -> Result<&ColumnState, rdlt_core::RdltError> {
+        let idx = self.column_index(source_key)?;
+        let mut budget = MAX_SOURCE_COLUMNS_PER_TABLE
+            .saturating_sub(self.columns.len())
+            .saturating_sub(self.nested_fields);
+        let initial = budget;
+        let observed = self.columns[idx]
+            .1
+            .observe(value, lists_as_columns, &mut budget);
+        // Fields retained before the refusal are already in the state, so the
+        // running count charges them either way — the next observation starts
+        // from an honest total.
+        self.nested_fields += initial - budget;
+        if observed.is_err() {
+            return Err(rdlt_core::RdltError::config(format!(
+                "table `{}` exceeds the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap \
+                 while observing key {source_key:?} — nested struct fields count toward \
+                 the same bound as columns",
+                self.table
+            )));
+        }
+        Ok(&self.columns[idx].1)
     }
 
     /// Source key → normalized column name pairs accumulated so far.
@@ -111,6 +151,14 @@ impl TableBuffer {
             }
             None => self.columns.retain(|(k, _)| k != source_key),
         }
+        // A rollback can remove or shrink a struct column, so the running
+        // nested-field count is re-derived from what actually remains. Cold
+        // path — this runs only under Discard* policy enforcement.
+        self.nested_fields = self
+            .columns
+            .iter()
+            .map(|(_, state)| state.nested_field_count())
+            .sum();
     }
 
     /// Normalized column name for a source key, memoizing the pairing on first
@@ -128,20 +176,28 @@ impl TableBuffer {
         &mut self,
         source_key: &str,
     ) -> Result<&mut ColumnState, rdlt_core::RdltError> {
+        let idx = self.column_index(source_key)?;
+        Ok(&mut self.columns[idx].1)
+    }
+
+    /// Index of the column for a source key, creating it (as `Unknown`) under
+    /// the column cap. Nested struct fields count toward the same cap — the
+    /// budget arithmetic lives in [`Self::observe_value`], which is why the
+    /// creation check here subtracts the running nested-field total too.
+    fn column_index(&mut self, source_key: &str) -> Result<usize, rdlt_core::RdltError> {
         if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
-            Ok(&mut self.columns[idx].1)
-        } else {
-            if self.columns.len() >= MAX_SOURCE_COLUMNS_PER_TABLE {
-                return Err(rdlt_core::RdltError::config(format!(
-                    "table `{}` exceeds the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap \
-                     while observing key {source_key:?}",
-                    self.table
-                )));
-            }
-            self.columns
-                .push((source_key.to_owned(), ColumnState::Unknown));
-            Ok(&mut self.columns.last_mut().expect("just pushed").1)
+            return Ok(idx);
         }
+        if self.columns.len() + self.nested_fields >= MAX_SOURCE_COLUMNS_PER_TABLE {
+            return Err(rdlt_core::RdltError::config(format!(
+                "table `{}` exceeds the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap \
+                 while observing key {source_key:?}",
+                self.table
+            )));
+        }
+        self.columns
+            .push((source_key.to_owned(), ColumnState::Unknown));
+        Ok(self.columns.len() - 1)
     }
 }
 
@@ -285,6 +341,7 @@ mod identity_cross_view {
     //! AGREEMENT across the two views, over arbitrary documents.
 
     use proptest::prelude::*;
+    use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
     use serde_json::Value;
 
     use super::{content_hash_with, row_identity};
@@ -353,7 +410,7 @@ mod identity_cross_view {
             let (slab, values) = views(&values);
             let bytes = slab.as_bytes();
             let mut arena = Arena::default();
-            let rows = arena.parse_rows(bytes).expect("the slab we just serialized must parse");
+            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS).expect("the slab we just serialized must parse");
             prop_assert_eq!(rows.len(), values.len());
             for (node, value) in rows.into_iter().zip(&values) {
                 let (mut a, mut b) = (Vec::new(), Vec::new());
@@ -375,7 +432,7 @@ mod identity_cross_view {
             let (slab, values) = views(&values);
             let bytes = slab.as_bytes();
             let mut arena = Arena::default();
-            let rows = arena.parse_rows(bytes).expect("the slab we just serialized must parse");
+            let rows = arena.parse_rows(bytes, MAX_RECORD_BATCH_ROWS).expect("the slab we just serialized must parse");
             for (node, value) in rows.into_iter().zip(&values) {
                 let keys: Vec<String> = value
                     .as_object()

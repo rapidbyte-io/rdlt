@@ -26,3 +26,9 @@ pub(crate) const MAX_SOURCE_COLUMNS_PER_TABLE: usize = 4096;
 
 /// Distinct child-table source keys retained beneath one parent table.
 pub(crate) const MAX_CHILD_TABLES_PER_PARENT: usize = 1024;
+
+/// Total tables (root plus every discovered child, at any depth) retained for
+/// one stream. The per-parent cap alone leaves the TOTAL unbounded — nesting
+/// multiplies parents — and every push does per-table bookkeeping, so
+/// unbounded tables turn one crafted frame into unbounded work and memory.
+pub(crate) const MAX_TABLES_PER_STREAM: usize = 64 * 1024;

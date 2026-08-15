@@ -175,7 +175,13 @@ pub(super) async fn stream_task(
                 // CPU-bound shred on the blocking pool; the owner keeps the
                 // shredder single-owner without locks. The tape path parses the
                 // slab into an arena and drains it in one call — no per-row trees.
-                let (returned, items) = owner
+                //
+                // Errors BREAK, never `?`-return: an early return would skip
+                // the cleanup below — the channel would close by drop (which
+                // does not wake a sender parked on the byte budget) and the
+                // spawned reader would never be reaped, leaking one parked
+                // task per refused run.
+                let (returned, items) = match owner
                     .shred(
                         bytes,
                         load_id.clone(),
@@ -183,9 +189,16 @@ pub(super) async fn stream_task(
                         policy.clone(),
                         stream_name.clone(),
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(returned) => returned,
+                    Err(e) => break Err(e),
+                };
                 owner = returned;
-                let items = items?;
+                let items = match items {
+                    Ok(items) => items,
+                    Err(e) => break Err(e),
+                };
                 // Rows READ: what the source payload DECODED to — batch
                 // rows plus whole rows a Discard policy dropped, so the
                 // read-vs-loaded divergence the event doc promises is
@@ -246,7 +259,9 @@ pub(super) async fn stream_task(
                     entry.0 += rows_read;
                     entry.1 += payload_bytes;
                 }
-                let (returned, items) = owner
+                // Same break-not-return rule as the shred arm: the cleanup
+                // below must run for every exit.
+                let (returned, items) = match owner
                     .passthrough(
                         batch,
                         arrow_table.clone(),
@@ -255,9 +270,17 @@ pub(super) async fn stream_task(
                         policy.clone(),
                         capabilities,
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(returned) => returned,
+                    Err(e) => break Err(e),
+                };
                 owner = returned;
-                for item in items? {
+                let items = match items {
+                    Ok(items) => items,
+                    Err(e) => break Err(e),
+                };
+                for item in items {
                     if tx.send(item).await.is_err() {
                         break;
                     }
