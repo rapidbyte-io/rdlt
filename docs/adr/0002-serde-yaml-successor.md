@@ -156,7 +156,13 @@ migration worktree off main @ c4441a1f.
 - **Byte-identical re-verified, not inherited:** the full workspace
   suite ran 842/842 green after the rename with zero error-spelling
   drift — every full-string config-refusal pin passed unchanged, so
-  the 2026-08-14 proof holds on the release actually shipped.
+  the 2026-08-14 proof holds on the release actually shipped. (The
+  "165 tests" figure cited above under Context/Proof was the original
+  throwaway-worktree count of the YAML-touching suites; a later
+  recount put the YAML-specific subset nearer ~112. The authoritative
+  execution figure is the whole-suite 842/842 — the discrepancy is a
+  suite-selection count, not a coverage change, and the byte-identity
+  claim rests on the pins that actually ran, not on the tally.)
 - **The event-guard hope did NOT materialize:** `serde_yaml_ng`
   0.10.0's `lib.rs` keeps `mod loader;` and `mod libyaml;` private,
   unchanged from the `serde_yaml` 0.9.34 it continues; its public
