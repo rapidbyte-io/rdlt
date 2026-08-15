@@ -61,9 +61,12 @@ impl<V: Copy> DrainRow<V> {
 struct TableDrain<'a, V> {
     buffer: &'a mut TableBuffer,
     rows: &'a mut Vec<DrainRow<V>>,
-    /// Column snapshot to roll back to on Discard*; `None` for a table that did
-    /// not exist before this batch (nothing to revert to).
-    rollback_snapshot: Option<&'a [(String, ColumnState)]>,
+    /// Column snapshot to roll back to on Discard* — taken OUT of the buffer
+    /// (the drain mutates the columns the snapshot describes, so it cannot
+    /// borrow it back). `None` for a table not mutated this push — which is
+    /// exactly a table that did not exist before this batch or went
+    /// unobserved in it (nothing to revert to).
+    rollback_snapshot: Option<Vec<(String, ColumnState)>>,
 }
 
 /// The shared drain: cascade filtering, schema resolution, policy enforcement,
@@ -71,7 +74,6 @@ struct TableDrain<'a, V> {
 pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     tables: &mut [TableBuffer],
     rows: &mut [Vec<DrainRow<V>>],
-    rollback_snapshot: &[Vec<(String, ColumnState)>],
     ctx: ShredContext,
 ) -> Result<Vec<LoadItem>, RdltError> {
     let ShredContext {
@@ -84,16 +86,18 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     // Rows discarded in earlier (parent) tables cascade into their descendants.
     let mut discarded_ids: BTreeSet<RowId> = BTreeSet::new();
 
-    // Pair the three index-aligned inputs once; `rollback_snapshot.get(idx)` is resolved
-    // here and never again, so the loop below cannot misalign them.
+    // Pair the index-aligned inputs once, taking each table's pre-push
+    // snapshot out of its buffer (see the field's doc for why owned).
     let mut drains: Vec<TableDrain<V>> = tables
         .iter_mut()
         .zip(rows.iter_mut())
-        .enumerate()
-        .map(|(idx, (buffer, rows))| TableDrain {
-            buffer,
-            rows,
-            rollback_snapshot: rollback_snapshot.get(idx).map(Vec::as_slice),
+        .map(|(buffer, rows)| {
+            let rollback_snapshot = buffer.take_rollback_snapshot();
+            TableDrain {
+                buffer,
+                rows,
+                rollback_snapshot,
+            }
         })
         .collect();
 
@@ -138,9 +142,22 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         }
 
         let has_rows = !d.rows.is_empty();
+        // 4M3: a row-less table whose observation state is UNCHANGED since
+        // its schema last reached the registry has nothing to resolve, diff,
+        // or emit — skipping before `resolve_schema` is what keeps an idle
+        // push from paying O(total table state) of pure CPU on a maximal
+        // stream. (A dirty table with no rows still resolves: its delta must
+        // reach the registry even when this push carries none of its rows.)
+        if !has_rows && !d.buffer.is_dirty() {
+            continue;
+        }
         let observed = table::resolve_schema(d.buffer);
         let table = observed.table.clone();
         if !has_rows && registry.get(&table).is_none() {
+            // Never registered and nothing to write — nothing reached the
+            // registry, so the table is clean from the registry's point of
+            // view; the next observation re-dirties it.
+            d.buffer.mark_clean();
             continue;
         }
 
@@ -212,7 +229,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             enforce_discards(
                 d.buffer,
                 d.rows,
-                d.rollback_snapshot,
+                d.rollback_snapshot.as_deref(),
                 &discard,
                 &mut discarded_ids,
                 &mut items,
@@ -235,9 +252,18 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             let schema = registry
                 .get(&d.buffer.table)
                 .expect("schema registered before building");
+            // The cell budget (4H3): the builder materializes every schema
+            // column for every row — nulls where a row lacks the field — so
+            // the columns × rows product is refused before any array is
+            // built, not metered after the gigabytes are resident.
+            crate::shred::refuse_over_cell_budget(
+                &d.buffer.table,
+                schema.columns.len(),
+                d.rows.len(),
+            )?;
             let (batch, misfits) = build::build_batch(
                 schema,
-                d.buffer.source_to_normalized(),
+                d.buffer.normalized_to_source(),
                 d.rows.as_slice(),
                 load_id,
             )
@@ -257,6 +283,11 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             }
             items.push(LoadItem::batch(d.buffer.table.clone(), batch));
         }
+        // The table's resolved state has reached the registry (or there was
+        // nothing to change): clean until the next observation. Error exits
+        // above deliberately skip this — an un-applied mutation must be
+        // re-resolved by the next drain.
+        d.buffer.mark_clean();
     }
     Ok(items)
 }

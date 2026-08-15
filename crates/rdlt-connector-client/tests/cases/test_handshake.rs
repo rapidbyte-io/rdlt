@@ -110,6 +110,40 @@ async fn a_destination_handshake_carries_capabilities() {
     );
 }
 
+/// 4L10: a config whose SERIALIZED form exceeds the document ceiling is
+/// refused before SEND — the serve side's post-receive refusal would
+/// fire anyway, but the host-side refusal names the real cause (the
+/// YAML→JSON inflation edge: a just-legal source file re-serializing
+/// past the ceiling). The server is live and reachable; the refusal
+/// proves the document never crossed the wire.
+#[tokio::test]
+async fn an_oversized_serialized_config_is_refused_before_send() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+        .await
+        .expect("bind");
+
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+        .await
+        .expect("dial");
+    let oversized = serde_json::json!({
+        "rows": 1,
+        "pad": "x".repeat(rdlt_connector_sdk::spi::MAX_DOCUMENT_BYTES as usize),
+    });
+    let error = handshake(
+        &channel,
+        Role::Source,
+        &oversized,
+        &ConnectorRequirement::new("echo-source"),
+    )
+    .await
+    .expect_err("an over-ceiling document must refuse at the host");
+    assert!(
+        matches!(error, ClientError::Protocol(ref text) if text.contains("document ceiling")),
+        "the refusal names the ceiling: {error:?}"
+    );
+}
+
 /// D-039-2: the provider resolved a connector id, and the connector
 /// reported a different one — refused typed, never worked around.
 #[tokio::test]

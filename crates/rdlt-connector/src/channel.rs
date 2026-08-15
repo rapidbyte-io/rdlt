@@ -132,6 +132,11 @@ impl<T> Clone for ByteSender<T> {
 pub struct ByteReceiver<T> {
     messages: mpsc::Receiver<Permitted<T>>,
     budget: Arc<Semaphore>,
+    /// Whether [`Self::close`] closes the budget semaphore too. Channels
+    /// drawing from a SHARED budget ([`records_channel_shared`]) must not:
+    /// closing the shared semaphore would fail every OTHER channel's parked
+    /// producer, turning one stream's teardown into a cascade.
+    close_budget: bool,
 }
 
 impl<T: ByteSized> ByteSender<T> {
@@ -182,10 +187,15 @@ impl<T> ByteReceiver<T> {
     /// Closing the message queue alone is not enough: a producer parked on
     /// the byte budget is waiting on the SEMAPHORE, and nothing would ever
     /// wake it. Closing the semaphore too is what turns "stop" into an
-    /// event the producer observes from either wait.
+    /// event the producer observes from either wait. A channel drawing
+    /// from a SHARED budget closes only its own queue (see the field on
+    /// the struct): the host's task teardown bounds how long a producer
+    /// parked on the shared pool can linger.
     pub fn close(&mut self) {
         self.messages.close();
-        self.budget.close();
+        if self.close_budget {
+            self.budget.close();
+        }
     }
 }
 
@@ -207,6 +217,7 @@ pub fn byte_channel<T>(
         ByteReceiver {
             messages: receiver,
             budget,
+            close_budget: true,
         },
     )
 }
@@ -468,6 +479,63 @@ pub fn records_channel(byte_budget: usize) -> (RecordsOut, RecordsIn) {
     (
         RecordsOut { channel: sender },
         RecordsIn { channel: receiver },
+    )
+}
+
+/// ONE byte budget shared by several records channels (GLM round-4, 4H2):
+/// the engine runs one channel per stream, and per-channel budgets meant a
+/// run's total in-flight allowance was `streams × budget` — unbounded on
+/// the one axis discovery never capped. Channels drawn from one
+/// `SharedBudget` spend from a single semaphore, so the run's peak memory
+/// is the configured budget no matter how many streams the source declares.
+///
+/// Two semantics differ from a per-channel budget, both deliberate:
+///
+/// - Backpressure is shared: one stream's unconsumed bytes park EVERY
+///   stream's producer once the pool is spent. That is the point — the
+///   ceiling prices the run, not the stream.
+/// - Closing one channel's receiver does NOT close the shared semaphore
+///   (that would cascade a failure into every sibling channel's parked
+///   producer). A producer parked on the shared pool is woken by its own
+///   task's teardown, which every host of this channel already performs
+///   (the engine aborts its reader tasks after a bounded grace).
+#[derive(Debug, Clone)]
+pub struct SharedBudget {
+    budget: Arc<Semaphore>,
+    total: usize,
+}
+
+impl SharedBudget {
+    /// A shared budget of `bytes` total in-flight bytes across every
+    /// channel drawn from it.
+    pub fn new(bytes: usize) -> Self {
+        Self {
+            budget: Arc::new(Semaphore::new(bytes)),
+            total: bytes,
+        }
+    }
+}
+
+/// The shared-budget twin of [`records_channel`] — see [`SharedBudget`]
+/// for the two semantic differences (shared backpressure; close does not
+/// close the pool).
+pub fn records_channel_shared(budget: &SharedBudget) -> (RecordsOut, RecordsIn) {
+    let (messages, receiver) = mpsc::channel(RECORDS_MESSAGE_CAPACITY);
+    (
+        RecordsOut {
+            channel: ByteSender {
+                messages,
+                budget: Arc::clone(&budget.budget),
+                budget_total: budget.total,
+            },
+        },
+        RecordsIn {
+            channel: ByteReceiver {
+                messages: receiver,
+                budget: Arc::clone(&budget.budget),
+                close_budget: false,
+            },
+        },
     )
 }
 
@@ -942,6 +1010,53 @@ mod records_tests {
             .expect("close must wake the parked producer")
             .expect("task joins");
         assert_eq!(result, Err(ChannelClosed), "the woken producer is told why");
+    }
+
+    /// The shared budget's whole point (4H2): two channels drawn from one
+    /// [`SharedBudget`] spend from ONE pool — a full first channel parks
+    /// the second channel's producer even though the second channel's own
+    /// queue is empty, and draining the first frees the second.
+    #[tokio::test]
+    async fn channels_sharing_a_budget_share_one_in_flight_ceiling() {
+        let budget = SharedBudget::new(100);
+        let (mut out_a, mut in_a) = records_channel_shared(&budget);
+        let (mut out_b, mut in_b) = records_channel_shared(&budget);
+        out_a
+            .raw_json(Bytes::from(vec![b'x'; 100]))
+            .await
+            .expect("the first channel fills the pool");
+        let parked = tokio::spawn(async move { out_b.raw_json(Bytes::from_static(b"y")).await });
+        tokio::time::sleep(Duration::from_millis(50)).await; // let it park
+        assert!(
+            !parked.is_finished(),
+            "the sibling channel parks on the shared pool"
+        );
+        // Draining the first channel frees the pool — the parked sibling
+        // push completes.
+        drop(in_a.recv().await.expect("a's queued push"));
+        tokio::time::timeout(BOUND, parked)
+            .await
+            .expect("the parked push completes once the pool frees")
+            .expect("task joins")
+            .expect("push lands");
+        assert!(in_b.recv().await.is_some(), "and it arrived on b");
+    }
+
+    /// Closing a shared-budget channel must NOT close the shared semaphore:
+    /// doing so would fail every sibling channel's parked producer — one
+    /// stream's teardown cascading into the rest (the engine closes a
+    /// stream's channel on EVERY exit, normal ones included).
+    #[tokio::test]
+    async fn closing_one_shared_channel_never_closes_the_pool() {
+        let budget = SharedBudget::new(8);
+        let (_out_a, mut in_a) = records_channel_shared(&budget);
+        let (mut out_b, mut in_b) = records_channel_shared(&budget);
+        in_a.close();
+        out_b
+            .raw_json(Bytes::from_static(b"12345678"))
+            .await
+            .expect("the sibling's pool is intact after a's close");
+        assert!(in_b.recv().await.is_some(), "the push arrives");
     }
 
     #[tokio::test]

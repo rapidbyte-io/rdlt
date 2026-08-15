@@ -52,7 +52,12 @@
 /// multi-megabyte "document" is a wrong path (a data file, a dump) —
 /// better refused by size, typed, than slurped whole into memory and
 /// fed to a recursive parser.
-pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
+///
+/// The constant itself is the SPI's (4I10 — one spelling for the host
+/// file read, this parse gate, the serve-side document ceiling, and the
+/// client's pre-send check, so the seats cannot drift apart); aliased
+/// here so existing paths keep working.
+pub const MAX_DOCUMENT_BYTES: u64 = rdlt_connector::MAX_DOCUMENT_BYTES;
 
 /// Which sink the scanner is inside, when it is inside one.
 enum Mode {

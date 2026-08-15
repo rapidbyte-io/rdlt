@@ -48,25 +48,15 @@ pub fn sanitize(text: &str) -> String {
 /// Escape every character unsafe in a one-line identifier seat. Unlike
 /// [`sanitize`], newlines and tabs are not formatting here: accepting
 /// them would let a pipeline/table name mint additional terminal lines.
+///
+/// The character inventory is the wire protocol's ONE table (4L3): this
+/// seat previously carried its own approximation, which had drifted
+/// narrower than the boundary it backs — the wire gates refuse first, but
+/// a defense-in-depth layer must not be narrower than the layer in front.
 pub fn sanitize_identifier(text: &str) -> String {
-    fn unsafe_character(character: char) -> bool {
-        character.is_control()
-            || matches!(
-                character,
-                '\u{00ad}'
-                    | '\u{061c}'
-                    | '\u{180e}'
-                    | '\u{200b}'..='\u{200f}'
-                    | '\u{2028}'..='\u{202e}'
-                    | '\u{2060}'..='\u{206f}'
-                    | '\u{feff}'
-                    | '\u{fff9}'..='\u{fffb}'
-            )
-    }
-
     let mut out = String::with_capacity(text.len());
     for character in text.chars() {
-        if unsafe_character(character) {
+        if rdlt_connector_protocol::sanitize::is_control_or_invisible(character) {
             use std::fmt::Write as _;
             let _ = write!(out, "\\u{{{:x}}}", character as u32);
         } else {

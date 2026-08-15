@@ -55,19 +55,26 @@ const RETENTION_CEILING_BYTES: usize = 64 << 20;
 /// conservative factor before parsing so the ceiling also bounds the
 /// parser's transient allocation, not only the retained result.
 ///
-/// The arithmetic behind 64, against a glibc-class allocator: a dense
-/// scalar array (`[0,0,0,…]`) costs ~2 wire bytes per element and
-/// materializes one 32-byte `Value` per element in the root `Vec` —
-/// and while that `Vec` doubles, the old and new allocations coexist,
-/// so the transient peak reaches ~3 slots' worth ≈ 96 bytes per
-/// element ≈ 48× the wire size. Chains of 1-element arrays
-/// (`[[[…]]]`, bounded by serde_json's 128-level recursion limit) cost
-/// ~2 wire bytes per level against a 32-byte `Value` slot plus its
-/// own 1-element `Vec` heap block, which the allocator rounds with
-/// header overhead to ~48 bytes — ~40× all told. 64 covers both with
-/// headroom, and over-counting is the safe direction here: it refuses
-/// an oversized fixture early, where an under-count OOMs the harness.
-const RAW_JSON_RETENTION_FACTOR: usize = 64;
+/// The arithmetic behind 256, against a glibc-class allocator and THIS
+/// workspace's serde_json: the `preserve_order` feature is enabled, so a
+/// `Value` is much larger than the 32 bytes of the default map
+/// (IndexMap-backed objects; measured 72 in this lockfile) — the 4L7
+/// catch, since the 64 figure was derived from 32. A dense scalar array
+/// (`[0,0,0,…]`) costs ~2 wire bytes per element and materializes one
+/// ~72-byte `Value` per element in the root `Vec` — and while that
+/// `Vec` doubles, old and new allocations coexist, so the transient
+/// peak reaches ~3 slots' worth ≈ 216 bytes per element ≈ 108× the
+/// wire size. Chains of 1-element arrays (`[[[…]]]`, bounded by
+/// serde_json's 128-level recursion limit) cost ~2 wire bytes per level
+/// against a ~72-byte `Value` slot plus its own 1-element `Vec` heap
+/// block, which the allocator rounds with header overhead to ~150 bytes
+/// — ~75× all told. 256 covers both with headroom, and over-counting is
+/// the safe direction here: it refuses an oversized fixture early,
+/// where an under-count OOMs the harness. The layout the arithmetic
+/// rests on is pinned below, so a feature change (say, dropping
+/// `preserve_order`) fails the pin rather than silently re-opening the
+/// gap.
+const RAW_JSON_RETENTION_FACTOR: usize = 256;
 
 /// What one full read produced: row groups separated by checkpoints.
 #[derive(Debug, Default)]
@@ -408,12 +415,37 @@ mod retention_tests {
     #[test]
     fn compact_json_is_refused_before_a_large_value_graph_can_materialize() {
         let largest_preparse_payload = RETENTION_CEILING_BYTES / RAW_JSON_RETENTION_FACTOR;
-        assert_eq!(largest_preparse_payload, 1 << 20);
+        assert_eq!(largest_preparse_payload, 1 << 18);
         assert!(
             largest_preparse_payload
                 .saturating_add(1)
                 .saturating_mul(RAW_JSON_RETENTION_FACTOR)
                 > RETENTION_CEILING_BYTES
+        );
+    }
+
+    /// 4L7: the retention factor's arithmetic rests on THIS workspace's
+    /// `serde_json::Value` layout — `preserve_order` makes it much larger
+    /// than the 32 bytes of the default map (IndexMap-backed objects; the
+    /// finding measured 80, this lock measures 72 — either way, not 32,
+    /// which is what the original 64× derivation assumed). Pin the
+    /// INVARIANT, computed from the real layout, so a feature change or a
+    /// dependency bump fails loudly here instead of silently re-opening
+    /// the under-counting gap.
+    #[test]
+    fn the_retention_factor_rests_on_the_real_value_layout() {
+        let value_size = std::mem::size_of::<serde_json::Value>();
+        assert!(
+            value_size > 32,
+            "a 32-byte Value means preserve_order was toggled OFF — re-derive \
+             RAW_JSON_RETENTION_FACTOR before trusting it (measured: {value_size})"
+        );
+        // The densest transient: ~3 coexisting Value slots per ~2-wire-byte
+        // array element while the root Vec doubles mid-parse.
+        assert!(
+            RAW_JSON_RETENTION_FACTOR >= 3 * value_size / 2,
+            "the factor no longer covers the densest transient against the \
+             real {value_size}-byte layout — re-derive it"
         );
     }
 }

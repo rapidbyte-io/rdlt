@@ -35,14 +35,17 @@ pub(crate) enum PushError {
     Engine(RdltError),
 }
 
-/// The one refusal both halves of the per-push row bound share: the parse-time
-/// root count and the traversal-time total (roots plus the child rows their
-/// lists fan out into) spend from the same cap and speak with one voice.
+/// The one refusal both halves of the per-push row bound share: the
+/// parse-time count (roots plus EVERY array element at any depth — each is a
+/// child row or a list cell to be, and counting at parse keeps a dense
+/// nested slab from becoming a multi-gigabyte arena before refusal, 4H3)
+/// and the traversal-time total spend from the same cap and speak with one
+/// voice.
 fn row_cap_refusal() -> RdltError {
     RdltError::config(format!(
-        "JSON push exceeds the {MAX_RECORD_BATCH_ROWS}-row cap across root and child rows — \
-         row count is bounded separately from encoded bytes to prevent per-row lineage \
-         and load-id amplification"
+        "JSON push exceeds the {MAX_RECORD_BATCH_ROWS}-row cap across root rows and array \
+         elements — row count is bounded separately from encoded bytes to prevent per-row \
+         lineage and load-id amplification"
     ))
 }
 
@@ -120,10 +123,14 @@ impl TapeShredder {
         bytes: &[u8],
         ctx: ShredContext,
     ) -> Result<Vec<LoadItem>, PushError> {
-        // Snapshot observation states: Discard* enforcement rolls offending
-        // columns back to exactly this point.
-        let rollback_snapshot: Vec<Vec<(String, ColumnState)>> =
-            self.tables.iter().map(|t| t.columns.clone()).collect();
+        // Rollback snapshots arm LAZILY (4M3): each table captures its
+        // pre-push column states on this push's FIRST mutation of it, so a
+        // push that touches few tables pays no whole-stream clone — the
+        // eager snapshot here used to clone every table's every column
+        // state per push, an O(total-state) tax no byte budget sees.
+        for table in &mut self.tables {
+            table.begin_push();
+        }
 
         let mut arena = Arena::sized_for(bytes.len());
         // The parse enforces the root half of the row cap PROGRESSIVELY —
@@ -176,8 +183,7 @@ impl TapeShredder {
                     .collect()
             })
             .collect();
-        drain_tables(&mut self.tables, &mut drain_rows, &rollback_snapshot, ctx)
-            .map_err(PushError::Engine)
+        drain_tables(&mut self.tables, &mut drain_rows, ctx).map_err(PushError::Engine)
     }
 
     /// Breadth-first traversal of one root document: observe every field at every
@@ -408,6 +414,41 @@ mod cardinality_tests {
             }
             Ok(_) => panic!("a push over the row cap must refuse"),
         }
+    }
+
+    /// 4M3's drain-skip contract: a push that leaves a table entirely
+    /// untouched emits NOTHING for it — no re-resolve, no phantom delta.
+    /// (The skip itself is a CPU optimization, but its observable contract
+    /// is "an idle table is inert", which this pins against regressions
+    /// that would emit from unchanged state.)
+    #[test]
+    fn an_idle_push_emits_nothing_for_an_untouched_table() {
+        let mut shredder = shredder();
+        push(&mut shredder, br#"{"x":0,"a":[{"y":2}]}"#)
+            .unwrap_or_else(|_| panic!("the establishing push shreds"));
+        assert_eq!(shredder.tables.len(), 2, "root plus the `a` child table");
+
+        // The idle push observes only an already-known root column. (The
+        // test harness's per-push registry is fresh, so a root CreateTable
+        // delta is expected noise; the contract is that the CHILD table —
+        // untouched this push — emits nothing at all.)
+        let items =
+            push(&mut shredder, br#"{"x":1}"#).unwrap_or_else(|_| panic!("the idle push shreds"));
+        assert!(
+            items.iter().all(|item| match item {
+                LoadItem::Batch { table, .. } => table.as_str() == "events",
+                LoadItem::Delta { schema, .. } => schema.table.as_str() == "events",
+                _ => true,
+            }),
+            "the untouched child table emits nothing: {items:?}"
+        );
+        assert!(
+            items.iter().any(|item| matches!(
+                item,
+                LoadItem::Batch { table, batch, .. } if table.as_str() == "events" && batch.num_rows() == 1
+            )),
+            "the root's one-row batch is still emitted: {items:?}"
+        );
     }
 
     /// More root documents than the row cap refuse with the typed row-cap

@@ -261,6 +261,13 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
 /// never a panic. Truncation SHORT of a declaration (too few bytes for
 /// a length word) is left for the reader's own EOF handling — nothing
 /// oversized gets allocated on that path.
+///
+/// Compression note (4I3): arrow-ipc's `decompress_to_buffer` does an
+/// unbounded `Vec::with_capacity` from a body-declared length — the same
+/// class this pre-pass kills, one layer down. It is unreachable today
+/// (no `ipc_compression` feature and no lz4/zstd anywhere in the
+/// lockfile); if compression is ever enabled, this walk must ALSO bound
+/// the decompressed length.
 fn refuse_overdeclared_framing(bytes: &[u8]) -> Result<(), SourceError> {
     const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
     let refuse = |what: &str, declared: u64| {
@@ -309,8 +316,15 @@ fn refuse_overdeclared_framing(bytes: &[u8]) -> Result<(), SourceError> {
                 "{ONE_BATCH_REFUSAL}: unverifiable message metadata: {error}"
             ))
         })?;
-        let body_len = u64::try_from(message.bodyLength())
-            .map_err(|_| refuse("body", message.bodyLength() as u64))?;
+        // A negative declaration renders SIGNED (4I4) — casting to u64
+        // first would print the wrapped value, a diagnostic that lies
+        // about what the frame actually declared.
+        let body_len = u64::try_from(message.bodyLength()).map_err(|_| {
+            SourceError::fatal(format!(
+                "{ONE_BATCH_REFUSAL}: a negative declared body length ({})",
+                message.bodyLength()
+            ))
+        })?;
         pos = usize::try_from(body_len)
             .ok()
             .and_then(|body| meta_end.checked_add(body))

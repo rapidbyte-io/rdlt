@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use rdlt_connector::{
     DestinationCapabilities, PushPayload, ReadRequest, Source, StreamSpec, channel::ByteSender,
-    records_channel,
+    channel::SharedBudget, records_channel_shared,
 };
 use rdlt_core::{
     Cursor, LoadId, PipelineEvent, RdltError, SchemaPolicy, StreamName, TableName, WriteMode,
@@ -116,7 +116,10 @@ pub(super) struct StreamPlan {
     pub(super) since: Option<Cursor>,
     pub(super) mode: WriteMode,
     pub(super) root_table: TableName,
-    pub(super) byte_budget: usize,
+    /// The RUN's one in-flight read budget, shared by every stream's
+    /// records channel (4H2/4H3): per-stream budgets multiplied the peak
+    /// memory cap by the stream count — the one axis discovery declares.
+    pub(super) records_budget: SharedBudget,
     pub(super) load_id: LoadId,
     pub(super) policy: SchemaPolicy,
 }
@@ -138,7 +141,7 @@ pub(super) async fn stream_task(
         since,
         mode,
         root_table,
-        byte_budget,
+        records_budget,
         load_id,
         policy,
     } = plan;
@@ -152,7 +155,7 @@ pub(super) async fn stream_task(
         registry: SchemaRegistry::default(),
     };
 
-    let (out, mut input) = records_channel(byte_budget);
+    let (out, mut input) = records_channel_shared(&records_budget);
     let request = ReadRequest::new(spec.clone(), since, out);
     let read_source = Arc::clone(&source);
     let mut reader = tokio::spawn(async move { read_source.read(request).await });
@@ -228,10 +231,19 @@ pub(super) async fn stream_task(
                     entry.0 += rows_read;
                     entry.1 += payload_bytes;
                 }
+                // A send failure means the loader is gone — exit the push
+                // loop, like the Checkpoint arm does. Breaking only the
+                // item loop kept this task SHREDDING every remaining push
+                // of a run whose outcome was already decided (4I8).
+                let mut loader_gone = false;
                 for item in items {
                     if tx.send(item).await.is_err() {
+                        loader_gone = true;
                         break;
                     }
+                }
+                if loader_gone {
+                    break Ok(LoopExit::LoaderGone);
                 }
             }
             PushPayload::Arrow(batch) => {
@@ -280,10 +292,17 @@ pub(super) async fn stream_task(
                     Ok(items) => items,
                     Err(e) => break Err(e),
                 };
+                // Same loader-gone exit as the RawJson arm (4I8): stop
+                // shredding pushes whose items can never be loaded.
+                let mut loader_gone = false;
                 for item in items {
                     if tx.send(item).await.is_err() {
+                        loader_gone = true;
                         break;
                     }
+                }
+                if loader_gone {
+                    break Ok(LoopExit::LoaderGone);
                 }
             }
             PushPayload::Checkpoint(cursor) => {

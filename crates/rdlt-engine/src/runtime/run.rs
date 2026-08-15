@@ -272,6 +272,12 @@ async fn run_once(
 
     // ---- Wire the graph ----
     let (load_tx, load_rx) = byte_channel::<LoadItem>(config.byte_budget, STAGE_MSG_CAPACITY);
+    // ONE read-side budget for the whole run (4H2/4H3): every stream's
+    // records channel spends from this single pool, so peak in-flight read
+    // memory is the configured budget regardless of how many streams the
+    // source declared — per-stream budgets multiplied the cap by the one
+    // axis a rogue source controls directly.
+    let records_budget = rdlt_connector::SharedBudget::new(config.byte_budget);
     let mut stream_tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
 
     for spec in streams {
@@ -302,7 +308,7 @@ async fn run_once(
             since,
             mode,
             root_table,
-            byte_budget: config.byte_budget,
+            records_budget: records_budget.clone(),
             load_id: load_id.clone(),
             policy: config.schema_policy.clone(),
         };

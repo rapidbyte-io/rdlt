@@ -395,6 +395,24 @@ MUST set its own decode cap to match: a dialing side left at tonic's
 4 MiB default kills the stream with an opaque transport error on the
 first over-4 MiB frame a server legally sends.
 
+## Document ceiling, and the cursor contract
+
+Distinct from the frame ceiling: every `*_json` DOCUMENT payload (the
+handshake's `config_json`, a read's `since_cursor_json`) is capped at
+**8 MiB** — [`MAX_DOCUMENT_BYTES`], again one constant both sides
+import. The serve side refuses an oversized document before parsing it
+(an untyped JSON document expands many-fold over its wire size inside
+the connector), and the client refuses to SEND one (a host-side cap on
+the YAML source file does not bound the re-serialized JSON — YAML→JSON
+expansion can push a just-legal file past the ceiling, and the
+pre-send refusal names exactly that).
+
+For cursor authors the contract is: persisted cursor state MUST
+serialize under the document ceiling. Megabyte-scale state is not a
+conforming cursor — a connector whose state can grow past the ceiling
+summarizes (a high-water mark, an offset, a resume token) instead of
+embedding the data, or its reads refuse typed at the serve gate.
+
 ## `Status` vs `ErrorFrame`: two refusal shapes, on purpose
 
 A caller has to know both exist and check the right one for a given

@@ -90,7 +90,10 @@ pub mod stream;
 pub use arrow_array as arrow;
 pub use arrow_array::RecordBatch;
 pub use capabilities::DestinationCapabilities;
-pub use channel::{ChannelClosed, PushPayload, RecordsIn, RecordsOut, SourcePush, records_channel};
+pub use channel::{
+    ChannelClosed, PushPayload, RecordsIn, RecordsOut, SharedBudget, SourcePush, records_channel,
+    records_channel_shared,
+};
 pub use destination::{
     Destination, LoadSession, OpenContext, PartCloseReason, PartClosed, PartEventFn,
 };
@@ -114,3 +117,18 @@ pub use secret::Secret;
 pub use source::{ReadRequest, Source};
 pub use spec::ConnectorSpec;
 pub use stream::StreamSpec;
+
+/// The most a JSON configuration/state DOCUMENT may weigh, in bytes
+/// (047 wave 5, 4L10/4I10): connector config documents and persisted
+/// cursors are hand-written or summarized state measured in kilobytes,
+/// and an untyped `serde_json::Value` materializes at many times its
+/// wire size, so every seat that parses or forwards one enforces this
+/// ONE ceiling — the sdk's config parse gate, the out-of-process
+/// `serve` document refusals (`config_json`, `since_cursor_json`), the
+/// client's pre-send check, and the host's file read all import this
+/// spelling so the seats cannot drift apart. The cursor contract for
+/// connector authors: persisted state MUST serialize under this
+/// ceiling — a connector whose state can outgrow it summarizes (a
+/// high-water mark, an offset, a resume token) rather than embedding
+/// the data.
+pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;

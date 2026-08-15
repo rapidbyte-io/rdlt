@@ -29,7 +29,6 @@ use rdlt_core::{
 use super::{
     DrainRow,
     canon::parse_timestamp_tz,
-    table::TableBuffer,
     view::{JsonView, ValueKind},
 };
 
@@ -72,8 +71,10 @@ pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
     Schema::new(arrow_fields(&schema.columns))
 }
 
-/// Build one table's batch. `source_to_normalized` maps source keys to normalized column names
-/// (the schema speaks normalized; the drained rows speak source).
+/// Build one table's batch. `normalized_to_source` maps normalized column
+/// names back to source keys (the schema speaks normalized; the drained rows
+/// speak source) — the table buffer's map, so each column's lookup is O(1)
+/// rather than a linear scan of the pairing list (4M3).
 ///
 /// Returns the batch and the number of MISFITS: cells where a present, non-null
 /// input produced a NULL output because the value could not be represented under
@@ -87,7 +88,7 @@ pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
 /// outnumber non-null inputs and the subtraction would underflow.
 pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     schema: &TableSchema,
-    source_to_normalized: &[(String, String)],
+    normalized_to_source: &std::collections::HashMap<String, String>,
     rows: &[DrainRow<V>],
     load_id: &LoadId,
 ) -> Result<(RecordBatch, u64), ArrowError> {
@@ -143,7 +144,9 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 Arc::new(b.finish())
             }
             _ => {
-                let source_key = TableBuffer::source_key_in(source_to_normalized, &column.name)
+                let source_key = normalized_to_source
+                    .get(column.name.as_str())
+                    .map(String::as_str)
                     .unwrap_or(column.name.as_str());
                 let values: Vec<Option<V>> =
                     rows.iter().map(|row| row.top_level(source_key)).collect();

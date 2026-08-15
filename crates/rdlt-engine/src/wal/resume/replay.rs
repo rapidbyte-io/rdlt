@@ -10,6 +10,14 @@ use crate::wal::WalRecord;
 
 use super::{blocking::off_runtime, scan::RecoverySpan};
 
+/// The most a WAL segment's footer may weigh. An honest footer is the
+/// schema's flatbuffer plus ONE block descriptor — the writer emits a single
+/// batch per segment ([`crate::wal::write_segment`]) — and even a maximal
+/// 4,096-column schema serializes well under a mebibyte. Sixteen mebibytes
+/// is generous headroom, and refusal degrades to re-extraction, so the cap
+/// can never lose data — it only ever costs a slower recovery.
+const MAX_SEGMENT_FOOTER_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Open one WAL segment for streaming decode; the error text names the
 /// failure so degradation to re-extraction is diagnosable from logs.
 ///
@@ -28,9 +36,116 @@ fn open_segment(
     // a writer appears, hanging replay forever.
     crate::wal::open_wal_read(&path)
         .map_err(|e| e.to_string())
-        .and_then(|f| {
+        .and_then(|mut f| {
+            refuse_overdeclared_segment_layout(&mut f)?;
             arrow::ipc::reader::FileReader::try_new_buffered(f, None).map_err(|e| e.to_string())
         })
+}
+
+/// Refuse a segment whose DECLARED layout exceeds its own file size, before
+/// arrow's reader is allowed to allocate from those declarations.
+///
+/// The threat (GLM round-4, 4H1): arrow-ipc 58.3's `read_block` seeks to the
+/// footer's declared block offset (a seek past EOF SUCCEEDS), converts the
+/// declared `bodyLength` with `to_usize().unwrap()`, and calls
+/// `MutableBuffer::from_len_zeroed(body + meta)` — whose allocation-failure
+/// path is `handle_alloc_error`, i.e. `std::process::abort()`. An abort is
+/// NOT a panic, so [`caught_decode`]'s `catch_unwind` belt — which correctly
+/// contains arrow's *panics* — is structurally irrelevant on this path: a
+/// sub-kilobyte crafted segment with a flatbuffer-valid footer declaring a
+/// body near `isize::MAX` aborts the whole process mid-recovery. The sibling
+/// `read_footer_length` allocates `vec![0; footer_len]` (up to 2 GiB) from a
+/// 4-byte field before its failing seek.
+///
+/// The information to refuse both is one fstat away: every extent the footer
+/// declares must fit INSIDE the file that declares it, because the file is
+/// all the reader will ever read. So the trailer's footer length is held
+/// against the file length, and each block's `offset + metaDataLength +
+/// bodyLength` must not exceed it either. A real segment always passes (the
+/// writer's own blocks point into the file it wrote); only a crafted one
+/// refuses, typed, degrading to re-extraction like every other damage arm.
+///
+/// Residual, recorded rather than chased: a SPARSE giant file (e.g. a 100 GiB
+/// hole) passes the extent check with a ~100 GiB declared body — under
+/// default overcommit the zeroed allocation maps lazily and the read fails
+/// typed at EOF, but under `vm.overcommit_memory=2` the allocation itself
+/// can fail and abort. Closing that needs an absolute segment-size ceiling;
+/// the honest segment size is not statically boundable (a single over-budget
+/// batch passes the channel by design), so the residual stands for hosts
+/// running strict overcommit with a same-OS-user adversary.
+///
+/// Decompression note (4I3): arrow-ipc's `decompress_to_buffer` does an
+/// unbounded `Vec::with_capacity` from a body-declared length, but no
+/// `ipc_compression` feature is enabled anywhere in this workspace (no lz4 /
+/// zstd in the lockfile), so that door is shut. If compression is ever
+/// enabled, this pre-pass must ALSO bound the decompressed length.
+fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let file_len = segment.metadata().map_err(|e| e.to_string())?.len();
+    // The smallest IPC file is leading magic (8) + footer + trailer (10).
+    if file_len < 18 {
+        return Err(format!(
+            "segment is {file_len} bytes — smaller than the smallest possible Arrow IPC file"
+        ));
+    }
+    let mut trailer = [0u8; 10];
+    segment
+        .seek(SeekFrom::End(-10))
+        .and_then(|_| segment.read_exact(&mut trailer))
+        .map_err(|e| e.to_string())?;
+    // arrow's own trailer reader: validates the trailing magic and refuses a
+    // negative footer length.
+    let footer_len = arrow::ipc::reader::read_footer_length(trailer).map_err(|e| e.to_string())?;
+    let footer_len = footer_len as u64;
+    if footer_len > file_len - 10 {
+        return Err(format!(
+            "segment declares a {footer_len}-byte footer inside a {file_len}-byte file — \
+             crafted lengths refuse before the decoder can allocate from them"
+        ));
+    }
+    if footer_len > MAX_SEGMENT_FOOTER_BYTES {
+        return Err(format!(
+            "segment declares a {footer_len}-byte footer, over the \
+             {MAX_SEGMENT_FOOTER_BYTES}-byte footer cap — an honest footer carries one \
+             schema and one block descriptor and measures in kibibytes"
+        ));
+    }
+    let mut footer_bytes = vec![0; footer_len as usize];
+    segment
+        .seek(SeekFrom::Start(file_len - 10 - footer_len))
+        .and_then(|_| segment.read_exact(&mut footer_bytes))
+        .map_err(|e| e.to_string())?;
+    // The default verifier options ARE arrow's own (max_depth 64): the
+    // deep-schema guard the `flatbuffer_verification_rejects_a_deep_schema…`
+    // pin holds fires here, before arrow's recursive schema conversion.
+    let footer = arrow::ipc::root_as_footer(&footer_bytes).map_err(|e| e.to_string())?;
+    for blocks in [footer.dictionaries(), footer.recordBatches()] {
+        for block in blocks.iter().flatten() {
+            let (offset, meta, body) = (block.offset(), block.metaDataLength(), block.bodyLength());
+            let end = (offset >= 0 && meta >= 0 && body >= 0)
+                .then(|| {
+                    (offset as u64)
+                        .checked_add(meta as u64)?
+                        .checked_add(body as u64)
+                })
+                .flatten();
+            match end {
+                Some(end) if end <= file_len => {}
+                _ => {
+                    return Err(format!(
+                        "segment declares a block at offset {offset} spanning metadata \
+                         {meta} + body {body} bytes — outside its own {file_len}-byte file; \
+                         crafted lengths refuse before the decoder can allocate them"
+                    ));
+                }
+            }
+        }
+    }
+    segment
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Arrow's schema converter contains panic arms for malformed but
@@ -38,6 +153,15 @@ fn open_segment(
 /// unwind is damaged data and must follow the same degrade-to-re-extraction
 /// path as an ordinary decode error. `AssertUnwindSafe` is confined to decoder
 /// state that is immediately discarded after a panic.
+///
+/// CAVEAT (GLM round-4, 4H1): `catch_unwind` contains PANICS only. An
+/// allocation arrow cannot satisfy runs the alloc-error hook —
+/// `std::process::abort()` — which no `catch_unwind` intercepts. That class
+/// is closed UPSTREAM of the decoder by
+/// [`refuse_overdeclared_segment_layout`], which holds every footer-declared
+/// extent against the segment's own file size before arrow can allocate from
+/// it; this belt remains for arrow's panic arms, which no size check can
+/// pre-empt.
 fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
         Ok(result) => result,
@@ -55,6 +179,14 @@ fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
 /// fuzzer pays no filesystem round trip, with panics contained exactly
 /// as replay contains them — a typed error or a caught unwind, never an
 /// escape.
+///
+/// Deliberately WITHOUT the production pre-pass
+/// ([`refuse_overdeclared_segment_layout`]): the pre-pass's job is to
+/// keep hostile declared lengths away from arrow's allocator, and it is
+/// pinned hermetically at the file seat; this seat's job is the
+/// complementary one — keep hunting the panics INSIDE arrow's decoder
+/// that no length check can pre-empt (its first catch, the crafted
+/// buffer-length panic, is pinned beside the pre-pass's pins).
 pub(crate) fn decode_segment_bytes(bytes: &[u8]) {
     let _ = caught_decode(|| {
         let reader = arrow::ipc::reader::FileReader::try_new(std::io::Cursor::new(bytes), None)
@@ -466,6 +598,92 @@ mod segment_format {
             error.to_ascii_lowercase().contains("depth"),
             "the dependency-level depth guard is the refusal: {error}"
         );
+    }
+
+    /// 4H1's headline case: a footer declaring a block whose extent exceeds
+    /// the segment's own file size must refuse TYPED — before arrow's
+    /// `read_block` can allocate the declared length, whose failure path is
+    /// `handle_alloc_error` → `abort()`, which no `catch_unwind` contains.
+    /// The pin returning at all IS the no-abort proof (an abort kills this
+    /// test's process); the message asserts the refusal is the layout
+    /// pre-pass's, not some downstream decode error.
+    #[test]
+    fn a_footer_declaring_a_block_past_the_file_is_refused_before_any_allocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("l-000000.arrow");
+        write_segment(&path, &batch(3)).expect("write");
+        let bytes = std::fs::read(&path).expect("read");
+
+        // Rewrite the one block's `bodyLength` to a near-`isize::MAX` value.
+        // The patch offset is SELF-LOCATING (scan candidate positions,
+        // re-parse, keep the one that moved the field), so the pin survives
+        // arrow's flatbuffer layout shifting between versions.
+        let len = bytes.len();
+        let footer_len =
+            i32::from_le_bytes(bytes[len - 10..len - 6].try_into().expect("trailer")) as usize;
+        let footer_start = len - 10 - footer_len;
+        let target: i64 = (isize::MAX - 4096) as i64;
+        let mut hostile = None;
+        for off in footer_start..len - 10 - 8 {
+            let mut trial = bytes.clone();
+            trial[off..off + 8].copy_from_slice(&target.to_le_bytes());
+            let moved = arrow::ipc::root_as_footer(&trial[footer_start..len - 10])
+                .ok()
+                .and_then(|footer| footer.recordBatches())
+                .and_then(|batches| batches.iter().next())
+                .is_some_and(|block| block.bodyLength() == target);
+            if moved {
+                hostile = Some(trial);
+                break;
+            }
+        }
+        let hostile =
+            hostile.expect("the bodyLength field must be locatable in the footer's own encoding");
+        std::fs::write(dir.path().join("hostile.arrow"), &hostile).expect("plant");
+
+        let error = open_segment(dir.path(), "hostile.arrow")
+            .map(|_| ())
+            .expect_err("a block extent past the file must refuse typed, never allocate");
+        assert!(
+            error.contains("outside its own"),
+            "the layout pre-pass is the refusal: {error}"
+        );
+    }
+
+    /// The trailer half of 4H1: a footer LENGTH that overruns the file (the
+    /// `vec![0; footer_len]` allocation in arrow's own reader, up to 2 GiB
+    /// from a 4-byte field) refuses typed before any allocation.
+    #[test]
+    fn a_footer_length_past_the_file_is_refused_before_any_allocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("l-000000.arrow");
+        write_segment(&path, &batch(3)).expect("write");
+        let mut bytes = std::fs::read(&path).expect("read");
+        let len = bytes.len();
+        // The trailer's first word is the footer length, little-endian i32.
+        bytes[len - 10..len - 6].copy_from_slice(&i32::MAX.to_le_bytes());
+        std::fs::write(dir.path().join("hostile.arrow"), &bytes).expect("plant");
+        let error = open_segment(dir.path(), "hostile.arrow")
+            .map(|_| ())
+            .expect_err("a footer length past the file must refuse typed");
+        assert!(
+            error.contains("crafted lengths refuse"),
+            "the layout pre-pass is the refusal: {error}"
+        );
+    }
+
+    /// 4I6: a DIRECTORY planted at a segment path passes the name gate and
+    /// every path check, and plain-open succeeds on directories — the
+    /// handle-side regular-file check is the only thing between replay and
+    /// decoding a directory's bytes. It must refuse, naming the shape.
+    #[test]
+    fn a_directory_planted_as_a_segment_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("l-000000.arrow")).expect("plant directory");
+        let error = open_segment(dir.path(), "l-000000.arrow")
+            .map(|_| ())
+            .expect_err("a directory at a segment path must refuse");
+        assert!(error.contains("not a regular file"), "{error}");
     }
 }
 

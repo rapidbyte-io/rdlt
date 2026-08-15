@@ -32,3 +32,60 @@ pub(crate) const MAX_CHILD_TABLES_PER_PARENT: usize = 1024;
 /// multiplies parents — and every push does per-table bookkeeping, so
 /// unbounded tables turn one crafted frame into unbounded work and memory.
 pub(crate) const MAX_TABLES_PER_STREAM: usize = 64 * 1024;
+
+/// The most CELLS one outgoing batch may assemble — `columns × rows`
+/// (GLM round-4, 4H3). The row cap and the column cap each bound one axis,
+/// but batch assembly pays their PRODUCT: every schema column is built for
+/// every row, with absent columns null-filled and the load-id stamped per
+/// row, so a ~50 KB empty-batch schema bootstrap (registering a maximal
+/// column set) plus one 1M-row push would otherwise assemble ~4096 × 1M
+/// cells ≈ 16 GiB of engine-side expansion from ~175 KB of wire — before
+/// any downstream byte metering, which prices inputs, not expansions.
+/// 2²⁸ cells bounds the null-fill transient at ≈1 GiB (4 offset bytes per
+/// null-filled string cell); honest maximal pipelines (256 columns × 1M
+/// rows ≈ 2⁸×2²⁰ cells) sit under it, and a source near the bound pushes
+/// smaller batches.
+pub(crate) const MAX_BATCH_CELLS: usize = 1 << 28;
+
+/// The typed refusal both assembly seats ([`passthrough`] and
+/// [`drain`]'s build call) share, so the cap speaks with one voice.
+pub(crate) fn refuse_over_cell_budget(
+    table: &rdlt_core::TableName,
+    columns: usize,
+    rows: usize,
+) -> Result<(), rdlt_core::RdltError> {
+    let cells = columns.saturating_mul(rows);
+    if cells > MAX_BATCH_CELLS {
+        return Err(rdlt_core::RdltError::config(format!(
+            "table `{table}`: assembling {columns} columns × {rows} rows is {cells} cells, \
+             over the {MAX_BATCH_CELLS}-cell per-batch budget — assembly null-fills absent \
+             columns and stamps lineage per cell, so the product is bounded independently \
+             of the input's encoded size; push smaller batches"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod cell_budget_tests {
+    use super::*;
+
+    /// The product, not the axes, is what's bounded: at the cap exactly it
+    /// passes (the refusal is `>`, not `>=` — an off-by-one here rejects a
+    /// legitimate maximal batch), one cell over refuses, and a saturated
+    /// product refuses instead of wrapping.
+    #[test]
+    fn the_cell_budget_is_inclusive_at_its_boundary() {
+        let table = rdlt_core::TableName::new("t");
+        refuse_over_cell_budget(&table, 1 << 14, MAX_BATCH_CELLS >> 14)
+            .expect("exactly the cap assembles");
+        let error = refuse_over_cell_budget(&table, 1 << 14, (MAX_BATCH_CELLS >> 14) + 1)
+            .expect_err("one cell over the cap refuses");
+        assert!(
+            error.to_string().contains("cell"),
+            "names the budget: {error}"
+        );
+        refuse_over_cell_budget(&table, usize::MAX, 2)
+            .expect_err("a saturating product refuses, never wraps");
+    }
+}

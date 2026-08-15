@@ -72,7 +72,9 @@ pub(crate) enum ParseRowsError {
 
 /// The remaining-row allowance one `parse_rows` call spends, with the flag
 /// that lets the caller tell a cap refusal apart from a serde error after
-/// the fact (inside a visitor only serde's error type can travel).
+/// the fact (inside a visitor only serde's error type can travel). Spent
+/// per root AND per array element at any depth — see [`NodeSeed`]'s
+/// `row_budget` for why nested elements count.
 struct RowBudget {
     remaining: usize,
     exhausted: bool,
@@ -120,11 +122,13 @@ impl<'s> Arena<'s> {
     /// Parse a slab into row nodes, refusing PROGRESSIVELY past `max_rows`.
     ///
     /// The bound is enforced where rows are first observed — per document
-    /// here, per element inside a top-level array (each element becomes a
-    /// row) — not after the parse. A slab dense enough to carry tens of
-    /// millions of rows in a legal frame would otherwise materialize a
-    /// multi-hundred-MB arena before a post-parse check could refuse it;
-    /// counting at observation stops the build at the cap instead.
+    /// here, and per array element at ANY depth: top-level elements become
+    /// rows, and nested elements become child-table rows or list cells, both
+    /// of which materialize per-element state downstream. A slab dense
+    /// enough to carry tens of millions of values in a legal frame would
+    /// otherwise materialize a ~22× arena (an int array is ~2 wire bytes
+    /// per node) before a post-parse check could refuse it; counting at
+    /// observation stops the build at the cap instead (4H3).
     pub(crate) fn parse_rows(
         &mut self,
         bytes: &'s [u8],
@@ -314,9 +318,13 @@ struct NodeSeed<'a, 's> {
     /// Nesting level of the value this seed deserializes (root = 0) — the
     /// ingest half of the shared depth cap; see the module doc.
     depth: usize,
-    /// `Some` only on the depth-0 seed: a top-level array's elements each
-    /// become a row, so `visit_seq` counts them against this as they parse.
-    /// Child seeds carry `None` — nested arrays are values, not rows.
+    /// The per-push row budget, carried at EVERY depth (GLM round-4, 4H3):
+    /// a top-level array's elements each become a row, and a NESTED array's
+    /// elements each become either a child-table row or a scalar-list cell —
+    /// both materialize downstream state per element. Counting nested
+    /// elements at PARSE time is what stops a dense nested slab (an int
+    /// array is ~2 bytes per node against ~40 bytes of arena) from
+    /// materializing a ~22× arena before the traversal budget could refuse.
     row_budget: Option<&'a mut RowBudget>,
 }
 
@@ -398,17 +406,23 @@ where
         while let Some(id) = seq.next_element_seed(NodeSeed {
             arena: self.arena,
             depth: self.depth + 1,
-            row_budget: None,
+            row_budget: self.row_budget.as_deref_mut(),
         })? {
-            // Only the depth-0 seed carries a budget: each element of a
-            // top-level array becomes a row, and counting here — as elements
-            // parse — is what makes the row cap fire before the rest of a
-            // dense slab is materialized into the arena.
+            // Every array element spends from the budget at EVERY depth:
+            // top-level elements become rows, nested elements become
+            // child-table rows or scalar-list cells — both materialize
+            // per-element state downstream, so both count here, AS they
+            // parse, before the rest of a dense slab becomes arena nodes.
+            // The scalar-list arm deliberately over-counts (an element
+            // that ends up a cell in a list column was never a row): the
+            // alternative — a 64 MiB frame building a multi-hundred-MB
+            // arena of list elements the budget never saw — is the worse
+            // direction, and a source near the bound splits its pushes.
             if let Some(budget) = self.row_budget.as_deref_mut()
                 && budget.take_one().is_err()
             {
                 return Err(serde::de::Error::custom(
-                    "top-level array exceeds the caller's row cap",
+                    "array elements exceed the caller's per-push row budget",
                 ));
             }
             items.push(id);
@@ -419,7 +433,7 @@ where
         Ok(self.arena.push_node(ArenaNode::Arr(start, end)))
     }
 
-    fn visit_map<A>(self, mut map: A) -> Result<NodeId, A::Error>
+    fn visit_map<A>(mut self, mut map: A) -> Result<NodeId, A::Error>
     where
         A: MapAccess<'de>,
     {
@@ -430,7 +444,7 @@ where
             let value = map.next_value_seed(NodeSeed {
                 arena: self.arena,
                 depth: self.depth + 1,
-                row_budget: None,
+                row_budget: self.row_budget.as_deref_mut(),
             })?;
             match entries.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, slot)) => *slot = value,
@@ -704,6 +718,43 @@ mod tests {
                 "the refusal names the nesting: {err}"
             );
         }
+    }
+
+    /// 4H3: NESTED array elements spend from the same budget, at parse time.
+    /// One root carrying a dense nested list would otherwise materialize the
+    /// whole ~22× arena before the traversal budget ever saw the elements —
+    /// the parse-time count refuses with the arena still at the cap.
+    #[test]
+    fn nested_array_elements_count_against_the_budget_at_parse_time() {
+        let mut slab = Vec::new();
+        slab.extend_from_slice(b"[[");
+        for i in 0..8 {
+            if i > 0 {
+                slab.push(b',');
+            }
+            slab.push(b'0');
+        }
+        slab.extend_from_slice(b"]]");
+        let mut arena = Arena::default();
+        let err = arena
+            .parse_rows(&slab, 3)
+            .expect_err("nested elements past the budget must refuse");
+        assert!(
+            matches!(err, ParseRowsError::RowCap),
+            "the typed budget arm, not a parse error: {err:?}"
+        );
+        assert!(
+            arena.nodes.len() <= 6,
+            "the parse stopped at the cap instead of materializing the list: {} nodes",
+            arena.nodes.len()
+        );
+
+        // At the budget it parses: two inner arrays + three inner elements
+        // spend exactly five.
+        let mut arena = Arena::default();
+        arena
+            .parse_rows(b"[[1,2],[3]]", 5)
+            .expect("inner arrays and their elements at the budget parse");
     }
 
     /// The row bound is PROGRESSIVE at both row-observation sites: per

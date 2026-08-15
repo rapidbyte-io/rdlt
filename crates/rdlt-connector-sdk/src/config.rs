@@ -279,6 +279,23 @@ mod tests {
         assert!(rendered.contains("over the 8388608-byte cap"), "{rendered}");
     }
 
+    /// 4I10's boundary half: the refusal fires at cap+1, so a document of
+    /// EXACTLY the cap must be ACCEPTED — the check is `>`, and an
+    /// off-by-one here rejects the largest legitimate document.
+    #[test]
+    fn from_yaml_accepts_a_document_at_exactly_the_size_cap() {
+        let cap = crate::yaml::MAX_DOCUMENT_BYTES as usize;
+        let prefix = "name: '";
+        let suffix = "'\n";
+        let document = format!(
+            "{prefix}{}{suffix}",
+            "a".repeat(cap - prefix.len() - suffix.len())
+        );
+        assert_eq!(document.len(), cap, "the fixture IS the cap");
+        let parsed = Probe::from_yaml(&document).expect("a document at exactly the cap parses");
+        assert_eq!(parsed.name.len(), cap - prefix.len() - suffix.len());
+    }
+
     /// The generated schema is the parser's own shape.
     #[cfg(feature = "schema")]
     #[test]

@@ -38,6 +38,8 @@ pub fn is_control_or_invisible(character: char) -> bool {
             | '\u{06dd}'
             // U+070F Syriac abbreviation mark (Cf).
             | '\u{070f}'
+            // U+0890–U+0891 Arabic pound/piastre marks above (Cf).
+            | '\u{0890}'..='\u{0891}'
             // U+08E2 Arabic disputed end of ayah (Cf).
             | '\u{08e2}'
             // U+180E Mongolian vowel separator (historically Cf).
@@ -61,6 +63,10 @@ pub fn is_control_or_invisible(character: char) -> bool {
             | '\u{fff9}'..='\u{fffb}'
             // U+110BD Kaithi number sign (Cf).
             | '\u{110bd}'
+            // U+110CD Kaithi number sign above (Cf).
+            | '\u{110cd}'
+            // U+13430–U+1343F Egyptian hieroglyph format controls (Cf).
+            | '\u{13430}'..='\u{1343f}'
             // U+1BCA0–U+1BCA3 shorthand format controls (Cf).
             | '\u{1bca0}'..='\u{1bca3}'
             // U+1D173–U+1D17A musical beam/tie controls (Cf).
@@ -126,6 +132,11 @@ mod tests {
             '\u{fff9}',
             '\u{fffb}',
             '\u{110bd}',
+            '\u{110cd}',
+            '\u{13430}',
+            '\u{1343f}',
+            '\u{0890}',
+            '\u{0891}',
             '\u{1bca0}',
             '\u{1bca3}',
             '\u{1d173}',

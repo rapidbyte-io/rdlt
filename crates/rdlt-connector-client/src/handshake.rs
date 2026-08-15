@@ -193,6 +193,24 @@ pub async fn handshake(
     config: &serde_json::Value,
     expected: &ConnectorRequirement,
 ) -> Result<HandshakeOutcome, ClientError> {
+    // The document ceiling enforced before SEND (4L10): the serve side
+    // refuses an oversized `config_json` after receiving it, but the
+    // host's own cap applies to the YAML FILE — and YAML→JSON
+    // re-serialization inflates (unicode escapes, quoting), so a
+    // just-legal file can cross the wire's ceiling. Refusing here turns
+    // the connector's typed post-receive refusal into a host-side error
+    // that names what actually happened.
+    let config_json =
+        serde_json::to_vec(config).expect("a serde_json::Value serializes to JSON infallibly");
+    if config_json.len() as u64 > rdlt_connector::MAX_DOCUMENT_BYTES {
+        return Err(ClientError::Protocol(format!(
+            "the config document serializes to {} bytes of JSON, over the protocol's \
+             {}-byte document ceiling (YAML→JSON re-serialization can inflate a \
+             just-legal source file past it) — shrink the document",
+            config_json.len(),
+            rdlt_connector::MAX_DOCUMENT_BYTES
+        )));
+    }
     let mut client = connector_client(channel.clone());
     let reply = with_deadline(
         expected.rpc_deadline,
@@ -200,8 +218,7 @@ pub async fn handshake(
         client.handshake(proto::HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             expected_role: role.wire_name().to_string(),
-            config_json: serde_json::to_vec(config)
-                .expect("a serde_json::Value serializes to JSON infallibly"),
+            config_json,
         }),
     )
     .await?

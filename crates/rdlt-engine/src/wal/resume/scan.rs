@@ -12,44 +12,48 @@ use crate::wal::WalRecord;
 
 use super::blocking::off_runtime;
 
-/// A manifest record is metadata, not a data container. Bound each line before
-/// allocating it so a corrupted WAL cannot make recovery materialize an
-/// arbitrarily large line.
-///
-/// The cap must sit ABOVE anything this engine's own writer can legitimately
-/// append, or a run's own WAL becomes unscannable (`Damaged` — safe direction,
-/// but a pure availability loss). The largest legitimate line is a Delta for a
-/// maximal table create, MEASURED at 1,352,213 bytes: the shred-time bounds
-/// allow 4,096 source columns per table with identifiers normalized to the
-/// destination's `IdentRules` length (63 by default), each column costing
-/// ~150 JSON bytes, and a CreateTable delta serializes that schema TWICE
-/// (once as the record's `schema`, once inside the change) — ~1.3 MiB. Four
-/// mebibytes covers it with headroom for longer destination ident rules while
-/// still bounding what a hostile line can make recovery allocate. Checkpoint
-/// lines carry a source-controlled cursor with NO shred-time bound; a cursor
-/// past this cap degrades the scan the same way, which is the residual this
-/// cap deliberately accepts over an unbounded read.
-const MAX_MANIFEST_LINE_BYTES: usize = 4 * 1024 * 1024;
+use crate::wal::record::MAX_MANIFEST_LINE_BYTES;
+
+/// The scan's whole-file budget (047 wave 5, 4M1): the per-line cap bounds
+/// ONE line, but the fold accumulates every line into memory, so a hostile
+/// multi-gigabyte manifest of small legal lines is the same unbounded
+/// allocation one size up. 256 MiB of manifest text is ~1.7 M checkpoint
+/// lines — orders of magnitude past any honest span (a manifest is cleared
+/// per successful run, so it only ever holds one run's span plus vouched
+/// residue) — and past it the scan degrades to re-extraction like every
+/// other damage arm.
+const MAX_MANIFEST_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The rules sidecar is the writer's `IdentRules` verbatim — a ~100-byte
+/// JSON document. It is read whole, so it gets a small cap of its own
+/// (4M1): a sparse giant regular file planted at the sidecar path passes
+/// the file-TYPE gate, and only this bound keeps recovery from reading it
+/// unbounded.
+const MAX_RULES_SIDECAR_BYTES: u64 = 8 * 1024;
 
 fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<String>, String> {
     let mut bytes = Vec::new();
     let read = reader
-        .take((MAX_MANIFEST_LINE_BYTES + 1) as u64)
+        .take((MAX_MANIFEST_LINE_BYTES + 2) as u64)
         .read_until(b'\n', &mut bytes)
         .map_err(|e| format!("manifest read: {e}"))?;
     if read == 0 {
         return Ok(None);
     }
-    if bytes.len() > MAX_MANIFEST_LINE_BYTES {
-        return Err(format!(
-            "manifest line exceeds the {MAX_MANIFEST_LINE_BYTES}-byte metadata cap"
-        ));
-    }
+    // Strip the terminator BEFORE measuring (4L5): the writer appends
+    // exactly `\n` per line, and counting it against the cap made the
+    // effective bound MAX−1 while the pins measured MAX. A line of exactly
+    // MAX content bytes plus its newline is legal and must scan.
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
+    }
+    if bytes.len() > MAX_MANIFEST_LINE_BYTES {
+        return Err(format!(
+            "manifest line exceeds the {MAX_MANIFEST_LINE_BYTES}-byte metadata cap"
+        ));
     }
     String::from_utf8(bytes)
         .map(Some)
@@ -135,6 +139,23 @@ pub(crate) async fn scan_off_runtime(
 }
 
 fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId) -> ScanOutcome {
+    // 4L4: the read side matched the write side's per-FILE gates, but not
+    // its directory gate — `ensure_owned_dir` refuses a symlinked `wal`
+    // leaf while the scan here would happily follow one, reading a foreign
+    // target's manifest into every verdict below (verdict-steering) and its
+    // segments into replay. Match the write side: a symlinked WAL directory
+    // is damage, never followed. (Not `Nothing`: the directory EXISTS, it
+    // just isn't ours to read. `Damaged` degrades to re-extraction, and the
+    // caller's clear then refuses the same symlink loudly.)
+    if let Ok(meta) = std::fs::symlink_metadata(dir)
+        && meta.file_type().is_symlink()
+    {
+        return ScanOutcome::Damaged(format!(
+            "the WAL directory `{}` is a symlink — the write side refuses symlinked WAL \
+             directories, so the read side refuses to follow one into a foreign target",
+            dir.display()
+        ));
+    }
     let path = dir.join("manifest.jsonl");
     // The gated open ([`crate::wal::open_wal_read`]) refuses FIFOs, symlinks
     // and other non-regular plants at the manifest path — a plain open would
@@ -156,6 +177,7 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
     };
     let mut records: Vec<WalRecord> = Vec::new();
     let mut damaged: Option<String> = None;
+    let mut total_bytes: u64 = 0;
     let mut reader = BufReader::new(file);
     loop {
         let line = match read_manifest_line(&mut reader) {
@@ -166,6 +188,16 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
                 break;
             }
         };
+        // The whole-file budget (4M1): the per-line cap bounds one line;
+        // this bounds their SUM, which is what the fold below accumulates.
+        total_bytes += line.len() as u64 + 1;
+        if total_bytes > MAX_MANIFEST_TOTAL_BYTES {
+            damaged = Some(format!(
+                "manifest exceeds the {MAX_MANIFEST_TOTAL_BYTES}-byte total budget — the \
+                 per-line cap bounds one line, but recovery accumulates every line"
+            ));
+            break;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -383,11 +415,21 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<Str
     let path = dir.join(crate::wal::RULES_SIDECAR);
     // Same gated open as the manifest's: the sidecar decides whether the
     // whole span is trusted, so a symlink here would let foreign content
-    // vouch for the writer's rules, and a FIFO would hang the scan.
-    let text = match crate::wal::open_wal_read(&path).and_then(|mut file| {
-        let mut text = String::new();
-        file.read_to_string(&mut text)?;
-        Ok(text)
+    // vouch for the writer's rules, and a FIFO would hang the scan. The
+    // read is BOUNDED (4M1): the writer's own sidecar is ~100 bytes, so a
+    // sparse giant regular file planted here — which passes the type gate —
+    // must refuse rather than be read whole.
+    let text = match crate::wal::open_wal_read(&path).and_then(|file| {
+        let mut bytes = Vec::new();
+        file.take(MAX_RULES_SIDECAR_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_RULES_SIDECAR_BYTES {
+            return Err(std::io::Error::other(format!(
+                "exceeds the {MAX_RULES_SIDECAR_BYTES}-byte sidecar cap"
+            )));
+        }
+        String::from_utf8(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }) {
         Ok(text) => text,
         Err(e) => {
@@ -719,6 +761,136 @@ mod tests {
             &PipelineId::new("p"),
         );
         assert!(matches!(outcome, ScanOutcome::Damaged(reason) if reason.contains("metadata cap")));
+    }
+
+    /// 4L5's boundary, both sides: the writer appends exactly `\n` per
+    /// line, so a completed line of EXACTLY the cap in content bytes must
+    /// scan (the terminator is not content), and one content byte over
+    /// must refuse. The off-by-one this closes counted the newline against
+    /// the cap, making the real bound MAX−1 while the pins measured MAX.
+    #[test]
+    fn the_line_cap_counts_content_not_the_terminator() {
+        let mut at_cap = vec![b'x'; MAX_MANIFEST_LINE_BYTES];
+        at_cap.push(b'\n');
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(at_cap));
+        let line = read_manifest_line(&mut reader)
+            .expect("a line at exactly the cap scans")
+            .expect("a line, not EOF");
+        assert_eq!(line.len(), MAX_MANIFEST_LINE_BYTES);
+
+        let mut over_cap = vec![b'x'; MAX_MANIFEST_LINE_BYTES + 1];
+        over_cap.push(b'\n');
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(over_cap));
+        let error = read_manifest_line(&mut reader).expect_err("one content byte over refuses");
+        assert!(error.contains("metadata cap"), "{error}");
+    }
+
+    /// 4M1's whole-file half: the per-line cap bounds ONE line; this pins
+    /// the SUM. Enough individually-legal lines to pass the total budget
+    /// must degrade, not accumulate.
+    #[test]
+    fn a_manifest_past_the_total_budget_degrades() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Individually-legal lines of ~1 MiB each: 257 of them pass the
+        // 256 MiB total budget. (Written through the real encoder so each
+        // line verifies.)
+        let cursor = rdlt_core::Cursor::new(serde_json::Value::String("x".repeat(1 << 20)));
+        let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
+            stream: rdlt_core::StreamName::new("s"),
+            cursor,
+        })
+        .expect("encode");
+        let mut out = crate::wal::record::encode_line(&WalRecord::Run {
+            format_version: crate::wal::WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("p"),
+        })
+        .expect("encode header");
+        out.push(b'\n');
+        let mut total = out.len() as u64;
+        while total <= MAX_MANIFEST_TOTAL_BYTES {
+            out.extend_from_slice(&line);
+            out.push(b'\n');
+            total += line.len() as u64 + 1;
+        }
+        std::fs::write(dir.path().join("manifest.jsonl"), out).expect("write manifest");
+        std::fs::write(
+            dir.path().join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+        )
+        .expect("write sidecar");
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("total budget")),
+            "the total budget refuses, naming itself: {outcome:?}"
+        );
+    }
+
+    /// 4M1's sidecar half: the writer's own sidecar is ~100 bytes, so a
+    /// sparse giant regular file at the sidecar path — which passes the
+    /// file-TYPE gate — refuses at the small content cap rather than being
+    /// read whole.
+    #[test]
+    fn an_oversized_sidecar_is_damage_not_an_unbounded_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(dir.path(), &[]);
+        std::fs::write(
+            dir.path().join(crate::wal::RULES_SIDECAR),
+            vec![b'x'; (MAX_RULES_SIDECAR_BYTES + 1) as usize],
+        )
+        .expect("plant oversized sidecar");
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("sidecar")),
+            "an oversized sidecar degrades the scan: {outcome:?}"
+        );
+    }
+
+    /// 4L4: a symlinked `wal` directory itself is refused, not followed —
+    /// the write side's `ensure_owned_dir` gate's read-side twin.
+    #[test]
+    fn a_symlinked_wal_directory_is_damage_never_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let foreign = tempfile::tempdir().expect("foreign dir");
+        write_manifest(foreign.path(), &[]);
+        let link = dir.path().join("wal");
+        std::os::unix::fs::symlink(foreign.path(), &link).expect("plant symlink");
+        let outcome = scan(
+            &link,
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("symlink")),
+            "a symlinked WAL directory refuses, never follows: {outcome:?}"
+        );
+    }
+
+    /// 4I6: a DIRECTORY planted at the manifest path opens fine on Unix
+    /// (directories are readable), so only the handle-side regular-file
+    /// check stands between the scan and decoding directory bytes. It
+    /// refuses as damage.
+    #[test]
+    fn a_directory_planted_at_the_manifest_path_is_damage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("manifest.jsonl")).expect("plant directory");
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(_)),
+            "a directory at the manifest path is damage, not absence: {outcome:?}"
+        );
     }
 
     /// Mutation-report closure: the on-disk Run header must SERIALIZE the

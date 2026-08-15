@@ -58,7 +58,21 @@ pub(crate) fn escape_control_characters(text: &str) -> Cow<'_, str> {
     let mut escaped = String::with_capacity(text.len() + 8);
     for character in text.chars() {
         if sanitize::is_control_or_invisible(character) {
-            escaped.extend(character.escape_debug());
+            // `escape_debug` escapes the Cc/Cf/Cs/Co/Cn/Z* categories but
+            // passes printable characters through unchanged — and the
+            // inventory's two Hangul fillers (U+3164, U+FFA0) are category
+            // Lo, i.e. "printable" to it while rendering as blank glyphs.
+            // An unchanged escape would render the inventory character
+            // raw, falsifying this seat's one invariant — rendered text
+            // cannot hide an inventory character — so spell those out
+            // explicitly (4L2).
+            let mut debug = character.escape_debug();
+            if debug.len() == 1 && debug.next() == Some(character) {
+                use std::fmt::Write as _;
+                let _ = write!(escaped, "\\u{{{:x}}}", character as u32);
+            } else {
+                escaped.extend(character.escape_debug());
+            }
         } else {
             escaped.push(character);
         }
@@ -125,5 +139,16 @@ mod tests {
             escape_control_characters("clean \"text\""),
             Cow::Borrowed("clean \"text\"")
         ));
+    }
+
+    /// 4L2: the inventory's two Hangul fillers are category `Lo` —
+    /// printable to `escape_debug`, which hands them back unchanged while
+    /// they render as blank glyphs. The display seat's invariant is that
+    /// rendered text cannot hide an inventory character, so the fallback
+    /// spells them out.
+    #[test]
+    fn the_hangul_fillers_escaped_raw_get_spelled_out() {
+        assert_eq!(escape_control_characters("a\u{3164}b"), "a\\u{3164}b");
+        assert_eq!(escape_control_characters("a\u{ffa0}b"), "a\\u{ffa0}b");
     }
 }

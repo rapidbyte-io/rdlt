@@ -42,7 +42,12 @@ pub(super) use rdlt_connector_protocol::MAX_FRAME_BYTES;
 /// hand-written config measured in kilobytes; 8 MiB matches the ceiling
 /// the host side already enforces on its own document reads before
 /// anything is sent, so a conforming host can never hit this refusal.
-pub(super) const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+///
+/// The value is the SPI's one constant (4I10); the client enforces the
+/// same ceiling before SEND, so a host-side document that inflates past
+/// it under YAML→JSON re-serialization is refused at the host with a
+/// clearer error than this seat's post-receive one.
+pub(super) const MAX_DOCUMENT_BYTES: usize = rdlt_connector::MAX_DOCUMENT_BYTES as usize;
 
 /// The typed size refusal for an oversized `*_json` document payload —
 /// one spelling for every seat that enforces [`MAX_DOCUMENT_BYTES`], so

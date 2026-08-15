@@ -2295,6 +2295,7 @@ dependencies = [
  "indicatif",
  "libc",
  "rdlt",
+ "rdlt-connector-protocol",
  "rdlt-testkit",
  "serde",
  "serde_json",

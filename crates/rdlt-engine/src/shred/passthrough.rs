@@ -78,6 +78,22 @@ pub(crate) fn passthrough_items(
                     })?;
             }
         }
+        // Columns only append (GLM round-4, 4M2 — the registry doc's promise,
+        // which this path used to BREAK): merge every column the batch OMITTED
+        // back into the observation, mirroring the struct-field join above.
+        // Without the merge, a batch that carried any real change (an add or
+        // a widen) while omitting column X made `apply` REPLACE the stored
+        // schema with the observation — X silently vanished from the durable
+        // schema, later batches null-filled it, then re-added it as per-push
+        // AddColumn churn (delta → destination ensure → WAL record). The
+        // assembly already null-fills absent columns; this keeps the registry
+        // itself append-only. The shredder's JSONL path needs no such merge:
+        // its observation states accumulate across pushes by construction.
+        for existing in &current.columns {
+            if !observed.columns.iter().any(|c| c.name == existing.name) {
+                observed.columns.push(existing.clone());
+            }
+        }
     }
 
     // ---- Re-count breadth AFTER the join ----
@@ -162,6 +178,10 @@ pub(crate) fn passthrough_items(
     // ---- Assemble the outgoing batch against the CURRENT registry schema ----
     let current = registry.get(table).expect("registered above");
     let rows = batch.num_rows();
+    // The cell budget (4H3): assembly pays columns × rows — null-filled for
+    // every column this batch omits — so the product is refused BEFORE any
+    // array is built, not metered after.
+    crate::shred::refuse_over_cell_budget(table, current.columns.len(), rows)?;
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(current.columns.len());
     for column in &current.columns {
         if column.name == system_columns::LOAD_ID {
@@ -421,6 +441,210 @@ fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 4H3(ii): the engine-side expansion is bounded by the PRODUCT. An
+    /// empty wide batch bootstraps a maximal registry schema for ~50 KB of
+    /// wire; one 1M-row single-column push then assembles 4,096 null-filled
+    /// columns — ~16 GiB — unless the cell budget refuses first.
+    #[test]
+    fn a_wide_registry_times_a_full_row_batch_refuses_at_the_cell_budget() {
+        use arrow::datatypes::Field;
+        let wide = arrow::datatypes::Schema::new(
+            (0..MAX_SOURCE_COLUMNS_PER_TABLE)
+                .map(|index| Field::new(format!("f{index}"), DataType::Boolean, true))
+                .collect::<Vec<_>>(),
+        );
+        // Schema bootstrap is nearly free: zero rows, the full column set.
+        let bootstrap = RecordBatch::new_empty(Arc::new(wide));
+        let mut registry = crate::schema::registry::SchemaRegistry::default();
+        let (load_id, mode, policy) = (
+            rdlt_core::LoadId::new("load"),
+            rdlt_core::WriteMode::Append,
+            rdlt_core::SchemaPolicy::default(),
+        );
+        let table = TableName::new("events");
+        passthrough_items(
+            &bootstrap,
+            &table,
+            ShredContext {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+            },
+            DestinationCapabilities::default(),
+        )
+        .expect("an empty wide bootstrap registers");
+        // One 125 KB boolean column at the full row cap: the assembly would
+        // null-fill the other 4,095 columns across a million rows.
+        let push = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "f0",
+                DataType::Boolean,
+                true,
+            )])),
+            vec![Arc::new(arrow::array::BooleanArray::from(vec![
+                true;
+                MAX_RECORD_BATCH_ROWS
+            ]))],
+        )
+        .expect("batch");
+        let error = passthrough_items(
+            &push,
+            &table,
+            ShredContext {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+            },
+            DestinationCapabilities::default(),
+        )
+        .expect_err("the columns × rows product must refuse");
+        assert!(
+            error.to_string().contains("cell"),
+            "the refusal names the cell budget: {error}"
+        );
+    }
+
+    /// 4M2 (data integrity): a structured batch that OMITS a registry column
+    /// while carrying another change must not shrink the durable schema.
+    /// Columns only append — the registry's own doc promise, which the
+    /// replace-on-diff path used to break.
+    #[test]
+    fn an_omitting_batch_keeps_its_missing_columns_in_the_registry() {
+        use arrow::array::{Float64Array, Int64Array};
+        use arrow::datatypes::Field;
+
+        let batch_of = |fields: Vec<Field>, columns: Vec<ArrayRef>| {
+            RecordBatch::try_new(Arc::new(arrow::datatypes::Schema::new(fields)), columns)
+                .expect("batch")
+        };
+        let mut registry = crate::schema::registry::SchemaRegistry::default();
+        let (load_id, mode, policy) = (
+            rdlt_core::LoadId::new("load"),
+            rdlt_core::WriteMode::Append,
+            rdlt_core::SchemaPolicy::default(),
+        );
+        let table = TableName::new("events");
+        fn pass(
+            registry: &mut crate::schema::registry::SchemaRegistry,
+            table: &TableName,
+            load_id: &rdlt_core::LoadId,
+            mode: &rdlt_core::WriteMode,
+            policy: &rdlt_core::SchemaPolicy,
+            batch: RecordBatch,
+        ) -> Vec<LoadItem> {
+            passthrough_items(
+                &batch,
+                table,
+                ShredContext {
+                    registry,
+                    load_id,
+                    mode,
+                    policy,
+                },
+                DestinationCapabilities::default(),
+            )
+            .expect("pass")
+        }
+
+        // Batch 1 establishes a, b.
+        pass(
+            &mut registry,
+            &table,
+            &load_id,
+            &mode,
+            &policy,
+            batch_of(
+                vec![
+                    Field::new("a", DataType::Int64, true),
+                    Field::new("b", DataType::Int64, true),
+                ],
+                vec![
+                    Arc::new(Int64Array::from(vec![1, 2])),
+                    Arc::new(Int64Array::from(vec![3, 4])),
+                ],
+            ),
+        );
+
+        // Batch 2 omits `a` and widens `b` — a real change, so the old code
+        // replaced the stored schema and `a` was gone.
+        let items = pass(
+            &mut registry,
+            &table,
+            &load_id,
+            &mode,
+            &policy,
+            batch_of(
+                vec![Field::new("b", DataType::Float64, true)],
+                vec![Arc::new(Float64Array::from(vec![1.5, 2.5, 3.5]))],
+            ),
+        );
+        let schema = registry.get(&table).expect("registered");
+        let names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"a") && names.contains(&"b"),
+            "an omitted column stays in the durable schema: {names:?}"
+        );
+        assert_eq!(
+            schema.column("b").expect("b").column_type,
+            ColumnType::scalar(LogicalType::Float64),
+            "the widen still landed"
+        );
+        // …and the emitted delta is exactly the widen — no phantom churn.
+        let delta_changes: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                LoadItem::Delta { delta, .. } => Some(
+                    delta
+                        .changes
+                        .iter()
+                        .map(|c| format!("{c:?}"))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(
+            delta_changes.len(),
+            1,
+            "one change: the widen, nothing else: {delta_changes:?}"
+        );
+        assert!(
+            delta_changes[0].contains("WidenColumn"),
+            "{delta_changes:?}"
+        );
+        // The outgoing batch null-fills the omitted column at batch 2's rows.
+        let out = items.iter().find_map(|item| match item {
+            LoadItem::Batch { batch, .. } => Some(batch),
+            _ => None,
+        });
+        let out = out.expect("a batch is emitted");
+        let a_index = out.schema().index_of("a").expect("column a in the output");
+        let a_col = out.column(a_index);
+        assert_eq!(a_col.null_count(), 3, "omitted ⇒ null-filled at these rows");
+
+        // Batch 3 carries `a` again: no re-add delta — the column never left.
+        let items = pass(
+            &mut registry,
+            &table,
+            &load_id,
+            &mode,
+            &policy,
+            batch_of(
+                vec![Field::new("a", DataType::Int64, true)],
+                vec![Arc::new(Int64Array::from(vec![9]))],
+            ),
+        );
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, LoadItem::Delta { .. })),
+            "no AddColumn churn for a column that never left the registry"
+        );
+    }
 
     /// 2H4: a bit-packed boolean frame can describe enormous row counts in a
     /// small byte payload. Refuse it before allocating the constant load-id

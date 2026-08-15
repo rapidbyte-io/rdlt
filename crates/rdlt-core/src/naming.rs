@@ -25,9 +25,6 @@ impl Default for IdentRules {
     }
 }
 
-/// Suffix length: `_` + 8 hex chars of the source-name hash.
-/// `_` + [`HASH_LEN`] hex characters — the suffix a truncated identifier carries.
-const SUFFIX_LEN: usize = HASH_LEN + 1;
 /// Hex characters of source hash appended to a truncated identifier.
 const HASH_LEN: usize = 8;
 
@@ -161,10 +158,17 @@ impl UniqueNamer {
 }
 
 fn suffixed(base: &str, source: &str, rules: IdentRules) -> String {
+    // The hash slice is SIZED TO THE BOUND, exactly like `normalize_ident`'s
+    // (4L9 — it used to be fixed at `_` + 8 hex, producing 9+ character
+    // names for any `max_len` ≤ 9, breaking the documented contract at the
+    // small bounds only an embedder can set). Degradation is graceful: a
+    // shorter hash buys weaker collision resistance, never an over-bound
+    // name.
+    let hash_len = HASH_LEN.min(rules.max_len.saturating_sub(1));
     let mut out = base.to_owned();
-    out.truncate(rules.max_len.saturating_sub(SUFFIX_LEN).min(out.len()));
+    out.truncate(rules.max_len.saturating_sub(hash_len + 1).min(out.len()));
     out.push('_');
-    out.push_str(&short_hash(source));
+    out.push_str(&short_hash(source)[..hash_len]);
     out
 }
 
@@ -232,13 +236,10 @@ mod tests {
         }
     }
 
-    /// `SUFFIX_LEN` must be exactly the suffix `suffixed` writes — an underscore
-    /// plus `HASH_LEN` hex characters. If the constant and the writer disagree,
-    /// truncation reserves the wrong amount and the result overruns the bound
-    /// the caller asked for.
+    /// At a bound roomy enough for the full hash, `suffixed` fills the
+    /// bound exactly: an underscore plus `HASH_LEN` hex characters.
     #[test]
-    fn suffix_length_matches_what_is_written() {
-        assert_eq!(SUFFIX_LEN, HASH_LEN + 1, "underscore plus the hash");
+    fn a_roomy_bound_gets_the_full_suffix() {
         let rules = IdentRules { max_len: 32 };
         let out = suffixed("a_base_name_long_enough_to_truncate", "src", rules);
         assert_eq!(
@@ -316,6 +317,33 @@ mod tests {
                 );
                 assert!(!out.is_empty(), "a name is never empty");
             }
+        }
+    }
+
+    /// 4L9: the COLLISION suffix honors the same bound — `suffixed` used
+    /// to write a fixed `_` + 8-hex suffix, producing 9+ character names
+    /// for any `max_len` ≤ 9. The hash slice is sized to the bound, like
+    /// `normalize_ident`'s. (The loop starts at 2: at `max_len` 1 two
+    /// colliding sources have exactly one legal name between them, and
+    /// the probe bound answers that loudly.)
+    #[test]
+    fn a_suffixed_identifier_never_exceeds_its_stated_bound() {
+        for max_len in 2..=24usize {
+            let rules = IdentRules { max_len };
+            let mut namer = UniqueNamer::new(rules);
+            // Two sources normalizing to one over-long base force the
+            // suffix path.
+            let first = namer.name_for("a very long colliding source name");
+            let second = namer.name_for("a-very-long-colliding-source-name");
+            for name in [&first, &second] {
+                assert!(
+                    name.len() <= max_len,
+                    "max_len={max_len} produced `{name}` ({} chars)",
+                    name.len()
+                );
+                assert!(!name.is_empty(), "a name is never empty");
+            }
+            assert_ne!(first, second, "distinct sources stay distinct");
         }
     }
 }

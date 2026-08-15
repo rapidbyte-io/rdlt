@@ -26,7 +26,13 @@ pub(crate) struct TableBuffer {
     pub(crate) columns: Vec<(String, ColumnState)>,
     /// Source key → normalized column/child name mapping (collision-safe).
     namer: UniqueNamer,
-    names: Vec<(String, String)>,
+    /// The memoized name pairings, BOTH directions (GLM round-4, 4M3): the
+    /// drain's resolve maps source → normalized per column, and the batch
+    /// builder maps normalized → source per column, so a `Vec::find` in
+    /// either direction made every resolve O(columns²) of string compares —
+    /// per push, on every table, row-less or not.
+    to_normalized: std::collections::HashMap<String, String>,
+    normalized_to_source: std::collections::HashMap<String, String>,
     /// Source key → index of the child table it resolves to, memoized.
     ///
     /// A CACHE IN FRONT OF the name-build-then-lookup in `child_table_idx`,
@@ -36,17 +42,28 @@ pub(crate) struct TableBuffer {
     /// key at one depth can alias a table created at another. Skipping that
     /// lookup on a miss would create a duplicate `TableName`.
     ///
-    /// Deliberately NOT in `rollback_snapshot` and NOT cleared by
+    /// Deliberately NOT in the pre-push snapshot and NOT cleared by
     /// `revert_column`: it maps keys to positions in an append-only table
     /// vector, so it stays valid across a column rollback. Adding it to the
-    /// snapshot would change that struct's shape and its positional alignment
-    /// with `self.tables`.
+    /// snapshot would change that struct's shape and its content.
     pub(crate) child_tables: Vec<(String, usize)>,
     /// Nested struct fields retained across all columns — they spend from the
     /// SAME per-table budget as top-level columns, because a single struct
     /// column can otherwise smuggle unbounded breadth past the column cap
     /// (and the registry re-clones whatever is retained, every batch).
     nested_fields: usize,
+    /// Whether any column state changed since this table's resolved schema
+    /// last reached the registry (4M3): the drain skips resolve+diff for a
+    /// row-less, un-dirty table — a maximal stream's per-push bookkeeping
+    /// otherwise costs O(total table state) of pure CPU even for an empty
+    /// push. Born dirty (a new table must establish its schema).
+    dirty: bool,
+    /// The pre-push column states, captured LAZILY on this push's first
+    /// mutation (4M3 — the eager whole-stream snapshot cloned every table's
+    /// every column state per push). `None` means "not mutated this push"
+    /// — including "did not exist before this push", which is exactly the
+    /// no-rollback case the drain distinguishes.
+    pre_push_snapshot: Option<Vec<(String, ColumnState)>>,
 }
 
 impl TableBuffer {
@@ -68,10 +85,45 @@ impl TableBuffer {
             parent,
             columns: Vec::new(),
             namer,
-            names: Vec::new(),
+            to_normalized: std::collections::HashMap::new(),
+            normalized_to_source: std::collections::HashMap::new(),
             child_tables: Vec::new(),
             nested_fields: 0,
+            dirty: true,
+            pre_push_snapshot: None,
         }
+    }
+
+    /// The drain's dirty flag: set by every column mutation, cleared once
+    /// the table's resolved schema has reached the registry.
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// See [`Self::is_dirty`].
+    pub(crate) fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+
+    /// Per-push housekeeping: forget the previous push's snapshot so this
+    /// push's first mutation captures the state IT started from.
+    pub(crate) fn begin_push(&mut self) {
+        self.pre_push_snapshot = None;
+    }
+
+    /// Capture the pre-push column states if this push has not mutated yet.
+    /// Must run BEFORE the mutation it protects against a Discard* rollback.
+    fn snapshot_on_first_mutation(&mut self) {
+        if self.pre_push_snapshot.is_none() {
+            self.pre_push_snapshot = Some(self.columns.clone());
+        }
+    }
+
+    /// Hand the drain this push's snapshot (taken, not borrowed — the drain
+    /// mutates the columns the snapshot describes). `None` for a table not
+    /// mutated this push.
+    pub(crate) fn take_rollback_snapshot(&mut self) -> Option<Vec<(String, ColumnState)>> {
+        self.pre_push_snapshot.take()
     }
 
     /// Observe one value under a source key: ensure the column exists (bounded
@@ -85,6 +137,8 @@ impl TableBuffer {
         value: V,
         lists_as_columns: bool,
     ) -> Result<&ColumnState, rdlt_core::RdltError> {
+        self.snapshot_on_first_mutation();
+        self.dirty = true;
         let idx = self.column_index(source_key)?;
         let mut budget = MAX_SOURCE_COLUMNS_PER_TABLE
             .saturating_sub(self.columns.len())
@@ -108,26 +162,17 @@ impl TableBuffer {
         Ok(&self.columns[idx].1)
     }
 
-    /// Source key → normalized column name pairs accumulated so far.
-    pub(crate) fn source_to_normalized(&self) -> &[(String, String)] {
-        &self.names
-    }
-
-    /// Reverse lookup over a `source_to_normalized` slice, for callers holding
-    /// the slice rather than the buffer (the batch builder receives exactly it).
-    pub(crate) fn source_key_in<'a>(
-        names: &'a [(String, String)],
-        normalized: &str,
-    ) -> Option<&'a str> {
-        names
-            .iter()
-            .find(|(_, n)| n == normalized)
-            .map(|(source, _)| source.as_str())
+    /// The memoized name pairings, normalized → source — what the batch
+    /// builder consumes (it walks schema columns, which speak normalized).
+    pub(crate) fn normalized_to_source(&self) -> &std::collections::HashMap<String, String> {
+        &self.normalized_to_source
     }
 
     /// Reverse lookup: normalized column name → source key.
     pub(crate) fn source_key_for(&self, normalized: &str) -> Option<&str> {
-        Self::source_key_in(&self.names, normalized)
+        self.normalized_to_source
+            .get(normalized)
+            .map(String::as_str)
     }
 
     /// Policy enforcement: revert one column's observation state to its pre-batch
@@ -137,6 +182,9 @@ impl TableBuffer {
         source_key: &str,
         rollback_snapshot: Option<&[(String, ColumnState)]>,
     ) {
+        // A rollback IS a mutation: the resolved state no longer matches the
+        // registry until the drain's re-resolve lands.
+        self.dirty = true;
         let prior = rollback_snapshot.and_then(|columns| {
             columns
                 .iter()
@@ -162,13 +210,16 @@ impl TableBuffer {
     }
 
     /// Normalized column name for a source key, memoizing the pairing on first
-    /// sight — may allocate and insert into the source→normalized map.
+    /// sight — may allocate and insert into the maps.
     pub(crate) fn normalized_name_for(&mut self, source_key: &str) -> String {
-        if let Some((_, normalized)) = self.names.iter().find(|(k, _)| k == source_key) {
+        if let Some(normalized) = self.to_normalized.get(source_key) {
             return normalized.clone();
         }
         let normalized = self.namer.name_for(source_key);
-        self.names.push((source_key.to_owned(), normalized.clone()));
+        self.to_normalized
+            .insert(source_key.to_owned(), normalized.clone());
+        self.normalized_to_source
+            .insert(normalized.clone(), source_key.to_owned());
         normalized
     }
 
@@ -176,6 +227,8 @@ impl TableBuffer {
         &mut self,
         source_key: &str,
     ) -> Result<&mut ColumnState, rdlt_core::RdltError> {
+        self.snapshot_on_first_mutation();
+        self.dirty = true;
         let idx = self.column_index(source_key)?;
         Ok(&mut self.columns[idx].1)
     }
@@ -322,6 +375,58 @@ mod cardinality_tests {
             .state_mut("one-too-many")
             .expect_err("the cumulative cap must refuse");
         assert!(error.to_string().contains("source-column cap"));
+    }
+
+    /// 4M3's mechanism, pinned directly because a regression here is
+    /// invisible to every behavioral test (the failure mode is pure CPU):
+    /// a table is born dirty, a successful drain cleans it, and the
+    /// rollback snapshot arms ONLY on a push's first mutation — never for
+    /// a table the push left alone.
+    #[test]
+    fn the_dirty_flag_and_lazy_snapshot_arm_and_disarm_per_push() {
+        let mut table = TableBuffer::new(
+            TableName::new("events"),
+            None,
+            rdlt_core::naming::IdentRules::default(),
+        );
+        assert!(
+            table.is_dirty(),
+            "born dirty: a new table must establish its schema"
+        );
+
+        // The drain's handshake: applied to the registry → clean.
+        table.mark_clean();
+        assert!(!table.is_dirty());
+
+        // A push begins; nothing observed yet → no snapshot exists.
+        table.begin_push();
+        assert!(
+            table.take_rollback_snapshot().is_none(),
+            "an unmutated table has nothing to roll back to"
+        );
+
+        // The push's first mutation arms the snapshot AND re-dirties.
+        table
+            .observe_value("k", &serde_json::json!(1), false)
+            .expect("observe");
+        assert!(table.is_dirty(), "a mutation re-dirties");
+        let snapshot = table
+            .take_rollback_snapshot()
+            .expect("the first mutation of the push armed the snapshot");
+        assert!(
+            snapshot.is_empty(),
+            "the pre-push state had no columns: {snapshot:?}"
+        );
+        assert!(
+            table.take_rollback_snapshot().is_none(),
+            "the drain consumes the snapshot exactly once"
+        );
+
+        // A mutation-free push after that leaves both mechanisms idle.
+        table.mark_clean();
+        table.begin_push();
+        assert!(!table.is_dirty());
+        assert!(table.take_rollback_snapshot().is_none());
     }
 }
 

@@ -34,6 +34,20 @@ fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str)
 /// wiring, the loader, and the recovery scan all build on it.
 pub(super) use crate::coverage::root_table;
 
+/// The most streams one source may declare for a single run (GLM round-4,
+/// 4H2). Every declared stream costs plan-time validation and — during the
+/// run — its own shred state and in-flight budget share, so the stream list
+/// is the one discovery axis a source controls DIRECTLY, and it must be
+/// bounded like every other axis (rows, columns, tables, frame bytes). A
+/// `streams()` reply is one gRPC message capped at 64 MiB, which a rogue
+/// connector can fill with ~10⁶ minimal specs; without a cap the collision
+/// checks below — even the sub-quadratic ones — and the per-stream run
+/// wiring turn that one reply into unbounded CPU before any budget,
+/// deadline, or cancellation can engage. 1,024 is far past every honest
+/// discovery (a relational database's table list), and refusal is typed at
+/// plan time, before any session opens.
+pub(super) const MAX_STREAMS_PER_SOURCE: usize = 1024;
+
 /// The mixed cursor-less/cursored advisory — CONDITIONAL truth, by
 /// design (round-4 fix): a stream declaring no `cursor_field` MAY be a
 /// snapshot stream that never checkpoints, but it may equally
@@ -116,6 +130,18 @@ pub(super) fn validate_streams(
         )));
     }
 
+    // The stream-count cap (4H2) sits BEFORE everything per-stream: nothing
+    // below may scale unboundedly with a source-declared list length.
+    if streams.len() > MAX_STREAMS_PER_SOURCE {
+        return Err(RdltError::config(format!(
+            "source declares {} streams, over the {MAX_STREAMS_PER_SOURCE}-stream cap — \
+             every declared stream costs plan-time validation and its own share of the \
+             run's in-flight budget, so the one discovery axis a source controls directly \
+             is bounded like every other",
+            streams.len()
+        )));
+    }
+
     if let Some(advisory) = mixed_snapshot_advisory(streams) {
         tracing::warn!("{advisory}");
     }
@@ -123,61 +149,6 @@ pub(super) fn validate_streams(
     let mut root_tables: BTreeMap<TableName, StreamName> = BTreeMap::new();
     for spec in streams {
         let table = root_table(&spec.name, capabilities.ident_rules);
-        // Child tables are minted at shred time as `{root}__{field}`. A
-        // collision between two DISTINCT streams' table spaces needs their
-        // roots A (shorter) and B (longer) to satisfy `B = A + "_" + s` for
-        // some suffix `s`: if `s` is empty, B is just A's own table with a
-        // trailing `_` and a `_`-leading source field mints the identical
-        // child table under either (rule 1, `orders_`/`orders`); if `s`
-        // starts with `_`, B already sits inside A's child namespace (rule
-        // 2, `__` is A's separator plus that leading `_`); any other `s`
-        // mismatches at the boundary character right after A and cannot
-        // collide. So checking every pair for rules 1 and 2 (both
-        // directions — the shorter root is not known in advance) makes
-        // every pair of distinct roots' table spaces disjoint, without
-        // refusing a table that merely LOOKS dangerous in isolation: a lone
-        // root containing `__` or ending in `_` cannot collide with
-        // itself, and postgres discovery mints exactly such roots from
-        // hostile identifiers (`Order "Items"` -> `order__items_`) that the
-        // operator does not own and cannot rename — refusing it outright
-        // broke a pinned product capability (the postgres connector's
-        // `hostile_identifiers_and_column_selection` conformance cell).
-        for (existing_table, existing_stream) in &root_tables {
-            let et = existing_table.as_str();
-            let nt = table.as_str();
-            if nt == format!("{et}_") {
-                return Err(trailing_underscore_collision(
-                    existing_stream,
-                    et,
-                    &spec.name,
-                    nt,
-                ));
-            }
-            if et == format!("{nt}_") {
-                return Err(trailing_underscore_collision(
-                    &spec.name,
-                    nt,
-                    existing_stream,
-                    et,
-                ));
-            }
-            if nt.starts_with(&format!("{et}__")) {
-                return Err(child_namespace_collision(
-                    existing_stream,
-                    et,
-                    &spec.name,
-                    nt,
-                ));
-            }
-            if et.starts_with(&format!("{nt}__")) {
-                return Err(child_namespace_collision(
-                    &spec.name,
-                    nt,
-                    existing_stream,
-                    et,
-                ));
-            }
-        }
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
             // Clause E2: exactly one stream owns a table.
             return Err(RdltError::config(format!(
@@ -245,6 +216,55 @@ pub(super) fn validate_streams(
                      declared primary_key columns {:?} (order does not matter)",
                     spec.name, key, declared
                 )));
+            }
+        }
+    }
+
+    // ---- Cross-stream table-space collision rules ----
+    // Child tables are minted at shred time as `{root}__{field}`. A
+    // collision between two DISTINCT streams' table spaces needs their
+    // roots A (shorter) and B (longer) to satisfy `B = A + "_" + s` for
+    // some suffix `s`: if `s` is empty, B is just A's own table with a
+    // trailing `_` and a `_`-leading source field mints the identical
+    // child table under either (rule 1, `orders_`/`orders`); if `s`
+    // starts with `_`, B already sits inside A's child namespace (rule
+    // 2, `__` is A's separator plus that leading `_`); any other `s`
+    // mismatches at the boundary character right after A and cannot
+    // collide. Both rules are PREFIX-SHAPED, so membership questions
+    // against the root set answer them without a pairwise scan (4H2 —
+    // the O(S²) loop with four `format!`s per pair turned one large
+    // `streams()` reply into hours of synchronous CPU before any budget
+    // or deadline could engage):
+    //
+    // - rule 1 fires iff some root ends in `_` and that root minus the
+    //   trailing `_` is also a root;
+    // - rule 2 fires iff some root contains `__` and the prefix up to
+    //   one of those occurrences is also a root.
+    //
+    // Each direction is exact: a membership hit IS the pair the pairwise
+    // form would have found, so no collision is missed and none is
+    // invented. And only PAIRS refuse: a lone root containing `__` or
+    // ending in `_` cannot collide with itself, and postgres discovery
+    // mints exactly such roots from hostile identifiers
+    // (`Order "Items"` -> `order__items_`) that the operator does not
+    // own and cannot rename — refusing it outright broke a pinned
+    // product capability (the postgres connector's
+    // `hostile_identifiers_and_column_selection` conformance cell).
+    for (table, stream) in &root_tables {
+        let tb = table.as_str();
+        if let Some(prefix) = tb.strip_suffix('_')
+            && !prefix.is_empty()
+            && let Some(owner) = root_tables.get(&TableName::new(prefix))
+        {
+            return Err(trailing_underscore_collision(owner, prefix, stream, tb));
+        }
+        let bytes = tb.as_bytes();
+        for i in 0..bytes.len().saturating_sub(1) {
+            if bytes[i] == b'_'
+                && bytes[i + 1] == b'_'
+                && let Some(owner) = root_tables.get(&TableName::new(&tb[..i]))
+            {
+                return Err(child_namespace_collision(owner, &tb[..i], stream, tb));
             }
         }
     }
@@ -381,6 +401,79 @@ mod hint_validation_tests {
         // "ends with `_`", legal alone for the same reason as the other
         // lone-root pins: nothing exists to collide with.
         assert!(check_streams(&["?"]).is_ok());
+    }
+
+    /// 4H2: the declared stream list is the one discovery axis a source
+    /// controls directly, so it is capped like every other axis — a typed
+    /// plan-time refusal, before any per-stream work.
+    #[test]
+    fn a_source_declaring_more_streams_than_the_cap_is_refused() {
+        let specs: Vec<_> = (0..MAX_STREAMS_PER_SOURCE + 1)
+            .map(|index| StreamSpec::new(format!("s{index}")))
+            .collect();
+        let dest = MemoryDestination::new();
+        let error = validate_streams(
+            &EngineConfig::new("streams"),
+            &specs,
+            dest.capabilities(),
+            &dest,
+        )
+        .expect_err("a stream list past the cap must refuse");
+        let text = error.to_string();
+        assert!(
+            text.contains("stream cap"),
+            "the refusal names the cap: {text}"
+        );
+        assert!(
+            text.contains(&(MAX_STREAMS_PER_SOURCE + 1).to_string()),
+            "the refusal reports the declared count: {text}"
+        );
+
+        let at_cap: Vec<_> = (0..MAX_STREAMS_PER_SOURCE)
+            .map(|index| StreamSpec::new(format!("s{index}")))
+            .collect();
+        validate_streams(
+            &EngineConfig::new("streams"),
+            &at_cap,
+            dest.capabilities(),
+            &dest,
+        )
+        .expect("exactly the cap validates");
+    }
+
+    /// The membership formulation of rules 1 and 2 must decide EXACTLY what
+    /// the replaced pairwise scan did — including pairs separated by other
+    /// roots in sorted order, which a naive adjacent-pair scan would miss:
+    /// `a0` sorts between `a` and `a_`, yet `a`/`a_` still collide.
+    #[test]
+    fn prefix_collisions_are_caught_even_when_not_adjacent_in_sorted_order() {
+        let error = check_streams(&["a", "a0", "a_"])
+            .expect_err("`a` and `a_` collide through an intervening root");
+        assert!(error.to_string().contains("trailing `_`"), "{error}");
+
+        let error = check_streams(&["x", "x0", "x..y"])
+            .expect_err("`x` and `x..y` (-> `x__y`) collide through an intervening root");
+        assert!(
+            error.to_string().contains("child-table namespace"),
+            "{error}"
+        );
+
+        // And the non-adjacent NON-collision stays accepted: `a0` is
+        // neither `a_` nor inside `a__…`.
+        assert!(check_streams(&["a", "a0", "ab"]).is_ok());
+    }
+
+    /// Rule 2 through NESTED separators: a root whose own name contains
+    /// `__` collides with the owner of ANY of its `__`-split prefixes, not
+    /// just the outermost — the membership scan checks every occurrence.
+    #[test]
+    fn a_root_collides_with_the_owner_of_any_double_underscore_prefix() {
+        // `x__y__z` sits inside `x__y`'s namespace (and `x`'s); either
+        // pairing must refuse.
+        assert!(check_streams(&["x", "x__y__z"]).is_err());
+        assert!(check_streams(&["x__y", "x__y__z"]).is_err());
+        // No prefix owner, no refusal — the lone-root capability.
+        assert!(check_streams(&["x__y__z"]).is_ok());
     }
 
     fn no_workdir_config() -> EngineConfig {

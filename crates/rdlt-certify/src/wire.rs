@@ -1569,6 +1569,39 @@ mod tests {
         assert_pass(&report, "P7");
     }
 
+    /// P6's terminality arm (GLM round-4, 4L8 — previously unpinned): a
+    /// frame served AFTER the error frame fails P6 by name — the wire's
+    /// error frames are terminal, and a connector that keeps talking
+    /// after one is exactly the rogue the arm exists to catch.
+    #[tokio::test]
+    async fn an_error_frame_with_trailing_frames_fails_p6() {
+        let report = certify_rogue(
+            RogueSource {
+                handshake: HandshakeScript::truthful(),
+                streams: vec![],
+                read_declared: vec![],
+                read_undeclared: vec![
+                    rogue::error_read_frame(rogue::error_frame(
+                        Classification::Fatal,
+                        "no such stream",
+                    )),
+                    rogue::json_read_frame(),
+                ],
+                read_hold_open: false,
+            },
+            "rogue",
+        )
+        .await;
+        assert_fail(
+            &report,
+            "P6",
+            "the ErrorFrame was not terminal — 1 frame(s) followed it",
+        );
+        assert_pass(&report, "P3");
+        assert_pass(&report, "P5");
+        assert_pass(&report, "P7");
+    }
+
     /// A refusal that never arrives is also a P6 failure: a clean end
     /// of stream on a nonexistent stream hides the refusal entirely.
     #[tokio::test]

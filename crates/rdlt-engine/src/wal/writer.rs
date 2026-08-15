@@ -183,12 +183,18 @@ fn ensure_owned_dir(dir: &Path) -> std::io::Result<()> {
         .write_all(OWNERSHIP_MARKER_BYTES)
 }
 
-/// Read a small WAL file whole through [`open_wal_read`]'s gate — the
-/// marker reads' replacement for `fs::read`, which opens ungated.
+/// Read a small WAL file through [`open_wal_read`]'s gate — the marker
+/// reads' replacement for `fs::read`, which opens ungated. BOUNDED at one
+/// byte past the expected marker (4M1): the type gate refuses FIFOs and
+/// symlinks, but a sparse giant REGULAR file planted at the marker path
+/// passes it — only this bound keeps the read small, and anything longer
+/// than the marker fails the content comparison either way.
 fn read_via_gated_open(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
-    open_wal_read(path)?.read_to_end(&mut bytes)?;
+    open_wal_read(path)?
+        .take((OWNERSHIP_MARKER_BYTES.len() + 1) as u64)
+        .read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
@@ -525,8 +531,24 @@ impl Wal {
         );
         // Every line carries its blake3 trailer — see
         // [`super::record::encode_line`] for why the digest exists.
-        let mut line =
-            super::record::encode_line(record).map_err(|e| wal_err("encode record", e))?;
+        let line = super::record::encode_line(record).map_err(|e| wal_err("encode record", e))?;
+        // The reader's line cap is an invariant the WRITER enforces too
+        // (4L6): a record larger than the cap — reachable with a
+        // wire-legal oversized cursor, or a destination declaring a huge
+        // `IdentRules.max_len` — would be written here and then refused by
+        // this engine's own recovery scan on every later run, degrading an
+        // honest WAL to re-extraction forever. Refuse at write time, where
+        // the error names the cause, instead of corrupting the WAL.
+        if line.len() > super::record::MAX_MANIFEST_LINE_BYTES {
+            return Err(RdltError::wal(format!(
+                "a {}-byte manifest record exceeds the {}-byte line cap recovery enforces \
+                 — refusing to write a WAL line this engine could never scan back (the \
+                 record carries an oversized cursor or schema)",
+                line.len(),
+                super::record::MAX_MANIFEST_LINE_BYTES
+            )));
+        }
+        let mut line = line;
         line.push(b'\n');
         self.manifest
             .write_all(&line)
@@ -850,6 +872,41 @@ mod tests {
             !target.exists(),
             "nothing may be minted at the symlink's target"
         );
+    }
+
+    /// 4L6: the reader's line cap is an invariant the writer enforces. A
+    /// record whose line exceeds the recovery scan's cap — here, a
+    /// checkpoint carrying an oversized cursor — is refused AT WRITE TIME
+    /// instead of producing a WAL this engine's own recovery can never
+    /// scan back.
+    #[tokio::test]
+    async fn an_over_cap_record_is_refused_at_write_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut wal = Wal::open(
+            dir.path().to_path_buf(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rdlt_core::naming::IdentRules::default(),
+            false,
+        )
+        .expect("open wal");
+        let oversized = rdlt_core::Cursor::new(serde_json::Value::String(
+            "x".repeat(crate::wal::record::MAX_MANIFEST_LINE_BYTES),
+        ));
+        let error = wal
+            .append(&WalRecord::Checkpoint {
+                stream: rdlt_core::StreamName::new("s"),
+                cursor: oversized,
+            })
+            .expect_err("an over-cap line must refuse at write time");
+        assert!(
+            error.to_string().contains("line cap"),
+            "the refusal names the invariant: {error}"
+        );
+        // And the manifest holds only the Run header — the refused record
+        // never reached the disk.
+        let records = manifest_records(dir.path());
+        assert_eq!(records.len(), 1, "only the Run header was written");
     }
 
     /// Each recorded batch gets its OWN segment file, and the sequence advances
