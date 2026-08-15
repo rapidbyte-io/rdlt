@@ -34,7 +34,7 @@ pub struct TickerConfig {
 #[derive(Debug, thiserror::Error)]
 pub enum TickerError {
     #[error("invalid ticker YAML: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_yaml_ng::Error),
     #[error("invalid ticker JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid ticker config: {0}")]

@@ -68,7 +68,7 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
         fixture = src_dir.join("events.jsonl").display(),
         out = dir.path().join("out").display(),
     );
-    let spec: Spec = serde_yaml::from_str(&yaml).expect("the connector document parses");
+    let spec: Spec = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
 
     // No `path:` overrides anywhere in the document, so this exercises
     // the full id → discovery route: the provider's search path stands
@@ -116,7 +116,7 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
 /// seven-spelling table is tests/desugar.rs's.
 #[test]
 fn a_rich_spelling_still_desugars_to_its_table_id_without_spawning() {
-    let spec: Spec = serde_yaml::from_str(
+    let spec: Spec = serde_yaml_ng::from_str(
         "pipeline: p\n\
          source:\n\
         \x20 file:\n\

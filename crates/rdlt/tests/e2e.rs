@@ -74,7 +74,7 @@ async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() 
         fixture = fixture.display(),
         out = out_dir.display(),
     );
-    let spec: Spec = serde_yaml::from_str(&yaml).expect("the connector document parses");
+    let spec: Spec = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
 
     let report = build_pipeline(&spec, Path::new(""))
         .await

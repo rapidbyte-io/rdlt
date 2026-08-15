@@ -46,9 +46,9 @@ pub struct Spec {
     pub workdir: Option<PathBuf>,
     // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}` /
     // `source: postgres: …` singleton-map form for externally-tagged
-    // enums (serde_yaml 0.9 otherwise wants `!tag` syntax).
+    // enums (serde_yaml_ng otherwise wants `!tag` syntax).
     /// How rows land at the destination. Absent defaults to `Append`.
-    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    #[serde(default, with = "serde_yaml_ng::with::singleton_map")]
     pub write_mode: Option<WriteModeSpec>,
     /// How many rows the engine accumulates before each destination
     /// WRITE — and so, for file destinations, how many rows land in
@@ -81,10 +81,10 @@ pub struct Spec {
     #[serde(default)]
     pub commit_policy: Option<CommitPolicy>,
     /// Where rows come from.
-    #[serde(with = "serde_yaml::with::singleton_map")]
+    #[serde(with = "serde_yaml_ng::with::singleton_map")]
     pub source: SourceSpec,
     /// Where rows go.
-    #[serde(with = "serde_yaml::with::singleton_map")]
+    #[serde(with = "serde_yaml_ng::with::singleton_map")]
     pub destination: DestSpec,
 }
 
@@ -189,7 +189,7 @@ impl std::fmt::Debug for ConfigSource {
 pub const MAX_DOCUMENT_BYTES: u64 = rdlt_connector_sdk::yaml::MAX_DOCUMENT_BYTES;
 
 fn parse_yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
-    // The raw-text graph gate runs BEFORE deserialization: `serde_yaml`
+    // The raw-text graph gate runs BEFORE deserialization: `serde_yaml_ng`
     // expands anchors and aliases while constructing the target value,
     // so an input-byte cap cannot bound the resulting allocation.
     // Pipeline and connector config documents are trees; graph syntax
@@ -197,7 +197,7 @@ fn parse_yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
     // so this parse and every connector's `Document::from_yaml` answer
     // to the same scanner.
     rdlt_connector_sdk::yaml::reject_graph_syntax(text)?;
-    serde_yaml::from_str(text).map_err(|error| error.to_string())
+    serde_yaml_ng::from_str(text).map_err(|error| error.to_string())
 }
 
 /// Parse one pipeline document through the raw-text security gates.
@@ -650,7 +650,7 @@ mod budget_tests {
     /// h2 windows.
     #[test]
     fn the_dial_budget_ignores_batch_policy() {
-        let spec: Spec = serde_yaml::from_str(
+        let spec: Spec = serde_yaml_ng::from_str(
             "pipeline: p\nbatch_policy: {every_bytes: 1048576}\n\
              source:\n  postgres: s.yaml\ndestination:\n  duckdb: {path: out.db}\n",
         )

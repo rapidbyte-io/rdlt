@@ -9,7 +9,7 @@ use std::path::Path;
 use rdlt::pipeline_spec::{ConfigSource, Spec, SpecError};
 
 fn spec(yaml: &str) -> Spec {
-    serde_yaml::from_str(yaml).expect("spec parses")
+    serde_yaml_ng::from_str(yaml).expect("spec parses")
 }
 
 /// The four source spellings and the id each must desugar to.
@@ -168,7 +168,7 @@ fn the_connector_arm_accepts_the_config_path_form_identically() {
 /// spelling is an unknown field at parse, never quietly rerouted.
 #[test]
 fn the_parquet_spelling_is_refused_at_parse() {
-    let parsed: Result<Spec, _> = serde_yaml::from_str(
+    let parsed: Result<Spec, _> = serde_yaml_ng::from_str(
         "pipeline: p\n\
          source:\n\
         \x20 connector: {id: io.rapidbyte.file, config: {}}\n\

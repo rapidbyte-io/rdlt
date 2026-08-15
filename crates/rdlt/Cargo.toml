@@ -36,15 +36,15 @@ rdlt-runtime = { workspace = true }
 # DEV dependency — the facade's own source never names it, and a library that
 # pulls in a runtime it does not use forces that cost on every consumer.
 tokio-util = { workspace = true }
-# The shared pipeline_spec model: serde derive + serde_yaml's singleton_map
+# The shared pipeline_spec model: serde derive + serde_yaml_ng's singleton_map
 # with-module, and serde_json for the opaque connector config documents.
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml_ng = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml_ng = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 

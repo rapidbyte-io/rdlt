@@ -30,7 +30,7 @@ destination:
     config:
       path: out.db
 "#;
-    let spec: Spec = serde_yaml::from_str(text).expect("the connector vocabulary parses");
+    let spec: Spec = serde_yaml_ng::from_str(text).expect("the connector vocabulary parses");
 
     let SourceSpec::Connector(source) = &spec.source else {
         panic!("source parses as the connector variant");
@@ -77,7 +77,7 @@ destination:
     id: io.rapidbyte.duckdb
     config: {}
 "#;
-    let parsed: Result<Spec, _> = serde_yaml::from_str(text);
+    let parsed: Result<Spec, _> = serde_yaml_ng::from_str(text);
     assert!(
         parsed.is_err(),
         "`binary:` is not part of the connector vocabulary and must refuse"
@@ -99,7 +99,7 @@ destination:
     id: io.rapidbyte.duckdb
     config: {}
 "#;
-    let parsed: Result<Spec, _> = serde_yaml::from_str(text);
+    let parsed: Result<Spec, _> = serde_yaml_ng::from_str(text);
     assert!(parsed.is_err(), "a missing config block must refuse");
 }
 
@@ -143,7 +143,7 @@ destination:
     id: io.rdlt.test.absent
     config: {}
 "#;
-    let spec: Spec = serde_yaml::from_str(text).expect("parses");
+    let spec: Spec = serde_yaml_ng::from_str(text).expect("parses");
     match build_pipeline(&spec, std::path::Path::new("")).await {
         Err(SpecError::Resolve(message)) => assert_eq!(
             message,
@@ -176,7 +176,7 @@ destination:
     id: io.rdlt.test.absent
     config: {}
 "#;
-    let spec: Spec = serde_yaml::from_str(text).expect("parses");
+    let spec: Spec = serde_yaml_ng::from_str(text).expect("parses");
     match build_pipeline(&spec, dir.path()).await {
         Err(SpecError::Resolve(message)) => assert!(
             message.contains("no binary `rdlt-connector-absent`"),

@@ -150,17 +150,20 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
     for key in PIPELINE_SUBSTITUTION_KEYS {
         rendered = rendered.replace(&format!("{{{{{key}}}}}"), "rdlt-placeholder");
     }
-    let document: serde_yaml::Value = serde_yaml::from_str(&rendered)
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&rendered)
         .map_err(|error| BenchError(format!("parsing pipeline template: {error}")))?;
     let mut bins = BTreeSet::new();
     for role in ["source", "destination"] {
-        let Some(declaration) = document.get(role).and_then(serde_yaml::Value::as_mapping) else {
+        let Some(declaration) = document
+            .get(role)
+            .and_then(serde_yaml_ng::Value::as_mapping)
+        else {
             continue;
         };
-        let connector = serde_yaml::Value::String("connector".to_owned());
+        let connector = serde_yaml_ng::Value::String("connector".to_owned());
         let spelling = if let Some(explicit) = declaration
             .get(&connector)
-            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(serde_yaml_ng::Value::as_mapping)
         {
             // A declaration carrying `path:` names its OWN binary —
             // possibly one no conventional build produces — so
@@ -173,21 +176,21 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
             // try to exec, so provisioning a conventional bin for it
             // would misdirect the operator toward a fix that cannot
             // help.
-            let path = serde_yaml::Value::String("path".to_owned());
+            let path = serde_yaml_ng::Value::String("path".to_owned());
             if explicit
                 .get(&path)
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(serde_yaml_ng::Value::as_str)
                 .is_some()
             {
                 continue;
             }
-            let id = serde_yaml::Value::String("id".to_owned());
+            let id = serde_yaml_ng::Value::String("id".to_owned());
             explicit
                 .get(&id)
-                .and_then(serde_yaml::Value::as_str)
+                .and_then(serde_yaml_ng::Value::as_str)
                 .and_then(|value| value.rsplit('.').next())
         } else {
-            declaration.keys().find_map(serde_yaml::Value::as_str)
+            declaration.keys().find_map(serde_yaml_ng::Value::as_str)
         };
         if let Some(segment) = spelling.filter(|segment| !segment.is_empty()) {
             bins.insert(format!("rdlt-connector-{segment}"));
@@ -814,7 +817,7 @@ mod tests {
         );
         for (template, expected_path) in [(null_path, None), (empty_path.as_str(), Some(""))] {
             let spec: rdlt::pipeline_spec::Spec =
-                serde_yaml::from_str(&format!("pipeline: p\n{template}"))
+                serde_yaml_ng::from_str(&format!("pipeline: p\n{template}"))
                     .expect("the template parses through the real Spec model");
             let reference = spec
                 .source

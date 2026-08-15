@@ -31,7 +31,7 @@ pub struct Config {
 pub enum Error {
     /// YAML did not parse as the config document.
     #[error("invalid reference source YAML: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_yaml_ng::Error),
     /// JSON did not parse as the config document.
     #[error("invalid reference source JSON: {0}")]
     Json(#[from] serde_json::Error),

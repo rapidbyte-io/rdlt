@@ -118,7 +118,7 @@ tokio-stream = "0.1"
 # The SPI's opt-in object-store seam (rdlt-connector's `object-store`
 # feature); the connector crates that consume it live in rdlt-connectors.
 object_store = { version = "0.12", features = ["aws"] }
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 schemars = "1"
 
 # Dev / test

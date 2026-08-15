@@ -7,7 +7,7 @@
 use rdlt::pipeline_spec::{ConfigSource, DestSpec, SourceSpec, Spec, WriteModeSpec};
 
 fn spec(yaml: &str) -> Spec {
-    serde_yaml::from_str(yaml).expect("spec parses")
+    serde_yaml_ng::from_str(yaml).expect("spec parses")
 }
 
 /// Each rich source spelling parses to its own arm, inline and by
@@ -112,12 +112,12 @@ fn pipeline_spec_forms_parse() {
 /// parse — deny_unknown_fields on the document AND on both arm enums.
 #[test]
 fn unknown_spellings_are_refused_at_parse() {
-    let bad_kind: Result<Spec, _> = serde_yaml::from_str(
+    let bad_kind: Result<Spec, _> = serde_yaml_ng::from_str(
         "pipeline: p\nsource:\n  mongodb: {conn: x}\ndestination:\n  duckdb: {path: out.db}\n",
     );
     assert!(bad_kind.is_err(), "an unknown source kind must not parse");
 
-    let bad_key: Result<Spec, _> = serde_yaml::from_str(
+    let bad_key: Result<Spec, _> = serde_yaml_ng::from_str(
         "pipeline: p\nworkdirr: /tmp/x\nsource:\n  postgres: s.yaml\n\
          destination:\n  duckdb: {path: out.db}\n",
     );

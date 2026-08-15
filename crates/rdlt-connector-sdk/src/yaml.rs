@@ -1,7 +1,7 @@
 //! The raw-text YAML security gate, run BEFORE any serde
 //! materialization of an untrusted document.
 //!
-//! `serde_yaml` expands anchors and aliases while constructing the
+//! `serde_yaml_ng` expands anchors and aliases while constructing the
 //! target value, so an input-byte cap cannot bound the resulting
 //! allocation: a few megabytes of anchored content plus a stream of
 //! three-byte aliases materializes quadratically. Worse, the expansion
@@ -13,8 +13,9 @@
 //!
 //! # Why this is a scanner, and how it stays sound
 //!
-//! The pinned `serde_yaml` 0.9.34 keeps its event stream private
-//! (`mod loader` / `mod libyaml`), so the gate cannot refuse on parser
+//! The pinned `serde_yaml_ng` 0.10 keeps its event stream private
+//! (`mod loader` / `mod libyaml`, unchanged from the `serde_yaml`
+//! 0.9.34 it continues), so the gate cannot refuse on parser
 //! events; it must decide from the raw text. A naive character scan is
 //! unsound — one apostrophe inside a plain scalar (`pipeline: john's
 //! orders`) misread as quote-open blinds every later check. This
@@ -104,7 +105,7 @@ fn blankz_after(text: &str, idx: usize) -> bool {
 /// cannot be decided without a full parser — before deserialization.
 ///
 /// `Ok(())` means the document contains no anchors and no aliases, so
-/// `serde_yaml` materialization is tree-bounded: the value it builds
+/// `serde_yaml_ng` materialization is tree-bounded: the value it builds
 /// can only be as large as the text that spells it. The error is one
 /// rendered line naming the refused indicator and its byte offset;
 /// callers absorb it into their own error vocabulary.
@@ -457,7 +458,7 @@ mod tests {
         // An accepted document must actually be the YAML it looks
         // like — acceptance by a gate that desynchronized from the
         // parser would be vacuous.
-        serde_yaml::from_str::<serde_yaml::Value>(doc).expect(doc);
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(doc).expect(doc);
     }
 
     #[test]

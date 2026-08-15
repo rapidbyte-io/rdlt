@@ -64,7 +64,7 @@ pub struct EchoConfig {
 #[derive(Debug, thiserror::Error)]
 pub enum EchoError {
     #[error("echo yaml: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_yaml_ng::Error),
     #[error("echo json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("echo: {0}")]

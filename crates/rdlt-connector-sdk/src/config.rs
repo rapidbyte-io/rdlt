@@ -45,7 +45,7 @@ use serde::de::DeserializeOwned;
 /// #[derive(Debug, thiserror::Error)]
 /// enum ConfigError {
 ///     #[error("invalid example YAML: {0}")]
-///     Yaml(#[from] serde_yaml::Error),
+///     Yaml(#[from] serde_yaml_ng::Error),
 ///     #[error("invalid example JSON: {0}")]
 ///     Json(#[from] serde_json::Error),
 ///     #[error("invalid example config: {0}")]
@@ -80,7 +80,7 @@ pub trait Document: DeserializeOwned + Sized {
     /// impl's `thiserror::Error` derive): `serve()` (038) renders a
     /// handshake's config refusal from a `Shell<C>` generic over `C`
     /// alone, with no connector-specific error type to match on.
-    type Error: std::fmt::Display + From<serde_yaml::Error> + From<serde_json::Error>;
+    type Error: std::fmt::Display + From<serde_yaml_ng::Error> + From<serde_json::Error>;
 
     /// The ONE validation gate. Every invariant the connector's runtime
     /// relies on is checked here, once — the provided entry points all
@@ -100,7 +100,7 @@ pub trait Document: DeserializeOwned + Sized {
     /// around the gate's one-line reason.
     fn from_yaml(yaml: &str) -> Result<Self, Self::Error> {
         if yaml.len() as u64 > crate::yaml::MAX_DOCUMENT_BYTES {
-            let refusal = <serde_yaml::Error as serde::de::Error>::custom(format!(
+            let refusal = <serde_yaml_ng::Error as serde::de::Error>::custom(format!(
                 "the document is {} bytes, over the {}-byte cap — connector configuration \
                  is hand-written, so a document this size is almost certainly not the \
                  configuration it was passed as",
@@ -110,10 +110,10 @@ pub trait Document: DeserializeOwned + Sized {
             return Err(refusal.into());
         }
         if let Err(reason) = crate::yaml::reject_graph_syntax(yaml) {
-            let refusal = <serde_yaml::Error as serde::de::Error>::custom(reason);
+            let refusal = <serde_yaml_ng::Error as serde::de::Error>::custom(reason);
             return Err(refusal.into());
         }
-        let document: Self = serde_yaml::from_str(yaml)?;
+        let document: Self = serde_yaml_ng::from_str(yaml)?;
         document.validate()?;
         Ok(document)
     }
@@ -162,7 +162,7 @@ mod tests {
     #[derive(Debug, thiserror::Error)]
     enum ProbeError {
         #[error("probe yaml: {0}")]
-        Yaml(#[from] serde_yaml::Error),
+        Yaml(#[from] serde_yaml_ng::Error),
         #[error("probe json: {0}")]
         Json(#[from] serde_json::Error),
         #[error("probe config: {0}")]

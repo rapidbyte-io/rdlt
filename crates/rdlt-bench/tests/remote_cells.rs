@@ -123,7 +123,7 @@ fn the_five_remote_pipelines_render_parse_and_name_their_connectors() {
              a key the runner does not provide:\n{rendered}"
         );
 
-        let spec: Spec = serde_yaml::from_str(&rendered).unwrap_or_else(|e| {
+        let spec: Spec = serde_yaml_ng::from_str(&rendered).unwrap_or_else(|e| {
             panic!("{file}: the rendered document is not a pipeline spec: {e}")
         });
 

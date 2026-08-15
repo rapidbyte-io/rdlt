@@ -418,7 +418,7 @@ mod tests {
     #[derive(Debug, thiserror::Error)]
     enum ProbeError {
         #[error("probe yaml: {0}")]
-        Yaml(#[from] serde_yaml::Error),
+        Yaml(#[from] serde_yaml_ng::Error),
         #[error("probe json: {0}")]
         Json(#[from] serde_json::Error),
     }

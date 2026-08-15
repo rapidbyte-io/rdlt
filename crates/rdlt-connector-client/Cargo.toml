@@ -40,7 +40,7 @@ tokio-stream = { workspace = true }
 # served in-process through the sdk's `serve_on` seam.
 rdlt-connector-sdk = { workspace = true, features = ["serve"] }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml_ng = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 # The rogue server fixture binds its own UDS listener (UnixListenerStream)

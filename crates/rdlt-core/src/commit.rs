@@ -266,7 +266,8 @@ mod commit_policy_tests {
     #[test]
     fn the_document_form_reads_as_written() {
         let policy: CommitPolicy =
-            serde_yaml::from_str("every_bytes: 104857600\nevery_seconds: 900\n").expect("parses");
+            serde_yaml_ng::from_str("every_bytes: 104857600\nevery_seconds: 900\n")
+                .expect("parses");
         assert_eq!(policy.every_bytes, Some(104_857_600));
         assert_eq!(policy.every_seconds, Some(900));
         assert_eq!(policy.every_checkpoints, None);
@@ -407,7 +408,7 @@ mod batch_policy_tests {
     #[test]
     fn the_document_form_reads_as_written() {
         let policy: BatchPolicy =
-            serde_yaml::from_str("every_rows: 50000\nevery_bytes: 134217728\n").expect("parses");
+            serde_yaml_ng::from_str("every_rows: 50000\nevery_bytes: 134217728\n").expect("parses");
         assert_eq!(policy.every_rows, Some(50_000));
         assert_eq!(policy.every_bytes, Some(134_217_728));
         assert!(policy.accumulates());
