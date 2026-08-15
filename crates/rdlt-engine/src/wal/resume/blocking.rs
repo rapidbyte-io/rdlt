@@ -8,10 +8,18 @@
 /// worker thread for the whole of recovery; on a single-threaded runtime it
 /// stalls the host completely. Neither is ours to spend.
 ///
-/// A panic inside the closure is re-raised on this thread rather than
-/// translated: it is a bug in decode logic, not a damaged WAL, and the damage
-/// arms exist to degrade from corrupt DATA. Turning a panic into "degrade to
-/// re-extraction" would hide a defect behind a slower correct path.
+/// Panic policy, both halves: a panic that reaches THIS seam is re-raised on
+/// the calling thread — but the DECODE seats never let one reach it. Replay
+/// wraps every Arrow IPC decode in `catch_unwind` INSIDE the closure it hands
+/// over (`replay::caught_decode` and the per-batch step), because arrow's
+/// decoder has panic arms reachable from malformed but FlatBuffer-valid
+/// segment bytes, and WAL bytes are external recovery input — such an unwind
+/// IS damaged data and belongs on the same degrade-to-re-extraction path as
+/// an ordinary decode error. For everything else that crosses here (manifest
+/// line reads, fsyncs, filesystem walks) a panic is a bug in our own logic,
+/// not corrupt data, and folding it into "degrade to re-extraction" would
+/// hide the defect behind a slower correct path — so the default posture
+/// stays re-raise, and a decode seat opts out at its closure, never here.
 pub(super) async fn off_runtime<T, F>(work: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,

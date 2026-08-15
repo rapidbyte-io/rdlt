@@ -149,6 +149,69 @@ async fn row3_crash_mid_commit_hits_idempotence() {
     );
 }
 
+/// One `mkfifo <workdir>/wal/manifest.jsonl` after a crash: a plain
+/// read-open of a writerless FIFO blocks until a writer appears — which is
+/// never — and nothing up the recovery stack carries a timeout, so before
+/// the read-side file-type gate this wedged every subsequent run of the
+/// pipeline FOREVER. The scan must refuse the FIFO as damage instead, and
+/// the run then converges by cursor re-extraction like any damaged WAL.
+/// The engine runs on its own thread under a deadline because the RED state
+/// of this pin is an eternal hang (a hung `spawn_blocking` open also hangs
+/// the runtime's drop), and a test that hangs forever fails no gate; the
+/// per-test process boundary reclaims the wedged thread of a red run.
+#[test]
+fn a_fifo_planted_as_the_manifest_after_a_crash_recovers_promptly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let inner = MemoryDestination::new();
+    let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
+
+    let runtime = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+    };
+    runtime()
+        .block_on(Engine::new(config(dir.path()), source(), flaky.clone()).run())
+        .expect_err("injected commit crash");
+
+    let manifest = dir.path().join("wal").join("manifest.jsonl");
+    std::fs::remove_file(&manifest).expect("drop manifest");
+    // mkfifo via the coreutils binary: the workspace denies `unsafe`, so
+    // `libc::mkfifo` is not callable. Skip rather than fail on a host
+    // without it.
+    match std::process::Command::new("mkfifo").arg(&manifest).status() {
+        Ok(status) if status.success() => {}
+        _ => {
+            eprintln!("skipping: no mkfifo binary on this host");
+            return;
+        }
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let workdir = dir.path().to_path_buf();
+    std::thread::spawn(move || {
+        let outcome =
+            runtime().block_on(Engine::new(config(&workdir), source(), inner.clone()).run());
+        let _ = tx.send((outcome, without_load_id(&inner)));
+    });
+    let (outcome, rows) = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+        Ok(result) => result,
+        Err(_) => panic!("recovery hung on the planted FIFO instead of refusing it"),
+    };
+    let report = outcome.expect("the recovery run resolves the damaged WAL and completes");
+    assert!(
+        matches!(report.resumed_from, ResumedFrom::Cursor),
+        "a refused manifest degrades to cursor re-extraction: {:?}",
+        report.resumed_from
+    );
+    assert_eq!(
+        rows,
+        runtime().block_on(uninterrupted()),
+        "the degraded run still converges to the uninterrupted result"
+    );
+}
+
 /// Row 4: the WAL is lost entirely after a crash. Recovery degrades to
 /// re-extraction from the last committed cursor — slower, never wrong.
 #[tokio::test]

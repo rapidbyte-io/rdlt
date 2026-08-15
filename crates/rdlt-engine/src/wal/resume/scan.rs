@@ -2,7 +2,6 @@
 //! [`ScanOutcome`] without touching a segment or a session.
 
 use std::{
-    fs::File,
     io::{BufRead, BufReader, Read as _},
     path::Path,
 };
@@ -16,7 +15,21 @@ use super::blocking::off_runtime;
 /// A manifest record is metadata, not a data container. Bound each line before
 /// allocating it so a corrupted WAL cannot make recovery materialize an
 /// arbitrarily large line.
-const MAX_MANIFEST_LINE_BYTES: usize = 1024 * 1024;
+///
+/// The cap must sit ABOVE anything this engine's own writer can legitimately
+/// append, or a run's own WAL becomes unscannable (`Damaged` — safe direction,
+/// but a pure availability loss). The largest legitimate line is a Delta for a
+/// maximal table create, MEASURED at 1,352,213 bytes: the shred-time bounds
+/// allow 4,096 source columns per table with identifiers normalized to the
+/// destination's `IdentRules` length (63 by default), each column costing
+/// ~150 JSON bytes, and a CreateTable delta serializes that schema TWICE
+/// (once as the record's `schema`, once inside the change) — ~1.3 MiB. Four
+/// mebibytes covers it with headroom for longer destination ident rules while
+/// still bounding what a hostile line can make recovery allocate. Checkpoint
+/// lines carry a source-controlled cursor with NO shred-time bound; a cursor
+/// past this cap degrades the scan the same way, which is the residual this
+/// cap deliberately accepts over an unbounded read.
+const MAX_MANIFEST_LINE_BYTES: usize = 4 * 1024 * 1024;
 
 fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<String>, String> {
     let mut bytes = Vec::new();
@@ -123,9 +136,23 @@ pub(crate) async fn scan_off_runtime(
 
 fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId) -> ScanOutcome {
     let path = dir.join("manifest.jsonl");
-    let file = match File::open(&path) {
+    // The gated open ([`crate::wal::open_wal_read`]) refuses FIFOs, symlinks
+    // and other non-regular plants at the manifest path — a plain open would
+    // BLOCK forever on a writerless FIFO (nothing above this scan has a
+    // timeout) or read a symlink's foreign target into the verdicts below.
+    // Absence stays `Nothing`, and ENOTDIR is absence too (no `wal`
+    // DIRECTORY exists — `Wal::open` refuses the occupied path loudly later,
+    // after recovery has resolved, which is the pinned failure order); every
+    // other failure is damage, named.
+    let file = match crate::wal::open_wal_read(&path) {
         Ok(f) => f,
-        Err(_) => return ScanOutcome::Nothing,
+        Err(e)
+            if e.kind() == std::io::ErrorKind::NotFound
+                || e.raw_os_error() == Some(libc::ENOTDIR) =>
+        {
+            return ScanOutcome::Nothing;
+        }
+        Err(e) => return ScanOutcome::Damaged(format!("manifest is unreadable: {e}")),
     };
     let mut records: Vec<WalRecord> = Vec::new();
     let mut damaged: Option<String> = None;
@@ -354,7 +381,14 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
 /// state, so no cursor from the refused span ever commits.
 fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<String> {
     let path = dir.join(crate::wal::RULES_SIDECAR);
-    let text = match std::fs::read_to_string(&path) {
+    // Same gated open as the manifest's: the sidecar decides whether the
+    // whole span is trusted, so a symlink here would let foreign content
+    // vouch for the writer's rules, and a FIFO would hang the scan.
+    let text = match crate::wal::open_wal_read(&path).and_then(|mut file| {
+        let mut text = String::new();
+        file.read_to_string(&mut text)?;
+        Ok(text)
+    }) {
         Ok(text) => text,
         Err(e) => {
             return Some(format!(
@@ -623,6 +657,52 @@ mod tests {
             serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
+    }
+
+    /// The line cap's other face: it must sit ABOVE anything this engine's
+    /// own writer can append, or a run's own WAL becomes unscannable. This
+    /// builds the largest Delta the shred-time bounds admit — 4,096 columns
+    /// (`MAX_SOURCE_COLUMNS_PER_TABLE`), identifiers at the default rules'
+    /// 63-byte bound, the schema serialized twice by a CreateTable change —
+    /// and holds the cap over it. Growing the shred bounds or shrinking the
+    /// cap fails HERE, before it fails as a `Damaged` scan in the field.
+    #[test]
+    fn the_line_cap_admits_the_writers_own_maximal_delta_line() {
+        use rdlt_core::{ColumnDef, ColumnType, LogicalType, Provenance, SchemaChange, WriteMode};
+        let columns: Vec<ColumnDef> = (0..crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE)
+            .map(|i| ColumnDef {
+                name: format!("{:a>59}{i:04}", ""),
+                column_type: ColumnType::scalar(LogicalType::Json),
+                nullable: true,
+                provenance: Provenance::Inferred,
+            })
+            .collect();
+        let schema = rdlt_core::TableSchema {
+            table: rdlt_core::TableName::new(format!("{:t>63}", "")),
+            parent: None,
+            columns,
+        };
+        let delta = rdlt_core::SchemaDelta {
+            table: schema.table.clone(),
+            from: None,
+            to: schema.content_hash(),
+            changes: vec![SchemaChange::CreateTable {
+                schema: schema.clone(),
+            }],
+        };
+        let record = WalRecord::Delta {
+            delta,
+            schema,
+            mode: WriteMode::Append,
+        };
+        let line = crate::wal::record::encode_line(&record).expect("encode");
+        assert!(
+            line.len() <= MAX_MANIFEST_LINE_BYTES,
+            "the writer's own maximal delta line ({} bytes) must scan under the \
+             {MAX_MANIFEST_LINE_BYTES}-byte cap — otherwise a legitimately huge \
+             table makes its own run's recovery degrade",
+            line.len()
+        );
     }
 
     #[test]
@@ -1760,6 +1840,156 @@ mod starvation_tests {
         assert!(
             during > 0,
             "the co-tenant was starved for the whole manifest scan: 0 polls"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hostile_file_types {
+    //! The scan's opens are the read side of the WAL's file-type boundary:
+    //! a FIFO planted at a WAL path makes a plain `File::open` block until
+    //! a writer appears — which is never — so recovery would hang FOREVER,
+    //! and nothing up the stack carries a timeout. A symlink planted there
+    //! steers scan verdicts by whatever foreign content it points at. Both
+    //! must degrade as `Damaged`, promptly.
+
+    use super::*;
+    use rdlt_core::PipelineId;
+
+    /// `mkfifo` via the coreutils binary: the workspace denies `unsafe`, so
+    /// `libc::mkfifo` is not callable, and no safe wrapper is in the tree.
+    /// Returns false when the binary is unavailable so the test can skip
+    /// rather than fail on an exotic host.
+    fn mkfifo(path: &std::path::Path) -> bool {
+        match std::process::Command::new("mkfifo").arg(path).status() {
+            Ok(status) => status.success(),
+            Err(_) => false,
+        }
+    }
+
+    /// Run `scan` on its own thread under a deadline. The RED state of these
+    /// pins is an eternal hang (a writerless FIFO blocks the open), and a
+    /// test that hangs forever fails no gate — the deadline turns a
+    /// regression into a loud failure. The scanning thread stays blocked
+    /// after a timeout; the per-test process boundary reclaims it.
+    fn scan_with_deadline(dir: std::path::PathBuf) -> ScanOutcome {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(scan(
+                &dir,
+                rdlt_core::naming::IdentRules::default(),
+                &PipelineId::new("p"),
+            ));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                panic!("recovery hung: the scan blocked on a hostile file instead of refusing it")
+            }
+        }
+    }
+
+    /// A current-version manifest with one benign record, plus the rules
+    /// sidecar — the fixture whose sidecar the FIFO/symlink tests then
+    /// replace.
+    fn benign_manifest(dir: &std::path::Path) {
+        let record = WalRecord::Run {
+            format_version: crate::wal::WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("p"),
+        };
+        let mut out = crate::wal::record::encode_line(&record).expect("record json");
+        out.push(b'\n');
+        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
+        std::fs::write(
+            dir.join(crate::wal::RULES_SIDECAR),
+            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+        )
+        .expect("write sidecar");
+    }
+
+    #[test]
+    fn a_fifo_planted_as_the_manifest_degrades_promptly_instead_of_hanging() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        if !mkfifo(&dir.path().join("manifest.jsonl")) {
+            eprintln!("skipping: no mkfifo binary on this host");
+            return;
+        }
+        let outcome = scan_with_deadline(dir.path().to_path_buf());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason)
+                if reason.contains("not a regular file")),
+            "a FIFO at the manifest path must refuse as damage: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_fifo_planted_as_the_rules_sidecar_degrades_promptly_instead_of_hanging() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        benign_manifest(dir.path());
+        std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
+        if !mkfifo(&dir.path().join(crate::wal::RULES_SIDECAR)) {
+            eprintln!("skipping: no mkfifo binary on this host");
+            return;
+        }
+        let outcome = scan_with_deadline(dir.path().to_path_buf());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason)
+                if reason.contains("not a regular file")),
+            "a FIFO at the sidecar path must refuse as damage: {outcome:?}"
+        );
+    }
+
+    /// The symlink steer, demonstrated end to end: the planted link points
+    /// at a fully valid manifest naming ANOTHER pipeline. Followed, the
+    /// scan's verdict becomes `ForeignPipeline` — an outcome the caller
+    /// must never resolve by clearing, so one symlink wedges the pipeline
+    /// on foreign content. The link itself must refuse as damage instead.
+    #[test]
+    fn a_symlink_planted_as_the_manifest_refuses_instead_of_being_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let foreign = dir.path().join("foreign");
+        std::fs::create_dir(&foreign).expect("foreign dir");
+        let record = WalRecord::Run {
+            format_version: crate::wal::WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("someone-elses-pipeline"),
+        };
+        let mut out = crate::wal::record::encode_line(&record).expect("record json");
+        out.push(b'\n');
+        std::fs::write(foreign.join("manifest.jsonl"), out).expect("foreign manifest");
+        std::os::unix::fs::symlink(
+            foreign.join("manifest.jsonl"),
+            dir.path().join("manifest.jsonl"),
+        )
+        .expect("plant symlink");
+        let outcome = scan_with_deadline(dir.path().to_path_buf());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("symlink")),
+            "a manifest symlink must refuse as damage, never read through: {outcome:?}"
+        );
+    }
+
+    /// The sidecar half of the same steer: a link pointing at a rules file
+    /// OUTSIDE the WAL passes the drift gate on foreign content — the gate
+    /// exists to prove the WRITER's rules, and a link proves nothing.
+    #[test]
+    fn a_symlink_planted_as_the_sidecar_refuses_instead_of_being_read_through() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        benign_manifest(dir.path());
+        std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
+        let outside = dir.path().join("outside-rules.json");
+        std::fs::write(
+            &outside,
+            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+        )
+        .expect("outside rules");
+        std::os::unix::fs::symlink(&outside, dir.path().join(crate::wal::RULES_SIDECAR))
+            .expect("plant symlink");
+        let outcome = scan_with_deadline(dir.path().to_path_buf());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("symlink")),
+            "a sidecar symlink must refuse as damage, never read through: {outcome:?}"
         );
     }
 }

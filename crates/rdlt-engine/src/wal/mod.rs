@@ -13,7 +13,7 @@ pub(crate) mod resume;
 mod writer;
 
 pub(crate) use record::{WAL_FORMAT_VERSION, WalRecord};
-pub(crate) use writer::{RULES_SIDECAR, Wal, clear, create_private_dir, dir_in};
+pub(crate) use writer::{RULES_SIDECAR, Wal, clear, create_private_dir, dir_in, open_wal_read};
 
 #[cfg(test)]
 pub(crate) use writer::write_segment;

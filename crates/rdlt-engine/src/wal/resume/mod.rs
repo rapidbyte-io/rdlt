@@ -5,5 +5,5 @@ mod blocking;
 mod replay;
 mod scan;
 
-pub(crate) use replay::replay;
+pub(crate) use replay::{decode_segment_bytes, replay};
 pub(crate) use scan::{RecoverySpan, ScanOutcome, scan_off_runtime};

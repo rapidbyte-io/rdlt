@@ -66,3 +66,9 @@ name = "wal_manifest_line"
 path = "fuzz_targets/wal_manifest_line.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "wal_segment_decode"
+path = "fuzz_targets/wal_segment_decode.rs"
+test = false
+doc = false
