@@ -7,7 +7,7 @@
 //! one the provider resolved and decodes its self-description, and
 //! the error module maps wire [`proto::ErrorFrame`]s back to the SPI's
 //! own classifications so the engine's retry machinery never learns the
-//! wire exists. [`source::Source`] is those seams composed into the
+//! wire exists. [`source::Remote`] is those seams composed into the
 //! SPI's read half — a `Source` whose every method is an RPC;
 //! [`destination::Destination`] is its write-side twin, boxing the
 //! sdk's own `Session` over a [`destination::Backend`] so the
@@ -32,7 +32,7 @@
 //! freeze.
 //!
 //! Every name has exactly one canonical path, at its module —
-//! [`handshake::Requirement`], [`source::Source`],
+//! [`handshake::Requirement`], [`source::Remote`],
 //! [`destination::Destination`], [`destination::Backend`], the
 //! transport seams at [`wire`], the error surface at [`error`] — with
 //! no crate-root aliases.

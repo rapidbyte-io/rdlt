@@ -132,7 +132,7 @@ impl Drop for LifecycleGuard {
 /// [`Source`] by delegation — hand it to `Engine::new` as-is.
 #[derive(Debug)]
 pub struct ManagedSource {
-    adapter: source::Source,
+    adapter: source::Remote,
     identity: String,
     resolved_version: String,
     negotiated_protocol: u32,
@@ -148,7 +148,7 @@ impl ManagedSource {
     /// `outcome`; `guard` is `None` for a provider whose connector's
     /// lifetime is managed elsewhere (a pool, an embedder's own child).
     pub fn new(
-        adapter: source::Source,
+        adapter: source::Remote,
         identity: impl Into<String>,
         outcome: &HandshakeOutcome,
         guard: Option<LifecycleGuard>,

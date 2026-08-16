@@ -1,4 +1,4 @@
-//! The wire `Source` against served counterparts: the sdk-served echo for
+//! The wire source adapter against served counterparts: the sdk-served echo for
 //! the honest paths, and the rogue for frames the sdk can never emit
 //! (the one-batch violation, the unbudgeted blast the pacing
 //! observation needs).
@@ -12,7 +12,7 @@ use rdlt_connector::{
     PushPayload, ReadRequest, RecordBatch, Source as _, SourceError, StreamSpec, records_channel,
 };
 use rdlt_connector_client::handshake::Requirement;
-use rdlt_connector_client::source::Source;
+use rdlt_connector_client::source::Remote;
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::serve;
 
@@ -42,8 +42,8 @@ const BOUND: Duration = Duration::from_secs(10);
 async fn connect_echo(
     path: &std::path::Path,
     config: serde_json::Value,
-) -> (Source, rdlt_connector_client::handshake::Outcome) {
-    Source::connect(
+) -> (Remote, rdlt_connector_client::handshake::Outcome) {
+    Remote::connect(
         path,
         ENGINE_BUDGET_BYTES,
         &config,
@@ -186,9 +186,10 @@ async fn a_full_read_forwards_frames_in_order() {
 }
 
 /// The terminal-error round-trip pin: a served fatal read failure,
-/// mapped back through the wire `Source`, renders the classification frame
-/// EXACTLY ONCE — full-string, so a second frame (the 026 double-frame
-/// class, end to end over the wire) cannot hide in a substring match.
+/// mapped back through the wire adapter, renders the classification
+/// frame EXACTLY ONCE — full-string, so a second frame (each mapping
+/// layer wrapping the classification again) cannot hide in a substring
+/// match.
 #[tokio::test]
 async fn a_terminal_error_renders_one_classification_frame() {
     let (_dir, path) = socket_path();
@@ -262,7 +263,7 @@ async fn an_arrow_frame_forwards_as_exactly_one_batch() {
             std::slice::from_ref(&sent),
         )]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -301,7 +302,7 @@ async fn a_two_batch_frame_is_refused_at_the_client_seat() {
         &path,
         ReadScript::Frames(vec![arrow_frame(&schema, &[first, second])]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -343,7 +344,7 @@ async fn a_malformed_checkpoint_is_refused_typed() {
             )),
         }]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -372,8 +373,8 @@ async fn a_malformed_checkpoint_is_refused_typed() {
     );
 }
 
-/// 5M1's inbound half, wire-level: a checkpoint frame whose cursor
-/// document exceeds the cursor contract is refused FATAL at the decode
+/// The cursor cap's inbound half, wire-level: a checkpoint frame whose
+/// cursor document exceeds the cursor contract is refused FATAL at the decode
 /// seat — the one untyped inbound document — before its `Value` ever
 /// materializes (and before it could poison persisted state, which every
 /// later resume would then refuse).
@@ -391,7 +392,7 @@ async fn an_oversized_checkpoint_cursor_is_refused_at_the_decode_seat() {
             ])),
         }]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -417,14 +418,14 @@ async fn an_oversized_checkpoint_cursor_is_refused_at_the_decode_seat() {
     );
 }
 
-/// 5M1's outbound half: a stored cursor over the contract bound is
+/// The cursor cap's outbound half: a stored cursor over the contract bound is
 /// refused BEFORE the re-send — the server is live and would serve, so
 /// the refusal proves the document never crossed the wire.
 #[tokio::test]
 async fn an_oversized_stored_cursor_is_refused_before_resend() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve(&path, ReadScript::Frames(vec![]));
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -486,7 +487,7 @@ async fn a_tiny_window_bounds_an_unread_blast() {
     );
     // Budget 1: dial floors it to h2's 64 KiB minimum — the tiniest
     // window the clamp can legally advertise.
-    let (remote, _) = Source::connect(&path, 1, &serde_json::json!({}), &Requirement::new("rogue"))
+    let (remote, _) = Remote::connect(&path, 1, &serde_json::json!({}), &Requirement::new("rogue"))
         .await
         .expect("connect");
 
@@ -550,7 +551,7 @@ async fn a_control_character_cursor_value_is_data_not_refused() {
             )),
         }]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -585,7 +586,7 @@ async fn a_control_character_cursor_value_is_data_not_refused() {
     }
 }
 
-/// 6L1, wire-level: a checkpoint frame whose WIRE bytes sit under the
+/// The inflation seat, wire-level: a checkpoint frame whose WIRE bytes sit under the
 /// cursor contract but whose RE-SERIALIZED form inflates past it (the
 /// float-notation shape: `1e15` parses compact, serde re-serializes
 /// `1000000000000000.0`) is refused on the serialized measurement —
@@ -605,7 +606,7 @@ async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
             frame: Some(read_frame::Frame::CheckpointCursorJson(floats.into_bytes())),
         }]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -631,7 +632,7 @@ async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
     );
 }
 
-/// 6.5: the inbound cursor gate is inclusive at its boundary — a
+/// The inbound cursor gate is inclusive at its boundary — a
 /// checkpoint frame of EXACTLY the contract's bytes parses and the
 /// checkpoint reaches the records channel.
 #[tokio::test]
@@ -649,7 +650,7 @@ async fn a_checkpoint_at_exactly_the_cursor_ceiling_is_accepted() {
             frame: Some(read_frame::Frame::CheckpointCursorJson(frame)),
         }]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),

@@ -466,7 +466,7 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
         // The guard exists from the moment a socket path is known: any
         // failure below drops it, which kills the child AND unlinks
         // whatever the connector may already have bound.
-        let (adapter, outcome) = source::Source::connect(
+        let (adapter, outcome) = source::Remote::connect(
             &line.socket_path,
             self.engine_budget_bytes,
             config,

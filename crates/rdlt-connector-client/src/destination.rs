@@ -80,7 +80,7 @@ impl Destination {
     /// [`wire::dial`]) and run the [`handshake::Role::Destination`]
     /// handshake, verifying the connector against `expected`. Returns
     /// the adapter AND the full [`handshake::Outcome`], mirroring
-    /// [`Source::connect`](crate::source::Source::connect).
+    /// [`Remote::connect`](crate::source::Remote::connect).
     pub async fn connect(
         socket_path: &Path,
         engine_budget_bytes: u64,

@@ -1,4 +1,4 @@
-//! [`Source`] — the SPI read seam over the wire: an SPI
+//! [`Remote`] — the SPI read seam over the wire: an SPI
 //! [`rdlt_connector::Source`] whose every method is an RPC against a
 //! served connector, so an engine (or any embedder holding a `dyn
 //! Source`) drives a spawned connector without learning the wire
@@ -28,17 +28,17 @@ use crate::{error, gate, handshake, wire};
 /// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
 /// plus the handshake's cached spec and the requirement's RPC deadline
 /// (every await below is bounded by it — a silent connector fails
-/// typed, never hangs). Constructed only through [`Source::connect`] —
-/// there is no way to hold one whose identity was not verified
-/// (D-039-2).
+/// typed, never hangs). Constructed only through [`Remote::connect`],
+/// so there is no way to hold one whose identity the handshake did not
+/// verify.
 #[derive(Debug)]
-pub struct Source {
+pub struct Remote {
     channel: Channel,
     spec: ConnectorSpec,
     deadline: Duration,
 }
 
-impl Source {
+impl Remote {
     /// Dial `socket_path` (the engine budget paces the wire — see
     /// [`wire::dial`]) and run the [`handshake::Role::Source`] handshake,
     /// verifying the connector against `expected`. Returns the adapter
@@ -50,7 +50,7 @@ impl Source {
         engine_budget_bytes: u64,
         config: &serde_json::Value,
         expected: &handshake::Requirement,
-    ) -> Result<(Source, handshake::Outcome), error::Error> {
+    ) -> Result<(Remote, handshake::Outcome), error::Error> {
         let (channel, outcome) = handshake::establish(
             socket_path,
             engine_budget_bytes,
@@ -60,7 +60,7 @@ impl Source {
         )
         .await?;
         Ok((
-            Source {
+            Remote {
                 channel,
                 spec: outcome.spec.clone(),
                 deadline: expected.rpc_deadline,
@@ -70,15 +70,16 @@ impl Source {
     }
 }
 
-/// Gate every identifier a declared stream carries — the name, the
-/// primary-key fields, the cursor field, the type-hint keys — through
-/// the trust boundary's identifier rule: these values travel into
-/// events, tracing spans, and the CLI's lines, so a name is either
-/// clean or refused. Refused HERE, where third-party bytes become host
-/// vocabulary, deliberately not in `StreamName::new` — the core type
-/// stays free-form for hosts by its own documented contract, and
+/// Gate everything untrusted a declared stream spec carries: its
+/// identifier seats — the name, the primary-key fields, the cursor
+/// field, the type-hint keys — through the trust boundary's identifier
+/// rule (these values travel into events, tracing spans, and the CLI's
+/// lines, so each is either clean or refused), plus count caps on the
+/// collections themselves. Refused HERE, where third-party bytes become
+/// host vocabulary, deliberately not in `StreamName::new` — the core
+/// type stays free-form for hosts by its own documented contract, and
 /// in-process embedders name their own streams.
-fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceError> {
+fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
     // Count caps beside the content gates — a spec with hundreds of
     // thousands of tiny keys passes every per-value gate within one
     // frame otherwise. An honest primary key names one to a few
@@ -111,16 +112,17 @@ fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceErro
     Ok(())
 }
 
-/// Validate every Arrow field name, including nested container fields.
-/// The walk is iterative so an attacker-controlled schema cannot add a
-/// second recursive traversal after Arrow's own verified decoder.
-fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), SourceError> {
+/// Validate every field name a decoded record batch carries, nested
+/// container fields included. The walk is iterative so an
+/// attacker-controlled schema cannot add a second recursive traversal
+/// after Arrow's own verified decoder.
+fn refuse_untrusted_record_batch_fields(batch: &RecordBatch) -> Result<(), SourceError> {
     use arrow::datatypes::DataType;
 
     let schema = batch.schema();
     let mut pending: Vec<Arc<arrow::datatypes::Field>> = schema.fields().iter().cloned().collect();
     while let Some(field) = pending.pop() {
-        gate::identifier("Arrow field name", field.name()).map_err(SourceError::fatal)?;
+        gate::identifier("record-batch field name", field.name()).map_err(SourceError::fatal)?;
         // A dictionary encodes another type without a field of its own,
         // but its VALUE type can carry named fields (a struct, a list,
         // another dictionary) — unwrap before matching, or those inner
@@ -156,8 +158,9 @@ fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), 
 /// seat of the proto's one-batch rule (the field's own doc): `Read` is
 /// server-streamed, so the refusal seat sits here — a conforming client
 /// refuses a frame carrying a second batch rather than silently taking
-/// the first (the destination direction measured that silence as row
-/// loss, 038 T5 F3; this is its read-direction mirror).
+/// the first, because on the write direction of this wire that same
+/// silence was measured as row loss, and this is its read-direction
+/// mirror.
 ///
 /// The spelling `read frame violated the one-batch rule` is frozen;
 /// the underlying arrow cause is appended where one exists (unreadable
@@ -195,9 +198,11 @@ const ONE_BATCH_REFUSAL: &str = "read frame violated the one-batch rule";
 /// The `Err`-shaped half of the decode: every failure arrow REPORTS
 /// (as opposed to panics on) maps behind the frozen prefix here.
 fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
-    // The shared framing pre-pass (SPI `ipc` module, 5H1): one
-    // implementation for every wire decode seat; this seat wraps its
-    // reasons in the frozen one-batch prefix.
+    // The framing pre-pass runs FIRST, before arrow's reader sees a
+    // byte: it refuses declared metadata/body lengths that exceed the
+    // frame, which the reader would otherwise allocate on trust. The
+    // SPI owns the one implementation for every wire decode seat; this
+    // seat wraps its reasons in the frozen one-batch prefix.
     rdlt_connector::ipc::refuse_overdeclared_ipc_framing(bytes)
         .map_err(|reason| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {reason}")))?;
     let mut reader =
@@ -210,11 +215,11 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         }
         None => return Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
     };
-    // 6M3: row count is the memory dimension the framing pre-pass
-    // cannot see — it bounds declared LENGTHS, not a RecordBatch's
-    // `length` field, and Null/run-end-encoded columns carry millions
-    // of rows in almost no bytes. The engine enforces this cap at its
-    // own ingress; this seat serves it to every host.
+    // Row count is the memory dimension the framing pre-pass cannot
+    // see — it bounds declared LENGTHS, not a RecordBatch's `length`
+    // field, and Null/run-end-encoded columns carry millions of rows
+    // in almost no bytes. The engine enforces this cap at its own
+    // ingress; this seat serves it to every host.
     if first.num_rows() > rdlt_connector::channel::MAX_RECORD_BATCH_ROWS {
         return Err(SourceError::fatal(format!(
             "{ONE_BATCH_REFUSAL}: the batch carries {} rows, over the {}-row wire cap — \
@@ -225,7 +230,7 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
     }
     match reader.next() {
         None => {
-            refuse_control_characters_in_arrow_fields(&first)?;
+            refuse_untrusted_record_batch_fields(&first)?;
             Ok(first)
         }
         Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
@@ -234,9 +239,9 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
 }
 
 #[async_trait]
-impl rdlt_connector::Source for Source {
+impl rdlt_connector::Source for Remote {
     /// The handshake's cached document — no RPC: the spec was verified
-    /// and decoded once at [`Source::connect`], and a connector's
+    /// and decoded once at [`Remote::connect`], and a connector's
     /// self-description does not change mid-session.
     fn spec(&self) -> ConnectorSpec {
         self.spec.clone()
@@ -268,7 +273,7 @@ impl rdlt_connector::Source for Source {
                             rdlt_connector::json::describe_parse_error(&error)
                         ))
                     })?;
-                    refuse_control_characters_in_name(&spec)?;
+                    refuse_untrusted_stream_spec(&spec)?;
                     Ok(spec)
                 })
                 .collect(),
@@ -406,10 +411,9 @@ impl rdlt_connector::Source for Source {
 }
 
 #[cfg(test)]
-mod name_boundary_tests {
-    //! The wire edge's control-character gate on declared stream
-    //! names, pinned directly on the helper the streams decode runs
-    //! every spec through.
+mod stream_spec_gate_tests {
+    //! The wire edge's gate on declared stream specs, pinned directly
+    //! on the helper the streams decode runs every spec through.
 
     use super::*;
     use rdlt_connector::StreamSpec;
@@ -420,7 +424,7 @@ mod name_boundary_tests {
     #[test]
     fn a_control_character_name_refuses_with_an_inert_message() {
         let spec = StreamSpec::new("\u{1b}]52;c;AAAA\u{7}");
-        let error = refuse_control_characters_in_name(&spec)
+        let error = refuse_untrusted_stream_spec(&spec)
             .expect_err("control characters in a declared name must refuse");
         assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
         let rendered = error.to_string();
@@ -439,17 +443,17 @@ mod name_boundary_tests {
     #[test]
     fn a_newline_in_a_name_refuses() {
         let spec = StreamSpec::new("orders\nFORGED LINE");
-        assert!(refuse_control_characters_in_name(&spec).is_err());
+        assert!(refuse_untrusted_stream_spec(&spec).is_err());
     }
 
-    /// 5L5: the length half — a control-free but absurdly long name
-    /// refuses at the same seat, and the boundary is exact.
+    /// The length half — a control-free but absurdly long name refuses
+    /// at the same seat, and the boundary is exact.
     #[test]
     fn an_oversized_name_refuses_and_the_boundary_is_exact() {
         let at = "a".repeat(crate::gate::MAX_WIRE_IDENTIFIER_BYTES);
-        assert!(refuse_control_characters_in_name(&StreamSpec::new(at)).is_ok());
+        assert!(refuse_untrusted_stream_spec(&StreamSpec::new(at)).is_ok());
         let over = "a".repeat(crate::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
-        let error = refuse_control_characters_in_name(&StreamSpec::new(over))
+        let error = refuse_untrusted_stream_spec(&StreamSpec::new(over))
             .expect_err("one byte over the ceiling refuses");
         assert!(
             error.to_string().contains("identifier ceiling"),
@@ -467,7 +471,7 @@ mod name_boundary_tests {
         ];
         for spec in cases {
             assert!(
-                refuse_control_characters_in_name(&spec).is_err(),
+                refuse_untrusted_stream_spec(&spec).is_err(),
                 "all connector-authored field identifiers are gated: {spec:?}"
             );
         }
@@ -480,23 +484,22 @@ mod name_boundary_tests {
         for name in ["orders", "Événements", "orders-v2.daily"] {
             let spec = StreamSpec::new(name);
             assert!(
-                refuse_control_characters_in_name(&spec).is_ok(),
+                refuse_untrusted_stream_spec(&spec).is_ok(),
                 "`{name}` must pass"
             );
         }
     }
 
-    /// 6L3: count caps beside the content gates — a spec with an
-    /// absurd number of tiny keys passes every per-value gate within
-    /// one frame otherwise, and the cost lands at plan time. At the
-    /// caps themselves the spec is legal (the boundaries are honest).
+    /// Count caps beside the content gates — a spec with an absurd
+    /// number of tiny keys passes every per-value gate within one frame
+    /// otherwise, and the cost lands at plan time. At the caps
+    /// themselves the spec is legal (the boundaries are honest).
     #[test]
     fn key_and_hint_counts_are_capped_at_the_wire_edge() {
         // Over the primary-key field cap.
         let mut spec = StreamSpec::new("orders");
         spec.primary_key = Some((0..65).map(|i| format!("k{i}")).collect());
-        let error =
-            refuse_control_characters_in_name(&spec).expect_err("65 primary-key fields refuse");
+        let error = refuse_untrusted_stream_spec(&spec).expect_err("65 primary-key fields refuse");
         assert!(
             error.to_string().contains("primary-key fields"),
             "the refusal names the seat: {error}"
@@ -507,7 +510,7 @@ mod name_boundary_tests {
             spec.type_hints
                 .insert(format!("c{i}"), rdlt_connector::core::LogicalType::Int64);
         }
-        let error = refuse_control_characters_in_name(&spec).expect_err("4097 type hints refuse");
+        let error = refuse_untrusted_stream_spec(&spec).expect_err("4097 type hints refuse");
         assert!(
             error.to_string().contains("type-hint fields"),
             "the refusal names the seat: {error}"
@@ -519,7 +522,7 @@ mod name_boundary_tests {
             spec.type_hints
                 .insert(format!("c{i}"), rdlt_connector::core::LogicalType::Int64);
         }
-        refuse_control_characters_in_name(&spec).expect("a spec at both count caps is legal");
+        refuse_untrusted_stream_spec(&spec).expect("a spec at both count caps is legal");
     }
 }
 
@@ -567,11 +570,11 @@ mod tests {
         assert_eq!(decoded, sent);
     }
 
-    /// 6M3: row count is the memory dimension the framing pre-pass
-    /// cannot see — a boolean column packs eight rows per byte, so a
-    /// ~125 KiB frame over the row cap must refuse at THIS seat
-    /// (the engine enforces the same cap at its own ingress; this seat
-    /// serves every host).
+    /// Row count is the memory dimension the framing pre-pass cannot
+    /// see — a boolean column packs eight rows per byte, so a ~125 KiB
+    /// frame over the row cap must refuse at THIS seat (the engine
+    /// enforces the same cap at its own ingress; this seat serves every
+    /// host).
     #[test]
     fn an_over_cap_row_count_refuses_at_the_decode_seat() {
         fn boolean_batch(rows: usize) -> RecordBatch {
@@ -616,9 +619,9 @@ mod tests {
             .expect("a batch at exactly the row cap decodes");
     }
 
-    /// 6L2's Arrow half: a multi-megabyte control-FREE field name is
-    /// still vocabulary abuse — the length gate applies at this seat
-    /// beside the content gate.
+    /// The length half at the record-batch seat: a multi-megabyte
+    /// control-FREE field name is still vocabulary abuse — the length
+    /// gate applies here beside the content gate.
     #[test]
     fn an_oversized_arrow_field_name_refuses_at_the_decode_seat() {
         use arrow::datatypes::{DataType, Field, Schema};
@@ -626,7 +629,7 @@ mod tests {
         let long = "f".repeat(crate::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
         let schema = Arc::new(Schema::new(vec![Field::new(long, DataType::Int64, true)]));
         let batch = RecordBatch::new_empty(schema);
-        let error = refuse_control_characters_in_arrow_fields(&batch)
+        let error = refuse_untrusted_record_batch_fields(&batch)
             .expect_err("an over-length field name refuses");
         let rendered = error.to_string();
         assert!(
@@ -645,9 +648,9 @@ mod tests {
             true,
         )]));
         let batch = RecordBatch::new_empty(schema);
-        let error = refuse_control_characters_in_arrow_fields(&batch)
+        let error = refuse_untrusted_record_batch_fields(&batch)
             .expect_err("nested field names use the identifier gate");
-        assert!(error.to_string().contains("Arrow field"));
+        assert!(error.to_string().contains("record-batch field"));
     }
 
     /// A dictionary-encoded nested container carries field names too:
@@ -669,9 +672,9 @@ mod tests {
             true,
         )]));
         let batch = RecordBatch::new_empty(schema);
-        let error = refuse_control_characters_in_arrow_fields(&batch)
+        let error = refuse_untrusted_record_batch_fields(&batch)
             .expect_err("field names inside a dictionary's value type use the identifier gate");
-        assert!(error.to_string().contains("Arrow field"));
+        assert!(error.to_string().contains("record-batch field"));
     }
 
     /// Zero batches (a schema-only stream) refuse with the bare frozen

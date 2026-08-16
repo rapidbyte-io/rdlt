@@ -17,7 +17,7 @@ use rdlt_connector::{
 use rdlt_connector_client::error::Error;
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, Operation};
-use rdlt_connector_client::{destination::Destination, source::Source};
+use rdlt_connector_client::{destination::Destination, source::Remote};
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::destination::Backend as _;
 
@@ -75,7 +75,7 @@ async fn a_peer_that_never_speaks_h2_fails_typed_at_connect() {
 
     let error = tokio::time::timeout(
         BOUND,
-        Source::connect(
+        Remote::connect(
             &path,
             ENGINE_BUDGET_BYTES,
             &serde_json::json!({}),
@@ -123,7 +123,7 @@ async fn a_silent_handshake_times_out_typed() {
 
     let error = tokio::time::timeout(
         BOUND,
-        Source::connect(
+        Remote::connect(
             &path,
             ENGINE_BUDGET_BYTES,
             &serde_json::json!({}),
@@ -152,7 +152,7 @@ async fn a_silent_handshake_times_out_typed() {
 async fn a_silent_check_times_out_fatal() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_mute(&path, MuteSeat::Check);
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -185,7 +185,7 @@ async fn a_stalled_read_stream_times_out_typed_after_forwarding_its_frames() {
         &path,
         ReadScript::FramesThenSilence(vec![raw_json_frame(0), raw_json_frame(1)]),
     );
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -242,7 +242,7 @@ async fn a_slow_dripping_stream_inside_the_deadline_survives() {
 
     let (_dir, path) = socket_path();
     let _serving = rogue::serve(&path, ReadScript::Drip { frames, interval });
-    let (remote, _) = Source::connect(
+    let (remote, _) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
