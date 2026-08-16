@@ -75,23 +75,24 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// Dial `socket_path` (the engine budget paces the wire — see
+    /// Dial `socket_path` (the byte budget paces the wire — see
     /// [`wire::dial`]) and run the [`handshake::Role::Destination`]
-    /// handshake, verifying the connector against `expected`. Returns
-    /// the adapter AND the full [`handshake::Outcome`], mirroring the
-    /// read seam's [`connect`](crate::source::Remote::connect).
+    /// handshake, verifying the connector against `requirement`.
+    /// Returns the adapter AND the full [`handshake::Outcome`],
+    /// mirroring the read seam's
+    /// [`connect`](crate::source::Remote::connect).
     pub async fn connect(
         socket_path: &Path,
-        engine_budget_bytes: u64,
+        budget_bytes: u64,
         config: &serde_json::Value,
-        expected: &handshake::Requirement,
+        requirement: &handshake::Requirement,
     ) -> Result<(Remote, handshake::Outcome), error::Error> {
         let (channel, outcome) = handshake::establish(
             socket_path,
-            engine_budget_bytes,
+            budget_bytes,
             config,
             handshake::Role::Destination,
-            expected,
+            requirement,
         )
         .await?;
         // The proto pins `capabilities_json` non-empty for destinations
@@ -106,7 +107,7 @@ impl Remote {
                 channel,
                 spec: outcome.spec.clone(),
                 capabilities,
-                deadline: expected.rpc_deadline,
+                deadline: requirement.rpc_deadline,
             },
             outcome,
         ))

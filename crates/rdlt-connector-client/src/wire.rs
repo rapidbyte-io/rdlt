@@ -81,16 +81,16 @@ pub(crate) async fn bounded<F: std::future::Future>(
 
 /// h2's workable window floor. The RFC default is 64 KiB; a window
 /// below it stalls a stream on frames the peer legally sends, so a
-/// tiny engine budget is floored here rather than handed to h2 as-is.
+/// tiny budget is floored here rather than handed to h2 as-is.
 const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 
 /// Dial the Unix domain socket a served connector's handshake line
 /// advertised, returning the one [`Channel`] every service client for
 /// that connector shares.
 ///
-/// The engine budget IS the pacing authority: both h2 windows are set
-/// from `engine_budget_bytes`, so a server can never hold more bytes
-/// in flight than the engine's own channel budget — left unset,
+/// The host's byte budget IS the pacing authority: both h2 windows are
+/// set from `budget_bytes`, so a server can never hold more bytes
+/// in flight than the host's own channel budget — left unset,
 /// tonic's ~2 MiB default window would pace the wire instead of the
 /// budget. The clamp floors tiny budgets at h2's workable minimum
 /// (`MIN_WINDOW_BYTES`, 64 KiB) and caps at [`MAX_FRAME_BYTES`], the
@@ -112,10 +112,10 @@ const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 /// instead of lingering until the next RPC.
 pub async fn dial(
     socket_path: &Path,
-    engine_budget_bytes: u64,
+    budget_bytes: u64,
     rpc_deadline: Duration,
 ) -> Result<Channel, error::Error> {
-    let window = engine_budget_bytes.clamp(MIN_WINDOW_BYTES, MAX_FRAME_BYTES as u64) as u32;
+    let window = budget_bytes.clamp(MIN_WINDOW_BYTES, MAX_FRAME_BYTES as u64) as u32;
     let path = socket_path.to_path_buf();
     let endpoint = Endpoint::try_from("http://[::1]:1")
         .expect("a static placeholder endpoint parses")

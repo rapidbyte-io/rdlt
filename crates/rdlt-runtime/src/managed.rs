@@ -157,7 +157,7 @@ impl ManagedSource {
             adapter,
             identity: identity.into(),
             resolved_version: outcome.connector_version.clone(),
-            negotiated_protocol: outcome.negotiated_protocol,
+            negotiated_protocol: outcome.protocol_version,
             state_format_versions: outcome.state_format_versions.clone(),
             guard,
         }
@@ -241,7 +241,7 @@ impl ManagedDestination {
             adapter,
             identity: identity.into(),
             resolved_version: outcome.connector_version.clone(),
-            negotiated_protocol: outcome.negotiated_protocol,
+            negotiated_protocol: outcome.protocol_version,
             state_format_versions: outcome.state_format_versions.clone(),
             guard,
         }

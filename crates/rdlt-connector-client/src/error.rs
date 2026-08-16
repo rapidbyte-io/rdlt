@@ -56,7 +56,7 @@ pub enum Error {
     #[error(
         "connector identity mismatch: required `{expected}`, the connector reported `{reported}`"
     )]
-    IdMismatch {
+    IdentityMismatch {
         /// The id the requirement named.
         expected: String,
         /// What the connector's `HandshakeOk` reported.

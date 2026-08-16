@@ -39,31 +39,31 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// Dial `socket_path` (the engine budget paces the wire — see
+    /// Dial `socket_path` (the byte budget paces the wire — see
     /// [`wire::dial`]) and run the [`handshake::Role::Source`] handshake,
-    /// verifying the connector against `expected`. Returns the adapter
-    /// AND the full [`handshake::Outcome`] so a caller reads what the
-    /// handshake established (state-format versions, the negotiated
-    /// protocol) without a second RPC.
+    /// verifying the connector against `requirement`. Returns the
+    /// adapter AND the full [`handshake::Outcome`] so a caller reads
+    /// what the handshake established (state-format versions, the
+    /// protocol version) without a second RPC.
     pub async fn connect(
         socket_path: &Path,
-        engine_budget_bytes: u64,
+        budget_bytes: u64,
         config: &serde_json::Value,
-        expected: &handshake::Requirement,
+        requirement: &handshake::Requirement,
     ) -> Result<(Remote, handshake::Outcome), error::Error> {
         let (channel, outcome) = handshake::establish(
             socket_path,
-            engine_budget_bytes,
+            budget_bytes,
             config,
             handshake::Role::Source,
-            expected,
+            requirement,
         )
         .await?;
         Ok((
             Remote {
                 channel,
                 spec: outcome.spec.clone(),
-                deadline: expected.rpc_deadline,
+                deadline: requirement.rpc_deadline,
             },
             outcome,
         ))

@@ -427,7 +427,7 @@ impl LocalBinaryConnectorProvider {
             )))
         })?;
         if requirement.path.is_none() && spec.name != requirement.id {
-            return Err(ProviderError::Client(ClientError::IdMismatch {
+            return Err(ProviderError::Client(ClientError::IdentityMismatch {
                 expected: requirement.id.clone(),
                 reported: spec.name,
             }));

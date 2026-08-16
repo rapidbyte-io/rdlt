@@ -24,7 +24,7 @@ fn socket_path() -> (tempfile::TempDir, PathBuf) {
 
 /// A budget in the middle of the SPI's real 8-64 MiB band — what an
 /// engine would actually hand `dial`.
-const ENGINE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
+const BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 
 fn source_config(rows: u64) -> serde_json::Value {
     serde_json::json!({ "rows": rows })
@@ -33,7 +33,7 @@ fn source_config(rows: u64) -> serde_json::Value {
 /// The happy path, source role: every `handshake::Outcome` field lands —
 /// the spec parsed from `spec_json`, NO capabilities (the proto pins
 /// `capabilities_json` empty for sources), the v0-empty state-format
-/// map, and the protocol version the client negotiated.
+/// map, and the protocol version both sides settled on.
 #[tokio::test]
 async fn a_source_handshake_populates_the_outcome() {
     let (_dir, path) = socket_path();
@@ -41,7 +41,7 @@ async fn a_source_handshake_populates_the_outcome() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let outcome = handshake::run(
@@ -71,7 +71,7 @@ async fn a_source_handshake_populates_the_outcome() {
         outcome.state_format_versions.is_empty(),
         "v0 servers send an empty state-format map"
     );
-    assert_eq!(outcome.negotiated_protocol, 0);
+    assert_eq!(outcome.protocol_version, 0);
 }
 
 /// The happy path, destination role: `capabilities` is `Some` and
@@ -131,7 +131,7 @@ async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
         "the fixture IS the ceiling"
     );
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     handshake::run(
@@ -157,7 +157,7 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let oversized = serde_json::json!({
@@ -187,7 +187,7 @@ async fn an_id_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -200,11 +200,11 @@ async fn an_id_mismatch_refuses_typed() {
     .expect_err("an id mismatch must refuse");
 
     match error {
-        Error::IdMismatch { expected, reported } => {
+        Error::IdentityMismatch { expected, reported } => {
             assert_eq!(expected, "postgres");
             assert_eq!(reported, "echo-source");
         }
-        other => panic!("expected IdMismatch, got {other:?}"),
+        other => panic!("expected IdentityMismatch, got {other:?}"),
     }
 }
 
@@ -218,7 +218,7 @@ async fn a_version_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -248,7 +248,7 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -276,7 +276,7 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
 
 /// The wire edge refuses control characters in the REPORTED identity
 /// before any equality check can render it: a hostile connector_id
-/// must not reach the IdMismatch message (which quotes the reported
+/// must not reach the IdentityMismatch message (which quotes the reported
 /// value) — it refuses as a protocol violation whose own rendering is
 /// inert.
 #[tokio::test]
@@ -284,7 +284,7 @@ async fn a_control_character_identity_refuses_inert_before_the_mismatch_render()
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_identity(&path, "ev\u{1b}]52;c;AAAA\u{7}il", "0.0.0");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -317,7 +317,7 @@ async fn a_control_character_version_refuses_inert() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_identity(&path, "clean-id", "1.0\u{7}");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -346,7 +346,7 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
     let oversized: &'static str = Box::leak("a".repeat(1025).into_boxed_str());
     let _serving = rogue::serve_identity(&path, oversized, "0.0.0");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -385,7 +385,7 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
     ok.spec_json = vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1];
     let _serving = rogue::serve_handshake_ok(&path, ok);
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(

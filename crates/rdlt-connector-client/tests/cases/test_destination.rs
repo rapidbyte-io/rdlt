@@ -38,7 +38,7 @@ fn socket_path() -> (tempfile::TempDir, PathBuf) {
 
 /// A budget in the middle of the SPI's real 8-64 MiB band — what an
 /// engine would actually hand `connect`.
-const ENGINE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
+const BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Every wait whose failure mode is a HANG is bounded, so a hang
 /// reports as a named failure rather than a suite timeout.
@@ -49,7 +49,7 @@ const BOUND: Duration = Duration::from_secs(10);
 async fn connect_echo(path: &std::path::Path, config: serde_json::Value) -> Remote {
     Remote::connect(
         path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &config,
         &Requirement::new("echo-destination"),
     )
@@ -83,7 +83,7 @@ async fn an_out_of_range_ident_rules_declaration_refuses_the_handshake() {
     );
     let error = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -449,7 +449,7 @@ async fn a_mid_stream_status_fails_the_in_flight_call_transport_fatal() {
     );
     let remote = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -492,7 +492,7 @@ async fn capabilities_answer_from_the_handshake_cache_without_an_rpc() {
         .expect("bind");
     let (remote, outcome) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("echo-destination"),
     )
@@ -534,7 +534,7 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
     );
     let remote = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -589,7 +589,7 @@ async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
     );
     let remote = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -647,7 +647,7 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
     );
     let remote = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -697,7 +697,7 @@ async fn a_malformed_state_document_refusal_never_echoes_the_document() {
     );
     let remote = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -740,7 +740,7 @@ async fn an_oversized_table_in_a_part_event_refuses_typed() {
     );
     let remote = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )

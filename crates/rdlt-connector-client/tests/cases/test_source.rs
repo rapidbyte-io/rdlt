@@ -30,7 +30,7 @@ fn socket_path() -> (tempfile::TempDir, PathBuf) {
 
 /// A budget in the middle of the SPI's real 8-64 MiB band — what an
 /// engine would actually hand `connect`.
-const ENGINE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
+const BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Every wait in this suite is bounded: the failure mode under test is
 /// a HANG, and an unbounded assertion would report it as a timeout of
@@ -45,7 +45,7 @@ async fn connect_echo(
 ) -> (Remote, rdlt_connector_client::handshake::Outcome) {
     Remote::connect(
         path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &config,
         &Requirement::new("echo-source"),
     )
@@ -230,7 +230,7 @@ async fn dropping_the_receiver_cancels_the_read_as_ok() {
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 10000})).await;
 
     let stream = remote.streams().await.expect("streams").remove(0);
-    let (out, mut input) = records_channel(ENGINE_BUDGET_BYTES as usize);
+    let (out, mut input) = records_channel(BUDGET_BYTES as usize);
     let read = tokio::spawn(async move { remote.read(ReadRequest::new(stream, None, out)).await });
 
     let first = tokio::time::timeout(BOUND, input.recv())
@@ -265,7 +265,7 @@ async fn an_arrow_frame_forwards_as_exactly_one_batch() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -304,7 +304,7 @@ async fn a_two_batch_frame_is_refused_at_the_client_seat() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -346,7 +346,7 @@ async fn a_malformed_checkpoint_is_refused_typed() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -394,7 +394,7 @@ async fn an_oversized_checkpoint_cursor_is_refused_at_the_decode_seat() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -427,7 +427,7 @@ async fn an_oversized_stored_cursor_is_refused_before_resend() {
     let _serving = rogue::serve(&path, ReadScript::Frames(vec![]));
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -553,7 +553,7 @@ async fn a_control_character_cursor_value_is_data_not_refused() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &rdlt_connector_client::handshake::Requirement::new("rogue"),
     )
@@ -608,7 +608,7 @@ async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )
@@ -652,7 +652,7 @@ async fn a_checkpoint_at_exactly_the_cursor_ceiling_is_accepted() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue"),
     )

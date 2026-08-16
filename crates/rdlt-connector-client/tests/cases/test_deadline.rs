@@ -31,7 +31,7 @@ fn socket_path() -> (tempfile::TempDir, PathBuf) {
 }
 
 /// A budget in the middle of the SPI's real 8-64 MiB band.
-const ENGINE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
+const BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The tight deadline the silence tests dial with — long enough that a
 /// healthy in-process reply never trips it, short enough to keep the
@@ -77,7 +77,7 @@ async fn a_peer_that_never_speaks_h2_fails_typed_at_connect() {
         BOUND,
         Remote::connect(
             &path,
-            ENGINE_BUDGET_BYTES,
+            BUDGET_BYTES,
             &serde_json::json!({}),
             &Requirement::new("mute").with_rpc_deadline(TIGHT),
         ),
@@ -125,7 +125,7 @@ async fn a_silent_handshake_times_out_typed() {
         BOUND,
         Remote::connect(
             &path,
-            ENGINE_BUDGET_BYTES,
+            BUDGET_BYTES,
             &serde_json::json!({}),
             &Requirement::new("mute").with_rpc_deadline(TIGHT),
         ),
@@ -154,7 +154,7 @@ async fn a_silent_check_times_out_fatal() {
     let _serving = rogue::serve_mute(&path, MuteSeat::Check);
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("mute").with_rpc_deadline(TIGHT),
     )
@@ -187,7 +187,7 @@ async fn a_stalled_read_stream_times_out_typed_after_forwarding_its_frames() {
     );
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue").with_rpc_deadline(TIGHT),
     )
@@ -244,7 +244,7 @@ async fn a_slow_dripping_stream_inside_the_deadline_survives() {
     let _serving = rogue::serve(&path, ReadScript::Drip { frames, interval });
     let (remote, _) = Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue").with_rpc_deadline(deadline),
     )
@@ -288,7 +288,7 @@ async fn a_silent_session_reply_times_out_typed() {
     );
     let (remote, _) = destination::Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue").with_rpc_deadline(TIGHT),
     )
@@ -333,7 +333,7 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
     );
     let (remote, _) = destination::Remote::connect(
         &path,
-        ENGINE_BUDGET_BYTES,
+        BUDGET_BYTES,
         &serde_json::json!({}),
         &Requirement::new("rogue").with_rpc_deadline(TIGHT),
     )

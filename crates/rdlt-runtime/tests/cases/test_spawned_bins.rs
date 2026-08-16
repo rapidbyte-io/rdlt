@@ -215,11 +215,11 @@ async fn a_dotless_id_reaches_the_binary_but_is_refused_as_an_identity_mismatch(
         .await
         .expect_err("a dotless id must not pass the strict-identity handshake");
     match &error {
-        ProviderError::Client(ClientError::IdMismatch { expected, reported }) => {
+        ProviderError::Client(ClientError::IdentityMismatch { expected, reported }) => {
             assert_eq!(expected, "reference");
             assert_eq!(reported, "io.rapidbyte.reference");
         }
-        other => panic!("expected the typed IdMismatch, got: {other:?}"),
+        other => panic!("expected the typed IdentityMismatch, got: {other:?}"),
     }
     assert_eq!(
         error.to_string(),
@@ -275,11 +275,11 @@ async fn the_spec_probe_refuses_a_discovered_binary_with_the_wrong_identity() {
         .await
         .expect_err("a foreign id must not pass the Spec probe's identity gate");
     match &error {
-        ProviderError::Client(ClientError::IdMismatch { expected, reported }) => {
+        ProviderError::Client(ClientError::IdentityMismatch { expected, reported }) => {
             assert_eq!(expected, "com.example.reference");
             assert_eq!(reported, "io.rapidbyte.reference");
         }
-        other => panic!("expected the typed IdMismatch, got: {other:?}"),
+        other => panic!("expected the typed IdentityMismatch, got: {other:?}"),
     }
     assert_eq!(
         error.to_string(),
@@ -404,11 +404,11 @@ async fn spec_for_role_refuses_a_discovered_binary_with_the_wrong_identity() {
         .await
         .expect_err("a foreign id must not pass the role probe's identity gate");
     match &error {
-        ProviderError::Client(ClientError::IdMismatch { expected, reported }) => {
+        ProviderError::Client(ClientError::IdentityMismatch { expected, reported }) => {
             assert_eq!(expected, "com.example.reference");
             assert_eq!(reported, "io.rapidbyte.reference");
         }
-        other => panic!("expected the typed IdMismatch, got: {other:?}"),
+        other => panic!("expected the typed IdentityMismatch, got: {other:?}"),
     }
     assert_eq!(
         error.to_string(),

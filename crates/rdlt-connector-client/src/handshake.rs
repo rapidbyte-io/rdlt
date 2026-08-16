@@ -127,11 +127,11 @@ pub struct Outcome {
     /// The protocol version both sides settled on — the one this client
     /// asked for, since the server accepting the request IS the
     /// agreement.
-    pub negotiated_protocol: u32,
+    pub protocol_version: u32,
 }
 
 /// Run the handshake on `channel` for `role`, carrying `config`, and
-/// verify the reply against `expected` (the id must match, and the
+/// verify the reply against `requirement` (the id must match, and the
 /// version must match when the requirement pins one) — identity is
 /// checked BEFORE any payload is decoded, so a wrong connector is
 /// reported as the mismatch it is rather than as whatever decode
@@ -141,7 +141,7 @@ pub struct Outcome {
 /// compares what the binary REPORTS against what was asked for, which
 /// catches an accidentally-wrong binary (a rename, a stale PATH entry)
 /// and never a malicious one — a hostile binary simply reports the
-/// expected id. Operators who cannot trust PATH discovery pin the
+/// required id. Operators who cannot trust PATH discovery pin the
 /// binary itself: the pipeline document's `path:` override, or a
 /// provider built `with_search_path` restricted to a directory they
 /// control. A digest/signature pin is the anticipated future growth of
@@ -150,7 +150,7 @@ pub async fn run(
     channel: &Channel,
     role: Role,
     config: &serde_json::Value,
-    expected: &Requirement,
+    requirement: &Requirement,
 ) -> Result<Outcome, error::Error> {
     // The document ceiling enforced before SEND: the serve side refuses
     // an oversized `config_json` after receiving it, but the host's own
@@ -172,7 +172,7 @@ pub async fn run(
     }
     let mut client = wire::connector_client(channel.clone());
     let reply = wire::bounded(
-        expected.rpc_deadline,
+        requirement.rpc_deadline,
         wire::Operation::Handshake,
         client.handshake(proto::HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
@@ -202,13 +202,13 @@ pub async fn run(
     gate::identifier("connector_id", &ok.connector_id).map_err(error::Error::Protocol)?;
     gate::identifier("connector_version", &ok.connector_version).map_err(error::Error::Protocol)?;
 
-    if ok.connector_id != expected.id {
-        return Err(error::Error::IdMismatch {
-            expected: expected.id.clone(),
+    if ok.connector_id != requirement.id {
+        return Err(error::Error::IdentityMismatch {
+            expected: requirement.id.clone(),
             reported: ok.connector_id,
         });
     }
-    if let Some(required) = &expected.version
+    if let Some(required) = &requirement.version
         && *required != ok.connector_version
     {
         return Err(error::Error::VersionMismatch {
@@ -284,7 +284,7 @@ pub async fn run(
         // prost generates a HashMap; the outcome holds a BTreeMap so an
         // embedder iterating it (logs, reports) sees a stable order.
         state_format_versions: ok.state_format_versions.into_iter().collect(),
-        negotiated_protocol: PROTOCOL_VERSION,
+        protocol_version: PROTOCOL_VERSION,
     })
 }
 
@@ -292,12 +292,12 @@ pub async fn run(
 /// adapters' `connect`.
 pub(crate) async fn establish(
     socket_path: &Path,
-    engine_budget_bytes: u64,
+    budget_bytes: u64,
     config: &serde_json::Value,
     role: Role,
-    expected: &Requirement,
+    requirement: &Requirement,
 ) -> Result<(Channel, Outcome), error::Error> {
-    let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
-    let outcome = run(&channel, role, config, expected).await?;
+    let channel = wire::dial(socket_path, budget_bytes, requirement.rpc_deadline).await?;
+    let outcome = run(&channel, role, config, requirement).await?;
     Ok((channel, outcome))
 }
