@@ -49,15 +49,15 @@ use rdlt_connector::{
     ConnectorSpec, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
     PartCloseReason, PartClosed, PartEventFn, RecordBatch,
 };
-use rdlt_connector_protocol::proto::{self, check_reply, session_reply, session_request};
+use rdlt_connector_protocol::proto::{self, session_reply, session_request};
 use rdlt_connector_sdk::destination::Session;
 use tokio::sync::mpsc;
 use tonic::Streaming;
 use tonic::transport::Channel;
 
-use crate::error::{ClientError, dest_error_from_frame};
+use crate::error::FromWire;
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
-use crate::{gate, wire};
+use crate::{error, gate, wire};
 
 /// The frozen fatal for a reply stream that ends while a call is still
 /// waiting on its reply — the session is over, whoever ended it.
@@ -87,7 +87,7 @@ impl Destination {
         engine_budget_bytes: u64,
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
-    ) -> Result<(Destination, HandshakeOutcome), ClientError> {
+    ) -> Result<(Destination, HandshakeOutcome), error::Error> {
         let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
         let outcome = handshake(&channel, Role::Destination, config, expected).await?;
         // The proto pins `capabilities_json` non-empty for destinations
@@ -95,7 +95,7 @@ impl Destination {
         // does not define, refused rather than defaulted (an all-false
         // sheet would silently plan away merge support).
         let capabilities = outcome.capabilities.ok_or_else(|| {
-            ClientError::Protocol("the destination handshake carried no capabilities".to_string())
+            error::Error::Protocol("the destination handshake carried no capabilities".to_string())
         })?;
         Ok((
             Destination {
@@ -128,8 +128,8 @@ impl Destination {
             client.open_session(tokio_stream::wrappers::ReceiverStream::new(feed)),
         )
         .await
-        .map_err(DestinationError::fatal)?
-        .map_err(transport_fatal)?
+        .map_err(DestinationError::fatal_error)?
+        .map_err(DestinationError::transport)?
         .into_inner();
 
         let mut backend = Backend {
@@ -160,23 +160,7 @@ impl rdlt_connector::Destination for Destination {
     }
 
     async fn check(&self) -> Result<(), DestinationError> {
-        let mut client = wire::connector_client(self.channel.clone());
-        let reply = wire::bounded(
-            self.deadline,
-            wire::Operation::Reply,
-            client.check(proto::CheckRequest {}),
-        )
-        .await
-        .map_err(DestinationError::fatal)?
-        .map_err(transport_fatal)?
-        .into_inner();
-        match reply.outcome {
-            Some(check_reply::Outcome::Ok(_)) => Ok(()),
-            Some(check_reply::Outcome::Error(frame)) => Err(dest_error_from_frame(&frame)),
-            None => Err(protocol_fatal(
-                "the check reply carried no outcome".to_string(),
-            )),
-        }
+        wire::check(&self.channel, self.deadline).await
     }
 
     /// The handshake-cached sheet, synchronously — the trait's own
@@ -190,20 +174,6 @@ impl rdlt_connector::Destination for Destination {
     async fn open(&self, context: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         Ok(Box::new(Session::new(self.open_backend(&context).await?)))
     }
-}
-
-/// A transport-level RPC failure at the SPI seam, classified FATAL —
-/// the source half's `transport_fatal` twin, same safe-loud rationale
-/// (and the same forward pointer: restarting a died connector is the
-/// provider layer's job, not this mapper's).
-fn transport_fatal(status: tonic::Status) -> DestinationError {
-    DestinationError::fatal(ClientError::Transport(status))
-}
-
-/// A wire shape the protocol does not define — FATAL, carried as
-/// [`ClientError::Protocol`]; the source side's twin.
-fn protocol_fatal(message: String) -> DestinationError {
-    DestinationError::fatal(ClientError::Protocol(message))
 }
 
 /// A reply whose variant is not the one `method`'s frame is defined to
@@ -233,7 +203,7 @@ fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationEr
             debug.len()
         )
     };
-    protocol_fatal(format!(
+    DestinationError::protocol(format!(
         "the connector answered {method} with an unexpected reply: {bounded}"
     ))
 }
@@ -262,7 +232,7 @@ fn encode_one_batch(batch: &RecordBatch) -> Result<Vec<u8>, String> {
 /// construction goes through [`Destination::open_backend`] alone, so no
 /// backend exists whose `Open` the server did not accept.
 ///
-/// An `ErrorFrame` reply maps back through `dest_error_from_frame` and
+/// An `ErrorFrame` reply maps back through the one `FromWire` mapping and
 /// the session stays usable (matching serve semantics — the refusal
 /// was a reply, not a stream end); the stream ending mid-await is the
 /// frozen `SESSION_ENDED` fatal; a transport `Status` is fatal
@@ -354,7 +324,7 @@ impl Backend {
         .await
         {
             Ok(_sent_or_gone) => {}
-            Err(timeout) => return Err(DestinationError::fatal(timeout)),
+            Err(timeout) => return Err(DestinationError::fatal_error(timeout)),
         }
         loop {
             let next = wire::bounded(
@@ -363,20 +333,22 @@ impl Backend {
                 self.replies.message(),
             )
             .await
-            .map_err(DestinationError::fatal)?;
+            .map_err(DestinationError::fatal_error)?;
             let reply = match next {
                 Ok(Some(proto::SessionReply { reply: Some(reply) })) => reply,
                 Ok(Some(proto::SessionReply { reply: None })) => {
-                    return Err(protocol_fatal(
+                    return Err(DestinationError::protocol(
                         "a session reply carried no payload".to_string(),
                     ));
                 }
                 Ok(None) => return Err(DestinationError::fatal(SESSION_ENDED)),
-                Err(status) => return Err(transport_fatal(status)),
+                Err(status) => return Err(DestinationError::transport(status)),
             };
             match reply {
                 session_reply::Reply::PartClosed(event) => self.forward_part(event)?,
-                session_reply::Reply::Error(frame) => return Err(dest_error_from_frame(&frame)),
+                session_reply::Reply::Error(frame) => {
+                    return Err(DestinationError::from_frame(&frame));
+                }
                 resolved => return Ok(resolved),
             }
         }
@@ -440,7 +412,7 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                 .receipt_json
                 .map(|bytes| {
                     serde_json::from_slice::<CommitReceipt>(&bytes).map_err(|error| {
-                        protocol_fatal(format!(
+                        DestinationError::protocol(format!(
                             "undecodable receipt_json in a session reply: {}",
                             rdlt_connector::json::describe_parse_error(&error)
                         ))
@@ -480,7 +452,7 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
         match reply {
             session_reply::Reply::Published(published) => {
                 serde_json::from_slice::<CommitReceipt>(&published.receipt_json).map_err(|error| {
-                    protocol_fatal(format!(
+                    DestinationError::protocol(format!(
                         "undecodable receipt_json in a session reply: {}",
                         rdlt_connector::json::describe_parse_error(&error)
                     ))
@@ -509,9 +481,9 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                     // materialization it bounds. An honest state
                     // document is summarized cursors measured in
                     // kilobytes; a multi-megabyte one embedded data.
-                    gate::document("state_doc_json", &bytes).map_err(protocol_fatal)?;
+                    gate::document("state_doc_json", &bytes).map_err(DestinationError::protocol)?;
                     let doc = serde_json::from_slice::<StateDoc>(&bytes).map_err(|error| {
-                        protocol_fatal(format!(
+                        DestinationError::protocol(format!(
                             "undecodable state_doc_json in a session reply: {}",
                             rdlt_connector::json::describe_parse_error(&error)
                         ))
@@ -525,9 +497,10 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                     // connector identifiers and ride the identifier
                     // gate.
                     for (stream, cursor) in &doc.cursors {
-                        gate::identifier("stream name", stream.as_str()).map_err(protocol_fatal)?;
+                        gate::identifier("stream name", stream.as_str())
+                            .map_err(DestinationError::protocol)?;
                         gate::cursor(cursor.as_value()).map_err(|reason| {
-                            protocol_fatal(format!(
+                            DestinationError::protocol(format!(
                                 "the state document's cursor for `{}` violates \
                                  the cursor contract: {reason}",
                                 // The shared escape: this refusal must not

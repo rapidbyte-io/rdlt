@@ -14,6 +14,5 @@
 //! arm, and a caller matching on it should not need a second
 //! dependency to spell the type.
 
-pub use rdlt_connector_client::{
-    Classification, ClientError, ConnectorRequirement, HandshakeOutcome, Role,
-};
+pub use rdlt_connector_client::error::{Classification, Error as ClientError};
+pub use rdlt_connector_client::{ConnectorRequirement, HandshakeOutcome, Role};

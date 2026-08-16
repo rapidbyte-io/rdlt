@@ -4,8 +4,9 @@
 
 use std::path::PathBuf;
 
+use rdlt_connector_client::error::{Classification, Error};
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, dial};
-use rdlt_connector_client::{Classification, ClientError, ConnectorRequirement, Role, handshake};
+use rdlt_connector_client::{ConnectorRequirement, Role, handshake};
 use rdlt_connector_sdk::serve;
 use rdlt_connector_sdk::source::SourceConnector as _;
 
@@ -173,7 +174,7 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
     .await
     .expect_err("an over-ceiling document must refuse at the host");
     assert!(
-        matches!(error, ClientError::Protocol(ref text) if text.contains("document ceiling")),
+        matches!(error, Error::Protocol(ref text) if text.contains("document ceiling")),
         "the refusal names the ceiling: {error:?}"
     );
 }
@@ -200,7 +201,7 @@ async fn an_id_mismatch_refuses_typed() {
     .expect_err("an id mismatch must refuse");
 
     match error {
-        ClientError::IdMismatch { expected, reported } => {
+        Error::IdMismatch { expected, reported } => {
             assert_eq!(expected, "postgres");
             assert_eq!(reported, "echo-source");
         }
@@ -230,7 +231,7 @@ async fn a_version_mismatch_refuses_typed() {
     .expect_err("a version mismatch must refuse");
 
     match error {
-        ClientError::VersionMismatch { required, reported } => {
+        Error::VersionMismatch { required, reported } => {
             assert_eq!(required, "9.9.9");
             assert_eq!(reported, "0.0.0");
         }
@@ -238,7 +239,7 @@ async fn a_version_mismatch_refuses_typed() {
     }
 }
 
-/// A connector-side config refusal surfaces as `ClientError::Handshake`
+/// A connector-side config refusal surfaces as `Error::Handshake`
 /// — FATAL, with scalar config values redacted and no wait hint.
 #[tokio::test]
 async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
@@ -260,7 +261,7 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
     .expect_err("an invalid config must refuse");
 
     match error {
-        ClientError::Handshake {
+        Error::Handshake {
             classification,
             message,
             retry_after_ms,
@@ -295,7 +296,7 @@ async fn a_control_character_identity_refuses_inert_before_the_mismatch_render()
     .await
     .expect_err("a control-character identity must refuse");
 
-    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
     let rendered = error.to_string();
     assert!(
         !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
@@ -328,7 +329,7 @@ async fn a_control_character_version_refuses_inert() {
     .await
     .expect_err("a control-character version must refuse");
 
-    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
     let rendered = error.to_string();
     assert!(
         !rendered.contains('\u{7}'),
@@ -357,7 +358,7 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
     .await
     .expect_err("an over-length identity must refuse");
 
-    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
     assert!(
         error.to_string().contains("identifier ceiling"),
         "the refusal names the ceiling: {error}"
@@ -396,7 +397,7 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
     .await
     .expect_err("an oversized spec_json must refuse at the handshake");
 
-    assert!(matches!(error, ClientError::Protocol(_)), "{error:?}");
+    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
     let rendered = error.to_string();
     assert!(
         rendered.contains("document ceiling"),

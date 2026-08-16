@@ -12,8 +12,7 @@ use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto::{self, handshake_reply};
 use tonic::transport::Channel;
 
-use crate::error::ClientError;
-use crate::{gate, wire};
+use crate::{error, gate, wire};
 
 /// Which half of the SPI the handshake asks the connector to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +56,7 @@ pub struct ConnectorRequirement {
     pub path: Option<PathBuf>,
     /// The liveness half of the requirement: how long any single wire
     /// await on this connector may stay silent before it fails as the
-    /// typed [`ClientError::Timeout`]. Defaults to
+    /// typed [`error::Error::Timeout`]. Defaults to
     /// [`wire::DEFAULT_DEADLINE`]; it bounds the quiet interval of each
     /// await, never a whole stream (see the constant's doc).
     pub rpc_deadline: Duration,
@@ -154,7 +153,7 @@ pub async fn handshake(
     role: Role,
     config: &serde_json::Value,
     expected: &ConnectorRequirement,
-) -> Result<HandshakeOutcome, ClientError> {
+) -> Result<HandshakeOutcome, error::Error> {
     // The document ceiling enforced before SEND (4L10): the serve side
     // refuses an oversized `config_json` after receiving it, but the
     // host's own cap applies to the YAML FILE — and YAML→JSON
@@ -165,7 +164,7 @@ pub async fn handshake(
     let config_json =
         serde_json::to_vec(config).expect("a serde_json::Value serializes to JSON infallibly");
     if config_json.len() as u64 > rdlt_connector::MAX_DOCUMENT_BYTES {
-        return Err(ClientError::Protocol(format!(
+        return Err(error::Error::Protocol(format!(
             "the config document serializes to {} bytes of JSON, over the protocol's \
              {}-byte document ceiling (YAML→JSON re-serialization can inflate a \
              just-legal source file past it) — shrink the document",
@@ -184,16 +183,16 @@ pub async fn handshake(
         }),
     )
     .await?
-    .map_err(ClientError::Transport)?
+    .map_err(error::Error::Transport)?
     .into_inner();
 
     let ok = match reply.outcome {
         Some(handshake_reply::Outcome::Ok(ok)) => ok,
         Some(handshake_reply::Outcome::Error(frame)) => {
-            return Err(ClientError::handshake_refusal(&frame));
+            return Err(error::Error::handshake_refusal(&frame));
         }
         None => {
-            return Err(ClientError::Protocol(
+            return Err(error::Error::Protocol(
                 "the handshake reply carried no outcome".to_string(),
             ));
         }
@@ -202,11 +201,11 @@ pub async fn handshake(
     // The identifier gate runs BEFORE the equality checks below: the
     // mismatch refusals quote the reported values, so a hostile
     // id/version must be refused inert before any message can carry it.
-    gate::identifier("connector_id", &ok.connector_id).map_err(ClientError::Protocol)?;
-    gate::identifier("connector_version", &ok.connector_version).map_err(ClientError::Protocol)?;
+    gate::identifier("connector_id", &ok.connector_id).map_err(error::Error::Protocol)?;
+    gate::identifier("connector_version", &ok.connector_version).map_err(error::Error::Protocol)?;
 
     if ok.connector_id != expected.id {
-        return Err(ClientError::IdMismatch {
+        return Err(error::Error::IdMismatch {
             expected: expected.id.clone(),
             reported: ok.connector_id,
         });
@@ -214,7 +213,7 @@ pub async fn handshake(
     if let Some(required) = &expected.version
         && *required != ok.connector_version
     {
-        return Err(ClientError::VersionMismatch {
+        return Err(error::Error::VersionMismatch {
             required: required.clone(),
             reported: ok.connector_version,
         });
@@ -226,9 +225,9 @@ pub async fn handshake(
     // untyped parse runs applies here too, on the RAW bytes before the
     // parse whose materialization it bounds. A hand-authored config
     // schema measures in kilobytes; a multi-megabyte one embedded data.
-    gate::document("spec_json", &ok.spec_json).map_err(ClientError::Protocol)?;
+    gate::document("spec_json", &ok.spec_json).map_err(error::Error::Protocol)?;
     let spec: ConnectorSpec = serde_json::from_slice(&ok.spec_json).map_err(|error| {
-        ClientError::Protocol(format!(
+        error::Error::Protocol(format!(
             "undecodable spec_json in the handshake reply: {}",
             rdlt_connector::json::describe_parse_error(&error)
         ))
@@ -236,8 +235,8 @@ pub async fn handshake(
     // The spec's own name/version are identifiers too — they travel
     // into logs, reports and the certifier's identity-agreement
     // judgment — and ride the same rule as the wire-reported pair.
-    gate::identifier("spec name", &spec.name).map_err(ClientError::Protocol)?;
-    gate::identifier("spec version", &spec.version).map_err(ClientError::Protocol)?;
+    gate::identifier("spec name", &spec.name).map_err(error::Error::Protocol)?;
+    gate::identifier("spec version", &spec.version).map_err(error::Error::Protocol)?;
     // A count cap beside the content gates — a state-format map of
     // millions of keys passes every content gate within the frame cap
     // otherwise. v0 servers send an empty map; 64 kinds is far past any
@@ -248,9 +247,9 @@ pub async fn handshake(
         ok.state_format_versions.len(),
         MAX_STATE_FORMAT_KINDS,
     )
-    .map_err(ClientError::Protocol)?;
+    .map_err(error::Error::Protocol)?;
     for state_format_name in ok.state_format_versions.keys() {
-        gate::identifier("state format name", state_format_name).map_err(ClientError::Protocol)?;
+        gate::identifier("state format name", state_format_name).map_err(error::Error::Protocol)?;
     }
     // Empty means "a source" per the proto field's own doc — only a
     // non-empty payload claims to be a capabilities document.
@@ -259,7 +258,7 @@ pub async fn handshake(
     } else {
         let capabilities: DestinationCapabilities = serde_json::from_slice(&ok.capabilities_json)
             .map_err(|error| {
-            ClientError::Protocol(format!(
+            error::Error::Protocol(format!(
                 "undecodable capabilities_json in the handshake reply: {}",
                 rdlt_connector::json::describe_parse_error(&error)
             ))
@@ -269,7 +268,7 @@ pub async fn handshake(
         // the trust boundary, so an exhaustible bound can never reach the
         // namer's release-active assert.
         capabilities.ident_rules.validate().map_err(|reason| {
-            ClientError::Protocol(format!(
+            error::Error::Protocol(format!(
                 "the connector's declared identifier rules are out of range: {reason}"
             ))
         })?;

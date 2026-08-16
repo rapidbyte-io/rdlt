@@ -14,10 +14,9 @@ use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector::{
     OpenContext, PushPayload, ReadRequest, Source as _, SourceError, records_channel,
 };
+use rdlt_connector_client::error::Error;
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, Operation};
-use rdlt_connector_client::{
-    ClientError, ConnectorRequirement, destination::Destination, source::Source,
-};
+use rdlt_connector_client::{ConnectorRequirement, destination::Destination, source::Source};
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::destination::Backend as _;
 
@@ -91,7 +90,7 @@ async fn a_peer_that_never_speaks_h2_fails_typed_at_connect() {
     assert!(
         matches!(
             error,
-            ClientError::Timeout {
+            Error::Timeout {
                 operation: Operation::Handshake,
                 deadline,
             } if deadline == TIGHT
@@ -104,7 +103,7 @@ async fn a_peer_that_never_speaks_h2_fails_typed_at_connect() {
 /// and the deadline, stating the law's refusal half.
 #[test]
 fn the_timeout_rendering_names_the_seat_and_the_deadline() {
-    let error = ClientError::Timeout {
+    let error = Error::Timeout {
         operation: Operation::Dial,
         deadline: TIGHT,
     };
@@ -139,7 +138,7 @@ async fn a_silent_handshake_times_out_typed() {
     assert!(
         matches!(
             error,
-            ClientError::Timeout {
+            Error::Timeout {
                 operation: Operation::Handshake,
                 ..
             }

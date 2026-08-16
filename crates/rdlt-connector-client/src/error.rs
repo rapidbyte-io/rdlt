@@ -1,12 +1,6 @@
-//! The client's error surface, and the frame→SPI mappers.
-//!
-//! Two directions live here. [`ClientError`] is what THIS crate's own
-//! operations (dialing, the handshake, a malformed reply) report to the
-//! adapter driving them. The `*_error_from_frame` mappers go the other
-//! way: a served connector's classified failure arrives as a
-//! [`proto::ErrorFrame`], and the adapters (Tasks 3/4) hand it back to
-//! the engine as the SPI's own [`SourceError`]/[`DestinationError`] so
-//! the engine's retry machinery never learns the wire exists.
+//! What this crate's own operations report, and the one mapping from a
+//! connector's classified wire failure back to the SPI's own errors —
+//! so the engine's retry machinery never learns the wire exists.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -16,8 +10,8 @@ use rdlt_connector_protocol::proto;
 
 use crate::{gate, wire};
 
-/// Re-exported wire classification: [`ClientError::Handshake`] carries
-/// it, so the client's callers name it through this crate rather than
+/// Re-exported wire classification: [`Error::Handshake`] carries it,
+/// so the client's callers name it through this crate rather than
 /// importing the protocol crate for one enum.
 pub use rdlt_connector_protocol::proto::Classification;
 
@@ -28,7 +22,7 @@ pub use rdlt_connector_protocol::proto::Classification;
 /// change — match with a wildcard arm.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum ClientError {
+pub enum Error {
     /// Connecting to the connector's Unix domain socket failed.
     #[error("dialing the connector socket at {path:?}: {source}")]
     Dial {
@@ -57,8 +51,8 @@ pub enum ClientError {
         retry_after_ms: Option<u64>,
     },
     /// The connector reported a different identity than the requirement
-    /// resolved (D-039-2): refused, never worked around — a wrong binary
-    /// at the resolved path is an operator problem, not a fallback.
+    /// resolved: refused, never worked around — a wrong binary at the
+    /// resolved path is an operator problem, not a fallback.
     #[error(
         "connector identity mismatch: required `{expected}`, the connector reported `{reported}`"
     )]
@@ -68,8 +62,7 @@ pub enum ClientError {
         /// What the connector's `HandshakeOk` reported.
         reported: String,
     },
-    /// The requirement pinned a version the connector does not report
-    /// (D-039-2's version half).
+    /// The requirement pinned a version the connector does not report.
     #[error(
         "connector version mismatch: required `{required}`, the connector reported `{reported}`"
     )]
@@ -107,60 +100,86 @@ pub enum ClientError {
     },
 }
 
-impl ClientError {
-    /// Build the [`ClientError::Handshake`] arm from a refusal frame —
-    /// the one place the wire enum's raw `i32` is normalized for the
-    /// handshake path.
+impl Error {
+    /// Build the [`Error::Handshake`] arm from a refusal frame — the
+    /// one place the wire enum's raw `i32` is normalized for the
+    /// handshake path. The message is rendered inert (control
+    /// characters spelled as escapes) rather than refused, because a
+    /// message is display text: the connector's real diagnostic should
+    /// survive its own bad bytes, not vanish behind a refusal.
     pub(crate) fn handshake_refusal(frame: &proto::ErrorFrame) -> Self {
-        ClientError::Handshake {
+        Error::Handshake {
             classification: gate::classification(frame.classification),
-            message: inert_message(frame),
+            message: gate::escape(&frame.message).into_owned(),
             retry_after_ms: gate::retry_after(frame).map(|d| d.as_millis() as u64),
         }
     }
 }
 
-/// The frame's message rendered inert: control characters spelled as
-/// escapes, everything else verbatim (the gate's escape disposition).
-/// Escaped rather than refused because a message is display text: the
-/// connector's real diagnostic should survive its own bad bytes, not
-/// vanish behind a refusal.
-fn inert_message(frame: &proto::ErrorFrame) -> String {
-    gate::escape(&frame.message).into_owned()
-}
+/// The one frame→SPI mapping, written once for both halves: TRANSIENT
+/// maps retryable, RATE_LIMITED forwards the clamped wait hint, FATAL
+/// — and, safe-loud, anything unspecified or unknown — aborts with the
+/// message rendered inert.
+pub(crate) trait FromWire: Sized {
+    fn transient(message: String) -> Self;
+    fn rate_limited(message: String, retry_after: Option<Duration>) -> Self;
+    fn fatal(message: String) -> Self;
+    /// A fatal carrying a structured client-side cause, so the
+    /// rendering names the transport or protocol failure.
+    fn fatal_error(error: Error) -> Self;
 
-/// Map a served source's [`proto::ErrorFrame`] back to the SPI error the
-/// engine acts on: `TRANSIENT`→`transient`, `RATE_LIMITED`→`rate_limited`
-/// (wait hint forwarded), `FATAL`→`fatal` — and `Unspecified`/unknown
-/// values →`fatal` too (`gate::classification`'s safe-loud rule). The
-/// frame's message becomes the cause, rendered inert
-/// ([`inert_message`]).
-pub(crate) fn source_error_from_frame(frame: &proto::ErrorFrame) -> SourceError {
-    let message = inert_message(frame);
-    match gate::classification(frame.classification) {
-        Classification::Transient => SourceError::transient(message),
-        Classification::RateLimited => SourceError::rate_limited(message, gate::retry_after(frame)),
-        _ => SourceError::fatal(message),
+    fn from_frame(frame: &proto::ErrorFrame) -> Self {
+        let message = crate::gate::escape(&frame.message).into_owned();
+        match crate::gate::classification(frame.classification) {
+            Classification::Transient => Self::transient(message),
+            Classification::RateLimited => {
+                Self::rate_limited(message, crate::gate::retry_after(frame))
+            }
+            _ => Self::fatal(message),
+        }
+    }
+    fn transport(status: tonic::Status) -> Self {
+        Self::fatal_error(Error::Transport(status))
+    }
+    fn protocol(message: String) -> Self {
+        Self::fatal_error(Error::Protocol(message))
     }
 }
 
-/// [`source_error_from_frame`]'s destination twin — same mapping, same
-/// safe-loud rule, the SPI's [`DestinationError`] constructors.
-pub(crate) fn dest_error_from_frame(frame: &proto::ErrorFrame) -> DestinationError {
-    let message = inert_message(frame);
-    match gate::classification(frame.classification) {
-        Classification::Transient => DestinationError::transient(message),
-        Classification::RateLimited => {
-            DestinationError::rate_limited(message, gate::retry_after(frame))
-        }
-        _ => DestinationError::fatal(message),
+impl FromWire for SourceError {
+    fn transient(message: String) -> Self {
+        SourceError::transient(message)
+    }
+    fn rate_limited(message: String, retry_after: Option<Duration>) -> Self {
+        SourceError::rate_limited(message, retry_after)
+    }
+    fn fatal(message: String) -> Self {
+        SourceError::fatal(message)
+    }
+    fn fatal_error(error: Error) -> Self {
+        SourceError::fatal(error)
+    }
+}
+
+impl FromWire for DestinationError {
+    fn transient(message: String) -> Self {
+        DestinationError::transient(message)
+    }
+    fn rate_limited(message: String, retry_after: Option<Duration>) -> Self {
+        DestinationError::rate_limited(message, retry_after)
+    }
+    fn fatal(message: String) -> Self {
+        DestinationError::fatal(message)
+    }
+    fn fatal_error(error: Error) -> Self {
+        DestinationError::fatal(error)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gate::MAX_RETRY_AFTER;
+    use crate::gate;
 
     fn frame(classification: i32, retry_after_ms: Option<u64>) -> proto::ErrorFrame {
         proto::ErrorFrame {
@@ -173,11 +192,11 @@ mod tests {
     /// TRANSIENT maps to the retryable variant, message intact.
     #[test]
     fn a_transient_frame_maps_transient() {
-        let error = source_error_from_frame(&frame(Classification::Transient as i32, None));
+        let error = SourceError::from_frame(&frame(Classification::Transient as i32, None));
         assert!(matches!(error, SourceError::Transient(_)), "{error:?}");
         assert!(error.to_string().contains("the cause"));
 
-        let error = dest_error_from_frame(&frame(Classification::Transient as i32, None));
+        let error = DestinationError::from_frame(&frame(Classification::Transient as i32, None));
         assert!(matches!(error, DestinationError::Transient(_)), "{error:?}");
         assert!(error.to_string().contains("the cause"));
     }
@@ -186,7 +205,7 @@ mod tests {
     /// in milliseconds — and absent when the frame carried none.
     #[test]
     fn a_rate_limited_frame_forwards_the_wait_hint() {
-        let error = source_error_from_frame(&frame(Classification::RateLimited as i32, Some(250)));
+        let error = SourceError::from_frame(&frame(Classification::RateLimited as i32, Some(250)));
         match error {
             SourceError::RateLimited { retry_after, .. } => {
                 assert_eq!(retry_after, Some(Duration::from_millis(250)));
@@ -194,7 +213,7 @@ mod tests {
             other => panic!("expected RateLimited, got {other:?}"),
         }
 
-        let error = dest_error_from_frame(&frame(Classification::RateLimited as i32, None));
+        let error = DestinationError::from_frame(&frame(Classification::RateLimited as i32, None));
         match error {
             DestinationError::RateLimited { retry_after, .. } => {
                 assert_eq!(retry_after, None, "no hint given, none invented");
@@ -206,10 +225,10 @@ mod tests {
     /// FATAL maps fatal.
     #[test]
     fn a_fatal_frame_maps_fatal() {
-        let error = source_error_from_frame(&frame(Classification::Fatal as i32, None));
+        let error = SourceError::from_frame(&frame(Classification::Fatal as i32, None));
         assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
 
-        let error = dest_error_from_frame(&frame(Classification::Fatal as i32, None));
+        let error = DestinationError::from_frame(&frame(Classification::Fatal as i32, None));
         assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
     }
 
@@ -217,10 +236,10 @@ mod tests {
     /// field) maps FATAL, not retried-forever.
     #[test]
     fn an_unspecified_frame_maps_fatal() {
-        let error = source_error_from_frame(&frame(Classification::Unspecified as i32, None));
+        let error = SourceError::from_frame(&frame(Classification::Unspecified as i32, None));
         assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
 
-        let error = dest_error_from_frame(&frame(Classification::Unspecified as i32, None));
+        let error = DestinationError::from_frame(&frame(Classification::Unspecified as i32, None));
         assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
     }
 
@@ -228,37 +247,40 @@ mod tests {
     /// (skew against a future protocol) maps FATAL, message intact.
     #[test]
     fn an_unknown_classification_maps_fatal() {
-        let error = source_error_from_frame(&frame(42, None));
+        let error = SourceError::from_frame(&frame(42, None));
         assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
         assert!(error.to_string().contains("the cause"));
 
-        let error = dest_error_from_frame(&frame(42, None));
+        let error = DestinationError::from_frame(&frame(42, None));
         assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
     }
 
     /// The wire edge's clamp on the wait hint: a rogue `u64::MAX`
     /// `retry_after_ms` (a ~584-million-year sleep the engine's retry
-    /// pacing would honor) arrives as MAX_RETRY_AFTER, through both
-    /// mappers and the handshake refusal alike; an honest hint inside
-    /// the cap is untouched (the 250 ms pin above).
+    /// pacing would honor) arrives as the cap, through both halves of
+    /// the mapping and the handshake refusal alike; an honest hint
+    /// inside the cap is untouched (the 250 ms pin above).
     #[test]
     fn an_absurd_wait_hint_is_clamped_at_the_wire_edge() {
         let hostile = frame(Classification::RateLimited as i32, Some(u64::MAX));
-        match source_error_from_frame(&hostile) {
+        match SourceError::from_frame(&hostile) {
             SourceError::RateLimited { retry_after, .. } => {
-                assert_eq!(retry_after, Some(MAX_RETRY_AFTER));
+                assert_eq!(retry_after, Some(gate::MAX_RETRY_AFTER));
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
-        match dest_error_from_frame(&hostile) {
+        match DestinationError::from_frame(&hostile) {
             DestinationError::RateLimited { retry_after, .. } => {
-                assert_eq!(retry_after, Some(MAX_RETRY_AFTER));
+                assert_eq!(retry_after, Some(gate::MAX_RETRY_AFTER));
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
-        match ClientError::handshake_refusal(&hostile) {
-            ClientError::Handshake { retry_after_ms, .. } => {
-                assert_eq!(retry_after_ms, Some(MAX_RETRY_AFTER.as_millis() as u64));
+        match Error::handshake_refusal(&hostile) {
+            Error::Handshake { retry_after_ms, .. } => {
+                assert_eq!(
+                    retry_after_ms,
+                    Some(gate::MAX_RETRY_AFTER.as_millis() as u64)
+                );
             }
             other => panic!("expected Handshake, got {other:?}"),
         }
@@ -270,11 +292,11 @@ mod tests {
     fn a_wait_hint_at_the_cap_is_untouched() {
         let at_cap = frame(
             Classification::RateLimited as i32,
-            Some(MAX_RETRY_AFTER.as_millis() as u64),
+            Some(gate::MAX_RETRY_AFTER.as_millis() as u64),
         );
-        match source_error_from_frame(&at_cap) {
+        match SourceError::from_frame(&at_cap) {
             SourceError::RateLimited { retry_after, .. } => {
-                assert_eq!(retry_after, Some(MAX_RETRY_AFTER));
+                assert_eq!(retry_after, Some(gate::MAX_RETRY_AFTER));
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
@@ -291,19 +313,19 @@ mod tests {
     fn a_control_character_message_renders_inert_through_every_mapper() {
         let hostile = "\u{1b}]52;c;AAAA\u{7}\nFORGED line";
         let renderings = [
-            source_error_from_frame(&proto::ErrorFrame {
+            SourceError::from_frame(&proto::ErrorFrame {
                 classification: Classification::Fatal as i32,
                 message: hostile.to_string(),
                 retry_after_ms: None,
             })
             .to_string(),
-            dest_error_from_frame(&proto::ErrorFrame {
+            DestinationError::from_frame(&proto::ErrorFrame {
                 classification: Classification::Fatal as i32,
                 message: hostile.to_string(),
                 retry_after_ms: None,
             })
             .to_string(),
-            ClientError::handshake_refusal(&proto::ErrorFrame {
+            Error::handshake_refusal(&proto::ErrorFrame {
                 classification: Classification::Fatal as i32,
                 message: hostile.to_string(),
                 retry_after_ms: None,
@@ -325,10 +347,10 @@ mod tests {
     }
 
     /// An ordinary message — non-ASCII included, which is data, not
-    /// control — passes through the mappers byte-identical.
+    /// control — passes through the mapping byte-identical.
     #[test]
     fn an_ordinary_message_is_untouched_by_the_escape_seat() {
-        let error = source_error_from_frame(&frame(Classification::Fatal as i32, None));
+        let error = SourceError::from_frame(&frame(Classification::Fatal as i32, None));
         assert_eq!(error.to_string(), "fatal source error: the cause");
     }
 
@@ -336,8 +358,8 @@ mod tests {
     /// carries the frame's fields through untouched.
     #[test]
     fn a_handshake_refusal_normalizes_safe_loud() {
-        match ClientError::handshake_refusal(&frame(Classification::RateLimited as i32, Some(7))) {
-            ClientError::Handshake {
+        match Error::handshake_refusal(&frame(Classification::RateLimited as i32, Some(7))) {
+            Error::Handshake {
                 classification,
                 message,
                 retry_after_ms,
@@ -349,8 +371,8 @@ mod tests {
             other => panic!("expected Handshake, got {other:?}"),
         }
 
-        match ClientError::handshake_refusal(&frame(Classification::Unspecified as i32, None)) {
-            ClientError::Handshake { classification, .. } => {
+        match Error::handshake_refusal(&frame(Classification::Unspecified as i32, None)) {
+            Error::Handshake { classification, .. } => {
                 assert_eq!(classification, Classification::Fatal, "safe-loud");
             }
             other => panic!("expected Handshake, got {other:?}"),

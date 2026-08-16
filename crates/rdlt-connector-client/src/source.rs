@@ -7,7 +7,7 @@
 //! The mapping is one-to-one and stateless past the handshake:
 //! `spec()` answers from the handshake's cached document (no RPC),
 //! `check()`/`streams()` are their unary RPCs with error frames mapped
-//! back through `source_error_from_frame`, and `read()` forwards the
+//! back through the one `FromWire` mapping, and `read()` forwards the
 //! server-streamed frames into the request's own byte channel — the
 //! wire adds transport, never semantics.
 
@@ -19,12 +19,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use rdlt_connector::core::Cursor;
 use rdlt_connector::{ConnectorSpec, ReadRequest, RecordBatch, SourceError, StreamSpec};
-use rdlt_connector_protocol::proto::{self, check_reply, read_frame, streams_reply};
+use rdlt_connector_protocol::proto::{self, read_frame, streams_reply};
 use tonic::transport::Channel;
 
-use crate::error::{ClientError, source_error_from_frame};
+use crate::error::FromWire;
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
-use crate::{gate, wire};
+use crate::{error, gate, wire};
 
 /// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
 /// plus the handshake's cached spec and the requirement's RPC deadline
@@ -51,7 +51,7 @@ impl Source {
         engine_budget_bytes: u64,
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
-    ) -> Result<(Source, HandshakeOutcome), ClientError> {
+    ) -> Result<(Source, HandshakeOutcome), error::Error> {
         let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
         let outcome = handshake(&channel, Role::Source, config, expected).await?;
         Ok((
@@ -63,26 +63,6 @@ impl Source {
             outcome,
         ))
     }
-}
-
-/// A transport-level RPC failure at the SPI seam, classified FATAL —
-/// the same safe-loud posture as the frame mappers' unknown arm: a
-/// broken transport gives this client no classification to trust, and
-/// retrying an unclassified failure risks looping a run forever on
-/// something permanent, while aborting a retryable one costs a re-run.
-/// The [`ClientError`] rides inside as the cause, so the rendering
-/// names the transport. Restarting a connector whose process died is
-/// the provider layer's job (`rdlt-runtime`, which supervises the
-/// process) — never a reclassification here.
-fn transport_fatal(status: tonic::Status) -> SourceError {
-    SourceError::fatal(ClientError::Transport(status))
-}
-
-/// A wire shape the protocol does not define (a reply with no outcome,
-/// an undecodable payload) — FATAL for the same safe-loud reason as
-/// [`transport_fatal`], carried as [`ClientError::Protocol`].
-fn protocol_fatal(message: String) -> SourceError {
-    SourceError::fatal(ClientError::Protocol(message))
 }
 
 /// Gate every identifier a declared stream carries — the name, the
@@ -258,23 +238,7 @@ impl rdlt_connector::Source for Source {
     }
 
     async fn check(&self) -> Result<(), SourceError> {
-        let mut client = wire::connector_client(self.channel.clone());
-        let reply = wire::bounded(
-            self.deadline,
-            wire::Operation::Reply,
-            client.check(proto::CheckRequest {}),
-        )
-        .await
-        .map_err(SourceError::fatal)?
-        .map_err(transport_fatal)?
-        .into_inner();
-        match reply.outcome {
-            Some(check_reply::Outcome::Ok(_)) => Ok(()),
-            Some(check_reply::Outcome::Error(frame)) => Err(source_error_from_frame(&frame)),
-            None => Err(protocol_fatal(
-                "the check reply carried no outcome".to_string(),
-            )),
-        }
+        wire::check(&self.channel, self.deadline).await
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
@@ -285,8 +249,8 @@ impl rdlt_connector::Source for Source {
             client.streams(proto::StreamsRequest {}),
         )
         .await
-        .map_err(SourceError::fatal)?
-        .map_err(transport_fatal)?
+        .map_err(SourceError::fatal_error)?
+        .map_err(SourceError::transport)?
         .into_inner();
         match reply.outcome {
             Some(streams_reply::Outcome::Ok(list)) => list
@@ -294,7 +258,7 @@ impl rdlt_connector::Source for Source {
                 .iter()
                 .map(|bytes| {
                     let spec = serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
-                        protocol_fatal(format!(
+                        SourceError::protocol(format!(
                             "undecodable stream_spec_json in the streams reply: {}",
                             rdlt_connector::json::describe_parse_error(&error)
                         ))
@@ -303,8 +267,8 @@ impl rdlt_connector::Source for Source {
                     Ok(spec)
                 })
                 .collect(),
-            Some(streams_reply::Outcome::Error(frame)) => Err(source_error_from_frame(&frame)),
-            None => Err(protocol_fatal(
+            Some(streams_reply::Outcome::Error(frame)) => Err(SourceError::from_frame(&frame)),
+            None => Err(SourceError::protocol(
                 "the streams reply carried no outcome".to_string(),
             )),
         }
@@ -345,8 +309,8 @@ impl rdlt_connector::Source for Source {
             client.read(wire_request),
         )
         .await
-        .map_err(SourceError::fatal)?
-        .map_err(transport_fatal)?
+        .map_err(SourceError::fatal_error)?
+        .map_err(SourceError::transport)?
         .into_inner();
 
         loop {
@@ -357,13 +321,13 @@ impl rdlt_connector::Source for Source {
             // trips it, while a mid-stream stall always does.
             let next = wire::bounded(self.deadline, wire::Operation::ReadFrame, frames.message())
                 .await
-                .map_err(SourceError::fatal)?;
+                .map_err(SourceError::fatal_error)?;
             let frame = match next {
                 Ok(Some(frame)) => frame,
                 // Clean end of stream: the served read returned Ok and
                 // every frame was forwarded.
                 Ok(None) => return Ok(()),
-                Err(status) => return Err(transport_fatal(status)),
+                Err(status) => return Err(SourceError::transport(status)),
             };
             let pushed = match frame.frame {
                 Some(read_frame::Frame::RawJson(bytes)) => out.raw_json(Bytes::from(bytes)).await,
@@ -378,7 +342,7 @@ impl rdlt_connector::Source for Source {
                     // cursor would then poison persisted state (every later
                     // resume refused at the gates that DO cap).
                     if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES {
-                        return Err(protocol_fatal(format!(
+                        return Err(SourceError::protocol(format!(
                             "a checkpoint cursor of {} bytes exceeds the {}-byte cursor \
                              contract — the connector must summarize its state rather than \
                              embed the data",
@@ -388,7 +352,7 @@ impl rdlt_connector::Source for Source {
                     }
                     let value: serde_json::Value =
                         serde_json::from_slice(&bytes).map_err(|error| {
-                            protocol_fatal(format!(
+                            SourceError::protocol(format!(
                                 "undecodable checkpoint_cursor_json in a read frame: {}",
                                 rdlt_connector::json::describe_parse_error(&error)
                             ))
@@ -400,17 +364,17 @@ impl rdlt_connector::Source for Source {
                     // line that receives the inflated spelling is capped
                     // tighter than the wire frame. Refusing here keeps the
                     // run from crash-looping against the write-time cap.
-                    gate::cursor(&value).map_err(protocol_fatal)?;
+                    gate::cursor(&value).map_err(SourceError::protocol)?;
                     out.checkpoint(Cursor::new(value)).await
                 }
                 // Terminal by the proto's own contract: the frame IS
                 // the served read's classified failure, and nothing
                 // follows it.
                 Some(read_frame::Frame::Error(frame)) => {
-                    return Err(source_error_from_frame(&frame));
+                    return Err(SourceError::from_frame(&frame));
                 }
                 None => {
-                    return Err(protocol_fatal(
+                    return Err(SourceError::protocol(
                         "a read frame carried no payload".to_string(),
                     ));
                 }
