@@ -14,6 +14,7 @@ use tonic::transport::Channel;
 
 use crate::dial::connector_client;
 use crate::error::{ClientError, TimedOutOperation, with_deadline};
+use crate::gate;
 
 /// The default RPC deadline: how long any single wire await — the
 /// dial, the handshake, one read frame's quiet interval, one reply —
@@ -170,35 +171,6 @@ pub struct HandshakeOutcome {
 /// provider built `with_search_path` restricted to a directory they
 /// control. A digest/signature pin is the anticipated future growth of
 /// [`ConnectorRequirement`] for stronger needs.
-/// Refuse a handshake identity field carrying control characters (C0
-/// incl. newline/tab/DEL, and C1) — an identifier seat of the
-/// `sanitize` module's one rule: these values become host vocabulary
-/// (logs, reports, mismatch refusals that quote them), and a name is
-/// either clean or refused. The refusal renders the value through the
-/// shared escape — `{:?}` leaves the inventory's two Lo-category
-/// Hangul fillers raw (5L4), and the message must not carry the very
-/// bytes it refuses.
-fn refuse_control_characters_in(field: &str, value: &str) -> Result<(), ClientError> {
-    // Length BEFORE content (8L2): bounds what the escaped refusal can
-    // expand below.
-    if crate::sanitize::is_oversized_identifier(value) {
-        return Err(ClientError::Protocol(format!(
-            "the handshake reported a {field} of {} bytes — over the {}-byte wire \
-             identifier ceiling, refused at the wire boundary",
-            value.len(),
-            crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
-        )));
-    }
-    if crate::sanitize::contains_control(value) {
-        return Err(ClientError::Protocol(format!(
-            "the handshake reported a {field} of `{}` — control characters in an \
-             identity field are refused at the wire boundary",
-            crate::sanitize::escape_control_characters(value)
-        )));
-    }
-    Ok(())
-}
-
 pub async fn handshake(
     channel: &Channel,
     role: Role,
@@ -249,12 +221,11 @@ pub async fn handshake(
         }
     };
 
-    // The identifier seats of the `sanitize` module's one rule, gated
-    // BEFORE the equality checks below: the mismatch refusals quote the
-    // reported values, so a hostile id/version must be refused inert
-    // before any message can carry it.
-    refuse_control_characters_in("connector_id", &ok.connector_id)?;
-    refuse_control_characters_in("connector_version", &ok.connector_version)?;
+    // The identifier gate runs BEFORE the equality checks below: the
+    // mismatch refusals quote the reported values, so a hostile
+    // id/version must be refused inert before any message can carry it.
+    gate::identifier("connector_id", &ok.connector_id).map_err(ClientError::Protocol)?;
+    gate::identifier("connector_version", &ok.connector_version).map_err(ClientError::Protocol)?;
 
     if ok.connector_id != expected.id {
         return Err(ClientError::IdMismatch {
@@ -271,14 +242,13 @@ pub async fn handshake(
         });
     }
 
-    // 6M2: the spec is a typed shell around one UNTYPED value —
+    // The spec is a typed shell around one UNTYPED value —
     // `config_schema` is a free-form `serde_json::Value` that the host
     // caches for the session's lifetime — so the document ceiling every
     // untyped parse runs applies here too, on the RAW bytes before the
     // parse whose materialization it bounds. A hand-authored config
     // schema measures in kilobytes; a multi-megabyte one embedded data.
-    rdlt_connector::json::refuse_oversized_document("spec_json", &ok.spec_json)
-        .map_err(ClientError::Protocol)?;
+    gate::document("spec_json", &ok.spec_json).map_err(ClientError::Protocol)?;
     let spec: ConnectorSpec = serde_json::from_slice(&ok.spec_json).map_err(|error| {
         ClientError::Protocol(format!(
             "undecodable spec_json in the handshake reply: {}",
@@ -288,22 +258,21 @@ pub async fn handshake(
     // The spec's own name/version are identifiers too — they travel
     // into logs, reports and the certifier's identity-agreement
     // judgment — and ride the same rule as the wire-reported pair.
-    refuse_control_characters_in("spec name", &spec.name)?;
-    refuse_control_characters_in("spec version", &spec.version)?;
-    // 5L5: count caps beside the content gates — a state-format map of
+    gate::identifier("spec name", &spec.name).map_err(ClientError::Protocol)?;
+    gate::identifier("spec version", &spec.version).map_err(ClientError::Protocol)?;
+    // A count cap beside the content gates — a state-format map of
     // millions of keys passes every content gate within the frame cap
     // otherwise. v0 servers send an empty map; 64 kinds is far past any
     // honest negotiation.
     const MAX_STATE_FORMAT_KINDS: usize = 64;
-    if ok.state_format_versions.len() > MAX_STATE_FORMAT_KINDS {
-        return Err(ClientError::Protocol(format!(
-            "the handshake reported {} state-format kinds — over the {MAX_STATE_FORMAT_KINDS}-kind \
-             ceiling, refused at the wire boundary",
-            ok.state_format_versions.len()
-        )));
-    }
+    gate::count(
+        "state-format kinds",
+        ok.state_format_versions.len(),
+        MAX_STATE_FORMAT_KINDS,
+    )
+    .map_err(ClientError::Protocol)?;
     for state_format_name in ok.state_format_versions.keys() {
-        refuse_control_characters_in("state format name", state_format_name)?;
+        gate::identifier("state format name", state_format_name).map_err(ClientError::Protocol)?;
     }
     // Empty means "a source" per the proto field's own doc — only a
     // non-empty payload claims to be a capabilities document.

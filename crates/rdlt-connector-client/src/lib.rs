@@ -39,14 +39,13 @@
 //!
 //! [`proto::ErrorFrame`]: rdlt_connector_protocol::proto::ErrorFrame
 
-mod contract;
 pub mod destination;
 mod dial;
 mod error;
 #[doc(hidden)]
 pub mod fuzzing;
+mod gate;
 mod handshake;
-mod sanitize;
 pub mod source;
 
 pub use dial::{connector_client, destination_client, dial, source_client};

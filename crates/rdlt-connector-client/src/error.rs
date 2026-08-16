@@ -14,6 +14,8 @@ use std::time::Duration;
 use rdlt_connector::{DestinationError, SourceError};
 use rdlt_connector_protocol::proto;
 
+use crate::gate;
+
 /// Re-exported wire classification: [`ClientError::Handshake`] carries
 /// it, so the client's callers name it through this crate rather than
 /// importing the protocol crate for one enum.
@@ -105,7 +107,7 @@ pub enum ClientError {
         message: String,
         /// The frame's wait hint, when the refusal carried one —
         /// clamped to the wire edge's one-minute ceiling (see
-        /// `MAX_RETRY_AFTER`).
+        /// `gate::MAX_RETRY_AFTER`).
         retry_after_ms: Option<u64>,
     },
     /// The connector reported a different identity than the requirement
@@ -165,77 +167,33 @@ impl ClientError {
     /// handshake path.
     pub(crate) fn handshake_refusal(frame: &proto::ErrorFrame) -> Self {
         ClientError::Handshake {
-            classification: normalized_classification(frame.classification),
+            classification: gate::classification(frame.classification),
             message: inert_message(frame),
-            retry_after_ms: clamped_retry_after_ms(frame),
+            retry_after_ms: gate::retry_after(frame).map(|d| d.as_millis() as u64),
         }
     }
 }
 
 /// The frame's message rendered inert: control characters spelled as
-/// escapes, everything else verbatim (the wire edge's escape seat —
-/// see the `sanitize` module's rule). Escaped rather than refused
-/// because a message is display text: the connector's real diagnostic
-/// should survive its own bad bytes, not vanish behind a refusal.
+/// escapes, everything else verbatim (the gate's escape disposition).
+/// Escaped rather than refused because a message is display text: the
+/// connector's real diagnostic should survive its own bad bytes, not
+/// vanish behind a refusal.
 fn inert_message(frame: &proto::ErrorFrame) -> String {
-    crate::sanitize::escape_control_characters(&frame.message).into_owned()
-}
-
-/// Decode a frame's raw classification, failing safe-loud: `Unspecified`
-/// (proto3's zero value — what a buggy server that never set the field
-/// sends) and any value this build does not know both normalize to
-/// `Fatal`. Retrying an unclassified failure could loop a run forever
-/// on something permanent; aborting a retryable one merely costs a
-/// re-run — so unknown means abort, loudly, with the message intact.
-fn normalized_classification(raw: i32) -> Classification {
-    match Classification::try_from(raw) {
-        Ok(Classification::Unspecified) | Err(_) => Classification::Fatal,
-        Ok(classification) => classification,
-    }
-}
-
-/// The ceiling on a connector-supplied `retry_after_ms` wait hint —
-/// one minute. The engine honors the hint DIRECTLY as its retry
-/// pacing (`rdlt-engine`'s run loop sleeps the hinted duration in
-/// place of its own backoff) — so an unclamped rogue hint of
-/// `u64::MAX` would park a run for ~584 million years with no typed
-/// anything. For scale: the engine's self-synthesized backoff FORMULA
-/// caps at 6.4 s (100 ms doubled, at most six doublings), and under
-/// the five-attempt run budget the reachable maximum is 1.6 s (the
-/// fourth retry's doubling — the formula's cap sits past the attempts
-/// that can use it). A minute is far above anything the engine would
-/// pace on its own: generous to every honest Retry-After a
-/// rate-limited service sends, while a clamped rogue costs at most
-/// one minute per attempt across the bounded attempt budget. Clamped
-/// HERE, at the wire edge, so no host layer needs to remember to.
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
-
-/// The frame's wait hint as the SPI's `retry_after` shape, clamped to
-/// [`MAX_RETRY_AFTER`].
-fn retry_after(frame: &proto::ErrorFrame) -> Option<Duration> {
-    clamped_retry_after_ms(frame).map(Duration::from_millis)
-}
-
-/// The frame's raw millisecond hint, clamped to [`MAX_RETRY_AFTER`] —
-/// the one clamp both the SPI mappers and the handshake refusal's raw
-/// field ride.
-fn clamped_retry_after_ms(frame: &proto::ErrorFrame) -> Option<u64> {
-    frame
-        .retry_after_ms
-        .map(|ms| ms.min(MAX_RETRY_AFTER.as_millis() as u64))
+    gate::escape(&frame.message).into_owned()
 }
 
 /// Map a served source's [`proto::ErrorFrame`] back to the SPI error the
 /// engine acts on: `TRANSIENT`→`transient`, `RATE_LIMITED`→`rate_limited`
 /// (wait hint forwarded), `FATAL`→`fatal` — and `Unspecified`/unknown
-/// values →`fatal` too (see [`normalized_classification`]'s safe-loud
-/// rationale). The frame's message becomes the cause, rendered inert
+/// values →`fatal` too (`gate::classification`'s safe-loud rule). The
+/// frame's message becomes the cause, rendered inert
 /// ([`inert_message`]).
 pub(crate) fn source_error_from_frame(frame: &proto::ErrorFrame) -> SourceError {
     let message = inert_message(frame);
-    match normalized_classification(frame.classification) {
+    match gate::classification(frame.classification) {
         Classification::Transient => SourceError::transient(message),
-        Classification::RateLimited => SourceError::rate_limited(message, retry_after(frame)),
+        Classification::RateLimited => SourceError::rate_limited(message, gate::retry_after(frame)),
         _ => SourceError::fatal(message),
     }
 }
@@ -244,9 +202,11 @@ pub(crate) fn source_error_from_frame(frame: &proto::ErrorFrame) -> SourceError 
 /// safe-loud rule, the SPI's [`DestinationError`] constructors.
 pub(crate) fn dest_error_from_frame(frame: &proto::ErrorFrame) -> DestinationError {
     let message = inert_message(frame);
-    match normalized_classification(frame.classification) {
+    match gate::classification(frame.classification) {
         Classification::Transient => DestinationError::transient(message),
-        Classification::RateLimited => DestinationError::rate_limited(message, retry_after(frame)),
+        Classification::RateLimited => {
+            DestinationError::rate_limited(message, gate::retry_after(frame))
+        }
         _ => DestinationError::fatal(message),
     }
 }
@@ -254,6 +214,7 @@ pub(crate) fn dest_error_from_frame(frame: &proto::ErrorFrame) -> DestinationErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gate::MAX_RETRY_AFTER;
 
     fn frame(classification: i32, retry_after_ms: Option<u64>) -> proto::ErrorFrame {
         proto::ErrorFrame {

@@ -24,6 +24,7 @@ use tonic::transport::Channel;
 
 use crate::dial::{connector_client, dial, source_client};
 use crate::error::{ClientError, TimedOutOperation, source_error_from_frame, with_deadline};
+use crate::gate;
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
 
 /// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
@@ -85,44 +86,24 @@ fn protocol_fatal(message: String) -> SourceError {
     SourceError::fatal(ClientError::Protocol(message))
 }
 
-/// Refuse a DECLARED stream name carrying control characters (C0
-/// including newline/tab/DEL, and C1) — the identifier seat of the
-/// `sanitize` module's one rule, and the wire edge's half of the
-/// terminal-injection defense: a stream name travels into events,
-/// tracing spans, and the CLI's lines, and control bytes in it are how
-/// a hostile connector forges log lines or drives escape sequences
-/// through an operator's terminal. Refused HERE, where third-party
-/// bytes become host vocabulary, deliberately not in
-/// `StreamName::new` — the core type stays free-form for hosts by its
-/// own documented contract, and in-process embedders name their own
-/// streams. The refusal renders the name through the shared escape
-/// (`{:?}` leaves the inventory's Lo-category fillers raw, 5L4), so
-/// the message itself cannot carry the very bytes it refuses.
+/// Gate every identifier a declared stream carries — the name, the
+/// primary-key fields, the cursor field, the type-hint keys — through
+/// the trust boundary's identifier rule: these values travel into
+/// events, tracing spans, and the CLI's lines, so a name is either
+/// clean or refused. Refused HERE, where third-party bytes become host
+/// vocabulary, deliberately not in `StreamName::new` — the core type
+/// stays free-form for hosts by its own documented contract, and
+/// in-process embedders name their own streams.
 fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceError> {
-    // 6L3: count caps beside the content and length gates — a spec with
-    // hundreds of thousands of tiny keys passes every per-value gate
-    // within one 64 MiB frame otherwise, and the cost lands at plan
-    // time. An honest primary key names one to a few columns; honest
-    // type hints cover at most the stream's columns, and the engine's
-    // own per-table column cap is 4,096.
-    const MAX_PRIMARY_KEY_FIELDS: usize = 64;
-    const MAX_TYPE_HINT_FIELDS: usize = 4096;
-    if let Some(key) = &spec.primary_key
-        && key.len() > MAX_PRIMARY_KEY_FIELDS
-    {
-        return Err(SourceError::fatal(format!(
-            "the connector declared {} primary-key fields — over the {MAX_PRIMARY_KEY_FIELDS}-field \
-             ceiling, refused at the wire boundary (no honest key approaches it)",
-            key.len()
-        )));
+    // Count caps beside the content gates — a spec with hundreds of
+    // thousands of tiny keys passes every per-value gate within one
+    // frame otherwise. An honest primary key names one to a few
+    // columns; honest type hints cover at most the stream's columns,
+    // and the engine's own per-table column cap is 4,096.
+    if let Some(key) = &spec.primary_key {
+        gate::count("primary-key fields", key.len(), 64).map_err(SourceError::fatal)?;
     }
-    if spec.type_hints.len() > MAX_TYPE_HINT_FIELDS {
-        return Err(SourceError::fatal(format!(
-            "the connector declared {} type-hint fields — over the {MAX_TYPE_HINT_FIELDS}-field \
-             ceiling, refused at the wire boundary (hints cover at most the stream's columns)",
-            spec.type_hints.len()
-        )));
-    }
+    gate::count("type-hint fields", spec.type_hints.len(), 4096).map_err(SourceError::fatal)?;
     let seats = std::iter::once(("stream name", spec.name.as_str()))
         .chain(
             spec.primary_key
@@ -141,28 +122,7 @@ fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceErro
                 .map(|field| ("type-hint field", field.as_str())),
         );
     for (seat, value) in seats {
-        // Length BEFORE content (8L2): a frame-cap-sized name carrying
-        // one control byte would otherwise render the WHOLE value in
-        // its escaped refusal — a ~6× firehose from one frame.
-        if crate::sanitize::is_oversized_identifier(value) {
-            return Err(SourceError::fatal(format!(
-                "the connector declared a {seat} of {} bytes — over the {}-byte wire \
-                 identifier ceiling, refused at the wire boundary (no real name approaches \
-                 it; the destinations' own limits are 63–255)",
-                value.len(),
-                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
-            )));
-        }
-        if crate::sanitize::contains_control(value) {
-            return Err(SourceError::fatal(format!(
-                "the connector declared a {seat} of `{}` — control or invisible formatting \
-                 characters in identifiers are refused at the wire boundary",
-                // The shared escape, not `{:?}` — the latter leaves the
-                // inventory's Lo-category fillers raw (5L4). The length
-                // gate above already bounds what the escape can expand.
-                crate::sanitize::escape_control_characters(value)
-            )));
-        }
+        gate::identifier(seat, value).map_err(SourceError::fatal)?;
     }
     Ok(())
 }
@@ -176,24 +136,7 @@ fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), 
     let schema = batch.schema();
     let mut pending: Vec<Arc<arrow::datatypes::Field>> = schema.fields().iter().cloned().collect();
     while let Some(field) = pending.pop() {
-        // Length before content (8L2 + 6L2's seat): bounds what the
-        // escaped refusal below can expand, and catches the
-        // multi-megabyte control-free name the round-5 cap missed.
-        if crate::sanitize::is_oversized_identifier(field.name()) {
-            return Err(SourceError::fatal(format!(
-                "the connector sent an Arrow field name of {} bytes — over the {}-byte wire \
-                 identifier ceiling, refused at the wire boundary",
-                field.name().len(),
-                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
-            )));
-        }
-        if crate::sanitize::contains_control(field.name()) {
-            return Err(SourceError::fatal(format!(
-                "the connector sent an Arrow field named `{}` — control or invisible formatting \
-                 characters in identifiers are refused at the wire boundary",
-                crate::sanitize::escape_control_characters(field.name())
-            )));
-        }
+        gate::identifier("Arrow field name", field.name()).map_err(SourceError::fatal)?;
         // A dictionary encodes another type without a field of its own,
         // but its VALUE type can carry named fields (a struct, a list,
         // another dictionary) — unwrap before matching, or those inner
@@ -384,16 +327,13 @@ impl rdlt_connector::Source for Source {
                 .expect("a StreamSpec serializes to JSON infallibly"),
             since_cursor_json: match &since {
                 Some(cursor) => {
-                    // The cursor contract, enforced pre-send (5M1) on the
+                    // The cursor contract, enforced pre-send on the
                     // SERIALIZED form — the bytes about to cross the wire
-                    // are exactly the bytes the shared helper measures.
-                    // An over-bound cursor came from this connector's own
+                    // are exactly the bytes the gate measures. An
+                    // over-bound cursor came from this connector's own
                     // earlier checkpoint (or persisted state); the
                     // refusal tells it to summarize.
-                    Some(
-                        crate::contract::cursor_within_contract(cursor.as_value())
-                            .map_err(SourceError::fatal)?,
-                    )
+                    Some(gate::cursor(cursor.as_value()).map_err(SourceError::fatal)?)
                 }
                 None => None,
             },
@@ -436,9 +376,9 @@ impl rdlt_connector::Source for Source {
                     out.arrow(decode_one_batch(&bytes)?).await
                 }
                 Some(read_frame::Frame::CheckpointCursorJson(bytes)) => {
-                    // The cursor contract, enforced at the trust boundary
-                    // (5M1): this is the one UNTYPED inbound document seat
-                    // — a compact 64 MiB frame would otherwise materialize
+                    // The cursor contract, enforced at the trust boundary:
+                    // this is the one UNTYPED inbound document seat — a
+                    // compact 64 MiB frame would otherwise materialize
                     // several hundred MB of `Value` here, and the oversized
                     // cursor would then poison persisted state (every later
                     // resume refused at the gates that DO cap).
@@ -458,14 +398,14 @@ impl rdlt_connector::Source for Source {
                                 rdlt_connector::json::describe_parse_error(&error)
                             ))
                         })?;
-                    // 6L1: the contract is on the form the host PERSISTS,
-                    // so the gate measures the RE-SERIALIZED value — serde's
+                    // The contract is on the form the host PERSISTS, so
+                    // the gate measures the RE-SERIALIZED value — serde's
                     // own number rendering inflates a wire-legal cursor
                     // (`1e15` becomes `1000000000000000.0`), and the WAL
                     // line that receives the inflated spelling is capped
                     // tighter than the wire frame. Refusing here keeps the
                     // run from crash-looping against the write-time cap.
-                    crate::contract::cursor_within_contract(&value).map_err(protocol_fatal)?;
+                    gate::cursor(&value).map_err(protocol_fatal)?;
                     out.checkpoint(Cursor::new(value)).await
                 }
                 // Terminal by the proto's own contract: the frame IS
@@ -542,9 +482,9 @@ mod name_boundary_tests {
     /// refuses at the same seat, and the boundary is exact.
     #[test]
     fn an_oversized_name_refuses_and_the_boundary_is_exact() {
-        let at = "a".repeat(crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES);
+        let at = "a".repeat(crate::gate::MAX_WIRE_IDENTIFIER_BYTES);
         assert!(refuse_control_characters_in_name(&StreamSpec::new(at)).is_ok());
-        let over = "a".repeat(crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES + 1);
+        let over = "a".repeat(crate::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
         let error = refuse_control_characters_in_name(&StreamSpec::new(over))
             .expect_err("one byte over the ceiling refuses");
         assert!(
@@ -719,7 +659,7 @@ mod tests {
     fn an_oversized_arrow_field_name_refuses_at_the_decode_seat() {
         use arrow::datatypes::{DataType, Field, Schema};
 
-        let long = "f".repeat(crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES + 1);
+        let long = "f".repeat(crate::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
         let schema = Arc::new(Schema::new(vec![Field::new(long, DataType::Int64, true)]));
         let batch = RecordBatch::new_empty(schema);
         let error = refuse_control_characters_in_arrow_fields(&batch)

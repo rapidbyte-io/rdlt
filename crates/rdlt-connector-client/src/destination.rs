@@ -57,6 +57,7 @@ use tonic::transport::Channel;
 
 use crate::dial::{connector_client, destination_client, dial};
 use crate::error::{ClientError, TimedOutOperation, dest_error_from_frame, with_deadline};
+use crate::gate;
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
 
 /// The frozen fatal for a reply stream that ends while a call is still
@@ -210,19 +211,18 @@ fn protocol_fatal(message: String) -> DestinationError {
 /// receive — a protocol violation, not a data outcome. Not a frozen
 /// spelling: a conforming server never produces it.
 fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationError {
-    // The shared escape over a BOUNDED Debug rendering (6.7 + 6L5's
-    // length rationale): `Debug` escapes control bytes but leaves the
-    // inventory's Lo-category fillers raw, and a wrong-variant reply can
-    // carry a workload-sized document — a diagnostic line is not a
-    // firehose, so the render truncates at a char boundary. The cap is
-    // the RAW prefix: the escape can expand each control char to ~10
-    // bytes (`\u{10ffff}`), so the worst-case message is ~10× the cap —
-    // bounded and inert, an order below the workload-sized render it
-    // replaced.
+    // The shared escape over a BOUNDED Debug rendering: `Debug` escapes
+    // control bytes but leaves the inventory's Lo-category fillers raw,
+    // and a wrong-variant reply can carry a workload-sized document — a
+    // diagnostic line is not a firehose, so the render truncates at a
+    // char boundary. The cap is the RAW prefix: the escape can expand
+    // each control char to ~10 bytes (`\u{10ffff}`), so the worst-case
+    // message is ~10× the cap — bounded and inert, an order below the
+    // workload-sized render it replaced.
     const REPLY_RENDER_CAP: usize = 2048;
     let debug = format!("{reply:?}");
     let bounded = if debug.len() <= REPLY_RENDER_CAP {
-        crate::sanitize::escape_control_characters(&debug).into_owned()
+        gate::escape(&debug).into_owned()
     } else {
         let mut cut = REPLY_RENDER_CAP;
         while !debug.is_char_boundary(cut) {
@@ -230,7 +230,7 @@ fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationEr
         }
         format!(
             "{}…[truncated from {} bytes]",
-            crate::sanitize::escape_control_characters(&debug[..cut]),
+            gate::escape(&debug[..cut]),
             debug.len()
         )
     };
@@ -292,32 +292,12 @@ impl Backend {
     /// know) skips the event rather than panicking or inventing a
     /// reason: part events are advisory telemetry, and a lossy skip is
     /// the honest degradation for a vocabulary gap. A table name
-    /// carrying control characters is NOT a vocabulary gap — it is the
-    /// identifier seat of the `sanitize` module's one rule (a table
-    /// name is filesystem-adjacent and travels into host telemetry),
-    /// so it refuses typed like a declared stream name, before the
-    /// event can reach the callback.
+    /// carrying control characters is NOT a vocabulary gap — a table
+    /// name is filesystem-adjacent and travels into host telemetry, so
+    /// it rides the identifier gate and refuses typed like a declared
+    /// stream name, before the event can reach the callback.
     fn forward_part(&self, event: proto::PartClosedEvent) -> Result<(), DestinationError> {
-        // Length BEFORE content (8L2 + 6L2's seat): bounds the escaped
-        // refusal, and catches the multi-megabyte control-free table
-        // name the round-5 cap missed.
-        if crate::sanitize::is_oversized_identifier(&event.table) {
-            return Err(DestinationError::fatal(format!(
-                "the connector reported a part event for a table name of {} bytes — over \
-                 the {}-byte wire identifier ceiling, refused at the wire boundary",
-                event.table.len(),
-                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
-            )));
-        }
-        if crate::sanitize::contains_control(&event.table) {
-            return Err(DestinationError::fatal(format!(
-                "the connector reported a part event for a table named `{}` — control \
-                 characters in a table name are refused at the wire boundary",
-                // The shared escape, not `{:?}` — the latter leaves the
-                // inventory's Lo-category fillers raw (5L4).
-                crate::sanitize::escape_control_characters(&event.table)
-            )));
-        }
+        gate::identifier("table name", &event.table).map_err(DestinationError::fatal)?;
         let Some(listener) = &self.part_events else {
             return Ok(());
         };
@@ -524,14 +504,13 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
             session_reply::Reply::State(state) => state
                 .state_doc_json
                 .map(|bytes| {
-                    // 6M1: `StateDoc` is a typed shell around UNTYPED
-                    // cursor values, so this seat gets the document
-                    // ceiling every untyped parse runs — BEFORE the
-                    // parse whose materialization it bounds. An honest
-                    // state document is summarized cursors measured in
+                    // `StateDoc` is a typed shell around UNTYPED cursor
+                    // values, so this seat gets the document ceiling
+                    // every untyped parse runs — BEFORE the parse whose
+                    // materialization it bounds. An honest state
+                    // document is summarized cursors measured in
                     // kilobytes; a multi-megabyte one embedded data.
-                    crate::contract::refuse_oversized_document("state_doc_json", &bytes)
-                        .map_err(protocol_fatal)?;
+                    gate::document("state_doc_json", &bytes).map_err(protocol_fatal)?;
                     let doc = serde_json::from_slice::<StateDoc>(&bytes).map_err(|error| {
                         protocol_fatal(format!(
                             "undecodable state_doc_json in a session reply: {}",
@@ -539,37 +518,24 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                         ))
                     })?;
                     // And every cursor it carries honors the cursor
-                    // contract on its SERIALIZED form (6L1) — the same
+                    // contract on its SERIALIZED form — the same
                     // re-serialized gate the checkpoint seat runs, so a
                     // cursor that parses inside the document ceiling
                     // cannot still inflate past the contract the WAL
-                    // line cap is sized for.
+                    // line cap is sized for. The stream names are
+                    // connector identifiers and ride the identifier
+                    // gate.
                     for (stream, cursor) in &doc.cursors {
-                        // 8L3: the length half of the identifier rule —
-                        // the escape below bounds, but a state doc can
-                        // carry one multi-megabyte name within its own
-                        // ceiling, and every other identifier seat caps.
-                        if crate::sanitize::is_oversized_identifier(stream.as_str()) {
-                            return Err(protocol_fatal(format!(
-                                "the state document carries a stream name of {} bytes — \
-                                 over the {}-byte wire identifier ceiling",
-                                stream.as_str().len(),
-                                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
-                            )));
-                        }
-                        crate::contract::cursor_within_contract(cursor.as_value()).map_err(
-                            |reason| {
-                                protocol_fatal(format!(
-                                    "the state document's cursor for `{}` violates \
-                                     the cursor contract: {reason}",
-                                    // The shared escape (7L3): the stream names of
-                                    // a hostile state document are connector
-                                    // identifiers, and this refusal must not carry
-                                    // the bytes it judges.
-                                    crate::sanitize::escape_control_characters(stream.as_str(),)
-                                ))
-                            },
-                        )?;
+                        gate::identifier("stream name", stream.as_str()).map_err(protocol_fatal)?;
+                        gate::cursor(cursor.as_value()).map_err(|reason| {
+                            protocol_fatal(format!(
+                                "the state document's cursor for `{}` violates \
+                                 the cursor contract: {reason}",
+                                // The shared escape: this refusal must not
+                                // carry the bytes it judges.
+                                gate::escape(stream.as_str())
+                            ))
+                        })?;
                     }
                     Ok(doc)
                 })
