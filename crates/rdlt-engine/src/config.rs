@@ -100,6 +100,14 @@ impl EngineConfig {
         self
     }
 
+    /// The configured commit policy (7L10): the facade's `build()`
+    /// runs `CommitPolicy::check` on it — the same refusal the YAML
+    /// parse makes — so a threshold-less policy cannot reach a run
+    /// through the builder either.
+    pub fn commit_policy(&self) -> &CommitPolicy {
+        &self.commit_policy
+    }
+
     /// Sets the working directory that holds the write-ahead log.
     ///
     /// Without a workdir the engine runs without durable recovery: a crash loses

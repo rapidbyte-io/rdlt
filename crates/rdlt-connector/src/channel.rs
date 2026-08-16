@@ -57,11 +57,12 @@ pub const MAX_RECORD_BATCH_ROWS: usize = 1_000_000;
 /// The most JSON VALUES one raw push may carry — every object entry and
 /// every nested array element counts one (GLM round-5, 5M5/5M4). Distinct
 /// from the row cap, deliberately: rows materialize lineage and per-row
-/// output, while each VALUE spends its arena node at parse — and an
-/// OBJECT entry spends its node plus its `(key, id)` entry tuple (~80
-/// bytes together against the node's ~40), with the dedup map's key
-/// clones adding up to one more copy of the key bytes for escaped keys
-/// — so a 64 MiB frame of dense values would otherwise build a ~20×
+/// output, while each VALUE spends its arena node at parse. On the
+/// pinned toolchain the measured layout is a ~24-byte `ArenaNode` (the
+/// `Cow<str>` niche-packs), an object entry adds its ~32-byte `(key,
+/// id)` tuple, and the per-object parse transients (the entries Vec,
+/// the dedup map's escaped-key clones) roughly double the peak again —
+/// so a 64 MiB frame of dense values would otherwise build a ~12-16×
 /// arena before any traversal-time check could refuse. The value budget
 /// caps that transient at the same order an honest maximal push already
 /// pays: sixteen units per row covers a full-row-cap push of fifteen

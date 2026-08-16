@@ -214,7 +214,11 @@ fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationEr
     // length rationale): `Debug` escapes control bytes but leaves the
     // inventory's Lo-category fillers raw, and a wrong-variant reply can
     // carry a workload-sized document — a diagnostic line is not a
-    // firehose, so the render truncates at a char boundary.
+    // firehose, so the render truncates at a char boundary. The cap is
+    // the RAW prefix: the escape can expand each control char to ~10
+    // bytes (`\u{10ffff}`), so the worst-case message is ~10× the cap —
+    // bounded and inert, an order below the workload-sized render it
+    // replaced.
     const REPLY_RENDER_CAP: usize = 2048;
     let debug = format!("{reply:?}");
     let bounded = if debug.len() <= REPLY_RENDER_CAP {
@@ -544,8 +548,13 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                         crate::contract::cursor_within_contract(cursor.as_value()).map_err(
                             |reason| {
                                 protocol_fatal(format!(
-                                    "the state document's cursor for `{stream}` violates \
-                                     the cursor contract: {reason}"
+                                    "the state document's cursor for `{}` violates \
+                                     the cursor contract: {reason}",
+                                    // The shared escape (7L3): the stream names of
+                                    // a hostile state document are connector
+                                    // identifiers, and this refusal must not carry
+                                    // the bytes it judges.
+                                    crate::sanitize::escape_control_characters(stream.as_str(),)
                                 ))
                             },
                         )?;

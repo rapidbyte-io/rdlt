@@ -390,6 +390,22 @@ impl<B: Backend> LoadSession for Session<B> {
             .existing_receipt(&meta.load_id, meta.commit_seq)
             .await?
         {
+            // The receipt is the protocol's idempotence TOKEN, and a
+            // token that names a different commit proves nothing about
+            // this one (GLM round-7, 7M1): a backend whose lookup is
+            // buggy — a stale cache, an unkeyed read — would otherwise
+            // turn every commit into a silent no-op publish while the
+            // engine marks the WAL committed and reclaims segments.
+            // Checked HERE, at the choreography seat every host rides,
+            // so no backend can be trusted to check it itself.
+            if receipt.load_id != meta.load_id || receipt.commit_seq != meta.commit_seq {
+                return Err(DestinationError::fatal(format!(
+                    "the destination answered existing_receipt({}, {}) with a receipt for \
+                     ({}, {}) — a receipt naming a different commit proves nothing about \
+                     this one; refusing rather than skipping publish",
+                    meta.load_id, meta.commit_seq, receipt.load_id, receipt.commit_seq
+                )));
+            }
             self.backend.replay(&meta, &receipt).await?;
             return Ok(receipt);
         }

@@ -372,6 +372,7 @@ async fn run_once(
         crate::load::Policies {
             commit: config.commit_policy,
             batch: config.batch_policy,
+            max_batch_cells: config.max_batch_cells,
         },
         wal,
         events.clone(),

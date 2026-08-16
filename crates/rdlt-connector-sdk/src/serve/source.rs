@@ -454,6 +454,17 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         // shapes, and an undecodable payload is a connector-outcome
         // refusal like the destination side's `*_json` decode
         // refusals, not a protocol-state violation.
+        // The document ceiling before the parse (7M2's fifth serve
+        // seat): a `StreamSpec` is a typed shell, but the read path's
+        // adversary is the client, and the spec travels with a cursor
+        // document into a RETAINED read request — the same
+        // raw-bytes-first discipline the other session seats run.
+        if let Err(message) = rdlt_connector::json::refuse_oversized_document(
+            "stream_spec_json",
+            &request.stream_spec_json,
+        ) {
+            return Ok(error_stream(message));
+        }
         let stream_spec = match serde_json::from_slice(&request.stream_spec_json) {
             Ok(spec) => spec,
             Err(error) => {

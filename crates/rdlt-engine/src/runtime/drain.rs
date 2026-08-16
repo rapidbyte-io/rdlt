@@ -175,6 +175,7 @@ mod drain_loader_tests {
             crate::load::Policies {
                 commit: CommitPolicy::default(),
                 batch: rdlt_core::BatchPolicy::default(),
+                max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
             },
             None,
             events,

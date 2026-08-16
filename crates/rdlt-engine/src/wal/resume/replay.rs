@@ -73,10 +73,15 @@ fn open_segment(
 /// commits the full declared buffer resident: an OOM kill under default
 /// overcommit, an abort where the single request exceeds the heuristic.
 /// The same fstat carries the answer: `st_blocks × 512` is what the file
-/// has actually ALLOCATED, and the writer's segments are dense (written
-/// sequentially, fsynced before the manifest names them — no fallocate,
-/// no punch-hole anywhere), so an honest segment's allocated bytes
-/// approximate its length. Declared read work is held against allocated
+/// has actually ALLOCATED, and the writer's segments are written densely
+/// and fsynced at commit — a segment named by a manifest line is not
+/// necessarily fsynced YET (the line is appended at record time; the
+/// fsync lands at `sync_for_commit`), so on delayed-allocation
+/// filesystems (ext4 in its default mode) an honest unsynced segment of
+/// a mid-run crash can under-report its allocation and refuse here —
+/// the safe direction, degrading to re-extraction, never acceptance
+/// (btrfs/tmpfs report full `st_blocks` pre-fsync, so the engine's own
+/// hosts replay as before). Declared read work is held against allocated
 /// bytes with a generous headroom factor that absorbs filesystem
 /// accounting slack (indirect-metadata blocks round up; a compressed
 /// btrfs/zfs file legitimately allocates less than it reads) — a sparse
@@ -366,7 +371,7 @@ pub(crate) async fn replay(
             if decoded != *rows {
                 tracing::warn!(
                     segment = %file,
-                    recorded = *rows,
+                    recorded = rows,
                     decoded,
                     "WAL segment row count disagrees with its manifest line — degrading to re-extraction"
                 );
@@ -404,7 +409,9 @@ pub(crate) async fn replay(
             WalRecord::Checkpoint { stream, cursor } => {
                 state.cursors.insert(stream, cursor);
             }
-            WalRecord::Segment { table, file, .. } => {
+            WalRecord::Segment {
+                table, file, rows, ..
+            } => {
                 let dir_owned = dir.to_path_buf();
                 let opened = {
                     let file = file.clone();
@@ -424,6 +431,7 @@ pub(crate) async fn replay(
                 // when the system is already degraded, which is the worst moment
                 // to start using twice the memory. Per-batch handoff costs a task
                 // switch on a path that only runs after a crash.
+                let mut rows_applied: u64 = 0;
                 loop {
                     let stepped = off_runtime(move || {
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -450,9 +458,28 @@ pub(crate) async fn replay(
                         tracing::warn!(segment = %file, "WAL segment failed re-read mid-replay — degrading to re-extraction");
                         return Ok(None);
                     };
+                    rows_applied += batch.num_rows() as u64;
                     batches += 1;
                     crate::load::apply::apply_batch(&mut *session, &capabilities, &table, &batch)
                         .await?;
+                }
+                // Pass-2's half of the manifest cross-check (7L1): pass 1
+                // verified this segment's rows against its manifest line,
+                // but the two passes re-open independently — a segment
+                // swapped between them (seconds apart on a big span, not
+                // the within-open microsecond window the fstat-compare
+                // guards) would apply rows the cross-check never saw.
+                // Staged-but-uncommitted writes are torn down by the
+                // caller's close, exactly like every other mid-replay
+                // degrade.
+                if rows_applied != rows {
+                    tracing::warn!(
+                        segment = %file,
+                        recorded = rows,
+                        applied = rows_applied,
+                        "WAL segment row count moved between replay passes — degrading to re-extraction"
+                    );
+                    return Ok(None);
                 }
             }
             WalRecord::Run { .. } | WalRecord::Committed { .. } => {}

@@ -253,8 +253,15 @@ impl Backend for Writer {
         commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError> {
         let path = self.dir.join(RECEIPTS_FILE);
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
+        // Read BYTES, never `read_to_string` (7L6): a torn append can
+        // split a multi-byte UTF-8 character (a non-ASCII load id rides
+        // the receipt line verbatim), and `read_to_string` would fail
+        // the WHOLE read as `InvalidData` — a transient the choreography
+        // retries forever, when the torn tail is contractually ABSENT
+        // and only `publish`'s truncation ever repairs it. Decoding per
+        // COMPLETE line keeps the tear where it belongs: in the tail.
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
                 return Err(DestinationError::transient(format!(
@@ -272,10 +279,19 @@ impl Backend for Writer {
         // An unparseable line that IS newline-terminated sits in the
         // log's interior: that is corruption, not a torn append, and
         // stays a typed refusal below.
-        let durable = match text.rfind('\n') {
-            Some(last_newline) => &text[..=last_newline],
-            None => "",
-        };
+        let durable_end = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map(|last_newline| last_newline + 1)
+            .unwrap_or(0);
+        let durable = &bytes[..durable_end];
+        let durable = std::str::from_utf8(durable).map_err(|error| {
+            DestinationError::transient(format!(
+                "reference destination: {} carries a corrupt receipt log (invalid UTF-8 \
+                 before the last complete line): {error}",
+                path.display()
+            ))
+        })?;
         for line in durable.lines().filter(|line| !line.trim().is_empty()) {
             let receipt: CommitReceipt = serde_json::from_str(line).map_err(|error| {
                 DestinationError::fatal(format!(

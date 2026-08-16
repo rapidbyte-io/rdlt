@@ -177,6 +177,14 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
         {
             return Err(RdltError::config("Merge requires at least one key column"));
         }
+        // 7L10: the YAML facade refuses a threshold-less commit policy
+        // at parse; the builder path deserves the same refusal — such a
+        // policy would hold the whole run in one crash window, the
+        // exact shape the type refuses everywhere else.
+        if let Err(reason) = self.config.commit_policy().check() {
+            return Err(RdltError::config(reason.to_string()));
+        }
+
         Ok(Pipeline {
             engine: Engine::new(self.config, self.source, self.destination),
         })

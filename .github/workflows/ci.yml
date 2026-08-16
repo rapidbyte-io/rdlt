@@ -40,6 +40,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Lint (make lint)
         run: make lint
+      # 5.12 (GLM round 7): the docs leg runs `-D warnings`, so a dead
+      # intra-doc link fails it — but it previously ran only in
+      # `make check` (deep-checks), letting exactly that class sit green
+      # in PR CI. One rustdoc pass is cheap next to the lint leg it
+      # shares a cache with.
+      - name: Docs (make docs)
+        run: make docs
 
   test:
     runs-on: ubuntu-latest

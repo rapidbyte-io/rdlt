@@ -14,9 +14,10 @@
 //! tests (Task 4 consumes them over the wire):
 //!
 //! - `fail_publish` induces a transient `publish` failure;
-//! - `replay_seq: Some(n)` makes `existing_receipt` answer a receipt at
-//!   commit_seq `n` (instead of `None`), so a test can drive the D3
-//!   `ExistingReceipt` → `Some` → `Replay` leg;
+//! - `replay_seq: Some(_)` makes `existing_receipt` answer `Some`
+//!   (with the REQUESTED identity — 7M1's guard refuses anything else),
+//!   so a test can drive the D3 `ExistingReceipt` → `Some` → `Replay`
+//!   leg;
 //! - `fail_connect` induces a transient `connect` failure, so a test
 //!   can drive the Open frame's `ErrorFrame` reply;
 //! - `emit_parts: n` makes `publish` report `n` closed parts through
@@ -153,9 +154,9 @@ pub struct EchoDestinationConfig {
     /// Induces a transient `publish` failure.
     #[serde(default)]
     pub fail_publish: bool,
-    /// `Some(n)`: `existing_receipt` answers a receipt pinned at
-    /// commit_seq `n` instead of `None` — the knob Task 4's
-    /// D3-over-the-wire test drives the Replay leg with.
+    /// `Some(_)`: `existing_receipt` answers `Some` instead of `None`
+    /// — with the requested identity, per 7M1's guard. The knob Task
+    /// 4's D3-over-the-wire test drives the Replay leg with.
     #[serde(default)]
     pub replay_seq: Option<u64>,
     /// Induces a transient `connect` failure — the Open frame's
@@ -267,10 +268,14 @@ impl Backend for EchoBackend {
     async fn existing_receipt(
         &mut self,
         load_id: &LoadId,
-        _commit_seq: u64,
+        commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError> {
         self.log("existing_receipt");
-        Ok(self.replay_seq.map(|commit_seq| CommitReceipt {
+        // A CONFORMING receipt: the identity the caller asked about.
+        // (7M1's guard refuses anything else, and the echo exists to
+        // model a well-behaved destination — the knob chooses WHETHER a
+        // receipt answers, never WHOSE.)
+        Ok(self.replay_seq.is_some().then(|| CommitReceipt {
             load_id: load_id.clone(),
             commit_seq,
         }))

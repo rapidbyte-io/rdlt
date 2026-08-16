@@ -150,3 +150,26 @@ async fn the_builder_plumbs_the_engine_knobs() {
         "the refusal names the knob or its axis: {rendered}"
     );
 }
+
+/// 7L10: the builder refuses a threshold-less commit policy — the
+/// same refusal the YAML parse makes. Such a policy would hold the
+/// whole run in one crash window, the exact shape the type's `check`
+/// exists to refuse.
+#[test]
+fn build_rejects_a_threshold_less_commit_policy() {
+    let threshold_less = rdlt_core::CommitPolicy {
+        every_checkpoints: None,
+        every_bytes: None,
+        every_seconds: None,
+    };
+    let err = Pipeline::builder("bad-policy")
+        .source(MemorySource::default())
+        .destination(MemoryDestination::new())
+        .commit_policy(threshold_less)
+        .build()
+        .expect_err("a policy with no threshold must not build");
+    assert!(
+        err.to_string().contains("every_checkpoints"),
+        "the refusal names the remedy: {err}"
+    );
+}

@@ -411,9 +411,20 @@ impl LocalBinaryConnectorProvider {
         })?
         .map_err(|status| ProviderError::Client(ClientError::Transport(status)))?
         .into_inner();
+        // The document ceiling and the shared kind-and-location renderer
+        // (7M4): the probe parses the SAME untyped `config_schema` field
+        // the client's handshake seat gates, from the same adversary —
+        // the wave-7 sweep converted every client seat and missed this,
+        // the runtime's own probe.
+        if let Err(message) =
+            rdlt_connector::json::refuse_oversized_document("spec_json", &reply.spec_json)
+        {
+            return Err(ProviderError::Client(ClientError::Protocol(message)));
+        }
         let spec: ConnectorSpec = serde_json::from_slice(&reply.spec_json).map_err(|error| {
             ProviderError::Client(ClientError::Protocol(format!(
-                "undecodable spec_json in the Spec reply: {error}"
+                "undecodable spec_json in the Spec reply: {}",
+                rdlt_connector::json::describe_parse_error(&error)
             )))
         })?;
         if requirement.path.is_none() && spec.name != requirement.id {

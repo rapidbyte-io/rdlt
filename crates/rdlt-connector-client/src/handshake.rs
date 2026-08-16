@@ -275,14 +275,8 @@ pub async fn handshake(
     // untyped parse runs applies here too, on the RAW bytes before the
     // parse whose materialization it bounds. A hand-authored config
     // schema measures in kilobytes; a multi-megabyte one embedded data.
-    if ok.spec_json.len() as u64 > rdlt_connector::MAX_DOCUMENT_BYTES {
-        return Err(ClientError::Protocol(format!(
-            "an inbound spec_json of {} bytes exceeds the {}-byte document ceiling — the \
-             spec's config schema is a hand-authored document, not a data channel",
-            ok.spec_json.len(),
-            rdlt_connector::MAX_DOCUMENT_BYTES
-        )));
-    }
+    rdlt_connector::json::refuse_oversized_document("spec_json", &ok.spec_json)
+        .map_err(ClientError::Protocol)?;
     let spec: ConnectorSpec = serde_json::from_slice(&ok.spec_json).map_err(|error| {
         ClientError::Protocol(format!(
             "undecodable spec_json in the handshake reply: {}",

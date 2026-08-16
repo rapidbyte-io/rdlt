@@ -35,20 +35,12 @@ pub(crate) fn cursor_within_contract(cursor: &serde_json::Value) -> Result<Vec<u
     Ok(bytes)
 }
 
-/// Refuse typed when a raw inbound document exceeds
-/// [`rdlt_connector::MAX_DOCUMENT_BYTES`] — the gate every untyped
-/// `Value` decode runs BEFORE parsing, bounding the parse's own
-/// materialization rather than cleaning up after it.
+/// The document ceiling, delegated to the SPI's ONE implementation
+/// (7M2's hoist): every crate that parses an untyped wire document
+/// imports the same gate, so the client's seats and the serve's cannot
+/// drift.
 pub(crate) fn refuse_oversized_document(field: &str, bytes: &[u8]) -> Result<(), String> {
-    if bytes.len() as u64 > rdlt_connector::MAX_DOCUMENT_BYTES {
-        return Err(format!(
-            "an inbound {field} of {} bytes exceeds the {}-byte document ceiling — a \
-             hand-authored or summarized document measures in kilobytes",
-            bytes.len(),
-            rdlt_connector::MAX_DOCUMENT_BYTES
-        ));
-    }
-    Ok(())
+    rdlt_connector::json::refuse_oversized_document(field, bytes)
 }
 
 #[cfg(test)]
@@ -99,24 +91,5 @@ mod tests {
         // The same numbers spelled the way serde re-serializes them sit
         // over the ceiling — the measurement is honest, not synthetic.
         assert!(format!("{parsed}").len() > rdlt_connector::MAX_CURSOR_BYTES as usize);
-    }
-
-    /// The document ceiling, same boundary discipline.
-    #[test]
-    fn the_document_ceiling_is_inclusive_at_the_boundary() {
-        refuse_oversized_document(
-            "state_doc_json",
-            &[b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize],
-        )
-        .expect("a document at the cap passes");
-        let error = refuse_oversized_document(
-            "state_doc_json",
-            &[b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1],
-        )
-        .expect_err("one byte over refuses");
-        assert!(
-            error.contains("document ceiling"),
-            "the refusal names the ceiling: {error}"
-        );
     }
 }

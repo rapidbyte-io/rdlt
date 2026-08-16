@@ -49,7 +49,7 @@ pub fn sanitize_display_text(text: &str) -> String {
 }
 
 /// Escape every character unsafe in a one-line identifier seat. Unlike
-/// [`sanitize`], newlines and tabs are not formatting here: accepting
+/// [`sanitize_display_text`], newlines and tabs are not formatting here: accepting
 /// them would let a pipeline/table name mint additional terminal lines.
 ///
 /// The character inventory is the wire protocol's ONE table (4L3): this

@@ -1328,6 +1328,57 @@ mod per_stream_coverage_tests {
         );
     }
 
+    /// 5.4 (GLM round 7): a manifest carrying TWO Run headers — the
+    /// shape a hand-crafted (or pre-isolation-residue) directory can
+    /// present even though the writer's invariant is one Run per
+    /// resolved span. The fold must consider only the LAST run's span:
+    /// the second `Run` resets the load id, the span, and the committed
+    /// seq, exactly as the recovery clearing discipline assumes.
+    #[test]
+    fn a_two_run_manifest_replays_only_the_last_runs_span() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run = |load: &str| WalRecord::Run {
+            format_version: crate::wal::WAL_FORMAT_VERSION,
+            load_id: LoadId::new(load),
+            pipeline: PipelineId::new("p"),
+        };
+        let records = vec![
+            run("first"),
+            delta("events", None),
+            segment("events", "first-000000.arrow"),
+            checkpoint("events"),
+            WalRecord::Committed { commit_seq: 1 },
+            // The second run: a different load id, its own span.
+            run("second"),
+            delta("events", None),
+            segment("events", "second-000000.arrow"),
+            checkpoint("events"),
+        ];
+        write_span(dir.path(), records, IdentRules::default());
+
+        let outcome = scan(dir.path(), IdentRules::default(), &PipelineId::new("p"));
+        let ScanOutcome::Recover(span) = outcome else {
+            unreachable!("a two-run manifest with a covered tail span recovers")
+        };
+        assert_eq!(
+            span.load_id,
+            LoadId::new("second"),
+            "the LAST Run header owns the replay identity"
+        );
+        assert_eq!(
+            span.records
+                .iter()
+                .filter_map(|r| match r {
+                    WalRecord::Segment { file, .. } => Some(file.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ["second-000000.arrow".to_owned()],
+            "the first run's committed span is never replayed"
+        );
+        assert_eq!(span.next_commit_seq, 1, "the second run's seq resets");
+    }
+
     /// The old positional rule got THIS single-stream shape right, and it must
     /// stay right: a segment after its own stream's last checkpoint is
     /// uncovered and dropped.

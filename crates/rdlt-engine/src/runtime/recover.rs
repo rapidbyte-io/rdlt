@@ -168,6 +168,18 @@ async fn read_state_checked(
         state
             .check_readable()
             .map_err(|e| RdltError::config(e.to_string()))?;
+        // 5.7: cross-pipeline isolation is the destination's SPI
+        // obligation and the reference connector enforces it, but a
+        // non-conforming third-party backend's answer was adopted
+        // unchecked — one identity comparison here closes the
+        // defense-in-depth gap for every backend at once.
+        if state.pipeline != config.pipeline {
+            return Err(RdltError::config(format!(
+                "the destination returned state for pipeline `{}`, not `{}` — resuming a \
+                 foreign pipeline's cursors here would mis-attribute its committed rows",
+                state.pipeline, config.pipeline
+            )));
+        }
     }
     Ok(recovered)
 }

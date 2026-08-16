@@ -274,6 +274,44 @@ fn decode_error_reply(field: &str, error: serde_json::Error) -> session_reply::R
     ))
 }
 
+/// Decode one inbound session document: the document ceiling FIRST (on
+/// the raw bytes, bounding the parse's own materialization — the 7M2
+/// serve mirror of the client's gates), then the parse with the shared
+/// kind-and-location renderer. Both refusals are fatal `ErrorFrame`s,
+/// the same shape the parse arm always answered with.
+fn decode_document<T: serde::de::DeserializeOwned>(
+    field: &str,
+    bytes: &[u8],
+) -> Result<T, session_reply::Reply> {
+    rdlt_connector::json::refuse_oversized_document(field, bytes).map_err(|message| {
+        session_reply::Reply::Error(common::error_frame(Classification::Fatal, message, None))
+    })?;
+    serde_json::from_slice::<T>(bytes).map_err(|error| decode_error_reply(field, error))
+}
+
+/// The identifier-length half of the wire's identifier rule, at the
+/// session's inbound seats (7M3): the client caps every
+/// connector-authored identifier at the SPI's shared ceiling, and the
+/// serve side owes its own adversary — a rogue same-uid client — the
+/// same bound, because ensured names and session ids are retained for
+/// the session's lifetime (a multi-megabyte name is memory and log
+/// swelling, not vocabulary).
+fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_reply::Reply> {
+    if value.len() > rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES {
+        return Err(session_reply::Reply::Error(common::error_frame(
+            Classification::Fatal,
+            format!(
+                "a session {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
+                 refused at the session boundary",
+                value.len(),
+                rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES
+            ),
+            None,
+        )));
+    }
+    Ok(())
+}
+
 /// The frozen refusal for any non-`Open` frame arriving before a
 /// session exists.
 fn refuse_before_open() -> session_reply::Reply {
@@ -557,6 +595,13 @@ async fn handle_frame<C: DestinationConnector>(
                 "a session accepts at most one Open frame, and it must be first",
             )))
         } else {
+            // 7M3: the session's ids are retained for its lifetime —
+            // the wire's identifier ceiling applies at the door.
+            if let Err(reply) = refuse_oversized_identifier("pipeline id", &open.pipeline)
+                .and_then(|()| refuse_oversized_identifier("load id", &open.load_id))
+            {
+                return finish(part_rx, reply_tx, reply).await;
+            }
             let tx = part_tx.clone();
             let context =
                 OpenContext::new(PipelineId::new(open.pipeline), LoadId::new(open.load_id))
@@ -589,24 +634,45 @@ async fn handle_frame<C: DestinationConnector>(
     let reply = match frame.request {
         Some(session_request::Request::Open(_)) => unreachable!("handled above"),
         Some(session_request::Request::Ensure(ensure)) => {
-            let schema = serde_json::from_slice::<TableSchema>(&ensure.table_schema_json);
-            let mode = serde_json::from_slice::<WriteMode>(&ensure.write_mode_json);
+            let schema =
+                decode_document::<TableSchema>("table_schema_json", &ensure.table_schema_json);
+            let mode = decode_document::<WriteMode>("write_mode_json", &ensure.write_mode_json);
             match (schema, mode) {
-                (Ok(schema), Ok(mode)) => match backend.ensure_table(&schema, &mode).await {
-                    Ok(()) => {
-                        guard.ensure(schema.table.clone());
-                        session_reply::Reply::Ensured(proto::Empty {})
+                (Ok(schema), Ok(mode)) => {
+                    // 7M3: the ensured table (and its column names) are
+                    // retained in the session's guard for its lifetime.
+                    let identifiers_ok =
+                        refuse_oversized_identifier("table name", schema.table.as_str()).and_then(
+                            |()| {
+                                schema.columns.iter().try_for_each(|column| {
+                                    refuse_oversized_identifier("column name", &column.name)
+                                })
+                            },
+                        );
+                    match identifiers_ok {
+                        Err(reply) => reply,
+                        Ok(()) => match backend.ensure_table(&schema, &mode).await {
+                            Ok(()) => {
+                                guard.ensure(schema.table.clone());
+                                session_reply::Reply::Ensured(proto::Empty {})
+                            }
+                            Err(error) => {
+                                session_reply::Reply::Error(destination_error_frame(&error))
+                            }
+                        },
                     }
-                    Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
-                },
-                (Err(error), _) => decode_error_reply("table_schema_json", error),
-                (_, Err(error)) => decode_error_reply("write_mode_json", error),
+                }
+                (Err(reply), _) | (_, Err(reply)) => reply,
             }
         }
         Some(session_request::Request::Write(write)) => {
             let table = TableName::new(write.table);
-            match guard.check_write(&table) {
-                Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+            match refuse_oversized_identifier("table name", table.as_str()).and_then(|()| {
+                guard
+                    .check_write(&table)
+                    .map_err(|error| session_reply::Reply::Error(destination_error_frame(&error)))
+            }) {
+                Err(reply) => reply,
                 Ok(()) => match decode_arrow_ipc(&write.arrow_ipc) {
                     Ok(batch) => match backend.write(&table, batch).await {
                         Ok(()) => session_reply::Reply::Written(proto::Empty {}),
@@ -650,19 +716,18 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::Replay(replay)) => {
-            let meta = serde_json::from_slice::<CommitMeta>(&replay.commit_meta_json);
-            let receipt = serde_json::from_slice::<CommitReceipt>(&replay.receipt_json);
+            let meta = decode_document::<CommitMeta>("commit_meta_json", &replay.commit_meta_json);
+            let receipt = decode_document::<CommitReceipt>("receipt_json", &replay.receipt_json);
             match (meta, receipt) {
                 (Ok(meta), Ok(receipt)) => match backend.replay(&meta, &receipt).await {
                     Ok(()) => session_reply::Reply::Replayed(proto::Empty {}),
                     Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
                 },
-                (Err(error), _) => decode_error_reply("commit_meta_json", error),
-                (_, Err(error)) => decode_error_reply("receipt_json", error),
+                (Err(reply), _) | (_, Err(reply)) => reply,
             }
         }
         Some(session_request::Request::Publish(publish)) => {
-            match serde_json::from_slice::<CommitMeta>(&publish.commit_meta_json) {
+            match decode_document::<CommitMeta>("commit_meta_json", &publish.commit_meta_json) {
                 Ok(meta) => match backend.publish(meta).await {
                     Ok(receipt) => session_reply::Reply::Published(Published {
                         receipt_json: serde_json::to_vec(&receipt)
@@ -670,7 +735,7 @@ async fn handle_frame<C: DestinationConnector>(
                     }),
                     Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
                 },
-                Err(error) => decode_error_reply("commit_meta_json", error),
+                Err(reply) => reply,
             }
         }
         Some(session_request::Request::ReadState(read_state)) => {

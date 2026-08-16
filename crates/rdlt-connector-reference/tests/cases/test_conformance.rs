@@ -769,3 +769,61 @@ async fn a_table_name_carrying_path_punctuation_is_refused_at_publish() {
         );
     }
 }
+
+/// 7L6: the tear's nastiest shape — the torn tail is INVALID UTF-8
+/// (an append that died inside a multi-byte character of a
+/// non-ASCII load id's JSON spelling). `read_to_string` failed the
+/// WHOLE read as `InvalidData` and wedged the choreography on a
+/// transient; the bytes-first read keeps the tear where it belongs:
+/// in the tail, which reads as absent, while the durable lines
+/// still answer.
+#[tokio::test]
+async fn a_torn_receipt_tail_of_invalid_utf8_reads_as_absent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let pipeline = PipelineId::new("ref-torn-u8");
+    // A non-ASCII load id: its JSON spelling carries the multi-byte
+    // characters the tear can split.
+    let load = LoadId::new("ref-lōad-è");
+    let receipt = CommitReceipt {
+        load_id: load.clone(),
+        commit_seq: 7,
+    };
+    let durable_line = format!("{}\n", serde_json::to_string(&receipt).expect("encode"));
+    let mut torn: Vec<u8> = serde_json::to_string(&receipt)
+        .expect("encode")
+        .into_bytes();
+    // Truncate until the prefix is invalid UTF-8 — inside a
+    // multi-byte character of the id's spelling. (JSON escapes the
+    // id's non-ASCII as \u sequences, so also plant a RAW multi-byte
+    // tail: the point is a tail no string decoder accepts.)
+    torn.extend_from_slice("ł".as_bytes()[..1].to_vec().as_slice());
+    assert!(
+        std::str::from_utf8(&torn).is_err(),
+        "the fixture's tail must be invalid UTF-8 — that is the point"
+    );
+    let mut log = durable_line.into_bytes();
+    log.extend_from_slice(&torn);
+    std::fs::write(dir.path().join("_reference_receipts.json"), log).expect("plant the torn log");
+
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    // Drive the choreography: with the durable line present and the
+    // tail torn mid-character, the commit must answer with the
+    // STORED receipt (the replay path) — the old `read_to_string`
+    // wedged here as an endless transient instead.
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    let answered = session
+        .commit(commit_meta_for(&pipeline, &load, 7))
+        .await
+        .expect("the torn tail is absent, never a transient wedge");
+    assert_eq!(
+        answered, receipt,
+        "the complete durable line still resolves through an invalid-UTF-8 tail"
+    );
+}

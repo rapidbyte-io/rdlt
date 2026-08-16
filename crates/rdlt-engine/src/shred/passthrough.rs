@@ -1,12 +1,15 @@
 //! Arrow passthrough — the shredder's sibling fast path.
 //!
 //! Already-structured batches are NOT re-shredded: the batch's arrow schema maps
-//! onto the logical schema, the SAME registry/policy seam governs evolution, and the
-//! only new data is one appended constant `_rdlt_load_id` column. Columns whose
+//! onto the logical schema, the SAME registry/policy seam governs evolution, and
+//! the only new data is one appended constant `_rdlt_load_id` column. Columns whose
 //! arrow type equals the table's current logical type pass through zero-copy
 //! (`Arc` clone); when cross-batch widening or an arrow representation difference
 //! (Large* variants, timestamp unit/zone) changed a column's type, its values are
-//! cast LOSSLESSLY to the current type — never semantically coerced.
+//! cast to the current type where the cast is EXACT — representation differences
+//! and in-range numeric widenings — and refused typed where it is not (an Int64
+//! beyond ±2^53 widening to Float64 rounds, and losslessness is the contract;
+//! 7M6). Values are never silently coerced.
 //! Structured streams carry no per-row identity (no `_rdlt_id`) — which is why
 //! Keyless Merge is rejected for them; keyed structured merge is supported.
 
@@ -226,6 +229,29 @@ pub(crate) fn passthrough_items(
                     Arc::clone(source) // the common zero-copy path
                 } else {
                     // Cross-batch widening (e.g. Int64 batch under a Float64 column).
+                    // The one widening the LATTICE licenses but a VALUE can refuse
+                    // (7M6): `Int64 ⊔ Float64 = Float64`, yet an integer beyond
+                    // ±2^53 has no exact f64 — arrow's cast would round it, which
+                    // is the silent alteration the module refuses to perform. The
+                    // JSONL path escalates the same value to Utf8; the structured
+                    // path's registry type is already committed, so the honest
+                    // answer is a typed refusal naming the remedy.
+                    if matches!(target_type, arrow::datatypes::DataType::Float64)
+                        && let Some(ints) =
+                            source.as_any().downcast_ref::<arrow::array::Int64Array>()
+                        && (0..ints.len()).any(|i| {
+                            !arrow::array::Array::is_null(ints, i)
+                                && !rdlt_core::types::int64_fits_in_f64(ints.value(i))
+                        })
+                    {
+                        return Err(RdltError::config(format!(
+                            "table `{table}` column `{}`: widening Int64 to Float64 would \
+                             silently round a value beyond ±2^53 (losslessness is the column's \
+                             contract, and the JSONL path escalates the same value to text) — \
+                             declare the column as text, or keep the source integral",
+                            column.name
+                        )));
+                    }
                     cast(source.as_ref(), &target_type).map_err(|e| {
                         RdltError::config(format!(
                             "table `{table}` column `{}`: cannot cast {} to {target_type}: {e}",
@@ -951,4 +977,105 @@ mod tests {
             "ordinary nesting still joins"
         );
     }
+}
+
+/// 7M6: the one widening the LATTICE licenses but a VALUE can
+/// refuse — a Float64 column (batch 1) widened by an Int64 batch
+/// (batch 2) whose integer sits beyond ±2^53. The cast arrow would
+/// perform rounds it; the JSONL path escalates the same value to
+/// text; the structured path's registry type is already committed,
+/// so the honest answer is the typed refusal. In-range integers
+/// still widen exactly.
+#[test]
+fn an_inexact_int64_to_float64_widening_refuses_typed() {
+    use arrow::array::{Float64Array, Int64Array};
+    use arrow::datatypes::Field;
+
+    let (mut registry, table) = (
+        crate::schema::registry::SchemaRegistry::default(),
+        TableName::new("events"),
+    );
+    let load_id = rdlt_core::LoadId::new("load");
+    let mode = rdlt_core::WriteMode::Append;
+    let policy = rdlt_core::SchemaPolicy::default();
+    // (Constructed inline at each call: `ShredContext` borrows both
+    // the locals above and the caller's `&mut registry`, which a
+    // closure cannot express.)
+
+    let float_batch = RecordBatch::try_new(
+        Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+            "v",
+            DataType::Float64,
+            true,
+        )])),
+        vec![Arc::new(Float64Array::from(vec![0.5]))],
+    )
+    .expect("float batch");
+    passthrough_items(
+        &float_batch,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect("the Float64 column registers");
+
+    // 2^53 + 1 in an Int64 batch: the lattice joins to Float64, the
+    // value cannot follow.
+    let beyond = RecordBatch::try_new(
+        Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+            "v",
+            DataType::Int64,
+            true,
+        )])),
+        vec![Arc::new(Int64Array::from(vec![9_007_199_254_740_993]))],
+    )
+    .expect("int batch");
+    let error = passthrough_items(
+        &beyond,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect_err("an inexact widening must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("silently round"),
+        "the refusal names the loss: {rendered}"
+    );
+
+    // 2^53 itself (and everything in range) widens exactly.
+    let exact = RecordBatch::try_new(
+        Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+            "v",
+            DataType::Int64,
+            true,
+        )])),
+        vec![Arc::new(Int64Array::from(vec![9_007_199_254_740_992]))],
+    )
+    .expect("int batch");
+    passthrough_items(
+        &exact,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect("an exact widening passes");
 }

@@ -88,9 +88,13 @@ pub struct Spec {
     pub destination: DestSpec,
 }
 
-/// The document form of [`WriteMode`].
+/// The document form of [`WriteMode`]. Unknown spellings refuse at
+/// parse like every other typed node on the document surface (7L9 — a
+/// typo inside a merge block silently ignored is exactly the mistake
+/// the elsewhere-uniform `deny_unknown_fields` posture exists to
+/// catch).
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum WriteModeSpec {
     /// Add rows, keeping everything already there.
     Append,

@@ -1748,3 +1748,151 @@ async fn a_write_over_the_row_cap_refuses_typed() {
         other => panic!("expected the row-cap refusal, got {other:?}"),
     }
 }
+
+/// 7L5: the serve seat's boundary discipline — a batch at EXACTLY the
+/// row cap is legal and writes (the client's mirror seat pins its own
+/// boundary; the two seats are hand-mirrored implementations, so a
+/// serve-only `>=` regression would pass the suite without this).
+#[tokio::test]
+async fn a_write_at_exactly_the_row_cap_writes() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    let rows = rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Boolean, false),
+    ]));
+    let batch = rdlt_connector::RecordBatch::try_new(
+        schema,
+        vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
+            false; rows
+        ]))],
+    )
+    .expect("an at-cap batch constructs");
+    let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
+        .expect("open an arrow ipc stream writer");
+    writer.write(&batch).expect("write the at-cap batch");
+    let arrow_ipc = writer
+        .into_inner()
+        .expect("close an arrow ipc stream writer");
+
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Write(proto::Write {
+                table: ECHOED_TABLE.to_string(),
+                arrow_ipc,
+            })),
+        })
+        .await
+        .expect("send the at-cap write");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Written(_)) => {}
+        other => panic!("a batch at exactly the row cap writes, got {other:?}"),
+    }
+}
+
+/// 7L5: precedence — a frame carrying TWO batches whose first is over
+/// the row cap gets the ROW-CAP refusal (the memory dimension outranks
+/// the structural violation; both are fatal either way), pinning the
+/// order the two seats share.
+#[tokio::test]
+async fn a_two_batch_frame_with_an_over_cap_first_batch_gets_the_row_cap_refusal() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    let rows = rdlt_connector::channel::MAX_RECORD_BATCH_ROWS + 1;
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Boolean, false),
+    ]));
+    let over = rdlt_connector::RecordBatch::try_new(
+        std::sync::Arc::clone(&schema),
+        vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
+            false; rows
+        ]))],
+    )
+    .expect("an over-cap batch constructs");
+    let tiny = rdlt_connector::RecordBatch::try_new(
+        schema,
+        vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
+            true,
+        ]))],
+    )
+    .expect("a second batch constructs");
+    let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), over.schema_ref())
+        .expect("open an arrow ipc stream writer");
+    writer.write(&over).expect("write the over-cap batch");
+    writer.write(&tiny).expect("write the second batch");
+    let arrow_ipc = writer
+        .into_inner()
+        .expect("close an arrow ipc stream writer");
+
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Write(proto::Write {
+                table: ECHOED_TABLE.to_string(),
+                arrow_ipc,
+            })),
+        })
+        .await
+        .expect("send the two-batch over-rows write");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert!(
+                error.message.contains("over the 1000000-row wire cap"),
+                "the row cap fires before the one-batch rule names the second batch: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the row-cap refusal over the multi-batch one, got {other:?}"),
+    }
+}

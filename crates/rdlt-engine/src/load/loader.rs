@@ -38,6 +38,8 @@ pub(crate) struct Loader {
     /// How much to accumulate before each destination write. The
     /// default writes straight through.
     batch_policy: rdlt_core::BatchPolicy,
+    /// The per-write cell ceiling the accumulator flushes at (7L4).
+    max_batch_cells: usize,
     /// Rows waiting to be written, per table.
     ///
     /// Keyed by TABLE because a batch belongs to one, and Arrow
@@ -87,6 +89,13 @@ pub(crate) struct Policies {
     pub(crate) commit: CommitPolicy,
     /// How much accumulates before each destination write.
     pub(crate) batch: rdlt_core::BatchPolicy,
+    /// The same per-batch cell ceiling the assembly seats enforce
+    /// (7L4): the coalescer's `concat_batches` is downstream of every
+    /// per-batch gate, so without this the accumulator could fuse
+    /// individually-legal batches into one destination write far past
+    /// the budget an operator set. The accumulator FLUSHES at the
+    /// bound — coalescing is its job — where the assembly seats refuse.
+    pub(crate) max_batch_cells: usize,
 }
 
 /// Rows accumulated for one table, waiting for a threshold.
@@ -113,6 +122,7 @@ impl Loader {
             load_id,
             policy: policies.commit,
             batch_policy: policies.batch,
+            max_batch_cells: policies.max_batch_cells,
             pending: std::collections::BTreeMap::new(),
             counters: CommitCounters::default(),
             commit_seq: 0,
@@ -397,7 +407,17 @@ impl Loader {
             .get(table)
             .and_then(|pending| pending.batches.first())
             .is_some_and(|held| held.schema() != batch.schema());
-        if schema_changed {
+        // 7L4: flush BEFORE the accumulation would cross the cell
+        // ceiling — each incoming batch is already under it (the
+        // assembly seats refuse over-ceiling batches), so every flushed
+        // write stays under it too. The budget counts THIS batch's
+        // width: coalesced batches share one schema, so the width of
+        // the incoming batch is the width of the fused write.
+        let cells_after_crossing = self.pending.get(table).is_some_and(|pending| {
+            (pending.rows + rows).saturating_mul(batch.num_columns() as u64)
+                > self.max_batch_cells as u64
+        });
+        if schema_changed || cells_after_crossing {
             self.flush_table(table).await?;
         }
         let pending = self.pending.entry(table.clone()).or_insert(Pending {
@@ -640,6 +660,7 @@ mod tests {
             Policies {
                 commit: policy,
                 batch: rdlt_core::BatchPolicy::default(),
+                max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
             },
             None,
             events,
@@ -708,6 +729,7 @@ mod tests {
             Policies {
                 commit: policy,
                 batch: rdlt_core::BatchPolicy::default(),
+                max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
             },
             None,
             events,
@@ -987,5 +1009,104 @@ mod tests {
         assert!(!loader.policy_triggers(), "one byte short");
         loader.bytes_since_commit = 100;
         assert!(loader.policy_triggers(), "at the threshold");
+    }
+
+    /// 7L4: the coalescer flushes at the cell ceiling — the same knob
+    /// the assembly seats enforce. With a batch policy that would
+    /// otherwise fuse the whole run (`every_rows` far above it) and a
+    /// two-cell budget, three one-cell pushes must arrive as THREE
+    /// writes, never one fused write past the ceiling.
+    #[tokio::test]
+    async fn the_accumulator_flushes_at_the_cell_ceiling() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        /// Records writes; accepts everything (the loader's own pins
+        /// need to observe WHEN a write was issued, not what it held).
+        struct CountingSession(Arc<std::sync::Mutex<usize>>);
+        #[async_trait::async_trait]
+        impl LoadSession for CountingSession {
+            async fn ensure_table(
+                &mut self,
+                _: &TableSchema,
+                _: &WriteMode,
+            ) -> Result<(), rdlt_connector::DestinationError> {
+                Ok(())
+            }
+            async fn write(
+                &mut self,
+                _: &TableName,
+                _: RecordBatch,
+            ) -> Result<(), rdlt_connector::DestinationError> {
+                *self.0.lock().expect("count lock") += 1;
+                Ok(())
+            }
+            async fn commit(
+                &mut self,
+                meta: CommitMeta,
+            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+                Ok(rdlt_core::CommitReceipt {
+                    load_id: meta.load_id,
+                    commit_seq: meta.commit_seq,
+                })
+            }
+            async fn read_state(
+                &mut self,
+                _: &rdlt_core::PipelineId,
+            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+                Ok(None)
+            }
+            async fn close(&mut self) -> Result<(), rdlt_connector::DestinationError> {
+                Ok(())
+            }
+        }
+
+        let writes = Arc::new(std::sync::Mutex::new(0usize));
+        let (events, _rx) = tokio::sync::broadcast::channel(16);
+        let pipeline = PipelineId::new("p");
+        let load_id = LoadId::new("l");
+        let mut loader = Loader::new(
+            crate::load::Sink {
+                session: Box::new(CountingSession(Arc::clone(&writes))),
+                capabilities: DestinationCapabilities::default(),
+            },
+            RunReport::new(pipeline.clone(), load_id.clone()),
+            StateDoc::new(pipeline, "test"),
+            load_id,
+            Policies {
+                commit: CommitPolicy::default(),
+                // Would fuse the whole run into one write…
+                batch: rdlt_core::BatchPolicy::every_rows(1_000_000),
+                // …except the cell ceiling flushes every second cell.
+                max_batch_cells: 2,
+            },
+            None,
+            events,
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1]))],
+        )
+        .expect("one-cell batch");
+        let table = TableName::new("t");
+        for _ in 0..3 {
+            loader
+                .process(LoadItem::batch(table.clone(), batch.clone()))
+                .await
+                .expect("each push lands");
+        }
+        loader.finish().await.expect("finish flushes the tail");
+        // The ceiling is INCLUSIVE: the accumulator holds up to two
+        // cells, so three one-cell pushes flush once mid-run and once
+        // at finish — two writes of at most two cells each, never the
+        // one fused write the row policy alone would have produced.
+        assert_eq!(
+            *writes.lock().expect("count lock"),
+            2,
+            "flushes at the ceiling (2 cells) then the tail — never fused past it"
+        );
     }
 }

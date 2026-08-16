@@ -136,7 +136,8 @@ pub(super) fn validate_streams(
              costs plan-time validation and its own share of the run's in-flight budget, \
              so the one discovery axis a source controls directly is bounded like every \
              other; an honestly larger discovery can raise the cap with \
-             `EngineConfig::with_max_streams_per_source`",
+             `EngineConfig::with_max_streams_per_source` (the facade's \
+             `PipelineBuilder::max_streams_per_source` plumbs the same knob)",
             streams.len(),
             config.max_streams_per_source
         )));

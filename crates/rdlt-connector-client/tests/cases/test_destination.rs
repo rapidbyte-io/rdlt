@@ -208,8 +208,9 @@ async fn a_replayed_commit_takes_the_replay_path_over_the_wire() {
         .expect("commit completes")
         .expect("commit");
     assert_eq!(
-        receipt.commit_seq, 7,
-        "the receipt the echo already held, not a fresh publish's"
+        receipt.commit_seq, 1,
+        "the stored receipt for THIS identity (7M1: a conforming backend \
+         answers the identity it was asked about), not a fresh publish's"
     );
     session.close().await.expect("close");
 

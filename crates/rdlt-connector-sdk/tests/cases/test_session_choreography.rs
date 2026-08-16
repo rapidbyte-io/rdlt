@@ -35,6 +35,10 @@ type Log = Arc<Mutex<Vec<Call>>>;
 enum ReceiptScript {
     None,
     Found(CommitReceipt),
+    /// Answer with a receipt whose IDENTITY disagrees with the lookup —
+    /// the 7M1 bug shape (a stale cache, an unkeyed read): the token
+    /// names a different commit than the one asked about.
+    Mismatched(CommitReceipt),
     Errors,
 }
 
@@ -109,6 +113,7 @@ impl Backend for SpyBackend {
         match &self.receipt {
             ReceiptScript::None => Ok(None),
             ReceiptScript::Found(receipt) => Ok(Some(receipt.clone())),
+            ReceiptScript::Mismatched(receipt) => Ok(Some(receipt.clone())),
             ReceiptScript::Errors => Err(DestinationError::fatal(format!(
                 "receipt lookup failed for {load_id}/{commit_seq}"
             ))),
@@ -190,6 +195,36 @@ async fn a_replayed_commit_runs_replay_housekeeping_and_never_publishes() {
     let receipt = session.commit(meta()).await.expect("replayed commit");
     assert_eq!(receipt, stored);
     assert_eq!(calls(&log), vec![Call::ExistingReceipt, Call::Replay]);
+}
+
+/// 7M1: the receipt is the idempotence TOKEN, and one naming a
+/// different commit proves nothing — a backend whose lookup returns a
+/// mismatched receipt (stale cache, unkeyed read) must fail the commit
+/// LOUDLY, never skip the publish and let the engine mark the WAL
+/// committed over rows that exist nowhere.
+#[tokio::test]
+async fn a_mismatched_receipt_identity_fails_the_commit_without_publishing() {
+    let wrong_identity = CommitReceipt {
+        load_id: LoadId::from("other-load"),
+        commit_seq: 4,
+    };
+    let (mut session, log) = open_spy(ReceiptScript::Mismatched(wrong_identity)).await;
+    let error = session
+        .commit(meta())
+        .await
+        .expect_err("a receipt naming a different commit must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("other-load"),
+        "the refusal names the forged identity: {rendered}"
+    );
+    assert!(
+        rendered.contains("proves nothing"),
+        "the refusal states why: {rendered}"
+    );
+    // Neither replay housekeeping nor publish ran: the choreography
+    // stopped at the token it could not trust.
+    assert_eq!(calls(&log), vec![Call::ExistingReceipt]);
 }
 
 /// A failed receipt lookup fails the commit without publishing — the

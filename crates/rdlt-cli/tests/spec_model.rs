@@ -122,4 +122,17 @@ fn unknown_spellings_are_refused_at_parse() {
          destination:\n  duckdb: {path: out.db}\n",
     );
     assert!(bad_key.is_err(), "a typoed top-level key must not parse");
+
+    // 7L9: a typo INSIDE the merge block must refuse too — the write
+    // mode was the one typed node without `deny_unknown_fields`, so
+    // `kye` silently ignored meant a merge with no key slipped toward
+    // the plan-time refusal instead of failing at the typo.
+    let bad_merge_key: Result<Spec, _> = serde_yaml_ng::from_str(
+        "pipeline: p\nwrite_mode: {merge: {kye: [id]}}\nsource:\n  postgres: s.yaml\n\
+         destination:\n  duckdb: {path: out.db}\n",
+    );
+    assert!(
+        bad_merge_key.is_err(),
+        "a typoed merge-block key must not parse"
+    );
 }

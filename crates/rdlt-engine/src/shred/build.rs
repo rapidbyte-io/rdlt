@@ -24,6 +24,7 @@ use arrow::{
 };
 use rdlt_core::{
     ColumnDef, ColumnType, LoadId, LogicalType, RowId, TableSchema, schema::system_columns,
+    types::int64_fits_in_f64,
 };
 
 use super::{
@@ -279,13 +280,18 @@ fn scalar_int64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
 fn scalar_float64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Float64Builder::new();
     for v in values {
-        // Mirrors `Value::as_f64`: any JSON number converts with `as` casts.
-        // No `ValueKind::UInt` arm: a u64 observation resolves the column to text, so
-        // a UInt can never reach a Float64 column. Converting one here would be
-        // the inexact narrowing the Float64 escalation exists to refuse.
+        // Mirrors `Value::as_f64` where lossless, and refuses where not:
+        // an Int beyond ±2^53 has no exact f64, and the column's own
+        // contract is losslessness at runtime, never assumed (7M5 — the
+        // inference path escalates the same value to Utf8; a HINT-pinned
+        // column never observes, so the check lives at the build arm,
+        // rendering the value a counted misfit instead of a silent
+        // 1-ulp alteration). No `ValueKind::UInt` arm: a u64 observation
+        // resolves the column to text, so a UInt can never reach a
+        // Float64 column.
         b.append_option(match view_kind(v) {
             Some(ValueKind::Float(f)) => Some(f),
-            Some(ValueKind::Int(i)) => Some(i as f64),
+            Some(ValueKind::Int(i)) if int64_fits_in_f64(i) => Some(i as f64),
             _ => None,
         });
     }
@@ -752,5 +758,33 @@ mod tests {
         assert_eq!(fits_precision(-1000, 3), None, "the bound is on magnitude");
         assert_eq!(fits_precision(0, 1), Some(0));
         assert_eq!(fits_precision(i128::MIN, 38), None, "no wrap on abs()");
+    }
+
+    /// 7M5: a HINT-pinned Float64 column builds a beyond-±2^53 integer
+    /// as a COUNTED MISFIT (null output, non-null input — the same
+    /// discipline a wrong-typed value gets), never a silent 1-ulp
+    /// rounding. The inference path escalates the same value to Utf8;
+    /// the pinned column cannot observe, so the check lives here.
+    #[test]
+    fn float64_builder_refuses_inexact_integers_as_misfits() {
+        use arrow::array::Float64Array;
+
+        let array = scalar_float64(&[
+            Some(&json!(9007199254740993i64)), // 2^53 + 1: no exact f64
+            Some(&json!(9007199254740992i64)), // 2^53: the last exact one
+            Some(&json!(1.5)),
+            Some(&json!("text")), // an ordinary misfit for contrast
+        ]);
+        let f = array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("float64 array");
+        assert!(
+            f.is_null(0),
+            "2^53+1 is a misfit, not a silent rounding to 2^53"
+        );
+        assert_eq!(f.value(1), 9007199254740992.0, "2^53 itself is exact");
+        assert_eq!(f.value(2), 1.5);
+        assert!(f.is_null(3), "a string remains an ordinary misfit");
     }
 }
