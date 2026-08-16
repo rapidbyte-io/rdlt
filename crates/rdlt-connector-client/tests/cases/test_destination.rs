@@ -573,10 +573,11 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
     );
 }
 
-/// The state read's document half, wire-level: a `ReadState` reply whose document
-/// exceeds the document ceiling is refused FATAL before its `Value`
-/// materializes — `StateDoc` is a typed shell around UNTYPED cursor
-/// values, so the seat gets the same ceiling every untyped parse runs.
+/// The state read's document half, wire-level: a `ReadState` reply
+/// whose document exceeds the document ceiling is refused FATAL before
+/// its `Value` materializes — `StateDoc` is a typed shell around
+/// UNTYPED cursor values, so the seat gets the same ceiling every
+/// untyped parse runs.
 #[tokio::test]
 async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
     let (_dir, path) = socket_path();
@@ -724,9 +725,9 @@ async fn a_malformed_state_document_refusal_never_echoes_the_document() {
     );
 }
 
-/// The length gate's part-event half: a `part_closed` naming an over-length table
-/// (clean of control characters — length alone is the abuse) refuses
-/// typed before the event reaches the callback.
+/// The length gate's part-event half: a `part_closed` naming an
+/// over-length table (clean of control characters — length alone is
+/// the abuse) refuses typed before the event reaches the callback.
 #[tokio::test]
 async fn an_oversized_table_in_a_part_event_refuses_typed() {
     let (_dir, path) = socket_path();

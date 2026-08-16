@@ -1,6 +1,6 @@
-//! `dial` + `handshake` against this crate's echo pair served
-//! in-process through the sdk's `serve_on` seam — the exact wire a
-//! spawned connector process would answer on, minus the spawn.
+//! `wire::dial` + `handshake::run` against this crate's echo pair
+//! served in-process through the sdk's `serve_on` seam — the exact
+//! wire a spawned connector process would answer on, minus the spawn.
 
 use std::path::PathBuf;
 
@@ -55,9 +55,8 @@ async fn a_source_handshake_populates_the_outcome() {
 
     assert_eq!(outcome.spec.name, "echo-source");
     assert_eq!(outcome.spec.version, "0.0.0");
-    // The VERIFIED identity (D-039-2) rides in the outcome — the 039
-    // final-review skew record closed: the wire's own reported values,
-    // not a re-read of the unverified `spec` decode.
+    // The VERIFIED identity rides in the outcome — the wire's own
+    // reported values, not a re-read of the unverified `spec` decode.
     assert_eq!(outcome.connector_id, EchoSource::NAME);
     assert_eq!(outcome.connector_version, EchoSource::VERSION);
     assert!(
@@ -110,7 +109,7 @@ async fn a_destination_handshake_carries_capabilities() {
     );
 }
 
-/// 6.8: the pre-send gate's exact-boundary acceptance — a config whose
+/// The pre-send gate's exact-boundary acceptance — a config whose
 /// serialized form IS the ceiling must pass both ends (the refusal is
 /// `>`, and the serve gate shares the constant, so an at-cap document
 /// completes the handshake).
@@ -145,7 +144,7 @@ async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
     .expect("an exactly-at-cap document passes both ends");
 }
 
-/// 4L10: a config whose SERIALIZED form exceeds the document ceiling is
+/// A config whose SERIALIZED form exceeds the document ceiling is
 /// refused before SEND — the serve side's post-receive refusal would
 /// fire anyway, but the host-side refusal names the real cause (the
 /// YAML→JSON inflation edge: a just-legal source file re-serializing
@@ -179,8 +178,8 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
     );
 }
 
-/// D-039-2: the provider resolved a connector id, and the connector
-/// reported a different one — refused typed, never worked around.
+/// The provider resolved a connector id, and the connector reported a
+/// different one — refused typed, never worked around.
 #[tokio::test]
 async fn an_id_mismatch_refuses_typed() {
     let (_dir, path) = socket_path();
@@ -209,8 +208,9 @@ async fn an_id_mismatch_refuses_typed() {
     }
 }
 
-/// D-039-2's version half: a requirement pinned to a version the
-/// connector does not report refuses typed, carrying both spellings.
+/// The identity check's version half: a requirement pinned to a
+/// version the connector does not report refuses typed, carrying both
+/// spellings.
 #[tokio::test]
 async fn a_version_mismatch_refuses_typed() {
     let (_dir, path) = socket_path();
@@ -337,7 +337,7 @@ async fn a_control_character_version_refuses_inert() {
     );
 }
 
-/// 5L5: the LENGTH gate — a control-free but absurdly long identity is
+/// The LENGTH gate — a control-free but absurdly long identity is
 /// refused at the wire boundary like the content hostiles. (Content
 /// gates alone priced nothing about size within the frame cap.)
 #[tokio::test]
@@ -365,7 +365,7 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
     );
 }
 
-/// 6M2: `spec_json` is a typed shell around one UNTYPED value — its
+/// `spec_json` is a typed shell around one UNTYPED value — its
 /// `config_schema` is a free-form document the host caches for the
 /// session's lifetime — so the seat gets the document ceiling every
 /// untyped parse runs, on the RAW bytes before the parse whose

@@ -1,7 +1,6 @@
 //! Fuzzing entry points. `#[doc(hidden)]` — these exist ONLY so the
-//! out-of-workspace `fuzz/` targets can reach `pub(crate)` hot paths
-//! (the engine's `fuzzing` module precedent); they are not API and may
-//! change at any time.
+//! out-of-workspace `fuzz/` targets can reach `pub(crate)` hot paths;
+//! they are not API and may change at any time.
 
 /// The HARDENED wire-edge arrow decode over arbitrary bytes — the seat
 /// a rogue source's `arrow_ipc` frames actually hit, catch_unwind

@@ -129,15 +129,16 @@ pub(crate) trait FromWire: Sized {
     fn fatal_error(error: Error) -> Self;
 
     fn from_frame(frame: &proto::ErrorFrame) -> Self {
-        let message = crate::gate::escape(&frame.message).into_owned();
-        match crate::gate::classification(frame.classification) {
+        let message = gate::escape(&frame.message).into_owned();
+        match gate::classification(frame.classification) {
             Classification::Transient => Self::transient(message),
-            Classification::RateLimited => {
-                Self::rate_limited(message, crate::gate::retry_after(frame))
-            }
+            Classification::RateLimited => Self::rate_limited(message, gate::retry_after(frame)),
             _ => Self::fatal(message),
         }
     }
+    /// A transport failure is fatal at this seam: restarting a died
+    /// connector is the provider layer's job (`rdlt-runtime` supervises
+    /// the process), never a reclassification here.
     fn transport(status: tonic::Status) -> Self {
         Self::fatal_error(Error::Transport(status))
     }

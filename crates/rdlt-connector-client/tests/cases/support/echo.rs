@@ -5,19 +5,19 @@
 //! [`EchoDestination`]'s `Backend` logs every call so a wire test can
 //! pin what the client actually drove.
 //!
-//! The source's failure knobs exist for the client's read-seam tests
-//! (Task 3 consumes them over the wire): `fail_read` induces a fatal
+//! The source's failure knobs exist for the client's read-seam tests,
+//! which consume them over the wire: `fail_read` induces a fatal
 //! read failure, `fail_check` a transient check failure — each carrying
 //! a pinned `echo:`-prefixed cause.
 //!
 //! The destination's config knobs exist for the client's session
-//! tests (Task 4 consumes them over the wire):
+//! tests, which consume them over the wire:
 //!
 //! - `fail_publish` induces a transient `publish` failure;
 //! - `replay_seq: Some(_)` makes `existing_receipt` answer `Some`
-//!   (with the REQUESTED identity — 7M1's guard refuses anything else),
-//!   so a test can drive the D3 `ExistingReceipt` → `Some` → `Replay`
-//!   leg;
+//!   (with the REQUESTED identity — the client refuses a receipt
+//!   naming any other), so a test can drive the choreography's
+//!   `ExistingReceipt` → `Some` → `Replay` leg;
 //! - `fail_connect` induces a transient `connect` failure, so a test
 //!   can drive the Open frame's `ErrorFrame` reply;
 //! - `emit_parts: n` makes `publish` report `n` closed parts through
@@ -56,7 +56,7 @@ pub struct EchoSourceConfig {
     #[serde(default)]
     pub fail_read: bool,
     /// Induces a transient `check` failure — the knob the client's
-    /// failing-check round-trip drives (Task 3).
+    /// failing-check round-trip drives.
     #[serde(default)]
     pub fail_check: bool,
 }
@@ -155,8 +155,8 @@ pub struct EchoDestinationConfig {
     #[serde(default)]
     pub fail_publish: bool,
     /// `Some(_)`: `existing_receipt` answers `Some` instead of `None`
-    /// — with the requested identity, per 7M1's guard. The knob Task
-    /// 4's D3-over-the-wire test drives the Replay leg with.
+    /// — with the requested identity, the only shape the client
+    /// accepts. The knob the replay-leg tests drive.
     #[serde(default)]
     pub replay_seq: Option<u64>,
     /// Induces a transient `connect` failure — the Open frame's
@@ -272,8 +272,8 @@ impl Backend for EchoBackend {
     ) -> Result<Option<CommitReceipt>, DestinationError> {
         self.log("existing_receipt");
         // A CONFORMING receipt: the identity the caller asked about.
-        // (7M1's guard refuses anything else, and the echo exists to
-        // model a well-behaved destination — the knob chooses WHETHER a
+        // (The client refuses any other, and the echo exists to model
+        // a well-behaved destination — the knob chooses WHETHER a
         // receipt answers, never WHOSE.)
         Ok(self.replay_seq.is_some().then(|| CommitReceipt {
             load_id: load_id.clone(),

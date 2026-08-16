@@ -235,8 +235,8 @@ pub enum SessionScript {
 #[derive(Debug)]
 pub struct RogueDestination {
     script: SessionScript,
-    /// Overrides the handshake's capabilities sheet when `Some` — the
-    /// 5M6 rogue declares an out-of-range `ident_rules.max_len`.
+    /// Overrides the handshake's capabilities sheet when `Some` — so a
+    /// rogue can declare an out-of-range `ident_rules.max_len`.
     capabilities: Option<DestinationCapabilities>,
 }
 
@@ -293,7 +293,7 @@ impl DestinationService for RogueDestination {
             // Consume the Open frame and accept it, so the failure
             // lands MID-SESSION — inside an in-flight Backend call,
             // not at the open seat (a handler-level Err(Status)
-            // surfaces trailers-only there; T4's record).
+            // surfaces trailers-only there).
             let _ = requests.message().await;
             let _ = reply_tx
                 .send(Ok(proto::SessionReply {

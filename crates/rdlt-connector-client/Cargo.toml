@@ -1,10 +1,8 @@
 [package]
 name = "rdlt-connector-client"
 description = "rdlt out-of-process connector client: dial a served connector over UDS, run the handshake, map wire error frames back to SPI classifications"
-# The wire this crate speaks is FROZEN (2026-08-07; ADR 0001 D8's
-# amendment). Publishing is a separate, owner-scheduled decision that
-# did not move with the freeze — this stays false until that wave runs,
-# in step with the protocol crate.
+# The wire is frozen but publishing is a separate, owner-scheduled
+# decision — this stays false until then, in step with the protocol crate.
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -16,8 +14,8 @@ repository.workspace = true
 rdlt-connector = { workspace = true }
 # The sdk WITHOUT its `serve` feature: the wire `destination::Backend`
 # implements the sdk's backend trait, and `open` boxes the SAME `Session<B>`
-# generic the in-process path composes — the D3 choreography is reused
-# by identical type, never reimplemented against the wire.
+# generic the in-process path composes — the exactly-once commit
+# choreography is reused by identical type, never reimplemented.
 rdlt-connector-sdk = { workspace = true }
 rdlt-connector-protocol = { workspace = true }
 tonic = { workspace = true }
