@@ -1,11 +1,11 @@
 {
   "format_version": 3,
   "cell_id": "pg-to-pg-1m",
-  "recorded_at": "2026-08-13",
+  "recorded_at": "2026-08-16",
   "fingerprint": {
     "cpu_model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
     "kernel": "7.0.12-201.fc44.x86_64",
-    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
     "competitor_pins": {
       "dlt": "dlt 1.29.0",
       "dlt-pyarrow": "dlt 1.29.0"
@@ -13,32 +13,32 @@
     "dataset_hashes": {
       "pg:seed_output": "dataset  |  rows   |           content_md5 | -----------+---------+---------------------------------- | events    | 1000000 | e840f51738a6b4b15f9f085ea85e3df8 | events_v2 | 1000000 | 7e208273f4d5333658fff2fa1c9839d9 | (2 rows)"
     },
-    "loadavg_at_start": 2.47,
+    "loadavg_at_start": 2.04,
     "quiet_note": null
   },
   "workload": {},
   "rdlt": {
     "runs_ms": [
-      1042.063598,
-      1063.771449,
-      1068.195805,
-      1042.5811449999999,
-      1012.4102399999999
+      1018.5955520000001,
+      1015.076133,
+      1019.7991820000001,
+      1096.383615,
+      1081.701729
     ],
-    "median_ms": 1042.5811449999999,
-    "p95_ms": 1068.195805,
+    "median_ms": 1019.7991820000001,
+    "p95_ms": 1096.383615,
     "rows": 1000000,
-    "bytes": 178240270,
-    "rows_per_s": 959157.955997756,
-    "mb_per_s": 163.0407076355821,
+    "bytes": 182424192,
+    "rows_per_s": 980585.2148643908,
+    "mb_per_s": 170.5956130111531,
     "cpu": {
-      "mean_util": 0.8790902786601605,
-      "peak_util": 1.9672131147540983,
-      "user_sys_ms": 890,
+      "mean_util": 0.8597564144228156,
+      "peak_util": 2.4242424242424243,
+      "user_sys_ms": 930,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     },
     "rss": {
-      "peak_bytes": 267563008,
+      "peak_bytes": 265572352,
       "note": "process TREE sampled at 50ms (root VmHWM exact; tree spikes between polls can be missed; cpu undercounts up to one interval)"
     }
   },
@@ -46,48 +46,48 @@
     "dlt": {
       "status": "ok",
       "runs_ms": [
-        10435.139816999254,
-        10461.974384000314,
-        10230.579652000417,
-        10311.464592000448,
-        10337.390083999708
+        10583.307466993574,
+        10508.983136009192,
+        10443.29131199629,
+        10472.59242698783,
+        10413.463703007435
       ],
-      "median_ms": 10337.390083999708,
+      "median_ms": 10472.59242698783,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.1333686569515768,
+        "mean_util": 1.1337745642717663,
         "peak_util": null,
-        "user_sys_ms": 12802,
+        "user_sys_ms": 12963,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 723009536,
+        "peak_bytes": 665448448,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 9.915189943320632
+      "ratio_vs_rdlt": 10.269269295205053
     },
     "dlt-pyarrow": {
       "status": "ok",
       "runs_ms": [
-        17714.45600199968,
-        17956.048519999968,
-        17683.916038999996,
-        17623.369511999954,
-        17663.001644999895
+        17452.61151000159,
+        17588.387404975947,
+        17629.939881007886,
+        18039.497944002505,
+        18197.66359499772
       ],
-      "median_ms": 17683.916038999996,
+      "median_ms": 17629.939881007886,
       "self_timed": true,
       "cpu": {
-        "mean_util": 1.0698885534979194,
+        "mean_util": 1.0763672857420963,
         "peak_util": null,
-        "user_sys_ms": 19850,
+        "user_sys_ms": 20508,
         "note": "cgroup v2 cpu.stat, last poll before exit"
       },
       "rss": {
-        "peak_bytes": 447496192,
+        "peak_bytes": 346677248,
         "note": "self-reported ru_maxrss — the recorded statistic (bar derivation)"
       },
-      "ratio_vs_rdlt": 16.96166876200317
+      "ratio_vs_rdlt": 17.287658386264408
     }
   },
   "verify": {
