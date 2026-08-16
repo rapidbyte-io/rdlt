@@ -647,7 +647,16 @@ async fn probe_order_book(socket: &Path, entropy: &str) -> Result<(), String> {
             "published",
         )?,
         // An earlier certification of this target already committed
-        // the load: `replay` is the legal continuation.
+        // the load: `replay` is the legal continuation — but only a
+        // receipt naming THIS commit proves that (8L8): the 7M1 bug
+        // shape, surviving certification otherwise.
+        Some(receipt) if !receipt_matches(&receipt, &p10_load, P10_SEQ) => {
+            return Err(format!(
+                "`existing_receipt` answered with a receipt for a DIFFERENT commit than the \
+                 one asked about ({})",
+                render_receipt(&receipt)
+            ));
+        }
         Some(receipt) => expect(
             session.request(replay_request(&meta_json, receipt)).await?,
             "replay",
@@ -673,6 +682,13 @@ async fn probe_order_book(socket: &Path, entropy: &str) -> Result<(), String> {
                 .to_string(),
         );
     };
+    if !receipt_matches(&existing, &p10_load, P10_SEQ) {
+        return Err(format!(
+            "the durable receipt names a DIFFERENT commit than the one asked about ({}) — \
+             the 7M1 bug shape, surviving certification otherwise",
+            render_receipt(&existing)
+        ));
+    }
     expect(
         session
             .request(replay_request(&meta_json, existing.clone()))
@@ -695,6 +711,40 @@ async fn probe_order_book(socket: &Path, entropy: &str) -> Result<(), String> {
                     "a `publish` for a load whose receipt already exists minted a NEW receipt \
                      — after `existing_receipt` reports a receipt, `publish` must be refused \
                      or answer that same receipt (existing {}, published {})",
+                    render_receipt(&existing),
+                    render_receipt(&published)
+                ));
+            }
+        }
+        other => return Err(mismatch("publish", &other, "published")),
+    }
+    session.close_judged().await?;
+
+    // ——— Pass 3: the no-ask double-publish (8M5 — the F-4 bar's other
+    // half, recorded in the sdk serve module's doc): a FRESH session
+    // publishes the SAME (load, seq) again with NO `existing_receipt`
+    // in between — the wire shape a non-conforming client can always
+    // drive, and the one the backend's own durable guard must answer.
+    // Refused is one legal answer; the PRIOR receipt (byte-equal to
+    // the durable one pass 2 read) is the other; a fresh mint is the
+    // exactly-once violation. (Silent row re-application with an
+    // identical receipt is the table-probe's read-back to catch — the
+    // D-clauses' probe gate — not a wire-only judgment's.)
+    let mut session = settle_open_wire(socket, P10_PIPELINE, &p10_load)
+        .await
+        .map_err(|why| format!("could not open the no-ask republish session: {why}"))?;
+    match session.request(publish_request(&meta_json)).await? {
+        WireReply::Error(_frame) => {}
+        WireReply::Published(published) => {
+            let same_receipt = match (receipt_value(&existing), receipt_value(&published)) {
+                (Some(durable), Some(published)) => durable == published,
+                _ => false,
+            };
+            if !same_receipt {
+                return Err(format!(
+                    "a no-ask re-`publish` of a committed load minted a fresh receipt \
+                     (durable {}, published {}) — with no `existing_receipt` in between, \
+                     `publish` must be refused or answer the prior receipt",
                     render_receipt(&existing),
                     render_receipt(&published)
                 ));
@@ -859,6 +909,27 @@ fn receipt_value(receipt_json: &[u8]) -> Option<Value> {
     serde_json::from_slice(receipt_json).ok()
 }
 
+/// The receipt-identity check the runtime's `Session::commit` guard
+/// performs (7M1) — the certifier owes the same skepticism of the
+/// receipts IT consumes (8L8): a receipt naming a different commit
+/// than the one asked about proves nothing, and a backend whose lookup
+/// returns one (stale cache, unkeyed read) has the 7M1 defect and must
+/// fail the clause, not pass it.
+fn receipt_matches(receipt_json: &[u8], load_id: &str, commit_seq: u64) -> bool {
+    let Some(Value::Object(map)) = receipt_value(receipt_json) else {
+        return false;
+    };
+    matches!(
+        (map.get("load_id"), map.get("commit_seq")),
+        (Some(Value::String(id)), Some(Value::String(seq)))
+            if id == load_id && seq.parse::<u64>() == Ok(commit_seq)
+    ) || matches!(
+        (map.get("load_id"), map.get("commit_seq")),
+        (Some(Value::String(id)), Some(Value::Number(seq)))
+            if id == load_id && seq.as_u64() == Some(commit_seq)
+    )
+}
+
 /// A receipt for an evidence line — its JSON document, or the honest
 /// marker when the server's bytes were not JSON at all.
 fn render_receipt(receipt_json: &[u8]) -> String {
@@ -1002,6 +1073,29 @@ mod tests {
              after `existing_receipt` reports a receipt, `publish` must be refused or answer \
              that same receipt (existing {\"load_id\":\"certify-p10-pinned\",\"commit_seq\":1}, \
              published {\"load_id\":\"certify-p10-pinned\",\"commit_seq\":2})"
+        );
+    }
+
+    /// P10's pass-3 rogue (8M5): a destination that behaves perfectly
+    /// for every session that ASKS `existing_receipt` first — passes 1
+    /// and 2 both do — but mints a fresh receipt on a no-ask republish
+    /// of a committed load fails with both receipts named: the
+    /// backend's own durable publish guard is missing, which is
+    /// exactly the wire-reachable exactly-once violation the serve
+    /// doc's F-4 record assigns to the backend.
+    #[tokio::test]
+    async fn a_fresh_mint_on_a_no_ask_republish_fails_p10() {
+        let (_dir, socket) = order_book_rogue(OrderBookScript::FreshMintOnNoAskRepublish);
+        let why = probe_order_book(&socket, "pinned")
+            .await
+            .expect_err("the no-ask republish minted a fresh receipt — P10 must fail");
+        assert_eq!(
+            why,
+            "a no-ask re-`publish` of a committed load minted a fresh receipt \
+             (durable {\"load_id\":\"certify-p10-pinned\",\"commit_seq\":1}, \
+             published {\"load_id\":\"certify-p10-pinned\",\"commit_seq\":2}) — with no \
+             `existing_receipt` in between, `publish` must be refused or answer the prior \
+             receipt"
         );
     }
 

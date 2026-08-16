@@ -141,15 +141,9 @@ fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceErro
                 .map(|field| ("type-hint field", field.as_str())),
         );
     for (seat, value) in seats {
-        if crate::sanitize::contains_control(value) {
-            return Err(SourceError::fatal(format!(
-                "the connector declared a {seat} of `{}` — control or invisible formatting \
-                 characters in identifiers are refused at the wire boundary",
-                // The shared escape, not `{:?}` — the latter leaves the
-                // inventory's Lo-category fillers raw (5L4).
-                crate::sanitize::escape_control_characters(value)
-            )));
-        }
+        // Length BEFORE content (8L2): a frame-cap-sized name carrying
+        // one control byte would otherwise render the WHOLE value in
+        // its escaped refusal — a ~6× firehose from one frame.
         if crate::sanitize::is_oversized_identifier(value) {
             return Err(SourceError::fatal(format!(
                 "the connector declared a {seat} of {} bytes — over the {}-byte wire \
@@ -157,6 +151,16 @@ fn refuse_control_characters_in_name(spec: &StreamSpec) -> Result<(), SourceErro
                  it; the destinations' own limits are 63–255)",
                 value.len(),
                 crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
+            )));
+        }
+        if crate::sanitize::contains_control(value) {
+            return Err(SourceError::fatal(format!(
+                "the connector declared a {seat} of `{}` — control or invisible formatting \
+                 characters in identifiers are refused at the wire boundary",
+                // The shared escape, not `{:?}` — the latter leaves the
+                // inventory's Lo-category fillers raw (5L4). The length
+                // gate above already bounds what the escape can expand.
+                crate::sanitize::escape_control_characters(value)
             )));
         }
     }
@@ -172,23 +176,22 @@ fn refuse_control_characters_in_arrow_fields(batch: &RecordBatch) -> Result<(), 
     let schema = batch.schema();
     let mut pending: Vec<Arc<arrow::datatypes::Field>> = schema.fields().iter().cloned().collect();
     while let Some(field) = pending.pop() {
-        if crate::sanitize::contains_control(field.name()) {
-            return Err(SourceError::fatal(format!(
-                "the connector sent an Arrow field named `{}` — control or invisible formatting \
-                 characters in identifiers are refused at the wire boundary",
-                crate::sanitize::escape_control_characters(field.name())
-            )));
-        }
-        // 6L2: the length half of the identifier rule, at the seat the
-        // round-5 cap missed — a multi-megabyte control-free field name
-        // would ride into engine column names (and the WAL's Delta
-        // lines) within the frame cap otherwise.
+        // Length before content (8L2 + 6L2's seat): bounds what the
+        // escaped refusal below can expand, and catches the
+        // multi-megabyte control-free name the round-5 cap missed.
         if crate::sanitize::is_oversized_identifier(field.name()) {
             return Err(SourceError::fatal(format!(
                 "the connector sent an Arrow field name of {} bytes — over the {}-byte wire \
                  identifier ceiling, refused at the wire boundary",
                 field.name().len(),
                 crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
+            )));
+        }
+        if crate::sanitize::contains_control(field.name()) {
+            return Err(SourceError::fatal(format!(
+                "the connector sent an Arrow field named `{}` — control or invisible formatting \
+                 characters in identifiers are refused at the wire boundary",
+                crate::sanitize::escape_control_characters(field.name())
             )));
         }
         // A dictionary encodes another type without a field of its own,

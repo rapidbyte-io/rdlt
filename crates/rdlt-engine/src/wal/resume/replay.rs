@@ -472,6 +472,15 @@ pub(crate) async fn replay(
                 // Staged-but-uncommitted writes are torn down by the
                 // caller's close, exactly like every other mid-replay
                 // degrade.
+                //
+                // Residual, recorded (8L4): the recount compares COUNTS
+                // only — a same-rows/different-contents swap between the
+                // passes still passes both checks. That is the
+                // at-rest writer's existing power over segment bytes
+                // (the manifest checksums lines, not segments; directory
+                // ownership is the boundary), and closing it needs a
+                // per-segment content digest in the manifest line —
+                // recorded as the door, not chased here.
                 if rows_applied != rows {
                     tracing::warn!(
                         segment = %file,
@@ -998,6 +1007,133 @@ mod segment_format {
 mod tests {
     use super::*;
     use rdlt_core::{LoadId, PipelineId};
+
+    /// 8L1: the pass-2 recount. The existing mismatch pin drives the
+    /// PASS-1 check; this one rewrites the segment BETWEEN the passes
+    /// (the spy's `ensure_table` runs after pass 1 via the span-delta
+    /// apply, before pass 2 streams) and pins that the second count
+    /// catches what the first validated — the seconds-wide window the
+    /// 7L1 recount exists to close.
+    #[tokio::test]
+    async fn a_segment_swapped_between_replay_passes_degrades_to_re_extraction() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let schema_of = || Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let seg = |rows: usize| {
+            RecordBatch::try_new(
+                schema_of(),
+                vec![Arc::new(Int64Array::from(
+                    (1..=rows as i64).collect::<Vec<_>>(),
+                ))],
+            )
+            .expect("batch")
+        };
+        crate::wal::write_segment(&dir.path().join("l-000000.arrow"), &seg(3))
+            .expect("write segment");
+
+        /// A session that rewrites the segment file when the span's
+        /// schema delta is applied — the between-passes seam.
+        struct SwappingSession {
+            dir: std::path::PathBuf,
+            swapped: bool,
+        }
+        #[async_trait::async_trait]
+        impl rdlt_connector::LoadSession for SwappingSession {
+            async fn ensure_table(
+                &mut self,
+                _schema: &rdlt_core::TableSchema,
+                _mode: &rdlt_core::WriteMode,
+            ) -> Result<(), rdlt_connector::DestinationError> {
+                if !self.swapped {
+                    self.swapped = true;
+                    // Four rows where the manifest (and pass 1) saw
+                    // three — a same-layout, different-count swap.
+                    let swapped = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+                        vec![Arc::new(Int64Array::from(vec![1i64, 2, 3, 4]))],
+                    )
+                    .expect("swap batch");
+                    // The writer's create_new refuses to overwrite;
+                    // the swap is an attacker's move, not a writer's.
+                    std::fs::remove_file(self.dir.join("l-000000.arrow"))
+                        .expect("clear the original for the swap");
+                    crate::wal::write_segment(&self.dir.join("l-000000.arrow"), &swapped)
+                        .expect("swap the segment");
+                }
+                Ok(())
+            }
+            async fn write(
+                &mut self,
+                _table: &rdlt_core::TableName,
+                _batch: RecordBatch,
+            ) -> Result<(), rdlt_connector::DestinationError> {
+                Ok(())
+            }
+            async fn commit(
+                &mut self,
+                _meta: rdlt_core::CommitMeta,
+            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+                panic!("a degraded replay never reaches commit")
+            }
+            async fn read_state(
+                &mut self,
+                _pipeline: &rdlt_core::PipelineId,
+            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+                Ok(None)
+            }
+            async fn close(&mut self) -> Result<(), rdlt_connector::DestinationError> {
+                Ok(())
+            }
+        }
+
+        let span = RecoverySpan {
+            load_id: LoadId::new("l"),
+            next_commit_seq: 1,
+            records: vec![
+                WalRecord::Segment {
+                    table: rdlt_core::TableName::new("t"),
+                    file: "l-000000.arrow".to_owned(),
+                    rows: 3,
+                },
+                WalRecord::Checkpoint {
+                    stream: rdlt_core::StreamName::new("s"),
+                    cursor: rdlt_core::Cursor::new(serde_json::json!(1)),
+                },
+            ],
+            schemas: vec![(
+                rdlt_core::TableSchema {
+                    table: rdlt_core::TableName::new("t"),
+                    parent: None,
+                    columns: vec![],
+                },
+                rdlt_core::WriteMode::Append,
+            )],
+        };
+
+        let mut session = Box::new(SwappingSession {
+            dir: dir.path().to_path_buf(),
+            swapped: false,
+        });
+        let mut state = StateDoc::new(PipelineId::new("p"), "test");
+        let replayed = replay(
+            dir.path(),
+            span,
+            &mut *session,
+            &mut state,
+            rdlt_connector::DestinationCapabilities::default(),
+        )
+        .await
+        .expect("replay returns Ok so the caller can degrade");
+        assert_eq!(
+            replayed, None,
+            "pass 1 validated three rows; pass 2 streamed four — the between-passes \
+             swap degrades to re-extraction, never applies the swapped rows"
+        );
+    }
 
     /// A manifest line that disagrees with its segment degrades to
     /// re-extraction instead of replaying.

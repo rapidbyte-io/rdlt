@@ -292,6 +292,15 @@ fn scan_with_budget(
     let mut max_committed_seq: u64 = 0;
     let mut span: Vec<WalRecord> = Vec::new();
     let mut schemas = SchemaMap::new();
+    // The segment names the CURRENT run's span already carries (8L5):
+    // the writer mints one monotonic sequence per run, so a REPEATED
+    // name is crafted — the zero-row amplification shape (millions of
+    // `rows:0` lines all naming one file under the total budget)
+    // repeats names because crafting millions of DISTINCT valid
+    // footers costs real disk. Refusing repeats caps the amplification
+    // at what distinct segments genuinely cost.
+    let mut span_segment_names: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     for record in records {
         if let WalRecord::Delta { schema, mode, .. } = &record {
             schemas.insert(schema.table.clone(), (schema.clone(), mode.clone()));
@@ -329,6 +338,7 @@ fn scan_with_budget(
                 // (recovery runs before `Wal::open` appends the new header), so a Run
                 // record always begins a fresh span.
                 span.clear();
+                span_segment_names.clear();
                 load_id = Some(id);
                 max_committed_seq = 0;
             }
@@ -350,6 +360,15 @@ fn scan_with_budget(
                     && let Err(reason) = crate::wal::record::verify_segment_file(load, file)
                 {
                     return ScanOutcome::Damaged(reason);
+                }
+                if let WalRecord::Segment { file, .. } = &other
+                    && !span_segment_names.insert(file.clone())
+                {
+                    return ScanOutcome::Damaged(format!(
+                        "the run's span names segment `{file}` more than once — the writer \
+                         mints one monotonic sequence per run, so a repeat is crafted \
+                         amplification, not a shape it could produce"
+                    ));
                 }
                 span.push(other);
             }
@@ -924,6 +943,60 @@ mod tests {
         assert!(
             !matches!(outcome, ScanOutcome::Damaged(_)),
             "a small manifest under the seam budget scans: {outcome:?}"
+        );
+    }
+
+    /// 8L5: a span naming one segment file TWICE is damage — the writer
+    /// mints one monotonic sequence per run, so a repeat can only be a
+    /// crafted manifest (the zero-row amplification shape: millions of
+    /// `rows:0` lines all pointing at one cheap segment, minutes of
+    /// recovery from kilobytes of disk). Distinct names still scan.
+    #[test]
+    fn a_span_naming_one_segment_twice_is_damage() {
+        let load = LoadId::new("l");
+        let header = WalRecord::Run {
+            format_version: crate::wal::WAL_FORMAT_VERSION,
+            load_id: load.clone(),
+            pipeline: PipelineId::new("p"),
+        };
+        let segment = |file: &str| WalRecord::Segment {
+            table: rdlt_core::TableName::new("t"),
+            file: file.to_owned(),
+            rows: 0,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[
+                header.clone(),
+                segment("l-000000.arrow"),
+                segment("l-000000.arrow"),
+            ],
+        );
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("more than once")),
+            "a repeated segment name degrades the scan: {outcome:?}"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[header, segment("l-000000.arrow"), segment("l-000001.arrow")],
+        );
+        let outcome = scan(
+            dir.path(),
+            rdlt_core::naming::IdentRules::default(),
+            &PipelineId::new("p"),
+        );
+        assert!(
+            !matches!(outcome, ScanOutcome::Damaged(_)),
+            "distinct segment names still scan: {outcome:?}"
         );
     }
 

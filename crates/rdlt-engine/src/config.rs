@@ -84,7 +84,6 @@ impl EngineConfig {
         self
     }
 
-    /// Sets when the engine commits: per checkpoint batch, or at run end.
     /// How much to accumulate before each destination write.
     ///
     /// Destination-agnostic: the engine does the accumulating, so
@@ -95,6 +94,15 @@ impl EngineConfig {
         self
     }
 
+    /// Sets when the engine commits: per checkpoint batch, or at run end.
+    ///
+    /// Deliberately infallible (7L10's posture): both product surfaces
+    /// validate the policy before reaching here — the YAML parse and
+    /// the facade's `build()` — and an engine-direct embedder setting a
+    /// threshold-less policy gets the degenerate whole-run-one-crash-
+    /// window shape the loader's final flush still commits safely;
+    /// tightening this to a checked setter would break every existing
+    /// chain site for no added protection.
     pub fn with_commit_policy(mut self, policy: CommitPolicy) -> Self {
         self.commit_policy = policy;
         self

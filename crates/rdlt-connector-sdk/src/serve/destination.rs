@@ -47,17 +47,15 @@
 //! above, this server does not referee frame order. The ONLY thing that
 //! saves exactly-once here is the destination's OWN durable receipt
 //! guard inside `Backend::publish`; a shipped `Backend` that does not
-//! keep one is wire-reachably double-publishable. This is a RECORDED
-//! gap, not a silently accepted one (038 T5 review round 2, F-4): the
-//! sdk's own black-box conformance kit never drives `Backend` directly
-//! today — it only exercises the in-process `Session<B>` path, where the
-//! choreography above IS enforced by the caller — so nothing in this
-//! codebase currently proves a shipped `Backend` actually keeps that
-//! guard when reached this way. Feature 040's conformance kit needs a
-//! Backend-direct D3-companion clause: drive `Publish` twice over the
-//! WIRE with no `ExistingReceipt`/`Replay` in between and assert the
-//! second either replays the first receipt or is refused — never
-//! silently re-applies.
+//! keep one is wire-reachably double-publishable. This was first a
+//! RECORDED gap (038 T5 review round 2, F-4): the sdk's own black-box
+//! conformance kit only exercises the in-process `Session<B>` path,
+//! where the choreography above IS enforced by the caller. The
+//! Backend-direct D3-companion clause the record asked for now exists
+//! (GLM round-8, 8M5): the certifier's P10 pass 3 drives `Publish`
+//! twice over the WIRE with no `ExistingReceipt`/`Replay` in between
+//! and asserts the second either replays the first receipt or is
+//! refused — never a fresh mint.
 //!
 //! `OpenContext::part_events` is the other place this server departs
 //! from a plain request/reply shape: the listener is a SYNC callback,
@@ -642,13 +640,29 @@ async fn handle_frame<C: DestinationConnector>(
                     // 7M3: the ensured table (and its column names) are
                     // retained in the session's guard for its lifetime.
                     let identifiers_ok =
-                        refuse_oversized_identifier("table name", schema.table.as_str()).and_then(
-                            |()| {
+                        refuse_oversized_identifier("table name", schema.table.as_str())
+                            .and_then(|()| {
+                                // 8L6: the parent link names another
+                                // table the schema carries.
+                                schema.parent.iter().try_for_each(|parent| {
+                                    refuse_oversized_identifier(
+                                        "parent table name",
+                                        parent.parent.as_str(),
+                                    )
+                                })
+                            })
+                            .and_then(|()| {
                                 schema.columns.iter().try_for_each(|column| {
                                     refuse_oversized_identifier("column name", &column.name)
                                 })
-                            },
-                        );
+                            })
+                            // 8L6: Merge keys name columns — same ceiling.
+                            .and_then(|()| match &mode {
+                                WriteMode::Merge { key } => key.iter().try_for_each(|column| {
+                                    refuse_oversized_identifier("merge key column", column)
+                                }),
+                                _ => Ok(()),
+                            });
                     match identifiers_ok {
                         Err(reply) => reply,
                         Ok(()) => match backend.ensure_table(&schema, &mode).await {
@@ -701,18 +715,25 @@ async fn handle_frame<C: DestinationConnector>(
             // receipts live in the same transaction as their publish
             // keep their internal guard too; this is the protocol fast
             // path."
-            let load_id = LoadId::new(existing.load_id);
-            match backend
-                .existing_receipt(&load_id, existing.commit_seq)
-                .await
-            {
-                Ok(receipt) => session_reply::Reply::Receipt(ReceiptReply {
-                    receipt_json: receipt.map(|receipt| {
-                        serde_json::to_vec(&receipt)
-                            .expect("a CommitReceipt serializes to JSON infallibly")
-                    }),
-                }),
-                Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+            // 8L6: the asked-about load id reaches the backend's lookup
+            // and its error text — same ceiling as every identifier seat.
+            match refuse_oversized_identifier("load id", &existing.load_id) {
+                Err(reply) => reply,
+                Ok(()) => {
+                    let load_id = LoadId::new(existing.load_id);
+                    match backend
+                        .existing_receipt(&load_id, existing.commit_seq)
+                        .await
+                    {
+                        Ok(receipt) => session_reply::Reply::Receipt(ReceiptReply {
+                            receipt_json: receipt.map(|receipt| {
+                                serde_json::to_vec(&receipt)
+                                    .expect("a CommitReceipt serializes to JSON infallibly")
+                            }),
+                        }),
+                        Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                    }
+                }
             }
         }
         Some(session_request::Request::Replay(replay)) => {
@@ -739,17 +760,22 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::ReadState(read_state)) => {
-            match backend
-                .read_state(&PipelineId::new(read_state.pipeline))
-                .await
-            {
-                Ok(state) => session_reply::Reply::State(StateReply {
-                    state_doc_json: state.map(|state| {
-                        serde_json::to_vec(&state)
-                            .expect("a StateDoc serializes to JSON infallibly")
+            // 8L6: the pipeline id keys the backend's state lookup and
+            // its error text — same ceiling as every identifier seat.
+            match refuse_oversized_identifier("pipeline id", &read_state.pipeline) {
+                Err(reply) => reply,
+                Ok(()) => match backend
+                    .read_state(&PipelineId::new(read_state.pipeline))
+                    .await
+                {
+                    Ok(state) => session_reply::Reply::State(StateReply {
+                        state_doc_json: state.map(|state| {
+                            serde_json::to_vec(&state)
+                                .expect("a StateDoc serializes to JSON infallibly")
+                        }),
                     }),
-                }),
-                Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                    Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                },
             }
         }
         Some(session_request::Request::Close(_)) => {

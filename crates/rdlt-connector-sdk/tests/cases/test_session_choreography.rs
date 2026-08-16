@@ -39,6 +39,9 @@ enum ReceiptScript {
     /// the 7M1 bug shape (a stale cache, an unkeyed read): the token
     /// names a different commit than the one asked about.
     Mismatched(CommitReceipt),
+    /// Lookup finds nothing, but `publish` RETURNS a receipt naming a
+    /// different commit — the mirror bug shape (round-8, 5.3).
+    PublishForges(CommitReceipt),
     Errors,
 }
 
@@ -111,7 +114,7 @@ impl Backend for SpyBackend {
             .expect("log lock")
             .push(Call::ExistingReceipt);
         match &self.receipt {
-            ReceiptScript::None => Ok(None),
+            ReceiptScript::None | ReceiptScript::PublishForges(_) => Ok(None),
             ReceiptScript::Found(receipt) => Ok(Some(receipt.clone())),
             ReceiptScript::Mismatched(receipt) => Ok(Some(receipt.clone())),
             ReceiptScript::Errors => Err(DestinationError::fatal(format!(
@@ -131,6 +134,9 @@ impl Backend for SpyBackend {
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
         self.log.lock().expect("log lock").push(Call::Publish);
+        if let ReceiptScript::PublishForges(forged) = &self.receipt {
+            return Ok(forged.clone());
+        }
         Ok(CommitReceipt {
             load_id: meta.load_id.clone(),
             commit_seq: meta.commit_seq,
@@ -225,6 +231,56 @@ async fn a_mismatched_receipt_identity_fails_the_commit_without_publishing() {
     // Neither replay housekeeping nor publish ran: the choreography
     // stopped at the token it could not trust.
     assert_eq!(calls(&log), vec![Call::ExistingReceipt]);
+}
+
+/// 8M4: the same refusal with a HOSTILE identity — control characters
+/// riding the forged load id — renders inert: the message cannot carry
+/// the bytes it judges.
+#[tokio::test]
+async fn a_mismatched_receipt_refusal_renders_the_forged_identity_inertly() {
+    let hostile = CommitReceipt {
+        load_id: LoadId::from("evil\u{1b}]52;c;AAAA\u{7}load"),
+        commit_seq: 99,
+    };
+    let (mut session, log) = open_spy(ReceiptScript::Mismatched(hostile)).await;
+    let error = session
+        .commit(meta())
+        .await
+        .expect_err("a hostile mismatched receipt must refuse");
+    let rendered = error.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "the refusal must not carry the bytes it judges: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("u{1b}]52;c;AAAA"),
+        "the forged identity renders as its spelled-out escapes: {rendered}"
+    );
+    assert_eq!(calls(&log), vec![Call::ExistingReceipt]);
+}
+
+/// The 7M1 guard's mirror (round-8, 5.3): a `publish` that RETURNS a
+/// receipt naming a different commit fails the commit — the returned
+/// receipt is the same idempotence token, and an embedder holding it
+/// would vouch for this commit with a token naming some other one.
+#[tokio::test]
+async fn a_publish_returning_a_foreign_receipt_fails_the_commit() {
+    let forged = CommitReceipt {
+        load_id: LoadId::from("other-load"),
+        commit_seq: 9,
+    };
+    let (mut session, log) = open_spy(ReceiptScript::PublishForges(forged)).await;
+    let error = session
+        .commit(meta())
+        .await
+        .expect_err("a foreign published receipt must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("other-load") && rendered.contains("proves nothing"),
+        "the refusal names the forged identity and why: {rendered}"
+    );
+    // The publish RAN — the guard judges its answer, not its order.
+    assert_eq!(calls(&log), vec![Call::ExistingReceipt, Call::Publish]);
 }
 
 /// A failed receipt lookup fails the commit without publishing — the

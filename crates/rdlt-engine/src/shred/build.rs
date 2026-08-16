@@ -346,11 +346,30 @@ fn scalar_json<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     Arc::new(b.finish())
 }
 
+/// True when a temporal literal's fractional-second digits fit the
+/// engine's microsecond canonical unit (8L11): chrono's `%.f` accepts
+/// arbitrary precision and the builders convert through nanoseconds,
+/// so 7-9 fraction digits would silently truncate — the same
+/// inexactness class `parse_decimal` refuses as a counted misfit, and
+/// temporal parsing now counts it the same way.
+fn fraction_within_micros(literal: &str) -> bool {
+    let Some(dot) = literal.find(['.', ',']) else {
+        return true;
+    };
+    let digits = literal[dot + 1..]
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits <= 6
+}
+
 fn scalar_timestamp_tz<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = TimestampMicrosecondBuilder::new();
     for v in values {
         let micros = match view_kind(v) {
-            Some(ValueKind::Str(s)) => parse_timestamp_tz(s).map(|dt| dt.timestamp_micros()),
+            Some(ValueKind::Str(s)) if fraction_within_micros(s) => {
+                parse_timestamp_tz(s).map(|dt| dt.timestamp_micros())
+            }
             _ => None,
         };
         b.append_option(micros);
@@ -362,7 +381,7 @@ fn scalar_timestamp_naive<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef
     let mut b = TimestampMicrosecondBuilder::new();
     for v in values {
         let micros = match view_kind(v) {
-            Some(ValueKind::Str(s)) => {
+            Some(ValueKind::Str(s)) if fraction_within_micros(s) => {
                 chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
                     .ok()
                     .map(|dt| dt.and_utc().timestamp_micros())
@@ -398,12 +417,14 @@ fn scalar_time<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     let mut b = Time64MicrosecondBuilder::new();
     for v in values {
         let micros = match view_kind(v) {
-            Some(ValueKind::Str(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
-                .ok()
-                .map(|t| {
-                    i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
-                        + i64::from(chrono::Timelike::nanosecond(&t) / 1_000)
-                }),
+            Some(ValueKind::Str(s)) if fraction_within_micros(s) => {
+                chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f")
+                    .ok()
+                    .map(|t| {
+                        i64::from(chrono::Timelike::num_seconds_from_midnight(&t)) * 1_000_000
+                            + i64::from(chrono::Timelike::nanosecond(&t) / 1_000)
+                    })
+            }
             _ => None,
         };
         b.append_option(micros);
@@ -758,6 +779,31 @@ mod tests {
         assert_eq!(fits_precision(-1000, 3), None, "the bound is on magnitude");
         assert_eq!(fits_precision(0, 1), Some(0));
         assert_eq!(fits_precision(i128::MIN, 38), None, "no wrap on abs()");
+    }
+
+    /// 8L11: a temporal literal carrying sub-microsecond fraction
+    /// digits is a COUNTED MISFIT, never a silently truncated value —
+    /// the same discipline `parse_decimal` applies to over-scale
+    /// fractions. Six digits (microseconds exactly) parse.
+    #[test]
+    fn temporal_builders_count_sub_microsecond_fractions_as_misfits() {
+        use arrow::array::Time64MicrosecondArray;
+
+        let array = scalar_time(&[
+            Some(&json!("01:02:03.456789")),  // six digits: exact µs
+            Some(&json!("01:02:03.4567891")), // seven: sub-µs, misfit
+            Some(&json!("01:02:03")),         // no fraction at all
+        ]);
+        let t = array
+            .as_any()
+            .downcast_ref::<Time64MicrosecondArray>()
+            .expect("time array");
+        assert_eq!(t.value(0), 3_723_456_789, "01:02:03.456789 is exact µs");
+        assert!(
+            t.is_null(1),
+            "a 7-digit fraction is a misfit, not a truncation"
+        );
+        assert_eq!(t.value(2), 3_723_000_000, "no fraction parses");
     }
 
     /// 7M5: a HINT-pinned Float64 column builds a beyond-±2^53 integer

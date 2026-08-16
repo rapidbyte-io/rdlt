@@ -615,3 +615,75 @@ async fn a_silent_spec_probe_times_out_typed() {
     }
     server.abort();
 }
+
+/// A connector control-plane fake whose `Spec` reply is over the 8 MiB
+/// document ceiling — within the 64 MiB transport frame cap, so only
+/// the probe's own gate (7M4) stands between it and an unbounded parse.
+#[derive(Debug)]
+struct OversizedSpecServer;
+
+#[tonic::async_trait]
+impl Connector for OversizedSpecServer {
+    async fn handshake(
+        &self,
+        _request: Request<proto::HandshakeRequest>,
+    ) -> Result<Response<proto::HandshakeReply>, Status> {
+        Err(Status::unimplemented(
+            "the oversized fake answers Spec alone",
+        ))
+    }
+
+    async fn check(
+        &self,
+        _request: Request<proto::CheckRequest>,
+    ) -> Result<Response<proto::CheckReply>, Status> {
+        Err(Status::unimplemented(
+            "the oversized fake answers Spec alone",
+        ))
+    }
+
+    async fn spec(
+        &self,
+        _request: Request<proto::SpecRequest>,
+    ) -> Result<Response<SpecReply>, Status> {
+        Ok(Response::new(SpecReply {
+            spec_json: vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1],
+        }))
+    }
+}
+
+/// 8L7: the probe's document ceiling (7M4) is pinned — an over-ceiling
+/// `spec_json` refuses typed BEFORE any parse, naming the ceiling, so
+/// deleting the gate call cannot pass the suite silently.
+#[tokio::test]
+async fn an_oversized_spec_reply_refuses_at_the_document_ceiling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("oversized.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).expect("the oversized socket binds");
+    let serving = tonic::transport::Server::builder()
+        .add_service(ConnectorServer::new(OversizedSpecServer))
+        .serve_with_incoming(UnixListenerStream::new(listener));
+    let server = tokio::spawn(async move {
+        let _ = serving.await;
+    });
+    let bin = write_script(
+        dir.path(),
+        "oversized-fake",
+        &line_fake_body("source", &socket),
+    );
+
+    let provider = LocalBinaryConnectorProvider::new();
+    let requirement = ConnectorRequirement::new("io.rapidbyte.fake").with_path(&bin);
+    let error = provider
+        .spec(&requirement)
+        .await
+        .expect_err("an over-ceiling spec_json must refuse");
+    match error {
+        ProviderError::Client(ClientError::Protocol(message)) => assert!(
+            message.contains("document ceiling"),
+            "the refusal names the ceiling: {message}"
+        ),
+        other => panic!("expected Client(Protocol), got {other:?}"),
+    }
+    server.abort();
+}

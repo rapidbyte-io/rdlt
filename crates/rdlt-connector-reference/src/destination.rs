@@ -3,7 +3,8 @@
 //!
 //! Staging is in-memory (a crashed session's staging simply vanishes —
 //! the open contract by construction); publish stream-encodes each
-//! table's staged rows to `<table>-<load_id>-<part>.jsonl`, persists
+//! table's staged rows to `<table>-<load_id>-<part>-<digest>.jsonl`
+//! (the digest an injective hash of the whole tuple — 8L10), persists
 //! the state document, and appends a receipt line LAST — each step
 //! fsynced, so the receipt can only be durable after the parts and
 //! state it acknowledges are. The part number IS the commit sequence,
@@ -286,7 +287,13 @@ impl Backend for Writer {
             .unwrap_or(0);
         let durable = &bytes[..durable_end];
         let durable = std::str::from_utf8(durable).map_err(|error| {
-            DestinationError::transient(format!(
+            // FATAL, not transient (8L9): the writer only ever appends
+            // valid UTF-8, and a torn append is newline-less (bytes
+            // AFTER the last newline, already excluded above) — so
+            // invalid UTF-8 before the last complete line is permanent
+            // corruption no retry repairs, the same taxonomy the
+            // unparseable-interior-line arm below applies.
+            DestinationError::fatal(format!(
                 "reference destination: {} carries a corrupt receipt log (invalid UTF-8 \
                  before the last complete line): {error}",
                 path.display()
@@ -343,7 +350,22 @@ impl Backend for Writer {
         }
         for (table, batches) in &tables {
             part_component(table)?;
-            let part = format!("{table}-{}-{}.jsonl", self.load_id, meta.commit_seq);
+            // The tuple-encoding is INJECTIVE (8L10): the plain
+            // `{table}-{load}-{seq}` spelling collides across dash-rich
+            // ids (`(a, b-c)` vs `(a-b, c)` map to one part file, the
+            // later publish silently overwriting the earlier tuple's
+            // rows — reachable only by a direct-`Backend` host with
+            // custom ids, precisely the lane this template tutors).
+            // A short digest of the WHOLE tuple separates them without
+            // changing the name's shape for the engine's dash-fixed
+            // ids (the digest is constant per tuple, so re-publish
+            // overwrite determinism is preserved).
+            let part = format!(
+                "{table}-{}-{}-{}.jsonl",
+                self.load_id,
+                meta.commit_seq,
+                part_tuple_digest(table.as_str(), self.load_id.as_str(), meta.commit_seq)
+            );
             part_filename(&part)?;
             self.persist_part(&part, table, batches)?;
         }
@@ -454,6 +476,23 @@ fn next_staging_bytes(current: usize, batch: usize) -> Result<usize, Destination
 /// never passes that gate — and this connector is the worked example
 /// third parties copy, so the safe pattern is modeled where the
 /// filename is built.
+/// A short hex digest of the whole `(table, load_id, commit_seq)` tuple
+/// (8L10). Inputs are length-prefixed and domain-separated so
+/// `("a","b-c")` and `("a-b","c")` cannot collide — the same discipline
+/// the engine's row-identity hashing applies — and the digest is a pure
+/// function of the tuple, so a retried publish still overwrites its own
+/// part deterministically.
+fn part_tuple_digest(table: &str, load_id: &str, commit_seq: u64) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"rdlt-reference:part:v1\0");
+    for field in [table.as_bytes(), load_id.as_bytes()] {
+        hasher.update(&(field.len() as u64).to_le_bytes());
+        hasher.update(field);
+    }
+    hasher.update(&commit_seq.to_le_bytes());
+    hasher.finalize().to_hex()[..8].to_owned()
+}
+
 fn part_component(table: &TableName) -> Result<(), DestinationError> {
     let name = table.as_str();
     if name.is_empty()

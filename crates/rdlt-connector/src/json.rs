@@ -51,6 +51,34 @@ pub fn refuse_oversized_document(field: &str, bytes: &[u8]) -> Result<(), String
     Ok(())
 }
 
+/// Render adversarial text for a DIAGNOSTIC, bounded: control
+/// characters (the terminal-injection class — ESC/BEL-driven OSC
+/// sequences, forged newlines) render as their spelled-out escapes,
+/// and the whole render truncates at `cap` raw bytes with a marker
+/// naming the true length (8M4: a forged identity up to the frame cap
+/// must not turn a refusal into a firehose). Non-control characters
+/// pass through — this is a diagnostic quoting seat, not a display
+/// seat; the full invisible-character inventory belongs to the wire
+/// gates and the display renders, not here.
+pub fn render_diagnostic(text: &str, cap: usize) -> String {
+    let mut out = String::with_capacity(text.len().min(cap + 32));
+    for character in text.chars() {
+        if character.is_control() {
+            for escaped in character.escape_debug() {
+                out.push(escaped);
+            }
+        } else {
+            out.push(character);
+        }
+        if out.len() >= cap {
+            use std::fmt::Write as _;
+            let _ = write!(out, "…[truncated from {} bytes]", text.len());
+            return out;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +101,29 @@ mod tests {
         assert!(
             error.contains("document ceiling"),
             "the refusal names the ceiling: {error}"
+        );
+    }
+
+    /// 8M4's helper at its own seat: control bytes render as their
+    /// spelled-out escapes (never raw), the render truncates at the
+    /// cap with a marker naming the true length, and ordinary text
+    /// passes through untouched.
+    #[test]
+    fn the_diagnostic_render_escapes_and_caps() {
+        assert_eq!(render_diagnostic("load-7", 256), "load-7");
+        let hostile = render_diagnostic("evil\u{1b}]52;c;A\u{7}id", 256);
+        assert!(
+            !hostile.contains('\u{1b}') && !hostile.contains('\u{7}'),
+            "no raw control bytes: {hostile:?}"
+        );
+        assert!(
+            hostile.contains("u{1b}]52;c;A"),
+            "the escape spells the byte out: {hostile}"
+        );
+        let long = render_diagnostic(&"x".repeat(10_000), 64);
+        assert!(
+            long.len() < 200 && long.contains("truncated from 10000 bytes"),
+            "the cap bounds the render and names the true length: {long}"
         );
     }
 

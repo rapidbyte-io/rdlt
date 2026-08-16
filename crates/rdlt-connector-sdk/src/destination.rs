@@ -403,13 +403,37 @@ impl<B: Backend> LoadSession for Session<B> {
                     "the destination answered existing_receipt({}, {}) with a receipt for \
                      ({}, {}) — a receipt naming a different commit proves nothing about \
                      this one; refusing rather than skipping publish",
-                    meta.load_id, meta.commit_seq, receipt.load_id, receipt.commit_seq
+                    meta.load_id,
+                    meta.commit_seq,
+                    // The forged identity is arbitrary wire text (8M4):
+                    // render it bounded and escaped — inert, and never a
+                    // frame-cap-sized firehose.
+                    rdlt_connector::json::render_diagnostic(receipt.load_id.as_str(), 256),
+                    receipt.commit_seq
                 )));
             }
             self.backend.replay(&meta, &receipt).await?;
             return Ok(receipt);
         }
-        self.backend.publish(meta).await
+        // The mirror of the lookup guard above (GLM round-8, 5.3): the
+        // receipt `publish` RETURNS is the same idempotence token — an
+        // embedder holding it (039's remote hosts do) would vouch for
+        // this commit with a token naming some other one. The engine
+        // discards returned receipts, so in-tree this is defense in
+        // depth; checked at the same choreography seat for the same
+        // reason — no backend can be trusted to check it itself.
+        let (expected_load, expected_seq) = (meta.load_id.clone(), meta.commit_seq);
+        let receipt = self.backend.publish(meta).await?;
+        if receipt.load_id != expected_load || receipt.commit_seq != expected_seq {
+            return Err(DestinationError::fatal(format!(
+                "the destination answered publish({expected_load}, {expected_seq}) with a \
+                 receipt for ({}, {}) — a receipt naming a different commit proves nothing \
+                 about this one; refusing rather than certifying the publish",
+                rdlt_connector::json::render_diagnostic(receipt.load_id.as_str(), 256),
+                receipt.commit_seq
+            )));
+        }
+        Ok(receipt)
     }
 
     async fn read_state(

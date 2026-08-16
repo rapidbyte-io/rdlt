@@ -7,16 +7,23 @@
 //! (`Arc` clone); when cross-batch widening or an arrow representation difference
 //! (Large* variants, timestamp unit/zone) changed a column's type, its values are
 //! cast to the current type where the cast is EXACT — representation differences
-//! and in-range numeric widenings — and refused typed where it is not (an Int64
-//! beyond ±2^53 widening to Float64 rounds, and losslessness is the contract;
-//! 7M6). Values are never silently coerced.
+//! and in-range numeric widenings — and refused typed where it is not, AT EVERY
+//! NESTING DEPTH (a recursive pre-cast walk mirrors arrow's own recursion through
+//! struct fields, list elements, and dictionary values): an Int64 beyond ±2^53
+//! widening to Float64 rounds (7M6, generalized 8M1); a nanosecond value not
+//! divisible by 1,000 truncates toward zero under the µs canonical unit — the
+//! wrong direction pre-epoch (8M2); a pre-epoch intra-day Date64 mis-dates by a
+//! day under Date32 (8M3). Values are never silently coerced.
 //! Structured streams carry no per-row identity (no `_rdlt_id`) — which is why
 //! Keyless Merge is rejected for them; keyed structured merge is supported.
 
 use std::sync::Arc;
 
 use arrow::{
-    array::{ArrayRef, StringArray, new_null_array},
+    array::{
+        Array as _, ArrayRef, Int64Array, StringArray, StructArray, Time64NanosecondArray,
+        TimestampNanosecondArray, new_null_array,
+    },
     compute::cast,
     datatypes::{DataType, TimeUnit},
     record_batch::RecordBatch,
@@ -228,30 +235,18 @@ pub(crate) fn passthrough_items(
                 if source.data_type() == &target_type {
                     Arc::clone(source) // the common zero-copy path
                 } else {
-                    // Cross-batch widening (e.g. Int64 batch under a Float64 column).
-                    // The one widening the LATTICE licenses but a VALUE can refuse
-                    // (7M6): `Int64 ⊔ Float64 = Float64`, yet an integer beyond
-                    // ±2^53 has no exact f64 — arrow's cast would round it, which
-                    // is the silent alteration the module refuses to perform. The
-                    // JSONL path escalates the same value to Utf8; the structured
-                    // path's registry type is already committed, so the honest
-                    // answer is a typed refusal naming the remedy.
-                    if matches!(target_type, arrow::datatypes::DataType::Float64)
-                        && let Some(ints) =
-                            source.as_any().downcast_ref::<arrow::array::Int64Array>()
-                        && (0..ints.len()).any(|i| {
-                            !arrow::array::Array::is_null(ints, i)
-                                && !rdlt_core::types::int64_fits_in_f64(ints.value(i))
-                        })
-                    {
-                        return Err(RdltError::config(format!(
-                            "table `{table}` column `{}`: widening Int64 to Float64 would \
-                             silently round a value beyond ±2^53 (losslessness is the column's \
-                             contract, and the JSONL path escalates the same value to text) — \
-                             declare the column as text, or keep the source integral",
-                            column.name
-                        )));
-                    }
+                    // Cross-batch widening or representation difference
+                    // (e.g. Int64 batch under a Float64 column, ns under
+                    // the µs canonical unit). The pre-cast exactness walk
+                    // (7M6, generalized in round 8) refuses any cast that
+                    // would silently ALTER a value — at every nesting
+                    // depth, not just the top level: the losslessness
+                    // contract belongs to the column, and arrow's cast
+                    // recurses through struct fields and list elements
+                    // exactly like this walk does.
+                    refuse_inexact_cast(source.as_ref(), &target_type, &column.name).map_err(
+                        |reason| RdltError::config(format!("table `{table}`: {reason}")),
+                    )?;
                     cast(source.as_ref(), &target_type).map_err(|e| {
                         RdltError::config(format!(
                             "table `{table}` column `{}`: cannot cast {} to {target_type}: {e}",
@@ -270,6 +265,171 @@ pub(crate) fn passthrough_items(
         .map_err(|e| RdltError::internal(format!("passthrough batch assembly: {e}")))?;
     items.push(LoadItem::batch(table.clone(), out));
     Ok(items)
+}
+
+/// Refuse any cast `source` → `target` that would silently ALTER a
+/// value (7M6, generalized in round 8 to 8M1/8M2/8M3): arrow's `cast`
+/// recurses through struct fields, list elements, and dictionary
+/// values, so the exactness check must recurse with it — the wave-7
+/// guard checked only the top-level array and let the same silent
+/// roundings through one nesting level down (found by an empirical
+/// probe against the pinned arrow 58.3.0).
+///
+/// Three leaf shapes are lossy and refused; everything else the
+/// registry can produce casts exactly (representation differences and
+/// in-range widenings; `Float64 ⊔ Decimal = Utf8` escalates in the
+/// lattice before a cast is ever built):
+///
+/// - **Int64 → Float64**: an integer beyond ±2^53 has no exact f64;
+///   arrow rounds. The JSONL path escalates the same value to text.
+/// - **Nanosecond → microsecond** (timestamp or time): arrow's integer
+///   division truncates TOWARD ZERO — pre-epoch values round the wrong
+///   way. Nanosecond is arrow's default unit for many producers; the
+///   engine's canonical unit is microsecond.
+/// - **Date64 → Date32** with a pre-epoch intra-day value: truncation
+///   toward zero is not day-floor, mis-dating by one day.
+///
+/// `path` names the position for the refusal message (`v` at the top
+/// level, `v.f`/`v[]` nested). Depth is bounded by the flatbuffer
+/// verifier's 64-level schema cap upstream — this walk follows types
+/// arrow itself will walk, never deeper.
+fn refuse_inexact_cast(
+    source: &dyn arrow::array::Array,
+    target: &DataType,
+    path: &str,
+) -> Result<(), String> {
+    // A dictionary encodes another type; casting one casts its VALUES,
+    // so the walk descends to them — through the any-dictionary view,
+    // which covers every key width arrow admits (a fixed downcast list
+    // would panic on the widths it missed).
+    if let Some(dict) = arrow::array::AsArray::as_any_dictionary_opt(source) {
+        return refuse_inexact_cast(dict.values().as_ref(), target, path);
+    }
+    let target = match target {
+        DataType::Dictionary(_, value) => value.as_ref(),
+        _ => target,
+    };
+    match (source.data_type(), target) {
+        (DataType::Struct(fields), DataType::Struct(target_fields)) => {
+            let struct_array = source
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("arrow types and arrays agree");
+            // Pair by NAME (the registry's join is a name-union); a
+            // target field the source lacks is null-filled elsewhere,
+            // and a source field the target lacks never reaches a cast.
+            for target_field in target_fields {
+                if let Some((index, _)) = fields.find(target_field.name()) {
+                    refuse_inexact_cast(
+                        struct_array.column(index),
+                        target_field.data_type(),
+                        &format!("{path}.{}", target_field.name()),
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        (
+            DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _),
+            DataType::List(target_item)
+            | DataType::LargeList(target_item)
+            | DataType::FixedSizeList(target_item, _),
+        ) => {
+            let values = source
+                .as_any()
+                .downcast_ref::<arrow::array::GenericListArray<i32>>()
+                .map(|list| list.values())
+                .or_else(|| {
+                    source
+                        .as_any()
+                        .downcast_ref::<arrow::array::GenericListArray<i64>>()
+                        .map(|list| list.values())
+                })
+                .or_else(|| {
+                    source
+                        .as_any()
+                        .downcast_ref::<arrow::array::FixedSizeListArray>()
+                        .map(|list| list.values())
+                })
+                .expect("the match arm admits exactly these three list arrays");
+            refuse_inexact_cast(
+                values.as_ref(),
+                target_item.data_type(),
+                &format!("{path}[]"),
+            )
+        }
+        (DataType::Int64, DataType::Float64) => {
+            let ints = source
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("arrow types and arrays agree");
+            (0..ints.len())
+                .any(|i| !ints.is_null(i) && !rdlt_core::types::int64_fits_in_f64(ints.value(i)))
+                .then(|| {
+                    format!(
+                        "column `{path}`: widening Int64 to Float64 would silently round a value \
+                     beyond ±2^53 (losslessness is the column's contract, and the JSONL path \
+                     escalates the same value to text) — declare the column as text, or keep \
+                     the source integral"
+                    )
+                })
+                .map_or(Ok(()), Err)
+        }
+        (
+            DataType::Timestamp(TimeUnit::Nanosecond, _),
+            DataType::Timestamp(TimeUnit::Microsecond, _),
+        ) => {
+            let nanos = source
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .expect("arrow types and arrays agree");
+            let inexact =
+                (0..nanos.len()).any(|i| !nanos.is_null(i) && nanos.value(i) % 1_000 != 0);
+            refuse_sub_microsecond(inexact, path, "timestamps")
+        }
+        (DataType::Time64(TimeUnit::Nanosecond), DataType::Time64(TimeUnit::Microsecond)) => {
+            let nanos = source
+                .as_any()
+                .downcast_ref::<Time64NanosecondArray>()
+                .expect("arrow types and arrays agree");
+            let inexact =
+                (0..nanos.len()).any(|i| !nanos.is_null(i) && nanos.value(i) % 1_000 != 0);
+            refuse_sub_microsecond(inexact, path, "times")
+        }
+        (DataType::Date64, DataType::Date32) => {
+            let days = source
+                .as_any()
+                .downcast_ref::<arrow::array::Date64Array>()
+                .expect("arrow types and arrays agree");
+            const MS_PER_DAY: i64 = 86_400_000;
+            (0..days.len())
+                .any(|i| !days.is_null(i) && days.value(i) < 0 && days.value(i) % MS_PER_DAY != 0)
+                .then(|| {
+                    format!(
+                        "column `{path}`: casting Date64 to Date32 would mis-date a pre-epoch \
+                         intra-day value by one day (arrow truncates toward zero, not to the \
+                         day floor) — deliver whole-day values, or declare the column as text"
+                    )
+                })
+                .map_or(Ok(()), Err)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The nanosecond→microsecond leaf, shared by the timestamp and time
+/// arms (both wrap i64 nanoseconds).
+fn refuse_sub_microsecond(inexact: bool, path: &str, kind: &str) -> Result<(), String> {
+    inexact
+        .then(|| {
+            format!(
+                "column `{path}`: casting nanosecond {kind} to the canonical microsecond unit \
+                 would silently truncate a value not divisible by 1,000 (arrow divides toward \
+                 zero, so pre-epoch values even round the wrong way) — deliver unit-consistent \
+                 batches, or declare the column as text"
+            )
+        })
+        .map_or(Ok(()), Err)
 }
 
 /// Logical schema for a structured batch: `_rdlt_load_id` + the batch's fields
@@ -1078,4 +1238,338 @@ fn an_inexact_int64_to_float64_widening_refuses_typed() {
         DestinationCapabilities::default(),
     )
     .expect("an exact widening passes");
+}
+
+/// 8M1: the walk recurses — a struct FIELD widening Int64→Float64
+/// refuses exactly as the top-level column does (the wave-7 guard
+/// saw only the top level; arrow's cast rounds one nesting down).
+#[test]
+fn a_nested_struct_int_widening_refuses_typed() {
+    use arrow::array::{Float64Array, Int64Array, StructArray};
+    use arrow::datatypes::{DataType, Field, Fields};
+
+    let (mut registry, table) = (
+        crate::schema::registry::SchemaRegistry::default(),
+        TableName::new("events"),
+    );
+    let load_id = rdlt_core::LoadId::new("load");
+    let mode = rdlt_core::WriteMode::Append;
+    let policy = rdlt_core::SchemaPolicy::default();
+    let float_struct = || {
+        StructArray::new(
+            Fields::from(vec![Field::new("f", DataType::Float64, true)]),
+            vec![Arc::new(Float64Array::from(vec![0.5])) as ArrayRef],
+            None,
+        )
+    };
+    let int_struct = || {
+        StructArray::new(
+            Fields::from(vec![Field::new("f", DataType::Int64, true)]),
+            vec![Arc::new(Int64Array::from(vec![9_007_199_254_740_993i64])) as ArrayRef],
+            None,
+        )
+    };
+    let schema_of = |field_type: DataType| {
+        Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(Fields::from(vec![Field::new("f", field_type, true)])),
+            true,
+        )]))
+    };
+    let first = RecordBatch::try_new(
+        schema_of(DataType::Float64),
+        vec![Arc::new(float_struct()) as ArrayRef],
+    )
+    .expect("float-struct batch");
+    passthrough_items(
+        &first,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect("the struct column registers");
+
+    let second = RecordBatch::try_new(
+        schema_of(DataType::Int64),
+        vec![Arc::new(int_struct()) as ArrayRef],
+    )
+    .expect("int-struct batch");
+    let error = passthrough_items(
+        &second,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect_err("a nested inexact widening must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("silently round") && rendered.contains("`s.f`"),
+        "the refusal names the nested path: {rendered}"
+    );
+}
+
+/// 8M1's list shape: a list ELEMENT widening Int64→Float64 refuses.
+#[test]
+fn a_nested_list_int_widening_refuses_typed() {
+    use arrow::array::{Float64Array, Int64Array, ListArray};
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::Field;
+
+    let (mut registry, table) = (
+        crate::schema::registry::SchemaRegistry::default(),
+        TableName::new("events"),
+    );
+    let load_id = rdlt_core::LoadId::new("load");
+    let mode = rdlt_core::WriteMode::Append;
+    let policy = rdlt_core::SchemaPolicy::default();
+
+    let item = |dt: DataType| Arc::new(Field::new("item", dt, true));
+    let list_of = |dt: DataType, values: ArrayRef| {
+        ListArray::new(
+            item(dt.clone()),
+            OffsetBuffer::new(vec![0i32, 1].into()),
+            values,
+            None,
+        )
+    };
+    let schema = |dt: DataType| {
+        Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+            "l",
+            DataType::List(item(dt)),
+            true,
+        )]))
+    };
+
+    let first = RecordBatch::try_new(
+        schema(DataType::Float64),
+        vec![Arc::new(list_of(
+            DataType::Float64,
+            Arc::new(Float64Array::from(vec![0.5])),
+        )) as ArrayRef],
+    )
+    .expect("float-list batch");
+    passthrough_items(
+        &first,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect("the list column registers");
+
+    let second = RecordBatch::try_new(
+        schema(DataType::Int64),
+        vec![Arc::new(list_of(
+            DataType::Int64,
+            Arc::new(Int64Array::from(vec![9_007_199_254_740_993i64])),
+        )) as ArrayRef],
+    )
+    .expect("int-list batch");
+    let error = passthrough_items(
+        &second,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect_err("a list-element inexact widening must refuse");
+    assert!(
+        error.to_string().contains("silently round"),
+        "the refusal names the loss: {error}"
+    );
+}
+
+/// 8M2: nanosecond timestamps under the µs canonical unit — a value
+/// not divisible by 1,000 refuses (arrow would truncate toward
+/// zero); a divisible one casts cleanly.
+#[test]
+fn a_sub_microsecond_timestamp_refuses_typed() {
+    use arrow::array::TimestampMicrosecondArray;
+
+    let (mut registry, table) = (
+        crate::schema::registry::SchemaRegistry::default(),
+        TableName::new("events"),
+    );
+    let load_id = rdlt_core::LoadId::new("load");
+    let mode = rdlt_core::WriteMode::Append;
+    let policy = rdlt_core::SchemaPolicy::default();
+
+    // Establish the µs canonical type with a µs batch.
+    let us_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("t", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+    ]));
+    let first = RecordBatch::try_new(
+        Arc::clone(&us_schema),
+        vec![Arc::new(TimestampMicrosecondArray::from(vec![1i64])) as ArrayRef],
+    )
+    .expect("µs batch");
+    passthrough_items(
+        &first,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect("the µs column registers");
+
+    let ns_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("t", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+    ]));
+    let mk_ns = |values: Vec<i64>| {
+        Arc::new(
+            arrow::array::TimestampNanosecondArray::from(values).with_timezone_opt::<&str>(None),
+        ) as ArrayRef
+    };
+    // 1,500 ns is NOT divisible by 1,000: refuse.
+    let second = RecordBatch::try_new(Arc::clone(&ns_schema), vec![mk_ns(vec![1_500i64])])
+        .expect("ns batch");
+    let error = passthrough_items(
+        &second,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect_err("a sub-microsecond nanosecond value must refuse");
+    assert!(
+        error.to_string().contains("truncate"),
+        "the refusal names the truncation: {error}"
+    );
+
+    // 2,000 ns divides cleanly: passes.
+    let exact = RecordBatch::try_new(Arc::clone(&ns_schema), vec![mk_ns(vec![2_000i64])])
+        .expect("ns batch");
+    passthrough_items(
+        &exact,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect("a microsecond-divisible nanosecond value casts exactly");
+}
+
+/// 8M3: a pre-epoch intra-day Date64 mis-dates under Date32 —
+/// refuse; a positive intra-day value (truncation keeps its date)
+/// and a whole-day value pass.
+#[test]
+fn a_pre_epoch_intra_day_date64_refuses_typed() {
+    use arrow::array::{Date32Array, Date64Array};
+
+    let (mut registry, table) = (
+        crate::schema::registry::SchemaRegistry::default(),
+        TableName::new("events"),
+    );
+    let load_id = rdlt_core::LoadId::new("load");
+    let mode = rdlt_core::WriteMode::Append;
+    let policy = rdlt_core::SchemaPolicy::default();
+    let day32_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("d", DataType::Date32, true),
+    ]));
+    let first = RecordBatch::try_new(
+        Arc::clone(&day32_schema),
+        vec![Arc::new(Date32Array::from(vec![0i32])) as ArrayRef],
+    )
+    .expect("date32 batch");
+    passthrough_items(
+        &first,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect("the Date column registers");
+
+    let day64_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("d", DataType::Date64, true),
+    ]));
+    // 1969-12-31T12:00Z: pre-epoch intra-day — arrow would say
+    // day 0 (1970-01-01), one day wrong.
+    let hostile = RecordBatch::try_new(
+        Arc::clone(&day64_schema),
+        vec![Arc::new(Date64Array::from(vec![-43_200_000i64])) as ArrayRef],
+    )
+    .expect("date64 batch");
+    let error = passthrough_items(
+        &hostile,
+        &table,
+        ShredContext {
+            registry: &mut registry,
+            load_id: &load_id,
+            mode: &mode,
+            policy: &policy,
+            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+        },
+        DestinationCapabilities::default(),
+    )
+    .expect_err("a pre-epoch intra-day Date64 must refuse");
+    assert!(
+        error.to_string().contains("mis-date"),
+        "the refusal names the mis-dating: {error}"
+    );
+
+    // Post-epoch intra-day (truncation keeps the date) and a
+    // whole-day value both pass.
+    for ms in [43_200_000i64, -86_400_000i64] {
+        let benign = RecordBatch::try_new(
+            Arc::clone(&day64_schema),
+            vec![Arc::new(Date64Array::from(vec![ms])) as ArrayRef],
+        )
+        .expect("date64 batch");
+        passthrough_items(
+            &benign,
+            &table,
+            ShredContext {
+                registry: &mut registry,
+                load_id: &load_id,
+                mode: &mode,
+                policy: &policy,
+                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+            },
+            DestinationCapabilities::default(),
+        )
+        .expect("a whole-day or post-epoch intra-day Date64 casts");
+    }
 }

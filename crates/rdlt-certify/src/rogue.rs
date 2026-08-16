@@ -472,6 +472,14 @@ pub(crate) enum OrderBookScript {
     /// `replay`, then ALSO accepts `publish` with a freshly minted
     /// receipt — the replay-vs-publish exclusivity is missing.
     PublishOnReplay,
+    /// Keeps every grammar rule a WELL-BEHAVED client can observe —
+    /// receipts durable, publish-after-ask answers the prior receipt —
+    /// but mints a FRESH receipt when an already-committed load is
+    /// re-published by a session that never asked `existing_receipt`:
+    /// the backend's own durable publish guard is missing (the F-4
+    /// shape P10's pass 3 exists to catch; passes 1 and 2 both ask
+    /// first, so they cannot see it).
+    FreshMintOnNoAskRepublish,
     /// Never answers `close`: the session goes silent, the reply
     /// stream stays open — the probe can only time out.
     HangOnClose,
@@ -510,12 +518,21 @@ fn receipt_json(load: &str, seq: u64) -> Vec<u8> {
     .expect("a CommitReceipt serializes to JSON infallibly")
 }
 
+/// Per-session memory the scripts consult: which tables this session
+/// ensured, and whether it asked `existing_receipt` at all — the
+/// no-ask republish script keys on the latter.
+#[derive(Default)]
+struct SessionMemory {
+    ensured: HashSet<String>,
+    asked_receipt: bool,
+}
+
 impl RogueOrderBook {
     /// Play one request frame by the script. `None` means "answer
     /// nothing" — the hang script's `close` arm.
     fn play(
         &self,
-        ensured: &mut HashSet<String>,
+        memory: &mut SessionMemory,
         request: Option<session_request::Request>,
     ) -> Option<session_reply::Reply> {
         let published = || {
@@ -530,13 +547,13 @@ impl RogueOrderBook {
             Some(session_request::Request::Ensure(ensure)) => {
                 if let Ok(schema) = serde_json::from_slice::<TableSchema>(&ensure.table_schema_json)
                 {
-                    ensured.insert(schema.table.as_str().to_string());
+                    memory.ensured.insert(schema.table.as_str().to_string());
                 }
                 session_reply::Reply::Ensured(proto::Empty {})
             }
             Some(session_request::Request::Write(write)) => {
                 if !matches!(self.script, OrderBookScript::AcceptWriteBeforeEnsure)
-                    && !ensured.contains(&write.table)
+                    && !memory.ensured.contains(&write.table)
                 {
                     // The rendered-refusal script violates the frame's
                     // TEXT here, not the order book: the refusal still
@@ -558,6 +575,7 @@ impl RogueOrderBook {
                 }
             }
             Some(session_request::Request::ExistingReceipt(existing)) => {
+                memory.asked_receipt = true;
                 let known = matches!(self.script, OrderBookScript::PublishOnReplay)
                     || published().contains(&(existing.load_id.clone(), existing.commit_seq));
                 session_reply::Reply::Receipt(proto::ReceiptReply {
@@ -571,13 +589,22 @@ impl RogueOrderBook {
             Some(session_request::Request::Publish(publish)) => {
                 match serde_json::from_slice::<CommitMeta>(&publish.commit_meta_json) {
                     Ok(meta) => {
+                        let key = (meta.load_id.as_str().to_string(), meta.commit_seq);
                         let receipt = if matches!(self.script, OrderBookScript::PublishOnReplay) {
                             // The fresh mint: a receipt the reported
                             // existing one never was — seq bumped.
                             receipt_json(meta.load_id.as_str(), meta.commit_seq + 1)
+                        } else if matches!(self.script, OrderBookScript::FreshMintOnNoAskRepublish)
+                            && !memory.asked_receipt
+                            && published().contains(&key)
+                        {
+                            // The missing durable guard: the republish
+                            // is invisible to a session that never
+                            // asked, so a fresh receipt is minted over
+                            // the committed one.
+                            receipt_json(meta.load_id.as_str(), meta.commit_seq + 1)
                         } else {
-                            published()
-                                .insert((meta.load_id.as_str().to_string(), meta.commit_seq));
+                            published().insert(key);
                             receipt_json(meta.load_id.as_str(), meta.commit_seq)
                         };
                         session_reply::Reply::Published(proto::Published {
@@ -622,10 +649,10 @@ impl DestinationService for RogueOrderBook {
         let mut requests = request.into_inner();
         let (reply_tx, reply_rx) = tokio::sync::mpsc::channel(4);
         tokio::spawn(async move {
-            let mut ensured = HashSet::new();
+            let mut memory = SessionMemory::default();
             while let Ok(Some(frame)) = requests.message().await {
                 let closing = matches!(frame.request, Some(session_request::Request::Close(_)));
-                let Some(reply) = rogue.play(&mut ensured, frame.request) else {
+                let Some(reply) = rogue.play(&mut memory, frame.request) else {
                     // The hang script's Close: answer NOTHING and keep
                     // the stream open — the certifier must outlive it.
                     continue;

@@ -337,7 +337,21 @@ async fn a_retried_publish_after_a_transient_failure_re_persists_the_rows() {
     // The injected IO failure: a directory squatting the part's staging
     // path makes its file creation fail — a transient refusal, exactly
     // the disk-full class mid-publish failures classify as.
-    let blocker = dir.path().join("_staged-zz_events-ref-load-retry-1.jsonl");
+    // The staged part name carries the injective tuple digest (8L10) —
+    // recomputed here so this pin also freezes the naming algorithm.
+    let digest = {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"rdlt-reference:part:v1\0");
+        for field in ["zz_events".as_bytes(), "ref-load-retry".as_bytes()] {
+            hasher.update(&(field.len() as u64).to_le_bytes());
+            hasher.update(field);
+        }
+        hasher.update(&1u64.to_le_bytes());
+        hasher.finalize().to_hex()[..8].to_owned()
+    };
+    let blocker = dir
+        .path()
+        .join(format!("_staged-zz_events-ref-load-retry-1-{digest}.jsonl"));
     std::fs::create_dir(&blocker).expect("blocker dir");
 
     let refused = session
@@ -825,5 +839,45 @@ async fn a_torn_receipt_tail_of_invalid_utf8_reads_as_absent() {
     assert_eq!(
         answered, receipt,
         "the complete durable line still resolves through an invalid-UTF-8 tail"
+    );
+}
+
+/// 8L9: invalid UTF-8 BEFORE the last complete line is a different
+/// animal from the torn tail above — the writer only ever appends
+/// valid UTF-8 and a torn append is newline-less, so an interior
+/// corruption is permanent: FATAL, never the endless-transient wedge
+/// the torn-tail fix (7L6) closed for the other cause.
+#[tokio::test]
+async fn interior_invalid_utf8_in_the_receipt_log_is_fatal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = destination::Shell::from_value(json!({"path": dir.path()})).expect("valid config");
+    let log_path = dir.path().join("_reference_receipts.json");
+    // A newline-TERMINATED line carrying a raw invalid byte: durable
+    // by position, unreadable by content.
+    std::fs::write(&log_path, b"{\"load_id\":\"x\xff\"}\n").expect("seed interior corruption");
+
+    let pipeline = PipelineId::new("ref-interior-u8");
+    let load = LoadId::new("ref-load-i");
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let refused = session
+        .commit(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect_err("interior invalid UTF-8 must refuse");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.starts_with("fatal destination error: reference destination: ")
+            && rendered.contains("corrupt receipt log (invalid UTF-8"),
+        "the refusal is fatal and names the corruption: {rendered}"
     );
 }

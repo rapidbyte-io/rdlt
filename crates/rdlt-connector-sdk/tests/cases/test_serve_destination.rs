@@ -1896,3 +1896,92 @@ async fn a_two_batch_frame_with_an_over_cap_first_batch_gets_the_row_cap_refusal
         other => panic!("expected the row-cap refusal over the multi-batch one, got {other:?}"),
     }
 }
+
+/// 8L7: the wave-8 serve gates, pinned — an oversized session document
+/// (the SPI ceiling) refuses typed BEFORE the backend is reached, so a
+/// dropped gate call can never pass the suite silently.
+#[tokio::test]
+async fn an_oversized_ensure_document_refuses_before_the_backend() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let oversized = serde_json::to_vec(&schema_for(
+        &"x".repeat(rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1),
+    ))
+    .expect("schema json serializes");
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Ensure(proto::Ensure {
+                table_schema_json: oversized,
+                write_mode_json: serde_json::to_vec(&WriteMode::Append).expect("write mode json"),
+            })),
+        })
+        .await
+        .expect("send the oversized ensure");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("document ceiling"),
+                "the refusal names the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the document-ceiling refusal, got {other:?}"),
+    }
+}
+
+/// 8L7: the identifier-length half — an oversized Open load id refuses
+/// before any session exists.
+#[tokio::test]
+async fn an_oversized_open_identifier_refuses_before_the_session() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx
+        .send(open_frame(
+            "p",
+            &"l".repeat(rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES + 1),
+        ))
+        .await
+        .expect("send the oversized open");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("identifier ceiling"),
+                "the refusal names the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
+    }
+}

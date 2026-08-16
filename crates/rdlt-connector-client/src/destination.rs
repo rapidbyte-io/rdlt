@@ -298,6 +298,17 @@ impl Backend {
     /// so it refuses typed like a declared stream name, before the
     /// event can reach the callback.
     fn forward_part(&self, event: proto::PartClosedEvent) -> Result<(), DestinationError> {
+        // Length BEFORE content (8L2 + 6L2's seat): bounds the escaped
+        // refusal, and catches the multi-megabyte control-free table
+        // name the round-5 cap missed.
+        if crate::sanitize::is_oversized_identifier(&event.table) {
+            return Err(DestinationError::fatal(format!(
+                "the connector reported a part event for a table name of {} bytes — over \
+                 the {}-byte wire identifier ceiling, refused at the wire boundary",
+                event.table.len(),
+                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
+            )));
+        }
         if crate::sanitize::contains_control(&event.table) {
             return Err(DestinationError::fatal(format!(
                 "the connector reported a part event for a table named `{}` — control \
@@ -305,17 +316,6 @@ impl Backend {
                 // The shared escape, not `{:?}` — the latter leaves the
                 // inventory's Lo-category fillers raw (5L4).
                 crate::sanitize::escape_control_characters(&event.table)
-            )));
-        }
-        // 6L2: the length half of the identifier rule, at the seat the
-        // round-5 cap missed — a multi-megabyte control-free table name
-        // would ride into host telemetry within the frame cap.
-        if crate::sanitize::is_oversized_identifier(&event.table) {
-            return Err(DestinationError::fatal(format!(
-                "the connector reported a part event for a table name of {} bytes — over \
-                 the {}-byte wire identifier ceiling, refused at the wire boundary",
-                event.table.len(),
-                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
             )));
         }
         let Some(listener) = &self.part_events else {
@@ -545,6 +545,18 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                     // cannot still inflate past the contract the WAL
                     // line cap is sized for.
                     for (stream, cursor) in &doc.cursors {
+                        // 8L3: the length half of the identifier rule —
+                        // the escape below bounds, but a state doc can
+                        // carry one multi-megabyte name within its own
+                        // ceiling, and every other identifier seat caps.
+                        if crate::sanitize::is_oversized_identifier(stream.as_str()) {
+                            return Err(protocol_fatal(format!(
+                                "the state document carries a stream name of {} bytes — \
+                                 over the {}-byte wire identifier ceiling",
+                                stream.as_str().len(),
+                                crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
+                            )));
+                        }
                         crate::contract::cursor_within_contract(cursor.as_value()).map_err(
                             |reason| {
                                 protocol_fatal(format!(

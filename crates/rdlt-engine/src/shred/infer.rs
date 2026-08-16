@@ -25,7 +25,6 @@ pub(crate) struct ScalarState {
     /// Fixed by a per-column hint: inference must not widen it.
     pinned: bool,
     saw_inexact_int: bool,
-    saw_float: bool,
 }
 
 impl ScalarState {
@@ -65,10 +64,7 @@ impl ScalarState {
             // make the resolved type depend on arrival order, which is the bug
             // class this lattice exists to prevent.
             ValueKind::UInt(_) => LogicalType::Utf8,
-            ValueKind::Float(_) => {
-                self.saw_float = true;
-                LogicalType::Float64
-            }
+            ValueKind::Float(_) => LogicalType::Float64,
             ValueKind::Str(s) => {
                 if parse_timestamp_tz(s).is_some() {
                     LogicalType::TimestampTz

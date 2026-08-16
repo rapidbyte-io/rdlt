@@ -179,19 +179,21 @@ pub struct HandshakeOutcome {
 /// Hangul fillers raw (5L4), and the message must not carry the very
 /// bytes it refuses.
 fn refuse_control_characters_in(field: &str, value: &str) -> Result<(), ClientError> {
-    if crate::sanitize::contains_control(value) {
-        return Err(ClientError::Protocol(format!(
-            "the handshake reported a {field} of `{}` — control characters in an \
-             identity field are refused at the wire boundary",
-            crate::sanitize::escape_control_characters(value)
-        )));
-    }
+    // Length BEFORE content (8L2): bounds what the escaped refusal can
+    // expand below.
     if crate::sanitize::is_oversized_identifier(value) {
         return Err(ClientError::Protocol(format!(
             "the handshake reported a {field} of {} bytes — over the {}-byte wire \
              identifier ceiling, refused at the wire boundary",
             value.len(),
             crate::sanitize::MAX_WIRE_IDENTIFIER_BYTES
+        )));
+    }
+    if crate::sanitize::contains_control(value) {
+        return Err(ClientError::Protocol(format!(
+            "the handshake reported a {field} of `{}` — control characters in an \
+             identity field are refused at the wire boundary",
+            crate::sanitize::escape_control_characters(value)
         )));
     }
     Ok(())
