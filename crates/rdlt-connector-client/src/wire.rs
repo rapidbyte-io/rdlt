@@ -1,6 +1,6 @@
-//! Dialing a served connector over its Unix domain socket, and the
-//! client-constructor helpers every generated service client in this
-//! crate is built through.
+//! The transport seat: dialing a served connector's Unix socket, the
+//! capped service clients every RPC goes through, and the deadline
+//! that bounds every wire await.
 
 use std::path::Path;
 use std::time::Duration;
@@ -11,7 +11,72 @@ use rdlt_connector_protocol::proto::destination_service_client::DestinationServi
 use rdlt_connector_protocol::proto::source_service_client::SourceServiceClient;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::error::{ClientError, TimedOutOperation, with_deadline};
+use crate::error;
+
+/// The default deadline for any single wire await — the dial, the
+/// handshake, one read frame's quiet interval, one reply.
+///
+/// The same ten seconds is pinned by the certifier's kill window and
+/// the runtime's spawn line-timeout, so a dead or silent connector
+/// fails typed within it — change one and the law fragments. Per-await,
+/// never per-stream: every frame or reply that arrives restarts the
+/// clock, so a slow-but-flowing stream of any total duration never
+/// trips it while a stalled one always does.
+pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Which wire await exceeded the deadline — carried by
+/// [`error::ClientError::Timeout`] so an embedder can tell a connector that
+/// never came up (dial, handshake) from one that went silent
+/// mid-session (a read frame, a reply that never arrives).
+///
+/// `#[non_exhaustive]`: a future transport can add awaits of its own —
+/// match with a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Operation {
+    /// Establishing the transport to the advertised socket — the
+    /// connector accepted the connection but never completed the
+    /// HTTP/2 setup.
+    Dial,
+    /// The handshake reply.
+    Handshake,
+    /// The next frame of a server-streamed read.
+    ReadFrame,
+    /// An RPC reply — a unary reply, or the next reply on an open
+    /// destination session.
+    Reply,
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Operation::Dial => "transport setup",
+            Operation::Handshake => "handshake reply",
+            Operation::ReadFrame => "read frame",
+            Operation::Reply => "reply",
+        })
+    }
+}
+
+/// Bound one wire await by the session's RPC deadline, elapsing into
+/// the typed [`error::ClientError::Timeout`]. Every await in this crate that
+/// waits on the connector goes through here — the deadline bounds the
+/// QUIET interval of that one await, never a whole stream: each frame
+/// or reply that arrives starts the next await's clock afresh, so a
+/// slow-but-flowing connector never trips it while a silent one always
+/// does.
+pub(crate) async fn bounded<F: std::future::Future>(
+    deadline: Duration,
+    operation: Operation,
+    future: F,
+) -> Result<F::Output, error::ClientError> {
+    tokio::time::timeout(deadline, future)
+        .await
+        .map_err(|_elapsed| error::ClientError::Timeout {
+            operation,
+            deadline,
+        })
+}
 
 /// h2's workable window floor. The RFC default is 64 KiB; a window
 /// below it stalls a stream on frames the peer legally sends, so a
@@ -22,15 +87,13 @@ const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 /// advertised, returning the one [`Channel`] every service client for
 /// that connector shares.
 ///
-/// The engine budget IS the pacing authority (ADR 0001 D6: `Read`
-/// rides h2 flow control, no explicit credit message): both h2 windows
-/// are set from `engine_budget_bytes`, so a server can never hold more
-/// bytes in flight than the engine's own channel budget — the clamp
-/// floors tiny budgets at h2's workable minimum (`MIN_WINDOW_BYTES`,
-/// 64 KiB) and caps at [`MAX_FRAME_BYTES`], the wire's hard per-message
-/// ceiling. Left unset, tonic's ~2 MiB default window would pace the
-/// wire instead of the budget (the research spike measured exactly
-/// that skew).
+/// The engine budget IS the pacing authority: both h2 windows are set
+/// from `engine_budget_bytes`, so a server can never hold more bytes
+/// in flight than the engine's own channel budget — left unset,
+/// tonic's ~2 MiB default window would pace the wire instead of the
+/// budget. The clamp floors tiny budgets at h2's workable minimum
+/// (`MIN_WINDOW_BYTES`, 64 KiB) and caps at [`MAX_FRAME_BYTES`], the
+/// wire's hard per-message ceiling.
 ///
 /// The URI handed to `Endpoint` is a placeholder — every connection
 /// goes to the UDS through the connector closure, the tonic-over-UDS
@@ -40,7 +103,7 @@ const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 ///
 /// `rpc_deadline` bounds the WHOLE dial — a connector that accepts the
 /// socket connection but never completes the HTTP/2 setup elapses into
-/// the typed [`ClientError::Timeout`] rather than hanging the host
+/// the typed [`error::ClientError::Timeout`] rather than hanging the host
 /// (`Endpoint::connect_timeout` alone covers only the io connect, so
 /// the outer deadline is what makes the bound whole). The same
 /// deadline arms the channel's HTTP/2 keep-alive, so a transport whose
@@ -50,7 +113,7 @@ pub async fn dial(
     socket_path: &Path,
     engine_budget_bytes: u64,
     rpc_deadline: Duration,
-) -> Result<Channel, ClientError> {
+) -> Result<Channel, error::ClientError> {
     let window = engine_budget_bytes.clamp(MIN_WINDOW_BYTES, MAX_FRAME_BYTES as u64) as u32;
     let path = socket_path.to_path_buf();
     let endpoint = Endpoint::try_from("http://[::1]:1")
@@ -69,9 +132,9 @@ pub async fn dial(
                 Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(io))
             }
         }));
-    with_deadline(rpc_deadline, TimedOutOperation::Dial, connecting)
+    bounded(rpc_deadline, Operation::Dial, connecting)
         .await?
-        .map_err(|source| ClientError::Dial {
+        .map_err(|source| error::ClientError::Dial {
             path: socket_path.to_path_buf(),
             source,
         })
@@ -108,11 +171,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nothing-listens-here.sock");
 
-        let error = dial(&path, 8 * 1024 * 1024, crate::DEFAULT_RPC_DEADLINE)
+        let error = dial(&path, 8 * 1024 * 1024, DEFAULT_DEADLINE)
             .await
             .expect_err("nothing listens — dial must refuse");
         match &error {
-            ClientError::Dial { path: reported, .. } => assert_eq!(reported, &path),
+            error::ClientError::Dial { path: reported, .. } => assert_eq!(reported, &path),
             other => panic!("expected Dial, got {other:?}"),
         }
         assert!(

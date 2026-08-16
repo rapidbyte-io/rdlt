@@ -12,30 +12,8 @@ use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto::{self, handshake_reply};
 use tonic::transport::Channel;
 
-use crate::dial::connector_client;
-use crate::error::{ClientError, TimedOutOperation, with_deadline};
-use crate::gate;
-
-/// The default RPC deadline: how long any single wire await — the
-/// dial, the handshake, one read frame's quiet interval, one reply —
-/// may stay silent before it fails as the typed
-/// [`ClientError::Timeout`].
-///
-/// Ten seconds is ONE LAW spelled in three places, deliberately equal:
-/// the certifier's kill matrix gives a SIGKILLed connector ten seconds
-/// to fail the wire (`rdlt-certify`'s `KILL_ERROR_WINDOW`), the
-/// runtime's spawner gives a fresh binary ten seconds to write its
-/// handshake line (`rdlt-runtime`'s `DEFAULT_LINE_TIMEOUT`), and this
-/// deadline gives an ALIVE connector ten seconds per answer — so a
-/// dead OR silent connector yields a typed error within ten seconds,
-/// never a hang. Change one and the law fragments; equality is pinned
-/// from both sibling crates.
-///
-/// Per-await, not per-stream: the deadline bounds each QUIET interval
-/// — every frame or reply that arrives starts the next await's clock
-/// afresh — so a slow-but-flowing read of any total duration never
-/// trips it, while a stream that stalls mid-flight always does.
-pub const DEFAULT_RPC_DEADLINE: Duration = Duration::from_secs(10);
+use crate::error::ClientError;
+use crate::{gate, wire};
 
 /// Which half of the SPI the handshake asks the connector to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +58,7 @@ pub struct ConnectorRequirement {
     /// The liveness half of the requirement: how long any single wire
     /// await on this connector may stay silent before it fails as the
     /// typed [`ClientError::Timeout`]. Defaults to
-    /// [`DEFAULT_RPC_DEADLINE`]; it bounds the quiet interval of each
+    /// [`wire::DEFAULT_DEADLINE`]; it bounds the quiet interval of each
     /// await, never a whole stream (see the constant's doc).
     pub rpc_deadline: Duration,
 }
@@ -92,7 +70,7 @@ impl ConnectorRequirement {
             id: id.into(),
             version: None,
             path: None,
-            rpc_deadline: DEFAULT_RPC_DEADLINE,
+            rpc_deadline: wire::DEFAULT_DEADLINE,
         }
     }
 
@@ -112,7 +90,7 @@ impl ConnectorRequirement {
 
     /// Override the per-await RPC deadline — for embedders whose
     /// connectors legitimately think longer than
-    /// [`DEFAULT_RPC_DEADLINE`] between answers (or tests that want a
+    /// [`wire::DEFAULT_DEADLINE`] between answers (or tests that want a
     /// tight one). The deadline bounds each quiet interval, so a
     /// longer stream needs no longer deadline — only a longer SILENCE
     /// does.
@@ -195,10 +173,10 @@ pub async fn handshake(
             rdlt_connector::MAX_DOCUMENT_BYTES
         )));
     }
-    let mut client = connector_client(channel.clone());
-    let reply = with_deadline(
+    let mut client = wire::connector_client(channel.clone());
+    let reply = wire::bounded(
         expected.rpc_deadline,
-        TimedOutOperation::Handshake,
+        wire::Operation::Handshake,
         client.handshake(proto::HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             expected_role: role.wire_name().to_string(),

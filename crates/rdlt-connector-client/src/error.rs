@@ -14,66 +14,12 @@ use std::time::Duration;
 use rdlt_connector::{DestinationError, SourceError};
 use rdlt_connector_protocol::proto;
 
-use crate::gate;
+use crate::{gate, wire};
 
 /// Re-exported wire classification: [`ClientError::Handshake`] carries
 /// it, so the client's callers name it through this crate rather than
 /// importing the protocol crate for one enum.
 pub use rdlt_connector_protocol::proto::Classification;
-
-/// Which wire await exceeded the RPC deadline — carried by
-/// [`ClientError::Timeout`] so an embedder can tell a connector that
-/// never came up (dial, handshake) from one that went silent
-/// mid-session (a read frame, a reply that never arrives).
-///
-/// `#[non_exhaustive]`: a future transport can add awaits of its own —
-/// match with a wildcard arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum TimedOutOperation {
-    /// Establishing the transport to the advertised socket — the
-    /// connector accepted the connection but never completed the
-    /// HTTP/2 setup.
-    Dial,
-    /// The handshake reply.
-    Handshake,
-    /// The next frame of a server-streamed read.
-    ReadFrame,
-    /// An RPC reply — a unary reply, or the next reply on an open
-    /// destination session.
-    Reply,
-}
-
-impl std::fmt::Display for TimedOutOperation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            TimedOutOperation::Dial => "transport setup",
-            TimedOutOperation::Handshake => "handshake reply",
-            TimedOutOperation::ReadFrame => "read frame",
-            TimedOutOperation::Reply => "reply",
-        })
-    }
-}
-
-/// Bound one wire await by the session's RPC deadline, elapsing into
-/// the typed [`ClientError::Timeout`]. Every await in this crate that
-/// waits on the connector goes through here — the deadline bounds the
-/// QUIET interval of that one await, never a whole stream: each frame
-/// or reply that arrives starts the next await's clock afresh, so a
-/// slow-but-flowing connector never trips it while a silent one always
-/// does.
-pub(crate) async fn with_deadline<F: std::future::Future>(
-    deadline: Duration,
-    operation: TimedOutOperation,
-    future: F,
-) -> Result<F::Output, ClientError> {
-    tokio::time::timeout(deadline, future)
-        .await
-        .map_err(|_elapsed| ClientError::Timeout {
-            operation,
-            deadline,
-        })
-}
 
 /// What dialing/handshaking a served connector can report.
 ///
@@ -155,7 +101,7 @@ pub enum ClientError {
     )]
     Timeout {
         /// Which wire await elapsed.
-        operation: TimedOutOperation,
+        operation: wire::Operation,
         /// The deadline that elapsed — the requirement's `rpc_deadline`.
         deadline: Duration,
     },

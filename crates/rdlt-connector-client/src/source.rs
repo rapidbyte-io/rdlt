@@ -22,10 +22,9 @@ use rdlt_connector::{ConnectorSpec, ReadRequest, RecordBatch, SourceError, Strea
 use rdlt_connector_protocol::proto::{self, check_reply, read_frame, streams_reply};
 use tonic::transport::Channel;
 
-use crate::dial::{connector_client, dial, source_client};
-use crate::error::{ClientError, TimedOutOperation, source_error_from_frame, with_deadline};
-use crate::gate;
+use crate::error::{ClientError, source_error_from_frame};
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
+use crate::{gate, wire};
 
 /// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
 /// plus the handshake's cached spec and the requirement's RPC deadline
@@ -42,7 +41,7 @@ pub struct Source {
 
 impl Source {
     /// Dial `socket_path` (the engine budget paces the wire — see
-    /// [`dial`]) and run the [`Role::Source`] handshake, verifying the
+    /// [`wire::dial`]) and run the [`Role::Source`] handshake, verifying the
     /// connector against `expected`. Returns the adapter AND the full
     /// [`HandshakeOutcome`] so a caller reads what the handshake
     /// established (state-format versions, the negotiated protocol)
@@ -53,7 +52,7 @@ impl Source {
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
     ) -> Result<(Source, HandshakeOutcome), ClientError> {
-        let channel = dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
+        let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
         let outcome = handshake(&channel, Role::Source, config, expected).await?;
         Ok((
             Source {
@@ -259,10 +258,10 @@ impl rdlt_connector::Source for Source {
     }
 
     async fn check(&self) -> Result<(), SourceError> {
-        let mut client = connector_client(self.channel.clone());
-        let reply = with_deadline(
+        let mut client = wire::connector_client(self.channel.clone());
+        let reply = wire::bounded(
             self.deadline,
-            TimedOutOperation::Reply,
+            wire::Operation::Reply,
             client.check(proto::CheckRequest {}),
         )
         .await
@@ -279,10 +278,10 @@ impl rdlt_connector::Source for Source {
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
-        let mut client = source_client(self.channel.clone());
-        let reply = with_deadline(
+        let mut client = wire::source_client(self.channel.clone());
+        let reply = wire::bounded(
             self.deadline,
-            TimedOutOperation::Reply,
+            wire::Operation::Reply,
             client.streams(proto::StreamsRequest {}),
         )
         .await
@@ -339,10 +338,10 @@ impl rdlt_connector::Source for Source {
             },
         };
 
-        let mut client = source_client(self.channel.clone());
-        let mut frames = with_deadline(
+        let mut client = wire::source_client(self.channel.clone());
+        let mut frames = wire::bounded(
             self.deadline,
-            TimedOutOperation::Reply,
+            wire::Operation::Reply,
             client.read(wire_request),
         )
         .await
@@ -356,13 +355,9 @@ impl rdlt_connector::Source for Source {
             // each frame that arrives starts the next wait's clock
             // afresh, so a slow-but-flowing source of any length never
             // trips it, while a mid-stream stall always does.
-            let next = with_deadline(
-                self.deadline,
-                TimedOutOperation::ReadFrame,
-                frames.message(),
-            )
-            .await
-            .map_err(SourceError::fatal)?;
+            let next = wire::bounded(self.deadline, wire::Operation::ReadFrame, frames.message())
+                .await
+                .map_err(SourceError::fatal)?;
             let frame = match next {
                 Ok(Some(frame)) => frame,
                 // Clean end of stream: the served read returned Ok and

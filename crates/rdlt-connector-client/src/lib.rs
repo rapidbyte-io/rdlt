@@ -1,7 +1,7 @@
 //! # rdlt-connector-client — the wire client an adapter drives a served
 //! connector through (039)
 //!
-//! The out-of-process counterpart to the sdk's `serve` half: [`dial`]
+//! The out-of-process counterpart to the sdk's `serve` half: [`wire::dial`]
 //! connects to the Unix domain socket a spawned connector's handshake
 //! line advertised, [`handshake`] verifies the connector is the one the
 //! provider resolved (D-039-2) and decodes its self-description, and
@@ -17,7 +17,7 @@
 //!
 //! Every wire await — the dial, the handshake, each read frame's
 //! quiet interval, each reply — is bounded by the requirement's RPC
-//! deadline ([`DEFAULT_RPC_DEADLINE`], overridable through
+//! deadline ([`wire::DEFAULT_DEADLINE`], overridable through
 //! [`ConnectorRequirement::with_rpc_deadline`]): a dead OR silent
 //! connector yields a typed [`ClientError::Timeout`] within it, never
 //! a hang.
@@ -33,26 +33,23 @@
 //!
 //! Every name has exactly one canonical path: the adapter types live
 //! at their modules — [`source::Source`], [`destination::Destination`],
-//! [`destination::Backend`] — with no crate-root aliases, and the
-//! wiring seams below (dial, error mapping, handshake) re-export flat
-//! from private modules.
+//! [`destination::Backend`] — with no crate-root aliases, the transport
+//! seams live at [`wire`], and the remaining wiring (error mapping,
+//! handshake) re-exports flat from private modules.
 //!
 //! [`proto::ErrorFrame`]: rdlt_connector_protocol::proto::ErrorFrame
 
 pub mod destination;
-mod dial;
 mod error;
 #[doc(hidden)]
 pub mod fuzzing;
 mod gate;
 mod handshake;
 pub mod source;
+pub mod wire;
 
-pub use dial::{connector_client, destination_client, dial, source_client};
-pub use error::{Classification, ClientError, TimedOutOperation};
-pub use handshake::{
-    ConnectorRequirement, DEFAULT_RPC_DEADLINE, HandshakeOutcome, Role, handshake,
-};
+pub use error::{Classification, ClientError};
+pub use handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
 
 // `error::source_error_from_frame`/`error::dest_error_from_frame` stay
 // crate-internal at their defining paths — the adapters reach them as

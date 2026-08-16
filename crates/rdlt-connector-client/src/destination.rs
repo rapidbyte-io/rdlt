@@ -55,10 +55,9 @@ use tokio::sync::mpsc;
 use tonic::Streaming;
 use tonic::transport::Channel;
 
-use crate::dial::{connector_client, destination_client, dial};
-use crate::error::{ClientError, TimedOutOperation, dest_error_from_frame, with_deadline};
-use crate::gate;
+use crate::error::{ClientError, dest_error_from_frame};
 use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
+use crate::{gate, wire};
 
 /// The frozen fatal for a reply stream that ends while a call is still
 /// waiting on its reply — the session is over, whoever ended it.
@@ -79,7 +78,7 @@ pub struct Destination {
 
 impl Destination {
     /// Dial `socket_path` (the engine budget paces the wire — see
-    /// [`dial`]) and run the [`Role::Destination`] handshake, verifying
+    /// [`wire::dial`]) and run the [`Role::Destination`] handshake, verifying
     /// the connector against `expected`. Returns the adapter AND the
     /// full [`HandshakeOutcome`], mirroring
     /// [`Source::connect`](crate::source::Source::connect).
@@ -89,7 +88,7 @@ impl Destination {
         config: &serde_json::Value,
         expected: &ConnectorRequirement,
     ) -> Result<(Destination, HandshakeOutcome), ClientError> {
-        let channel = dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
+        let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
         let outcome = handshake(&channel, Role::Destination, config, expected).await?;
         // The proto pins `capabilities_json` non-empty for destinations
         // — a destination handshake without one is a wire the protocol
@@ -122,10 +121,10 @@ impl Destination {
         // request/reply paced — every send awaits its reply before the
         // next, so a slot is always free.
         let (requests, feed) = mpsc::channel::<proto::SessionRequest>(1);
-        let mut client = destination_client(self.channel.clone());
-        let replies = with_deadline(
+        let mut client = wire::destination_client(self.channel.clone());
+        let replies = wire::bounded(
             self.deadline,
-            TimedOutOperation::Reply,
+            wire::Operation::Reply,
             client.open_session(tokio_stream::wrappers::ReceiverStream::new(feed)),
         )
         .await
@@ -161,10 +160,10 @@ impl rdlt_connector::Destination for Destination {
     }
 
     async fn check(&self) -> Result<(), DestinationError> {
-        let mut client = connector_client(self.channel.clone());
-        let reply = with_deadline(
+        let mut client = wire::connector_client(self.channel.clone());
+        let reply = wire::bounded(
             self.deadline,
-            TimedOutOperation::Reply,
+            wire::Operation::Reply,
             client.check(proto::CheckRequest {}),
         )
         .await
@@ -345,9 +344,9 @@ impl Backend {
         // reply read ever starts — the elapse reports as the reply
         // that never came, which is what the caller observes either
         // way.
-        match with_deadline(
+        match wire::bounded(
             self.deadline,
-            TimedOutOperation::Reply,
+            wire::Operation::Reply,
             self.requests.send(proto::SessionRequest {
                 request: Some(request),
             }),
@@ -358,9 +357,9 @@ impl Backend {
             Err(timeout) => return Err(DestinationError::fatal(timeout)),
         }
         loop {
-            let next = with_deadline(
+            let next = wire::bounded(
                 self.deadline,
-                TimedOutOperation::Reply,
+                wire::Operation::Reply,
                 self.replies.message(),
             )
             .await

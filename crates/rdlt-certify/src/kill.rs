@@ -742,7 +742,7 @@ mod tests {
     fn the_kill_window_is_the_client_rpc_deadline() {
         assert_eq!(
             KILL_ERROR_WINDOW,
-            rdlt_connector_client::DEFAULT_RPC_DEADLINE
+            rdlt_connector_client::wire::DEFAULT_DEADLINE
         );
     }
 }

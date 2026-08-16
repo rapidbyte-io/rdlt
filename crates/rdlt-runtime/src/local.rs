@@ -9,9 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rdlt_connector::ConnectorSpec;
-use rdlt_connector_client::{
-    ClientError, Role, TimedOutOperation, connector_client, destination, dial, source,
-};
+use rdlt_connector_client::wire::{self, connector_client, dial};
+use rdlt_connector_client::{ClientError, Role, destination, source};
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
 use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
@@ -405,7 +404,7 @@ impl LocalBinaryConnectorProvider {
         .await
         .map_err(|_elapsed| {
             ProviderError::Client(ClientError::Timeout {
-                operation: TimedOutOperation::Reply,
+                operation: wire::Operation::Reply,
                 deadline: requirement.rpc_deadline,
             })
         })?
@@ -530,7 +529,7 @@ mod tests {
     fn the_line_timeout_is_the_client_rpc_deadline() {
         assert_eq!(
             DEFAULT_LINE_TIMEOUT,
-            rdlt_connector_client::DEFAULT_RPC_DEADLINE
+            rdlt_connector_client::wire::DEFAULT_DEADLINE
         );
     }
 }

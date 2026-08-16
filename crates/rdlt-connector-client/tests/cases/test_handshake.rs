@@ -4,9 +4,8 @@
 
 use std::path::PathBuf;
 
-use rdlt_connector_client::{
-    Classification, ClientError, ConnectorRequirement, DEFAULT_RPC_DEADLINE, Role, dial, handshake,
-};
+use rdlt_connector_client::wire::{DEFAULT_DEADLINE, dial};
+use rdlt_connector_client::{Classification, ClientError, ConnectorRequirement, Role, handshake};
 use rdlt_connector_sdk::serve;
 use rdlt_connector_sdk::source::SourceConnector as _;
 
@@ -41,7 +40,7 @@ async fn a_source_handshake_populates_the_outcome() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let outcome = handshake(
@@ -88,7 +87,7 @@ async fn a_destination_handshake_carries_capabilities() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, 1, DEFAULT_RPC_DEADLINE).await.expect("dial");
+    let channel = dial(&path, 1, DEFAULT_DEADLINE).await.expect("dial");
     let outcome = handshake(
         &channel,
         Role::Destination,
@@ -132,7 +131,7 @@ async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
         "the fixture IS the ceiling"
     );
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     handshake(
@@ -158,7 +157,7 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let oversized = serde_json::json!({
@@ -188,7 +187,7 @@ async fn an_id_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake(
@@ -218,7 +217,7 @@ async fn a_version_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake(
@@ -248,7 +247,7 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake(
@@ -284,7 +283,7 @@ async fn a_control_character_identity_refuses_inert_before_the_mismatch_render()
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_identity(&path, "ev\u{1b}]52;c;AAAA\u{7}il", "0.0.0");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake(
@@ -317,7 +316,7 @@ async fn a_control_character_version_refuses_inert() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_identity(&path, "clean-id", "1.0\u{7}");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake(
@@ -346,7 +345,7 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
     let oversized: &'static str = Box::leak("a".repeat(1025).into_boxed_str());
     let _serving = rogue::serve_identity(&path, oversized, "0.0.0");
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake(
@@ -385,7 +384,7 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
     ok.spec_json = vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1];
     let _serving = rogue::serve_handshake_ok(&path, ok);
 
-    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_RPC_DEADLINE)
+    let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake(

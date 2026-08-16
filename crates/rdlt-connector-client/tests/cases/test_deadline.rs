@@ -14,9 +14,9 @@ use rdlt_connector::core::{LoadId, PipelineId};
 use rdlt_connector::{
     OpenContext, PushPayload, ReadRequest, Source as _, SourceError, records_channel,
 };
+use rdlt_connector_client::wire::{DEFAULT_DEADLINE, Operation};
 use rdlt_connector_client::{
-    ClientError, ConnectorRequirement, DEFAULT_RPC_DEADLINE, TimedOutOperation,
-    destination::Destination, source::Source,
+    ClientError, ConnectorRequirement, destination::Destination, source::Source,
 };
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::destination::Backend as _;
@@ -56,10 +56,10 @@ fn raw_json_frame(n: u64) -> proto::ReadFrame {
 /// its side), and a fresh requirement carries it.
 #[test]
 fn the_default_rpc_deadline_is_the_ten_second_law() {
-    assert_eq!(DEFAULT_RPC_DEADLINE, Duration::from_secs(10));
+    assert_eq!(DEFAULT_DEADLINE, Duration::from_secs(10));
     assert_eq!(
         ConnectorRequirement::new("any").rpc_deadline,
-        DEFAULT_RPC_DEADLINE
+        DEFAULT_DEADLINE
     );
     let tightened = ConnectorRequirement::new("any").with_rpc_deadline(TIGHT);
     assert_eq!(tightened.rpc_deadline, TIGHT);
@@ -92,7 +92,7 @@ async fn a_peer_that_never_speaks_h2_fails_typed_at_connect() {
         matches!(
             error,
             ClientError::Timeout {
-                operation: TimedOutOperation::Handshake,
+                operation: Operation::Handshake,
                 deadline,
             } if deadline == TIGHT
         ),
@@ -105,7 +105,7 @@ async fn a_peer_that_never_speaks_h2_fails_typed_at_connect() {
 #[test]
 fn the_timeout_rendering_names_the_seat_and_the_deadline() {
     let error = ClientError::Timeout {
-        operation: TimedOutOperation::Dial,
+        operation: Operation::Dial,
         deadline: TIGHT,
     };
     assert_eq!(
@@ -140,7 +140,7 @@ async fn a_silent_handshake_times_out_typed() {
         matches!(
             error,
             ClientError::Timeout {
-                operation: TimedOutOperation::Handshake,
+                operation: Operation::Handshake,
                 ..
             }
         ),
