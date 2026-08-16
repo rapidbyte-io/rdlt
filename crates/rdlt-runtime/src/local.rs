@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rdlt_connector::ConnectorSpec;
 use rdlt_connector_client::wire::{self, connector_client, dial};
-use rdlt_connector_client::{Role, destination, source};
+use rdlt_connector_client::{destination, source};
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
 use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
@@ -19,7 +19,7 @@ use tokio::process::Command;
 
 use crate::managed::{LifecycleGuard, ManagedDestination, ManagedSource};
 use crate::provider::{ConnectorProvider, ProviderError};
-use crate::requirement::{ClientError, ConnectorRequirement};
+use crate::requirement::{ClientError, ConnectorRequirement, Role};
 
 /// How long a spawned binary gets to write its handshake line before
 /// the provider gives up on it. Generous on purpose: the line is the

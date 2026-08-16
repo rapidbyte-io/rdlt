@@ -56,8 +56,7 @@ use tonic::Streaming;
 use tonic::transport::Channel;
 
 use crate::error::FromWire;
-use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
-use crate::{error, gate, wire};
+use crate::{error, gate, handshake, wire};
 
 /// The frozen fatal for a reply stream that ends while a call is still
 /// waiting on its reply — the session is over, whoever ended it.
@@ -78,18 +77,24 @@ pub struct Destination {
 
 impl Destination {
     /// Dial `socket_path` (the engine budget paces the wire — see
-    /// [`wire::dial`]) and run the [`Role::Destination`] handshake, verifying
-    /// the connector against `expected`. Returns the adapter AND the
-    /// full [`HandshakeOutcome`], mirroring
+    /// [`wire::dial`]) and run the [`handshake::Role::Destination`]
+    /// handshake, verifying the connector against `expected`. Returns
+    /// the adapter AND the full [`handshake::Outcome`], mirroring
     /// [`Source::connect`](crate::source::Source::connect).
     pub async fn connect(
         socket_path: &Path,
         engine_budget_bytes: u64,
         config: &serde_json::Value,
-        expected: &ConnectorRequirement,
-    ) -> Result<(Destination, HandshakeOutcome), error::Error> {
-        let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
-        let outcome = handshake(&channel, Role::Destination, config, expected).await?;
+        expected: &handshake::Requirement,
+    ) -> Result<(Destination, handshake::Outcome), error::Error> {
+        let (channel, outcome) = handshake::establish(
+            socket_path,
+            engine_budget_bytes,
+            config,
+            handshake::Role::Destination,
+            expected,
+        )
+        .await?;
         // The proto pins `capabilities_json` non-empty for destinations
         // — a destination handshake without one is a wire the protocol
         // does not define, refused rather than defaulted (an all-false

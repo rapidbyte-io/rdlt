@@ -1,18 +1,10 @@
-//! The requirement vocabulary, re-exported from the client crate.
-//!
-//! [`ConnectorRequirement`] is DEFINED in `rdlt-connector-client` and
-//! re-exported here because the two crates split one job: the CLIENT
-//! verifies (its handshake checks the reported id, and the exact
-//! version when one is pinned — D-039-2), the RUNTIME resolves (turning
-//! an id into a spawnable path is the provider's job, so `path` rides
-//! the requirement for it). Consumers above this layer (the facade,
-//! embedders) name everything through THIS crate — the client crate
-//! stays an implementation detail of the wire.
-//!
-//! [`ClientError`], [`HandshakeOutcome`] and [`Role`] ride along for
-//! the same reason: [`crate::ProviderError`] carries a `ClientError`
-//! arm, and a caller matching on it should not need a second
-//! dependency to spell the type.
+//! The runtime's names for the client's types; the client's own paths
+//! are canonical. The two crates split one job — the client VERIFIES
+//! the reported identity, the runtime RESOLVES an id into a spawnable
+//! path — so consumers above this layer name everything through this
+//! crate.
 
 pub use rdlt_connector_client::error::{Classification, Error as ClientError};
-pub use rdlt_connector_client::{ConnectorRequirement, HandshakeOutcome, Role};
+pub use rdlt_connector_client::handshake::{
+    Outcome as HandshakeOutcome, Requirement as ConnectorRequirement, Role,
+};

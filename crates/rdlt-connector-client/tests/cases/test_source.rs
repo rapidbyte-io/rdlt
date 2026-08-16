@@ -11,7 +11,8 @@ use std::time::Duration;
 use rdlt_connector::{
     PushPayload, ReadRequest, RecordBatch, Source as _, SourceError, StreamSpec, records_channel,
 };
-use rdlt_connector_client::{ConnectorRequirement, source::Source};
+use rdlt_connector_client::handshake::Requirement;
+use rdlt_connector_client::source::Source;
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::serve;
 
@@ -41,12 +42,12 @@ const BOUND: Duration = Duration::from_secs(10);
 async fn connect_echo(
     path: &std::path::Path,
     config: serde_json::Value,
-) -> (Source, rdlt_connector_client::HandshakeOutcome) {
+) -> (Source, rdlt_connector_client::handshake::Outcome) {
     Source::connect(
         path,
         ENGINE_BUDGET_BYTES,
         &config,
-        &ConnectorRequirement::new("echo-source"),
+        &Requirement::new("echo-source"),
     )
     .await
     .expect("connect")
@@ -265,7 +266,7 @@ async fn an_arrow_frame_forwards_as_exactly_one_batch() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect");
@@ -304,7 +305,7 @@ async fn a_two_batch_frame_is_refused_at_the_client_seat() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect");
@@ -346,7 +347,7 @@ async fn a_malformed_checkpoint_is_refused_typed() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect");
@@ -394,7 +395,7 @@ async fn an_oversized_checkpoint_cursor_is_refused_at_the_decode_seat() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect");
@@ -427,7 +428,7 @@ async fn an_oversized_stored_cursor_is_refused_before_resend() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect");
@@ -485,14 +486,9 @@ async fn a_tiny_window_bounds_an_unread_blast() {
     );
     // Budget 1: dial floors it to h2's 64 KiB minimum — the tiniest
     // window the clamp can legally advertise.
-    let (remote, _) = Source::connect(
-        &path,
-        1,
-        &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
-    )
-    .await
-    .expect("connect");
+    let (remote, _) = Source::connect(&path, 1, &serde_json::json!({}), &Requirement::new("rogue"))
+        .await
+        .expect("connect");
 
     // An SPI budget of exactly one frame: the first forward fills it,
     // the second parks — the host never drains.
@@ -558,7 +554,7 @@ async fn a_control_character_cursor_value_is_data_not_refused() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &rdlt_connector_client::ConnectorRequirement::new("rogue"),
+        &rdlt_connector_client::handshake::Requirement::new("rogue"),
     )
     .await
     .expect("connect");
@@ -613,7 +609,7 @@ async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect");
@@ -657,7 +653,7 @@ async fn a_checkpoint_at_exactly_the_cursor_ceiling_is_accepted() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect");

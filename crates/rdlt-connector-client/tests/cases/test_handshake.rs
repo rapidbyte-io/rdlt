@@ -5,8 +5,8 @@
 use std::path::PathBuf;
 
 use rdlt_connector_client::error::{Classification, Error};
+use rdlt_connector_client::handshake::{self, Requirement, Role};
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, dial};
-use rdlt_connector_client::{ConnectorRequirement, Role, handshake};
 use rdlt_connector_sdk::serve;
 use rdlt_connector_sdk::source::SourceConnector as _;
 
@@ -30,7 +30,7 @@ fn source_config(rows: u64) -> serde_json::Value {
     serde_json::json!({ "rows": rows })
 }
 
-/// The happy path, source role: every `HandshakeOutcome` field lands —
+/// The happy path, source role: every `handshake::Outcome` field lands —
 /// the spec parsed from `spec_json`, NO capabilities (the proto pins
 /// `capabilities_json` empty for sources), the v0-empty state-format
 /// map, and the protocol version the client negotiated.
@@ -44,11 +44,11 @@ async fn a_source_handshake_populates_the_outcome() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let outcome = handshake(
+    let outcome = handshake::run(
         &channel,
         Role::Source,
         &source_config(3),
-        &ConnectorRequirement::new("echo-source"),
+        &Requirement::new("echo-source"),
     )
     .await
     .expect("handshake");
@@ -89,11 +89,11 @@ async fn a_destination_handshake_carries_capabilities() {
         .expect("bind");
 
     let channel = dial(&path, 1, DEFAULT_DEADLINE).await.expect("dial");
-    let outcome = handshake(
+    let outcome = handshake::run(
         &channel,
         Role::Destination,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("echo-destination"),
+        &Requirement::new("echo-destination"),
     )
     .await
     .expect("handshake");
@@ -135,11 +135,11 @@ async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    handshake(
+    handshake::run(
         &channel,
         Role::Source,
         &config,
-        &ConnectorRequirement::new("echo-source"),
+        &Requirement::new("echo-source"),
     )
     .await
     .expect("an exactly-at-cap document passes both ends");
@@ -165,11 +165,11 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
         "rows": 1,
         "pad": "x".repeat(rdlt_connector_sdk::spi::MAX_DOCUMENT_BYTES as usize),
     });
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &oversized,
-        &ConnectorRequirement::new("echo-source"),
+        &Requirement::new("echo-source"),
     )
     .await
     .expect_err("an over-ceiling document must refuse at the host");
@@ -191,11 +191,11 @@ async fn an_id_mismatch_refuses_typed() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &source_config(3),
-        &ConnectorRequirement::new("postgres"),
+        &Requirement::new("postgres"),
     )
     .await
     .expect_err("an id mismatch must refuse");
@@ -221,11 +221,11 @@ async fn a_version_mismatch_refuses_typed() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &source_config(3),
-        &ConnectorRequirement::new("echo-source").with_version("9.9.9"),
+        &Requirement::new("echo-source").with_version("9.9.9"),
     )
     .await
     .expect_err("a version mismatch must refuse");
@@ -251,11 +251,11 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &source_config(0),
-        &ConnectorRequirement::new("echo-source"),
+        &Requirement::new("echo-source"),
     )
     .await
     .expect_err("an invalid config must refuse");
@@ -287,11 +287,11 @@ async fn a_control_character_identity_refuses_inert_before_the_mismatch_render()
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("clean-id"),
+        &Requirement::new("clean-id"),
     )
     .await
     .expect_err("a control-character identity must refuse");
@@ -320,11 +320,11 @@ async fn a_control_character_version_refuses_inert() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("clean-id"),
+        &Requirement::new("clean-id"),
     )
     .await
     .expect_err("a control-character version must refuse");
@@ -349,11 +349,11 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("clean-id"),
+        &Requirement::new("clean-id"),
     )
     .await
     .expect_err("an over-length identity must refuse");
@@ -388,11 +388,11 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
     let channel = dial(&path, ENGINE_BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
-    let error = handshake(
+    let error = handshake::run(
         &channel,
         Role::Source,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect_err("an oversized spec_json must refuse at the handshake");

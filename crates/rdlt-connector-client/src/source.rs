@@ -23,8 +23,7 @@ use rdlt_connector_protocol::proto::{self, read_frame, streams_reply};
 use tonic::transport::Channel;
 
 use crate::error::FromWire;
-use crate::handshake::{ConnectorRequirement, HandshakeOutcome, Role, handshake};
-use crate::{error, gate, wire};
+use crate::{error, gate, handshake, wire};
 
 /// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
 /// plus the handshake's cached spec and the requirement's RPC deadline
@@ -41,19 +40,25 @@ pub struct Source {
 
 impl Source {
     /// Dial `socket_path` (the engine budget paces the wire — see
-    /// [`wire::dial`]) and run the [`Role::Source`] handshake, verifying the
-    /// connector against `expected`. Returns the adapter AND the full
-    /// [`HandshakeOutcome`] so a caller reads what the handshake
-    /// established (state-format versions, the negotiated protocol)
-    /// without a second RPC.
+    /// [`wire::dial`]) and run the [`handshake::Role::Source`] handshake,
+    /// verifying the connector against `expected`. Returns the adapter
+    /// AND the full [`handshake::Outcome`] so a caller reads what the
+    /// handshake established (state-format versions, the negotiated
+    /// protocol) without a second RPC.
     pub async fn connect(
         socket_path: &Path,
         engine_budget_bytes: u64,
         config: &serde_json::Value,
-        expected: &ConnectorRequirement,
-    ) -> Result<(Source, HandshakeOutcome), error::Error> {
-        let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
-        let outcome = handshake(&channel, Role::Source, config, expected).await?;
+        expected: &handshake::Requirement,
+    ) -> Result<(Source, handshake::Outcome), error::Error> {
+        let (channel, outcome) = handshake::establish(
+            socket_path,
+            engine_budget_bytes,
+            config,
+            handshake::Role::Source,
+            expected,
+        )
+        .await?;
         Ok((
             Source {
                 channel,

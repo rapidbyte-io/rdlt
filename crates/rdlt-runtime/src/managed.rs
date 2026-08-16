@@ -16,8 +16,10 @@ use rdlt_connector::{
     ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
     OpenContext, ReadRequest, Source, SourceError, StreamSpec,
 };
-use rdlt_connector_client::{HandshakeOutcome, destination, source};
+use rdlt_connector_client::{destination, source};
 use tokio::process::Child;
+
+use crate::requirement::HandshakeOutcome;
 
 /// Owns a spawned connector process and the socket path its handshake
 /// line advertised. Dropping the guard is the shutdown: `start_kill`

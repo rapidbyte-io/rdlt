@@ -19,7 +19,8 @@ use rdlt_connector::{
     Destination as _, DestinationError, LoadSession, OpenContext, PartCloseReason, PartClosed,
     RecordBatch,
 };
-use rdlt_connector_client::{ConnectorRequirement, destination::Destination};
+use rdlt_connector_client::destination::Destination;
+use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_sdk::destination::Backend as _;
 use rdlt_connector_sdk::serve;
 
@@ -50,7 +51,7 @@ async fn connect_echo(path: &std::path::Path, config: serde_json::Value) -> Dest
         path,
         ENGINE_BUDGET_BYTES,
         &config,
-        &ConnectorRequirement::new("echo-destination"),
+        &Requirement::new("echo-destination"),
     )
     .await
     .expect("connect")
@@ -84,7 +85,7 @@ async fn an_out_of_range_ident_rules_declaration_refuses_the_handshake() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect_err("an exhaustible max_len must refuse the handshake");
@@ -449,7 +450,7 @@ async fn a_mid_stream_status_fails_the_in_flight_call_transport_fatal() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect")
@@ -492,7 +493,7 @@ async fn capabilities_answer_from_the_handshake_cache_without_an_rpc() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("echo-destination"),
+        &Requirement::new("echo-destination"),
     )
     .await
     .expect("connect");
@@ -534,7 +535,7 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect")
@@ -588,7 +589,7 @@ async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect")
@@ -646,7 +647,7 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect")
@@ -695,7 +696,7 @@ async fn a_malformed_state_document_refusal_never_echoes_the_document() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect")
@@ -738,7 +739,7 @@ async fn an_oversized_table_in_a_part_event_refuses_typed() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue"),
+        &Requirement::new("rogue"),
     )
     .await
     .expect("connect")

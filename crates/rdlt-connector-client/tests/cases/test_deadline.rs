@@ -15,8 +15,9 @@ use rdlt_connector::{
     OpenContext, PushPayload, ReadRequest, Source as _, SourceError, records_channel,
 };
 use rdlt_connector_client::error::Error;
+use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, Operation};
-use rdlt_connector_client::{ConnectorRequirement, destination::Destination, source::Source};
+use rdlt_connector_client::{destination::Destination, source::Source};
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::destination::Backend as _;
 
@@ -56,11 +57,8 @@ fn raw_json_frame(n: u64) -> proto::ReadFrame {
 #[test]
 fn the_default_rpc_deadline_is_the_ten_second_law() {
     assert_eq!(DEFAULT_DEADLINE, Duration::from_secs(10));
-    assert_eq!(
-        ConnectorRequirement::new("any").rpc_deadline,
-        DEFAULT_DEADLINE
-    );
-    let tightened = ConnectorRequirement::new("any").with_rpc_deadline(TIGHT);
+    assert_eq!(Requirement::new("any").rpc_deadline, DEFAULT_DEADLINE);
+    let tightened = Requirement::new("any").with_rpc_deadline(TIGHT);
     assert_eq!(tightened.rpc_deadline, TIGHT);
 }
 
@@ -81,7 +79,7 @@ async fn a_peer_that_never_speaks_h2_fails_typed_at_connect() {
             &path,
             ENGINE_BUDGET_BYTES,
             &serde_json::json!({}),
-            &ConnectorRequirement::new("mute").with_rpc_deadline(TIGHT),
+            &Requirement::new("mute").with_rpc_deadline(TIGHT),
         ),
     )
     .await
@@ -129,7 +127,7 @@ async fn a_silent_handshake_times_out_typed() {
             &path,
             ENGINE_BUDGET_BYTES,
             &serde_json::json!({}),
-            &ConnectorRequirement::new("mute").with_rpc_deadline(TIGHT),
+            &Requirement::new("mute").with_rpc_deadline(TIGHT),
         ),
     )
     .await
@@ -158,7 +156,7 @@ async fn a_silent_check_times_out_fatal() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("mute").with_rpc_deadline(TIGHT),
+        &Requirement::new("mute").with_rpc_deadline(TIGHT),
     )
     .await
     .expect("the mute connector handshakes honestly");
@@ -191,7 +189,7 @@ async fn a_stalled_read_stream_times_out_typed_after_forwarding_its_frames() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue").with_rpc_deadline(TIGHT),
+        &Requirement::new("rogue").with_rpc_deadline(TIGHT),
     )
     .await
     .expect("the rogue handshakes");
@@ -248,7 +246,7 @@ async fn a_slow_dripping_stream_inside_the_deadline_survives() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue").with_rpc_deadline(deadline),
+        &Requirement::new("rogue").with_rpc_deadline(deadline),
     )
     .await
     .expect("the rogue handshakes");
@@ -292,7 +290,7 @@ async fn a_silent_session_reply_times_out_typed() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue").with_rpc_deadline(TIGHT),
+        &Requirement::new("rogue").with_rpc_deadline(TIGHT),
     )
     .await
     .expect("the rogue handshakes");
@@ -337,7 +335,7 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
-        &ConnectorRequirement::new("rogue").with_rpc_deadline(TIGHT),
+        &Requirement::new("rogue").with_rpc_deadline(TIGHT),
     )
     .await
     .expect("the rogue handshakes");

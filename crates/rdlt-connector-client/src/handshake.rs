@@ -1,10 +1,10 @@
 //! The client half of the wire handshake: send the one `Handshake`
 //! RPC, verify the connector's reported identity against what the
-//! provider resolved (D-039-2), and decode the reply's payloads into
-//! SPI vocabulary.
+//! provider resolved, and decode the reply's payloads into SPI
+//! vocabulary.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rdlt_connector::{ConnectorSpec, DestinationCapabilities};
@@ -36,17 +36,17 @@ impl Role {
 /// What the provider requires of a connector before trusting it: the
 /// id it resolved, optionally a pinned version, optionally the
 /// executable path it resolved the id to. Defined HERE and re-exported
-/// by `rdlt-runtime` — the CLIENT verifies (this module's handshake
+/// by `rdlt-runtime` — the CLIENT verifies (this module's [`run`]
 /// checks id/version against the reply), the RUNTIME resolves (turning
 /// an id into a spawnable path is the provider's job, so `path` rides
 /// along for it without this crate reading it).
 ///
 /// `#[non_exhaustive]`: requirements can grow (a checksum, a signature)
-/// without breaking constructors — build with [`ConnectorRequirement::new`]
+/// without breaking constructors — build with [`Requirement::new`]
 /// plus the `with_*` declarations.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct ConnectorRequirement {
+pub struct Requirement {
     /// The connector id the handshake's reported identity must equal.
     pub id: String,
     /// A pinned connector version; `None` accepts any.
@@ -62,7 +62,7 @@ pub struct ConnectorRequirement {
     pub rpc_deadline: Duration,
 }
 
-impl ConnectorRequirement {
+impl Requirement {
     /// Require a connector by id alone.
     pub fn new(id: impl Into<String>) -> Self {
         Self {
@@ -102,19 +102,17 @@ impl ConnectorRequirement {
 
 /// Everything a verified handshake established.
 #[derive(Debug, Clone)]
-pub struct HandshakeOutcome {
-    /// VERIFIED at handshake (D-039-2) — the identity the wire
-    /// actually reported, as distinct from the unverified `spec`
-    /// decode; the 039 final-review skew record, closed by carrying
-    /// the verified fields.
+pub struct Outcome {
+    /// The identity the wire actually reported, VERIFIED at handshake
+    /// against the requirement — as distinct from the unverified
+    /// `spec` decode.
     pub connector_id: String,
     /// The connector version the WIRE reported — checked against the
-    /// requirement only when it pins a version (D-039-2); with no pin
-    /// it is carried as reported. Spec-vs-wire skew (`spec.version`
-    /// disagreeing with this value) is not refused here — that is the
-    /// certifier's P3 clause. Either way it is distinct from the
-    /// unverified `spec` decode (the 039 final-review skew record,
-    /// closed by carrying the wire-reported fields).
+    /// requirement only when it pins a version; with no pin it is
+    /// carried as reported. Spec-vs-wire skew (`spec.version`
+    /// disagreeing with this value) is not refused here — the
+    /// certifier judges identity agreement separately. Either way it
+    /// is distinct from the unverified `spec` decode.
     pub connector_version: String,
     /// The connector's self-description, decoded from `spec_json`.
     pub spec: ConnectorSpec,
@@ -133,7 +131,7 @@ pub struct HandshakeOutcome {
 }
 
 /// Run the handshake on `channel` for `role`, carrying `config`, and
-/// verify the reply against `expected` (D-039-2: id must match, and
+/// verify the reply against `expected` (the id must match, and the
 /// version must match when the requirement pins one) — identity is
 /// checked BEFORE any payload is decoded, so a wrong connector is
 /// reported as the mismatch it is rather than as whatever decode
@@ -147,20 +145,20 @@ pub struct HandshakeOutcome {
 /// binary itself: the pipeline document's `path:` override, or a
 /// provider built `with_search_path` restricted to a directory they
 /// control. A digest/signature pin is the anticipated future growth of
-/// [`ConnectorRequirement`] for stronger needs.
-pub async fn handshake(
+/// [`Requirement`] for stronger needs.
+pub async fn run(
     channel: &Channel,
     role: Role,
     config: &serde_json::Value,
-    expected: &ConnectorRequirement,
-) -> Result<HandshakeOutcome, error::Error> {
-    // The document ceiling enforced before SEND (4L10): the serve side
-    // refuses an oversized `config_json` after receiving it, but the
-    // host's own cap applies to the YAML FILE — and YAML→JSON
-    // re-serialization inflates (unicode escapes, quoting), so a
-    // just-legal file can cross the wire's ceiling. Refusing here turns
-    // the connector's typed post-receive refusal into a host-side error
-    // that names what actually happened.
+    expected: &Requirement,
+) -> Result<Outcome, error::Error> {
+    // The document ceiling enforced before SEND: the serve side refuses
+    // an oversized `config_json` after receiving it, but the host's own
+    // cap applies to the YAML FILE — and YAML→JSON re-serialization
+    // inflates (unicode escapes, quoting), so a just-legal file can
+    // cross the wire's ceiling. Refusing here turns the connector's
+    // typed post-receive refusal into a host-side error that names what
+    // actually happened.
     let config_json =
         serde_json::to_vec(config).expect("a serde_json::Value serializes to JSON infallibly");
     if config_json.len() as u64 > rdlt_connector::MAX_DOCUMENT_BYTES {
@@ -263,10 +261,10 @@ pub async fn handshake(
                 rdlt_connector::json::describe_parse_error(&error)
             ))
         })?;
-        // 5M6: the declared `ident_rules.max_len` is untrusted wire input
-        // and drives the engine's naming probe loop — validate it HERE, at
-        // the trust boundary, so an exhaustible bound can never reach the
-        // namer's release-active assert.
+        // The declared `ident_rules.max_len` is untrusted wire input
+        // and drives the engine's naming probe loop — validate it HERE,
+        // at the trust boundary, so an exhaustible bound can never
+        // reach the namer's release-active assert.
         capabilities.ident_rules.validate().map_err(|reason| {
             error::Error::Protocol(format!(
                 "the connector's declared identifier rules are out of range: {reason}"
@@ -275,7 +273,7 @@ pub async fn handshake(
         Some(capabilities)
     };
 
-    Ok(HandshakeOutcome {
+    Ok(Outcome {
         // The values the identity checks above verified — carried so
         // consumers read what the wire reported, never a re-derivation
         // from the unverified spec payload.
@@ -288,4 +286,18 @@ pub async fn handshake(
         state_format_versions: ok.state_format_versions.into_iter().collect(),
         negotiated_protocol: PROTOCOL_VERSION,
     })
+}
+
+/// Dial and verify in one motion — the shared first half of both
+/// adapters' `connect`.
+pub(crate) async fn establish(
+    socket_path: &Path,
+    engine_budget_bytes: u64,
+    config: &serde_json::Value,
+    role: Role,
+    expected: &Requirement,
+) -> Result<(Channel, Outcome), error::Error> {
+    let channel = wire::dial(socket_path, engine_budget_bytes, expected.rpc_deadline).await?;
+    let outcome = run(&channel, role, config, expected).await?;
+    Ok((channel, outcome))
 }
