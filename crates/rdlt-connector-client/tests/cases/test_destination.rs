@@ -1,5 +1,5 @@
-//! The wire `Destination`/`Backend` against the served echo
-//! destination: the sdk's D3 exactly-once choreography running
+//! The wire `Remote`/`Backend` against the served echo
+//! destination: the sdk's exactly-once commit choreography running
 //! CLIENT-side over the wire — the same `Session<B>` type the
 //! in-process path composes, over a `Backend` whose every method is a
 //! frame on the bidi stream. The echo's process-global call log is the
@@ -19,7 +19,7 @@ use rdlt_connector::{
     Destination as _, DestinationError, LoadSession, OpenContext, PartCloseReason, PartClosed,
     RecordBatch,
 };
-use rdlt_connector_client::destination::Destination;
+use rdlt_connector_client::destination::Remote;
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_sdk::destination::Backend as _;
 use rdlt_connector_sdk::serve;
@@ -46,8 +46,8 @@ const BOUND: Duration = Duration::from_secs(10);
 
 /// Connect to a served echo destination with `config`, requiring the
 /// echo's own identity.
-async fn connect_echo(path: &std::path::Path, config: serde_json::Value) -> Destination {
-    Destination::connect(
+async fn connect_echo(path: &std::path::Path, config: serde_json::Value) -> Remote {
+    Remote::connect(
         path,
         ENGINE_BUDGET_BYTES,
         &config,
@@ -63,7 +63,7 @@ fn context() -> OpenContext {
     OpenContext::new(PipelineId::new("pipe"), LoadId::new("load-1"))
 }
 
-/// 5M6: a destination declaring an out-of-range `ident_rules.max_len`
+/// A destination declaring an out-of-range `ident_rules.max_len`
 /// is refused at the handshake — the field drives the engine's naming
 /// probe loop, so the trust boundary validates it before any engine
 /// ever sees it.
@@ -81,7 +81,7 @@ async fn an_out_of_range_ident_rules_declaration_refuses_the_handshake() {
                 .with_ident_rules(rdlt_connector::core::naming::IdentRules { max_len: 2 }),
         ),
     );
-    let error = Destination::connect(
+    let error = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -178,11 +178,11 @@ async fn the_full_choreography_crosses_the_wire_as_a_load_session() {
             "read_state",
             "close"
         ],
-        "the D3 choreography, frame for frame, in the server's own order"
+        "the commit choreography, frame for frame, in the server's own order"
     );
 }
 
-/// The replay leg over the wire — the D3 choreography working
+/// The replay leg over the wire — the commit choreography working
 /// client-side across the transport: the echo's `existing_receipt`
 /// answers `Some`, so `Session::commit` returns the PRIOR receipt and
 /// runs `replay`, never `publish`.
@@ -210,7 +210,7 @@ async fn a_replayed_commit_takes_the_replay_path_over_the_wire() {
         .expect("commit");
     assert_eq!(
         receipt.commit_seq, 1,
-        "the stored receipt for THIS identity (7M1: a conforming backend \
+        "the stored receipt for THIS identity (a conforming backend \
          answers the identity it was asked about), not a fresh publish's"
     );
     session.close().await.expect("close");
@@ -277,8 +277,9 @@ async fn part_events_reach_the_callback_before_commit_returns() {
 
 /// The error round-trip pin: a served transient publish failure, mapped
 /// back through the wire, renders the classification frame EXACTLY ONCE
-/// — full-string, so a second frame (the 026 double-frame class, end to
-/// end over the wire) cannot hide in a substring match. The session
+/// — full-string, so a doubled classification prefix (the mapping
+/// re-wrapping an already-rendered cause) cannot hide in a substring
+/// match. The session
 /// stays usable afterward: close still works, matching serve semantics.
 #[tokio::test]
 async fn a_failed_publish_round_trips_the_classified_cause() {
@@ -446,7 +447,7 @@ async fn a_mid_stream_status_fails_the_in_flight_call_transport_fatal() {
             message: "rogue: induced mid-session failure".to_string(),
         },
     );
-    let remote = Destination::connect(
+    let remote = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -489,7 +490,7 @@ async fn capabilities_answer_from_the_handshake_cache_without_an_rpc() {
     let (_line, handle) = serve::destination::serve_on::<EchoDestination>(&path)
         .await
         .expect("bind");
-    let (remote, outcome) = Destination::connect(
+    let (remote, outcome) = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -531,7 +532,7 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
             table: "num\u{1b}]52;c;AAAA\u{7}bers".to_string(),
         },
     );
-    let remote = Destination::connect(
+    let remote = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -572,7 +573,7 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
     );
 }
 
-/// 6M1's document half, wire-level: a `ReadState` reply whose document
+/// The state read's document half, wire-level: a `ReadState` reply whose document
 /// exceeds the document ceiling is refused FATAL before its `Value`
 /// materializes — `StateDoc` is a typed shell around UNTYPED cursor
 /// values, so the seat gets the same ceiling every untyped parse runs.
@@ -585,7 +586,7 @@ async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
             state_doc_json: vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1],
         },
     );
-    let remote = Destination::connect(
+    let remote = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -612,7 +613,7 @@ async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
     );
 }
 
-/// 6M1's cursor half + 6L1: a state document inside the ceiling whose
+/// The state read's cursor half: a state document inside the ceiling whose
 /// CURSOR inflates past the cursor contract on re-serialization (the
 /// float-notation shape: `1e15` parses compact and re-serializes as
 /// `1000000000000000.0`) is refused naming the per-stream contract —
@@ -643,7 +644,7 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
             state_doc_json: doc,
         },
     );
-    let remote = Destination::connect(
+    let remote = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -670,9 +671,10 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
     );
 }
 
-/// 6M1's render quality: a malformed state document's refusal carries
-/// KIND and LOCATION, never the document's own bytes (6L7 — serde's
-/// data arms quote the parsed token, and state docs run to megabytes).
+/// The refusal's render quality: a malformed state document's refusal
+/// carries KIND and LOCATION, never the document's own bytes — serde's
+/// data arms quote the parsed token verbatim, and state docs run to
+/// megabytes.
 #[tokio::test]
 async fn a_malformed_state_document_refusal_never_echoes_the_document() {
     // A document whose `format_version` carries a string: serde's data
@@ -692,7 +694,7 @@ async fn a_malformed_state_document_refusal_never_echoes_the_document() {
             state_doc_json: doc,
         },
     );
-    let remote = Destination::connect(
+    let remote = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -722,7 +724,7 @@ async fn a_malformed_state_document_refusal_never_echoes_the_document() {
     );
 }
 
-/// 6L2's part-event half: a `part_closed` naming an over-length table
+/// The length gate's part-event half: a `part_closed` naming an over-length table
 /// (clean of control characters — length alone is the abuse) refuses
 /// typed before the event reaches the callback.
 #[tokio::test]
@@ -735,7 +737,7 @@ async fn an_oversized_table_in_a_part_event_refuses_typed() {
             table: "t".repeat(1025),
         },
     );
-    let remote = Destination::connect(
+    let remote = Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),

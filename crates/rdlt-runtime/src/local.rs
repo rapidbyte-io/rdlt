@@ -490,7 +490,7 @@ impl ConnectorProvider for LocalBinaryConnectorProvider {
         let (guard, line) = self
             .spawn_and_read_line(&path, &binary, "destination", false)
             .await?;
-        let (adapter, outcome) = destination::Destination::connect(
+        let (adapter, outcome) = destination::Remote::connect(
             &line.socket_path,
             self.engine_budget_bytes,
             config,

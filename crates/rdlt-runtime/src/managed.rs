@@ -220,7 +220,7 @@ impl Source for ManagedSource {
 /// handshake's findings, the guard — a [`Destination`] by delegation.
 #[derive(Debug)]
 pub struct ManagedDestination {
-    adapter: destination::Destination,
+    adapter: destination::Remote,
     identity: String,
     resolved_version: String,
     negotiated_protocol: u32,
@@ -232,7 +232,7 @@ impl ManagedDestination {
     /// Wrap a connected adapter — see [`ManagedSource::new`] for the
     /// field provenance.
     pub fn new(
-        adapter: destination::Destination,
+        adapter: destination::Remote,
         identity: impl Into<String>,
         outcome: &HandshakeOutcome,
         guard: Option<LifecycleGuard>,

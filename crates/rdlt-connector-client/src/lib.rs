@@ -9,7 +9,7 @@
 //! own classifications so the engine's retry machinery never learns the
 //! wire exists. [`source::Remote`] is those seams composed into the
 //! SPI's read half — a `Source` whose every method is an RPC;
-//! [`destination::Destination`] is its write-side twin, boxing the
+//! [`destination::Remote`] is its write-side twin, boxing the
 //! sdk's own `Session` over a [`destination::Backend`] so the
 //! exactly-once commit choreography runs client-side by identical
 //! type; `rdlt-runtime` re-exports [`handshake::Requirement`] (the
@@ -33,7 +33,7 @@
 //!
 //! Every name has exactly one canonical path, at its module —
 //! [`handshake::Requirement`], [`source::Remote`],
-//! [`destination::Destination`], [`destination::Backend`], the
+//! [`destination::Remote`], [`destination::Backend`], the
 //! transport seams at [`wire`], the error surface at [`error`] — with
 //! no crate-root aliases.
 //!

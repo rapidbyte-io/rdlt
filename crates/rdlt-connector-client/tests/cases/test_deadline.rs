@@ -17,7 +17,7 @@ use rdlt_connector::{
 use rdlt_connector_client::error::Error;
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, Operation};
-use rdlt_connector_client::{destination::Destination, source::Remote};
+use rdlt_connector_client::{destination, source::Remote};
 use rdlt_connector_protocol::proto::{self, read_frame};
 use rdlt_connector_sdk::destination::Backend as _;
 
@@ -286,7 +286,7 @@ async fn a_silent_session_reply_times_out_typed() {
             table: "numbers".to_string(),
         },
     );
-    let (remote, _) = Destination::connect(
+    let (remote, _) = destination::Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
@@ -331,7 +331,7 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
             table: "numbers".to_string(),
         },
     );
-    let (remote, _) = Destination::connect(
+    let (remote, _) = destination::Remote::connect(
         &path,
         ENGINE_BUDGET_BYTES,
         &serde_json::json!({}),
