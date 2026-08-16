@@ -26,7 +26,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 # `arrow` (not the SPI's arrow-array re-export) for the IPC stream
-# reader: `source::Source` decodes each `arrow_ipc` read frame's
+# reader: `source::Remote` decodes each `arrow_ipc` read frame's
 # exactly-one batch — the client seat of the proto's one-batch rule.
 arrow = { workspace = true }
 bytes = { workspace = true }

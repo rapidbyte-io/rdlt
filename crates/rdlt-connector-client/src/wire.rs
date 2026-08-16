@@ -150,6 +150,18 @@ pub fn connector_client(channel: Channel) -> ConnectorClient<Channel> {
     ConnectorClient::new(channel).max_decoding_message_size(MAX_FRAME_BYTES)
 }
 
+/// A `SourceService` client with the decode cap installed — see
+/// [`connector_client`].
+pub fn source_client(channel: Channel) -> SourceServiceClient<Channel> {
+    SourceServiceClient::new(channel).max_decoding_message_size(MAX_FRAME_BYTES)
+}
+
+/// A `DestinationService` client with the decode cap installed — see
+/// [`connector_client`].
+pub fn destination_client(channel: Channel) -> DestinationServiceClient<Channel> {
+    DestinationServiceClient::new(channel).max_decoding_message_size(MAX_FRAME_BYTES)
+}
+
 /// The connector-level `Check` RPC — one implementation for both
 /// adapter halves.
 pub(crate) async fn check<E: crate::error::FromWire>(
@@ -173,18 +185,6 @@ pub(crate) async fn check<E: crate::error::FromWire>(
             "the check reply carried no outcome".to_string(),
         )),
     }
-}
-
-/// A `SourceService` client with the decode cap installed — see
-/// [`connector_client`].
-pub fn source_client(channel: Channel) -> SourceServiceClient<Channel> {
-    SourceServiceClient::new(channel).max_decoding_message_size(MAX_FRAME_BYTES)
-}
-
-/// A `DestinationService` client with the decode cap installed — see
-/// [`connector_client`].
-pub fn destination_client(channel: Channel) -> DestinationServiceClient<Channel> {
-    DestinationServiceClient::new(channel).max_decoding_message_size(MAX_FRAME_BYTES)
 }
 
 #[cfg(test)]
