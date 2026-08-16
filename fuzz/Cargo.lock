@@ -1248,6 +1248,7 @@ dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-data",
+ "arrow-ipc",
  "arrow-schema",
  "async-trait",
  "bytes",
