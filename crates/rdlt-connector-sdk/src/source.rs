@@ -10,7 +10,7 @@ use std::ops::ControlFlow;
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::channel::{ChannelClosed, RecordsOut};
-use rdlt_connector::core::Cursor;
+use rdlt_connector::core::cursor::Cursor;
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;

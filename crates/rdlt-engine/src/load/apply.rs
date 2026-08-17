@@ -9,7 +9,11 @@
 use rdlt_connector::arrow::RecordBatch;
 
 use rdlt_connector::destination::{Capabilities, LoadSession};
-use rdlt_core::{RdltError, StateDoc, TableName, TableSchema, WriteMode};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::error::Error;
+use rdlt_core::id::TableName;
+use rdlt_core::schema::TableSchema;
+use rdlt_core::state::StateDoc;
 
 use super::lowering;
 
@@ -24,7 +28,7 @@ pub(crate) async fn apply_delta(
     capabilities: &Capabilities,
     schema: &TableSchema,
     mode: &WriteMode,
-) -> Result<(), RdltError> {
+) -> Result<(), Error> {
     let lowered = lowering::lower_schema(schema, capabilities);
     session
         .ensure_table(&lowered, mode)
@@ -45,7 +49,7 @@ pub(crate) async fn apply_batch(
     capabilities: &Capabilities,
     table: &TableName,
     batch: &RecordBatch,
-) -> Result<(), RdltError> {
+) -> Result<(), Error> {
     let lowered = lowering::lower_batch(batch, capabilities)?;
     session
         .write(table, lowered)

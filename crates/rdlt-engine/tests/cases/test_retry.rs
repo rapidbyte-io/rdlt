@@ -4,7 +4,8 @@
 //! closures; each names the mutant class it kills.
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{PipelineEvent, RdltError};
+use rdlt_core::error::Error;
+use rdlt_core::event::PipelineEvent;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
@@ -43,7 +44,7 @@ async fn transient_failures_retry_exactly_and_are_counted() {
         .expect_err("budget exhausted");
     assert!(matches!(
         err,
-        RdltError::Source {
+        Error::Source {
             retryable: true,
             ..
         }
@@ -99,7 +100,7 @@ async fn retry_budget_exhaustion_is_a_classified_error() {
         .run()
         .await
         .expect_err("must eventually fail");
-    assert!(matches!(err, rdlt_core::RdltError::Source { .. }));
+    assert!(matches!(err, rdlt_core::error::Error::Source { .. }));
 }
 
 /// 037 US2 fix round 2 (I1's decision + M5's vacuity guard),
@@ -138,7 +139,7 @@ async fn a_failed_run_closes_best_effort() {
     // fail, but the shape is pinned regardless) must never leak into
     // or replace it.
     assert!(
-        matches!(err, rdlt_core::RdltError::Source { .. }),
+        matches!(err, rdlt_core::error::Error::Source { .. }),
         "the propagated error must be the source failure, not a close artifact: {err:?}"
     );
     // M5 vacuity guard: without this, a mutant that skipped opening a
@@ -176,7 +177,7 @@ async fn mid_stream_transient_retry_does_not_duplicate_staged_rows() {
         .transient_fail_after_once(2), // …then the source dies transiently
     ]);
     let mut config = EngineConfig::new("retry-nodup");
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
+    config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let report = Engine::new(config, source, dest.clone())
         .run()
@@ -235,28 +236,29 @@ struct TransientCommitSession {
 impl rdlt_connector::destination::LoadSession for TransientCommitSession {
     async fn ensure_table(
         &mut self,
-        schema: &rdlt_connector::core::TableSchema,
-        mode: &rdlt_core::WriteMode,
+        schema: &rdlt_connector::core::schema::TableSchema,
+        mode: &rdlt_core::commit::WriteMode,
     ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
     async fn write(
         &mut self,
-        table: &rdlt_core::TableName,
+        table: &rdlt_core::id::TableName,
         batch: rdlt_connector::arrow::RecordBatch,
     ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.write(table, batch).await
     }
     async fn read_state(
         &mut self,
-        pipeline: &rdlt_core::PipelineId,
-    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError> {
+        pipeline: &rdlt_core::id::PipelineId,
+    ) -> Result<Option<rdlt_core::state::StateDoc>, rdlt_connector::error::DestinationError> {
         self.inner.read_state(pipeline).await
     }
     async fn commit(
         &mut self,
-        meta: rdlt_connector::core::CommitMeta,
-    ) -> Result<rdlt_connector::core::CommitReceipt, rdlt_connector::error::DestinationError> {
+        meta: rdlt_connector::core::commit::CommitMeta,
+    ) -> Result<rdlt_connector::core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
+    {
         use std::sync::atomic::Ordering;
         if self
             .remaining
@@ -301,7 +303,7 @@ async fn transient_destination_failures_retry_and_are_bounded() {
     assert!(
         matches!(
             err,
-            RdltError::Destination {
+            Error::Destination {
                 retryable: true,
                 ..
             }
@@ -357,7 +359,7 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
     assert!(
         matches!(
             err,
-            RdltError::Destination {
+            Error::Destination {
                 retryable: true,
                 ..
             }
@@ -391,7 +393,7 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
     .expect_err("budget exhausted");
     assert!(matches!(
         err,
-        RdltError::Source {
+        Error::Source {
             retryable: true,
             ..
         }

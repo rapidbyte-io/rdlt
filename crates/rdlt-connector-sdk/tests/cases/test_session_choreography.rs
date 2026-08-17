@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::{
-    CommitCounters, CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName,
-    TableSchema, WriteMode,
-};
+use rdlt_connector::core::commit::{self, CommitMeta, CommitReceipt, WriteMode};
+use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
+use rdlt_connector::core::schema::TableSchema;
+use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector_sdk::destination::{self, Backend, DestinationConnector};
@@ -169,7 +169,7 @@ fn meta() -> CommitMeta {
         load_id: LoadId::from("l"),
         commit_seq: 4,
         state: StateDoc::new(PipelineId::from("p"), env!("CARGO_PKG_VERSION")),
-        counters: CommitCounters::default(),
+        counters: commit::Counters::default(),
     }
 }
 

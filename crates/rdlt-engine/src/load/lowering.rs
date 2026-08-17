@@ -20,7 +20,11 @@ use arrow::{
 };
 use rdlt_connector::channel::MAX_ARROW_DEPTH;
 use rdlt_connector::destination::Capabilities;
-use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema, naming::UniqueNamer};
+use rdlt_core::error::Error;
+use rdlt_core::schema::{Column, ColumnType, TableSchema};
+use rdlt_core::types::LogicalType;
+
+use crate::naming::UniqueNamer;
 
 fn needs_lowering(capabilities: &Capabilities) -> bool {
     !capabilities.structs || !capabilities.decimal
@@ -32,7 +36,7 @@ pub(crate) fn lower_schema(schema: &TableSchema, capabilities: &Capabilities) ->
         return schema.clone();
     }
     let mut namer = UniqueNamer::new(capabilities.ident_rules);
-    let mut columns: Vec<ColumnDef> = Vec::new();
+    let mut columns: Vec<Column> = Vec::new();
     for column in &schema.columns {
         lower_column(column, &[], capabilities, &mut namer, &mut columns);
     }
@@ -44,11 +48,11 @@ pub(crate) fn lower_schema(schema: &TableSchema, capabilities: &Capabilities) ->
 }
 
 fn lower_column(
-    column: &ColumnDef,
+    column: &Column,
     path: &[&str],
     capabilities: &Capabilities,
     namer: &mut UniqueNamer,
-    out: &mut Vec<ColumnDef>,
+    out: &mut Vec<Column>,
 ) {
     let mut full_path: Vec<&str> = path.to_vec();
     full_path.push(&column.name);
@@ -65,7 +69,7 @@ fn lower_column(
                 } if !capabilities.decimal => ColumnType::scalar(LogicalType::Utf8),
                 other => other.clone(),
             };
-            out.push(ColumnDef {
+            out.push(Column {
                 name: namer.name_for(&full_path.join("__")),
                 column_type: lowered_ty,
                 nullable: column.nullable || !path.is_empty(),
@@ -81,7 +85,7 @@ fn lower_column(
 pub(crate) fn lower_batch(
     batch: &RecordBatch,
     capabilities: &Capabilities,
-) -> Result<RecordBatch, RdltError> {
+) -> Result<RecordBatch, Error> {
     if !needs_lowering(capabilities) {
         return Ok(batch.clone());
     }
@@ -100,7 +104,7 @@ pub(crate) fn lower_batch(
         )?;
     }
     RecordBatch::try_new(Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
-        .map_err(|e| RdltError::internal(format!("lowering produced invalid batch: {e}")))
+        .map_err(|e| Error::internal(format!("lowering produced invalid batch: {e}")))
 }
 
 fn flatten_array(
@@ -111,7 +115,7 @@ fn flatten_array(
     namer: &mut UniqueNamer,
     fields: &mut Vec<arrow::datatypes::Field>,
     out: &mut Vec<ArrayRef>,
-) -> Result<(), RdltError> {
+) -> Result<(), Error> {
     use arrow::datatypes::DataType;
     let mut full_path: Vec<&str> = path.to_vec();
     full_path.push(field.name());
@@ -119,7 +123,7 @@ fn flatten_array(
     // arrow's validator), and a stack overflow is an ABORT no containment
     // absorbs — refuse past the shared cap (047 M1).
     if full_path.len() > MAX_ARROW_DEPTH {
-        return Err(RdltError::internal(format!(
+        return Err(Error::internal(format!(
             "batch nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
              the flatten walk can overflow the stack"
         )));
@@ -129,7 +133,7 @@ fn flatten_array(
             let struct_array = array
                 .as_any()
                 .downcast_ref::<StructArray>()
-                .ok_or_else(|| RdltError::internal("schema says struct, array is not"))?;
+                .ok_or_else(|| Error::internal("schema says struct, array is not"))?;
             let parent_nulls = struct_array.nulls().cloned();
             for (i, child_field) in children.iter().enumerate() {
                 let child = with_merged_nulls(struct_array.column(i), parent_nulls.as_ref())?;
@@ -149,7 +153,7 @@ fn flatten_array(
             let decimals = array
                 .as_any()
                 .downcast_ref::<Decimal128Array>()
-                .ok_or_else(|| RdltError::internal("schema says decimal, array is not"))?;
+                .ok_or_else(|| Error::internal("schema says decimal, array is not"))?;
             let scale = (*scale).max(0) as u8;
             let rendered: StringArray = decimals
                 .iter()
@@ -194,12 +198,12 @@ fn flatten_array(
 /// IPC-decoded batch (which skips arrow's validator) — `NullBuffer::union`
 /// panics on it, so the mismatch is refused with a typed error instead
 /// (047 L3).
-fn with_merged_nulls(child: &ArrayRef, parent: Option<&NullBuffer>) -> Result<ArrayRef, RdltError> {
+fn with_merged_nulls(child: &ArrayRef, parent: Option<&NullBuffer>) -> Result<ArrayRef, Error> {
     let Some(parent) = parent else {
         return Ok(Arc::clone(child));
     };
     if parent.len() != child.len() {
-        return Err(RdltError::internal(format!(
+        return Err(Error::internal(format!(
             "struct null-merge: the parent's validity buffer covers {} rows but the \
              child array holds {} — an inconsistent batch, refused instead of unwound",
             parent.len(),
@@ -238,7 +242,8 @@ mod tests {
     use super::*;
     use arrow::array::Int64Array;
     use arrow::datatypes::{DataType, Field, Schema};
-    use rdlt_core::{Provenance, TableName};
+    use rdlt_core::id::TableName;
+    use rdlt_core::schema::Provenance;
 
     fn capabilities(structs: bool, decimal: bool) -> Capabilities {
         Capabilities::default()
@@ -246,8 +251,8 @@ mod tests {
             .with_decimal(decimal)
     }
 
-    fn col(name: &str, ty: ColumnType) -> ColumnDef {
-        ColumnDef {
+    fn col(name: &str, ty: ColumnType) -> Column {
+        Column {
             name: name.into(),
             column_type: ty,
             nullable: false,
@@ -581,7 +586,7 @@ mod parity_tests {
     //!
     //! `lower_schema` tells the destination what columns to CREATE;
     //! `lower_batch` decides what columns actually ARRIVE. They are written
-    //! separately — one walks `ColumnDef`s, the other walks arrow `Field`s — and
+    //! separately — one walks `Column`s, the other walks arrow `Field`s — and
     //! every rule has to be stated twice. A disagreement is not a compile error
     //! and usually not a test failure either: the destination creates one shape
     //! and receives another, and what happens next depends on the destination.
@@ -597,7 +602,8 @@ mod parity_tests {
     use super::*;
     use crate::shred::build::arrow_schema;
     use proptest::prelude::*;
-    use rdlt_core::{Provenance, TableName};
+    use rdlt_core::id::TableName;
+    use rdlt_core::schema::Provenance;
 
     fn capabilities(structs: bool, decimal: bool) -> Capabilities {
         Capabilities::default()
@@ -625,9 +631,9 @@ mod parity_tests {
         ]
     }
 
-    fn column(depth: u32) -> impl Strategy<Value = ColumnDef> {
+    fn column(depth: u32) -> impl Strategy<Value = Column> {
         let leaf = ("[a-z][a-z0-9_]{0,7}", scalar_type(), any::<bool>()).prop_map(
-            |(name, column_type, nullable)| ColumnDef {
+            |(name, column_type, nullable)| Column {
                 name,
                 column_type,
                 nullable,
@@ -640,7 +646,7 @@ mod parity_tests {
                 prop::collection::vec(inner, 1..3),
                 any::<bool>(),
             )
-                .prop_map(|(name, fields, nullable)| ColumnDef {
+                .prop_map(|(name, fields, nullable)| Column {
                     name,
                     column_type: ColumnType::Struct { fields },
                     nullable,

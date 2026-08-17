@@ -12,10 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
-    StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::commit::{self, CommitMeta, WriteMode};
+use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
+use rdlt_connector::core::schema::{Column, ColumnType, Provenance, TableSchema};
+use rdlt_connector::core::state::StateDoc;
+use rdlt_connector::core::types::LogicalType;
 use rdlt_connector::destination::{
     Destination as _, LoadSession, OpenContext, PartCloseReason, PartClosed,
 };
@@ -79,7 +80,7 @@ async fn an_out_of_range_ident_rules_declaration_refuses_the_handshake() {
         },
         Some(
             rdlt_connector::destination::Capabilities::default()
-                .with_ident_rules(rdlt_connector::core::naming::IdentRules { max_len: 2 }),
+                .with_ident_rules(rdlt_connector::core::schema::IdentRules { max_len: 2 }),
         ),
     );
     let error = Remote::connect(
@@ -102,7 +103,7 @@ fn schema_for(table: &str) -> TableSchema {
     TableSchema {
         table: TableName::new(table),
         parent: None,
-        columns: vec![ColumnDef {
+        columns: vec![Column {
             name: "id".into(),
             column_type: ColumnType::scalar(LogicalType::Int64),
             nullable: false,
@@ -129,7 +130,7 @@ fn meta_for(seq: u64) -> CommitMeta {
         load_id: LoadId::new("load-1"),
         commit_seq: seq,
         state: StateDoc::new(PipelineId::new("pipe"), "test"),
-        counters: CommitCounters::default(),
+        counters: commit::Counters::default(),
     }
 }
 
@@ -601,7 +602,7 @@ async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
     let mut backend = remote.open_backend(&context()).await.expect("open");
     let error = tokio::time::timeout(
         BOUND,
-        backend.read_state(&rdlt_connector::core::PipelineId::new("p")),
+        backend.read_state(&rdlt_connector::core::id::PipelineId::new("p")),
     )
     .await
     .expect("the refusal answers promptly")
@@ -626,11 +627,13 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
     // serializes past the 4 MiB cursor contract — built through the real
     // `StateDoc` so the shape is the wire's own.
     let floats = format!("[{}]", vec!["1e15"; 300_000].join(","));
-    let mut doc =
-        rdlt_connector::core::StateDoc::new(rdlt_connector::core::PipelineId::new("p"), "test");
+    let mut doc = rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p"),
+        "test",
+    );
     doc.cursors.insert(
-        rdlt_connector::core::StreamName::new("s"),
-        rdlt_connector::core::Cursor::new({
+        rdlt_connector::core::id::StreamName::new("s"),
+        rdlt_connector::core::cursor::Cursor::new({
             let inflated: serde_json::Value =
                 serde_json::from_str(&floats).expect("compact exponent notation parses");
             inflated
@@ -659,7 +662,7 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
     let mut backend = remote.open_backend(&context()).await.expect("open");
     let error = tokio::time::timeout(
         BOUND,
-        backend.read_state(&rdlt_connector::core::PipelineId::new("p")),
+        backend.read_state(&rdlt_connector::core::id::PipelineId::new("p")),
     )
     .await
     .expect("the refusal answers promptly")
@@ -682,8 +685,8 @@ async fn a_malformed_state_document_refusal_never_echoes_the_document() {
     // A document whose `format_version` carries a string: serde's data
     // error quotes the parsed token verbatim — the renderer must not.
     // Built from a real StateDoc so only the one field is hostile.
-    let mut value = serde_json::to_value(rdlt_connector::core::StateDoc::new(
-        rdlt_connector::core::PipelineId::new("p"),
+    let mut value = serde_json::to_value(rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p"),
         "test",
     ))
     .expect("a StateDoc serializes");
@@ -709,7 +712,7 @@ async fn a_malformed_state_document_refusal_never_echoes_the_document() {
     let mut backend = remote.open_backend(&context()).await.expect("open");
     let error = tokio::time::timeout(
         BOUND,
-        backend.read_state(&rdlt_connector::core::PipelineId::new("p")),
+        backend.read_state(&rdlt_connector::core::id::PipelineId::new("p")),
     )
     .await
     .expect("the refusal answers promptly")

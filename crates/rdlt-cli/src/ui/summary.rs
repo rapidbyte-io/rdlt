@@ -1,11 +1,12 @@
-//! The final summary, rendered from the RunReport — the exactly-once
+//! The final summary, rendered from the run report — the exactly-once
 //! numbers, never the live fold. Both renderers end with this; only
 //! quiet mode suppresses it.
 
 use std::time::Duration;
 
 use console::style as style_any;
-use rdlt::prelude::{ResumedFrom, RunReport};
+use rdlt::prelude::ResumedFrom;
+use rdlt::report;
 
 use super::format;
 
@@ -19,7 +20,7 @@ fn style<D>(value: D) -> console::StyledObject<D> {
 /// gates a default `style()` on STDOUT's color state, and the common
 /// `rdlt run … > report.json` on a terminal would silently lose
 /// styling (while `--color never` failed to strip it).
-pub fn render(report: &RunReport) -> String {
+pub fn render(report: &report::Run) -> String {
     let elapsed = Duration::from_millis(report.elapsed_ms);
     let total_rows: u64 = report.tables.values().map(|t| t.rows).sum();
     let total_bytes: u64 = report.tables.values().map(|t| t.bytes).sum();
@@ -145,9 +146,9 @@ mod tests {
     /// test: console detects the non-terminal).
     #[test]
     fn a_report_renders_all_sections() {
-        let mut report = RunReport::new(
+        let mut report = report::Run::new(
             rdlt::prelude::StreamName::new("p").as_str().into(),
-            rdlt::sdk::spi::core::LoadId::new("load-1"),
+            rdlt::sdk::spi::core::id::LoadId::new("load-1"),
         );
         report.commits = 2;
         report.elapsed_ms = 2_000;

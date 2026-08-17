@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt_connector::core::TableName;
+use rdlt_connector::core::id::TableName;
 use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 
 /// The shared meter: closed probe windows plus the start of the window

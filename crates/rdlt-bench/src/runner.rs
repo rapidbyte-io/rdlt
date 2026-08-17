@@ -59,7 +59,7 @@ fn at(path: &Path) -> impl Fn(std::io::Error) -> BenchError + '_ {
     move |e| BenchError(format!("{}: {e}", path.display()))
 }
 
-/// Rows/bytes totals a RunReport JSON attributes to its tables.
+/// Rows/bytes totals a run-report JSON attributes to its tables.
 fn report_totals(report: &serde_json::Value) -> (u64, u64) {
     let mut rows = 0;
     let mut bytes = 0;
@@ -578,7 +578,7 @@ fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<V
         .and_then(|s| s.detail.report.as_ref())
         .ok_or_else(|| {
             BenchError(format!(
-                "cell `{}`: verify declared but no RunReport captured",
+                "cell `{}`: verify declared but no run report captured",
                 cell.id
             ))
         })?;
@@ -912,7 +912,7 @@ mod tests {
     }
 
     /// Build a cell whose only interesting property is its declared table set,
-    /// paired with one sample carrying a RunReport of the delivered set.
+    /// paired with one sample carrying a run report of the delivered set.
     fn cell_and_sample(
         declared: &[(&str, u64)],
         delivered: &[(&str, u64)],

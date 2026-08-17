@@ -13,7 +13,7 @@
 use async_trait::async_trait;
 use rdlt_connector_sdk::config::{self, Document};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
-use rdlt_connector_sdk::spi::core::Cursor;
+use rdlt_connector_sdk::spi::core::cursor::Cursor;
 use rdlt_connector_sdk::spi::error::SourceError;
 use rdlt_connector_sdk::spi::source::StreamSpec;
 

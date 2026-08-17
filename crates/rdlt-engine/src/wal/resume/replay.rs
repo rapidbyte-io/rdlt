@@ -4,7 +4,9 @@
 use std::{fs::File, io::BufReader, path::Path};
 
 use rdlt_connector::destination::LoadSession;
-use rdlt_core::{CommitMeta, RdltError, StateDoc};
+use rdlt_core::commit::CommitMeta;
+use rdlt_core::error::Error;
+use rdlt_core::state::StateDoc;
 
 use crate::wal::WalRecord;
 
@@ -316,7 +318,7 @@ pub(crate) async fn replay(
     session: &mut dyn LoadSession,
     state: &mut StateDoc,
     capabilities: rdlt_connector::destination::Capabilities,
-) -> Result<Option<u64>, RdltError> {
+) -> Result<Option<u64>, Error> {
     // Pass 1 — validate: every segment must fully decode BEFORE any write
     // reaches the session. Batches are decoded one at a time and dropped,
     // so recovery memory stays bounded by one batch regardless of span
@@ -495,7 +497,7 @@ pub(crate) async fn replay(
         }
     }
 
-    state.last_commit = Some(rdlt_core::LastCommit {
+    state.last_commit = Some(rdlt_core::state::LastCommit {
         load_id: span.load_id.clone(),
         commit_seq: span.next_commit_seq,
     });
@@ -1006,7 +1008,7 @@ mod segment_format {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdlt_core::{LoadId, PipelineId};
+    use rdlt_core::id::{LoadId, PipelineId};
 
     /// 8L1: the pass-2 recount. The existing mismatch pin drives the
     /// PASS-1 check; this one rewrites the segment BETWEEN the passes
@@ -1045,8 +1047,8 @@ mod tests {
         impl rdlt_connector::destination::LoadSession for SwappingSession {
             async fn ensure_table(
                 &mut self,
-                _schema: &rdlt_core::TableSchema,
-                _mode: &rdlt_core::WriteMode,
+                _schema: &rdlt_core::schema::TableSchema,
+                _mode: &rdlt_core::commit::WriteMode,
             ) -> Result<(), rdlt_connector::error::DestinationError> {
                 if !self.swapped {
                     self.swapped = true;
@@ -1068,22 +1070,22 @@ mod tests {
             }
             async fn write(
                 &mut self,
-                _table: &rdlt_core::TableName,
+                _table: &rdlt_core::id::TableName,
                 _batch: RecordBatch,
             ) -> Result<(), rdlt_connector::error::DestinationError> {
                 Ok(())
             }
             async fn commit(
                 &mut self,
-                _meta: rdlt_core::CommitMeta,
-            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError>
+                _meta: rdlt_core::commit::CommitMeta,
+            ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
             {
                 panic!("a degraded replay never reaches commit")
             }
             async fn read_state(
                 &mut self,
-                _pipeline: &rdlt_core::PipelineId,
-            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError>
+                _pipeline: &rdlt_core::id::PipelineId,
+            ) -> Result<Option<rdlt_core::state::StateDoc>, rdlt_connector::error::DestinationError>
             {
                 Ok(None)
             }
@@ -1097,22 +1099,22 @@ mod tests {
             next_commit_seq: 1,
             records: vec![
                 WalRecord::Segment {
-                    table: rdlt_core::TableName::new("t"),
+                    table: rdlt_core::id::TableName::new("t"),
                     file: "l-000000.arrow".to_owned(),
                     rows: 3,
                 },
                 WalRecord::Checkpoint {
-                    stream: rdlt_core::StreamName::new("s"),
-                    cursor: rdlt_core::Cursor::new(serde_json::json!(1)),
+                    stream: rdlt_core::id::StreamName::new("s"),
+                    cursor: rdlt_core::cursor::Cursor::new(serde_json::json!(1)),
                 },
             ],
             schemas: vec![(
-                rdlt_core::TableSchema {
-                    table: rdlt_core::TableName::new("t"),
+                rdlt_core::schema::TableSchema {
+                    table: rdlt_core::id::TableName::new("t"),
                     parent: None,
                     columns: vec![],
                 },
-                rdlt_core::WriteMode::Append,
+                rdlt_core::commit::WriteMode::Append,
             )],
         };
 
@@ -1150,7 +1152,8 @@ mod tests {
     /// damage arm in this module makes.
     #[tokio::test]
     async fn a_row_count_mismatch_degrades_to_re_extraction() {
-        use rdlt_core::{TableName, WriteMode};
+        use rdlt_core::commit::WriteMode;
+        use rdlt_core::id::TableName;
 
         use arrow::array::Int64Array;
         use arrow::datatypes::{DataType, Field, Schema};
@@ -1167,7 +1170,7 @@ mod tests {
         .expect("batch");
         crate::wal::write_segment(&dir.path().join("l-000000.arrow"), &seg).expect("write segment");
 
-        let schema = rdlt_core::TableSchema {
+        let schema = rdlt_core::schema::TableSchema {
             table: TableName::new("t"),
             parent: None,
             columns: vec![],
@@ -1182,8 +1185,8 @@ mod tests {
                     rows,
                 },
                 WalRecord::Checkpoint {
-                    stream: rdlt_core::StreamName::new("s"),
-                    cursor: rdlt_core::Cursor::new(serde_json::json!(1)),
+                    stream: rdlt_core::id::StreamName::new("s"),
+                    cursor: rdlt_core::cursor::Cursor::new(serde_json::json!(1)),
                 },
             ],
             schemas: vec![(schema.clone(), WriteMode::Append)],

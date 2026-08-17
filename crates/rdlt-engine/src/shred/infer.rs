@@ -1,21 +1,31 @@
 //! Per-column type observation with value-checked widening.
 //!
-//! Drives `rdlt_core::widen` and layers the *value* checks the pure lattice cannot
+//! Drives `rdlt_core::types::widen` and layers the *value* checks the pure lattice cannot
 //! know about: an `Int64` beyond ±2^53 meeting `Float64` escalates the column to
 //! `Utf8` — losslessness is enforced at runtime, never assumed.
 //!
 //! Generic over [`JsonView`]: the tape path and the `&serde_json::Value` test
 //! view observe through the SAME logic — one lattice, one escalation rule.
 
-use rdlt_core::{
-    ColumnDef, ColumnType, Provenance,
-    types::{LogicalType, int64_fits_in_f64, widen},
-};
+use rdlt_core::schema::{Column, ColumnType, Provenance};
+use rdlt_core::types::{LogicalType, widen};
 
 use super::{
     canon::parse_timestamp_tz,
     view::{JsonView, ValueKind},
 };
+
+/// `true` iff `v` converts to `f64` exactly. Values outside ±2^53 do not; the
+/// shredder must escalate the column instead of silently rounding.
+pub(crate) fn int64_fits_in_f64(v: i64) -> bool {
+    const EXACT: i64 = 1 << 53;
+    (-EXACT..=EXACT).contains(&v)
+}
+
+/// `a ⊑ b` in the widening order (i.e. `b` can hold everything `a` can).
+pub(crate) fn is_widening_of(a: LogicalType, b: LogicalType) -> bool {
+    widen(a, b) == b
+}
 
 /// Observation state for a scalar position (column, struct field, or list item).
 #[derive(Debug, Default, Clone)]
@@ -262,10 +272,10 @@ impl ColumnState {
                 item: item.resolve(),
             }),
             ColumnState::Struct(fields) => {
-                let resolved: Vec<ColumnDef> = fields
+                let resolved: Vec<Column> = fields
                     .iter()
                     .filter_map(|(name, state)| {
-                        state.resolve().map(|ty| ColumnDef {
+                        state.resolve().map(|ty| Column {
                             name: name.clone(),
                             column_type: ty,
                             nullable: true,
@@ -493,5 +503,23 @@ mod tests {
         let mut state = ScalarState::pinned(LogicalType::TimestampTz);
         state.observe(&json!("definitely not a timestamp"));
         assert_eq!(state.resolve(), LogicalType::TimestampTz);
+    }
+
+    #[test]
+    fn f64_exactness_boundary() {
+        assert!(int64_fits_in_f64(1 << 53));
+        assert!(!int64_fits_in_f64((1 << 53) + 1));
+        assert!(int64_fits_in_f64(-(1 << 53)));
+        assert!(!int64_fits_in_f64(-(1 << 53) - 1));
+    }
+
+    #[test]
+    fn widening_order_is_strict() {
+        assert!(is_widening_of(LogicalType::Int64, LogicalType::Float64));
+        assert!(
+            !is_widening_of(LogicalType::Float64, LogicalType::Int64),
+            "narrowing is NOT widening"
+        );
+        assert!(is_widening_of(LogicalType::Binary, LogicalType::Json));
     }
 }

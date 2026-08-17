@@ -25,7 +25,8 @@ use std::path::PathBuf;
 use rdlt_connector::destination::Destination;
 
 use rdlt_connector::source::{Source, StreamSpec};
-use rdlt_core::{WriteMode, failpoint::fail};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
@@ -288,7 +289,7 @@ impl rdlt_connector::source::Source for KeyedArrowSource {
             }
             if req
                 .out
-                .checkpoint(rdlt_connector::core::Cursor::new((b + 1) as u64))
+                .checkpoint(rdlt_connector::core::cursor::Cursor::new((b + 1) as u64))
                 .await
                 .is_err()
             {

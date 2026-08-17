@@ -15,7 +15,7 @@ data movement, serde-serializable (`{"event": "batch_loaded", ...}`),
 ADVISORY: dropping them changes nothing about the load, and a
 consumer that lags loses the OLDEST events rather than being allowed
 to slow the pipeline — a still-connected consumer must not infer a
-complete feed. The `RunReport` remains the complete record either
+complete feed. The run report (`report::Run`) remains the complete record either
 way.
 
 | event | carries | meaning |
@@ -33,7 +33,7 @@ way.
 | `heartbeat` | elapsed_ms | A liveness tick (1 s) once the streams are wired (discovery, session open and WAL recovery precede the ticker). The first beat fires synchronously at wiring itself, before the 1 s ticker is even spawned, so every identified run carries at least one: events may legitimately go quiet, heartbeats may not. |
 
 Sensitivity: `committed` carries each commit's CURSORS, and the
-`RunReport` carries the final ones. Cursor values are source-defined —
+`report::Run` carries the final ones. Cursor values are source-defined —
 an offset is harmless, a resume token or signed continuation URL is
 not — so anything that persists the feed or the report (the CLI's
 `--events` NDJSON file, `--report`/stdout JSON, a CI artifact store)
@@ -55,6 +55,7 @@ matching `committed` — the next attempt runs under a new load id.
 every consumer shows the same rows/s:
 
 ```rust,ignore
+use rdlt::metrics::Snapshot;
 use rdlt::prelude::*;
 
 let mut events = pipeline.events();
@@ -68,7 +69,7 @@ tokio::spawn(async move {
                 None => break,
             },
             _ = tick.tick() => {
-                let snap: MetricsSnapshot = metrics.snapshot();
+                let snap: Snapshot = metrics.snapshot();
                 // serve it, log it, ship it — it's plain serializable data
                 println!("{} rows/s", snap.rows_per_sec.unwrap_or(0.0));
             }
@@ -77,11 +78,11 @@ tokio::spawn(async move {
 });
 ```
 
-`MetricsSnapshot` carries per-stream read totals, the stream→table
+`metrics::Snapshot` carries per-stream read totals, the stream→table
 mapping the engine announced, per-table write and output totals,
 sliding-window and cumulative rates, commit recency, and whether a
 commit is in flight. The fold is advisory like the feed
-that drives it: FINAL totals belong to the `RunReport` — the
+that drives it: FINAL totals belong to the `report::Run` — the
 exactly-once record — and a consumer showing final numbers must take
 them from there.
 
@@ -103,7 +104,7 @@ attribute each other's work.
 
 ## The report's telemetry fields
 
-`RunReport` (format v1, additions additive with `#[serde(default)]`):
+`report::Run` (format v1, additions additive with `#[serde(default)]`):
 per-stream `streams.{rows_read, bytes_read}`, per-table
 `tables.{output_bytes}` (zero where no files were written), and
 `rows_per_sec_avg`. These are counted at the source and in the part

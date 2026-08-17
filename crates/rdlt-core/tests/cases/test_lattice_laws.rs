@@ -1,11 +1,11 @@
-//! Widening-lattice laws as executable properties (SC-006, research.md R7).
+//! Widening-lattice laws as executable properties.
 //!
 //! Order-insensitive inference requires `widen` to be a semilattice join:
 //! commutative + associative + idempotent, with monotone results. A counterexample
 //! here is a release blocker.
 
 use proptest::prelude::*;
-use rdlt_core::types::{DECIMAL_MAX_PRECISION, LogicalType, is_widening_of, widen};
+use rdlt_core::types::{DECIMAL_MAX_PRECISION, LogicalType, widen};
 
 fn any_logical_type() -> impl Strategy<Value = LogicalType> {
     prop_oneof![
@@ -50,12 +50,13 @@ proptest! {
         prop_assert_eq!(widen(widen(a, b), c), widen(a, widen(b, c)));
     }
 
-    /// The join is an upper bound of both inputs (types only move upward).
+    /// The join is an upper bound of both inputs (types only move upward):
+    /// joining either input with the result gives the result back.
     #[test]
     fn monotone_upper_bound(a in any_logical_type(), b in any_logical_type()) {
         let joined = widen(a, b);
-        prop_assert!(is_widening_of(a, joined));
-        prop_assert!(is_widening_of(b, joined));
+        prop_assert_eq!(widen(a, joined), joined);
+        prop_assert_eq!(widen(b, joined), joined);
     }
 
     /// Json is the absorbing top of the lattice.

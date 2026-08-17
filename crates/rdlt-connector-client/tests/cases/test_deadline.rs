@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rdlt_connector::channel::{PushPayload, records};
-use rdlt_connector::core::{LoadId, PipelineId};
+use rdlt_connector::core::id::{LoadId, PipelineId};
 use rdlt_connector::destination::OpenContext;
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::{ReadRequest, Source as _};
@@ -302,7 +302,7 @@ async fn a_silent_session_reply_times_out_typed() {
         BOUND,
         backend.ensure_table(
             &schema_for("numbers"),
-            &rdlt_connector::core::WriteMode::Append,
+            &rdlt_connector::core::commit::WriteMode::Append,
         ),
     )
     .await
@@ -353,7 +353,7 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
         BOUND,
         backend.ensure_table(
             &schema_for("numbers"),
-            &rdlt_connector::core::WriteMode::Append,
+            &rdlt_connector::core::commit::WriteMode::Append,
         ),
     )
     .await
@@ -373,12 +373,14 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
 
 /// The one-column `id: Int64` logical schema, hand-built (this crate's
 /// test support imports nothing cross-crate).
-fn schema_for(table: &str) -> rdlt_connector::core::TableSchema {
-    use rdlt_connector::core::{ColumnDef, ColumnType, LogicalType, Provenance, TableName};
-    rdlt_connector::core::TableSchema {
+fn schema_for(table: &str) -> rdlt_connector::core::schema::TableSchema {
+    use rdlt_connector::core::id::TableName;
+    use rdlt_connector::core::schema::{Column, ColumnType, Provenance};
+    use rdlt_connector::core::types::LogicalType;
+    rdlt_connector::core::schema::TableSchema {
         table: TableName::new(table),
         parent: None,
-        columns: vec![ColumnDef {
+        columns: vec![Column {
             name: "id".into(),
             column_type: ColumnType::scalar(LogicalType::Int64),
             nullable: false,

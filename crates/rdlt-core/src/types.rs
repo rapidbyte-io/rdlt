@@ -1,10 +1,10 @@
 //! Logical types and the widening lattice.
 //!
 //! `widen` is the pure join used by schema inference. Its laws — commutativity,
-//! idempotence, associativity (order-insensitivity), and monotonicity — are enforced by
-//! property tests in `tests/lattice_laws.rs`. Types move only *upward*; there is
-//! deliberately **no** `Float64 → Decimal` edge (NaN/±Inf and the exponent range don't
-//! fit — that edge would be a silent-corruption bug).
+//! idempotence, associativity (order-insensitivity), and monotonicity — are
+//! enforced by the crate's property tests. Types move only *upward*; there is
+//! deliberately **no** `Float64 → Decimal` edge (NaN/±Inf and the exponent range
+//! don't fit — that edge would be a silent-corruption bug).
 
 use serde::{Deserialize, Serialize};
 
@@ -61,9 +61,9 @@ use LogicalType::*;
 /// `Binary` and `Json`); the numeric chains are `Int64 → Float64 → Utf8` and
 /// `Int64 → Decimal → Utf8`, with `Float64 ⊔ Decimal = Utf8`.
 ///
-/// Note this is the *type-level* join. Conversions are additionally value-checked at
-/// shred time (`Int64 → Float64` is exact only within ±2^53); an inexact value
-/// escalates the column further along the lattice. See `int64_fits_in_f64`.
+/// This is the *type-level* join. The engine additionally value-checks
+/// conversions at shred time (`Int64 → Float64` is exact only within ±2^53) and
+/// escalates an inexact value's column further along the lattice.
 pub fn widen(a: LogicalType, b: LogicalType) -> LogicalType {
     if a == b {
         return a;
@@ -104,31 +104,18 @@ fn join_decimals(p1: u8, s1: u8, p2: u8, s2: u8) -> LogicalType {
     }
 }
 
-/// `true` iff `v` converts to `f64` exactly. Values outside ±2^53 do not; the shredder
-/// must escalate the column instead of silently rounding.
-pub fn int64_fits_in_f64(v: i64) -> bool {
-    const EXACT: i64 = 1 << 53;
-    (-EXACT..=EXACT).contains(&v)
-}
-
-/// `a ⊑ b` in the widening order (i.e. `b` can hold everything `a` can).
-pub fn is_widening_of(a: LogicalType, b: LogicalType) -> bool {
-    widen(a, b) == b
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The Binary arm meets everything at Json, and the order is strict:
+    /// a join that lands on the wider side must not also land on the narrower.
     #[test]
     fn binary_meets_anything_at_json_and_order_is_strict() {
-        // Mutation-report closure: the Binary arm and is_widening_of's negative
-        // case were untested.
-        use LogicalType::*;
         assert_eq!(widen(Binary, Int64), Json);
         assert_eq!(widen(Utf8, Binary), Json);
-        assert!(is_widening_of(Int64, Float64));
-        assert!(!is_widening_of(Float64, Int64), "narrowing is NOT widening");
+        assert_eq!(widen(Int64, Float64), Float64);
+        assert_ne!(widen(Float64, Int64), Int64, "narrowing is NOT widening");
     }
 
     #[test]
@@ -178,13 +165,5 @@ mod tests {
             ),
             Utf8
         );
-    }
-
-    #[test]
-    fn f64_exactness_boundary() {
-        assert!(int64_fits_in_f64(1 << 53));
-        assert!(!int64_fits_in_f64((1 << 53) + 1));
-        assert!(int64_fits_in_f64(-(1 << 53)));
-        assert!(!int64_fits_in_f64(-(1 << 53) - 1));
     }
 }

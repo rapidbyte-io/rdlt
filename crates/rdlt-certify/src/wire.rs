@@ -23,7 +23,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use rdlt_connector::core::{LoadId, PipelineId, WriteMode};
+use rdlt_connector::core::commit::WriteMode;
+use rdlt_connector::core::id::{LoadId, PipelineId};
 use rdlt_connector::source::StreamSpec;
 use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_client::wire::{

@@ -3,7 +3,8 @@
 //! Second runs move only new data; merge replaces a record's whole subtree.
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{CommitPolicy, Cursor, WriteMode};
+use rdlt_core::commit::{CommitPolicy, WriteMode};
+use rdlt_core::cursor::Cursor;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
@@ -63,7 +64,7 @@ async fn second_run_resumes_from_committed_cursor() {
     assert_eq!(dest.committed_rows("events").len(), 3, "no duplicates");
     assert!(matches!(
         report2.resumed_from,
-        rdlt_core::ResumedFrom::Cursor
+        rdlt_core::report::ResumedFrom::Cursor
     ));
 }
 
@@ -214,7 +215,7 @@ async fn fresh_run_reads_with_no_cursor() {
 /// report `Fresh`, not `Cursor`.
 #[tokio::test]
 async fn empty_cursor_state_reports_fresh_resume() {
-    use rdlt_core::ResumedFrom;
+    use rdlt_core::report::ResumedFrom;
     let dest = MemoryDestination::new();
     // No checkpoints: state commits with an empty cursor map.
     let stream = MemoryStream::new(

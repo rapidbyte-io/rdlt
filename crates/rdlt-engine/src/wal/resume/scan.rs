@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use rdlt_core::{LoadId, PipelineId};
+use rdlt_core::id::{LoadId, PipelineId};
 
 use crate::wal::WalRecord;
 
@@ -85,8 +85,8 @@ fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<ReadLine>, Str
 /// consumer reads (the fold builds it; `ChainMemo`, `live_tables` and
 /// `filter_covered` walk it).
 type SchemaMap = std::collections::BTreeMap<
-    rdlt_core::TableName,
-    (rdlt_core::TableSchema, rdlt_core::WriteMode),
+    rdlt_core::id::TableName,
+    (rdlt_core::schema::TableSchema, rdlt_core::commit::WriteMode),
 >;
 
 /// The uncommitted tail of a previous run.
@@ -102,7 +102,7 @@ pub(crate) struct RecoverySpan {
     /// spans included). A span whose schema delta committed earlier still needs
     /// `ensure_table` on the fresh recovery session — sessions register
     /// publishable tables per session.
-    pub(crate) schemas: Vec<(rdlt_core::TableSchema, rdlt_core::WriteMode)>,
+    pub(crate) schemas: Vec<(rdlt_core::schema::TableSchema, rdlt_core::commit::WriteMode)>,
 }
 
 /// Scan outcome. `Damaged` means segments/manifest can't support replay — the caller
@@ -150,7 +150,7 @@ pub(crate) enum ScanOutcome {
 /// decoding does.
 pub(crate) async fn scan_off_runtime(
     dir: &Path,
-    rules: rdlt_core::naming::IdentRules,
+    rules: rdlt_core::schema::IdentRules,
     pipeline: &PipelineId,
 ) -> ScanOutcome {
     let dir = dir.to_path_buf();
@@ -158,7 +158,7 @@ pub(crate) async fn scan_off_runtime(
     off_runtime(move || scan(&dir, rules, &pipeline)).await
 }
 
-fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId) -> ScanOutcome {
+fn scan(dir: &Path, rules: rdlt_core::schema::IdentRules, pipeline: &PipelineId) -> ScanOutcome {
     scan_with_budget(dir, rules, pipeline, MAX_MANIFEST_TOTAL_BYTES)
 }
 
@@ -168,7 +168,7 @@ fn scan(dir: &Path, rules: rdlt_core::naming::IdentRules, pipeline: &PipelineId)
 /// precedent in the testkit).
 fn scan_with_budget(
     dir: &Path,
-    rules: rdlt_core::naming::IdentRules,
+    rules: rdlt_core::schema::IdentRules,
     pipeline: &PipelineId,
     total_budget: u64,
 ) -> ScanOutcome {
@@ -466,7 +466,7 @@ fn scan_with_budget(
 /// existed) — refuses the whole span. `Some(reason)` means Damaged:
 /// the caller clears the WAL and re-extracts from last COMMITTED
 /// state, so no cursor from the refused span ever commits.
-fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<String> {
+fn sidecar_drift(dir: &Path, rules: rdlt_core::schema::IdentRules) -> Option<String> {
     let path = dir.join(crate::wal::RULES_SIDECAR);
     // Same gated open as the manifest's: the sidecar decides whether the
     // whole span is trusted, so a symlink here would let foreign content
@@ -496,7 +496,7 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<Str
             ));
         }
     };
-    match serde_json::from_str::<rdlt_core::naming::IdentRules>(&text) {
+    match serde_json::from_str::<rdlt_core::schema::IdentRules>(&text) {
         // 5M6: a recorded rules value must be SANE as well as matching —
         // an out-of-range `max_len` in the sidecar is not a state this
         // engine's writer produces (its rules were validated at plan
@@ -534,7 +534,7 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::naming::IdentRules) -> Option<Str
 /// root.
 #[derive(Default)]
 struct ChainMemo {
-    chains: std::collections::BTreeMap<rdlt_core::TableName, Vec<rdlt_core::TableName>>,
+    chains: std::collections::BTreeMap<rdlt_core::id::TableName, Vec<rdlt_core::id::TableName>>,
 }
 
 impl ChainMemo {
@@ -544,11 +544,11 @@ impl ChainMemo {
     /// no writer produces.
     fn chain(
         &mut self,
-        table: &rdlt_core::TableName,
+        table: &rdlt_core::id::TableName,
         schemas: &SchemaMap,
-    ) -> Result<&[rdlt_core::TableName], String> {
+    ) -> Result<&[rdlt_core::id::TableName], String> {
         if !self.chains.contains_key(table) {
-            let mut path: Vec<rdlt_core::TableName> = Vec::new();
+            let mut path: Vec<rdlt_core::id::TableName> = Vec::new();
             crate::coverage::walk_to_root(table, schemas.len(), |current| {
                 path.push(current.clone());
                 match schemas.get(current) {
@@ -569,9 +569,9 @@ impl ChainMemo {
     /// The chain's last hop — the root the covered-filter joins on.
     fn root_of(
         &mut self,
-        table: &rdlt_core::TableName,
+        table: &rdlt_core::id::TableName,
         schemas: &SchemaMap,
-    ) -> Result<rdlt_core::TableName, String> {
+    ) -> Result<rdlt_core::id::TableName, String> {
         Ok(self
             .chain(table, schemas)?
             .last()
@@ -590,7 +590,7 @@ fn live_tables(
     records: &[WalRecord],
     schemas: &SchemaMap,
     memo: &mut ChainMemo,
-) -> std::collections::BTreeSet<rdlt_core::TableName> {
+) -> std::collections::BTreeSet<rdlt_core::id::TableName> {
     let mut live = std::collections::BTreeSet::new();
     for record in records {
         if let WalRecord::Segment { table, .. } = record
@@ -621,14 +621,14 @@ fn live_tables(
 fn filter_covered(
     span: Vec<WalRecord>,
     schemas: &SchemaMap,
-    rules: rdlt_core::naming::IdentRules,
+    rules: rdlt_core::schema::IdentRules,
     memo: &mut ChainMemo,
 ) -> Result<Option<Vec<WalRecord>>, String> {
     use std::collections::BTreeMap;
 
     // A stream's last checkpoint position: every segment of that stream
     // before it is covered by its cursor.
-    let mut last_checkpoint: BTreeMap<rdlt_core::StreamName, usize> = BTreeMap::new();
+    let mut last_checkpoint: BTreeMap<rdlt_core::id::StreamName, usize> = BTreeMap::new();
     for (index, record) in span.iter().enumerate() {
         if let WalRecord::Checkpoint { stream, .. } = record {
             last_checkpoint.insert(stream.clone(), index);
@@ -638,7 +638,8 @@ fn filter_covered(
         return Ok(None);
     }
 
-    let mut root_to_stream: BTreeMap<rdlt_core::TableName, rdlt_core::StreamName> = BTreeMap::new();
+    let mut root_to_stream: BTreeMap<rdlt_core::id::TableName, rdlt_core::id::StreamName> =
+        BTreeMap::new();
     for stream in last_checkpoint.keys() {
         let root = crate::coverage::root_table(stream, rules);
         if root_to_stream
@@ -673,11 +674,11 @@ fn filter_covered(
     // (round-11 hoist — the loop below re-normalized every schema
     // table per checkpointed root and re-looked-up keys it was already
     // iterating), then each checkpointed root reads its count.
-    let mut normalized_roots: BTreeMap<rdlt_core::TableName, usize> = BTreeMap::new();
+    let mut normalized_roots: BTreeMap<rdlt_core::id::TableName, usize> = BTreeMap::new();
     for (table, (schema, _)) in schemas {
         if schema.parent.is_none() {
             let normalized =
-                crate::coverage::root_table(&rdlt_core::StreamName::new(table.as_str()), rules);
+                crate::coverage::root_table(&rdlt_core::id::StreamName::new(table.as_str()), rules);
             *normalized_roots.entry(normalized).or_insert(0) += 1;
         }
     }
@@ -747,7 +748,7 @@ fn filter_covered(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdlt_core::{LoadId, PipelineId};
+    use rdlt_core::id::{LoadId, PipelineId};
 
     fn write_manifest(dir: &std::path::Path, records: &[WalRecord]) {
         let mut out: Vec<u8> = Vec::new();
@@ -760,7 +761,7 @@ mod tests {
         // the fixtures here model a matching-rules writer.
         std::fs::write(
             dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
     }
@@ -771,11 +772,11 @@ mod tests {
     /// is only honest if the WAL can actually record one.
     #[test]
     fn the_line_cap_admits_a_maximal_cursor_line() {
-        let cursor = rdlt_core::Cursor::new(serde_json::Value::String(
+        let cursor = rdlt_core::cursor::Cursor::new(serde_json::Value::String(
             "x".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize),
         ));
         let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
-            stream: rdlt_core::StreamName::new("s"),
+            stream: rdlt_core::id::StreamName::new("s"),
             cursor,
         })
         .expect("encode");
@@ -795,25 +796,27 @@ mod tests {
     /// cap fails HERE, before it fails as a `Damaged` scan in the field.
     #[test]
     fn the_line_cap_admits_the_writers_own_maximal_delta_line() {
-        use rdlt_core::{ColumnDef, ColumnType, LogicalType, Provenance, SchemaChange, WriteMode};
-        let columns: Vec<ColumnDef> = (0..crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE)
-            .map(|i| ColumnDef {
+        use rdlt_core::commit::WriteMode;
+        use rdlt_core::schema::{self, Column, ColumnType, Provenance};
+        use rdlt_core::types::LogicalType;
+        let columns: Vec<Column> = (0..crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE)
+            .map(|i| Column {
                 name: format!("{:a>59}{i:04}", ""),
                 column_type: ColumnType::scalar(LogicalType::Json),
                 nullable: true,
                 provenance: Provenance::Inferred,
             })
             .collect();
-        let schema = rdlt_core::TableSchema {
-            table: rdlt_core::TableName::new(format!("{:t>63}", "")),
+        let schema = rdlt_core::schema::TableSchema {
+            table: rdlt_core::id::TableName::new(format!("{:t>63}", "")),
             parent: None,
             columns,
         };
-        let delta = rdlt_core::SchemaDelta {
+        let delta = rdlt_core::schema::Delta {
             table: schema.table.clone(),
             from: None,
             to: schema.content_hash(),
-            changes: vec![SchemaChange::CreateTable {
+            changes: vec![schema::Change::CreateTable {
                 schema: schema.clone(),
             }],
         };
@@ -842,7 +845,7 @@ mod tests {
         .expect("fixture manifest");
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
         );
         assert!(matches!(outcome, ScanOutcome::Damaged(reason) if reason.contains("metadata cap")));
@@ -894,9 +897,9 @@ mod tests {
             "the production whole-file budget (see its doc for the honest arithmetic)"
         );
         let dir = tempfile::tempdir().expect("tempdir");
-        let cursor = rdlt_core::Cursor::new(serde_json::Value::String("x".repeat(1000)));
+        let cursor = rdlt_core::cursor::Cursor::new(serde_json::Value::String("x".repeat(1000)));
         let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
-            stream: rdlt_core::StreamName::new("s"),
+            stream: rdlt_core::id::StreamName::new("s"),
             cursor,
         })
         .expect("encode");
@@ -917,12 +920,12 @@ mod tests {
         std::fs::write(dir.path().join("manifest.jsonl"), out).expect("write manifest");
         std::fs::write(
             dir.path().join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
         let outcome = scan_with_budget(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
             16 * 1024,
         );
@@ -936,7 +939,7 @@ mod tests {
         write_manifest(dir.path(), &[]);
         let outcome = scan_with_budget(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
             16 * 1024,
         );
@@ -960,7 +963,7 @@ mod tests {
             pipeline: PipelineId::new("p"),
         };
         let segment = |file: &str| WalRecord::Segment {
-            table: rdlt_core::TableName::new("t"),
+            table: rdlt_core::id::TableName::new("t"),
             file: file.to_owned(),
             rows: 0,
         };
@@ -976,7 +979,7 @@ mod tests {
         );
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
         );
         assert!(
@@ -991,7 +994,7 @@ mod tests {
         );
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
         );
         assert!(
@@ -1015,7 +1018,7 @@ mod tests {
         .expect("plant oversized sidecar");
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
         );
         assert!(
@@ -1033,12 +1036,12 @@ mod tests {
         write_manifest(dir.path(), &[]);
         std::fs::write(
             dir.path().join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::naming::IdentRules { max_len: 2 }).expect("rules json"),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules { max_len: 2 }).expect("rules json"),
         )
         .expect("plant insane sidecar");
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
         );
         assert!(
@@ -1058,7 +1061,7 @@ mod tests {
         std::os::unix::fs::symlink(foreign.path(), &link).expect("plant symlink");
         let outcome = scan(
             &link,
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
         );
         assert!(
@@ -1077,7 +1080,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("manifest.jsonl")).expect("plant directory");
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("p"),
         );
         assert!(
@@ -1132,7 +1135,7 @@ mod tests {
             );
             scan(
                 dir.path(),
-                rdlt_core::naming::IdentRules::default(),
+                rdlt_core::schema::IdentRules::default(),
                 &PipelineId::new("p"),
             )
         };
@@ -1174,7 +1177,7 @@ mod tests {
             matches!(
                 scan(
                     dir.path(),
-                    rdlt_core::naming::IdentRules::default(),
+                    rdlt_core::schema::IdentRules::default(),
                     &PipelineId::new("p")
                 ),
                 ScanOutcome::Damaged(_)
@@ -1201,7 +1204,7 @@ mod tests {
         );
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("customers"),
         );
         assert!(
@@ -1228,7 +1231,7 @@ mod tests {
         );
         let outcome = scan(
             dir.path(),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             &PipelineId::new("customers"),
         );
         assert!(
@@ -1250,10 +1253,10 @@ mod per_stream_coverage_tests {
     //! decides whether the property holds.
 
     use super::*;
-    use rdlt_core::{
-        Cursor, LoadId, ParentLink, PipelineId, SchemaDelta, StreamName, TableName, TableSchema,
-        WriteMode, naming::IdentRules,
-    };
+    use rdlt_core::commit::WriteMode;
+    use rdlt_core::cursor::Cursor;
+    use rdlt_core::id::{LoadId, PipelineId, StreamName, TableName};
+    use rdlt_core::schema::{self, IdentRules, ParentLink, TableSchema};
 
     fn delta(table: &str, parent: Option<&str>) -> WalRecord {
         let schema = TableSchema {
@@ -1265,7 +1268,7 @@ mod per_stream_coverage_tests {
             columns: vec![],
         };
         WalRecord::Delta {
-            delta: SchemaDelta {
+            delta: schema::Delta {
                 table: schema.table.clone(),
                 from: None,
                 to: schema.content_hash(),
@@ -1849,13 +1852,15 @@ mod integrity_tests {
     //! Every damage arm degrades to re-extraction — slower, never wrong.
 
     use super::*;
-    use rdlt_core::{Cursor, LoadId, PipelineId, StreamName, TableName, naming::IdentRules};
+    use rdlt_core::cursor::Cursor;
+    use rdlt_core::id::{LoadId, PipelineId, StreamName, TableName};
+    use rdlt_core::schema::IdentRules;
 
     /// A replayable one-stream span under a current-version header, written
     /// through the writer's own line encoding — the healthy baseline the
     /// tamper tests below corrupt.
     fn healthy_manifest(dir: &std::path::Path) {
-        let schema = rdlt_core::TableSchema {
+        let schema = rdlt_core::schema::TableSchema {
             table: TableName::new("orders"),
             parent: None,
             columns: vec![],
@@ -1867,14 +1872,14 @@ mod integrity_tests {
                 pipeline: PipelineId::new("p"),
             },
             WalRecord::Delta {
-                delta: rdlt_core::SchemaDelta {
+                delta: rdlt_core::schema::Delta {
                     table: schema.table.clone(),
                     from: None,
                     to: schema.content_hash(),
                     changes: vec![],
                 },
                 schema,
-                mode: rdlt_core::WriteMode::Append,
+                mode: rdlt_core::commit::WriteMode::Append,
             },
             WalRecord::Segment {
                 table: TableName::new("orders"),
@@ -2180,12 +2185,12 @@ mod starvation_tests {
         let mut records = vec![WalRecord::Run {
             format_version: crate::wal::WAL_FORMAT_VERSION,
             load_id: LoadId::from("starve"),
-            pipeline: rdlt_core::PipelineId::from("p"),
+            pipeline: rdlt_core::id::PipelineId::from("p"),
         }];
         for seq in 0..20_000u64 {
             records.push(WalRecord::Checkpoint {
-                stream: rdlt_core::StreamName::from("s"),
-                cursor: rdlt_core::Cursor::new(format!("c{seq}")),
+                stream: rdlt_core::id::StreamName::from("s"),
+                cursor: rdlt_core::cursor::Cursor::new(format!("c{seq}")),
             });
         }
         let mut out: Vec<u8> = Vec::new();
@@ -2196,7 +2201,7 @@ mod starvation_tests {
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
         std::fs::write(
             dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
     }
@@ -2234,8 +2239,8 @@ mod starvation_tests {
                 let _ = started_tx.send(());
                 scan_off_runtime(
                     &path,
-                    rdlt_core::naming::IdentRules::default(),
-                    &rdlt_core::PipelineId::new("p"),
+                    rdlt_core::schema::IdentRules::default(),
+                    &rdlt_core::id::PipelineId::new("p"),
                 )
                 .await
             });
@@ -2270,7 +2275,7 @@ mod hostile_file_types {
     //! must degrade as `Damaged`, promptly.
 
     use super::*;
-    use rdlt_core::PipelineId;
+    use rdlt_core::id::PipelineId;
 
     /// `mkfifo` via the coreutils binary: the workspace denies `unsafe`, so
     /// `libc::mkfifo` is not callable, and no safe wrapper is in the tree.
@@ -2293,7 +2298,7 @@ mod hostile_file_types {
         std::thread::spawn(move || {
             let _ = tx.send(scan(
                 &dir,
-                rdlt_core::naming::IdentRules::default(),
+                rdlt_core::schema::IdentRules::default(),
                 &PipelineId::new("p"),
             ));
         });
@@ -2319,7 +2324,7 @@ mod hostile_file_types {
         std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
         std::fs::write(
             dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
     }
@@ -2397,7 +2402,7 @@ mod hostile_file_types {
         let outside = dir.path().join("outside-rules.json");
         std::fs::write(
             &outside,
-            serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
         )
         .expect("outside rules");
         std::os::unix::fs::symlink(&outside, dir.path().join(crate::wal::RULES_SIDECAR))

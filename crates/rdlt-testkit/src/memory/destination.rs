@@ -12,10 +12,10 @@ use std::sync::{Arc, Mutex};
 use arrow::json::writer::{JsonArray, WriterBuilder};
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::{
-    CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
-    schema::system_columns,
-};
+use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
+use rdlt_connector::core::schema::{self, TableSchema};
+use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::spec::ConnectorSpec;
@@ -275,7 +275,7 @@ impl LoadSession for MemorySession {
             if is_merge_root {
                 let ids = staged_root_ids.entry(table.clone()).or_default();
                 ids.extend(rows.iter().filter_map(|r| {
-                    r.get(system_columns::ID)
+                    r.get(schema::system::ID)
                         .and_then(Value::as_str)
                         .map(str::to_owned)
                 }));
@@ -298,7 +298,7 @@ impl LoadSession for MemorySession {
                 WriteMode::Replace => apply_replace(&mut inner, table, rows),
                 WriteMode::Merge { key }
                     if inner.schemas.get(&table).is_some_and(|s| {
-                        s.columns.iter().all(|c| c.name != system_columns::ID)
+                        s.columns.iter().all(|c| c.name != schema::system::ID)
                     }) =>
                 {
                     apply_merge_keyed(&mut inner, table, rows, &key);
@@ -392,9 +392,9 @@ fn apply_merge_by_id(
     let replaced_root_ids: BTreeSet<String> =
         staged_root_ids.get(&root).cloned().unwrap_or_default();
     let id_column = if table == root {
-        system_columns::ID
+        schema::system::ID
     } else {
-        system_columns::ROOT_ID
+        schema::system::ROOT_ID
     };
     let committed = inner.committed.entry(table).or_default();
     committed.retain(|row| {
@@ -408,7 +408,7 @@ fn apply_merge_by_id(
     let mut deduped: Vec<Row> = Vec::new();
     for row in rows.into_iter().rev() {
         let id = row
-            .get(system_columns::ID)
+            .get(schema::system::ID)
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
@@ -422,7 +422,7 @@ fn apply_merge_by_id(
 
 /// Cast one stored row to the (possibly widened) column types — the
 /// memory analogue of a column-type migration.
-fn migrate_row(row: &mut Row, columns: &[rdlt_connector::core::ColumnDef]) {
+fn migrate_row(row: &mut Row, columns: &[rdlt_connector::core::schema::Column]) {
     for column in columns {
         if let Some(value) = row.get_mut(&column.name) {
             coerce_value(value, &column.column_type);
@@ -430,8 +430,9 @@ fn migrate_row(row: &mut Row, columns: &[rdlt_connector::core::ColumnDef]) {
     }
 }
 
-fn coerce_value(value: &mut Value, ty: &rdlt_connector::core::ColumnType) {
-    use rdlt_connector::core::{ColumnType, LogicalType};
+fn coerce_value(value: &mut Value, ty: &rdlt_connector::core::schema::ColumnType) {
+    use rdlt_connector::core::schema::ColumnType;
+    use rdlt_connector::core::types::LogicalType;
     match ty {
         ColumnType::Scalar {
             scalar: LogicalType::Utf8,

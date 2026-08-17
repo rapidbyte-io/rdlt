@@ -13,7 +13,7 @@ use arrow::array::{Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
-use rdlt_core::identity::{FieldValue, RowIdBuilder};
+use rdlt_engine::identity::{FieldValue, RowIdBuilder};
 
 const ROWS: usize = 10_000;
 

@@ -10,9 +10,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::cursor::Cursor;
-use crate::ids::{LoadId, StreamName, TableName};
+use crate::id::{LoadId, StreamName, TableName};
 use crate::report::ResumedFrom;
-use crate::schema::SchemaDelta;
+use crate::schema;
 
 /// What a run reports as it happens.
 ///
@@ -20,7 +20,7 @@ use crate::schema::SchemaDelta;
 /// Events are advisory: dropping them changes nothing about the load, and a
 /// consumer that lags LOSES THE OLDEST EVENTS rather than being allowed to slow
 /// the pipeline — a still-connected consumer must not infer a complete feed.
-/// The `RunReport` is the complete record either way.
+/// The run report is the complete record either way.
 ///
 /// `#[non_exhaustive]`: new events can be added without a breaking change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ pub enum PipelineEvent {
     /// has not been told about.
     SchemaEvolved {
         /// What changed.
-        delta: SchemaDelta,
+        delta: schema::Delta,
     },
     /// Work was published atomically with pipeline state. Follows every event it
     /// covers, and its cursors are durable: a crash after this replays from here.
@@ -134,7 +134,7 @@ pub enum PipelineEvent {
         /// Encoded size of the closed part.
         encoded_bytes: u64,
         /// What closed it.
-        reason: PartClose,
+        reason: PartCloseReason,
     },
     /// A liveness tick on a coarse timer while the run is active. Lets
     /// a consumer distinguish "the wire is quiet" from "the process is
@@ -150,7 +150,7 @@ pub enum PipelineEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum PartClose {
+pub enum PartCloseReason {
     /// The part reached its size target.
     Target,
     /// The part was open longer than `roll_after_seconds`.

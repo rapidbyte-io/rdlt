@@ -6,7 +6,11 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_core::{CommitPolicy, Cursor, RdltError, ResumedFrom, TableName};
+use rdlt_core::commit::CommitPolicy;
+use rdlt_core::cursor::Cursor;
+use rdlt_core::error::Error;
+use rdlt_core::id::TableName;
+use rdlt_core::report::ResumedFrom;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{
     CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row,
@@ -61,7 +65,7 @@ async fn row1_source_crash_mid_extraction() {
         .run()
         .await
         .expect_err("injected source crash");
-    assert!(matches!(err, RdltError::Source { .. }));
+    assert!(matches!(err, Error::Source { .. }));
 
     // Restart with a healthy source: must resume from checkpoint 1 (no re-read).
     let healthy = source();
@@ -282,10 +286,7 @@ async fn cancellation_recovers_like_a_crash() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     token.cancel();
     let outcome = run.await.expect("task join");
-    assert!(
-        matches!(outcome, Err(RdltError::Cancelled)),
-        "got {outcome:?}"
-    );
+    assert!(matches!(outcome, Err(Error::Cancelled)), "got {outcome:?}");
 
     let report = Engine::new(config(dir.path()), source(), dest.clone())
         .run()
@@ -345,13 +346,13 @@ async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
     .await
     .expect("run must terminate, not deadlock");
     assert!(
-        matches!(outcome, Err(RdltError::Destination { .. })),
+        matches!(outcome, Err(Error::Destination { .. })),
         "expected the destination error to surface, got {outcome:?}"
     );
 }
 
 /// Kills: the cancellation error-precedence guard (`saw_cancelled`→false) —
-/// a cancelled run must surface EXACTLY `RdltError::Cancelled`.
+/// a cancelled run must surface EXACTLY `Error::Cancelled`.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancellation_surfaces_the_cancelled_error() {
     let dest = MemoryDestination::new();
@@ -368,7 +369,7 @@ async fn cancellation_surfaces_the_cancelled_error() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     token.cancel();
     let err = run.await.expect("join").expect_err("cancelled");
-    assert!(matches!(err, RdltError::Cancelled), "got: {err:?}");
+    assert!(matches!(err, Error::Cancelled), "got: {err:?}");
 }
 
 /// A source PARKED between frames observes no channel closure, so
@@ -416,10 +417,7 @@ async fn cancelling_a_parked_source_returns_promptly() {
         .await
         .expect("a cancelled run must not hang on a parked reader")
         .expect("join");
-    assert!(
-        matches!(outcome, Err(RdltError::Cancelled)),
-        "got {outcome:?}"
-    );
+    assert!(matches!(outcome, Err(Error::Cancelled)), "got {outcome:?}");
 }
 
 /// The subtler parked shape: the source first drops its output, making
@@ -465,7 +463,7 @@ async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
         .await
         .expect("SourceFinished teardown remains cancellable")
         .expect("join");
-    assert!(matches!(outcome, Err(RdltError::Cancelled)), "{outcome:?}");
+    assert!(matches!(outcome, Err(Error::Cancelled)), "{outcome:?}");
 }
 
 /// Review round 2's regression pin for the RunStarted-first guarantee
@@ -481,13 +479,14 @@ async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
 mod run_started_first_on_replay {
     use super::*;
     use rdlt_connector::arrow::RecordBatch;
-    use rdlt_connector::core::{CommitMeta, CommitReceipt, StateDoc};
+    use rdlt_connector::core::commit::{CommitMeta, CommitReceipt};
+    use rdlt_connector::core::state::StateDoc;
     use rdlt_connector::destination::{
         Capabilities, Destination, LoadSession, OpenContext, PartCloseReason, PartClosed,
         PartEventFn,
     };
     use rdlt_connector::error::DestinationError;
-    use rdlt_core::PipelineEvent;
+    use rdlt_core::event::PipelineEvent;
 
     /// MemoryDestination, plus a part report per commit — the shape of
     /// every file-writing destination, reduced to the seam under test.
@@ -523,14 +522,14 @@ mod run_started_first_on_replay {
     impl LoadSession for PartEmittingSession {
         async fn ensure_table(
             &mut self,
-            schema: &rdlt_connector::core::TableSchema,
-            mode: &rdlt_connector::core::WriteMode,
+            schema: &rdlt_connector::core::schema::TableSchema,
+            mode: &rdlt_connector::core::commit::WriteMode,
         ) -> Result<(), DestinationError> {
             self.inner.ensure_table(schema, mode).await
         }
         async fn write(
             &mut self,
-            table: &rdlt_connector::core::TableName,
+            table: &rdlt_connector::core::id::TableName,
             batch: RecordBatch,
         ) -> Result<(), DestinationError> {
             self.inner.write(table, batch).await
@@ -538,7 +537,7 @@ mod run_started_first_on_replay {
         async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
             if let Some(listener) = &self.listener {
                 listener(PartClosed::new(
-                    rdlt_connector::core::TableName::new("events"),
+                    rdlt_connector::core::id::TableName::new("events"),
                     64,
                     PartCloseReason::Commit,
                 ));
@@ -547,7 +546,7 @@ mod run_started_first_on_replay {
         }
         async fn read_state(
             &mut self,
-            pipeline: &rdlt_connector::core::PipelineId,
+            pipeline: &rdlt_connector::core::id::PipelineId,
         ) -> Result<Option<StateDoc>, DestinationError> {
             self.inner.read_state(pipeline).await
         }
@@ -573,7 +572,10 @@ mod run_started_first_on_replay {
         let mut events = engine.events();
         let report = engine.run().await.expect("recovery run");
         assert!(
-            matches!(report.resumed_from, rdlt_core::ResumedFrom::Wal { .. }),
+            matches!(
+                report.resumed_from,
+                rdlt_core::report::ResumedFrom::Wal { .. }
+            ),
             "the pin must exercise the REPLAY path, got {:?}",
             report.resumed_from
         );

@@ -10,7 +10,7 @@ use std::{
 };
 
 use fs4::fs_std::FileExt;
-use rdlt_core::RdltError;
+use rdlt_core::error::Error;
 
 #[derive(Debug)]
 pub(crate) struct WorkdirLock {
@@ -18,15 +18,14 @@ pub(crate) struct WorkdirLock {
 }
 
 impl WorkdirLock {
-    pub(crate) fn acquire(workdir: &Path) -> Result<Self, RdltError> {
+    pub(crate) fn acquire(workdir: &Path) -> Result<Self, Error> {
         // Failures here are about the configured workdir being usable and
         // ownable by this run (path, permissions, contention) — not WAL damage,
         // so they classify as configuration, like the "already held" case below.
         // Created PRIVATE (see `create_private_dir`): the WAL and lock
         // under it carry in-flight data no other local user should read.
-        crate::wal::create_private_dir(workdir).map_err(|e| {
-            RdltError::config(format!("creating workdir {}: {e}", workdir.display()))
-        })?;
+        crate::wal::create_private_dir(workdir)
+            .map_err(|e| Error::config(format!("creating workdir {}: {e}", workdir.display())))?;
         let path = workdir.join(".lock");
         // The lock file legitimately persists between runs, so this open
         // must accept an existing regular file (`create`, not
@@ -42,19 +41,19 @@ impl WorkdirLock {
             .open(&path)
             .map_err(|e| {
                 if e.raw_os_error() == Some(libc::ELOOP) {
-                    return RdltError::config(format!(
+                    return Error::config(format!(
                         "opening lock {}: the path is a symlink — refusing to follow it out \
                          of the workdir",
                         path.display()
                     ));
                 }
-                RdltError::config(format!("opening lock {}: {e}", path.display()))
+                Error::config(format!("opening lock {}: {e}", path.display()))
             })?;
         if !file
             .try_lock_exclusive()
-            .map_err(|e| RdltError::config(format!("locking {}: {e}", path.display())))?
+            .map_err(|e| Error::config(format!("locking {}: {e}", path.display())))?
         {
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "another run holds the workdir lock at {} — one process per pipeline",
                 path.display()
             )));

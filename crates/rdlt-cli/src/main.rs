@@ -10,13 +10,13 @@
 //!
 //! Everything the CLI does, the library does — the CLI adds zero engine
 //! capability. Events stream to stderr (human-readable); the
-//! `RunReport` JSON goes to stdout or `--report`.
+//! The run report's JSON goes to stdout or `--report`.
 //!
-//! Exit codes mirror `RdltError` variants (stable, scriptable):
+//! Exit codes mirror `rdlt::Error` variants (stable, scriptable):
 //! 0 success · 2 config · 3 schema contract · 4 source · 5 destination · 6 WAL/disk ·
 //! 7 cancelled · 64 usage · 70 internal defect · 74 file I/O.
 //!
-//! 70 is also the code for any variant this build does not know: `RdltError` is
+//! 70 is also the code for any variant this build does not know: `rdlt::Error` is
 //! `#[non_exhaustive]`, and "this binary cannot classify what happened" is a bug
 //! to report, never an instruction to go and edit the pipeline configuration.
 
@@ -28,7 +28,7 @@ mod ui;
 use std::process::ExitCode;
 
 use clap::Parser as _;
-use rdlt::prelude::*;
+use rdlt::Error;
 
 /// Bound glibc's allocator retention: data movement churns
 /// large short-lived buffers (slabs, arenas, arrow builds), and glibc retains
@@ -143,7 +143,7 @@ pub(crate) enum CliError {
     /// A file the CLI itself could not read or write. Distinct from `Usage`:
     /// the invocation was well-formed, the filesystem refused.
     Io(String),
-    Run(RdltError),
+    Run(Error),
 }
 
 impl CliError {
@@ -167,16 +167,16 @@ impl CliError {
     }
 }
 
-/// The `RdltError` half of the contract, alone so a pin can hold it.
-pub(crate) fn exit_code_for(error: &RdltError) -> u8 {
+/// The `rdlt::Error` half of the contract, alone so a pin can hold it.
+pub(crate) fn exit_code_for(error: &Error) -> u8 {
     match error {
-        RdltError::Config { .. } => 2,
-        RdltError::Schema(_) => 3,
-        RdltError::Source { .. } => 4,
-        RdltError::Destination { .. } => 5,
-        RdltError::Wal { .. } => 6,
-        RdltError::Cancelled => 7,
-        RdltError::Internal { .. } => 70,
+        Error::Config { .. } => 2,
+        Error::Schema(_) => 3,
+        Error::Source { .. } => 4,
+        Error::Destination { .. } => 5,
+        Error::Wal { .. } => 6,
+        Error::Cancelled => 7,
+        Error::Internal { .. } => 70,
         // NOT 2. Falling back to the config code tells a scripting
         // caller to fix their YAML for something the engine could not
         // classify, and a future variant would silently join it.
@@ -184,8 +184,8 @@ pub(crate) fn exit_code_for(error: &RdltError) -> u8 {
     }
 }
 
-impl From<RdltError> for CliError {
-    fn from(e: RdltError) -> Self {
+impl From<Error> for CliError {
+    fn from(e: Error) -> Self {
         CliError::Run(e)
     }
 }
@@ -210,10 +210,10 @@ mod tests {
     /// dispatch on these numbers.
     #[test]
     fn the_exit_code_contract_holds() {
-        assert_eq!(exit_code_for(&RdltError::config("x")), 2);
-        assert_eq!(exit_code_for(&RdltError::Cancelled), 7);
+        assert_eq!(exit_code_for(&Error::config("x")), 2);
+        assert_eq!(exit_code_for(&Error::Cancelled), 7);
         assert_eq!(
-            exit_code_for(&RdltError::source(rdlt::prelude::StreamName::new("s"), "x")),
+            exit_code_for(&Error::source(rdlt::prelude::StreamName::new("s"), "x")),
             4
         );
     }

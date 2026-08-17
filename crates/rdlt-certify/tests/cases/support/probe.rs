@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use rdlt_connector::core::TableName;
+use rdlt_connector::core::id::TableName;
 use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 
 /// Counts reader-visible rows for `table` in a reference-destination

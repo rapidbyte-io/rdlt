@@ -11,11 +11,14 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use async_trait::async_trait;
-use rdlt_connector::core::Cursor;
+use rdlt_connector::core::cursor::Cursor;
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;
-use rdlt_core::{PolicyAction, RdltError, SchemaPolicy, TableName, schema::system_columns};
+use rdlt_core::error::Error;
+use rdlt_core::id::TableName;
+use rdlt_core::schema;
+use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{CrashDestination, FaultPoint, MemoryDestination};
 use serde_json::json;
@@ -116,11 +119,11 @@ async fn passthrough_preserves_data_and_stamps_load_id() {
     );
     assert_eq!(rows[1]["name"], json!("b"));
     assert!(
-        rows[0][system_columns::LOAD_ID].as_str().is_some(),
+        rows[0][schema::system::LOAD_ID].as_str().is_some(),
         "run provenance stamped"
     );
     assert!(
-        !rows[0].contains_key(system_columns::ID),
+        !rows[0].contains_key(schema::system::ID),
         "structured streams carry NO per-row identity (clause E7)"
     );
 }
@@ -158,14 +161,14 @@ async fn passthrough_freeze_rejects_before_publication() {
     let mut config = EngineConfig::new("pt-freeze");
     config =
         config.with_schema_policy(SchemaPolicy::evolve().table("metrics", PolicyAction::Freeze));
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
+    config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let err = Engine::new(config, source, dest.clone())
         .run()
         .await
         .expect_err("freeze must fire");
     match &err {
-        RdltError::Schema(violation) => {
+        Error::Schema(violation) => {
             assert_eq!(violation.table, TableName::new("metrics"));
             assert_eq!(violation.column.as_deref(), Some("extra"));
         }
@@ -205,7 +208,7 @@ async fn structured_segments_replay_from_wal() {
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
     let mut config = EngineConfig::new("pt-crash");
     config = config.with_workdir(dir.path().to_path_buf());
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
+    config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let source = ArrowSource {
         batches: vec![batch_ab(&[1], &["a"]), batch_ab(&[2], &["b"])],
@@ -226,7 +229,10 @@ async fn structured_segments_replay_from_wal() {
         .await
         .expect("recovery");
     assert!(
-        matches!(report.resumed_from, rdlt_core::ResumedFrom::Wal { .. }),
+        matches!(
+            report.resumed_from,
+            rdlt_core::report::ResumedFrom::Wal { .. }
+        ),
         "WAL replay, not re-extraction: {:?}",
         report.resumed_from
     );
@@ -247,7 +253,7 @@ async fn merge_on_structured_stream_rejected_before_any_io() {
         declare_structured: true,
     };
     let mut config = EngineConfig::new("pt-merge");
-    config = config.with_write_mode(rdlt_core::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_core::commit::WriteMode::Merge {
         key: vec!["id".into()],
     });
     let err = Engine::new(config, source, dest.clone())
@@ -278,7 +284,7 @@ async fn input_column_named_like_system_column_is_suffixed() {
     let batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
-            Field::new(system_columns::LOAD_ID, DataType::Utf8, true),
+            Field::new(schema::system::LOAD_ID, DataType::Utf8, true),
         ])),
         vec![
             Arc::new(Int64Array::from(vec![1])),
@@ -298,7 +304,7 @@ async fn input_column_named_like_system_column_is_suffixed() {
     let rows = dest.committed_rows("metrics");
     let row = &rows[0];
     // The system column holds OUR load id; the upstream value lives in a suffixed column.
-    assert_ne!(row[system_columns::LOAD_ID], json!("upstream-value"));
+    assert_ne!(row[schema::system::LOAD_ID], json!("upstream-value"));
     let suffixed: Vec<&String> = row
         .keys()
         .filter(|k| k.starts_with("_rdlt_load_id_"))
@@ -346,7 +352,7 @@ async fn cross_batch_narrowing_keeps_the_wide_type() {
         .expect("v column");
     assert_eq!(
         v.column_type,
-        rdlt_core::ColumnType::scalar(rdlt_core::LogicalType::Utf8),
+        rdlt_core::schema::ColumnType::scalar(rdlt_core::types::LogicalType::Utf8),
         "narrowing must not shrink the registry type"
     );
     let rows = dest.committed_rows("metrics");
@@ -392,7 +398,7 @@ impl Source for KeyedArrowSource {
 
 fn merge_config(pipeline: &str, key: &[&str]) -> EngineConfig {
     let mut config = EngineConfig::new(pipeline);
-    config = config.with_write_mode(rdlt_core::WriteMode::Merge {
+    config = config.with_write_mode(rdlt_core::commit::WriteMode::Merge {
         key: key.iter().map(|k| (*k).to_string()).collect(),
     });
     config
@@ -566,7 +572,7 @@ async fn a_refused_column_is_projected_away_and_counted_per_value() {
     // carried it.
     let mut counted = 0u64;
     while let Some(event) = events.recv().await {
-        if let rdlt_core::PipelineEvent::Discarded { values, .. } = event {
+        if let rdlt_core::event::PipelineEvent::Discarded { values, .. } = event {
             counted += values;
         }
     }

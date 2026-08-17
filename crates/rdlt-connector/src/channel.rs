@@ -20,7 +20,7 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use tokio::sync::{Semaphore, mpsc};
 
-use crate::core::Cursor;
+use crate::core::cursor::Cursor;
 
 /// Secondary message-count cap on the records channel.
 ///

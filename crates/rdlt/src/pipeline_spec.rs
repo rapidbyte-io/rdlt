@@ -69,7 +69,7 @@ pub struct Spec {
     /// its frames — this knob neither bounds nor needs to bound a
     /// connector process.
     #[serde(default)]
-    pub batch_policy: Option<rdlt_core::BatchPolicy>,
+    pub batch_policy: Option<rdlt_core::commit::BatchPolicy>,
     /// When accumulated rows are committed — and so, for file
     /// destinations, how many rows land in each part.
     ///
@@ -427,7 +427,7 @@ pub enum SpecError {
     Resolve(String),
     /// The typestate builder rejected the configuration (e.g. a destination
     /// that cannot Merge).
-    Build(crate::RdltError),
+    Build(crate::Error),
 }
 
 impl SpecError {
@@ -454,8 +454,8 @@ impl std::error::Error for SpecError {
     }
 }
 
-impl From<crate::RdltError> for SpecError {
-    fn from(error: crate::RdltError) -> Self {
+impl From<crate::Error> for SpecError {
+    fn from(error: crate::Error) -> Self {
         SpecError::Build(error)
     }
 }
@@ -494,10 +494,12 @@ fn engine_budget_bytes(_spec: &Spec) -> u64 {
 fn resolved_workdir(spec: &Spec, base: &Path) -> PathBuf {
     match &spec.workdir {
         Some(dir) => base.join(dir),
-        None => base.join(".rdlt").join(rdlt_core::naming::normalize_ident(
-            &spec.pipeline,
-            rdlt_core::naming::IdentRules::default(),
-        )),
+        None => base
+            .join(".rdlt")
+            .join(rdlt_engine::naming::normalize_ident(
+                &spec.pipeline,
+                rdlt_core::schema::IdentRules::default(),
+            )),
     }
 }
 

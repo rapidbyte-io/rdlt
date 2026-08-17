@@ -6,7 +6,8 @@
 //! duplicating.
 
 use rdlt_connector_reference::{destination, source};
-use rdlt_connector_sdk::spi::core::{CommitReceipt, LoadId, PipelineId, TableName, WriteMode};
+use rdlt_connector_sdk::spi::core::commit::{CommitReceipt, WriteMode};
+use rdlt_connector_sdk::spi::core::id::{LoadId, PipelineId, TableName};
 use rdlt_connector_sdk::spi::destination::{Destination, OpenContext};
 use rdlt_connector_sdk::spi::source::Source;
 use rdlt_testkit::{

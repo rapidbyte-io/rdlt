@@ -3,7 +3,8 @@
 //! Nested, heterogeneous records flow memory→memory into typed tables with inferred
 //! schemas, child-table splitting, and `_rdlt_*` lineage. No schema declared, Append.
 
-use rdlt_core::{ColumnType, LogicalType, schema::system_columns};
+use rdlt_core::schema::{self, ColumnType};
+use rdlt_core::types::LogicalType;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::json;
@@ -126,11 +127,11 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
     // ---- Lineage ----
     let root_ids: Vec<&str> = root_rows
         .iter()
-        .map(|r| r[system_columns::ID].as_str().expect("_rdlt_id"))
+        .map(|r| r[schema::system::ID].as_str().expect("_rdlt_id"))
         .collect();
     assert_eq!(root_ids.len(), 3);
     for row in &root_rows {
-        assert!(row[system_columns::LOAD_ID].as_str().is_some());
+        assert!(row[schema::system::LOAD_ID].as_str().is_some());
     }
     let child_schema = dest.schema("items__tags").expect("child schema");
     assert_eq!(
@@ -146,35 +147,35 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
             .unwrap_or_else(|| panic!("child row {label}"))
     };
     assert_eq!(
-        by_label("red")[system_columns::PARENT_ID],
+        by_label("red")[schema::system::PARENT_ID],
         json!(root_ids[0])
     );
-    assert_eq!(by_label("red")[system_columns::POS], json!(0));
+    assert_eq!(by_label("red")[schema::system::POS], json!(0));
     assert_eq!(
-        by_label("blue")[system_columns::PARENT_ID],
+        by_label("blue")[schema::system::PARENT_ID],
         json!(root_ids[0])
     );
-    assert_eq!(by_label("blue")[system_columns::POS], json!(1));
+    assert_eq!(by_label("blue")[schema::system::POS], json!(1));
     assert_eq!(
-        by_label("green")[system_columns::PARENT_ID],
+        by_label("green")[schema::system::PARENT_ID],
         json!(root_ids[1])
     );
     // Depth-1 children: root id == parent id.
     for row in &child_rows {
-        assert_eq!(row[system_columns::ROOT_ID], row[system_columns::PARENT_ID]);
+        assert_eq!(row[schema::system::ROOT_ID], row[schema::system::PARENT_ID]);
     }
 
     // ---- Report accounting matches destination reality ----
-    let items = &report.tables[&rdlt_core::TableName::new("items")];
+    let items = &report.tables[&rdlt_core::id::TableName::new("items")];
     assert_eq!(items.rows, 3);
-    let tags = &report.tables[&rdlt_core::TableName::new("items__tags")];
+    let tags = &report.tables[&rdlt_core::id::TableName::new("items__tags")];
     assert_eq!(tags.rows, 3);
     assert!(report.commits >= 1);
     // Mid-run evolution surfaced as schema migrations (create tables + added column).
     assert!(
         report.schema_migrations.iter().any(|delta| {
             delta.changes.iter().any(|c| {
-                matches!(c, rdlt_core::SchemaChange::AddColumn { column } if column.name == "note")
+                matches!(c, rdlt_core::schema::Change::AddColumn { column } if column.name == "note")
             })
         }),
         "the late `note` column must appear as an evolution delta"

@@ -13,10 +13,12 @@ use std::time::Instant;
 use rdlt_connector::arrow::RecordBatch;
 
 use rdlt_connector::destination::{Capabilities, LoadSession};
-use rdlt_core::{
-    CommitCounters, CommitMeta, CommitPolicy, LoadId, RdltError, RunReport, StateDoc, TableName,
-    crash_point,
-};
+use rdlt_core::commit::{self, CommitMeta, CommitPolicy};
+use rdlt_core::crash_point;
+use rdlt_core::error::Error;
+use rdlt_core::id::{LoadId, TableName};
+use rdlt_core::report;
+use rdlt_core::state::StateDoc;
 
 use crate::wal::Wal;
 
@@ -32,14 +34,14 @@ pub(crate) struct Sink {
 
 pub(crate) struct Loader {
     sink: Sink,
-    pub(crate) report: RunReport,
+    pub(crate) report: report::Run,
     /// The evolving pipeline state; every commit persists a snapshot of it.
     state: StateDoc,
     load_id: LoadId,
     policy: CommitPolicy,
     /// How much to accumulate before each destination write. The
     /// default writes straight through.
-    batch_policy: rdlt_core::BatchPolicy,
+    batch_policy: rdlt_core::commit::BatchPolicy,
     /// The per-write cell ceiling the accumulator flushes at (7L4).
     max_batch_cells: usize,
     /// Rows waiting to be written, per table.
@@ -48,7 +50,7 @@ pub(crate) struct Loader {
     /// concatenation requires a single schema — two tables' rows
     /// could never be one write.
     pending: std::collections::BTreeMap<TableName, Pending>,
-    counters: CommitCounters,
+    counters: commit::Counters,
     commit_seq: u64,
     checkpoints_since_commit: u32,
     bytes_since_commit: u64,
@@ -58,7 +60,7 @@ pub(crate) struct Loader {
     /// Write-ahead log; `None` when no workdir is configured (recovery then always
     /// degrades to cursor re-extraction — slower, never wrong).
     wal: Option<Wal>,
-    events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
+    events: tokio::sync::broadcast::Sender<rdlt_core::event::PipelineEvent>,
     /// Keyed structured merge: tables whose write mode is Merge
     /// and whose schema carries NO per-row identity — their key columns must
     /// never be NULL (keys are identities; validated per batch).
@@ -90,7 +92,7 @@ pub(crate) struct Policies {
     /// When a commit unit closes.
     pub(crate) commit: CommitPolicy,
     /// How much accumulates before each destination write.
-    pub(crate) batch: rdlt_core::BatchPolicy,
+    pub(crate) batch: rdlt_core::commit::BatchPolicy,
     /// The same per-batch cell ceiling the assembly seats enforce
     /// (7L4): the coalescer's `concat_batches` is downstream of every
     /// per-batch gate, so without this the accumulator could fuse
@@ -110,12 +112,12 @@ struct Pending {
 impl Loader {
     pub(crate) fn new(
         sink: Sink,
-        report: RunReport,
+        report: report::Run,
         base_state: StateDoc,
         load_id: LoadId,
         policies: Policies,
         wal: Option<Wal>,
-        events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
+        events: tokio::sync::broadcast::Sender<rdlt_core::event::PipelineEvent>,
     ) -> Self {
         Self {
             sink,
@@ -126,7 +128,7 @@ impl Loader {
             batch_policy: policies.batch,
             max_batch_cells: policies.max_batch_cells,
             pending: std::collections::BTreeMap::new(),
-            counters: CommitCounters::default(),
+            counters: commit::Counters::default(),
             commit_seq: 0,
             checkpoints_since_commit: 0,
             bytes_since_commit: 0,
@@ -168,11 +170,11 @@ impl Loader {
         root
     }
 
-    fn emit(&self, event: rdlt_core::PipelineEvent) {
+    fn emit(&self, event: rdlt_core::event::PipelineEvent) {
         let _ = self.events.send(event); // no listeners is fine
     }
 
-    pub(crate) async fn process(&mut self, item: LoadItem) -> Result<(), RdltError> {
+    pub(crate) async fn process(&mut self, item: LoadItem) -> Result<(), Error> {
         // No `enter()` guard: this function awaits, and a guard held across an
         // await stays on the worker thread's span stack while other tasks run
         // there. The loader is a single task, so the span is bound to its future
@@ -210,17 +212,17 @@ impl Loader {
                 .await?;
                 crash_point!(
                     "session.after_ensure",
-                    Err(RdltError::config(
+                    Err(Error::config(
                         "injected crash after ensure_table (failpoint)",
                     ))
                 );
                 // Track keyed STRUCTURED merges (no `_rdlt_id` column ⇒ the
                 // stream is structured): batches must carry non-NULL keys.
-                if let rdlt_core::WriteMode::Merge { key } = &mode
+                if let rdlt_core::commit::WriteMode::Merge { key } = &mode
                     && !schema
                         .columns
                         .iter()
-                        .any(|c| c.name == rdlt_core::schema::system_columns::ID)
+                        .any(|c| c.name == rdlt_core::schema::system::ID)
                 {
                     self.structured_merge_keys
                         .insert(schema.table.clone(), key.clone());
@@ -229,7 +231,7 @@ impl Loader {
                     self.parents
                         .insert(schema.table.clone(), link.parent.clone());
                 }
-                self.emit(rdlt_core::PipelineEvent::SchemaEvolved {
+                self.emit(rdlt_core::event::PipelineEvent::SchemaEvolved {
                     delta: delta.clone(),
                 });
                 self.report.schema_migrations.push(delta);
@@ -254,12 +256,12 @@ impl Loader {
                 if let Some(keys) = self.structured_merge_keys.get(&table) {
                     for key in keys {
                         let column = batch.column_by_name(key).ok_or_else(|| {
-                            RdltError::config(format!(
+                            Error::config(format!(
                                 "merge key `{key}` is not a column of table `{table}`"
                             ))
                         })?;
                         if column.null_count() > 0 {
-                            return Err(RdltError::config(format!(
+                            return Err(Error::config(format!(
                                 "merge key `{key}` contains NULLs in table `{table}` — \
                                  merge keys are identities"
                             )));
@@ -284,9 +286,9 @@ impl Loader {
                 }
                 crash_point!(
                     "session.after_write",
-                    Err(RdltError::config("injected crash after write (failpoint)",))
+                    Err(Error::config("injected crash after write (failpoint)",))
                 );
-                self.emit(rdlt_core::PipelineEvent::BatchLoaded {
+                self.emit(rdlt_core::event::PipelineEvent::BatchLoaded {
                     table: table.clone(),
                     rows,
                     bytes,
@@ -376,7 +378,7 @@ impl Loader {
                 rows,
                 values,
             } => {
-                self.emit(rdlt_core::PipelineEvent::Discarded {
+                self.emit(rdlt_core::event::PipelineEvent::Discarded {
                     table: table.clone(),
                     rows,
                     values,
@@ -402,7 +404,7 @@ impl Loader {
         table: &TableName,
         batch: RecordBatch,
         bytes: u64,
-    ) -> Result<(), RdltError> {
+    ) -> Result<(), Error> {
         let rows = batch.num_rows() as u64;
         let schema_changed = self
             .pending
@@ -437,7 +439,7 @@ impl Loader {
     }
 
     /// Write one table's accumulated rows as a SINGLE batch.
-    async fn flush_table(&mut self, table: &TableName) -> Result<(), RdltError> {
+    async fn flush_table(&mut self, table: &TableName) -> Result<(), Error> {
         let Some(pending) = self.pending.remove(table) else {
             return Ok(());
         };
@@ -451,7 +453,7 @@ impl Loader {
             pending.batches.into_iter().next().expect("one batch")
         } else {
             arrow::compute::concat_batches(&schema, pending.batches.iter())
-                .map_err(|e| RdltError::config(format!("coalescing batches for `{table}`: {e}")))?
+                .map_err(|e| Error::config(format!("coalescing batches for `{table}`: {e}")))?
         };
         apply::apply_batch(
             &mut *self.sink.session,
@@ -467,7 +469,7 @@ impl Loader {
     /// Called before a commit closes and before the run ends, so a
     /// commit is always made of whole writes and nothing is left
     /// buffered when the loader stops.
-    async fn flush_all(&mut self) -> Result<(), RdltError> {
+    async fn flush_all(&mut self) -> Result<(), Error> {
         let tables: Vec<TableName> = self.pending.keys().cloned().collect();
         for table in tables {
             self.flush_table(&table).await?;
@@ -489,7 +491,7 @@ impl Loader {
     /// Trailing work (rows after the last checkpoint, or a run that never
     /// checkpointed) gets one final commit; a clean no-op run still commits once so a
     /// fresh pipeline's state document exists.
-    pub(crate) async fn finish(&mut self) -> Result<(), RdltError> {
+    pub(crate) async fn finish(&mut self) -> Result<(), Error> {
         // Rows can be accumulating without the run being `dirty` in
         // the commit sense, so the flush is unconditional: leaving
         // buffered rows unwritten would lose them silently.
@@ -509,7 +511,7 @@ impl Loader {
     /// ...) failed to release, and the prefixed message says so
     /// explicitly rather than leaving the operator to wonder if the
     /// run's data survived. Classified NON-RETRYABLE unconditionally
-    /// (`RdltError::destination`, never `classify_dest_error`, which
+    /// (`Error::destination`, never `classify_dest_error`, which
     /// would trust the destination's OWN transient/fatal classification
     /// — a destination has no way to know this specific failure can
     /// never be helped by re-running the WHOLE load from committed
@@ -518,9 +520,9 @@ impl Loader {
     /// operator should know close failed even though the run itself
     /// did not. The ABANDONMENT path (a failed or cancelled run) never
     /// calls this — see [`Loader::close_best_effort`].
-    pub(crate) async fn close(&mut self) -> Result<(), RdltError> {
+    pub(crate) async fn close(&mut self) -> Result<(), Error> {
         self.sink.session.close().await.map_err(|e| {
-            RdltError::destination(format!(
+            Error::destination(format!(
                 "session close failed AFTER all commits were durable (the data is committed): {e}"
             ))
         })
@@ -540,16 +542,16 @@ impl Loader {
         let _ = self.sink.session.close().await;
     }
 
-    async fn commit(&mut self) -> Result<(), RdltError> {
+    async fn commit(&mut self) -> Result<(), Error> {
         // A BATCH NEVER SPANS A COMMIT. Whatever is still accumulating
         // is written first, so the commit unit is made of whole
         // writes and a resume never has to reason about half a batch.
         self.flush_all().await?;
         self.commit_seq += 1;
-        self.emit(rdlt_core::PipelineEvent::CommitStarted {
+        self.emit(rdlt_core::event::PipelineEvent::CommitStarted {
             commit_seq: self.commit_seq,
         });
-        self.state.last_commit = Some(rdlt_core::LastCommit {
+        self.state.last_commit = Some(rdlt_core::state::LastCommit {
             load_id: self.load_id.clone(),
             commit_seq: self.commit_seq,
         });
@@ -574,7 +576,7 @@ impl Loader {
         // marked — a crash here MUST replay idempotently (D3).
         crash_point!(
             "session.after_commit",
-            Err(RdltError::config(
+            Err(Error::config(
                 "injected crash after destination commit (failpoint)",
             ))
         );
@@ -582,7 +584,7 @@ impl Loader {
         if let Some(wal) = &mut self.wal {
             wal.mark_committed(self.commit_seq).await?;
         }
-        self.emit(rdlt_core::PipelineEvent::Committed {
+        self.emit(rdlt_core::event::PipelineEvent::Committed {
             commit_seq: self.commit_seq,
             cursors: self.state.cursors.clone(),
         });
@@ -608,7 +610,9 @@ mod tests {
     use std::time::Duration;
 
     use rdlt_connector::arrow::RecordBatch;
-    use rdlt_core::{PipelineId, TableSchema, WriteMode};
+    use rdlt_core::commit::WriteMode;
+    use rdlt_core::id::PipelineId;
+    use rdlt_core::schema::TableSchema;
 
     use super::*;
 
@@ -636,7 +640,8 @@ mod tests {
         async fn commit(
             &mut self,
             _: CommitMeta,
-        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError> {
+        ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
+        {
             unreachable!("policy_triggers never touches the destination")
         }
         async fn read_state(
@@ -656,12 +661,12 @@ mod tests {
                 session: Box::new(UnusedSession),
                 capabilities: Capabilities::default(),
             },
-            RunReport::new(pipeline.clone(), load_id.clone()),
+            report::Run::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
             load_id,
             Policies {
                 commit: policy,
-                batch: rdlt_core::BatchPolicy::default(),
+                batch: rdlt_core::commit::BatchPolicy::default(),
                 max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
             },
             None,
@@ -695,8 +700,9 @@ mod tests {
         async fn commit(
             &mut self,
             meta: CommitMeta,
-        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError> {
-            let receipt = rdlt_core::CommitReceipt {
+        ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
+        {
+            let receipt = rdlt_core::commit::CommitReceipt {
                 load_id: meta.load_id.clone(),
                 commit_seq: meta.commit_seq,
             };
@@ -725,12 +731,12 @@ mod tests {
                 }),
                 capabilities: Capabilities::default(),
             },
-            RunReport::new(pipeline.clone(), load_id.clone()),
+            report::Run::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
             load_id,
             Policies {
                 commit: policy,
-                batch: rdlt_core::BatchPolicy::default(),
+                batch: rdlt_core::commit::BatchPolicy::default(),
                 max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
             },
             None,
@@ -742,14 +748,14 @@ mod tests {
     fn delta_item(table: &str, parent: Option<&str>) -> LoadItem {
         let schema = TableSchema {
             table: TableName::new(table),
-            parent: parent.map(|p| rdlt_core::ParentLink {
+            parent: parent.map(|p| rdlt_core::schema::ParentLink {
                 parent: TableName::new(p),
                 depth: 1,
             }),
             columns: vec![],
         };
         LoadItem::Delta {
-            delta: rdlt_core::SchemaDelta {
+            delta: rdlt_core::schema::Delta {
                 table: schema.table.clone(),
                 from: None,
                 to: schema.content_hash(),
@@ -776,8 +782,8 @@ mod tests {
 
     fn checkpoint_item(stream: &str) -> LoadItem {
         LoadItem::Checkpoint {
-            stream: rdlt_core::StreamName::new(stream),
-            cursor: rdlt_core::Cursor::new(serde_json::json!(1)),
+            stream: rdlt_core::id::StreamName::new(stream),
+            cursor: rdlt_core::cursor::Cursor::new(serde_json::json!(1)),
         }
     }
 
@@ -820,8 +826,8 @@ mod tests {
         );
         let cursors = &committed[0].state.cursors;
         assert!(
-            cursors.contains_key(&rdlt_core::StreamName::new("events"))
-                && cursors.contains_key(&rdlt_core::StreamName::new("orders")),
+            cursors.contains_key(&rdlt_core::id::StreamName::new("events"))
+                && cursors.contains_key(&rdlt_core::id::StreamName::new("orders")),
             "the deferred commit carries BOTH cursors: {cursors:?}"
         );
     }
@@ -1047,17 +1053,17 @@ mod tests {
             async fn commit(
                 &mut self,
                 meta: CommitMeta,
-            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError>
+            ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
             {
-                Ok(rdlt_core::CommitReceipt {
+                Ok(rdlt_core::commit::CommitReceipt {
                     load_id: meta.load_id,
                     commit_seq: meta.commit_seq,
                 })
             }
             async fn read_state(
                 &mut self,
-                _: &rdlt_core::PipelineId,
-            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError>
+                _: &rdlt_core::id::PipelineId,
+            ) -> Result<Option<rdlt_core::state::StateDoc>, rdlt_connector::error::DestinationError>
             {
                 Ok(None)
             }
@@ -1075,13 +1081,13 @@ mod tests {
                 session: Box::new(CountingSession(Arc::clone(&writes))),
                 capabilities: Capabilities::default(),
             },
-            RunReport::new(pipeline.clone(), load_id.clone()),
+            report::Run::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
             load_id,
             Policies {
                 commit: CommitPolicy::default(),
                 // Would fuse the whole run into one write…
-                batch: rdlt_core::BatchPolicy::every_rows(1_000_000),
+                batch: rdlt_core::commit::BatchPolicy::every_rows(1_000_000),
                 // …except the cell ceiling flushes every second cell.
                 max_batch_cells: 2,
             },

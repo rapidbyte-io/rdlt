@@ -8,14 +8,15 @@ the vocabulary; connectors run out of process, spawned per run.
 
 ```rust,no_run
 use rdlt::prelude::*;
+use rdlt::report;
 
-# async fn demo() -> Result<(), RdltError> {
+# async fn demo() -> Result<(), Error> {
 let pipeline = Pipeline::builder("demo")
     .source(my_source)
     .destination(my_destination)
     .write_mode(WriteMode::Append)
     .build()?; // configuration errors die here, before any I/O
-let report: RunReport = pipeline.run().await?;
+let report: report::Run = pipeline.run().await?;
 # Ok(())
 # }
 ```

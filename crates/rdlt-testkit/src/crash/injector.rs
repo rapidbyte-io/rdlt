@@ -8,9 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::{
-    CommitMeta, CommitReceipt, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use rdlt_connector::core::id::{PipelineId, TableName};
+use rdlt_connector::core::schema::TableSchema;
+use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::spec::ConnectorSpec;
@@ -167,7 +168,7 @@ impl LoadSession for CrashSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdlt_connector::core::LoadId;
+    use rdlt_connector::core::id::LoadId;
 
     /// 037 US2 fix round 2, I2: `close` must forward to the wrapped
     /// session, not silently resolve to the trait's own default. Wraps

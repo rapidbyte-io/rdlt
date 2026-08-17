@@ -18,7 +18,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::Cursor;
+use rdlt_connector::core::cursor::Cursor;
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::{ReadRequest, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;
@@ -469,8 +469,10 @@ mod stream_spec_gate_tests {
         let cases = [
             StreamSpec::new("orders").with_primary_key(["id\u{202e}"]),
             StreamSpec::new("orders").with_cursor_field("cursor\nforged"),
-            StreamSpec::new("orders")
-                .with_type_hint("amount\u{200b}", rdlt_connector::core::LogicalType::Int64),
+            StreamSpec::new("orders").with_type_hint(
+                "amount\u{200b}",
+                rdlt_connector::core::types::LogicalType::Int64,
+            ),
         ];
         for spec in cases {
             assert!(
@@ -510,8 +512,10 @@ mod stream_spec_gate_tests {
         // Over the type-hint field cap.
         let mut spec = StreamSpec::new("orders");
         for i in 0..4097 {
-            spec.type_hints
-                .insert(format!("c{i}"), rdlt_connector::core::LogicalType::Int64);
+            spec.type_hints.insert(
+                format!("c{i}"),
+                rdlt_connector::core::types::LogicalType::Int64,
+            );
         }
         let error = refuse_untrusted_stream_spec(&spec).expect_err("4097 type hints refuse");
         assert!(
@@ -522,8 +526,10 @@ mod stream_spec_gate_tests {
         let mut spec = StreamSpec::new("orders");
         spec.primary_key = Some((0..64).map(|i| format!("k{i}")).collect());
         for i in 0..4096 {
-            spec.type_hints
-                .insert(format!("c{i}"), rdlt_connector::core::LogicalType::Int64);
+            spec.type_hints.insert(
+                format!("c{i}"),
+                rdlt_connector::core::types::LogicalType::Int64,
+            );
         }
         refuse_untrusted_stream_spec(&spec).expect("a spec at both count caps is legal");
     }

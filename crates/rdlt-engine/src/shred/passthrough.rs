@@ -30,11 +30,13 @@ use arrow::{
 };
 use rdlt_connector::channel::{MAX_ARROW_DEPTH, MAX_RECORD_BATCH_ROWS};
 use rdlt_connector::destination::Capabilities;
-use rdlt_core::{
-    ColumnDef, ColumnType, LogicalType, PolicyAction, Provenance, RdltError, SchemaChange,
-    TableName, TableSchema, naming::UniqueNamer, schema::system_columns,
-};
+use rdlt_core::error::Error;
+use rdlt_core::id::TableName;
+use rdlt_core::schema::{self, Column, ColumnType, Provenance, TableSchema};
+use rdlt_core::types::LogicalType;
 
+use crate::naming::UniqueNamer;
+use crate::policy::PolicyAction;
 use crate::{
     load::LoadItem,
     schema::contracts::{change_column, violation_for},
@@ -51,9 +53,9 @@ pub(crate) fn passthrough_items(
     table: &TableName,
     ctx: ShredContext,
     capabilities: Capabilities,
-) -> Result<Vec<LoadItem>, RdltError> {
+) -> Result<Vec<LoadItem>, Error> {
     if batch.num_rows() > MAX_RECORD_BATCH_ROWS {
-        return Err(RdltError::config(format!(
+        return Err(Error::config(format!(
             "table `{table}`: Arrow batch carries {} rows, over the \
              {MAX_RECORD_BATCH_ROWS}-row cap — row count is bounded separately from \
              encoded bytes to prevent per-row column amplification",
@@ -80,7 +82,7 @@ pub(crate) fn passthrough_items(
         // each walked a per-column linear find — O(columns²) of string
         // compares per push on a wide table, the same class 4M3 removed
         // from the shredder side.
-        let current_by_name: std::collections::HashMap<&str, &rdlt_core::ColumnDef> = current
+        let current_by_name: std::collections::HashMap<&str, &rdlt_core::schema::Column> = current
             .columns
             .iter()
             .map(|c| (c.name.as_str(), c))
@@ -89,7 +91,7 @@ pub(crate) fn passthrough_items(
             if let Some(existing) = current_by_name.get(column.name.as_str()) {
                 column.column_type = join_column_types(&existing.column_type, &column.column_type)
                     .map_err(|reason| {
-                        RdltError::config(format!(
+                        Error::config(format!(
                             "table `{table}` column `{}`: {reason}",
                             column.name
                         ))
@@ -107,7 +109,7 @@ pub(crate) fn passthrough_items(
         // assembly already null-fills absent columns; this keeps the registry
         // itself append-only. The shredder's JSONL path needs no such merge:
         // its observation states accumulate across pushes by construction.
-        let missing: Vec<rdlt_core::ColumnDef> = {
+        let missing: Vec<rdlt_core::schema::Column> = {
             let observed_names: std::collections::HashSet<&str> =
                 observed.columns.iter().map(|c| c.name.as_str()).collect();
             current
@@ -132,7 +134,7 @@ pub(crate) fn passthrough_items(
         .map(|column| 1 + nested_struct_fields(&column.column_type))
         .sum();
     if source_fields > MAX_SOURCE_COLUMNS_PER_TABLE {
-        return Err(RdltError::config(format!(
+        return Err(Error::config(format!(
             "table `{table}`: cross-batch schema growth reaches {source_fields} columns \
              and nested struct fields, over the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column \
              cap — struct breadth counts toward the same bound as columns"
@@ -142,9 +144,9 @@ pub(crate) fn passthrough_items(
     // ---- Policy resolution (same rules as the shredder) ----
     let changes = registry.diff(&observed);
     let mut dropped_columns: Vec<String> = Vec::new();
-    let mut kept: Vec<SchemaChange> = Vec::new();
+    let mut kept: Vec<schema::Change> = Vec::new();
     for change in changes {
-        let action = if matches!(change, SchemaChange::CreateTable { .. }) {
+        let action = if matches!(change, schema::Change::CreateTable { .. }) {
             PolicyAction::Evolve // first version, not evolution
         } else {
             policy.action_for(table, change_column(&change))
@@ -152,21 +154,21 @@ pub(crate) fn passthrough_items(
         match (&change, action) {
             (_, PolicyAction::Evolve) => kept.push(change),
             (_, PolicyAction::Freeze) => {
-                return Err(RdltError::Schema(violation_for(table, &change)));
+                return Err(Error::Schema(violation_for(table, &change)));
             }
-            (SchemaChange::AddColumn { column }, _) => {
+            (schema::Change::AddColumn { column }, _) => {
                 // Discard on a structured stream: project the refused column away
                 // (exact for column additions), counted below.
                 dropped_columns.push(column.name.clone());
             }
-            (SchemaChange::WidenColumn { name, .. }, _) => {
-                return Err(RdltError::config(format!(
+            (schema::Change::WidenColumn { name, .. }, _) => {
+                return Err(Error::config(format!(
                     "table `{table}` column `{name}`: Discard policies cannot filter \
                      value-level type changes on structured streams; use \
                      Evolve or Freeze"
                 )));
             }
-            (SchemaChange::CreateTable { .. }, _) => unreachable!("handled as Evolve"),
+            (schema::Change::CreateTable { .. }, _) => unreachable!("handled as Evolve"),
         }
     }
 
@@ -222,7 +224,7 @@ pub(crate) fn passthrough_items(
         .collect();
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(current.columns.len());
     for column in &current.columns {
-        if column.name == system_columns::LOAD_ID {
+        if column.name == schema::system::LOAD_ID {
             arrays.push(Arc::new(StringArray::from(vec![load_id.as_str(); rows])));
             continue;
         }
@@ -242,11 +244,10 @@ pub(crate) fn passthrough_items(
                     // contract belongs to the column, and arrow's cast
                     // recurses through struct fields and list elements
                     // exactly like this walk does.
-                    refuse_inexact_cast(source.as_ref(), &target_type, &column.name).map_err(
-                        |reason| RdltError::config(format!("table `{table}`: {reason}")),
-                    )?;
+                    refuse_inexact_cast(source.as_ref(), &target_type, &column.name)
+                        .map_err(|reason| Error::config(format!("table `{table}`: {reason}")))?;
                     cast(source.as_ref(), &target_type).map_err(|e| {
-                        RdltError::config(format!(
+                        Error::config(format!(
                             "table `{table}` column `{}`: cannot cast {} to {target_type}: {e}",
                             column.name,
                             source.data_type()
@@ -260,7 +261,7 @@ pub(crate) fn passthrough_items(
         arrays.push(array);
     }
     let out = RecordBatch::try_new(Arc::new(arrow_schema(current)), arrays)
-        .map_err(|e| RdltError::internal(format!("passthrough batch assembly: {e}")))?;
+        .map_err(|e| Error::internal(format!("passthrough batch assembly: {e}")))?;
     items.push(LoadItem::batch(table.clone(), out));
     Ok(items)
 }
@@ -362,7 +363,7 @@ fn refuse_inexact_cast(
                 .downcast_ref::<Int64Array>()
                 .expect("arrow types and arrays agree");
             (0..ints.len())
-                .any(|i| !ints.is_null(i) && !rdlt_core::types::int64_fits_in_f64(ints.value(i)))
+                .any(|i| !ints.is_null(i) && !crate::shred::int64_fits_in_f64(ints.value(i)))
                 .then(|| {
                     format!(
                         "column `{path}`: widening Int64 to Float64 would silently round a value \
@@ -436,19 +437,19 @@ fn schema_from_arrow(
     batch: &RecordBatch,
     table: &TableName,
     capabilities: Capabilities,
-) -> Result<(TableSchema, Vec<(String, usize)>), RdltError> {
+) -> Result<(TableSchema, Vec<(String, usize)>), Error> {
     if batch.num_columns() > MAX_SOURCE_COLUMNS_PER_TABLE {
-        return Err(RdltError::config(format!(
+        return Err(Error::config(format!(
             "table `{table}` carries {} Arrow fields, over the \
              {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap",
             batch.num_columns()
         )));
     }
     let mut namer = UniqueNamer::new(capabilities.ident_rules);
-    namer.reserve(system_columns::LOAD_ID); // even a literal `_rdlt_load_id` input suffixes
+    namer.reserve(schema::system::LOAD_ID); // even a literal `_rdlt_load_id` input suffixes
 
-    let mut columns = vec![ColumnDef {
-        name: system_columns::LOAD_ID.to_owned(),
+    let mut columns = vec![Column {
+        name: schema::system::LOAD_ID.to_owned(),
         column_type: ColumnType::scalar(LogicalType::Utf8),
         nullable: false,
         provenance: Provenance::System,
@@ -456,13 +457,13 @@ fn schema_from_arrow(
     let mut normalized_to_index = Vec::new();
     // Struct-field breadth spends from the SAME budget as top-level columns.
     // Counted BEFORE each field is mapped — a declared million-field struct
-    // must refuse without first materializing a million `ColumnDef`s, and
+    // must refuse without first materializing a million `Column`s, and
     // without rendering the offending schema back into the error.
     let mut source_fields = batch.num_columns();
     for (idx, field) in batch.schema().fields().iter().enumerate() {
         source_fields = source_fields.saturating_add(declared_struct_fields(field.data_type(), 0));
         if source_fields > MAX_SOURCE_COLUMNS_PER_TABLE {
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "table `{table}` column `{}`: declared struct fields push the schema over \
                  the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap — struct breadth \
                  counts toward the same bound as columns",
@@ -470,7 +471,7 @@ fn schema_from_arrow(
             )));
         }
         let ty = column_type_from_arrow(field.data_type()).map_err(|reason| {
-            RdltError::config(format!(
+            Error::config(format!(
                 "table `{table}` column `{}`: unmappable arrow type {} ({reason}) — \
                  never coerced silently",
                 field.name(),
@@ -479,7 +480,7 @@ fn schema_from_arrow(
         })?;
         let name = namer.name_for(field.name());
         normalized_to_index.push((name.clone(), idx));
-        columns.push(ColumnDef {
+        columns.push(Column {
             name,
             column_type: ty,
             nullable: true,
@@ -497,7 +498,7 @@ fn schema_from_arrow(
 }
 
 /// Struct fields a declared arrow type carries, recursively — a pure count,
-/// so a hostile breadth refuses before any `ColumnDef` is built. Descent
+/// so a hostile breadth refuses before any `Column` is built. Descent
 /// stops at the shared depth cap (the mapping walk right behind this refuses
 /// there with its own typed error); saturating, never panicking.
 fn declared_struct_fields(dt: &DataType, depth: usize) -> usize {
@@ -626,10 +627,10 @@ fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, 
             }))
         }
         DataType::Struct(fields) => {
-            let mapped: Result<Vec<ColumnDef>, String> = fields
+            let mapped: Result<Vec<Column>, String> = fields
                 .iter()
                 .map(|f| {
-                    Ok(ColumnDef {
+                    Ok(Column {
                         name: f.name().clone(),
                         column_type: column_type_from_arrow_at(f.data_type(), depth + 1)?,
                         nullable: true,
@@ -669,9 +670,9 @@ mod tests {
         let bootstrap = RecordBatch::new_empty(Arc::new(wide));
         let mut registry = crate::schema::registry::SchemaRegistry::default();
         let (load_id, mode, policy) = (
-            rdlt_core::LoadId::new("load"),
-            rdlt_core::WriteMode::Append,
-            rdlt_core::SchemaPolicy::default(),
+            rdlt_core::id::LoadId::new("load"),
+            rdlt_core::commit::WriteMode::Append,
+            crate::policy::SchemaPolicy::default(),
         );
         let table = TableName::new("events");
         passthrough_items(
@@ -735,17 +736,17 @@ mod tests {
         };
         let mut registry = crate::schema::registry::SchemaRegistry::default();
         let (load_id, mode, policy) = (
-            rdlt_core::LoadId::new("load"),
-            rdlt_core::WriteMode::Append,
-            rdlt_core::SchemaPolicy::default(),
+            rdlt_core::id::LoadId::new("load"),
+            rdlt_core::commit::WriteMode::Append,
+            crate::policy::SchemaPolicy::default(),
         );
         let table = TableName::new("events");
         fn pass(
             registry: &mut crate::schema::registry::SchemaRegistry,
             table: &TableName,
-            load_id: &rdlt_core::LoadId,
-            mode: &rdlt_core::WriteMode,
-            policy: &rdlt_core::SchemaPolicy,
+            load_id: &rdlt_core::id::LoadId,
+            mode: &rdlt_core::commit::WriteMode,
+            policy: &crate::policy::SchemaPolicy,
             batch: RecordBatch,
         ) -> Vec<LoadItem> {
             passthrough_items(
@@ -874,9 +875,9 @@ mod tests {
         )
         .expect("valid compact boolean batch");
         let mut registry = crate::schema::registry::SchemaRegistry::default();
-        let load_id = rdlt_core::LoadId::new("load");
-        let mode = rdlt_core::WriteMode::Append;
-        let policy = rdlt_core::SchemaPolicy::default();
+        let load_id = rdlt_core::id::LoadId::new("load");
+        let mode = rdlt_core::commit::WriteMode::Append;
+        let policy = crate::policy::SchemaPolicy::default();
         let error = passthrough_items(
             &batch,
             &TableName::new("events"),
@@ -963,9 +964,9 @@ mod tests {
             )])))
         };
         let mut registry = crate::schema::registry::SchemaRegistry::default();
-        let load_id = rdlt_core::LoadId::new("load");
-        let mode = rdlt_core::WriteMode::Append;
-        let policy = rdlt_core::SchemaPolicy::default();
+        let load_id = rdlt_core::id::LoadId::new("load");
+        let mode = rdlt_core::commit::WriteMode::Append;
+        let policy = crate::policy::SchemaPolicy::default();
         let table = TableName::new("events");
         let half = MAX_SOURCE_COLUMNS_PER_TABLE / 2 + 1;
         passthrough_items(
@@ -1098,7 +1099,7 @@ mod tests {
             let mut ty = ColumnType::scalar(leaf);
             for _ in 0..levels {
                 ty = ColumnType::Struct {
-                    fields: vec![ColumnDef {
+                    fields: vec![Column {
                         name: "f".to_owned(),
                         column_type: ty,
                         nullable: true,
@@ -1141,9 +1142,9 @@ fn an_inexact_int64_to_float64_widening_refuses_typed() {
         crate::schema::registry::SchemaRegistry::default(),
         TableName::new("events"),
     );
-    let load_id = rdlt_core::LoadId::new("load");
-    let mode = rdlt_core::WriteMode::Append;
-    let policy = rdlt_core::SchemaPolicy::default();
+    let load_id = rdlt_core::id::LoadId::new("load");
+    let mode = rdlt_core::commit::WriteMode::Append;
+    let policy = crate::policy::SchemaPolicy::default();
     // (Constructed inline at each call: `ShredContext` borrows both
     // the locals above and the caller's `&mut registry`, which a
     // closure cannot express.)
@@ -1238,9 +1239,9 @@ fn a_nested_struct_int_widening_refuses_typed() {
         crate::schema::registry::SchemaRegistry::default(),
         TableName::new("events"),
     );
-    let load_id = rdlt_core::LoadId::new("load");
-    let mode = rdlt_core::WriteMode::Append;
-    let policy = rdlt_core::SchemaPolicy::default();
+    let load_id = rdlt_core::id::LoadId::new("load");
+    let mode = rdlt_core::commit::WriteMode::Append;
+    let policy = crate::policy::SchemaPolicy::default();
     let float_struct = || {
         StructArray::new(
             Fields::from(vec![Field::new("f", DataType::Float64, true)]),
@@ -1317,9 +1318,9 @@ fn a_nested_list_int_widening_refuses_typed() {
         crate::schema::registry::SchemaRegistry::default(),
         TableName::new("events"),
     );
-    let load_id = rdlt_core::LoadId::new("load");
-    let mode = rdlt_core::WriteMode::Append;
-    let policy = rdlt_core::SchemaPolicy::default();
+    let load_id = rdlt_core::id::LoadId::new("load");
+    let mode = rdlt_core::commit::WriteMode::Append;
+    let policy = crate::policy::SchemaPolicy::default();
 
     let item = |dt: DataType| Arc::new(Field::new("item", dt, true));
     let list_of = |dt: DataType, values: ArrayRef| {
@@ -1398,9 +1399,9 @@ fn a_sub_microsecond_timestamp_refuses_typed() {
         crate::schema::registry::SchemaRegistry::default(),
         TableName::new("events"),
     );
-    let load_id = rdlt_core::LoadId::new("load");
-    let mode = rdlt_core::WriteMode::Append;
-    let policy = rdlt_core::SchemaPolicy::default();
+    let load_id = rdlt_core::id::LoadId::new("load");
+    let mode = rdlt_core::commit::WriteMode::Append;
+    let policy = crate::policy::SchemaPolicy::default();
 
     // Establish the µs canonical type with a µs batch.
     let us_schema = Arc::new(arrow::datatypes::Schema::new(vec![
@@ -1483,9 +1484,9 @@ fn a_pre_epoch_intra_day_date64_refuses_typed() {
         crate::schema::registry::SchemaRegistry::default(),
         TableName::new("events"),
     );
-    let load_id = rdlt_core::LoadId::new("load");
-    let mode = rdlt_core::WriteMode::Append;
-    let policy = rdlt_core::SchemaPolicy::default();
+    let load_id = rdlt_core::id::LoadId::new("load");
+    let mode = rdlt_core::commit::WriteMode::Append;
+    let policy = crate::policy::SchemaPolicy::default();
     let day32_schema = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("d", DataType::Date32, true),
     ]));

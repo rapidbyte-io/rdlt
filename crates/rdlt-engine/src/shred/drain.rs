@@ -4,8 +4,13 @@
 
 use std::collections::BTreeSet;
 
-use rdlt_core::{LoadId, PolicyAction, RdltError, RowId, SchemaChange, SchemaPolicy, WriteMode};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::error::Error;
+use rdlt_core::id::LoadId;
+use rdlt_core::schema;
 
+use crate::identity::RowId;
+use crate::policy::{PolicyAction, SchemaPolicy};
 use crate::{
     load::LoadItem,
     schema::{
@@ -77,7 +82,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
     tables: &mut [TableBuffer],
     rows: &mut [Vec<DrainRow<V>>],
     ctx: ShredContext,
-) -> Result<Vec<LoadItem>, RdltError> {
+) -> Result<Vec<LoadItem>, Error> {
     let ShredContext {
         registry,
         load_id,
@@ -167,10 +172,10 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         let changes = registry.diff(&observed);
 
         // ---- Policy resolution per change ----
-        let mut discard: Vec<(SchemaChange, PolicyAction)> = Vec::new();
-        let mut kept: Vec<SchemaChange> = Vec::new();
+        let mut discard: Vec<(schema::Change, PolicyAction)> = Vec::new();
+        let mut kept: Vec<schema::Change> = Vec::new();
         for change in changes {
-            let action = if matches!(change, SchemaChange::CreateTable { .. }) {
+            let action = if matches!(change, schema::Change::CreateTable { .. }) {
                 // Establishing the stream's initial shape is not evolution,
                 // however many tables that shape needs. But a table that appears
                 // LATER is drift — a new nested collection creates one, and
@@ -189,10 +194,10 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                 PolicyAction::Freeze => {
                     // Nothing of this batch has been emitted: fail before any row
                     // of the violating batch is written.
-                    return Err(RdltError::Schema(violation_for(&table, &change)));
+                    return Err(Error::Schema(violation_for(&table, &change)));
                 }
                 PolicyAction::DiscardRow | PolicyAction::DiscardValue => {
-                    if matches!(change, SchemaChange::CreateTable { .. }) {
+                    if matches!(change, schema::Change::CreateTable { .. }) {
                         // A table that does not exist yet has no column to null
                         // and no prior shape to roll back to, so `enforce_discards`
                         // has nothing to act on and would skip it — silently
@@ -278,7 +283,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
                 d.rows.as_slice(),
                 load_id,
             )
-            .map_err(|e| RdltError::internal(format!("arrow build: {e}")))?;
+            .map_err(|e| Error::internal(format!("arrow build: {e}")))?;
             d.rows.clear();
             // A value that cannot be represented under its column's type is
             // nulled by the builder. Declared columns never reach the policy
@@ -311,7 +316,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
     buffer: &mut TableBuffer,
     rows: &mut Vec<DrainRow<V>>,
     rollback_snapshot: Option<&[(String, ColumnState)]>,
-    discard: &[(SchemaChange, PolicyAction)],
+    discard: &[(schema::Change, PolicyAction)],
     discarded_ids: &mut BTreeSet<RowId>,
     items: &mut Vec<LoadItem>,
 ) {
@@ -322,7 +327,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
         source_key: String,
         /// `None` = new column (any non-null value offends);
         /// `Some(ty)` = must fit this (the pre-change) type.
-        must_fit: Option<rdlt_core::ColumnType>,
+        must_fit: Option<rdlt_core::schema::ColumnType>,
         action: PolicyAction,
     }
     let mut offenses: Vec<Offense> = Vec::new();
@@ -336,7 +341,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
             .to_owned();
         buffer.revert_column(&source_key, rollback_snapshot);
         let must_fit = match change {
-            SchemaChange::WidenColumn { from, .. } => Some(from.clone()),
+            schema::Change::WidenColumn { from, .. } => Some(from.clone()),
             _ => None,
         };
         offenses.push(Offense {

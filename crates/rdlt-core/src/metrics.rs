@@ -7,14 +7,14 @@
 //!
 //! The fold is ADVISORY, like the events that feed it: the numbers
 //! here are live approximations for humans and dashboards. The
-//! exactly-once numbers are the [`crate::RunReport`]'s, and a consumer
+//! exactly-once numbers are the [`crate::report::Run`]'s, and a consumer
 //! showing final totals must take them from there — a lagging event
 //! subscriber loses the oldest events rather than being allowed to
 //! slow the pipeline, so the live fold may have missed events the
 //! report did not.
 //!
-//! Time is a PARAMETER (`apply_at`, `snapshot_at`), which is what
-//! makes rates testable; the `apply`/`snapshot` sugar passes
+//! Time is a parameter internally (`apply_at`, `snapshot_at`), which is
+//! what makes rates testable; the public `apply`/`snapshot` pass
 //! `Instant::now()`.
 
 use std::collections::BTreeMap;
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::event::PipelineEvent;
-use crate::ids::{StreamName, TableName};
+use crate::id::{StreamName, TableName};
 
 /// How far back the sliding rate window reaches.
 const RATE_WINDOW: Duration = Duration::from_secs(5);
@@ -40,7 +40,7 @@ pub enum StreamState {
 
 /// Read-side totals for one stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-pub struct StreamMetrics {
+pub struct Stream {
     /// Rows decoded from the source payloads.
     pub rows_read: u64,
     /// Source payload bytes (raw for JSON sources, Arrow footprint for
@@ -50,7 +50,7 @@ pub struct StreamMetrics {
 
 /// Write-side totals for one table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-pub struct TableMetrics {
+pub struct Table {
     /// Rows written to the destination (not necessarily committed yet).
     pub rows_written: u64,
     /// In-memory bytes of the batches written.
@@ -70,9 +70,9 @@ pub struct TableMetrics {
 /// is what a metrics endpoint returns and what a renderer draws.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
-pub struct MetricsSnapshot {
+pub struct Snapshot {
     /// Per-stream read totals.
-    pub streams: BTreeMap<StreamName, StreamMetrics>,
+    pub streams: BTreeMap<StreamName, Stream>,
     /// Per-stream state, kept beside rather than inside the totals so
     /// the totals stay `Copy`.
     pub stream_states: BTreeMap<StreamName, StreamState>,
@@ -82,7 +82,7 @@ pub struct MetricsSnapshot {
     /// destination's).
     pub stream_tables: BTreeMap<StreamName, TableName>,
     /// Per-table write totals.
-    pub tables: BTreeMap<TableName, TableMetrics>,
+    pub tables: BTreeMap<TableName, Table>,
     /// Total rows read across streams.
     pub rows_read: u64,
     /// Total rows written across tables.
@@ -116,10 +116,10 @@ pub struct MetricsSnapshot {
 #[derive(Debug)]
 pub struct Metrics {
     started: Instant,
-    streams: BTreeMap<StreamName, StreamMetrics>,
+    streams: BTreeMap<StreamName, Stream>,
     stream_states: BTreeMap<StreamName, StreamState>,
     stream_tables: BTreeMap<StreamName, TableName>,
-    tables: BTreeMap<TableName, TableMetrics>,
+    tables: BTreeMap<TableName, Table>,
     commits: u64,
     last_commit_seq: Option<u64>,
     last_commit_at: Option<Instant>,
@@ -137,7 +137,7 @@ impl Metrics {
     }
 
     /// A fold whose run started at `started` — the testable form.
-    pub fn started_at(started: Instant) -> Self {
+    fn started_at(started: Instant) -> Self {
         Self {
             started,
             streams: BTreeMap::new(),
@@ -160,7 +160,7 @@ impl Metrics {
     }
 
     /// Fold one event in at an explicit instant — the testable form.
-    pub fn apply_at(&mut self, event: &PipelineEvent, at: Instant) {
+    fn apply_at(&mut self, event: &PipelineEvent, at: Instant) {
         match event {
             PipelineEvent::StreamStarted { stream, table } => {
                 self.streams.entry(stream.clone()).or_default();
@@ -234,12 +234,12 @@ impl Metrics {
     }
 
     /// The picture as of NOW.
-    pub fn snapshot(&mut self) -> MetricsSnapshot {
+    pub fn snapshot(&mut self) -> Snapshot {
         self.snapshot_at(Instant::now())
     }
 
     /// The picture as of an explicit instant — the testable form.
-    pub fn snapshot_at(&mut self, now: Instant) -> MetricsSnapshot {
+    fn snapshot_at(&mut self, now: Instant) -> Snapshot {
         self.prune(now);
         let rows_written: u64 = self.tables.values().map(|t| t.rows_written).sum();
         let bytes_written: u64 = self.tables.values().map(|t| t.bytes_written).sum();
@@ -261,7 +261,7 @@ impl Metrics {
             (span > f64::EPSILON).then(|| count as f64 / span)
         };
         let elapsed = now.duration_since(self.started).as_secs_f64();
-        MetricsSnapshot {
+        Snapshot {
             streams: self.streams.clone(),
             stream_states: self.stream_states.clone(),
             stream_tables: self.stream_tables.clone(),
@@ -293,7 +293,7 @@ impl Default for Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::PartClose;
+    use crate::event::PartCloseReason;
 
     fn batch_loaded(table: &str, rows: u64, bytes: u64) -> PipelineEvent {
         PipelineEvent::BatchLoaded {
@@ -389,7 +389,7 @@ mod tests {
             &PipelineEvent::PartClosed {
                 table: TableName::new("t"),
                 encoded_bytes: 90_000,
-                reason: PartClose::Target,
+                reason: PartCloseReason::Target,
             },
             start,
         );

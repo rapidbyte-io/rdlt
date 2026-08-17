@@ -7,17 +7,18 @@ use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use rdlt_connector::core::{
-    ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
-    StateDoc, TableName, TableSchema,
-};
+use rdlt_connector::core::commit::{self, CommitMeta};
+use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
+use rdlt_connector::core::schema::{Column, ColumnType, Provenance, TableSchema};
+use rdlt_connector::core::state::StateDoc;
+use rdlt_connector::core::types::LogicalType;
 
 /// The canonical logical schema: one non-nullable `id: Int64` column.
 pub fn schema_for(table: &str) -> TableSchema {
     TableSchema {
         table: TableName::new(table),
         parent: None,
-        columns: vec![ColumnDef {
+        columns: vec![Column {
             name: "id".into(),
             column_type: ColumnType::scalar(LogicalType::Int64),
             nullable: false,
@@ -44,7 +45,7 @@ pub fn commit_meta_for(pipeline: &PipelineId, load: &LoadId, seq: u64) -> Commit
         load_id: load.clone(),
         commit_seq: seq,
         state: StateDoc::new(pipeline.clone(), "test"),
-        counters: CommitCounters::default(),
+        counters: commit::Counters::default(),
     }
 }
 
@@ -61,7 +62,7 @@ pub(crate) fn arrow_schema(logical: &TableSchema) -> Schema {
     )
 }
 
-fn arrow_field(column: &ColumnDef) -> Field {
+fn arrow_field(column: &Column) -> Field {
     let data_type = match &column.column_type {
         ColumnType::Scalar {
             scalar: LogicalType::Utf8,

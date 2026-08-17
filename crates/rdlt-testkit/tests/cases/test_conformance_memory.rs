@@ -46,7 +46,7 @@ struct MemoryProbe(MemoryDestination);
 
 #[async_trait]
 impl TableProbe for MemoryProbe {
-    async fn count(&self, table: &rdlt_connector::core::TableName) -> Result<u64, ProbeError> {
+    async fn count(&self, table: &rdlt_connector::core::id::TableName) -> Result<u64, ProbeError> {
         Ok(self.0.committed_rows(table.as_str()).len() as u64)
     }
 }

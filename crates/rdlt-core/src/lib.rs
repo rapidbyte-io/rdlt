@@ -1,21 +1,26 @@
 //! # rdlt-core — the rdlt vocabulary
 //!
-//! Pure data contracts and semantic laws for the rdlt engine and the rapidbyte
-//! platform: every type that is persisted, reported, or crosses a wire, plus the pure
-//! functions that define rdlt's data semantics (widening lattice, row identity, schema
-//! hashing, naming).
+//! The types every side of an rdlt pipeline names: what is persisted in a
+//! destination ([`state`], [`schema`]), what crosses the connector wire
+//! ([`commit`], [`cursor`], [`id`], [`types`]), what a run reports back
+//! ([`report`], [`event`], [`metrics`], [`error`]), and the one test-only
+//! macro production code arms ([`failpoint`]).
 //!
-//! **Charter**: pure data + pure functions only. If it needs tokio, I/O, or arrow
-//! compute, it does not belong here. Dependencies stay narrow — serde/serde_json for
-//! serialization, blake3 for hashing, thiserror for the error taxonomy, and an optional
-//! `fail` dependency used only for crash-point injection in tests (the `failpoints`
-//! feature, never in release builds). Notably NOT arrow: the schema vocabulary here is
-//! rdlt's own, and mapping it onto arrow types is the engine's job, not this crate's.
+//! **Charter: vocabulary that crosses a boundary, and nothing else.** A type
+//! lives here because more than one side of a boundary must agree on it —
+//! engine and connector, engine and embedder, this engine version and the
+//! documents an older one wrote. Machinery with a single owner (row identity,
+//! collision-safe naming, schema policy) is engine code and lives in the
+//! engine, however pure it is. Dependencies stay narrow — serde/serde_json,
+//! blake3, thiserror, and an optional `fail` used only under the `failpoints`
+//! feature — and deliberately NOT arrow: the schema vocabulary is rdlt's own,
+//! and mapping it onto arrow types is the engine's job.
 //!
-//! This crate is SEMVER-SACRED: `cargo semver-checks` gates it in CI, and the persisted
-//! formats it defines (`StateDoc`, schema hashes, `RunReport`) are byte-stable — their
-//! on-disk serialization is a compatibility contract that changes only through an
-//! explicit, versioned format migration, never incidentally.
+//! Every serde form here is a persisted or wire format and is byte-stable:
+//! field names, tags and renames change only through an explicit, versioned
+//! format migration, never incidentally. `cargo semver-checks` gates the crate.
+//!
+//! Every module path is canonical — nothing is re-exported at the root.
 
 // Warn, not deny: an undocumented public item is a gap to fill, not a
 // reason to fail a contributor's build. `make docs` is where the
@@ -27,26 +32,9 @@ pub mod cursor;
 pub mod error;
 pub mod event;
 pub mod failpoint;
-pub mod identity;
-pub mod ids;
+pub mod id;
 pub mod metrics;
-pub mod naming;
-pub mod policy;
 pub mod report;
 pub mod schema;
 pub mod state;
 pub mod types;
-
-pub use commit::{BatchPolicy, CommitCounters, CommitMeta, CommitPolicy, CommitReceipt, WriteMode};
-pub use cursor::Cursor;
-pub use error::{ContractViolation, RdltError};
-pub use event::{PartClose, PipelineEvent};
-pub use ids::{InvalidHexId, LoadId, PipelineId, RowId, SchemaHash, StreamName, TableName};
-pub use metrics::{Metrics, MetricsSnapshot};
-pub use policy::{ColumnRef, PolicyAction, SchemaPolicy};
-pub use report::{ResumedFrom, RunReport, TableReport};
-pub use schema::{
-    ColumnDef, ColumnType, ParentLink, Provenance, SchemaChange, SchemaDelta, TableSchema,
-};
-pub use state::{LastCommit, StateDoc, UnsupportedStateVersion};
-pub use types::{LogicalType, is_widening_of, widen};

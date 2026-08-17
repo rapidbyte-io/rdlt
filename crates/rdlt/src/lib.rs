@@ -5,15 +5,16 @@
 //!
 //! ```no_run
 //! use rdlt::prelude::*;
+//! use rdlt::report;
 //! use rdlt_testkit::{MemoryDestination, MemorySource};
 //!
-//! # async fn demo() -> Result<(), RdltError> {
+//! # async fn demo() -> Result<(), Error> {
 //! let pipeline = Pipeline::builder("demo")
 //!     .source(MemorySource::default())
 //!     .destination(MemoryDestination::new())
 //!     .write_mode(WriteMode::Append)
 //!     .build()?; // config errors die here, pre-I/O
-//! let report: RunReport = pipeline.run().await?;
+//! let report: report::Run = pipeline.run().await?;
 //! # let _ = report; Ok(())
 //! # }
 //! ```
@@ -38,11 +39,14 @@ pub use builder::{Pipeline, PipelineBuilder};
 /// parse connector configs directly (`sdk::config::Document` is the trait
 /// behind every connector's `from_yaml`/`from_json`/`from_value`).
 pub use rdlt_connector_sdk as sdk;
-pub use rdlt_core::{
-    BatchPolicy, CommitPolicy, Cursor, Metrics, MetricsSnapshot, PartClose, PipelineEvent,
-    PolicyAction, RdltError, ResumedFrom, RunReport, SchemaPolicy, StreamName, TableName,
-    TableReport, WriteMode,
-};
+pub use rdlt_core::commit::{BatchPolicy, CommitPolicy, WriteMode};
+pub use rdlt_core::cursor::Cursor;
+pub use rdlt_core::error::Error;
+pub use rdlt_core::event::{PartCloseReason, PipelineEvent};
+pub use rdlt_core::id::{StreamName, TableName};
+pub use rdlt_core::metrics::{self, Metrics};
+pub use rdlt_core::report::{self, ResumedFrom};
+pub use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
 /// The out-of-process connector runtime, re-exported for embedders that
 /// supply their own [`runtime::ConnectorProvider`] to
 /// [`pipeline_spec::build_pipeline_with`] — or configure the default
@@ -51,14 +55,15 @@ pub use rdlt_runtime as runtime;
 
 /// Glob-import target for pipeline authors.
 ///
-/// Rule: the prelude is the crate-root vocabulary re-export set (every type re-exported
+/// Rule: the prelude is the crate-root vocabulary re-export set (every TYPE re-exported
 /// at `rdlt::`) plus the [`Pipeline`] entry point. Import `rdlt::prelude::*` and you can
-/// name everything a pipeline definition and its report handling touch without reaching
-/// for the submodules. Anything reachable at the crate root is reachable here.
+/// name everything a pipeline definition touches without reaching for the submodules;
+/// the module-nouned outcome types stay behind their nouns — [`report::Run`] and
+/// [`metrics::Snapshot`] — because bare `Run`/`Table`/`Snapshot` in a glob would
+/// collide with an author's own names.
 pub mod prelude {
     pub use crate::{
-        BatchPolicy, CommitPolicy, Cursor, Metrics, MetricsSnapshot, PartClose, Pipeline,
-        PipelineEvent, PolicyAction, RdltError, ResumedFrom, RunReport, SchemaPolicy, StreamName,
-        TableName, TableReport, WriteMode,
+        BatchPolicy, CommitPolicy, Cursor, Error, Metrics, PartCloseReason, Pipeline,
+        PipelineEvent, PolicyAction, ResumedFrom, SchemaPolicy, StreamName, TableName, WriteMode,
     };
 }

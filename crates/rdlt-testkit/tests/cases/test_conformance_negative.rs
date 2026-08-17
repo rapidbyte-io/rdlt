@@ -3,9 +3,10 @@
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::{
-    CommitMeta, CommitReceipt, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use rdlt_connector::core::id::{PipelineId, TableName};
+use rdlt_connector::core::schema::TableSchema;
+use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::{DestinationError, SourceError};
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
@@ -36,7 +37,7 @@ impl Source for AmnesiacSource {
         }
         let _ = req
             .out
-            .checkpoint(rdlt_connector::core::Cursor::new(2))
+            .checkpoint(rdlt_connector::core::cursor::Cursor::new(2))
             .await;
         Ok(())
     }
@@ -401,7 +402,9 @@ impl Source for TeardownFailingSource {
         if out.rows([json!({"a": 1})]).await.is_err() {
             return Ok(());
         }
-        let _ = out.checkpoint(rdlt_connector::core::Cursor::new(1)).await;
+        let _ = out
+            .checkpoint(rdlt_connector::core::cursor::Cursor::new(1))
+            .await;
         drop(out); // every sender gone — the harness channel drains NOW
         // Yield so the harness OBSERVES the drain before this error
         // exists — the pin must exercise the wait-for-the-reader path,

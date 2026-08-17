@@ -1,18 +1,21 @@
-//! The commit protocol vocabulary.
+//! The commit protocol vocabulary: what a destination publishes atomically,
+//! how it acknowledges, and the cadence policies the engine commits under.
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::LoadId;
+use crate::id::LoadId;
 use crate::state::StateDoc;
 
-/// Counters for one commit unit. Feeds `RunReport` accounting — no silent failures.
+/// Counters for one commit unit. Feeds the run report's accounting — no silent
+/// failures.
 ///
-/// Field-identical to [`crate::report::TableReport`] by design, but a different role:
-/// `CommitCounters` totals one commit unit across all its tables, whereas a
-/// `TableReport` totals one table across the whole run. `From<CommitCounters>` (defined
-/// alongside `TableReport`) projects the former into the latter's shape.
+/// Field-identical to [`crate::report::Table`] by design, but a different role:
+/// `Counters` totals one commit unit across all its tables, whereas a
+/// `report::Table` totals one table across the whole run. `From<Counters>`
+/// (defined alongside `report::Table`) projects the former into the latter's
+/// shape.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommitCounters {
+pub struct Counters {
     /// Rows in this commit unit.
     pub rows: u64,
     /// In-memory bytes of its batches.
@@ -34,7 +37,7 @@ pub struct CommitMeta {
     /// the destination, in the same transaction as the data.
     pub state: StateDoc,
     /// This unit's totals, for the run report.
-    pub counters: CommitCounters,
+    pub counters: Counters,
 }
 
 /// Destination acknowledgment. Re-committing the same `(load_id, commit_seq)` MUST
@@ -110,7 +113,7 @@ impl CommitPolicy {
         }
     }
 
-    /// No thresholds. Only useful as a base for the builders below —
+    /// No thresholds. Only useful as a base for the constructors above —
     /// [`check`](Self::check) refuses it.
     fn empty() -> Self {
         Self {
@@ -118,27 +121,6 @@ impl CommitPolicy {
             every_bytes: None,
             every_seconds: None,
         }
-    }
-
-    /// Add a byte threshold, keeping any already set.
-    #[must_use]
-    pub fn or_every_bytes(mut self, bytes: u64) -> Self {
-        self.every_bytes = Some(bytes);
-        self
-    }
-
-    /// Add a time threshold, keeping any already set.
-    #[must_use]
-    pub fn or_every_seconds(mut self, secs: u32) -> Self {
-        self.every_seconds = Some(secs);
-        self
-    }
-
-    /// Add a checkpoint threshold, keeping any already set.
-    #[must_use]
-    pub fn or_every_checkpoints(mut self, n: u32) -> Self {
-        self.every_checkpoints = Some(n);
-        self
     }
 
     /// Every threshold that would fire, given what has accumulated.
@@ -209,7 +191,10 @@ mod commit_policy_tests {
     /// — "100 MB or every 15 minutes" is one policy, not two.
     #[test]
     fn any_threshold_alone_triggers() {
-        let policy = CommitPolicy::every_bytes(100).or_every_seconds(900);
+        let policy = CommitPolicy {
+            every_seconds: Some(900),
+            ..CommitPolicy::every_bytes(100)
+        };
 
         // Bytes reached, time nowhere near.
         assert!(policy.triggers(0, 100, 0));
@@ -324,10 +309,9 @@ pub struct BatchPolicy {
     /// It bounds the ENGINE's accumulation only. A spawned connector's
     /// own in-flight memory is bounded separately: the connector sdk
     /// byte-budgets the encoded frames a served source can hold ahead
-    /// of the wire (`BYTE_FRAME_BUDGET` in `rdlt-connector-sdk`'s
-    /// `serve/source.rs` owns the numbers and the worst case), and the
-    /// connector's own batch knobs size its frames. This knob cannot
-    /// reach those buffers, and no longer needs to.
+    /// of the wire, and the connector's own batch knobs size its
+    /// frames. This knob cannot reach those buffers, and does not need
+    /// to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub every_bytes: Option<u64>,
 }
@@ -347,13 +331,6 @@ impl BatchPolicy {
             every_rows: None,
             every_bytes: Some(bytes),
         }
-    }
-
-    /// Add a byte threshold, keeping any already set.
-    #[must_use]
-    pub fn or_every_bytes(mut self, bytes: u64) -> Self {
-        self.every_bytes = Some(bytes);
-        self
     }
 
     /// Does this policy accumulate at all? A policy with no threshold
@@ -390,7 +367,10 @@ mod batch_policy_tests {
     /// First threshold to be reached ends the batch.
     #[test]
     fn any_threshold_alone_triggers() {
-        let policy = BatchPolicy::every_rows(50_000).or_every_bytes(128 << 20);
+        let policy = BatchPolicy {
+            every_rows: Some(50_000),
+            every_bytes: Some(128 << 20),
+        };
         assert!(policy.triggers(50_000, 0));
         assert!(policy.triggers(0, 128 << 20));
         assert!(!policy.triggers(49_999, (128 << 20) - 1));

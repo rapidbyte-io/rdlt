@@ -1,7 +1,7 @@
 //! The live terminal display: one line per stream, a totals line, all
 //! redrawn in place at 10 Hz over the shared `Metrics` fold. Honest by
 //! construction: everything shown is LIVE and approximate; the final
-//! summary re-renders from the RunReport, the exactly-once record.
+//! summary re-renders from the run report, the exactly-once record.
 //!
 //! indicatif rather than a full-screen TUI, deliberately: a batch
 //! tool must compose with scrollback, pipes and CI logs, and leave

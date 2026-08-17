@@ -23,7 +23,7 @@ version.workspace = true
 
 [dependencies]
 arrow = { workspace = true }
-# WAL v3 manifest line checksums (047 M4).
+# Row identity hashing and WAL manifest line checksums.
 blake3 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }

@@ -18,7 +18,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rdlt_connector::core::{CommitMeta, CommitReceipt, LoadId, TableSchema};
+use rdlt_connector::core::commit::{CommitMeta, CommitReceipt};
+use rdlt_connector::core::id::LoadId;
+use rdlt_connector::core::schema::TableSchema;
 use rdlt_connector::source::StreamSpec;
 use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_protocol::MAX_FRAME_BYTES;

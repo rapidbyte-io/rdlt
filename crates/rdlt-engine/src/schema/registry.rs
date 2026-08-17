@@ -1,10 +1,11 @@
-//! Schema registry: current version per table, evolution as `SchemaDelta`s.
+//! Schema registry: current version per table, evolution as `schema::Delta`s.
 //! Deltas are the ONLY way schemas change, and a delta is always
 //! emitted before the first batch at its `to` version.
 
 use std::collections::BTreeMap;
 
-use rdlt_core::{ColumnType, SchemaChange, SchemaDelta, TableName, TableSchema, schema};
+use rdlt_core::id::TableName;
+use rdlt_core::schema::{self, ColumnType, TableSchema};
 
 #[derive(Debug, Default)]
 pub(crate) struct SchemaRegistry {
@@ -31,8 +32,8 @@ impl SchemaRegistry {
     pub(crate) fn apply(
         &mut self,
         observed: TableSchema,
-        changes: Vec<SchemaChange>,
-    ) -> Option<(SchemaDelta, TableSchema)> {
+        changes: Vec<schema::Change>,
+    ) -> Option<(schema::Delta, TableSchema)> {
         if changes.is_empty() {
             return None;
         }
@@ -40,7 +41,7 @@ impl SchemaRegistry {
             .tables
             .get(&observed.table)
             .map(TableSchema::content_hash);
-        let delta = SchemaDelta {
+        let delta = schema::Delta {
             table: observed.table.clone(),
             from,
             to: observed.content_hash(),
@@ -54,10 +55,10 @@ impl SchemaRegistry {
     /// Non-mutating: what would change if `observed` became current?
     /// Columns only append and types only widen — the shredder's observation states
     /// guarantee it; debug assertions verify (a shrink here is an engine bug).
-    pub(crate) fn diff(&self, observed: &TableSchema) -> Vec<SchemaChange> {
+    pub(crate) fn diff(&self, observed: &TableSchema) -> Vec<schema::Change> {
         let table = &observed.table;
         let Some(current) = self.tables.get(table) else {
-            return vec![SchemaChange::CreateTable {
+            return vec![schema::Change::CreateTable {
                 schema: observed.clone(),
             }];
         };
@@ -65,7 +66,7 @@ impl SchemaRegistry {
         let mut changes = Vec::new();
         for column in &observed.columns {
             match current.column(&column.name) {
-                None => changes.push(SchemaChange::AddColumn {
+                None => changes.push(schema::Change::AddColumn {
                     column: column.clone(),
                 }),
                 Some(existing) if existing.column_type != column.column_type => {
@@ -77,7 +78,7 @@ impl SchemaRegistry {
                         existing.column_type,
                         column.column_type
                     );
-                    changes.push(SchemaChange::WidenColumn {
+                    changes.push(schema::Change::WidenColumn {
                         name: column.name.clone(),
                         from: existing.column_type.clone(),
                         to: column.column_type.clone(),
@@ -87,7 +88,7 @@ impl SchemaRegistry {
             }
         }
         for existing in &current.columns {
-            if schema::system_columns::is_system(&existing.name) {
+            if schema::system::is_system(&existing.name) {
                 continue;
             }
             debug_assert!(
@@ -104,12 +105,12 @@ impl SchemaRegistry {
 /// Structural widening check (used in debug assertions): scalar-lattice order,
 /// struct fields append/widen, anything → Json.
 fn is_widening(from: &ColumnType, to: &ColumnType) -> bool {
-    use rdlt_core::types::is_widening_of;
+    use crate::shred::is_widening_of;
     match (from, to) {
         (
             _,
             ColumnType::Scalar {
-                scalar: rdlt_core::LogicalType::Json,
+                scalar: rdlt_core::types::LogicalType::Json,
             },
         ) => true,
         (ColumnType::Scalar { scalar: a }, ColumnType::Scalar { scalar: b }) => {
@@ -143,14 +144,15 @@ mod widening_tests {
     //! assertion it feeds — the only way to notice a weakened invariant check
     //! is to check the checker.
     use super::*;
-    use rdlt_core::{ColumnDef, LogicalType, Provenance};
+    use rdlt_core::schema::{Column, Provenance};
+    use rdlt_core::types::LogicalType;
 
     fn scalar(t: LogicalType) -> ColumnType {
         ColumnType::scalar(t)
     }
 
-    fn field(name: &str, ty: ColumnType) -> ColumnDef {
-        ColumnDef {
+    fn field(name: &str, ty: ColumnType) -> Column {
+        Column {
             name: name.into(),
             column_type: ty,
             nullable: true,

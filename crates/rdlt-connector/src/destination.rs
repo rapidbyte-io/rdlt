@@ -6,10 +6,10 @@ use arrow_array::RecordBatch;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::core::naming::IdentRules;
-use crate::core::{
-    CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
-};
+use crate::core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use crate::core::id::{LoadId, PipelineId, TableName};
+use crate::core::schema::{IdentRules, TableSchema};
+use crate::core::state::StateDoc;
 use crate::error::DestinationError;
 use crate::spec::ConnectorSpec;
 
@@ -352,7 +352,7 @@ mod tests {
         let wire = serde_json::to_value(&event).expect("serializes");
         assert_eq!(
             wire["reason"], "budget",
-            "snake_case, matching rdlt_core::PartClose"
+            "snake_case, matching rdlt_core::event::PartCloseReason"
         );
         let back: PartClosed = serde_json::from_value(wire).expect("round-trips");
         assert_eq!(back, event);

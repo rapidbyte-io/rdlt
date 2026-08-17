@@ -116,7 +116,7 @@ pub(crate) fn mint_run_entropy() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    rdlt_connector::core::naming::ident_hash(&format!("{}:{nanos}", std::process::id()), 12)
+    rdlt_connector::core::schema::ident_hash(&format!("{}:{nanos}", std::process::id()), 12)
 }
 
 /// The bin contract's `--role=` argument for `role` — the ONE place the

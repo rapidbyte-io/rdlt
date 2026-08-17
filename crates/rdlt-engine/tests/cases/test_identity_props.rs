@@ -1,7 +1,7 @@
-//! Deterministic `_rdlt_id` as executable properties (SC-006, design doc §5.4).
+//! Deterministic `_rdlt_id` as executable properties.
 
 use proptest::prelude::*;
-use rdlt_core::identity::{FieldValue, RowIdBuilder, child_row_id};
+use rdlt_engine::identity::{FieldValue, RowId, RowIdBuilder, child_row_id};
 
 type Row = Vec<(String, Option<Vec<u8>>)>;
 
@@ -15,7 +15,7 @@ fn any_row() -> impl Strategy<Value = Row> {
     )
 }
 
-fn id_of(row: &Row, keyed: bool) -> rdlt_core::RowId {
+fn id_of(row: &Row, keyed: bool) -> RowId {
     let mut builder = if keyed {
         RowIdBuilder::keyed()
     } else {

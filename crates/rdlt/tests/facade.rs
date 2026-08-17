@@ -43,7 +43,7 @@ fn build_rejects_merge_against_non_merge_destination() {
         })
         .build()
         .expect_err("must fail fast at build time, pre-I/O");
-    assert!(matches!(err, RdltError::Config { .. }));
+    assert!(matches!(err, Error::Config { .. }));
     assert!(err.to_string().contains("Merge"));
 }
 
@@ -157,7 +157,7 @@ async fn the_builder_plumbs_the_engine_knobs() {
 /// exists to refuse.
 #[test]
 fn build_rejects_a_threshold_less_commit_policy() {
-    let threshold_less = rdlt_core::CommitPolicy {
+    let threshold_less = rdlt_core::commit::CommitPolicy {
         every_checkpoints: None,
         every_bytes: None,
         every_seconds: None,

@@ -3,7 +3,7 @@
 //! connector answers to — plus the choreography refusal the framework
 //! itself owns.
 
-use rdlt_connector::core::TableName;
+use rdlt_connector::core::id::TableName;
 use rdlt_connector::destination::Destination;
 use rdlt_connector::source::Source;
 use rdlt_connector_sdk::config::Document;
@@ -61,7 +61,7 @@ async fn a_framework_destination_passes_the_conformance_kit() {
 /// no backend gets the chance to half-apply it.
 #[tokio::test]
 async fn the_session_refuses_a_write_before_ensure() {
-    use rdlt_connector::core::{LoadId, PipelineId};
+    use rdlt_connector::core::id::{LoadId, PipelineId};
     let shell = destination::shell(Sink::with_store(SharedStore::default()));
     let mut session = shell
         .open(rdlt_connector::destination::OpenContext::new(

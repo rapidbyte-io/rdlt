@@ -7,12 +7,15 @@ use bytes::Bytes;
 use rdlt_connector::channel::{ByteSender, PushPayload, SharedBudget, records_shared};
 use rdlt_connector::destination::Capabilities;
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
-use rdlt_core::{
-    Cursor, LoadId, PipelineEvent, RdltError, SchemaPolicy, StreamName, TableName, WriteMode,
-};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::cursor::Cursor;
+use rdlt_core::error::Error;
+use rdlt_core::event::PipelineEvent;
+use rdlt_core::id::{LoadId, StreamName, TableName};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+use crate::policy::SchemaPolicy;
 use crate::{
     load::LoadItem,
     schema::registry::SchemaRegistry,
@@ -53,7 +56,7 @@ impl ShredOwner {
         policy: SchemaPolicy,
         max_batch_cells: usize,
         stream: StreamName,
-    ) -> Result<(Self, Result<Vec<LoadItem>, RdltError>), RdltError> {
+    ) -> Result<(Self, Result<Vec<LoadItem>, Error>), Error> {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.shred");
             let _guard = span.enter();
@@ -69,14 +72,14 @@ impl ShredOwner {
                 .push_and_drain(&bytes, ctx)
                 .map_err(|e| match e {
                     PushError::Json(e) => {
-                        RdltError::source(stream, format!("invalid JSON from source: {e}"))
+                        Error::source(stream, format!("invalid JSON from source: {e}"))
                     }
                     PushError::Engine(e) => e,
                 });
             (self, items)
         })
         .await
-        .map_err(|e| RdltError::internal(format!("shred task panicked: {e}")))
+        .map_err(|e| Error::internal(format!("shred task panicked: {e}")))
     }
 
     /// Pass one already-structured batch through on the blocking pool: the common
@@ -92,7 +95,7 @@ impl ShredOwner {
         policy: SchemaPolicy,
         max_batch_cells: usize,
         capabilities: Capabilities,
-    ) -> Result<(Self, Result<Vec<LoadItem>, RdltError>), RdltError> {
+    ) -> Result<(Self, Result<Vec<LoadItem>, Error>), Error> {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.passthrough");
             let _guard = span.enter();
@@ -108,7 +111,7 @@ impl ShredOwner {
             (self, items)
         })
         .await
-        .map_err(|e| RdltError::internal(format!("passthrough task panicked: {e}")))
+        .map_err(|e| Error::internal(format!("passthrough task panicked: {e}")))
     }
 }
 
@@ -140,7 +143,7 @@ pub(super) async fn stream_task(
     cancel: CancellationToken,
     events: broadcast::Sender<PipelineEvent>,
     read_totals: Arc<std::sync::Mutex<std::collections::BTreeMap<StreamName, (u64, u64)>>>,
-) -> Result<(), RdltError> {
+) -> Result<(), Error> {
     let StreamPlan {
         spec,
         capabilities,
@@ -167,12 +170,12 @@ pub(super) async fn stream_task(
     let read_source = Arc::clone(&source);
     let mut reader = tokio::spawn(async move { read_source.read(request).await });
 
-    let push_result: Result<LoopExit, RdltError> = loop {
+    let push_result: Result<LoopExit, Error> = loop {
         let push = tokio::select! {
             push = input.recv() => push,
             _ = cancel.cancelled() => {
                 input.close();
-                break Err(RdltError::Cancelled);
+                break Err(Error::Cancelled);
             }
         };
         let Some(push) = push else {
@@ -226,7 +229,7 @@ pub(super) async fn stream_task(
                         _ => 0,
                     })
                     .sum();
-                let _ = events.send(rdlt_core::PipelineEvent::BatchRead {
+                let _ = events.send(rdlt_core::event::PipelineEvent::BatchRead {
                     stream: stream_name.clone(),
                     rows: rows_read,
                     bytes: payload_bytes,
@@ -258,7 +261,7 @@ pub(super) async fn stream_task(
                 // Structured fast path; undeclared streams are a
                 // contract violation.
                 if !spec.structured {
-                    break Err(RdltError::source(
+                    break Err(Error::source(
                         stream_name.clone(),
                         "source pushed Arrow batches on a stream not declared \
                          `structured`",
@@ -269,7 +272,7 @@ pub(super) async fn stream_task(
                 // re-walk, and BatchRead / the report totals charge the
                 // identical figure the budget did.
                 let (rows_read, payload_bytes) = (batch.num_rows() as u64, push_bytes as u64);
-                let _ = events.send(rdlt_core::PipelineEvent::BatchRead {
+                let _ = events.send(rdlt_core::event::PipelineEvent::BatchRead {
                     stream: stream_name.clone(),
                     rows: rows_read,
                     bytes: payload_bytes,
@@ -356,12 +359,12 @@ pub(super) async fn stream_task(
                 _ = cancel.cancelled() => {
                     reader.abort();
                     let _ = (&mut reader).await;
-                    return Err(RdltError::Cancelled);
+                    return Err(Error::Cancelled);
                 }
                 _ = tokio::time::sleep(READER_FINISH_GRACE) => {
                     reader.abort();
                     let _ = (&mut reader).await;
-                    return Err(RdltError::source(
+                    return Err(Error::source(
                         stream_name,
                         "source closed its output channel but did not return from read() \
                          within the bounded teardown grace",
@@ -380,7 +383,7 @@ pub(super) async fn stream_task(
     match (push_result, read_result) {
         (Err(e), _) => Err(e),
         (Ok(_), Ok(Ok(()))) => {
-            let _ = events.send(rdlt_core::PipelineEvent::StreamFinished {
+            let _ = events.send(rdlt_core::event::PipelineEvent::StreamFinished {
                 stream: stream_name,
             });
             Ok(())
@@ -391,7 +394,7 @@ pub(super) async fn stream_task(
         // (the loader's own error), so the reaped reader is cleanup,
         // not a stream failure.
         (Ok(_), Err(join_err)) if join_err.is_cancelled() => Ok(()),
-        (Ok(_), Err(join_err)) => Err(RdltError::source(
+        (Ok(_), Err(join_err)) => Err(Error::source(
             stream_name,
             format!("source task: {join_err}"),
         )),

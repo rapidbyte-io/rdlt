@@ -3,7 +3,10 @@
 use rdlt_connector::arrow::RecordBatch;
 
 use rdlt_connector::channel::{ByteSized, arrow_batch_footprint};
-use rdlt_core::{Cursor, SchemaDelta, StreamName, TableName, TableSchema, WriteMode};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::cursor::Cursor;
+use rdlt_core::id::{StreamName, TableName};
+use rdlt_core::schema::{self, TableSchema};
 
 /// One unit of work flowing shred → load. Per-table order within the channel is the
 /// ordering guarantee (delta before first batch at the new version).
@@ -11,7 +14,7 @@ use rdlt_core::{Cursor, SchemaDelta, StreamName, TableName, TableSchema, WriteMo
 pub(crate) enum LoadItem {
     Delta {
         schema: TableSchema,
-        delta: SchemaDelta,
+        delta: schema::Delta,
         mode: WriteMode,
     },
     Batch {
@@ -63,7 +66,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use rdlt_connector::channel::{Permitted, bytes};
-    use rdlt_core::StreamName;
+    use rdlt_core::id::StreamName;
 
     use super::*;
     use crate::runtime::STAGE_MSG_CAPACITY;

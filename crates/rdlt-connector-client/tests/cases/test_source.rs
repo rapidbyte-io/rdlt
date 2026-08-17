@@ -438,7 +438,7 @@ async fn an_oversized_stored_cursor_is_refused_before_resend() {
     .await
     .expect("connect");
 
-    let oversized = rdlt_connector::core::Cursor::new(serde_json::Value::String(
+    let oversized = rdlt_connector::core::cursor::Cursor::new(serde_json::Value::String(
         "x".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize),
     ));
     let (out, _input) = records(1 << 20);

@@ -18,6 +18,7 @@ pub(crate) mod tape;
 pub(crate) mod view;
 
 pub(crate) use drain::{DrainRow, ShredContext, drain_tables};
+pub(crate) use infer::{int64_fits_in_f64, is_widening_of};
 pub(crate) use tape::TapeShredder;
 
 /// Cumulative source columns retained for one logical table. System columns
@@ -52,14 +53,14 @@ pub(crate) const MAX_BATCH_CELLS: usize = crate::DEFAULT_MAX_BATCH_CELLS;
 /// The typed refusal both assembly seats ([`passthrough`] and
 /// [`drain`]'s build call) share, so the cap speaks with one voice.
 pub(crate) fn refuse_over_cell_budget(
-    table: &rdlt_core::TableName,
+    table: &rdlt_core::id::TableName,
     columns: usize,
     rows: usize,
     budget: usize,
-) -> Result<(), rdlt_core::RdltError> {
+) -> Result<(), rdlt_core::error::Error> {
     let cells = columns.saturating_mul(rows);
     if cells > budget {
-        return Err(rdlt_core::RdltError::config(format!(
+        return Err(rdlt_core::error::Error::config(format!(
             "table `{table}`: assembling {columns} columns × {rows} rows is {cells} cells, \
              over the {budget}-cell per-batch budget — assembly null-fills absent columns \
              and stamps lineage per cell, so the product is bounded independently of the \
@@ -82,7 +83,7 @@ mod cell_budget_tests {
     /// product refuses instead of wrapping.
     #[test]
     fn the_cell_budget_is_inclusive_at_its_boundary() {
-        let table = rdlt_core::TableName::new("t");
+        let table = rdlt_core::id::TableName::new("t");
         refuse_over_cell_budget(&table, 1 << 14, MAX_BATCH_CELLS >> 14, MAX_BATCH_CELLS)
             .expect("exactly the cap assembles");
         let error = refuse_over_cell_budget(

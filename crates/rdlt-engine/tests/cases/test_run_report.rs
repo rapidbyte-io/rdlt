@@ -1,12 +1,14 @@
 //! The run's accounting: events arrive in causal order, the report's totals
-//! equal destination-visible reality, the `CommitCounters` handed to a
+//! equal destination-visible reality, the `commit::Counters` handed to a
 //! destination describe the unit they accompany, and `Discarded` — the
 //! engine's data-loss signal — fires exactly when something was discarded.
 //! Several tests here are mutation-report closures; each names the mutant
 //! class it kills.
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{PipelineEvent, TableName};
+use rdlt_core::event::PipelineEvent;
+use rdlt_core::id::TableName;
+use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination};
 use serde_json::json;
@@ -21,7 +23,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
         evolving_batches(),
     );
     let mut config = EngineConfig::new("obs");
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
+    config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let engine = Engine::new(config, source, dest.clone());
     let mut events = engine.events();
@@ -185,28 +187,29 @@ struct CloseFailsSession {
 impl rdlt_connector::destination::LoadSession for CloseFailsSession {
     async fn ensure_table(
         &mut self,
-        schema: &rdlt_core::TableSchema,
-        mode: &rdlt_core::WriteMode,
+        schema: &rdlt_core::schema::TableSchema,
+        mode: &rdlt_core::commit::WriteMode,
     ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
     async fn write(
         &mut self,
-        table: &rdlt_core::TableName,
+        table: &rdlt_core::id::TableName,
         batch: rdlt_connector::arrow::RecordBatch,
     ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.write(table, batch).await
     }
     async fn commit(
         &mut self,
-        meta: rdlt_connector::core::CommitMeta,
-    ) -> Result<rdlt_connector::core::CommitReceipt, rdlt_connector::error::DestinationError> {
+        meta: rdlt_connector::core::commit::CommitMeta,
+    ) -> Result<rdlt_connector::core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
+    {
         self.inner.commit(meta).await
     }
     async fn read_state(
         &mut self,
-        pipeline: &rdlt_core::PipelineId,
-    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError> {
+        pipeline: &rdlt_core::id::PipelineId,
+    ) -> Result<Option<rdlt_core::state::StateDoc>, rdlt_connector::error::DestinationError> {
         self.inner.read_state(pipeline).await
     }
     async fn close(&mut self) -> Result<(), rdlt_connector::error::DestinationError> {
@@ -234,7 +237,7 @@ async fn a_close_failure_after_success_is_never_retried_and_says_data_is_durable
     assert!(
         matches!(
             err,
-            rdlt_core::RdltError::Destination {
+            rdlt_core::error::Error::Destination {
                 retryable: false,
                 ..
             }
@@ -251,7 +254,7 @@ async fn a_close_failure_after_success_is_never_retried_and_says_data_is_durable
     assert!(err.to_string().contains("injected close failure"), "{err}");
 }
 
-/// A destination that records the `CommitCounters` it is handed.
+/// A destination that records the `commit::Counters` it is handed.
 ///
 /// `CommitMeta.counters` is the per-commit-unit accounting the engine publishes
 /// alongside the data, and NOTHING in the suite looked at it — the report's
@@ -261,7 +264,7 @@ async fn a_close_failure_after_success_is_never_retried_and_says_data_is_durable
 #[derive(Clone)]
 struct CountersDest {
     inner: MemoryDestination,
-    seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::CommitCounters>>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::commit::Counters>>>,
 }
 
 #[async_trait::async_trait]
@@ -288,36 +291,37 @@ impl rdlt_connector::destination::Destination for CountersDest {
 
 struct CountersSession {
     inner: Box<dyn rdlt_connector::destination::LoadSession>,
-    seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::CommitCounters>>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::commit::Counters>>>,
 }
 
 #[async_trait::async_trait]
 impl rdlt_connector::destination::LoadSession for CountersSession {
     async fn ensure_table(
         &mut self,
-        schema: &rdlt_core::TableSchema,
-        mode: &rdlt_core::WriteMode,
+        schema: &rdlt_core::schema::TableSchema,
+        mode: &rdlt_core::commit::WriteMode,
     ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
     async fn write(
         &mut self,
-        table: &rdlt_core::TableName,
+        table: &rdlt_core::id::TableName,
         batch: rdlt_connector::arrow::RecordBatch,
     ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.write(table, batch).await
     }
     async fn commit(
         &mut self,
-        meta: rdlt_connector::core::CommitMeta,
-    ) -> Result<rdlt_connector::core::CommitReceipt, rdlt_connector::error::DestinationError> {
+        meta: rdlt_connector::core::commit::CommitMeta,
+    ) -> Result<rdlt_connector::core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
+    {
         self.seen.lock().expect("seen").push(meta.counters);
         self.inner.commit(meta).await
     }
     async fn read_state(
         &mut self,
-        pipeline: &rdlt_core::PipelineId,
-    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError> {
+        pipeline: &rdlt_core::id::PipelineId,
+    ) -> Result<Option<rdlt_core::state::StateDoc>, rdlt_connector::error::DestinationError> {
         self.inner.read_state(pipeline).await
     }
 }
@@ -359,7 +363,6 @@ async fn commit_counters_describe_the_unit_they_publish() {
 /// Discards are counted into the commit unit too, not just into the report.
 #[tokio::test]
 async fn discard_counters_reach_the_commit_unit() {
-    use rdlt_core::{PolicyAction, SchemaPolicy};
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let dest = CountersDest {
         inner: MemoryDestination::new(),
@@ -405,7 +408,6 @@ async fn discard_counters_reach_the_commit_unit() {
 /// The value-level discard counter, which `DiscardRow` never exercises.
 #[tokio::test]
 async fn discarded_value_counter_reaches_the_commit_unit() {
-    use rdlt_core::{PolicyAction, SchemaPolicy};
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let dest = CountersDest {
         inner: MemoryDestination::new(),
@@ -457,7 +459,6 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
 /// so the child table sees a non-empty discarded set and still cascades nothing.
 #[tokio::test]
 async fn only_the_table_that_discarded_reports_a_discard() {
-    use rdlt_core::{PolicyAction, SchemaPolicy};
     let mut config = EngineConfig::new("discard-scoped");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
@@ -536,8 +537,6 @@ async fn only_the_table_that_discarded_reports_a_discard() {
 /// separately whether to emit, and a flat fixture never reaches them.
 #[tokio::test]
 async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
-    use rdlt_core::{PolicyAction, SchemaPolicy};
-
     for action in [PolicyAction::DiscardRow, PolicyAction::DiscardValue] {
         let mut config = EngineConfig::new("discard-clean");
         config = config.with_schema_policy(SchemaPolicy::with_default(action));
@@ -598,7 +597,7 @@ async fn read_commit_and_heartbeat_events_hold_their_order() {
         evolving_batches(),
     );
     let mut config = EngineConfig::new("obs-036");
-    config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
+    config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let engine = Engine::new(config, source, dest.clone());
     let mut events = engine.events();
@@ -669,7 +668,7 @@ async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
     let mut events = engine.events();
     let report = engine.run().await.expect("run");
 
-    let mut metrics = rdlt_core::Metrics::new();
+    let mut metrics = rdlt_core::metrics::Metrics::new();
     while let Some(event) = events.recv().await {
         metrics.apply(&event);
     }
@@ -690,7 +689,6 @@ async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
 /// silently pre-subtracting them.
 #[tokio::test]
 async fn rows_read_includes_discarded_rows() {
-    use rdlt_core::{PolicyAction, SchemaPolicy};
     let mut config = EngineConfig::new("discard-read");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![

@@ -5,7 +5,10 @@
 use rdlt_connector::destination::Capabilities;
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{LoadId, SchemaPolicy, TableName, WriteMode};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::id::{LoadId, TableName};
+
+use crate::policy::SchemaPolicy;
 
 /// Raw-JSON slab parsing only (NDJSON / array / single doc) through the
 /// PRODUCTION arena parser: must never panic, hang, or blow memory —

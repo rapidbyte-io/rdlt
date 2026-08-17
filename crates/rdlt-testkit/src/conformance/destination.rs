@@ -25,13 +25,12 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use rdlt_connector::core::{
-    CommitMeta, WriteMode,
-    {
-        ColumnDef, ColumnType, CommitCounters, Cursor, LoadId, LogicalType, PipelineId, Provenance,
-        StateDoc, StreamName, TableName, TableSchema, schema::system_columns,
-    },
-};
+use rdlt_connector::core::commit::{self, CommitMeta, WriteMode};
+use rdlt_connector::core::cursor::Cursor;
+use rdlt_connector::core::id::{LoadId, PipelineId, StreamName, TableName};
+use rdlt_connector::core::schema::{self, Column, ColumnType, Provenance, TableSchema};
+use rdlt_connector::core::state::StateDoc;
+use rdlt_connector::core::types::LogicalType;
 use rdlt_connector::destination::{Destination, LoadSession, OpenContext};
 
 use super::{Conformance, ConformanceFailure, ConformanceSkip};
@@ -79,7 +78,7 @@ impl std::error::Error for ProbeError {}
 /// The suite's three-column logical fixture: two system columns and one
 /// value column, enough for every clause including merge identity.
 fn fixture_schema(table: &str) -> TableSchema {
-    let col = |name: &str, ty, provenance| ColumnDef {
+    let col = |name: &str, ty, provenance| Column {
         name: name.to_owned(),
         column_type: ColumnType::scalar(ty),
         nullable: false,
@@ -90,11 +89,11 @@ fn fixture_schema(table: &str) -> TableSchema {
         parent: None,
         columns: vec![
             col(
-                system_columns::LOAD_ID,
+                schema::system::LOAD_ID,
                 LogicalType::Utf8,
                 Provenance::System,
             ),
-            col(system_columns::ID, LogicalType::Utf8, Provenance::System),
+            col(schema::system::ID, LogicalType::Utf8, Provenance::System),
             col("v", LogicalType::Int64, Provenance::Inferred),
         ],
     }
@@ -131,7 +130,7 @@ fn commit_meta(
         load_id: load_id.clone(),
         commit_seq: seq,
         state,
-        counters: CommitCounters::default(),
+        counters: commit::Counters::default(),
     }
 }
 

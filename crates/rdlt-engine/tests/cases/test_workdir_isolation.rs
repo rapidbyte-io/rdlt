@@ -5,7 +5,8 @@
 //! resolves WITHOUT clearing, because clearing is exactly the
 //! destruction the refusal exists to prevent.
 
-use rdlt_core::{CommitPolicy, RdltError};
+use rdlt_core::commit::CommitPolicy;
+use rdlt_core::error::Error;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{
     CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,
@@ -66,7 +67,7 @@ async fn a_foreign_pipelines_wal_refuses_and_survives() {
     .run()
     .await
     .expect_err("a foreign WAL must refuse the run");
-    let RdltError::Config { message } = &err else {
+    let Error::Config { message } = &err else {
         panic!("the refusal is configuration-class (give each pipeline its own workdir): {err:?}");
     };
     assert_eq!(

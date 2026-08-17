@@ -16,12 +16,12 @@ report. The document model and its construction into a pipeline are shared
 library code (`rdlt::pipeline_spec`), so a platform embedding rdlt builds the
 same pipelines without shelling out.
 
-Events stream to stderr in human-readable form; the `RunReport` JSON goes to
+Events stream to stderr in human-readable form; the run report's JSON goes to
 stdout, or to `--report <path>`.
 
 ## Exit codes
 
-Stable and scriptable, mirroring the `RdltError` taxonomy:
+Stable and scriptable, mirroring the `rdlt::Error` taxonomy:
 
 | Code | Meaning |
 |---|---|

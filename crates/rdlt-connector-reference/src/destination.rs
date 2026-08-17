@@ -28,9 +28,10 @@ use fs4::fs_std::FileExt as _;
 use rdlt_connector_sdk::config::{self, Document};
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::spi::arrow::RecordBatch;
-use rdlt_connector_sdk::spi::core::{
-    CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector_sdk::spi::core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use rdlt_connector_sdk::spi::core::id::{LoadId, PipelineId, TableName};
+use rdlt_connector_sdk::spi::core::schema::TableSchema;
+use rdlt_connector_sdk::spi::core::state::StateDoc;
 use rdlt_connector_sdk::spi::destination::{Capabilities, OpenContext};
 use rdlt_connector_sdk::spi::error::DestinationError;
 

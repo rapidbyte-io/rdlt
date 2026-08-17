@@ -1,9 +1,10 @@
 //! The manifest's on-disk vocabulary: one record shape per line, versioned by
 //! the `Run` header.
 
-use rdlt_core::{
-    Cursor, LoadId, PipelineId, SchemaDelta, StreamName, TableName, TableSchema, WriteMode,
-};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::cursor::Cursor;
+use rdlt_core::id::{LoadId, PipelineId, StreamName, TableName};
+use rdlt_core::schema::{self, TableSchema};
 use serde::{Deserialize, Serialize};
 
 /// WAL format version, covering the manifest record shapes, the per-line
@@ -39,7 +40,7 @@ pub(crate) enum WalRecord {
     },
     Delta {
         schema: TableSchema,
-        delta: SchemaDelta,
+        delta: schema::Delta,
         mode: WriteMode,
     },
     Segment {

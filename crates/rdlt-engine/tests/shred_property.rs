@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 use proptest::prelude::*;
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::schema::system_columns;
+use rdlt_core::schema;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
 use serde_json::{Map, Value, json};
@@ -173,9 +173,9 @@ fn run_engine(batches: Vec<Vec<Value>>) -> MemoryDestination {
     dest
 }
 
-fn scalar_of(ty: &rdlt_core::ColumnType) -> Option<rdlt_core::LogicalType> {
+fn scalar_of(ty: &rdlt_core::schema::ColumnType) -> Option<rdlt_core::types::LogicalType> {
     match ty {
-        rdlt_core::ColumnType::Scalar { scalar } => Some(*scalar),
+        rdlt_core::schema::ColumnType::Scalar { scalar } => Some(*scalar),
         _ => None,
     }
 }
@@ -201,7 +201,7 @@ proptest! {
         // (2) Lineage integrity + (4) naming safety.
         let root_ids: BTreeSet<String> = root_rows
             .iter()
-            .map(|r| r[system_columns::ID].as_str().expect("root id").to_owned())
+            .map(|r| r[schema::system::ID].as_str().expect("root id").to_owned())
             .collect();
         for table in &tables {
             let schema = dest.schema(table.as_str()).expect("schema");
@@ -214,13 +214,13 @@ proptest! {
             let parent_ids: BTreeSet<String> = dest
                 .committed_rows(parent.parent.as_str())
                 .iter()
-                .map(|r| r[system_columns::ID].as_str().expect("parent id").to_owned())
+                .map(|r| r[schema::system::ID].as_str().expect("parent id").to_owned())
                 .collect();
             for row in dest.committed_rows(table.as_str()) {
-                let pid = row[system_columns::PARENT_ID].as_str().expect("parent id present");
+                let pid = row[schema::system::PARENT_ID].as_str().expect("parent id present");
                 prop_assert!(parent_ids.contains(pid),
                     "orphan `_rdlt_parent_id` in `{table}`");
-                let rid = row[system_columns::ROOT_ID].as_str().expect("root id present");
+                let rid = row[schema::system::ROOT_ID].as_str().expect("root id present");
                 prop_assert!(root_ids.contains(rid),
                     "dangling `_rdlt_root_id` in `{table}`");
             }

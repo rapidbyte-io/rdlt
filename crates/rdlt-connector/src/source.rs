@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::channel::RecordsOut;
-use crate::core::{Cursor, LogicalType, StreamName};
+use crate::core::cursor::Cursor;
+use crate::core::id::StreamName;
+use crate::core::types::LogicalType;
 use crate::error::SourceError;
 use crate::spec::ConnectorSpec;
 

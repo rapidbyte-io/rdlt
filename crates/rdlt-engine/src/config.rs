@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use rdlt_core::{CommitPolicy, PipelineId, SchemaPolicy, StreamName, WriteMode};
+use rdlt_core::commit::{CommitPolicy, WriteMode};
+use rdlt_core::id::{PipelineId, StreamName};
+
+use crate::policy::SchemaPolicy;
 
 /// Default bound on in-flight bytes per stage channel: 64 MiB. This is the engine's
 /// resident-memory cap; a producer that would exceed it parks until the consumer
@@ -40,7 +43,7 @@ pub struct EngineConfig {
     pub(crate) write_modes: BTreeMap<StreamName, WriteMode>,
     pub(crate) schema_policy: SchemaPolicy,
     pub(crate) commit_policy: CommitPolicy,
-    pub(crate) batch_policy: rdlt_core::BatchPolicy,
+    pub(crate) batch_policy: rdlt_core::commit::BatchPolicy,
     pub(crate) workdir: Option<PathBuf>,
     pub(crate) byte_budget: usize,
     pub(crate) max_batch_cells: usize,
@@ -55,7 +58,7 @@ impl EngineConfig {
             write_modes: BTreeMap::new(),
             schema_policy: SchemaPolicy::evolve(),
             commit_policy: CommitPolicy::default(),
-            batch_policy: rdlt_core::BatchPolicy::default(),
+            batch_policy: rdlt_core::commit::BatchPolicy::default(),
             workdir: None,
             byte_budget: DEFAULT_BYTE_BUDGET,
             max_batch_cells: DEFAULT_MAX_BATCH_CELLS,
@@ -89,7 +92,7 @@ impl EngineConfig {
     /// Destination-agnostic: the engine does the accumulating, so
     /// every connector benefits without re-solving it. The default
     /// writes each source batch straight through.
-    pub fn with_batch_policy(mut self, policy: rdlt_core::BatchPolicy) -> Self {
+    pub fn with_batch_policy(mut self, policy: rdlt_core::commit::BatchPolicy) -> Self {
         self.batch_policy = policy;
         self
     }

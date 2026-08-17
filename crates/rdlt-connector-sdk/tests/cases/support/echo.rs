@@ -11,10 +11,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::Cursor;
-use rdlt_connector::core::{
-    CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use rdlt_connector::core::cursor::Cursor;
+use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
+use rdlt_connector::core::schema::TableSchema;
+use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, OpenContext, PartCloseReason, PartClosed};
 use rdlt_connector::error::{DestinationError, SourceError};
 use rdlt_connector::source::StreamSpec;

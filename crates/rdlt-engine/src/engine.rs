@@ -3,7 +3,9 @@ use std::sync::Arc;
 use rdlt_connector::destination::Destination;
 
 use rdlt_connector::source::Source;
-use rdlt_core::{PipelineEvent, RdltError, RunReport};
+use rdlt_core::error::Error;
+use rdlt_core::event::PipelineEvent;
+use rdlt_core::report;
 use tokio_util::sync::CancellationToken;
 
 use crate::{EngineConfig, runtime};
@@ -39,7 +41,7 @@ impl EventStream {
                 Ok(event) => return Some(event),
                 // A slow consumer loses events. Skipping silently makes a
                 // partial event stream indistinguishable from a complete one,
-                // so say how many went — the RunReport remains the complete
+                // so say how many went — the run report remains the complete
                 // record either way.
                 Err(RecvError::Lagged(dropped)) => {
                     tracing::warn!(dropped, "event consumer lagged; events were dropped");
@@ -86,7 +88,7 @@ impl Engine {
 
     /// Run to completion (resumable, cancel-safe). Consumes the engine — a run is not
     /// restartable in place; construct a new one to run again.
-    pub async fn run(self) -> Result<RunReport, RdltError> {
+    pub async fn run(self) -> Result<report::Run, Error> {
         runtime::run::run(
             self.config,
             self.source,

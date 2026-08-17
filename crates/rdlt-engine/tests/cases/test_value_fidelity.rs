@@ -8,14 +8,14 @@
 //! path that panics.
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::LogicalType;
+use rdlt_core::types::LogicalType;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource};
 use serde_json::json;
 
 use super::common::stream_with_batches;
 
-fn discarded_values(report: &rdlt_core::RunReport) -> u64 {
+fn discarded_values(report: &rdlt_core::report::Run) -> u64 {
     report.tables.values().map(|t| t.discarded_values).sum()
 }
 
@@ -101,7 +101,7 @@ async fn a_type_hint_is_not_dropped_by_an_object_value() {
     let column = schema.column("payload").expect("hinted column exists");
     assert_eq!(
         column.column_type,
-        rdlt_core::ColumnType::scalar(LogicalType::Utf8),
+        rdlt_core::schema::ColumnType::scalar(LogicalType::Utf8),
         "the hint governs the column type even after an object is observed"
     );
 
@@ -182,7 +182,7 @@ async fn an_unrepresentable_type_hint_is_a_typed_config_error() {
         .expect_err("an unrepresentable hint must not be accepted");
 
     assert!(
-        matches!(error, rdlt_core::RdltError::Config { .. }),
+        matches!(error, rdlt_core::error::Error::Config { .. }),
         "an unhonourable hint is a configuration error, not a panic or an internal error: {error:?}"
     );
 }

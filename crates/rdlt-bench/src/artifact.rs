@@ -51,7 +51,7 @@ pub struct RdltSide {
     pub runs_ms: Vec<f64>,
     pub median_ms: f64,
     pub p95_ms: f64,
-    /// From the RunReport's own accounting — never estimated.
+    /// From the run report's own accounting — never estimated.
     pub rows: Option<u64>,
     pub bytes: Option<u64>,
     pub rows_per_s: Option<f64>,

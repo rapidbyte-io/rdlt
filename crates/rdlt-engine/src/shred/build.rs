@@ -22,16 +22,17 @@ use arrow::{
     error::ArrowError,
     record_batch::RecordBatch,
 };
-use rdlt_core::{
-    ColumnDef, ColumnType, LoadId, LogicalType, RowId, TableSchema, schema::system_columns,
-    types::int64_fits_in_f64,
-};
+use rdlt_core::id::LoadId;
+use rdlt_core::schema::{self, Column, ColumnType, TableSchema};
+use rdlt_core::types::LogicalType;
 
 use super::{
     DrainRow,
     canon::parse_timestamp_tz,
     view::{JsonView, ValueKind},
 };
+use crate::identity::RowId;
+use crate::shred::int64_fits_in_f64;
 
 /// Arrow physical type for a logical type.
 fn arrow_scalar_type(ty: LogicalType) -> DataType {
@@ -61,7 +62,7 @@ pub(crate) fn arrow_column_type(ty: &ColumnType) -> DataType {
     }
 }
 
-fn arrow_fields(columns: &[ColumnDef]) -> Fields {
+fn arrow_fields(columns: &[Column]) -> Fields {
     columns
         .iter()
         .map(|c| Field::new(&c.name, arrow_column_type(&c.column_type), c.nullable))
@@ -97,14 +98,14 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
     for column in &schema.columns {
         let array: ArrayRef = match column.name.as_str() {
-            system_columns::LOAD_ID => {
+            schema::system::LOAD_ID => {
                 let mut b = StringBuilder::new();
                 for _ in rows {
                     b.append_value(load_id.as_str());
                 }
                 Arc::new(b.finish())
             }
-            system_columns::ID => {
+            schema::system::ID => {
                 let mut b = StringBuilder::new();
                 let mut hex = [0u8; 64];
                 for row in rows {
@@ -112,7 +113,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 }
                 Arc::new(b.finish())
             }
-            system_columns::PARENT_ID => {
+            schema::system::PARENT_ID => {
                 let mut b = StringBuilder::new();
                 let mut hex = [0u8; 64];
                 for row in rows {
@@ -123,7 +124,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 }
                 Arc::new(b.finish())
             }
-            system_columns::ROOT_ID => {
+            schema::system::ROOT_ID => {
                 let mut b = StringBuilder::new();
                 let mut hex = [0u8; 64];
                 for row in rows {
@@ -134,7 +135,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                 }
                 Arc::new(b.finish())
             }
-            system_columns::POS => {
+            schema::system::POS => {
                 let mut b = Int64Builder::new();
                 for row in rows {
                     match row.pos {

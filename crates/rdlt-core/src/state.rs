@@ -1,14 +1,14 @@
 //! Pipeline state persisted *in the destination*.
 //!
-//! Written atomically with the data it covers by `LoadSession::commit`; the reason
-//! correctness survives total loss of the local work directory.
+//! Written atomically with the data it covers by the destination's commit; the
+//! reason correctness survives total loss of the local work directory.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::cursor::Cursor;
-use crate::ids::{LoadId, PipelineId, SchemaHash, StreamName, TableName};
+use crate::id::{LoadId, PipelineId, SchemaHash, StreamName, TableName};
 
 /// Version of the state document's serialized shape.
 ///
@@ -33,7 +33,7 @@ pub struct LastCommit {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// Pipeline state, persisted IN the destination.
 ///
-/// Written atomically with the data it covers, by the same `LoadSession::commit`.
+/// Written atomically with the data it covers, by the destination's commit.
 /// That is why correctness survives total loss of the local work directory: the
 /// cursors and the rows they describe cannot disagree, because nothing can
 /// publish one without the other.
@@ -53,7 +53,7 @@ pub struct StateDoc {
     /// runs would report drift for a run that merely observed a subset of the
     /// columns — the common shape for a sparse source. It is persisted so an
     /// operator or a support tool can see which schema version a table was on at
-    /// each commit, alongside the `from → to` hashes each `SchemaDelta` carries.
+    /// each commit, alongside the `from → to` hashes each schema delta carries.
     pub schema_hashes: BTreeMap<TableName, SchemaHash>,
     /// The last successful commit, or `None` for a pipeline that has never
     /// committed.
@@ -110,8 +110,6 @@ pub struct UnsupportedStateVersion {
 
 #[cfg(test)]
 mod version_tests {
-    // Mutation-report closure: the future-version guard (same shape as the
-    // WAL manifest guard).
     use super::*;
 
     #[test]

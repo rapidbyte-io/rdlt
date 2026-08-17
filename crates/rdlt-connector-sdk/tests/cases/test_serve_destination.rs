@@ -16,7 +16,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rdlt_connector::core::{CommitReceipt, LoadId, PipelineId, WriteMode};
+use rdlt_connector::core::commit::{CommitReceipt, WriteMode};
+use rdlt_connector::core::id::{LoadId, PipelineId};
 use rdlt_connector::destination::Capabilities;
 use rdlt_connector_protocol::proto::connector_client::ConnectorClient;
 use rdlt_connector_protocol::proto::destination_service_client::DestinationServiceClient;

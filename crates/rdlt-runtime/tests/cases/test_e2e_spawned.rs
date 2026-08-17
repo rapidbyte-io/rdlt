@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rdlt::pipeline_spec::{Spec, build_pipeline, build_pipeline_with};
-use rdlt::{PipelineEvent, RdltError};
+use rdlt::{Error, PipelineEvent};
 use rdlt_runtime::{
     ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider, ManagedDestination,
     ManagedSource, ProviderError,
@@ -401,7 +401,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     // transport to DestinationError::Fatal, and the engine surfaces it
     // as the non-retryable Destination arm.
     match &error {
-        RdltError::Destination {
+        Error::Destination {
             message, retryable, ..
         } => {
             assert!(

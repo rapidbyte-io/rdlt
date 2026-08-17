@@ -104,7 +104,7 @@ async fn a_wal_open_failure_after_session_recovery_still_closes_the_session() {
         .await
         .expect_err("Wal::open must fail against a blocking file");
     assert!(
-        matches!(error, rdlt_core::RdltError::Wal { .. }),
+        matches!(error, rdlt_core::error::Error::Wal { .. }),
         "the failure is Wal::open's own, not something else: {error}"
     );
     assert_eq!(

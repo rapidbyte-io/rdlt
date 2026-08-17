@@ -2,17 +2,58 @@
 //!
 //! `_rdlt_id` is a pure function of row content (keyless) or key values (keyed);
 //! child ids mix parent id, position, and child content so nested changes produce new
-//! child ids — which is what makes subtree merge see changed children. Determinism is
-//! property-tested in `tests/identity_props.rs`.
+//! child ids — which is what makes subtree merge see changed children. Determinism
+//! and content-sensitivity are property-tested in the crate's integration suite.
 //!
 //! Hash inputs are domain-separated and length-prefixed: `("a","bc")` and `("ab","c")`
-//! must not collide.
+//! must not collide. The domain strings are part of the persisted identity of every
+//! row ever loaded: changing one changes every `_rdlt_id`.
 
-use crate::ids::RowId;
+use std::fmt;
 
 const DOMAIN_KEYLESS: &[u8] = b"rdlt:row-id:content:v1\0";
 const DOMAIN_KEYED: &[u8] = b"rdlt:row-id:key:v1\0";
 const DOMAIN_CHILD: &[u8] = b"rdlt:row-id:child:v1\0";
+
+/// Deterministic row identity (`_rdlt_id`): content hash (keyless) or key hash (keyed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RowId([u8; 32]);
+
+impl RowId {
+    /// Wrap 32 raw hash bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw hash bytes.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Lowercase hex — the rendering that lands in the `_rdlt_id` column.
+    pub fn to_hex(&self) -> String {
+        let mut out = [0u8; 64];
+        self.write_hex(&mut out);
+        // `write_hex` emits only ASCII hex digits.
+        String::from_utf8(out.to_vec()).expect("hex digits are ASCII")
+    }
+
+    /// Allocation-free hex into a stack buffer: the shredder lands three of
+    /// these per row in Arrow builders, so the hot path must not allocate.
+    pub fn write_hex(&self, out: &mut [u8; 64]) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for (i, byte) in self.0.iter().enumerate() {
+            out[i * 2] = HEX[(byte >> 4) as usize];
+            out[i * 2 + 1] = HEX[(byte & 0x0f) as usize];
+        }
+    }
+}
+
+impl fmt::Display for RowId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
 
 /// Streaming hasher for one row's identity. The shredder feeds canonical field bytes
 /// in stable (schema) column order; no intermediate row materialization required.
@@ -95,6 +136,16 @@ pub fn child_row_id(parent: &RowId, pos: u64, child_content: &RowId) -> RowId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_rendering_is_lowercase_and_exact() {
+        let id = RowId::from_bytes([0xAB; 32]);
+        assert_eq!(id.to_hex(), "ab".repeat(32));
+        let mut buf = [0u8; 64];
+        id.write_hex(&mut buf);
+        assert_eq!(&buf[..], id.to_hex().as_bytes());
+        assert_eq!(id.to_string(), id.to_hex());
+    }
 
     #[test]
     fn null_and_missing_are_distinct() {

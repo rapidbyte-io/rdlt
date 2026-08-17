@@ -41,7 +41,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt_connector::core::{LoadId, PipelineId};
+use rdlt_connector::core::id::{LoadId, PipelineId};
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::spec::ConnectorSpec;

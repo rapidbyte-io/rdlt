@@ -4,7 +4,10 @@
 use std::path::Path;
 
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
-use rdlt_core::{LoadId, RdltError, ResumedFrom, StateDoc};
+use rdlt_core::error::Error;
+use rdlt_core::id::LoadId;
+use rdlt_core::report::ResumedFrom;
+use rdlt_core::state::StateDoc;
 
 use crate::EngineConfig;
 
@@ -20,9 +23,9 @@ pub(super) async fn recover_wal(
     load_id: &LoadId,
     wal_dir: Option<&Path>,
     capabilities: Capabilities,
-    events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
+    events: &tokio::sync::broadcast::Sender<rdlt_core::event::PipelineEvent>,
     output_totals: &std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
-) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom, WalResidue), RdltError> {
+) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom, WalResidue), Error> {
     // Replay runs on its OWN session, opened under the CRASHED run's load id —
     // scanning therefore has to happen before any session exists. A session's
     // load id is not decoration: a destination that publishes straight into
@@ -46,9 +49,9 @@ pub(super) async fn recover_wal(
         // best-effort tolerance returns there as a warning, and the
         // one caller threads the tolerance to `Wal::open`, whose
         // residue refusal stands for every OTHER path.
-        let cleared = |dir: &Path| -> Result<(), RdltError> {
+        let cleared = |dir: &Path| -> Result<(), Error> {
             crate::wal::clear(dir).map_err(|e| {
-                RdltError::wal(format!(
+                Error::wal(format!(
                     "clearing the WAL directory `{}` failed: {e} — refusing to run over \
                      unresolved residue",
                     dir.display()
@@ -91,7 +94,7 @@ pub(super) async fn recover_wal(
             // configuration-class, because the fix is the operator's
             // (each pipeline gets its own workdir).
             crate::wal::resume::ScanOutcome::ForeignPipeline { occupant } => {
-                return Err(RdltError::config(format!(
+                return Err(Error::config(format!(
                     "the WAL at `{}` belongs to pipeline `{occupant}` — this run is pipeline \
                      `{}`; replaying another pipeline's crash residue would commit its rows \
                      and cursors under the wrong pipeline, and clearing it would destroy its \
@@ -159,7 +162,7 @@ pub(super) enum WalResidue {
 async fn read_state_checked(
     session: &mut dyn LoadSession,
     config: &EngineConfig,
-) -> Result<Option<StateDoc>, RdltError> {
+) -> Result<Option<StateDoc>, Error> {
     let recovered = session
         .read_state(&config.pipeline)
         .await
@@ -167,14 +170,14 @@ async fn read_state_checked(
     if let Some(state) = &recovered {
         state
             .check_readable()
-            .map_err(|e| RdltError::config(e.to_string()))?;
+            .map_err(|e| Error::config(e.to_string()))?;
         // 5.7: cross-pipeline isolation is the destination's SPI
         // obligation and the reference connector enforces it, but a
         // non-conforming third-party backend's answer was adopted
         // unchecked — one identity comparison here closes the
         // defense-in-depth gap for every backend at once.
         if state.pipeline != config.pipeline {
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "the destination returned state for pipeline `{}`, not `{}` — resuming a \
                  foreign pipeline's cursors here would mis-attribute its committed rows",
                 state.pipeline, config.pipeline
@@ -193,7 +196,7 @@ async fn replay_span(
     wal_dir: &Path,
     span: crate::wal::resume::RecoverySpan,
     capabilities: Capabilities,
-) -> Result<Option<ResumedFrom>, RdltError> {
+) -> Result<Option<ResumedFrom>, Error> {
     // The replay session gets NO part-event listener: its parts belong
     // to the CRASHED load, and the feed describes THIS run — replayed
     // batches never emit BatchLoaded either, and report totals draw
@@ -249,7 +252,7 @@ async fn replay_span(
             // regardless of whether this close ran, so this is prompt
             // cleanup, not a correctness requirement for what follows.
             session.close().await.map_err(|e| {
-                RdltError::destination(format!(
+                Error::destination(format!(
                     "session close failed AFTER all commits were durable (the data is \
                      committed): {e}"
                 ))
@@ -276,7 +279,7 @@ async fn replay_span(
 /// reason vocabulary and the event enum's must not drift apart, and
 /// having exactly one match is what enforces that.
 fn part_event_forwarder(
-    events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
+    events: tokio::sync::broadcast::Sender<rdlt_core::event::PipelineEvent>,
     output_totals: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
 ) -> rdlt_connector::destination::PartEventFn {
     std::sync::Arc::new(move |part: rdlt_connector::destination::PartClosed| {
@@ -285,18 +288,18 @@ fn part_event_forwarder(
         }
         use rdlt_connector::destination::PartCloseReason as Spi;
         let reason = match part.reason {
-            Spi::Target => rdlt_core::PartClose::Target,
-            Spi::Time => rdlt_core::PartClose::Time,
-            Spi::Budget => rdlt_core::PartClose::Budget,
-            Spi::Commit => rdlt_core::PartClose::Commit,
-            Spi::Schema => rdlt_core::PartClose::Schema,
+            Spi::Target => rdlt_core::event::PartCloseReason::Target,
+            Spi::Time => rdlt_core::event::PartCloseReason::Time,
+            Spi::Budget => rdlt_core::event::PartCloseReason::Budget,
+            Spi::Commit => rdlt_core::event::PartCloseReason::Commit,
+            Spi::Schema => rdlt_core::event::PartCloseReason::Schema,
             // The SPI enum is non_exhaustive: an unknown reason is
             // still a closed part, and Commit is the least-wrong
             // attribution for "the protocol closed it".
-            _ => rdlt_core::PartClose::Commit,
+            _ => rdlt_core::event::PartCloseReason::Commit,
         };
-        let _ = events.send(rdlt_core::PipelineEvent::PartClosed {
-            table: rdlt_core::TableName::new(part.table.as_str()),
+        let _ = events.send(rdlt_core::event::PipelineEvent::PartClosed {
+            table: rdlt_core::id::TableName::new(part.table.as_str()),
             encoded_bytes: part.encoded_bytes,
             reason,
         });

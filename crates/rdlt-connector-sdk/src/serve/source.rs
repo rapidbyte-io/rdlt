@@ -23,7 +23,7 @@ use rdlt_connector::channel::{
 };
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::Source as _;
-use rdlt_connector::{channel, core, gate, source};
+use rdlt_connector::{channel, gate, source};
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
@@ -395,7 +395,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
                 .await);
             }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
-                Ok(value) => Some(core::Cursor::new(value)),
+                Ok(value) => Some(rdlt_connector::core::cursor::Cursor::new(value)),
                 Err(error) => {
                     return Ok(error_stream(format!(
                         "invalid since_cursor_json: {}",

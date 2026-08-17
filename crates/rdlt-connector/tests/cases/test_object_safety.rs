@@ -9,9 +9,10 @@
 //! addition that can quietly disturb dyn-compatibility.
 
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::{
-    CommitMeta, CommitReceipt, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
-};
+use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use rdlt_connector::core::id::{PipelineId, TableName};
+use rdlt_connector::core::schema::TableSchema;
+use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::{DestinationError, SourceError};
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};

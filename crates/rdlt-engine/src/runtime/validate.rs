@@ -5,15 +5,18 @@ use std::collections::BTreeMap;
 use rdlt_connector::destination::{Capabilities, Destination};
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{LogicalType, RdltError, StreamName, TableName, WriteMode};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::error::Error;
+use rdlt_core::id::{StreamName, TableName};
+use rdlt_core::types::LogicalType;
 
 use crate::EngineConfig;
 
 /// Rule 1: `a`'s table plus a trailing `_` equals `b`'s table — a
 /// `_`-leading source field mints the same child table under either root.
 /// `a` is always the stream owning the shorter (prefix) table.
-fn trailing_underscore_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> RdltError {
-    RdltError::config(format!(
+fn trailing_underscore_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> Error {
+    Error::config(format!(
         "streams `{a}` and `{b}` normalize to tables `{ta}` and `{tb}`, which differ only by \
          a trailing `_` — a `_`-leading source field would mint the same child table for both; \
          rename one stream"
@@ -22,8 +25,8 @@ fn trailing_underscore_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &
 
 /// Rule 2: `b`'s table sits inside `a`'s child namespace (`b` starts with
 /// `a` + `__`). `a` is always the stream owning the shorter (prefix) table.
-fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> RdltError {
-    RdltError::config(format!(
+fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str) -> Error {
+    Error::config(format!(
         "streams `{a}` and `{b}` normalize to tables `{ta}` and `{tb}`, and `{tb}` sits inside \
          `{ta}`'s child-table namespace (`__` separates parent from child); rename one stream \
          so neither table extends the other"
@@ -106,11 +109,11 @@ pub(super) fn validate_streams(
     streams: &[StreamSpec],
     capabilities: Capabilities,
     destination: &dyn Destination,
-) -> Result<(), RdltError> {
+) -> Result<(), Error> {
     // Durable-identity destinations declare per-run, not per-stream; refuse
     // early so even a no-op run against such a destination fails cleanly.
     if capabilities.requires_durable_identity && config.workdir.is_none() {
-        return Err(RdltError::config(format!(
+        return Err(Error::config(format!(
             "destination `{}` publishes non-atomically and requires a workdir for \
              exactly-once crash recovery; set one with `workdir:` (the CLI defaults \
              to `.rdlt`) — without it a mid-publish failure re-appends committed rows",
@@ -124,7 +127,7 @@ pub(super) fn validate_streams(
     // this seat covers IN-PROCESS destinations, so every path into the
     // engine validates once.
     if let Err(reason) = capabilities.ident_rules.validate() {
-        return Err(RdltError::config(format!(
+        return Err(Error::config(format!(
             "destination `{}` declares out-of-range identifier rules: {reason}",
             destination.spec().name
         )));
@@ -133,7 +136,7 @@ pub(super) fn validate_streams(
     // The stream-count cap (4H2) sits BEFORE everything per-stream: nothing
     // below may scale unboundedly with a source-declared list length.
     if streams.len() > config.max_streams_per_source {
-        return Err(RdltError::config(format!(
+        return Err(Error::config(format!(
             "source declares {} streams, over the {}-stream cap — every declared stream \
              costs plan-time validation and its own share of the run's in-flight budget, \
              so the one discovery axis a source controls directly is bounded like every \
@@ -156,7 +159,7 @@ pub(super) fn validate_streams(
         // sources, so an embedded mega-name cannot ride into plan
         // diagnostics (and the WAL lines that name streams) unbounded.
         if spec.name.as_str().len() > rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES {
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "stream name of {} bytes exceeds the {}-byte identifier ceiling — a \
                  name is vocabulary, not a data channel",
                 spec.name.as_str().len(),
@@ -166,7 +169,7 @@ pub(super) fn validate_streams(
         let table = root_table(&spec.name, capabilities.ident_rules);
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
             // Clause E2: exactly one stream owns a table.
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "streams `{owner}` and `{}` both map to table `{table}`",
                 spec.name
             )));
@@ -174,7 +177,7 @@ pub(super) fn validate_streams(
         if matches!(config.write_mode_for(&spec.name), WriteMode::Merge { .. })
             && !capabilities.merge
         {
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "stream `{}` requests Merge but destination `{}` does not support it",
                 spec.name,
                 destination.spec().name
@@ -187,7 +190,7 @@ pub(super) fn validate_streams(
         for (column, hint) in &spec.type_hints {
             if let LogicalType::Decimal { precision, scale } = hint {
                 if *precision == 0 || *precision > rdlt_core::types::DECIMAL_MAX_PRECISION {
-                    return Err(RdltError::config(format!(
+                    return Err(Error::config(format!(
                         "stream `{}` column `{column}`: decimal precision {precision} is out of \
                          range (1..={})",
                         spec.name,
@@ -195,7 +198,7 @@ pub(super) fn validate_streams(
                     )));
                 }
                 if scale > precision {
-                    return Err(RdltError::config(format!(
+                    return Err(Error::config(format!(
                         "stream `{}` column `{column}`: decimal scale {scale} exceeds its \
                          precision {precision}",
                         spec.name
@@ -212,7 +215,7 @@ pub(super) fn validate_streams(
         {
             let declared = spec.primary_key.clone().unwrap_or_default();
             if declared.is_empty() {
-                return Err(RdltError::config(format!(
+                return Err(Error::config(format!(
                     "stream `{}` is structured with no declared primary_key and \
                      cannot use Merge; declare a key on the \
                      stream and set Merge {{ key }} to it, or use Append/Replace",
@@ -226,7 +229,7 @@ pub(super) fn validate_streams(
             let mut declared_set = declared.clone();
             declared_set.sort_unstable();
             if key_set != declared_set {
-                return Err(RdltError::config(format!(
+                return Err(Error::config(format!(
                     "stream `{}`: Merge key {:?} must name exactly the stream's \
                      declared primary_key columns {:?} (order does not matter)",
                     spec.name, key, declared
@@ -301,7 +304,7 @@ mod hint_validation_tests {
     use super::*;
     use rdlt_testkit::MemoryDestination;
 
-    fn check(precision: u8, scale: u8) -> Result<(), RdltError> {
+    fn check(precision: u8, scale: u8) -> Result<(), Error> {
         let spec = StreamSpec::new("s")
             .with_type_hint("amount", LogicalType::Decimal { precision, scale });
         let dest = MemoryDestination::new();
@@ -330,7 +333,7 @@ mod hint_validation_tests {
         assert!(check(5, 6).is_err(), "scale exceeding precision");
     }
 
-    fn check_streams(names: &[&str]) -> Result<(), RdltError> {
+    fn check_streams(names: &[&str]) -> Result<(), Error> {
         let specs: Vec<_> = names.iter().map(|&name| StreamSpec::new(name)).collect();
         let dest = MemoryDestination::new();
         validate_streams(
@@ -346,7 +349,7 @@ mod hint_validation_tests {
         // `Users` and `users` both normalize to root table `users`.
         let error = check_streams(&["Users", "users"]).expect_err("E2: one stream owns a table");
         assert!(
-            matches!(error, RdltError::Config { .. }),
+            matches!(error, Error::Config { .. }),
             "a root-table collision is a config refusal: {error:?}"
         );
         let text = error.to_string();
@@ -516,7 +519,7 @@ mod hint_validation_tests {
             .with_capabilities(Capabilities::default().with_requires_durable_identity(true))
     }
 
-    fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), RdltError> {
+    fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), Error> {
         let spec = StreamSpec::new("s");
         validate_streams(
             &config,
@@ -591,7 +594,7 @@ mod hint_validation_tests {
     #[test]
     fn an_out_of_range_ident_rules_declaration_is_refused() {
         let dest = MemoryDestination::new().with_capabilities(
-            Capabilities::default().with_ident_rules(rdlt_core::naming::IdentRules { max_len: 2 }),
+            Capabilities::default().with_ident_rules(rdlt_core::schema::IdentRules { max_len: 2 }),
         );
         let error = check_with(no_workdir_config(), dest)
             .expect_err("an exhaustible max_len refuses at plan time");
@@ -600,9 +603,9 @@ mod hint_validation_tests {
             "the refusal names the rules: {error}"
         );
         // The edges: the floor and the default are both fine.
-        for max_len in [rdlt_core::naming::MIN_IDENT_MAX_LEN, 63, 255] {
+        for max_len in [rdlt_core::schema::MIN_IDENT_MAX_LEN, 63, 255] {
             let dest = MemoryDestination::new().with_capabilities(
-                Capabilities::default().with_ident_rules(rdlt_core::naming::IdentRules { max_len }),
+                Capabilities::default().with_ident_rules(rdlt_core::schema::IdentRules { max_len }),
             );
             check_with(no_workdir_config(), dest).expect("in-range rules validate");
         }

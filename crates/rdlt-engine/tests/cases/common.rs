@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{TableName, schema::system_columns};
+use rdlt_core::id::TableName;
+use rdlt_core::schema;
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row};
 use serde_json::json;
 
@@ -51,7 +52,7 @@ pub(crate) fn without_load_id(dest: &MemoryDestination) -> BTreeMap<TableName, V
                 table,
                 rows.into_iter()
                     .map(|mut row| {
-                        row.remove(system_columns::LOAD_ID);
+                        row.remove(schema::system::LOAD_ID);
                         row
                     })
                     .collect(),

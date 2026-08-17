@@ -2,12 +2,8 @@
 //! identity, and schema resolution — everything the tape traversal (`tape.rs`)
 //! and the drain (`drain.rs`) build on.
 
-use rdlt_core::{
-    ColumnDef, ParentLink, Provenance, RowId, TableName, TableSchema,
-    identity::{FieldValue, RowIdBuilder},
-    naming::{IdentRules, UniqueNamer},
-    schema::system_columns,
-};
+use rdlt_core::id::TableName;
+use rdlt_core::schema::{self, Column, IdentRules, ParentLink, Provenance, TableSchema};
 
 use super::{
     MAX_SOURCE_COLUMNS_PER_TABLE,
@@ -15,6 +11,8 @@ use super::{
     infer::ColumnState,
     view::JsonView,
 };
+use crate::identity::{FieldValue, RowId, RowIdBuilder};
+use crate::naming::UniqueNamer;
 
 /// One table's persistent shredding state: naming, shape observation, lineage —
 /// everything EXCEPT the buffered rows (those are per-batch and path-specific).
@@ -72,11 +70,11 @@ impl TableBuffer {
         // System columns RESERVE their names: a source field literally named
         // `_rdlt_id` gets suffixed rather than aliasing the lineage column.
         for sys in [
-            system_columns::LOAD_ID,
-            system_columns::ID,
-            system_columns::PARENT_ID,
-            system_columns::POS,
-            system_columns::ROOT_ID,
+            schema::system::LOAD_ID,
+            schema::system::ID,
+            schema::system::PARENT_ID,
+            schema::system::POS,
+            schema::system::ROOT_ID,
         ] {
             namer.reserve(sys);
         }
@@ -136,7 +134,7 @@ impl TableBuffer {
         source_key: &str,
         value: V,
         lists_as_columns: bool,
-    ) -> Result<&ColumnState, rdlt_core::RdltError> {
+    ) -> Result<&ColumnState, rdlt_core::error::Error> {
         self.snapshot_on_first_mutation();
         self.dirty = true;
         let idx = self.column_index(source_key)?;
@@ -152,7 +150,7 @@ impl TableBuffer {
         // from an honest total.
         self.nested_fields += initial - budget;
         if observed.is_err() {
-            return Err(rdlt_core::RdltError::config(format!(
+            return Err(rdlt_core::error::Error::config(format!(
                 "table `{}` exceeds the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap \
                  while observing key {source_key:?} — nested struct fields count toward \
                  the same bound as columns",
@@ -226,7 +224,7 @@ impl TableBuffer {
     pub(crate) fn state_mut(
         &mut self,
         source_key: &str,
-    ) -> Result<&mut ColumnState, rdlt_core::RdltError> {
+    ) -> Result<&mut ColumnState, rdlt_core::error::Error> {
         self.snapshot_on_first_mutation();
         self.dirty = true;
         let idx = self.column_index(source_key)?;
@@ -237,12 +235,12 @@ impl TableBuffer {
     /// the column cap. Nested struct fields count toward the same cap — the
     /// budget arithmetic lives in [`Self::observe_value`], which is why the
     /// creation check here subtracts the running nested-field total too.
-    fn column_index(&mut self, source_key: &str) -> Result<usize, rdlt_core::RdltError> {
+    fn column_index(&mut self, source_key: &str) -> Result<usize, rdlt_core::error::Error> {
         if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
             return Ok(idx);
         }
         if self.columns.len() + self.nested_fields >= MAX_SOURCE_COLUMNS_PER_TABLE {
-            return Err(rdlt_core::RdltError::config(format!(
+            return Err(rdlt_core::error::Error::config(format!(
                 "table `{}` exceeds the {MAX_SOURCE_COLUMNS_PER_TABLE}-source-column cap \
                  while observing key {source_key:?}",
                 self.table
@@ -307,31 +305,37 @@ pub(crate) fn content_hash_with<'a, V: JsonView<'a>>(row: V, scratch: &mut Vec<u
 /// Resolve one table's observation state into schema columns: system/lineage
 /// columns first, then source columns in first-seen order.
 pub(crate) fn resolve_schema(buffer: &mut TableBuffer) -> TableSchema {
-    let mut columns: Vec<ColumnDef> = Vec::new();
-    let system = |name: &str, ty| ColumnDef {
+    let mut columns: Vec<Column> = Vec::new();
+    let system = |name: &str, ty| Column {
         name: name.to_owned(),
-        column_type: rdlt_core::ColumnType::scalar(ty),
+        column_type: rdlt_core::schema::ColumnType::scalar(ty),
         nullable: false,
         provenance: Provenance::System,
     };
     columns.push(system(
-        system_columns::LOAD_ID,
-        rdlt_core::LogicalType::Utf8,
+        schema::system::LOAD_ID,
+        rdlt_core::types::LogicalType::Utf8,
     ));
-    columns.push(system(system_columns::ID, rdlt_core::LogicalType::Utf8));
+    columns.push(system(
+        schema::system::ID,
+        rdlt_core::types::LogicalType::Utf8,
+    ));
     if buffer.parent.is_some() {
         columns.push(system(
-            system_columns::PARENT_ID,
-            rdlt_core::LogicalType::Utf8,
+            schema::system::PARENT_ID,
+            rdlt_core::types::LogicalType::Utf8,
         ));
-        columns.push(system(system_columns::POS, rdlt_core::LogicalType::Int64));
         columns.push(system(
-            system_columns::ROOT_ID,
-            rdlt_core::LogicalType::Utf8,
+            schema::system::POS,
+            rdlt_core::types::LogicalType::Int64,
+        ));
+        columns.push(system(
+            schema::system::ROOT_ID,
+            rdlt_core::types::LogicalType::Utf8,
         ));
     }
 
-    let sources: Vec<(String, Option<rdlt_core::ColumnType>)> = buffer
+    let sources: Vec<(String, Option<rdlt_core::schema::ColumnType>)> = buffer
         .columns
         .iter()
         .map(|(key, state)| (key.clone(), state.resolve()))
@@ -339,7 +343,7 @@ pub(crate) fn resolve_schema(buffer: &mut TableBuffer) -> TableSchema {
     for (source_key, resolved) in sources {
         if let Some(ty) = resolved {
             let name = buffer.normalized_name_for(&source_key);
-            columns.push(ColumnDef {
+            columns.push(Column {
                 name,
                 column_type: ty,
                 nullable: true,
@@ -364,7 +368,7 @@ mod cardinality_tests {
         let mut table = TableBuffer::new(
             TableName::new("events"),
             None,
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
         );
         for index in 0..MAX_SOURCE_COLUMNS_PER_TABLE {
             table
@@ -387,7 +391,7 @@ mod cardinality_tests {
         let mut table = TableBuffer::new(
             TableName::new("events"),
             None,
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
         );
         assert!(
             table.is_dirty(),

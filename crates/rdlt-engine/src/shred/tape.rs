@@ -18,9 +18,9 @@ use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
 use rdlt_connector::destination::Capabilities;
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{
-    ParentLink, RdltError, RowId, TableName, identity::child_row_id, naming::child_table_name,
-};
+use rdlt_core::error::Error;
+use rdlt_core::id::TableName;
+use rdlt_core::schema::ParentLink;
 
 use super::{
     DrainRow, MAX_CHILD_TABLES_PER_PARENT, MAX_TABLES_PER_STREAM, ShredContext,
@@ -30,21 +30,23 @@ use super::{
     table::{TableBuffer, content_hash_with, row_identity},
     view::JsonView,
 };
+use crate::identity::{RowId, child_row_id};
 use crate::load::LoadItem;
+use crate::naming::child_table_name;
 
 /// A shred-path error: invalid JSON from the source (classified per stream at
 /// the call site), or an engine error passing through unchanged.
 pub(crate) enum PushError {
     Json(serde_json::Error),
-    Engine(RdltError),
+    Engine(Error),
 }
 
 /// The one refusal both halves of the per-push row bound share: the
 /// parse-time root count and the traversal-time total (roots plus the child
 /// rows their lists fan out into) spend from the same cap and speak with
 /// one voice.
-fn row_cap_refusal() -> RdltError {
-    RdltError::config(format!(
+fn row_cap_refusal() -> Error {
+    Error::config(format!(
         "JSON push exceeds the {MAX_RECORD_BATCH_ROWS}-row cap across root and child rows — \
          row count is bounded separately from encoded bytes to prevent per-row lineage \
          and load-id amplification"
@@ -55,8 +57,8 @@ fn row_cap_refusal() -> RdltError {
 /// elements each cost an arena node at parse, so their count is bounded
 /// separately from rows — a dense slab refuses typed instead of
 /// materializing a ~22× arena before any traversal check could run.
-fn value_cap_refusal() -> RdltError {
-    RdltError::config(format!(
+fn value_cap_refusal() -> Error {
+    Error::config(format!(
         "JSON push exceeds the {}-value parse budget across object fields and array \
          elements — value count bounds the parse arena separately from row count; split \
          the push into smaller slabs",
@@ -65,7 +67,7 @@ fn value_cap_refusal() -> RdltError {
 }
 
 /// Spend one row from the per-push budget, refusing typed at exhaustion.
-fn take_row(remaining: &mut usize) -> Result<(), RdltError> {
+fn take_row(remaining: &mut usize) -> Result<(), Error> {
     if *remaining == 0 {
         return Err(row_cap_refusal());
     }
@@ -117,7 +119,7 @@ impl TapeShredder {
         spec: StreamSpec,
         capabilities: Capabilities,
         root_table: TableName,
-    ) -> Result<Self, RdltError> {
+    ) -> Result<Self, Error> {
         let mut root = TableBuffer::new(root_table.clone(), None, capabilities.ident_rules);
         // Hints pin root-level scalar columns (they win over inference).
         for (column, ty) in &spec.type_hints {
@@ -218,7 +220,7 @@ impl TapeShredder {
         rows: &mut Vec<Vec<TapeRow>>,
         hash_scratch: &mut Vec<u8>,
         row_budget: &mut usize,
-    ) -> Result<(), RdltError> {
+    ) -> Result<(), Error> {
         let root_id = row_identity(
             self.spec.primary_key.as_deref(),
             arena.node(root),
@@ -283,7 +285,7 @@ impl TapeShredder {
         queue: &mut VecDeque<Queued>,
         hash_scratch: &mut Vec<u8>,
         row_budget: &mut usize,
-    ) -> Result<(), RdltError> {
+    ) -> Result<(), Error> {
         for (key, items) in child_lists {
             let child_idx = self.child_table_idx(entry.table_idx, &key, rows)?;
             for (i, item) in items.into_iter().enumerate() {
@@ -320,7 +322,7 @@ impl TapeShredder {
         parent_idx: usize,
         source_key: &str,
         rows: &mut Vec<Vec<TapeRow>>,
-    ) -> Result<usize, RdltError> {
+    ) -> Result<usize, Error> {
         // Memo hit: this parent has resolved this exact source key before.
         // Every document in a push repeats its keys, so after the first one
         // this replaces a normalized-name construction (which formats, and may
@@ -334,7 +336,7 @@ impl TapeShredder {
             return Ok(idx);
         }
         if self.tables[parent_idx].child_tables.len() >= MAX_CHILD_TABLES_PER_PARENT {
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "table `{}` exceeds the {MAX_CHILD_TABLES_PER_PARENT}-child-table cap \
                  while observing key {source_key:?}",
                 self.tables[parent_idx].table
@@ -363,7 +365,7 @@ impl TapeShredder {
                 // bookkeeping, so an unbounded total turns one crafted frame
                 // into unbounded memory and quadratic work.
                 if self.tables.len() >= MAX_TABLES_PER_STREAM {
-                    return Err(RdltError::config(format!(
+                    return Err(Error::config(format!(
                         "stream `{}` exceeds the {MAX_TABLES_PER_STREAM}-table cap \
                          while observing key {source_key:?} under table `{parent_table}`",
                         self.spec.name
@@ -393,8 +395,10 @@ impl TapeShredder {
 #[cfg(test)]
 mod cardinality_tests {
     use super::*;
+    use crate::policy::SchemaPolicy;
     use crate::schema::registry::SchemaRegistry;
-    use rdlt_core::{LoadId, SchemaPolicy, WriteMode};
+    use rdlt_core::commit::WriteMode;
+    use rdlt_core::id::LoadId;
 
     /// Drive one slab through the full push path with a throwaway context.
     fn push(shredder: &mut TapeShredder, bytes: &[u8]) -> Result<Vec<LoadItem>, PushError> {

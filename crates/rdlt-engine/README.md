@@ -37,4 +37,4 @@ on.
 
 Rows a policy discards are counted and reported. A value that will not fit
 its column is refused, not coerced. A retry is bounded and recorded. If the
-run did less than you asked, the `RunReport` says so.
+run did less than you asked, the run report says so.

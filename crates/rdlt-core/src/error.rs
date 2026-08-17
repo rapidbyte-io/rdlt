@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{StreamName, TableName};
+use crate::id::{StreamName, TableName};
 use crate::types::LogicalType;
 
 /// A frozen contract turned a would-be schema delta into a typed failure — before any
@@ -43,7 +43,7 @@ pub struct ContractViolation {
 /// is free to change, while the shape is the contract.
 ///
 /// `#[non_exhaustive]`: match with a wildcard arm.
-pub enum RdltError {
+pub enum Error {
     /// Operator action: fix the pipeline configuration.
     #[error("configuration error: {message}")]
     Config {
@@ -107,17 +107,17 @@ pub enum RdltError {
     Cancelled,
 }
 
-impl RdltError {
+impl Error {
     /// A configuration failure: the operator can fix this by editing the pipeline.
     pub fn config(message: impl Into<String>) -> Self {
-        RdltError::Config {
+        Error::Config {
             message: message.into(),
         }
     }
 
     /// A permanent destination failure. The run aborts.
     pub fn destination(message: impl std::fmt::Display) -> Self {
-        RdltError::Destination {
+        Error::Destination {
             message: message.to_string(),
             retryable: false,
             retry_after_ms: None,
@@ -130,7 +130,7 @@ impl RdltError {
         message: impl std::fmt::Display,
         retry_after: Option<std::time::Duration>,
     ) -> Self {
-        RdltError::Destination {
+        Error::Destination {
             message: message.to_string(),
             retryable: true,
             // Saturate rather than truncate an implausibly-long hint.
@@ -140,7 +140,7 @@ impl RdltError {
 
     /// A permanent source failure on one stream. The run aborts.
     pub fn source(stream: StreamName, message: impl std::fmt::Display) -> Self {
-        RdltError::Source {
+        Error::Source {
             stream,
             message: message.to_string(),
             retryable: false,
@@ -155,7 +155,7 @@ impl RdltError {
         message: impl std::fmt::Display,
         retry_after: Option<std::time::Duration>,
     ) -> Self {
-        RdltError::Source {
+        Error::Source {
             stream,
             message: message.to_string(),
             retryable: true,
@@ -167,7 +167,7 @@ impl RdltError {
 
     /// A write-ahead-log or work-directory failure: check local disk.
     pub fn wal(message: impl std::fmt::Display) -> Self {
-        RdltError::Wal {
+        Error::Wal {
             message: message.to_string(),
         }
     }
@@ -175,7 +175,7 @@ impl RdltError {
     /// An engine invariant broke. This is a bug to report, not a configuration
     /// problem — do NOT use it for anything an operator could fix.
     pub fn internal(message: impl Into<String>) -> Self {
-        RdltError::Internal {
+        Error::Internal {
             message: message.into(),
         }
     }

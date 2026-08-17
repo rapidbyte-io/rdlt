@@ -4,11 +4,13 @@
 //! batch is written; `Discard*` filters data down to the frozen shape — counted, never
 //! silent.
 
-use rdlt_core::{
-    ColumnType, ContractViolation, LogicalType, PolicyAction, SchemaChange, SchemaPolicy,
-    TableName, TableSchema, types::int64_fits_in_f64,
-};
+use rdlt_core::error::ContractViolation;
+use rdlt_core::id::TableName;
+use rdlt_core::schema::{self, ColumnType, TableSchema};
+use rdlt_core::types::LogicalType;
 
+use crate::policy::{PolicyAction, SchemaPolicy};
+use crate::shred::int64_fits_in_f64;
 use crate::{
     schema::registry::SchemaRegistry,
     shred::{
@@ -72,23 +74,23 @@ fn scalar_fits<'a, V: JsonView<'a>>(value: V, scalar: LogicalType) -> bool {
 }
 
 /// Build the typed violation for a frozen change.
-pub(crate) fn violation_for(table: &TableName, change: &SchemaChange) -> ContractViolation {
+pub(crate) fn violation_for(table: &TableName, change: &schema::Change) -> ContractViolation {
     match change {
-        SchemaChange::CreateTable { .. } => ContractViolation {
+        schema::Change::CreateTable { .. } => ContractViolation {
             table: table.clone(),
             column: None,
             change: "table creation".to_owned(),
             from: None,
             to: None,
         },
-        SchemaChange::AddColumn { column } => ContractViolation {
+        schema::Change::AddColumn { column } => ContractViolation {
             table: table.clone(),
             column: Some(column.name.clone()),
             change: format!("new column `{}` would be added", column.name),
             from: None,
             to: scalar_of(&column.column_type),
         },
-        SchemaChange::WidenColumn { name, from, to } => ContractViolation {
+        schema::Change::WidenColumn { name, from, to } => ContractViolation {
             table: table.clone(),
             column: Some(name.clone()),
             change: format!("column `{name}` would widen from {from:?} to {to:?}"),
@@ -106,11 +108,11 @@ fn scalar_of(ty: &ColumnType) -> Option<LogicalType> {
 }
 
 /// The column a change concerns, for policy resolution (None = table-level).
-pub(crate) fn change_column(change: &SchemaChange) -> Option<&str> {
+pub(crate) fn change_column(change: &schema::Change) -> Option<&str> {
     match change {
-        SchemaChange::CreateTable { .. } => None,
-        SchemaChange::AddColumn { column } => Some(&column.name),
-        SchemaChange::WidenColumn { name, .. } => Some(name),
+        schema::Change::CreateTable { .. } => None,
+        schema::Change::AddColumn { column } => Some(&column.name),
+        schema::Change::WidenColumn { name, .. } => Some(name),
     }
 }
 
@@ -160,7 +162,7 @@ fn explicit_action(
     column: Option<&str>,
 ) -> Option<PolicyAction> {
     if let Some(column) = column {
-        let key = rdlt_core::ColumnRef {
+        let key = crate::policy::ColumnRef {
             table: table.clone(),
             column: column.to_owned(),
         };
@@ -175,8 +177,10 @@ fn explicit_action(
 mod tests {
     // Mutation-report closure: value_fits arms were only reachable through
     // Discard policies, which few tests exercise. Direct table.
-    use super::*;
+    use rdlt_core::schema::{Column, Provenance};
     use serde_json::json;
+
+    use super::*;
 
     fn fits(value: &serde_json::Value, ty: LogicalType) -> bool {
         value_fits(value, &ColumnType::scalar(ty))
@@ -223,11 +227,11 @@ mod tests {
     #[test]
     fn value_fits_struct_and_list() {
         let struct_ty = ColumnType::Struct {
-            fields: vec![rdlt_core::ColumnDef {
+            fields: vec![rdlt_core::schema::Column {
                 name: "a".into(),
                 column_type: ColumnType::scalar(LogicalType::Int64),
                 nullable: true,
-                provenance: rdlt_core::Provenance::Inferred,
+                provenance: rdlt_core::schema::Provenance::Inferred,
             }],
         };
         assert!(value_fits(&json!({"a": 1}), &struct_ty));
@@ -259,13 +263,12 @@ mod tests {
     /// forbids pinning behaviour to rendered text.
     #[test]
     fn violation_for_carries_typed_from_and_to() {
-        use rdlt_core::{ColumnDef, Provenance, TableSchema};
         let table = TableName::new("t");
 
         // CreateTable is table-level: no column, no types.
         let created = violation_for(
             &table,
-            &SchemaChange::CreateTable {
+            &schema::Change::CreateTable {
                 schema: TableSchema {
                     table: table.clone(),
                     parent: None,
@@ -281,8 +284,8 @@ mod tests {
         // AddColumn: no `from` (the column did not exist), `to` is its type.
         let added = violation_for(
             &table,
-            &SchemaChange::AddColumn {
-                column: ColumnDef {
+            &schema::Change::AddColumn {
+                column: Column {
                     name: "email".into(),
                     column_type: ColumnType::scalar(LogicalType::Utf8),
                     nullable: true,
@@ -301,7 +304,7 @@ mod tests {
         // WidenColumn: both ends present and distinct.
         let widened = violation_for(
             &table,
-            &SchemaChange::WidenColumn {
+            &schema::Change::WidenColumn {
                 name: "id".into(),
                 from: ColumnType::scalar(LogicalType::Int64),
                 to: ColumnType::scalar(LogicalType::Utf8),
@@ -317,10 +320,9 @@ mod tests {
     /// the fallback arm are distinguishable.
     #[test]
     fn violation_for_reports_none_for_non_scalar_ends() {
-        use rdlt_core::{ColumnDef, Provenance};
         let table = TableName::new("t");
         let struct_ty = ColumnType::Struct {
-            fields: vec![ColumnDef {
+            fields: vec![Column {
                 name: "city".into(),
                 column_type: ColumnType::scalar(LogicalType::Utf8),
                 nullable: true,
@@ -329,7 +331,7 @@ mod tests {
         };
         let widened = violation_for(
             &table,
-            &SchemaChange::WidenColumn {
+            &schema::Change::WidenColumn {
                 name: "profile".into(),
                 from: struct_ty.clone(),
                 to: ColumnType::scalar(LogicalType::Json),
@@ -341,9 +343,8 @@ mod tests {
 
     #[test]
     fn change_column_addresses_the_right_column() {
-        use rdlt_core::{ColumnDef, Provenance, TableSchema};
         assert_eq!(
-            change_column(&SchemaChange::CreateTable {
+            change_column(&schema::Change::CreateTable {
                 schema: TableSchema {
                     table: TableName::new("t"),
                     parent: None,
@@ -354,8 +355,8 @@ mod tests {
             "table creation is table-level, not column-level"
         );
         assert_eq!(
-            change_column(&SchemaChange::AddColumn {
-                column: ColumnDef {
+            change_column(&schema::Change::AddColumn {
+                column: Column {
                     name: "email".into(),
                     column_type: ColumnType::scalar(LogicalType::Utf8),
                     nullable: true,
@@ -365,7 +366,7 @@ mod tests {
             Some("email")
         );
         assert_eq!(
-            change_column(&SchemaChange::WidenColumn {
+            change_column(&schema::Change::WidenColumn {
                 name: "id".into(),
                 from: ColumnType::scalar(LogicalType::Int64),
                 to: ColumnType::scalar(LogicalType::Utf8),

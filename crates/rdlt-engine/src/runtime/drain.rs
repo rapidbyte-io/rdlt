@@ -1,7 +1,8 @@
 //! Drain the loader over the load channel and settle the run's outcome.
 
 use rdlt_connector::channel::{ByteReceiver, Permitted};
-use rdlt_core::{RdltError, RunReport};
+use rdlt_core::error::Error;
+use rdlt_core::report;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -14,10 +15,10 @@ use crate::load::{LoadItem, Loader};
 pub(super) async fn drain_loader(
     mut loader: Loader,
     mut load_rx: ByteReceiver<LoadItem>,
-    mut stream_tasks: JoinSet<Result<(), RdltError>>,
+    mut stream_tasks: JoinSet<Result<(), Error>>,
     cancel: &CancellationToken,
-) -> Result<RunReport, RdltError> {
-    let loader_result: Result<(), RdltError> = loop {
+) -> Result<report::Run, Error> {
+    let loader_result: Result<(), Error> = loop {
         // `biased` toward the channel: items already in flight (e.g. a checkpoint
         // preceding a stream failure) are drained and committed before a
         // cancellation is observed — keeps failure semantics deterministic.
@@ -27,7 +28,7 @@ pub(super) async fn drain_loader(
             // what is QUEUED, and accounting for anything derived downstream
             // belongs to that stage's own channel.
             item = load_rx.recv() => item.map(Permitted::into_value),
-            _ = cancel.cancelled() => break Err(RdltError::Cancelled),
+            _ = cancel.cancelled() => break Err(Error::Cancelled),
         };
         match item {
             Some(item) => {
@@ -45,17 +46,15 @@ pub(super) async fn drain_loader(
     drop(load_rx);
 
     // ---- Join stream tasks; prefer real errors over induced cancellations ----
-    let mut first_error: Option<RdltError> = None;
+    let mut first_error: Option<Error> = None;
     let mut saw_cancelled = false;
     while let Some(joined) = stream_tasks.join_next().await {
         let outcome = match joined {
             Ok(res) => res,
-            Err(join_err) => Err(RdltError::internal(format!(
-                "stream task panicked: {join_err}"
-            ))),
+            Err(join_err) => Err(Error::internal(format!("stream task panicked: {join_err}"))),
         };
         match outcome {
-            Err(RdltError::Cancelled) => saw_cancelled = true,
+            Err(Error::Cancelled) => saw_cancelled = true,
             Err(e) => {
                 if first_error.is_none() {
                     cancel.cancel();
@@ -83,7 +82,7 @@ pub(super) async fn drain_loader(
         }
         Ok(()) if saw_cancelled => {
             loader.close_best_effort().await;
-            return Err(RdltError::Cancelled);
+            return Err(Error::Cancelled);
         }
         Ok(()) => {}
     }
@@ -118,10 +117,10 @@ mod drain_loader_tests {
     use crate::runtime::STAGE_MSG_CAPACITY;
     use rdlt_connector::channel::bytes;
     use rdlt_connector::destination::{Capabilities, LoadSession};
-    use rdlt_core::{
-        CommitMeta, CommitPolicy, CommitReceipt, LoadId, PipelineId, StateDoc, TableName,
-        TableSchema, WriteMode,
-    };
+    use rdlt_core::commit::{CommitMeta, CommitPolicy, CommitReceipt, WriteMode};
+    use rdlt_core::id::{LoadId, PipelineId, TableName};
+    use rdlt_core::schema::TableSchema;
+    use rdlt_core::state::StateDoc;
     use tokio::sync::broadcast;
 
     /// The success path ends in `loader.finish()`, which commits once even for a
@@ -170,12 +169,12 @@ mod drain_loader_tests {
                 session: Box::new(AcceptingSession),
                 capabilities: Capabilities::default(),
             },
-            RunReport::new(pipeline.clone(), load_id.clone()),
+            report::Run::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
             load_id,
             crate::load::Policies {
                 commit: CommitPolicy::default(),
-                batch: rdlt_core::BatchPolicy::default(),
+                batch: rdlt_core::commit::BatchPolicy::default(),
                 max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
             },
             None,
@@ -197,13 +196,13 @@ mod drain_loader_tests {
     /// finished into a clean report with a committed cursor.
     #[tokio::test]
     async fn a_cancelled_stream_task_defeats_an_otherwise_clean_loader() {
-        let mut tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
-        tasks.spawn(async { Err(RdltError::Cancelled) });
+        let mut tasks: JoinSet<Result<(), Error>> = JoinSet::new();
+        tasks.spawn(async { Err(Error::Cancelled) });
 
         let cancel = CancellationToken::new();
         let result = drain_loader(loader(), closed_input(), tasks, &cancel).await;
         assert!(
-            matches!(result, Err(RdltError::Cancelled)),
+            matches!(result, Err(Error::Cancelled)),
             "a cancelled stream must surface as Cancelled, not as success: {result:?}"
         );
     }
@@ -228,16 +227,16 @@ mod drain_loader_tests {
     /// hide the cause.
     #[tokio::test]
     async fn a_real_stream_error_outranks_a_cancellation() {
-        let mut tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
-        tasks.spawn(async { Err(RdltError::Cancelled) });
-        tasks.spawn(async { Err(RdltError::internal("the real cause")) });
+        let mut tasks: JoinSet<Result<(), Error>> = JoinSet::new();
+        tasks.spawn(async { Err(Error::Cancelled) });
+        tasks.spawn(async { Err(Error::internal("the real cause")) });
 
         let cancel = CancellationToken::new();
         let error = drain_loader(loader(), closed_input(), tasks, &cancel)
             .await
             .expect_err("a failing stream fails the run");
         assert!(
-            matches!(error, RdltError::Internal { .. }),
+            matches!(error, Error::Internal { .. }),
             "the real error must be reported, not the cancellation it caused: {error:?}"
         );
     }

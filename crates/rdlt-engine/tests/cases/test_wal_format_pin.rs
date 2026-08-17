@@ -21,7 +21,8 @@ use std::{
 };
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::{CommitPolicy, schema::system_columns};
+use rdlt_core::commit::CommitPolicy;
+use rdlt_core::schema;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource};
 use serde_json::json;
@@ -135,7 +136,7 @@ fn committed_load_ids(dest: &MemoryDestination) -> Vec<String> {
         .snapshot()
         .values()
         .flatten()
-        .filter_map(|row| row.get(system_columns::LOAD_ID))
+        .filter_map(|row| row.get(schema::system::LOAD_ID))
         .filter_map(|v| v.as_str().map(str::to_owned))
         .collect();
     ids.sort();
@@ -261,7 +262,7 @@ async fn a_crashed_wal_replays_to_exactly_a_clean_runs_rows() {
     };
     let replayed = normalize(&dest);
     assert!(
-        replayed.contains(system_columns::ID),
+        replayed.contains(schema::system::ID),
         "replayed rows must carry their persisted identity columns:\n{replayed}"
     );
     assert_eq!(
@@ -314,7 +315,7 @@ async fn a_bare_manifest_claiming_another_version_is_refused_never_replayed() {
     .expect("write bare manifest");
     std::fs::write(
         wal_dir.join("rules.json"),
-        serde_json::to_vec(&rdlt_core::naming::IdentRules::default()).expect("rules json"),
+        serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
     )
     .expect("write rules sidecar");
 

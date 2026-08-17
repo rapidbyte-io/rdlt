@@ -56,7 +56,7 @@ use std::{collections::BTreeMap, fmt::Write as _, path::PathBuf};
 use rdlt_connector::destination::Capabilities;
 
 use rdlt_connector::source::StreamSpec;
-use rdlt_core::schema::system_columns;
+use rdlt_core::schema;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryDestination, MemorySource};
 use serde_json::{Value, json};
@@ -329,10 +329,10 @@ fn render(case: &Case, dest: &MemoryDestination) -> String {
             let _ = writeln!(
                 out,
                 "    [{idx}] id={} parent={} root={} pos={}",
-                field(system_columns::ID),
-                field(system_columns::PARENT_ID),
-                field(system_columns::ROOT_ID),
-                field(system_columns::POS),
+                field(schema::system::ID),
+                field(schema::system::PARENT_ID),
+                field(schema::system::ROOT_ID),
+                field(schema::system::POS),
             );
         }
     }

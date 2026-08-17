@@ -1,8 +1,9 @@
-//! Collision-safe naming as executable properties (design doc §5.3): distinct source
-//! names never silently merge, and assigned names are stable.
+//! Collision-safe naming as executable properties: distinct source names
+//! never silently merge, and assigned names are stable.
 
 use proptest::prelude::*;
-use rdlt_core::naming::{IdentRules, UniqueNamer, child_table_name, normalize_ident};
+use rdlt_core::schema::IdentRules;
+use rdlt_engine::naming::{UniqueNamer, child_table_name, normalize_ident};
 
 proptest! {
     /// UniqueNamer is injective over distinct source names.
@@ -42,19 +43,18 @@ proptest! {
     }
 
     /// The engine's collision gate is complete: for any two distinct stream
-    /// names whose normalized roots A, B pass BOTH pairwise rules in
-    /// `runtime/validate.rs` (rule 1: `B != A + "_"` and `A != B + "_"`;
-    /// rule 2: neither root starts with the other's `+ "__"`), no chain of
-    /// child derivations from one can equal the other root or any child of
-    /// the other root — even against a raw source field that itself starts
-    /// with `_` (Mongo's `_id`). A root that ITSELF contains `__` or ends in
-    /// `_` is not tested here as a solo precondition — the gate is
-    /// deliberately pairwise now (037 fix round 2: an absolute per-root
-    /// rule refused single hostile-but-harmless roots that postgres
-    /// discovery mints from identifiers the operator does not own, e.g.
-    /// `Order "Items"` -> `order__items_`), so this property only ever
-    /// compares TWO roots against each other, matching what the gate
-    /// actually checks.
+    /// names whose normalized roots A, B pass BOTH pairwise rules the run
+    /// validator applies (rule 1: `B != A + "_"` and `A != B + "_"`; rule 2:
+    /// neither root starts with the other's `+ "__"`), no chain of child
+    /// derivations from one can equal the other root or any child of the
+    /// other root — even against a raw source field that itself starts with
+    /// `_` (Mongo's `_id`). A root that ITSELF contains `__` or ends in `_`
+    /// is not tested here as a solo precondition — the gate is deliberately
+    /// pairwise (an absolute per-root rule would refuse single
+    /// hostile-but-harmless roots that postgres discovery mints from
+    /// identifiers the operator does not own, e.g. `Order "Items"` ->
+    /// `order__items_`), so this property only ever compares TWO roots
+    /// against each other, matching what the gate actually checks.
     ///
     /// `(a, b)` come from [`root_pair_strategy`] rather than two independent
     /// raw regex classes, for two measured reasons. First: a regex class
@@ -70,16 +70,14 @@ proptest! {
     /// random roots essentially never land in the `rb == ra + "_"` relation
     /// (`orders_`/`orders`) that rule 1 exists to refuse — verified live by
     /// temporarily dropping that half of the `prop_assume!` below with fully
-    /// independent roots and watching the run pass anyway (recorded in the
-    /// 037 fix-round report, both for the original ends-with formulation and
-    /// again for this round's pairwise formulation). `root_pair_strategy`
-    /// therefore deliberately mints that exact boundary shape a quarter of
-    /// the time, alongside independent pairs for general coverage. `field`
-    /// allows a leading `_` (`_?[a-z][a-z0-9_]{0,20}`) so the child
-    /// derivation itself can also land on the `_id`-shaped boundary. The
-    /// literal-separator edge cases (`users__emails`, `users..emails`,
-    /// `orders_`/`orders`, a bare `_` root, alone AND paired) live in
-    /// `runtime/validate.rs`'s unit tests too.
+    /// independent roots and watching the run pass anyway.
+    /// `root_pair_strategy` therefore deliberately mints that exact boundary
+    /// shape a quarter of the time, alongside independent pairs for general
+    /// coverage. `field` allows a leading `_` (`_?[a-z][a-z0-9_]{0,20}`) so
+    /// the child derivation itself can also land on the `_id`-shaped
+    /// boundary. The literal-separator edge cases (`users__emails`,
+    /// `users..emails`, `orders_`/`orders`, a bare `_` root, alone AND
+    /// paired) live in the run validator's unit tests too.
     #[test]
     fn distinct_separator_free_roots_have_disjoint_table_spaces(
         (a, b) in root_pair_strategy(),

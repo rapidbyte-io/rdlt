@@ -1,10 +1,10 @@
-//! Schema-change policies.
+//! Schema-change policies: what the engine does when incoming data would
+//! change a table's schema, resolved per column, table, or run.
 
 use std::collections::BTreeMap;
 
+use rdlt_core::id::TableName;
 use serde::{Deserialize, Serialize};
-
-use crate::ids::TableName;
 
 /// What to do when incoming data would change a schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,12 +143,10 @@ mod tests {
         assert_eq!(policy.action_for(&other, None), PolicyAction::Evolve);
     }
 
-    /// The named constructors are the API a caller reaches for, and they were
-    /// never asserted: the resolution test above builds `evolve()` and obtains
-    /// `Freeze` only through a `.table()` override, so `freeze()` itself was
-    /// unpinned. `Default` for this type is `evolve()`, which makes an unpinned
-    /// `freeze()` the worst kind of hole — substituting the default silently
-    /// INVERTS the contract, handing Evolve to a caller who asked to freeze.
+    /// The named constructors are the API a caller reaches for. `Default` for
+    /// this type is `evolve()`, so a `freeze()` that silently fell back to the
+    /// default would INVERT the contract, handing Evolve to a caller who asked
+    /// to freeze — each constructor is pinned to its own action.
     #[test]
     fn named_constructors_select_their_own_default_action() {
         assert_eq!(SchemaPolicy::freeze().default, PolicyAction::Freeze);

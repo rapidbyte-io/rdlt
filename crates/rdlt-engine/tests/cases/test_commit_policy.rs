@@ -2,7 +2,7 @@
 //! boundaries are exact. Mutation-report closure; the doc names the mutant
 //! class it kills.
 
-use rdlt_core::CommitPolicy;
+use rdlt_core::commit::{BatchPolicy, CommitPolicy};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::MemoryDestination;
 
@@ -53,8 +53,6 @@ async fn commit_policy_boundaries_are_exact() {
 /// of 10.
 #[tokio::test]
 async fn batch_policy_coalesces_writes_and_loses_nothing() {
-    use rdlt_core::BatchPolicy;
-
     // Baseline: no policy, one write per source batch.
     let dest = MemoryDestination::new();
     let config = EngineConfig::new("batch-none");
@@ -99,7 +97,7 @@ async fn batch_policy_coalesces_writes_and_loses_nothing() {
         rows_written,
         "every row must still arrive: {coalesced:?}"
     );
-    let total = |r: &rdlt_core::RunReport| r.tables.values().map(|t| t.rows).sum::<u64>();
+    let total = |r: &rdlt_core::report::Run| r.tables.values().map(|t| t.rows).sum::<u64>();
     assert_eq!(
         total(&coalesced_report),
         total(&report),
@@ -114,8 +112,6 @@ async fn batch_policy_coalesces_writes_and_loses_nothing() {
 /// had not been given yet — the receipt would claim more than landed.
 #[tokio::test]
 async fn accumulated_rows_are_written_before_each_commit() {
-    use rdlt_core::BatchPolicy;
-
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("batch-vs-commit");
     // A threshold far above the whole run, so nothing would ever
@@ -157,7 +153,8 @@ mod delta_flushes_pending_first {
 
     use rdlt_connector::arrow::RecordBatch;
 
-    use rdlt_connector::core::{CommitMeta, CommitReceipt, StateDoc};
+    use rdlt_connector::core::commit::{CommitMeta, CommitReceipt};
+    use rdlt_connector::core::state::StateDoc;
 
     use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 
@@ -202,8 +199,8 @@ mod delta_flushes_pending_first {
     impl LoadSession for RecordingSession {
         async fn ensure_table(
             &mut self,
-            schema: &rdlt_connector::core::TableSchema,
-            mode: &rdlt_connector::core::WriteMode,
+            schema: &rdlt_connector::core::schema::TableSchema,
+            mode: &rdlt_connector::core::commit::WriteMode,
         ) -> Result<(), DestinationError> {
             self.ops
                 .lock()
@@ -213,7 +210,7 @@ mod delta_flushes_pending_first {
         }
         async fn write(
             &mut self,
-            table: &rdlt_connector::core::TableName,
+            table: &rdlt_connector::core::id::TableName,
             batch: RecordBatch,
         ) -> Result<(), DestinationError> {
             self.ops
@@ -227,7 +224,7 @@ mod delta_flushes_pending_first {
         }
         async fn read_state(
             &mut self,
-            pipeline: &rdlt_connector::core::PipelineId,
+            pipeline: &rdlt_connector::core::id::PipelineId,
         ) -> Result<Option<StateDoc>, DestinationError> {
             self.inner.read_state(pipeline).await
         }
@@ -235,8 +232,6 @@ mod delta_flushes_pending_first {
 
     #[tokio::test]
     async fn pending_batches_flush_before_the_delta_is_ensured() {
-        use rdlt_core::BatchPolicy;
-
         let source = MemorySource::new(vec![MemoryStream::new(
             rdlt_connector::source::StreamSpec::new("s"),
             vec![

@@ -26,7 +26,11 @@ use rdlt_connector::channel::bytes;
 use rdlt_connector::destination::Destination;
 
 use rdlt_connector::source::Source;
-use rdlt_core::{LoadId, PipelineEvent, RdltError, RunReport, StreamName, WriteMode};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::error::Error;
+use rdlt_core::event::PipelineEvent;
+use rdlt_core::id::{LoadId, StreamName};
+use rdlt_core::report;
 use tokio::{sync::broadcast, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
@@ -114,7 +118,7 @@ pub(crate) async fn run(
     destination: Arc<dyn Destination>,
     cancel: CancellationToken,
     events: broadcast::Sender<PipelineEvent>,
-) -> Result<RunReport, RdltError> {
+) -> Result<report::Run, Error> {
     let mut attempt: u32 = 0;
     loop {
         let attempt_cancel = cancel.child_token();
@@ -147,7 +151,7 @@ pub(crate) async fn run(
         // committed state: the crash-recovery path tears down staging and
         // resumes cursors, so a retry can never double-publish.
         let (stream, message, retry_after_ms) = match result {
-            Err(RdltError::Source {
+            Err(Error::Source {
                 stream,
                 message,
                 retryable: true,
@@ -155,7 +159,7 @@ pub(crate) async fn run(
             }) if attempt + 1 < MAX_RUN_ATTEMPTS && !cancel.is_cancelled() => {
                 (Some(stream), message, retry_after_ms)
             }
-            Err(RdltError::Destination {
+            Err(Error::Destination {
                 message,
                 retryable: true,
                 retry_after_ms,
@@ -172,10 +176,10 @@ pub(crate) async fn run(
             stream = ?stream, attempt, %message,
             "transient failure; restarting run from committed state"
         );
-        let _ = events.send(rdlt_core::PipelineEvent::Retried { stream, attempt });
+        let _ = events.send(rdlt_core::event::PipelineEvent::Retried { stream, attempt });
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
-            _ = cancel.cancelled() => return Err(RdltError::Cancelled),
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
         }
     }
 }
@@ -187,7 +191,7 @@ async fn run_once(
     cancel: CancellationToken,
     events: broadcast::Sender<PipelineEvent>,
     prior_retries: u64,
-) -> Result<RunReport, RdltError> {
+) -> Result<report::Run, Error> {
     let started = Instant::now();
     let load_id = new_load_id();
     // The load id is minted HERE, so the root span cannot carry it from
@@ -261,9 +265,9 @@ async fn run_once(
         }
     };
 
-    let mut report = RunReport::new(config.pipeline.clone(), load_id.clone());
+    let mut report = report::Run::new(config.pipeline.clone(), load_id.clone());
     report.resumed_from = resumed_from.clone();
-    let _ = events.send(rdlt_core::PipelineEvent::RunStarted {
+    let _ = events.send(rdlt_core::event::PipelineEvent::RunStarted {
         load_id: load_id.clone(),
         resumed_from,
     });
@@ -282,7 +286,7 @@ async fn run_once(
     // source declared — per-stream budgets multiplied the cap by the one
     // axis a rogue source controls directly.
     let records_budget = rdlt_connector::channel::SharedBudget::new(config.byte_budget);
-    let mut stream_tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
+    let mut stream_tasks: JoinSet<Result<(), Error>> = JoinSet::new();
 
     for spec in streams {
         let mode = config.write_mode_for(&spec.name);
@@ -295,7 +299,7 @@ async fn run_once(
         };
         let root_table = root_table(&spec.name, capabilities.ident_rules);
 
-        let _ = events.send(rdlt_core::PipelineEvent::StreamStarted {
+        let _ = events.send(rdlt_core::event::PipelineEvent::StreamStarted {
             stream: spec.name.clone(),
             table: root_table.clone(),
         });
@@ -342,7 +346,7 @@ async fn run_once(
     // the ticker before that ever happens (observed as a flake — the
     // run beat the task's first poll). Emitting inline makes "every run
     // carries >=1 heartbeat" structural instead of a race.
-    let _ = events.send(rdlt_core::PipelineEvent::Heartbeat {
+    let _ = events.send(rdlt_core::event::PipelineEvent::Heartbeat {
         elapsed_ms: started.elapsed().as_millis() as u64,
     });
     let heartbeat = {
@@ -357,7 +361,7 @@ async fn run_once(
             tick.tick().await;
             loop {
                 tick.tick().await;
-                let _ = events.send(rdlt_core::PipelineEvent::Heartbeat {
+                let _ = events.send(rdlt_core::event::PipelineEvent::Heartbeat {
                     elapsed_ms: started.elapsed().as_millis() as u64,
                 });
             }
@@ -411,7 +415,7 @@ async fn run_once(
     if let Ok(outputs) = output_totals.lock() {
         for (table, bytes) in outputs.iter() {
             report
-                .table_mut(&rdlt_core::TableName::new(table.as_str()))
+                .table_mut(&rdlt_core::id::TableName::new(table.as_str()))
                 .output_bytes = *bytes;
         }
     }

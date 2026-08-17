@@ -11,14 +11,17 @@
 //! another: segments silently dropped (rows lost until re-extraction)
 //! or recovery refused outright.
 
-use rdlt_core::{StreamName, TableName, naming};
+use rdlt_core::id::{StreamName, TableName};
+use rdlt_core::schema::IdentRules;
+
+use crate::naming;
 
 /// The destination root table a stream owns: `normalize_ident` under the
 /// destination's rules. `runtime::validate` proves this mapping
 /// injective across a run's streams before any session opens; the run
 /// wiring, the loader's checkpoint arm, and the scan's stream↔root join
 /// all build on exactly this call.
-pub(crate) fn root_table(stream: &StreamName, rules: naming::IdentRules) -> TableName {
+pub(crate) fn root_table(stream: &StreamName, rules: IdentRules) -> TableName {
     TableName::new(naming::normalize_ident(stream.as_str(), rules))
 }
 

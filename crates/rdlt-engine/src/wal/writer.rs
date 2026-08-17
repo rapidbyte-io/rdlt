@@ -15,7 +15,9 @@ use std::{
 };
 
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_core::{LoadId, PipelineId, RdltError, crash_point};
+use rdlt_core::crash_point;
+use rdlt_core::error::Error;
+use rdlt_core::id::{LoadId, PipelineId};
 
 use crate::load::LoadItem;
 
@@ -240,8 +242,8 @@ pub(crate) struct Wal {
     pending_gc: Vec<PathBuf>,
 }
 
-fn wal_err(context: &str, e: impl std::fmt::Display) -> RdltError {
-    RdltError::wal(format!("{context}: {e}"))
+fn wal_err(context: &str, e: impl std::fmt::Display) -> Error {
+    Error::wal(format!("{context}: {e}"))
 }
 
 impl Wal {
@@ -255,9 +257,9 @@ impl Wal {
         dir: PathBuf,
         pipeline: &PipelineId,
         load_id: &LoadId,
-        rules: rdlt_core::naming::IdentRules,
+        rules: rdlt_core::schema::IdentRules,
         tolerate_resolved_residue: bool,
-    ) -> Result<Self, RdltError> {
+    ) -> Result<Self, Error> {
         create_private_dir(&dir).map_err(|e| wal_err("creating wal dir", e))?;
         ensure_owned_dir(&dir).map_err(|e| wal_err("proving wal directory ownership", e))?;
         // A fresh open expects a CLEAN directory (round-12): recovery
@@ -268,7 +270,7 @@ impl Wal {
         // residue — unless recovery vouched (see above).
         let manifest_path = dir.join("manifest.jsonl");
         if manifest_path.exists() && !tolerate_resolved_residue {
-            return Err(RdltError::wal(format!(
+            return Err(Error::wal(format!(
                 "a WAL manifest already exists at `{}` — a fresh run opens over a clean \
                  directory (recovery resolves and clears a prior span first), so \
                  surviving residue means the previous span was never resolved; refusing \
@@ -355,7 +357,7 @@ impl Wal {
     ///
     /// Deliberately NOT pipelined against the destination write either: the
     /// manifest's order on disk IS the replay order.
-    pub(crate) async fn record(&mut self, item: &LoadItem) -> Result<(), RdltError> {
+    pub(crate) async fn record(&mut self, item: &LoadItem) -> Result<(), Error> {
         match item {
             LoadItem::Delta {
                 schema,
@@ -427,7 +429,7 @@ impl Wal {
     /// durability barrier is covered. Verifying it needs a different KIND of
     /// instrument (a fault-injecting filesystem, or hardware), not another
     /// assertion.
-    pub(crate) async fn sync_for_commit(&mut self) -> Result<(), RdltError> {
+    pub(crate) async fn sync_for_commit(&mut self) -> Result<(), Error> {
         crash_point!(
             "wal.segment.fsync",
             Err(wal_err(
@@ -461,7 +463,7 @@ impl Wal {
                     .and_then(|f| f.sync_all())
                     .map_err(|e| wal_err("fsync wal directory", e))?;
             }
-            Ok::<(), RdltError>(())
+            Ok::<(), Error>(())
         })
         .await
         .map_err(|e| wal_err("segment fsync task", e))??;
@@ -490,7 +492,7 @@ impl Wal {
     }
 
     /// Step (3): the destination acknowledged `commit_seq` — mark and reclaim.
-    pub(crate) async fn mark_committed(&mut self, commit_seq: u64) -> Result<(), RdltError> {
+    pub(crate) async fn mark_committed(&mut self, commit_seq: u64) -> Result<(), Error> {
         self.append(&WalRecord::Committed { commit_seq })?;
         self.manifest
             .flush()
@@ -521,7 +523,7 @@ impl Wal {
         Ok(())
     }
 
-    fn append(&mut self, record: &WalRecord) -> Result<(), RdltError> {
+    fn append(&mut self, record: &WalRecord) -> Result<(), Error> {
         crash_point!(
             "wal.manifest.append",
             Err(wal_err(
@@ -540,7 +542,7 @@ impl Wal {
         // honest WAL to re-extraction forever. Refuse at write time, where
         // the error names the cause, instead of corrupting the WAL.
         if line.len() > super::record::MAX_MANIFEST_LINE_BYTES {
-            return Err(RdltError::wal(format!(
+            return Err(Error::wal(format!(
                 "a {}-byte manifest record exceeds the {}-byte line cap recovery enforces \
                  — refusing to write a WAL line this engine could never scan back (the \
                  record carries an oversized cursor or schema)",
@@ -573,7 +575,7 @@ impl Wal {
 /// flatbuffer metadata, padding and the footer alongside the body buffers —
 /// so several hundred per load, most of them tiny. Measured at 1.1% of wall on
 /// the 1M-row relational cell: small, but free.
-pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), RdltError> {
+pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Error> {
     // `create_new` (O_EXCL), not create+truncate (047 L4): a segment name is
     // never legitimately reused — the sequence is monotonic within a run and
     // the load id carries per-process OS entropy across runs — so an
@@ -636,7 +638,7 @@ pub(crate) fn clear(dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdlt_core::TableName;
+    use rdlt_core::id::TableName;
     use std::sync::Arc;
 
     fn batch_of(rows: i64) -> arrow::record_batch::RecordBatch {
@@ -681,7 +683,7 @@ mod tests {
             dir.path().to_path_buf(),
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             false,
         )
         .expect_err("a surviving manifest must refuse the open");
@@ -714,7 +716,7 @@ mod tests {
             dir.path().to_path_buf(),
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             true,
         )
         .expect("the vouched open proceeds over resolved residue");
@@ -744,7 +746,7 @@ mod tests {
             wal_dir,
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             true,
         )
         .expect_err("the vouched open must still refuse a symlink");
@@ -764,7 +766,7 @@ mod tests {
             dir.path().join("wal"),
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             false,
         )
         .expect("open wal");
@@ -802,7 +804,7 @@ mod tests {
             wal_dir.clone(),
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             false,
         )
         .expect("open replaces the planted link");
@@ -832,7 +834,7 @@ mod tests {
             wal_dir.clone(),
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             false,
         )
         .expect_err("non-empty foreign directories must not be adopted");
@@ -860,7 +862,7 @@ mod tests {
             wal_dir,
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             false,
         )
         .expect_err("an occupied manifest path must refuse");
@@ -886,16 +888,16 @@ mod tests {
             dir.path().to_path_buf(),
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             false,
         )
         .expect("open wal");
-        let oversized = rdlt_core::Cursor::new(serde_json::Value::String(
+        let oversized = rdlt_core::cursor::Cursor::new(serde_json::Value::String(
             "x".repeat(crate::wal::record::MAX_MANIFEST_LINE_BYTES),
         ));
         let error = wal
             .append(&WalRecord::Checkpoint {
-                stream: rdlt_core::StreamName::new("s"),
+                stream: rdlt_core::id::StreamName::new("s"),
                 cursor: oversized,
             })
             .expect_err("an over-cap line must refuse at write time");
@@ -922,7 +924,7 @@ mod tests {
             dir.path().to_path_buf(),
             &PipelineId::new("p"),
             &LoadId::new("l"),
-            rdlt_core::naming::IdentRules::default(),
+            rdlt_core::schema::IdentRules::default(),
             false,
         )
         .expect("open wal");
@@ -932,8 +934,8 @@ mod tests {
         let sidecar = std::fs::read_to_string(dir.path().join(RULES_SIDECAR))
             .expect("the sidecar exists beside the manifest");
         assert_eq!(
-            serde_json::from_str::<rdlt_core::naming::IdentRules>(&sidecar).expect("parses"),
-            rdlt_core::naming::IdentRules::default(),
+            serde_json::from_str::<rdlt_core::schema::IdentRules>(&sidecar).expect("parses"),
+            rdlt_core::schema::IdentRules::default(),
             "the sidecar round-trips the writer's rules verbatim"
         );
 

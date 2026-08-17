@@ -6,12 +6,16 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rdlt_connector::core::WriteMode;
+use rdlt_connector::core::commit::WriteMode;
 
 use rdlt_connector::destination::Destination;
 
 use rdlt_connector::source::Source;
-use rdlt_core::{CommitPolicy, RdltError, RunReport, SchemaPolicy, StreamName};
+use rdlt_core::commit::CommitPolicy;
+use rdlt_core::error::Error;
+use rdlt_core::id::StreamName;
+use rdlt_core::report;
+use rdlt_engine::policy::SchemaPolicy;
 use rdlt_engine::{Engine, EngineConfig};
 
 /// Typestate marker: no source/destination provided yet.
@@ -35,7 +39,7 @@ pub struct PipelineBuilder<S, D> {
 }
 
 impl PipelineBuilder<Missing, Missing> {
-    pub(crate) fn new(pipeline: impl Into<rdlt_core::PipelineId>) -> Self {
+    pub(crate) fn new(pipeline: impl Into<rdlt_core::id::PipelineId>) -> Self {
         Self {
             config: EngineConfig::new(pipeline),
             source: Missing,
@@ -85,7 +89,7 @@ impl<S, D> PipelineBuilder<S, D> {
 
     /// How much to accumulate before each destination WRITE
     /// (default: write each source batch straight through).
-    pub fn batch_policy(mut self, policy: rdlt_core::BatchPolicy) -> Self {
+    pub fn batch_policy(mut self, policy: rdlt_core::commit::BatchPolicy) -> Self {
         self.config = self.config.with_batch_policy(policy);
         self
     }
@@ -138,11 +142,11 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
     /// Validate configuration against destination capabilities and construct the
     /// pipeline. No network or destination I/O happens here; the checks are purely
     /// against the declared destination capabilities.
-    pub fn build(self) -> Result<Pipeline, RdltError> {
+    pub fn build(self) -> Result<Pipeline, Error> {
         let caps = self.destination.capabilities();
         let merge = merge_streams(self.config.write_mode(), self.config.write_modes());
         if !caps.merge && merge.any() {
-            return Err(RdltError::config(format!(
+            return Err(Error::config(format!(
                 "destination `{}` does not support Merge (requested {})",
                 self.destination.spec().name,
                 if merge.default {
@@ -171,7 +175,7 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
             if let WriteMode::Merge { key } = mode
                 && key.is_empty()
             {
-                return Err(RdltError::config(format!(
+                return Err(Error::config(format!(
                     "stream `{stream}`: Merge requires at least one key column"
                 )));
             }
@@ -179,14 +183,14 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
         if let WriteMode::Merge { key } = self.config.write_mode()
             && key.is_empty()
         {
-            return Err(RdltError::config("Merge requires at least one key column"));
+            return Err(Error::config("Merge requires at least one key column"));
         }
         // 7L10: the YAML facade refuses a threshold-less commit policy
         // at parse; the builder path deserves the same refusal — such a
         // policy would hold the whole run in one crash window, the
         // exact shape the type refuses everywhere else.
         if let Err(reason) = self.config.commit_policy().check() {
-            return Err(RdltError::config(reason.to_string()));
+            return Err(Error::config(reason.to_string()));
         }
 
         Ok(Pipeline {
@@ -236,7 +240,9 @@ impl Pipeline {
     ///
     /// The returned builder is missing both connectors, and its type says so:
     /// `build()` does not exist until a source and a destination are set.
-    pub fn builder(name: impl Into<rdlt_core::PipelineId>) -> PipelineBuilder<Missing, Missing> {
+    pub fn builder(
+        name: impl Into<rdlt_core::id::PipelineId>,
+    ) -> PipelineBuilder<Missing, Missing> {
         PipelineBuilder::new(name)
     }
 
@@ -270,7 +276,7 @@ impl Pipeline {
     /// let _ = pipeline.run().await; // moved by the first run — must NOT compile
     /// # }
     /// ```
-    pub async fn run(self) -> Result<RunReport, RdltError> {
+    pub async fn run(self) -> Result<report::Run, Error> {
         self.engine.run().await
     }
 }

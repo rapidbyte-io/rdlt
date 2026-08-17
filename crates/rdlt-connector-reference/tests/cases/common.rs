@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 
 use rdlt_connector_sdk::spi::channel::{PushPayload, records};
-use rdlt_connector_sdk::spi::core::{Cursor, TableName};
+use rdlt_connector_sdk::spi::core::cursor::Cursor;
+use rdlt_connector_sdk::spi::core::id::TableName;
 use rdlt_connector_sdk::spi::error::SourceError;
 use rdlt_connector_sdk::spi::source::{ReadRequest, Source, StreamSpec};
 use rdlt_testkit::{ProbeError, TableProbe};

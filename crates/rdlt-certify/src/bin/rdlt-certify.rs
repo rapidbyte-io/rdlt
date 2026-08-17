@@ -34,7 +34,7 @@ use rdlt_certify::{
     CLAUSES, Target, certify_destination, certify_source, kill_matrix_destination,
     kill_matrix_source,
 };
-use rdlt_connector::core::TableName;
+use rdlt_connector::core::id::TableName;
 use rdlt_runtime::{LocalBinaryConnectorProvider, ProviderError, Role};
 use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 use serde_json::Value;

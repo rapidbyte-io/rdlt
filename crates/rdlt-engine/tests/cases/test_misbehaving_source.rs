@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;
-use rdlt_core::RdltError;
+use rdlt_core::error::Error;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryDestination, batch_of};
 
@@ -123,7 +123,7 @@ async fn arrow_on_unstructured_stream_fails_typed_and_terminates() {
     .expect("the run must terminate, not hang");
     let err = outcome.expect_err("contract violation is an error");
     assert!(
-        matches!(err, RdltError::Source { .. }) && err.to_string().contains("structured"),
+        matches!(err, Error::Source { .. }) && err.to_string().contains("structured"),
         "typed contract error expected: {err}"
     );
 }
