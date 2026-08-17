@@ -13,6 +13,19 @@ pub(crate) enum Mode {
     Quiet,
 }
 
+impl Mode {
+    /// The display's terminal is also receiving another stream
+    /// (`--events -` with stdout on the terminal): every foreign line
+    /// shoves a redrawing display, so Pretty degrades to a line per
+    /// event; the other modes are unaffected.
+    pub(crate) fn sharing_terminal(self) -> Mode {
+        match self {
+            Mode::Pretty => Mode::Plain,
+            other => other,
+        }
+    }
+}
+
 /// The ladder: `-q` silences everything; `--output json` is machine
 /// mode and silences the feed too; `--output plain` forces a line per
 /// event; then `-v`, `--no-progress` or a non-terminal stderr force
@@ -67,5 +80,13 @@ mod tests {
         );
         assert_eq!(select(false, false, false, Output::Json, true), Mode::Quiet);
         assert_eq!(select(false, true, false, Output::Json, false), Mode::Quiet);
+    }
+
+    /// A shared terminal demotes only the redrawing display.
+    #[test]
+    fn a_shared_terminal_demotes_pretty_to_plain() {
+        assert_eq!(Mode::Pretty.sharing_terminal(), Mode::Plain);
+        assert_eq!(Mode::Plain.sharing_terminal(), Mode::Plain);
+        assert_eq!(Mode::Quiet.sharing_terminal(), Mode::Quiet);
     }
 }

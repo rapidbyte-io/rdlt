@@ -22,6 +22,12 @@ pub(crate) async fn run(
 ) -> Result<(), exit::Error> {
     let target = events::Target::resolve(events, report.is_some())?;
     let (pipeline, name) = build(&spec).await?;
+    // NDJSON streaming to a terminal stdout shares the screen with the
+    // live display; the display yields.
+    let mode = match target {
+        Some(events::Target::Stdout) if stdout_is_tty => mode.sharing_terminal(),
+        _ => mode,
+    };
     let sink = target.map(events::Target::open).transpose()?;
     let feed = feed(&pipeline, name, mode, sink, verbosity);
     let run_result = pipeline.run().await;

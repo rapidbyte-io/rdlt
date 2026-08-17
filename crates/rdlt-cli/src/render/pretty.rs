@@ -32,15 +32,25 @@ pub(crate) struct Pretty {
 
 impl Pretty {
     pub(crate) fn new(pipeline: &str) -> Self {
-        let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(10));
+        Self::with_target(pipeline, ProgressDrawTarget::stderr_with_hz(10))
+    }
+
+    /// The display over any draw target — the tests render into an
+    /// in-memory terminal through this seam.
+    fn with_target(pipeline: &str, target: ProgressDrawTarget) -> Self {
+        // Every row is `{wide_msg}`: truncated to the terminal's width,
+        // never wrapped, so the region is always exactly one row per bar
+        // and a redraw's cursor arithmetic cannot disagree with the
+        // terminal about how many rows a long line took.
+        let multi = MultiProgress::with_draw_target(target);
         let header = multi.add(ProgressBar::no_length());
-        header.set_style(ProgressStyle::with_template("  {msg}").expect("static template"));
+        header.set_style(ProgressStyle::with_template("  {wide_msg}").expect("static template"));
         header.set_message(format!(
             "pipeline {}",
             stderr::sanitize_identifier(pipeline)
         ));
         let totals = multi.add(ProgressBar::no_length());
-        totals.set_style(ProgressStyle::with_template("  {msg}").expect("static template"));
+        totals.set_style(ProgressStyle::with_template("  {wide_msg}").expect("static template"));
         Self {
             metrics: Metrics::new(),
             multi,
@@ -69,7 +79,7 @@ impl Pretty {
                     .multi
                     .insert_before(&self.totals, ProgressBar::no_length());
                 bar.set_style(
-                    ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                    ProgressStyle::with_template("  {spinner:.cyan} {wide_msg}")
                         .expect("static template"),
                 );
                 bar.enable_steady_tick(REDRAW_EVERY);
@@ -130,7 +140,9 @@ impl Pretty {
                 // renders, disable the steady tick so a done bar stops
                 // ticking (nothing left to animate), then set — never
                 // finish — the message.
-                bar.set_style(ProgressStyle::with_template("  ✔ {msg}").expect("static template"));
+                bar.set_style(
+                    ProgressStyle::with_template("  ✔ {wide_msg}").expect("static template"),
+                );
                 bar.disable_steady_tick();
                 line.push_str(" done");
                 bar.set_message(line);
@@ -151,18 +163,125 @@ impl Pretty {
         self.totals.set_message(totals);
     }
 
-    /// Tear the ENTIRE live display down — header, every stream row, totals —
-    /// leaving nothing behind. The summary (on success) or the error text
-    /// (on failure) is the durable record; the live rows exist only to
-    /// animate a run in progress and are ephemeral by design, so every row
-    /// must stay CLEARABLE for as long as this display lives. That is why
-    /// `redraw`'s done branch never calls `finish_with_message`: indicatif
-    /// treats a finished bar as committed output beyond a `MultiProgress`
-    /// clear's reach (it survives on screen forever, one line per stream,
-    /// duplicating what the summary's per-table rows already say) — a
-    /// done row must stay merely `set_message`d, live-but-still, so this
-    /// `clear()` actually removes it.
+    /// Tear the ENTIRE live display down — header, every stream row,
+    /// totals — leaving nothing behind: the summary or the error text
+    /// that follows is the durable record. Every row stays clearable
+    /// because `redraw`'s done branch never `finish`es a bar (indicatif
+    /// keeps a finished row as committed output beyond a clear's reach).
+    /// The steady ticks stop first so no tick redraws a cleared display,
+    /// and the target goes hidden after the clear so dropping the bar
+    /// handles — which reaps rows and would redraw the rest — draws
+    /// nothing more.
     pub(crate) fn clear(self) {
+        for bar in self.streams.values() {
+            bar.disable_steady_tick();
+        }
         let _ = self.multi.clear();
+        self.multi.set_draw_target(ProgressDrawTarget::hidden());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use indicatif::InMemoryTerm;
+    use rdlt::prelude::{ResumedFrom, StreamName, TableName};
+    use rdlt::sdk::spi::core::id::LoadId;
+
+    use super::*;
+
+    fn rows(term: &InMemoryTerm) -> usize {
+        term.contents().lines().count()
+    }
+
+    /// Redraw after the draw-rate limiter has refilled, so the assertions
+    /// read the display's settled contents rather than a dropped frame.
+    fn settle(display: &mut Pretty) {
+        std::thread::sleep(Duration::from_millis(120));
+        display.redraw();
+    }
+
+    /// The region's height is fixed from the moment the streams are
+    /// announced: batches, ticks, a stream finishing (the ✔ row) and a
+    /// commit change text, never the row count — a row-count change is
+    /// what shifts the display on a terminal. `clear()` leaves nothing
+    /// behind, and nothing is drawn after it.
+    #[test]
+    fn the_display_keeps_its_height_and_clears_without_residue() {
+        let term = InMemoryTerm::new(24, 100);
+        let target = ProgressDrawTarget::term_like_with_hz(Box::new(term.clone()), 200);
+        let mut display = Pretty::with_target("p", target);
+        display.apply(&PipelineEvent::RunStarted {
+            load_id: LoadId::new("load-1"),
+            resumed_from: ResumedFrom::Fresh,
+        });
+        for stream in ["a", "b"] {
+            display.apply(&PipelineEvent::StreamStarted {
+                stream: StreamName::new(stream),
+                table: TableName::new(stream),
+            });
+        }
+        settle(&mut display);
+        // header + two stream rows + totals
+        assert_eq!(rows(&term), 4, "{}", term.contents());
+        assert!(term.contents().contains("load load-1 · fresh"));
+
+        display.apply(&PipelineEvent::BatchLoaded {
+            table: TableName::new("a"),
+            rows: 40,
+            bytes: 400,
+        });
+        display.redraw();
+        display.apply(&PipelineEvent::StreamFinished {
+            stream: StreamName::new("a"),
+        });
+        display.apply(&PipelineEvent::Committed {
+            commit_seq: 1,
+            cursors: Default::default(),
+        });
+        settle(&mut display);
+        assert_eq!(rows(&term), 4, "{}", term.contents());
+        assert!(term.contents().contains("✔ a"), "{}", term.contents());
+        assert!(term.contents().contains("1 commit"), "{}", term.contents());
+
+        let _ = term.moves_since_last_check();
+        display.clear();
+        assert_eq!(term.contents(), "", "the display leaves no residue");
+        let moves = term.moves_since_last_check();
+        assert!(
+            !moves.contains("Str("),
+            "nothing is drawn after the clear:\n{moves}"
+        );
+    }
+
+    /// A narrow terminal truncates rows, never wraps them: the region
+    /// stays one row per bar however long the pipeline name, load id
+    /// or stream row runs.
+    #[test]
+    fn long_rows_truncate_instead_of_wrapping() {
+        let term = InMemoryTerm::new(24, 40);
+        let target = ProgressDrawTarget::term_like_with_hz(Box::new(term.clone()), 200);
+        let mut display = Pretty::with_target("a-rather-long-pipeline-name", target);
+        display.apply(&PipelineEvent::RunStarted {
+            load_id: LoadId::new("1a011417aec-4a05a-0-a911350ec4463e1c"),
+            resumed_from: ResumedFrom::Wal {
+                replayed_batches: 3,
+            },
+        });
+        display.apply(&PipelineEvent::StreamStarted {
+            stream: StreamName::new("a-stream-name-past-the-column"),
+            table: TableName::new("t"),
+        });
+        std::thread::sleep(Duration::from_millis(120));
+        display.redraw();
+        let contents = term.contents();
+        assert_eq!(contents.lines().count(), 3, "{contents}");
+        assert!(
+            contents
+                .lines()
+                .all(|line| console::measure_text_width(line) <= 40),
+            "{contents}"
+        );
+        display.clear();
+        assert_eq!(term.contents(), "");
     }
 }
