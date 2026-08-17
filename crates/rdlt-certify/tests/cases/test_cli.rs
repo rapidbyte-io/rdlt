@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use rdlt_certify::CLAUSES;
+use rdlt_certify::report::CLAUSES;
 
 use super::support::bins::built_bin;
 
@@ -241,8 +241,8 @@ fn dest_config(dir: &Path, out_root: &Path) -> std::path::PathBuf {
 
 /// A probe template without `{{table}}` would count ONE fixed target
 /// for every clause — wrong verdicts in both directions with no error
-/// naming the real mistake — so it is a usage error at argument time
-/// (round-3 fix): exit 2, the message naming the placeholder, and the
+/// naming the real mistake — so it is a usage error at argument time:
+/// exit 2, the message naming the placeholder, and the
 /// rest of the line never echoed (it may carry credentials).
 #[test]
 fn a_probe_cmd_without_the_placeholder_is_refused_at_argument_time() {
@@ -404,8 +404,7 @@ fn a_failing_probe_cmd_fails_the_read_back_clause_naming_the_probe() {
 }
 
 /// Probe stdout that is not one u64 FAILS the clause naming the
-/// PROBLEM — never the bytes (round-12: the arm echoed the output
-/// verbatim, and a usage-printing wrapper would leak the
+/// PROBLEM — never the bytes (a usage-printing wrapper would leak the
 /// credential-bearing probe line into the report), and never the
 /// command that produced it.
 #[test]

@@ -6,10 +6,9 @@
 //! socket. Hermetic on tempdirs — no container runtime, no network —
 //! so neither cell ever skips.
 
-use rdlt_certify::{
-    DESTINATION_DUAL_ROLE_SKIP, NO_MERGE_SKIP, SOURCE_DUAL_ROLE_SKIP, Target,
-    assert_certified_all_pass_with_named_skips, certify_destination, certify_source,
-};
+use rdlt_certify::clause::{d, p, s};
+use rdlt_certify::report;
+use rdlt_certify::target::Target;
 use serde_json::json;
 
 use super::common::DirProbe;
@@ -33,16 +32,16 @@ async fn the_reference_source_certifies_all_pass() {
     let file = dir.path().join("events.jsonl");
     std::fs::write(&file, "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n").expect("seed file");
 
-    let report = certify_source(
+    let report = s::certify(
         &Target::resolve_path(built_bin(), json!({"path": file})),
         &[],
     )
     .await;
 
-    assert_certified_all_pass_with_named_skips(
+    report::assert_all_pass(
         &report,
         &["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"],
-        &[("P13", SOURCE_DUAL_ROLE_SKIP)],
+        &[("P13", p::SOURCE_DUAL_ROLE_SKIP)],
     );
 }
 
@@ -57,18 +56,21 @@ async fn the_reference_destination_certifies_all_pass_with_the_merge_skip() {
     let out = dir.path().join("out");
     let probe = DirProbe(out.clone());
 
-    let report = certify_destination(
+    let report = d::certify(
         &Target::resolve_path(built_bin(), json!({"path": out})),
         Some(&probe),
     )
     .await;
 
-    assert_certified_all_pass_with_named_skips(
+    report::assert_all_pass(
         &report,
         &[
             "D1", "D2", "D3", "D4", "D5", "D6", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
             "P11", "P12",
         ],
-        &[("D8", NO_MERGE_SKIP), ("P13", DESTINATION_DUAL_ROLE_SKIP)],
+        &[
+            ("D8", d::NO_MERGE_SKIP),
+            ("P13", p::DESTINATION_DUAL_ROLE_SKIP),
+        ],
     );
 }

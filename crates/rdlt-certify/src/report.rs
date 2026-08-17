@@ -3,8 +3,9 @@
 //! `SKIP K-D4 (<title>): <why>` / `NOT-REACHED D4 (<title>): <why>` —
 //! the certifier bin's stdout contract), the one authoritative clause
 //! table (id, title, definition — what the titles, the bin's
-//! `--explain` and the README all speak from), and the S/D-reuse fold
-//! that maps the testkit's conformance failures into clause entries.
+//! `--explain` and the README all speak from), the S/D-reuse fold that
+//! maps the testkit's conformance failures into clause entries, and the
+//! two assert helpers first-party certify cells hold reports to.
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -31,7 +32,7 @@ pub(crate) fn timed_out() -> String {
 /// self-contained definition (rendered by the bin's `--explain`). End
 /// users never see this repository's specs, so a bare `FAIL P3` is
 /// unactionable — the title makes the line readable and the definition
-/// makes it fixable (D-040-5).
+/// makes it fixable.
 #[derive(Debug, Clone, Copy)]
 pub struct Clause {
     /// The contract id, e.g. `"P3"`.
@@ -419,9 +420,8 @@ impl Report {
     /// The S/D-reuse fold: map one conformance-suite run into clause
     /// entries. [`Concluded`] is the suite's own record of which clauses'
     /// checks ran to a verdict; a pass is minted ONLY from its silence
-    /// (the 042 docket's absorb hardening — silence alone used to
-    /// read as a pass, so a suite dying mid-run certified its
-    /// unreached tail).
+    /// (silence alone would read a suite dying mid-run as certifying
+    /// its unreached tail).
     ///
     /// Every clause in `asserted` gets a verdict — each failure naming
     /// it becomes a `Fail` at that clause's position; each skip naming
@@ -490,35 +490,19 @@ pub(crate) fn never_reached() -> String {
         .to_string()
 }
 
-/// Assert-style certification verdict for first-party cells (round-3
-/// fix — the five connector certify cells asserted through hand-copied
-/// scaffolding, and a cell whose hand list lagged a vocabulary growth
-/// kept passing while silently not asserting the new clauses): every
-/// clause in `expected` has an entry, and EVERY entry is `Pass`.
-/// Panics with the rendered report otherwise. The no-skips face of
-/// [`assert_certified_all_pass_with_named_skips`] — one walk, two
-/// names, so the two contracts cannot drift apart.
-pub fn assert_certified_all_pass(report: &Report, expected: &[&str]) {
-    assert_certified_all_pass_with_named_skips(report, expected, &[]);
-}
-
-/// [`assert_certified_all_pass`] with a named honest-skip allowance
-/// (round-8 fix — the D8 merge-false cells hand-rolled this walk in
-/// two suites, each carrying its own copy of the skip's reason
-/// spelling): every clause in `expected` and `skips` has an entry,
-/// every `(clause, reason)` in `skips` came out `Skip` carrying
-/// EXACTLY that reason — never `Pass`, which would mint a verdict for
-/// a clause that never ran — and every other entry is `Pass`. Panics
+/// The assert-style certification verdict for first-party cells, so no
+/// cell asserts through hand-copied scaffolding whose list can lag a
+/// vocabulary growth: every clause in `expected` and `allowed_skips`
+/// has an entry, every `(clause, reason)` in `allowed_skips` came out
+/// `Skip` carrying EXACTLY that reason — never `Pass`, which would mint
+/// a verdict for a clause that never ran — and every other entry is
+/// `Pass`. An empty `allowed_skips` is the strict all-Pass form. Panics
 /// with the rendered report otherwise.
-pub fn assert_certified_all_pass_with_named_skips(
-    report: &Report,
-    expected: &[&str],
-    skips: &[(&str, &str)],
-) {
+pub fn assert_all_pass(report: &Report, expected: &[&str], allowed_skips: &[(&str, &str)]) {
     let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
     for clause in expected
         .iter()
-        .chain(skips.iter().map(|(clause, _)| clause))
+        .chain(allowed_skips.iter().map(|(clause, _)| clause))
     {
         assert!(
             clauses.contains(clause),
@@ -526,7 +510,10 @@ pub fn assert_certified_all_pass_with_named_skips(
         );
     }
     for entry in &report.entries {
-        match skips.iter().find(|(clause, _)| *clause == entry.clause) {
+        match allowed_skips
+            .iter()
+            .find(|(clause, _)| *clause == entry.clause)
+        {
             Some((clause, reason)) => match &entry.verdict {
                 Verdict::Skip(actual) => assert_eq!(
                     actual, reason,
@@ -550,9 +537,8 @@ pub fn assert_certified_all_pass_with_named_skips(
 }
 
 /// Render a borrowed entry slice the way a report renders. Built ONLY
-/// on the panic paths (round-10 fix — the assert helpers cloned the
-/// whole entry list up front to have a rendering ready, paying the
-/// allocation on the all-pass path every gate run takes).
+/// on the panic paths, so the all-pass path every gate run takes pays
+/// no allocation for a rendering it never shows.
 fn render_entries(entries: &[Entry]) -> String {
     Report {
         entries: entries.to_vec(),
@@ -562,8 +548,30 @@ fn render_entries(entries: &[Entry]) -> String {
 
 /// The kill matrices' stronger shape: the clause sequence is EXACTLY
 /// `expected`, in order (the K-vocabulary is fixed), and every entry is
-/// `Pass`. Panics with the rendered entries otherwise.
-pub fn assert_all_pass_in_order(entries: &[Entry], expected: &[&str]) {
+/// `Pass` — a Skip never passes. On a live kill matrix a Skip means the
+/// FIXTURE failed the cell (the stream was swallowed whole before the
+/// kill, or a container never came up), not that the connector did, so
+/// a Skip panics FIRST and separately from a genuine clause failure,
+/// naming `fixture_advice` when the cell supplies one. Panics with the
+/// rendered entries otherwise.
+#[track_caller]
+pub fn assert_in_order(entries: &[Entry], expected: &[&str], fixture_advice: Option<&str>) {
+    for entry in entries {
+        if let Verdict::Skip(why) = &entry.verdict {
+            match fixture_advice {
+                Some(advice) => panic!(
+                    "{} skipped — {advice}: {why}\n{}",
+                    entry.clause,
+                    render_entries(entries)
+                ),
+                None => panic!(
+                    "{} skipped — every arm must Pass: {why}\n{}",
+                    entry.clause,
+                    render_entries(entries)
+                ),
+            }
+        }
+    }
     let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
     assert_eq!(
         clauses, expected,
@@ -577,31 +585,6 @@ pub fn assert_all_pass_in_order(entries: &[Entry], expected: &[&str]) {
     }
 }
 
-/// The Skip-diagnosing variant of [`assert_all_pass_in_order`] (round-4
-/// fix — three kill cells carried verbatim copies): on the live kill
-/// matrices a Skip means the FIXTURE failed the cell (the stream was
-/// swallowed whole before the kill, or the container never came up in
-/// a gated arm that must run), not that the connector did — so a Skip
-/// panics FIRST, naming the cell's own `fixture_advice`, separately
-/// from a genuine clause failure.
-#[track_caller]
-pub fn assert_all_pass_in_order_with_skip_advice(
-    entries: &[Entry],
-    expected: &[&str],
-    fixture_advice: &str,
-) {
-    for entry in entries {
-        if let Verdict::Skip(why) = &entry.verdict {
-            panic!(
-                "{} skipped — {fixture_advice}: {why}\n{}",
-                entry.clause,
-                render_entries(entries)
-            );
-        }
-    }
-    assert_all_pass_in_order(entries, expected);
-}
-
 #[cfg(test)]
 mod tests {
     //! `absorb` and the timeout spelling are `pub(crate)`, so their pins
@@ -609,6 +592,7 @@ mod tests {
     //! are pinned by the integration cases.
 
     use super::*;
+    use crate::clause::{d, k, p, s};
 
     fn failure(clause: &'static str, message: &str) -> Failure {
         Failure {
@@ -713,8 +697,8 @@ mod tests {
         assert!(report.passed(), "a skip is not a failure");
     }
 
-    /// THE ABSORB HARDENING's red pin (042 docket: silence used to
-    /// read as a pass): a suite that dies half-way reports a failure
+    /// THE ABSORB HARDENING's red pin (silence must not read as a
+    /// pass): a suite that dies half-way reports a failure
     /// for the clause it died under and NOTHING for the rest — no
     /// skip tail, no conclusions. The unmentioned, unconcluded tail
     /// must render NOT-REACHED with the fold's own evidence, and the
@@ -782,22 +766,22 @@ mod tests {
         );
     }
 
-    /// The named-skip helper's teeth: the named clause must be a
-    /// `Skip` with EXACTLY the named reason — a `Pass` there (a
-    /// verdict minted for a clause that never ran) and a drifted
-    /// reason both refuse.
+    /// The skip allowance's teeth: the allowed clause must be a `Skip`
+    /// with EXACTLY the allowed reason — a `Pass` there (a verdict
+    /// minted for a clause that never ran) and a drifted reason both
+    /// refuse.
     #[test]
-    fn the_named_skip_helper_demands_the_skip_and_its_exact_reason() {
+    fn the_skip_allowance_demands_the_skip_and_its_exact_reason() {
         let mut honest = Report::default();
         honest.pass("D1");
         honest.skip("D8", "not exercised".into());
-        assert_certified_all_pass_with_named_skips(&honest, &["D1"], &[("D8", "not exercised")]);
+        assert_all_pass(&honest, &["D1"], &[("D8", "not exercised")]);
 
         let mut minted = Report::default();
         minted.pass("D1");
         minted.pass("D8");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_certified_all_pass_with_named_skips(&minted, &["D1"], &[("D8", "not exercised")])
+            assert_all_pass(&minted, &["D1"], &[("D8", "not exercised")])
         }));
         assert!(
             outcome.is_err(),
@@ -808,11 +792,7 @@ mod tests {
         drifted.pass("D1");
         drifted.skip("D8", "some other spelling".into());
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_certified_all_pass_with_named_skips(
-                &drifted,
-                &["D1"],
-                &[("D8", "not exercised")],
-            )
+            assert_all_pass(&drifted, &["D1"], &[("D8", "not exercised")])
         }));
         assert!(outcome.is_err(), "a drifted skip reason must refuse");
     }
@@ -933,14 +913,11 @@ mod tests {
     fn every_two_direction_freeze_rule_is_certified_on_both_sides() {
         use std::collections::BTreeSet;
 
-        let read_direction: BTreeSet<&str> = crate::wire::SOURCE_WIRE_CLAUSES
+        let read_direction: BTreeSet<&str> = p::SOURCE_WIRE.into_iter().chain(s::CLAUSES).collect();
+        let write_direction: BTreeSet<&str> = p::DEST_WIRE
             .into_iter()
-            .chain(crate::source::SOURCE_CLAUSES)
-            .collect();
-        let write_direction: BTreeSet<&str> = crate::wire::DEST_WIRE_CLAUSES
-            .into_iter()
-            .chain(crate::destination::SESSION_CLAUSES)
-            .chain(crate::destination::DEST_CLAUSES)
+            .chain(p::SESSION)
+            .chain(d::CLAUSES)
             .collect();
 
         for rule in TWO_DIRECTION_FREEZE_RULES {
@@ -973,14 +950,14 @@ mod tests {
         use std::collections::BTreeSet;
 
         let mut emittable: BTreeSet<&str> = BTreeSet::new();
-        emittable.extend(crate::target::GENERIC_CLAUSES);
-        emittable.extend(crate::wire::SOURCE_WIRE_CLAUSES);
-        emittable.extend(crate::wire::DEST_WIRE_CLAUSES);
-        emittable.extend(crate::source::SOURCE_CLAUSES);
-        emittable.extend(crate::destination::DEST_CLAUSES);
-        emittable.extend(crate::destination::SESSION_CLAUSES);
-        emittable.extend(crate::kill::SOURCE_KILL_CLAUSES);
-        emittable.extend(crate::kill::DEST_KILL_CLAUSES);
+        emittable.extend(p::GENERIC);
+        emittable.extend(p::SOURCE_WIRE);
+        emittable.extend(p::DEST_WIRE);
+        emittable.extend(s::CLAUSES);
+        emittable.extend(d::CLAUSES);
+        emittable.extend(p::SESSION);
+        emittable.extend(k::SOURCE);
+        emittable.extend(k::DESTINATION);
 
         let table: BTreeSet<&str> = CLAUSES.iter().map(|clause| clause.id).collect();
         assert_eq!(

@@ -5,10 +5,9 @@
 //! and the testkit's S-clauses reused against the managed adapter. A
 //! conformant connector comes out all-Pass — P5 vacuously so here (the
 //! reference source serves raw_json frames, never arrow), which is the
-//! clause's recorded posture for JSON-native sources. This is
-//! D-044-3's in-gate certifier exercise: the certification stack keeps
-//! facing a REAL spawned connector after the seven first-party
-//! connectors move out.
+//! clause's recorded posture for JSON-native sources. This is the
+//! in-gate certifier exercise: the certification stack keeps facing a
+//! REAL spawned connector with the first-party connectors out of tree.
 //!
 //! Certification runs TWICE in a row against the same target and the
 //! same fixture file — the certification bar's repeated element (no
@@ -20,11 +19,11 @@
 //! by design — the resume conformance S1/S2 certify — so it can never
 //! mint the S2 skip. The fold itself (unacknowledged → FAIL naming the
 //! flag, wrong name inert, acknowledged → honest Skip) stays pinned
-//! in-process at `src/source.rs`'s own tests.
+//! in-process at `clause::s`'s own tests.
 
-use rdlt_certify::{
-    SOURCE_DUAL_ROLE_SKIP, Target, assert_certified_all_pass_with_named_skips, certify_source,
-};
+use rdlt_certify::clause::{p, s};
+use rdlt_certify::report;
+use rdlt_certify::target::Target;
 use serde_json::json;
 
 use super::support::bins::built_bin;
@@ -44,12 +43,12 @@ async fn the_reference_source_certifies_all_pass() {
     let config = json!({ "path": file });
 
     for _attempt in 1..=2 {
-        let report = certify_source(&Target::resolve_path(bin.clone(), config.clone()), &[]).await;
+        let report = s::certify(&Target::resolve_path(bin.clone(), config.clone()), &[]).await;
 
-        assert_certified_all_pass_with_named_skips(
+        report::assert_all_pass(
             &report,
             &["S1", "S2", "S4", "P1", "P2", "P3", "P4", "P5", "P6", "P7"],
-            &[("P13", SOURCE_DUAL_ROLE_SKIP)],
+            &[("P13", p::SOURCE_DUAL_ROLE_SKIP)],
         );
     }
 }

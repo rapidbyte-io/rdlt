@@ -1,10 +1,9 @@
-//! The spawned connector bin's shared contract pins (round-4 fix —
-//! five connector suites carried verbatim copies of the argument and
-//! version arms, and near-copies of the Spec-RPC identity arm; a
-//! contract change had to land five times or one crate's smoke drifted
-//! from the others'). This crate is the natural home: every spawn
-//! suite already depends on it for the certification cells, and the
-//! Spec arm needs the provider this crate already carries.
+//! The spawned connector bin's shared contract pins, held ONCE here
+//! rather than copied into every connector's smoke suite (a contract
+//! change would otherwise land N times or one crate's smoke would
+//! drift from the others'). This crate is the natural home: every
+//! spawn suite already depends on it for the certification cells, and
+//! the Spec arm needs the provider this crate already carries.
 //!
 //! Two helpers, deliberately split rather than bundled: the argument
 //! contract is std-only and runs on ANY machine, while the Spec RPC

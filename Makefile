@@ -208,11 +208,10 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-b
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins -E 'test(test_kill_matrix)'
 # The CLI suite additionally enables `bin`: it spawns the certifier
 # bin itself (cargo builds it for `CARGO_BIN_EXE_`), pinning the
-# stdout/stderr/exit-code contract end to end.
-# `probe_stdout` names the bin's own unit pins (047 L6: the probe
-# stdout byte cap) — they live INSIDE the bin target, which only this
-# line's `bin` feature ever compiles, so they run here or nowhere.
-RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli) + test(probe_stdout)'
+# stdout/stderr/exit-code contract end to end. (The shell probe's own
+# unit pins live in the LIBRARY — `probe::tests` — so the bare
+# workspace line already runs them.)
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-bins,bin -E 'test(test_cli)'
 # The Python proof connector (040): ZERO Rust — the SAME certifier
 # bin, the SAME clause vocabulary, against a pure-Python jsonl source
 # over the real wire. One compound block so the skip guard covers all

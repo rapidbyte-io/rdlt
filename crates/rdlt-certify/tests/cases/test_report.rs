@@ -5,13 +5,13 @@
 //! `SKIP K-D4 (<title>): <why>` / `NOT-REACHED D4 (<title>): <why>`
 //! are the certifier bin's stdout lines, pinned full-string here.
 //! Every clause id carries its fixed short title from the one
-//! vocabulary table (D-040-5: end users never see specs/, so a bare
-//! `FAIL P3` would be unactionable); an id outside the table renders
+//! vocabulary table (end users never see specs, so a bare `FAIL P3`
+//! would be unactionable); an id outside the table renders
 //! bare rather than inventing a title. (`absorb`'s S/D-reuse fold is
 //! `pub(crate)` and pinned by the unit tests beside it in
 //! `src/report.rs`.)
 
-use rdlt_certify::{CLAUSES, Entry, Report, Verdict, clause_title};
+use rdlt_certify::report::{CLAUSES, Entry, Report, Verdict, clause_title};
 
 /// A report is certified when nothing FAILED — skips are honest
 /// non-verdicts (a clause the session could not exercise), not failures.

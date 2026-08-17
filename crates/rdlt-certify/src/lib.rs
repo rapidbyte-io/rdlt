@@ -1,38 +1,32 @@
-//! # rdlt-certify — the standalone connector certifier (ADR 0001 D8)
+//! # rdlt-certify — the wire-side connector certifier
 //!
-//! "Certified = passes conformance", for OUT-OF-PROCESS connectors: the
-//! testkit's clause suites certify an SPI object in-process; this crate
-//! spawns a connector BINARY, drives it over the wire through
-//! [`rdlt_runtime`]'s provider, and folds the same S/D clauses plus the
-//! protocol-level P clauses into one [`Report`] whose render spellings
-//! are the certifier CLI's stdout contract.
+//! "Certified = passes conformance", for OUT-OF-PROCESS connectors:
+//! the testkit's clause suites certify an SPI object in-process; this
+//! crate spawns a connector BINARY, drives it over the wire, and
+//! certifies it clause by clause into one [`report::Report`] whose
+//! render spellings are the certifier CLI's stdout contract. It
+//! re-derives no in-process suite (the S and D families reuse the
+//! testkit's against the managed adapters), owns every protocol (P)
+//! and kill (K) probe, and its every clause is timeout-bounded — a
+//! connector that stalls FAILS the clause, the certifier never hangs;
+//! failures are actionable (`FAIL P1 (<title>): <why>`); reports name
+//! clauses, never config bytes.
 //!
-//! The certification bar: every clause is timeout-bounded — a connector
-//! that stalls FAILS the clause, the certifier never hangs; failures are
-//! actionable (`FAIL P1 (<title>): <why>`); reports name clauses, never
-//! config bytes.
-//!
-//! The modules are private and the surface below is the one canonical
-//! path to every name.
+//! The modules are the map: [`clause`] holds the four clause families
+//! (`s`, `d`, `p`, `k`) over the substrate — [`report`] the vocabulary
+//! and renders, [`target`] what a session points at and how it spawns,
+//! `wire` the raw-frame probe below the client adapters, `clock` the
+//! probe-time-excluded clause budget — with [`probe`] the shell-line
+//! table probe the CLI offers and [`contract`] the pins every served
+//! connector bin answers to. Every name is reached by its module path;
+//! nothing is re-exported at the root.
 
-mod clock;
-mod contract;
-mod destination;
-mod kill;
-mod report;
+pub mod clause;
+pub(crate) mod clock;
+pub mod contract;
+pub mod probe;
+pub mod report;
 #[cfg(test)]
 mod rogue;
-mod source;
-mod target;
-mod wire;
-
-pub use contract::{assert_bin_arg_contract, assert_spec_identity};
-pub use destination::{NO_MERGE_SKIP, certify_destination};
-pub use kill::{kill_matrix_destination, kill_matrix_source};
-pub use report::{
-    CLAUSES, Clause, Entry, Report, Verdict, assert_all_pass_in_order,
-    assert_all_pass_in_order_with_skip_advice, assert_certified_all_pass,
-    assert_certified_all_pass_with_named_skips, clause_title,
-};
-pub use source::{SOURCE_CLAUSES, certify_source};
-pub use target::{DESTINATION_DUAL_ROLE_SKIP, SOURCE_DUAL_ROLE_SKIP, Target};
+pub mod target;
+pub(crate) mod wire;

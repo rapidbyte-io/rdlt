@@ -9,23 +9,25 @@
 //! WRONG directory must FAIL the convergence assert (the count judgment
 //! is live, not decorative), and a probe-less run must Skip every
 //! destination K-clause with the `NO_PROBE_SKIP` reason the matrix
-//! shares with `certify_destination` (`src/destination.rs`) — never
+//! shares with `clause::d::certify` — never
 //! silently narrow, never vacuously pass. The kill itself is proven
 //! able to fail by K-D6's no-op arm: a kill that duplicated rows would
 //! break its exact-count assert.
 
 use std::path::Path;
 
-use rdlt_certify::{Entry, Target, Verdict, kill_matrix_destination, kill_matrix_source};
+use rdlt_certify::clause::k;
+use rdlt_certify::report::{Entry, Verdict};
+use rdlt_certify::target::Target;
 use serde_json::json;
 
 use super::support::bins::built_bin;
 use super::support::probe::JsonlDirProbe;
 
 /// The skip reason a probe-less run stamps on every destination
-/// K-clause — `src/destination.rs`'s `NO_PROBE_SKIP` spelling,
-/// byte-identical (that const is `pub(crate)`, so this pin restates it
-/// from outside).
+/// K-clause — `clause::d::NO_PROBE_SKIP`'s spelling, restated here
+/// byte-identical so the frozen text is pinned from outside the
+/// crate.
 const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
      (the library API takes a TableProbe directly). Single-writer stores (duckdb) refuse \
      every open beside the live connector, a read-only one included — probe a COPY: copy \
@@ -79,7 +81,7 @@ async fn the_source_kill_matrix_passes_at_every_boundary() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixture = write_source_fixture(dir.path());
 
-    let entries = kill_matrix_source(&source_target(&fixture)).await;
+    let entries = k::source(&source_target(&fixture)).await;
 
     let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
     assert_eq!(
@@ -108,7 +110,7 @@ async fn the_destination_kill_matrix_passes_at_every_boundary() {
         root: out.path().to_path_buf(),
     };
 
-    let entries = kill_matrix_destination(&dest_target(out.path()), Some(&probe)).await;
+    let entries = k::destination(&dest_target(out.path()), Some(&probe)).await;
 
     let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
     assert_eq!(
@@ -132,7 +134,7 @@ async fn the_destination_kill_matrix_passes_at_every_boundary() {
 async fn a_probe_less_destination_matrix_skips_with_the_reason() {
     let out = tempfile::tempdir().expect("tempdir");
 
-    let entries = kill_matrix_destination(&dest_target(out.path()), None).await;
+    let entries = k::destination(&dest_target(out.path()), None).await;
 
     let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
     assert_eq!(clauses, ["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"]);
@@ -150,8 +152,8 @@ async fn a_probe_less_destination_matrix_skips_with_the_reason() {
 /// THE VACUITY ARM: a probe rooted at the WRONG directory sees zero
 /// rows, so every convergence assert must FAIL — proof the count
 /// judgment can fail at all. K-D4's evidence is pinned by both ends
-/// (round-13: the arm table carries the invocation's entropy suffix,
-/// so the middle is no longer a constant); the matrix ran against a
+/// (the arm table carries the invocation's entropy suffix, so the
+/// middle is not a constant); the matrix ran against a
 /// real target whose re-runs genuinely landed rows, so a Pass here
 /// could only mean the assert never looked.
 #[tokio::test]
@@ -162,7 +164,7 @@ async fn a_wrong_probe_fails_every_convergence_assert() {
         root: elsewhere.path().to_path_buf(),
     };
 
-    let entries = kill_matrix_destination(&dest_target(out.path()), Some(&wrong)).await;
+    let entries = k::destination(&dest_target(out.path()), Some(&wrong)).await;
 
     for entry in &entries {
         assert!(

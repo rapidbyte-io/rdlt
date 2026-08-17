@@ -9,10 +9,9 @@
 //! unexercisable D-clauses come out Skip-with-reason, never Pass and
 //! never Fail.
 
-use rdlt_certify::{
-    DESTINATION_DUAL_ROLE_SKIP, NO_MERGE_SKIP, Target, Verdict,
-    assert_certified_all_pass_with_named_skips, certify_destination,
-};
+use rdlt_certify::clause::{d, p};
+use rdlt_certify::report::{self, Verdict};
+use rdlt_certify::target::Target;
 use serde_json::json;
 
 use super::support::bins::built_bin;
@@ -41,15 +40,18 @@ async fn the_reference_destination_certifies_clean_with_a_probe() {
         root: out.path().to_path_buf(),
     };
 
-    let report = certify_destination(&reference_target(out.path()), Some(&probe)).await;
+    let report = d::certify(&reference_target(out.path()), Some(&probe)).await;
 
-    assert_certified_all_pass_with_named_skips(
+    report::assert_all_pass(
         &report,
         &[
             "D1", "D2", "D3", "D4", "D5", "D6", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10",
             "P11", "P12",
         ],
-        &[("D8", NO_MERGE_SKIP), ("P13", DESTINATION_DUAL_ROLE_SKIP)],
+        &[
+            ("D8", d::NO_MERGE_SKIP),
+            ("P13", p::DESTINATION_DUAL_ROLE_SKIP),
+        ],
     );
 }
 
@@ -60,7 +62,7 @@ async fn the_reference_destination_certifies_clean_with_a_probe() {
 async fn a_probe_less_run_skips_the_read_back_clauses_with_the_reason() {
     let out = tempfile::tempdir().expect("tempdir");
 
-    let report = certify_destination(&reference_target(out.path()), None).await;
+    let report = d::certify(&reference_target(out.path()), None).await;
 
     for clause in ["D1", "D2", "D3", "D4", "D5", "D6", "D8"] {
         let entry = report
@@ -95,7 +97,7 @@ async fn a_probe_less_run_skips_the_read_back_clauses_with_the_reason() {
         .find(|entry| entry.clause == "P13")
         .expect("clause P13 has an entry");
     match &p13.verdict {
-        Verdict::Skip(reason) => assert_eq!(reason, DESTINATION_DUAL_ROLE_SKIP),
+        Verdict::Skip(reason) => assert_eq!(reason, p::DESTINATION_DUAL_ROLE_SKIP),
         other => panic!("a dual-role connector's P13 must skip, not {other:?}"),
     }
     assert!(

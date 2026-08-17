@@ -1,16 +1,14 @@
-//! The clause budget with the PROBE CLOCK STOPPED (round-5 fix).
+//! The clause budget with the PROBE CLOCK STOPPED.
 //!
-//! One 30s clause budget used to span whole suite phases INCLUDING up
-//! to four `--probe-cmd` invocations that are each individually
-//! budgeted 20s — arithmetic that could not hold: probe latency well
-//! inside its own documented budget exhausted the suite budget and
-//! failed every clause with the timeout spelling blaming the
-//! CONNECTOR. The fix is structural: the probe the certifier passes is
-//! wrapped to meter the wall time its counts spend (in-flight time
-//! included), and the deadline extends by exactly that meter — the
-//! clause budget then bounds SPI traffic alone, while each probe count
-//! keeps its own [`PROBE_TIMEOUT`-style] bound and fails naming
-//! ITSELF.
+//! One 30s clause budget spanning a whole suite phase INCLUDING up to
+//! four table-probe counts that are each individually budgeted 20s is
+//! arithmetic that cannot hold: probe latency well inside its own
+//! budget would exhaust the suite budget and fail every clause with
+//! the timeout spelling blaming the CONNECTOR. So the probe the
+//! certifier passes is wrapped to meter the wall time its counts spend
+//! (in-flight time included), and the deadline extends by exactly that
+//! meter — the clause budget then bounds SPI traffic alone, while each
+//! probe count keeps its own bound and fails naming ITSELF.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,13 +18,12 @@ use rdlt_connector::core::id::TableName;
 use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 
 /// The shared meter: closed probe windows plus the start of the window
-/// currently open. Overlap-safe (round-8 fix — a single in-flight slot
-/// let a second concurrent count overwrite the first's start, and the
-/// first exit then consumed the later stamp while the second exit
-/// found nothing: real probe time dropped from the meter): counts are
-/// metered as a UNION WINDOW — the first count entering stamps the
-/// window's start, each exit decrements, and only the LAST exit closes
-/// the window into `accumulated`.
+/// currently open. Overlap-safe: counts are metered as a UNION WINDOW
+/// — the first count entering stamps the window's start, each exit
+/// decrements, and only the LAST exit closes the window into
+/// `accumulated` (a single in-flight slot would let a second
+/// concurrent count overwrite the first's start and drop real probe
+/// time from the meter).
 #[derive(Default)]
 struct ClockState {
     accumulated: Duration,
@@ -53,13 +50,12 @@ impl ProbeClock {
 
     /// A count is starting: open the union window if this is the first
     /// count in flight. The returned guard closes it on Drop — RAII,
-    /// not a paired exit call, deliberately (round-10 fix): a count
-    /// future dropped mid-flight (an outer select or timeout) would
-    /// skip any paired exit, leaving the window open forever, the
-    /// allowance growing with wall clock, and the deadline the clock
-    /// feeds extending indefinitely — the module's own no-hang
-    /// guarantee defeated by convention where construction closes the
-    /// class.
+    /// not a paired exit call, deliberately: a count future dropped
+    /// mid-flight (an outer select or timeout) would skip any paired
+    /// exit, leaving the window open forever, the allowance growing
+    /// with wall clock, and the deadline the clock feeds extending
+    /// indefinitely — the module's own no-hang guarantee defeated by
+    /// convention where construction closes the class.
     fn enter(&self) -> WindowGuard {
         let mut state = self.0.lock().expect("probe clock lock");
         if state.active_counts == 0 {
@@ -88,7 +84,7 @@ impl Drop for WindowGuard {
 }
 
 /// The certifier's own bound on ONE probe count — what keeps the
-/// stop-clock from deleting the no-hang guarantee (round-6 fix): the
+/// stop-clock from deleting the no-hang guarantee: the
 /// clause clock stops while a count runs, so without this bound a
 /// never-returning probe would hang certification forever. Every probe
 /// the certifier drives — library-supplied and first-party alike — is
@@ -220,7 +216,7 @@ mod tests {
         assert_eq!(outcome.expect("probe time is excluded"), "done");
     }
 
-    /// The no-hang bound restored (round-6 fix): a NEVER-returning
+    /// The no-hang bound: a NEVER-returning
     /// probe fails its count within [`PROBE_BOUND`]'s stand-in — the
     /// clause proceeds with a probe failure naming the probe, and the
     /// whole run stays bounded instead of hanging on a stopped clock.
@@ -252,10 +248,10 @@ mod tests {
         );
     }
 
-    /// Overlapping counts credit the UNION window (round-8 fix): count
-    /// A runs 0s→9s, count B 3s→12s, so the union is the full 12s. The
-    /// old single in-flight slot let B's enter overwrite A's start and
-    /// A's exit consume the later stamp — crediting a 6s fragment and
+    /// Overlapping counts credit the UNION window: count A runs
+    /// 0s→9s, count B 3s→12s, so the union is the full 12s. A single
+    /// in-flight slot would let B's enter overwrite A's start and A's
+    /// exit consume the later stamp — crediting a 6s fragment and
     /// spending 6s of real probe time from the clause budget.
     #[tokio::test(start_paused = true)]
     async fn overlapping_counts_credit_the_union_window() {
@@ -276,7 +272,7 @@ mod tests {
         );
     }
 
-    /// Cancel-safety (round-10 fix): a count future dropped MID-FLIGHT
+    /// Cancel-safety: a count future dropped MID-FLIGHT
     /// still closes its window — the RAII guard's Drop is the exit, so
     /// the clock stays consistent and the allowance stops growing at
     /// the cancellation instant instead of tracking wall clock

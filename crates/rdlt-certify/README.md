@@ -89,7 +89,7 @@ the clause under evaluation. Without `--probe-cmd` the read-back
 clauses render Skip with the reason. The flag is destination-only:
 combining it with `--role source` is a usage error, and a template
 without the `{{table}}` placeholder is refused at argument time. The
-library API (`certify_destination`, `kill_matrix_destination`) takes a
+library API (`clause::d::certify`, `clause::k::destination`) takes a
 `TableProbe` directly.
 
 **Single-writer stores need a copy-then-count probe.** A store that

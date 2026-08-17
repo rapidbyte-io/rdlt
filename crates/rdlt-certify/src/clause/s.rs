@@ -1,88 +1,70 @@
 //! Source certification: spawn the target's binary and certify it over
-//! the wire — the role-generic protocol clauses (P1 handshake-line
-//! discipline, P2 typed config refusal, P4 pre-handshake Spec, P13 the
-//! unserved role's refusal — the probes live in [`crate::target`]),
-//! the wire clauses judged on raw frames below the adapters (P3
-//! identity/skew, P7 the v0 state-format map, P5 one-batch, P6
-//! error-frame shape — [`crate::wire`]), plus the testkit's source
-//! conformance clauses (S1/S2/S4) reused against the managed adapter.
+//! the wire — the protocol clauses a source faces (P1/P13 self-probed,
+//! P2/P4 through the provider, P3/P7/P5/P6 on raw frames — all judged
+//! in [`crate::clause::p`]) plus the testkit's source conformance
+//! clauses S1/S2/S4 reused against the managed adapter, folded here.
 //!
-//! Every clause rides under [`CLAUSE_TIMEOUT`] — a stalling connector
-//! FAILS the clause, the certifier never hangs — and no failure message
-//! ever carries config bytes.
+//! Every clause rides under the 30 s clause timeout — a stalling
+//! connector FAILS the clause, the certifier never hangs — and no
+//! failure message ever carries config bytes.
 
 use rdlt_connector_client::handshake::Role;
 use rdlt_runtime::local::Local;
 use rdlt_runtime::provider::Provider;
 use rdlt_testkit::conformance::{Failure, Skip, source};
 
-use crate::report::{CLAUSE_TIMEOUT, Concluded, Report, timed_out};
-use crate::target::{
-    GENERIC_CLAUSES, SELF_PROBED_CLAUSES, Target, fetch_spec, probe_handshake_line, report_p2,
-    report_p4, report_role_refusal, resolved_requirement,
-};
-use crate::wire;
+use crate::clause::p;
+use crate::report::{self, Report};
+use crate::target::{self, Target};
 
 /// The S-clauses the reused testkit suite asserts — its module doc's
-/// exact set. Public (re-exported at the crate root) because the
-/// certifier CLI's skip-acknowledgment gate keys on exactly this set:
-/// a skip among these clauses refuses certification unless the
-/// operator acknowledges its stream by name.
-pub const SOURCE_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
+/// exact set. The skip-acknowledgment gate keys on exactly this set: a
+/// skip among these clauses refuses certification unless the operator
+/// acknowledges its stream by name.
+pub const CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 
 /// Certify `target` as a SOURCE connector. Never hangs and never
 /// panics on connector misbehavior: every clause's outcome — including
 /// "the binary is not a connector at all" — is a report entry.
 ///
 /// `accept_skips` is the snapshot-source acknowledgment, BY STREAM
-/// NAME and strict by default (round-4 put the guard HERE, not only in
-/// the CLI; round-12 made it name-scoped — a blanket acknowledgment
-/// accepted for one genuine snapshot stream also folded a REGRESSED
-/// co-stream green): an S-suite skip folds as a FAILURE naming its
-/// stream and the acknowledgment unless that stream is named in
-/// `accept_skips`, so a library caller gating on [`Report::passed`]
-/// refuses a source that never checkpoints exactly as the CLI does.
-/// `Report::passed` itself deliberately keeps treating `Skip` as
-/// passing — the destination's no-probe and no-merge skips are choices
-/// the operator already made.
-pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
+/// NAME and strict by default: an S-suite skip folds as a FAILURE
+/// naming its stream and the acknowledgment unless that stream is
+/// named in `accept_skips`, so a library caller gating on
+/// [`Report::passed`] refuses a source that never checkpoints exactly
+/// as the CLI does. A blanket acknowledgment would fold a REGRESSED
+/// co-stream green beside a genuine snapshot stream. `Report::passed`
+/// itself deliberately keeps treating `Skip` as passing — the
+/// destination's no-probe and no-merge skips are choices the operator
+/// already made.
+pub async fn certify(target: &Target, accept_skips: &[&str]) -> Report {
     let mut report = Report::default();
 
-    // P1 — the handshake-line discipline, probed on a direct spawn whose
-    // only purpose is P1; certification re-spawns cleanly afterward. The
-    // clause timeout rides INSIDE the probe so its reap runs even on a
-    // timeout (the P13 shape).
-    match probe_handshake_line(target, Role::Source, CLAUSE_TIMEOUT).await {
-        Ok(()) => report.pass("P1"),
-        Err(why) => report.fail("P1", why),
-    }
-
-    // P13 — the unserved role's refusal, probed on its own spawn of
-    // the OTHER role's flag (a dual-role connector earns the announced
-    // skip instead); like P1, its entry is written here, before any
-    // cascade point.
-    report_role_refusal(&mut report, target, Role::Source).await;
+    // P1 and P13 probe on their own spawns and write their entries
+    // here, before any cascade point.
+    p::report_p1(&mut report, target, Role::Source).await;
+    p::report_p13(&mut report, target, Role::Source).await;
 
     let provider = Local::new();
 
     // The Spec reply feeds P4 below — and, for a path-only target,
     // identity: the operator named a binary, not an id, so the id the
-    // wire handshake verifies strictly (D-039-2) is learned from the
-    // connector's own report.
-    let spec = fetch_spec(&provider, &target.requirement, Role::Source).await;
+    // wire handshake verifies strictly is learned from the connector's
+    // own report.
+    let spec = target::fetch_spec(&provider, &target.requirement, Role::Source).await;
 
     // Everything past the self-probed clauses (whose probes already
     // wrote their entries) runs over a verified handshake; without
     // one, every remaining clause fails with the one cause.
     let downstream = || {
-        GENERIC_CLAUSES
+        p::GENERIC
             .into_iter()
-            .filter(|clause| !SELF_PROBED_CLAUSES.contains(clause))
-            .chain(SOURCE_CLAUSES)
-            .chain(wire::SOURCE_WIRE_CLAUSES)
+            .filter(|clause| !p::SELF_PROBED.contains(clause))
+            .chain(CLAUSES)
+            .chain(p::SOURCE_WIRE)
     };
 
-    let requirement = match resolved_requirement(&target.requirement, &spec) {
+    let requirement = match target::resolved_requirement(&target.requirement, &spec) {
         Ok(requirement) => requirement,
         Err(why) => {
             for clause in downstream() {
@@ -95,7 +77,7 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     // The certification subject: one managed source, spawned honestly
     // through the provider (resolution is part of the bar).
     let managed = tokio::time::timeout(
-        CLAUSE_TIMEOUT,
+        report::CLAUSE_TIMEOUT,
         provider.source(&requirement, &target.config),
     )
     .await;
@@ -110,7 +92,7 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
         }
         Err(_elapsed) => {
             for clause in downstream() {
-                report.fail(clause, timed_out());
+                report.fail(clause, report::timed_out());
             }
             return report;
         }
@@ -119,48 +101,22 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     // P2 — typed config refusal, probed on its own spawn with a
     // one-unknown-field document.
     let bogus = serde_json::json!({ "__rdlt_certify_bogus__": true });
-    report_p2(
+    p::report_p2(
         &mut report,
-        tokio::time::timeout(CLAUSE_TIMEOUT, provider.source(&requirement, &bogus)).await,
+        tokio::time::timeout(
+            report::CLAUSE_TIMEOUT,
+            provider.source(&requirement, &bogus),
+        )
+        .await,
     );
 
     // P4 — the pre-handshake Spec: name/version non-empty and a JSON
     // -object config schema, answered with no config at all.
-    report_p4(&mut report, &spec);
+    p::report_p4(&mut report, &spec);
 
-    // The wire clauses — P3/P7 from one raw handshake, P5/P6 on
-    // observed frames — ride their OWN spawn: the kit watches actual
-    // frames BELOW the adapters (a misbehaving server must not hide
-    // behind our client's good manners), and the managed adapter's
-    // process has already spent its one handshake.
-    // The child parks in a shared slot so the timeout arm can claim
-    // and REAP it (the destination block's round-3 discipline; a
-    // timed-out future only drops, and kill_on_drop only SENDS the
-    // signal — the abandoned connector process must not outlive the
-    // certification that spawned it).
-    let slot = wire::ChildSlot::default();
-    match tokio::time::timeout(
-        CLAUSE_TIMEOUT,
-        wire::attach_for(&requirement, Role::Source, &target.config, &slot),
-    )
-    .await
-    {
-        Ok(Ok(mut probe)) => {
-            wire::certify_source_wire(&mut report, &mut probe, &requirement.id).await;
-            probe.kill().await;
-        }
-        Ok(Err(why)) => {
-            for clause in wire::SOURCE_WIRE_CLAUSES {
-                report.fail(clause, why.clone());
-            }
-        }
-        Err(_elapsed) => {
-            wire::reap_parked(&slot).await;
-            for clause in wire::SOURCE_WIRE_CLAUSES {
-                report.fail(clause, timed_out());
-            }
-        }
-    }
+    // The wire clauses P3/P7/P5/P6 on their OWN spawn, below the
+    // adapters.
+    p::wire_clauses(&mut report, &requirement, Role::Source, &target.config).await;
 
     // S-reuse — the testkit's source conformance suite, verbatim,
     // against the managed adapter: the wire is certified by the SAME
@@ -171,27 +127,25 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     // itself refuses (the S2 skip is reachable by DEFAULT-absent
     // cursor_field — a source that merely forgot checkpointing must
     // not certify).
-    match tokio::time::timeout(CLAUSE_TIMEOUT, source::verify(&managed)).await {
+    match tokio::time::timeout(report::CLAUSE_TIMEOUT, source::verify(&managed)).await {
         Ok(outcome) => {
-            // Both arms are EXPLICIT consumptions of the outcome
-            // (round-7: the fields went private so failures cannot be
-            // read past the skip guard): the acknowledgment takes the
-            // skips by name; strict promotes each through the
-            // testkit's one fold spelling plus the acknowledgment
-            // tail.
+            // Both arms are EXPLICIT consumptions of the outcome: the
+            // acknowledgment takes the skips by name; strict promotes
+            // each through the testkit's one fold spelling plus the
+            // acknowledgment tail.
             let (mut failures, skips, concluded) = outcome.tolerating_skips();
             let (promoted, acknowledged) = fold_acknowledged(skips, accept_skips);
             failures.extend(promoted);
             report.absorb(
                 failures,
                 acknowledged,
-                Concluded(&concluded),
-                &SOURCE_CLAUSES,
+                report::Concluded(&concluded),
+                &CLAUSES,
             )
         }
         Err(_elapsed) => {
-            for clause in SOURCE_CLAUSES {
-                report.fail(clause, timed_out());
+            for clause in CLAUSES {
+                report.fail(clause, report::timed_out());
             }
         }
     }
@@ -206,11 +160,9 @@ fn skip_stream(reason: &str) -> Option<&str> {
     reason.split('`').nth(1)
 }
 
-/// Fold the S-suite's skips through the NAME-scoped acknowledgment
-/// (round-12 — the acknowledgment was a blanket bool, so accepting a
-/// genuine snapshot stream also folded a REGRESSED co-stream green):
-/// a skip whose named stream is acknowledged stays an honest Skip;
-/// every other skip promotes to a failure naming its stream and the
+/// Fold the S-suite's skips through the NAME-scoped acknowledgment: a
+/// skip whose named stream is acknowledged stays an honest Skip; every
+/// other skip promotes to a failure naming its stream and the
 /// name-taking acknowledgment.
 fn fold_acknowledged(skips: Vec<Skip>, accept_skips: &[&str]) -> (Vec<Failure>, Vec<Skip>) {
     let (acknowledged, promoted): (Vec<_>, Vec<_>) = skips.into_iter().partition(|skip| {
@@ -235,11 +187,10 @@ fn fold_acknowledged(skips: Vec<Skip>, accept_skips: &[&str]) -> (Vec<Failure>, 
 
 #[cfg(test)]
 mod acknowledgment_tests {
-    //! The name-scoped gate, pinned pure (round-12 red pin): two
-    //! cursor-less streams, ONE acknowledged — the other must still
-    //! fail by name, because a blanket acknowledgment is exactly how a
-    //! regressed CDC stream certifies green beside a genuine snapshot
-    //! stream.
+    //! The name-scoped gate, pinned pure: two cursor-less streams, ONE
+    //! acknowledged — the other must still fail by name, because a
+    //! blanket acknowledgment is exactly how a regressed CDC stream
+    //! certifies green beside a genuine snapshot stream.
 
     use super::*;
 

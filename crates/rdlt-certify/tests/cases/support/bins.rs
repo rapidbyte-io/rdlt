@@ -1,6 +1,6 @@
 //! Locating (and optionally building) the real connector bin the
 //! certification cases spawn — a thin wrapper over the ONE spawn
-//! scaffold ([`rdlt_testkit::spawn`], 042 round-2 fix wave): the
+//! scaffold ([`rdlt_testkit::spawn`]): the
 //! mechanics — `CARGO_TARGET_DIR` resolution, the
 //! `RDLT_BUILD_CONNECTOR_BINS` guard, the stale-bin note, the loud
 //! missing-bin refusal — live there once for every spawn suite.

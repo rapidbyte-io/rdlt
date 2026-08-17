@@ -1,32 +1,29 @@
-//! The raw wire observation layer BELOW the adapters: the wire
-//! P-clauses — P3 (identity/skew), P5 (one-batch), P6 (error-frame
-//! shape), P7 (the v0 state-format map) — judged on the ACTUAL frames a
-//! served connector speaks, through a probe that deliberately bypasses
-//! the client adapters. The adapters' own good manners (identity
-//! verification at handshake, the one-batch refusal, classification
-//! mapping) would otherwise stand between the certifier and a
-//! misbehaving server — a clause that can only see what the adapter
-//! lets through certifies the adapter, not the connector.
+//! The raw wire substrate BELOW the client adapters, which the P and
+//! K families ride: a spawn-and-attach probe ([`WireProbe`]) whose
+//! every method is a bare RPC with NO verification layered on, so the
+//! clauses see the ACTUAL frames a served connector speaks — the
+//! adapters' own good manners (identity verification at handshake, the
+//! one-batch refusal, classification mapping) would otherwise stand
+//! between the certifier and a misbehaving server, and a clause that
+//! can only see what the adapter lets through certifies the adapter,
+//! not the connector.
 //!
-//! The same layer carries the write direction's raw session substrate
-//! ([`WireSession`]) — the P8/P9 probes in [`crate::destination`] ride
-//! it, opening sessions with bare `Open` frames on their own dials, and
-//! the P10 order-book probe drives the WHOLE session grammar through
-//! [`WireSession::request`]/[`WireSession::close_judged`]: one tagged
-//! reply per request frame, interleaved `part_closed` events skipped
-//! where they are legal, and a judged end where the reply stream must
-//! actually END after `closed`. The P11/P12 probes ride the same
-//! substrate: the two-batch `write` builder is P11's induced
-//! violation, and [`refusal_shape`] is the frame judgment P6 and P12
-//! share across the wire's two directions.
+//! The same layer carries the write direction's raw session substrate:
+//! [`WireSession`] opens with a bare `Open` frame on its own dial and
+//! drives the WHOLE session grammar through [`WireSession::request`]
+//! and [`WireSession::close_judged`] — one tagged reply per request
+//! frame, interleaved `part_closed` events skipped where they are
+//! legal, and a judged end where the reply stream must actually END
+//! after `closed` — plus the certifier-authored request frames and
+//! [`refusal_shape`], the error-frame judgment both wire directions
+//! share. No clause verdict is minted here; the families in
+//! [`crate::clause`] write every report entry.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use rdlt_connector::core::commit::WriteMode;
 use rdlt_connector::core::id::{LoadId, PipelineId};
-use rdlt_connector::source::StreamSpec;
-use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_client::handshake::{Requirement, Role};
 use rdlt_connector_client::wire::{
     DEFAULT_DEADLINE, connector_client, destination_client, dial, source_client,
@@ -44,29 +41,14 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 
-use crate::report::{CLAUSE_TIMEOUT, Report, timed_out};
-use crate::target::{LINE_TIMEOUT, MAX_LINE_BYTES, resolve_binary, role_arg};
+use crate::target;
 
-/// The wire clauses a SOURCE certification judges, in report order —
-/// also the cascade set when the probe cannot attach or handshake
-/// (nothing downstream of a dead handshake can be observed).
-pub(crate) const SOURCE_WIRE_CLAUSES: [&str; 4] = ["P3", "P7", "P5", "P6"];
-
-/// The DESTINATION's wire clauses: the handshake-borne pair alone —
-/// P5/P6 are read-direction clauses, and the write direction's own
-/// wire clauses (P8/P9/P10) are probed in [`crate::destination`].
-pub(crate) const DEST_WIRE_CLAUSES: [&str; 2] = ["P3", "P7"];
-
-/// The stream name P6 reads to induce a refusal: reserved by spelling —
-/// no real connector stream may collide with it.
-const P6_BOGUS_STREAM: &str = "__rdlt_certify_no_such_stream__";
-
-/// The four CLIENT renderings P6 refuses on the frame MESSAGE: a frame
-/// whose message begins with one of these has the classification
-/// rendered into text — the server put a client's framing on the wire,
-/// where the bare cause text belongs (classification travels as the
-/// enum; the receiving client renders the frame exactly once on
-/// reconstruction — the 026 double-frame class, kept dead).
+/// The four CLIENT renderings the refusal-shape judgment refuses on
+/// the frame MESSAGE: a frame whose message begins with one of these
+/// has the classification rendered into text — the server put a
+/// client's framing on the wire, where the bare cause text belongs
+/// (classification travels as the enum; the receiving client renders
+/// the frame exactly once on reconstruction).
 const CLIENT_RENDERINGS: [&str; 4] = [
     "transient source error: ",
     "fatal source error: ",
@@ -76,7 +58,7 @@ const CLIENT_RENDERINGS: [&str; 4] = [
 
 /// The proto's `expected_role` spelling for `role` — the bare wire
 /// words, as distinct from the bin contract's `--role=` argument
-/// ([`role_arg`]).
+/// ([`target::role_arg`]).
 fn wire_role(role: Role) -> &'static str {
     match role {
         Role::Source => "source",
@@ -130,15 +112,11 @@ impl RawFrame {
 /// frames is bounded by the same ceiling.
 pub(crate) const READ_RETENTION_CEILING: usize = MAX_FRAME_BYTES * 4;
 
-/// Keep P5 evidence useful without letting a fast rogue turn one
-/// bounded read probe into millions of retained report strings.
-const MAX_P5_VIOLATIONS: usize = 100;
-
 /// The frame census P5's evidence carries: what the read direction
 /// actually served, counted by kind — so a vacuous pass (no arrow
 /// frames at all) and a violation both say what was observed.
 #[derive(Default)]
-struct Census {
+pub(crate) struct Census {
     arrow: usize,
     raw_json: usize,
     checkpoint: usize,
@@ -148,7 +126,7 @@ struct Census {
 
 impl Census {
     /// Count one frame.
-    fn record(&mut self, frame: &RawFrame) {
+    pub(crate) fn record(&mut self, frame: &RawFrame) {
         match frame {
             RawFrame::Arrow(_) => self.arrow += 1,
             RawFrame::Json => self.raw_json += 1,
@@ -169,9 +147,9 @@ impl std::fmt::Display for Census {
     }
 }
 
-/// What a wire attach parks for whoever must clean up after it (round-3
-/// fix; the socket joined in round 4): the spawned child, and — once
-/// the handshake line names it — the advertised socket's path. The
+/// What a wire attach parks for whoever must clean up after it: the
+/// spawned child, and — once the handshake line names it — the
+/// advertised socket's path. The
 /// child lives HERE for the probe's WHOLE life, not in any future, so
 /// a caller that must abandon the attach (a timeout aborting the task)
 /// or the arm holding a live probe (a whole-arm clause timeout) can
@@ -253,10 +231,10 @@ pub(crate) async fn reap_parked(slot: &ChildSlot) {
 /// Spawn `bin` under `role` with the probes' shared stdio discipline
 /// (stdout piped and capped, stderr nulled, stdin nulled,
 /// `kill_on_drop` as the net under the slot), park the child in
-/// `slot`, and read the FIRST stdout line under [`MAX_LINE_BYTES`] and
-/// [`LINE_TIMEOUT`] — the one first-line funnel the wire attach and
-/// the P1 line probe both ride (round-12: P1 hand-rolled an identical
-/// copy, kill-and-reap included). Error paths REAP the parked child
+/// `slot`, and read the FIRST stdout line under
+/// [`target::MAX_LINE_BYTES`] and [`target::LINE_TIMEOUT`] — the one
+/// first-line funnel the wire attach and the P1 line probe both ride,
+/// kill-and-reap included. Error paths REAP the parked child
 /// before returning; the returned reader carries whatever stdout
 /// follows the line, for callers that keep listening.
 pub(crate) async fn spawn_and_read_line(
@@ -271,7 +249,7 @@ pub(crate) async fn spawn_and_read_line(
     String,
 > {
     let mut child = Command::new(bin)
-        .arg(role_arg(role))
+        .arg(target::role_arg(role))
         // stderr is nulled: the probes observe the machine channel and
         // the wire, not the connector's human log.
         .stdout(Stdio::piped())
@@ -289,15 +267,15 @@ pub(crate) async fn spawn_and_read_line(
         .expect("stdout was piped at spawn, so the child carries it");
     slot.lock().expect("child slot lock").child = Some(child);
 
-    let mut reader = BufReader::new(stdout.take(MAX_LINE_BYTES));
+    let mut reader = BufReader::new(stdout.take(target::MAX_LINE_BYTES));
     let mut line = String::new();
-    match tokio::time::timeout(LINE_TIMEOUT, reader.read_line(&mut line)).await {
+    match tokio::time::timeout(target::LINE_TIMEOUT, reader.read_line(&mut line)).await {
         Err(_elapsed) => {
             reap_parked(slot).await;
             Err(format!(
                 "wrote no handshake line within {}s — the first stdout line must be the \
                  handshake line",
-                LINE_TIMEOUT.as_secs()
+                target::LINE_TIMEOUT.as_secs()
             ))
         }
         Ok(Err(error)) => {
@@ -527,7 +505,10 @@ impl WireProbe {
     /// mid-stream transport `Status` is an error — the protocol's
     /// refusal shape inside a read stream is the terminal `ErrorFrame`,
     /// never a bare status.
-    async fn read_frames(&mut self, stream_spec_json: Vec<u8>) -> Result<Vec<RawFrame>, String> {
+    pub(crate) async fn read_frames(
+        &mut self,
+        stream_spec_json: Vec<u8>,
+    ) -> Result<Vec<RawFrame>, String> {
         self.read_frames_within(stream_spec_json, READ_RETENTION_CEILING)
             .await
     }
@@ -583,218 +564,28 @@ pub(crate) fn decode_read_frame(frame: proto::ReadFrame) -> RawFrame {
 }
 
 /// Spawn the target's own binary for the wire clauses: the SAME
-/// resolution the P1 probe uses ([`resolve_binary`] — one helper, no
-/// fourth copy), then [`WireProbe::attach`].
+/// resolution the P1 probe uses ([`target::resolve_binary`]), then
+/// [`WireProbe::attach`].
 pub(crate) async fn attach_for(
     requirement: &Requirement,
     role: Role,
     config: &Value,
     slot: &ChildSlot,
 ) -> Result<WireProbe, String> {
-    let bin = resolve_binary(requirement)?;
+    let bin = target::resolve_binary(requirement)?;
     WireProbe::attach(&bin, role, config, MAX_FRAME_BYTES as u64, slot).await
-}
-
-/// The source wire clauses over one attached probe, in
-/// [`SOURCE_WIRE_CLAUSES`] order: P3/P7 from one raw handshake, P5
-/// over every declared stream's frames, P6 on an induced refusal. A
-/// probe whose handshake fails fails ALL of them with the one cause.
-pub(crate) async fn certify_source_wire(
-    report: &mut Report,
-    probe: &mut WireProbe,
-    required_id: &str,
-) {
-    let Some(ok) = raw_handshake_or_cascade(report, probe, &SOURCE_WIRE_CLAUSES).await else {
-        return;
-    };
-    report_p3(report, &ok, required_id);
-    report_p7(report, &ok);
-    report_p5(report, probe).await;
-    report_p6(report, probe).await;
-}
-
-/// The destination wire clauses: the handshake-borne P3/P7 alone (see
-/// [`DEST_WIRE_CLAUSES`]).
-pub(crate) async fn certify_destination_wire(
-    report: &mut Report,
-    probe: &mut WireProbe,
-    required_id: &str,
-) {
-    let Some(ok) = raw_handshake_or_cascade(report, probe, &DEST_WIRE_CLAUSES).await else {
-        return;
-    };
-    report_p3(report, &ok, required_id);
-    report_p7(report, &ok);
-}
-
-/// One raw handshake under the clause budget; a refusal, a transport
-/// failure, or a stall fails EVERY clause in `clauses` with the one
-/// cause — the cascade a dead handshake earns.
-async fn raw_handshake_or_cascade(
-    report: &mut Report,
-    probe: &mut WireProbe,
-    clauses: &[&'static str],
-) -> Option<proto::HandshakeOk> {
-    match tokio::time::timeout(CLAUSE_TIMEOUT, probe.handshake_raw()).await {
-        Ok(Ok(ok)) => Some(ok),
-        Ok(Err(why)) => {
-            for clause in clauses {
-                report.fail(clause, why.clone());
-            }
-            None
-        }
-        Err(_elapsed) => {
-            for clause in clauses {
-                report.fail(clause, timed_out());
-            }
-            None
-        }
-    }
-}
-
-/// P3 — identity/skew: the handshake's VALUES must agree with
-/// themselves (`spec_json` vs the wire's reported identity — the skew
-/// case) and, when the target names an id, with that requirement.
-/// Values, never spellings: an in-process rogue's own name is as
-/// legitimate an identity as `io.rapidbyte.*`.
-fn report_p3(report: &mut Report, ok: &proto::HandshakeOk, required_id: &str) {
-    let mut problems = Vec::new();
-    match serde_json::from_slice::<ConnectorSpec>(&ok.spec_json) {
-        Ok(spec) => {
-            if spec.name != ok.connector_id {
-                problems.push(format!(
-                    "spec_json names `{}` but the wire reported connector_id `{}`",
-                    spec.name, ok.connector_id
-                ));
-            }
-            if spec.version != ok.connector_version {
-                problems.push(format!(
-                    "spec_json carries version `{}` but the wire reported connector_version `{}`",
-                    spec.version, ok.connector_version
-                ));
-            }
-        }
-        Err(error) => problems.push(format!(
-            "spec_json does not decode as a ConnectorSpec: {error}"
-        )),
-    }
-    if !required_id.is_empty() && ok.connector_id != required_id {
-        problems.push(format!(
-            "the wire reported connector_id `{}` but the target requires `{required_id}`",
-            ok.connector_id
-        ));
-    }
-    if problems.is_empty() {
-        report.pass("P3");
-    } else {
-        report.fail(
-            "P3",
-            format!("the handshake identity is skewed: {}", problems.join("; ")),
-        );
-    }
-}
-
-/// P7 — the v0 state-format map: `state_format_versions` must decode
-/// as a `map<string, u32>`, which protobuf decoding already enforced
-/// by the time a `HandshakeOk` exists (an undecodable field fails the
-/// whole handshake and cascades). Empty passes — the v0 posture — and
-/// a populated map ALSO passes: tolerated, threaded, never negotiated
-/// (D-040-1). `Pass` carries no payload, so the tolerance evidence is
-/// pinned by the populated-map rogue rather than rendered here.
-fn report_p7(report: &mut Report, ok: &proto::HandshakeOk) {
-    let _ = &ok.state_format_versions;
-    report.pass("P7");
-}
-
-/// P5 — the one-batch rule, judged on the wire bytes: every
-/// `arrow_ipc` read frame across every DECLARED stream must decode as
-/// an Arrow IPC stream carrying exactly one record batch. Frames that
-/// are not arrow are exempt (the rule is per-frame, not per-source);
-/// a source that serves no arrow frames at all passes vacuously — the
-/// clause still ran, and a violation's evidence carries the full frame
-/// census so the observation is auditable either way.
-async fn report_p5(report: &mut Report, probe: &mut WireProbe) {
-    match tokio::time::timeout(CLAUSE_TIMEOUT, p5_violations(probe)).await {
-        Ok(Ok(violations)) if violations.is_empty() => report.pass("P5"),
-        Ok(Ok(violations)) => {
-            for violation in violations {
-                report.fail("P5", violation);
-            }
-        }
-        Ok(Err(why)) => report.fail("P5", why),
-        Err(_elapsed) => report.fail("P5", timed_out()),
-    }
-}
-
-/// Walk every declared stream's frames and collect one-batch
-/// violations, each suffixed with the complete frame census.
-async fn p5_violations(probe: &mut WireProbe) -> Result<Vec<String>, String> {
-    let streams = probe.streams_raw().await?;
-    let mut census = Census::default();
-    let mut violations = Vec::new();
-    let mut omitted = 0usize;
-    for spec_json in streams {
-        // The stream's own name, for the evidence line — undecodable
-        // spec bytes still get read (the connector declared them).
-        let name = serde_json::from_slice::<StreamSpec>(&spec_json)
-            .map(|spec| spec.name.to_string())
-            .unwrap_or_else(|_| "<undecodable stream spec>".to_string());
-        for frame in probe.read_frames(spec_json).await? {
-            census.record(&frame);
-            if let RawFrame::Arrow(bytes) = &frame {
-                match count_batches(bytes) {
-                    Ok(1) => {}
-                    Ok(count) => retain_p5_violation(&mut violations, &mut omitted, || {
-                        format!(
-                            "an arrow read frame carried {count} record batches — the one-batch \
-                             rule requires exactly one (stream `{name}`)"
-                        )
-                    }),
-                    Err(error) => retain_p5_violation(&mut violations, &mut omitted, || {
-                        format!(
-                            "an arrow read frame does not decode as one Arrow IPC stream \
-                             (stream `{name}`): {error}"
-                        )
-                    }),
-                }
-            }
-        }
-    }
-    let mut violations: Vec<String> = violations
-        .into_iter()
-        .map(|violation| format!("{violation}; frame census: {census}"))
-        .collect();
-    if omitted != 0 {
-        violations.push(format!(
-            "and {omitted} more one-batch violations were omitted after the first \
-             {MAX_P5_VIOLATIONS}; frame census: {census}"
-        ));
-    }
-    Ok(violations)
-}
-
-fn retain_p5_violation(
-    violations: &mut Vec<String>,
-    omitted: &mut usize,
-    message: impl FnOnce() -> String,
-) {
-    if violations.len() < MAX_P5_VIOLATIONS {
-        violations.push(message());
-    } else {
-        *omitted = omitted.saturating_add(1);
-    }
 }
 
 /// The record batches one `arrow_ipc` payload carries.
 ///
-/// 5H1: this seat decodes a CONNECTOR UNDER CERTIFICATION's frames — the
-/// primary adversary — so it gets both halves of the decode defense: the
-/// shared framing pre-pass (SPI `ipc` module) holds every declared
-/// length against the frame's real bytes before arrow's reader can
-/// allocate from them (the memset and `handle_alloc_error` → abort arms
-/// are neither panics nor errors), and `catch_unwind` contains arrow's
-/// panic arms, so a crafted frame fails the clause TYPED instead of
-/// killing the certifier.
+/// This seat decodes a CONNECTOR UNDER CERTIFICATION's frames — the
+/// primary adversary — so it gets both halves of the decode defense:
+/// the SPI's shared framing pre-pass holds every declared length
+/// against the frame's real bytes before arrow's reader can allocate
+/// from them (the memset and allocation-abort arms are neither panics
+/// nor errors), and `catch_unwind` contains arrow's panic arms, so a
+/// crafted frame fails the clause TYPED instead of killing the
+/// certifier.
 pub(crate) fn count_batches(bytes: &[u8]) -> Result<usize, String> {
     rdlt_connector::gate::refuse_overdeclared_framing(bytes)?;
     caught_decode(|| count_batches_decoding(bytes))
@@ -807,10 +598,10 @@ fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|payload| {
         Err(format!(
             "the Arrow decoder panicked: {}",
-            // The shared bounded rendering (6L9): the violation COUNT is
-            // capped at `MAX_P5_VIOLATIONS`, but the count cap never
-            // bounded each string's LENGTH — a payload embedding
-            // frame-derived text would ride the report file whole.
+            // The shared bounded rendering: P5 caps its violation
+            // COUNT, but a count cap never bounds each string's LENGTH
+            // — a payload embedding frame-derived text would otherwise
+            // ride the report file whole.
             rdlt_connector::gate::panic_text(payload.as_ref())
         ))
     })
@@ -844,49 +635,6 @@ mod decode_belt_tests {
         assert!(error.contains("decoder panicked"), "{error}");
         assert!(error.contains("crafted metadata"), "{error}");
     }
-}
-
-/// P6 — error-frame shape, on an induced refusal: reading
-/// [`P6_BOGUS_STREAM`] must produce a TERMINAL `ErrorFrame` whose
-/// classification is a real enum value and whose message carries the
-/// bare cause text — never one of the four client renderings
-/// ([`CLIENT_RENDERINGS`]).
-async fn report_p6(report: &mut Report, probe: &mut WireProbe) {
-    match tokio::time::timeout(CLAUSE_TIMEOUT, p6_verdict(probe)).await {
-        Ok(Ok(())) => report.pass("P6"),
-        Ok(Err(why)) => report.fail("P6", why),
-        Err(_elapsed) => report.fail("P6", timed_out()),
-    }
-}
-
-/// The P6 judgment — `Ok(())` when the induced refusal arrived shaped
-/// as the protocol demands.
-async fn p6_verdict(probe: &mut WireProbe) -> Result<(), String> {
-    let spec_json = serde_json::to_vec(&StreamSpec::new(P6_BOGUS_STREAM))
-        .expect("a StreamSpec serializes to JSON infallibly");
-    let frames = probe.read_frames(spec_json).await?;
-
-    let mut found = None;
-    for (position, frame) in frames.iter().enumerate() {
-        if let RawFrame::Error(error) = frame {
-            found = Some((position, error));
-            break;
-        }
-    }
-    let Some((position, frame)) = found else {
-        return Err(
-            "reading a nonexistent stream produced no terminal ErrorFrame — a refusal must \
-             arrive as a typed error frame, never a clean end of stream"
-                .to_string(),
-        );
-    };
-    let trailing = frames.len() - position - 1;
-    if trailing > 0 {
-        return Err(format!(
-            "the ErrorFrame was not terminal — {trailing} frame(s) followed it"
-        ));
-    }
-    refusal_shape(frame)
 }
 
 /// The refusal-shape judgment P6 and P12 share, either direction of
@@ -1249,9 +997,9 @@ pub(crate) fn mismatch(request: &str, got: &WireReply, want: &str) -> String {
 
 /// Why a raw session did not open.
 pub(crate) enum WireOpenError {
-    /// The transport-level `FailedPrecondition` refusal — the
-    /// one-session ceiling class (038's frozen refusal), whichever
-    /// seat of the RPC it surfaced at.
+    /// The transport-level `FailedPrecondition` refusal — the frozen
+    /// one-session ceiling class, whichever seat of the RPC it
+    /// surfaced at.
     Ceiling(tonic::Status),
     /// Anything else, rendered.
     Other(String),
@@ -1325,232 +1073,15 @@ pub(crate) async fn open_wire_session(
 
 #[cfg(test)]
 mod tests {
-    //! The rogue suite for the source wire clauses: each designated
-    //! rogue proves its clause CAN fail, with the evidence pinned
-    //! full-string. The rogues serve in-process over UDS — no spawn,
-    //! no built bin — so these ride the bare (ungated) suite; the seam
-    //! is [`WireProbe::attach_socket`], pub(crate), so the pins live
-    //! beside the clause code (the report.rs precedent).
+    //! The retention ceiling's rogue, driven through the ceiling's own
+    //! seam — no spawn, no built bin.
+
+    use rdlt_connector::source::StreamSpec;
 
     use super::*;
-    use crate::report::Verdict;
     use crate::rogue::{self, HandshakeScript, RogueSource};
-    use proto::Classification;
 
-    #[test]
-    fn p5_retains_only_the_first_bounded_set_of_violation_strings() {
-        let mut violations = Vec::new();
-        let mut omitted = 0usize;
-        for index in 0..(MAX_P5_VIOLATIONS + 7) {
-            retain_p5_violation(&mut violations, &mut omitted, || index.to_string());
-        }
-        assert_eq!(violations.len(), MAX_P5_VIOLATIONS);
-        assert_eq!(omitted, 7);
-        assert_eq!(violations.first().map(String::as_str), Some("0"));
-    }
-
-    /// Serve `rogue` in-process and run the full source wire-clause
-    /// sequence against it, requiring identity `required_id`.
-    async fn certify_rogue(rogue: RogueSource, required_id: &str) -> Report {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("rogue.sock");
-        let _serving = rogue::serve_source(&socket, rogue);
-        let mut probe = WireProbe::attach_socket(&socket, Role::Source, &serde_json::json!({}))
-            .await
-            .expect("the rogue's socket dials");
-        let mut report = Report::default();
-        certify_source_wire(&mut report, &mut probe, required_id).await;
-        report
-    }
-
-    fn verdict<'a>(report: &'a Report, clause: &str) -> &'a Verdict {
-        &report
-            .entries
-            .iter()
-            .find(|entry| entry.clause == clause)
-            .unwrap_or_else(|| panic!("no {clause} entry:\n{}", report.render_text()))
-            .verdict
-    }
-
-    #[track_caller]
-    fn assert_fail(report: &Report, clause: &str, evidence: &str) {
-        match verdict(report, clause) {
-            Verdict::Fail(why) => assert_eq!(why, evidence, "clause {clause}"),
-            other => panic!(
-                "{clause} must Fail, got {other:?}:\n{}",
-                report.render_text()
-            ),
-        }
-    }
-
-    #[track_caller]
-    fn assert_pass(report: &Report, clause: &str) {
-        assert!(
-            matches!(verdict(report, clause), Verdict::Pass),
-            "{clause} must Pass:\n{}",
-            report.render_text()
-        );
-    }
-
-    /// A well-shaped induced refusal: FATAL, bare cause text.
-    fn shaped_refusal() -> Vec<proto::ReadFrame> {
-        vec![rogue::error_read_frame(rogue::error_frame(
-            Classification::Fatal,
-            "no such stream",
-        ))]
-    }
-
-    /// THE SKEW CASE (the T1 carry — no other test anywhere exercises
-    /// `spec.version != connector_version`): a rogue whose spec
-    /// document and wire identity disagree on VERSION fails P3 with
-    /// both values named, and ONLY P3. Its populated state-format map
-    /// is tolerated — P7 passes with it (D-040-1's pin).
-    #[tokio::test]
-    async fn a_version_skewed_handshake_fails_p3_alone() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::Ok {
-                    connector_id: "rogue",
-                    connector_version: "0.0.0",
-                    spec_name: "rogue",
-                    spec_version: "9.9.9",
-                    state_format_versions: &[("cursor", 2)],
-                },
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: shaped_refusal(),
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P3",
-            "the handshake identity is skewed: spec_json carries version `9.9.9` but the wire \
-             reported connector_version `0.0.0`",
-        );
-        assert_pass(&report, "P7");
-        assert_pass(&report, "P5");
-        assert_pass(&report, "P6");
-    }
-
-    /// The name half of the skew: spec_json naming somebody else than
-    /// the wire's connector_id fails P3 by VALUES — no `io.rapidbyte.*`
-    /// spelling is assumed anywhere.
-    #[tokio::test]
-    async fn a_name_skewed_handshake_fails_p3() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::Ok {
-                    connector_id: "rogue",
-                    connector_version: "0.0.0",
-                    spec_name: "somebody-else",
-                    spec_version: "0.0.0",
-                    state_format_versions: &[],
-                },
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: shaped_refusal(),
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P3",
-            "the handshake identity is skewed: spec_json names `somebody-else` but the wire \
-             reported connector_id `rogue`",
-        );
-    }
-
-    /// The requirement arm: a self-consistent identity that is not the
-    /// one the target requires still fails P3.
-    #[tokio::test]
-    async fn a_wrong_connector_id_fails_p3_against_the_requirement() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: shaped_refusal(),
-                read_hold_open: false,
-            },
-            "somebody-else",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P3",
-            "the handshake identity is skewed: the wire reported connector_id `rogue` but the \
-             target requires `somebody-else`",
-        );
-    }
-
-    /// P5's designated rogue: ONE arrow frame carrying TWO record
-    /// batches fails P5 with the count and the census, and only P5.
-    #[tokio::test]
-    async fn a_two_batch_arrow_frame_fails_p5_alone() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![StreamSpec::new("rogue_stream")],
-                read_declared: vec![rogue::arrow_read_frame(2)],
-                read_undeclared: shaped_refusal(),
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P5",
-            "an arrow read frame carried 2 record batches — the one-batch rule requires \
-             exactly one (stream `rogue_stream`); frame census: 1 arrow, 0 raw_json, \
-             0 checkpoint, 0 error, 0 empty",
-        );
-        assert_pass(&report, "P3");
-        assert_pass(&report, "P6");
-        assert_pass(&report, "P7");
-    }
-
-    /// The certification bar's oversized-frame arm: a rogue serving a
-    /// read frame LARGER than [`MAX_FRAME_BYTES`] must surface the
-    /// dial-side decode cap as a TYPED refusal — not a hang, not a
-    /// clean end of stream. It reports at P5, the clause walking the
-    /// declared streams' frames when the cap fires: the read stream
-    /// dies with the transport status carrying tonic's own
-    /// length-limit message, and the exact rendering is pinned
-    /// full-string (the firing proof, the K-S closure's shape). Only
-    /// P5 fails — the handshake clauses and P6's induced refusal ride
-    /// their own RPCs, untouched by the reset read stream.
-    #[tokio::test]
-    async fn an_oversized_read_frame_fails_p5_with_the_decode_cap_refusal() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![StreamSpec::new("rogue_stream")],
-                read_declared: vec![rogue::oversized_read_frame()],
-                read_undeclared: shaped_refusal(),
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P5",
-            "the read stream failed mid-flight with a transport status: code: 'Operation was \
-             attempted past the valid range', message: \"Error, decoded message length too \
-             large: found 67108870 bytes, the limit is: 67108864 bytes\"",
-        );
-        assert_pass(&report, "P3");
-        assert_pass(&report, "P6");
-        assert_pass(&report, "P7");
-    }
-
-    /// The retention ceiling's rogue (047 L5): a read stream carrying
+    /// The retention ceiling's rogue: a read stream carrying
     /// more than the collector may retain is refused TYPED, with the
     /// pinned spelling — driven through the ceiling's own seam with a
     /// small budget so the pin costs kilobytes rather than the
@@ -1587,266 +1118,12 @@ mod tests {
         );
         assert_eq!(READ_RETENTION_CEILING, 4 * MAX_FRAME_BYTES);
     }
-
-    /// P6's designated rogue: an error frame whose MESSAGE begins with
-    /// a client rendering fails P6 with the pinned diagnosis, and only
-    /// P6 — the frame carries cause text; classification travels as
-    /// the enum.
-    #[tokio::test]
-    async fn a_client_rendering_in_the_frame_message_fails_p6_alone() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: vec![rogue::error_read_frame(rogue::error_frame(
-                    Classification::Fatal,
-                    "fatal source error: boom",
-                ))],
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P6",
-            "classification rendered inside the message — the frame carries cause text; \
-             classification travels as the enum (the message begins with `fatal source \
-             error: `)",
-        );
-        assert_pass(&report, "P3");
-        assert_pass(&report, "P5");
-        assert_pass(&report, "P7");
-    }
-
-    /// 5H1 at THIS seat: a rogue serving an Arrow frame whose declared
-    /// metadata length dwarfs the frame must fail P5 TYPED — the shared
-    /// pre-pass's refusal — rather than memsetting gigabytes or aborting
-    /// the certifier process mid-clause. (The pin returning at all is
-    /// the no-abort proof; an abort kills this test's process.)
-    #[tokio::test]
-    async fn an_overdeclared_arrow_frame_fails_p5_typed() {
-        let mut crafted = vec![0xff, 0xff, 0xff, 0xff];
-        crafted.extend_from_slice(&0x7fff_fff0_i32.to_le_bytes());
-        crafted.extend_from_slice(&[0u8; 16]);
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![StreamSpec::new("rogue_stream")],
-                read_declared: vec![rogue::raw_arrow_read_frame(crafted)],
-                read_undeclared: shaped_refusal(),
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P5",
-            "an arrow read frame does not decode as one Arrow IPC stream (stream \
-             `rogue_stream`): a declared metadata length of 2147483632 bytes exceeds the \
-             24-byte frame; frame census: 1 arrow, 0 raw_json, 0 checkpoint, 0 error, 0 empty",
-        );
-        assert_pass(&report, "P3");
-        assert_pass(&report, "P6");
-        assert_pass(&report, "P7");
-    }
-
-    /// The seat's second defense-in-depth arm: the client lane's
-    /// 160-byte fuzz reproducer, served raw. (Today this input refuses
-    /// at the pre-pass — its declared framing is already over the
-    /// frame's end — which is still the pinned property: a crafted
-    /// frame fails P5 TYPED, never an abort or an escaped unwind. The
-    /// belt's own synthetic pin sits beside [`caught_decode`].)
-    #[tokio::test]
-    async fn a_decoder_panicking_frame_fails_p5_typed() {
-        const REPRO: [u8; 160] = [
-            0xff, 0xff, 0xff, 0xff, 0x78, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x0a, 0x00, 0x0c, 0x00, 0x06, 0x00, 0x05, 0x00, 0x08, 0x00, 0x0a, 0x00, 0x00, 0x00,
-            0x00, 0x01, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x00, 0x00,
-            0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x14, 0x00, 0x00, 0x00, 0x10, 0x00, 0x14, 0x00, 0x08, 0x00, 0x06, 0x00, 0x07, 0x00,
-            0x0c, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
-            0x10, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x69, 0x64, 0x00, 0x00, 0x08, 0x00, 0x0c, 0x00,
-            0x08, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x40, 0xff,
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x29, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
-            0x88, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00,
-            0x16, 0x00, 0x06, 0x00, 0x05, 0x00,
-        ];
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![StreamSpec::new("rogue_stream")],
-                read_declared: vec![rogue::raw_arrow_read_frame(REPRO.to_vec())],
-                read_undeclared: shaped_refusal(),
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        match verdict(&report, "P5") {
-            Verdict::Fail(why) => assert!(
-                why.starts_with("an arrow read frame does not decode as one Arrow IPC stream"),
-                "the typed refusal, never an escaped unwind: {why}"
-            ),
-            other => panic!("P5 must fail typed on a panicking frame: {other:?}"),
-        }
-    }
-
-    /// P6's terminality arm (GLM round-4, 4L8 — previously unpinned): a
-    /// frame served AFTER the error frame fails P6 by name — the wire's
-    /// error frames are terminal, and a connector that keeps talking
-    /// after one is exactly the rogue the arm exists to catch.
-    #[tokio::test]
-    async fn an_error_frame_with_trailing_frames_fails_p6() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: vec![
-                    rogue::error_read_frame(rogue::error_frame(
-                        Classification::Fatal,
-                        "no such stream",
-                    )),
-                    rogue::json_read_frame(),
-                ],
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P6",
-            "the ErrorFrame was not terminal — 1 frame(s) followed it",
-        );
-        assert_pass(&report, "P3");
-        assert_pass(&report, "P5");
-        assert_pass(&report, "P7");
-    }
-
-    /// A refusal that never arrives is also a P6 failure: a clean end
-    /// of stream on a nonexistent stream hides the refusal entirely.
-    #[tokio::test]
-    async fn a_clean_end_on_the_bogus_stream_fails_p6() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: vec![],
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P6",
-            "reading a nonexistent stream produced no terminal ErrorFrame — a refusal must \
-             arrive as a typed error frame, never a clean end of stream",
-        );
-    }
-
-    /// An unclassified refusal fails P6: CLASSIFICATION_UNSPECIFIED is
-    /// the proto's zero value, not a classification.
-    #[tokio::test]
-    async fn an_unspecified_classification_fails_p6() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::truthful(),
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: vec![rogue::error_read_frame(proto::ErrorFrame {
-                    classification: Classification::Unspecified as i32,
-                    message: "boom".to_string(),
-                    retry_after_ms: None,
-                })],
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        assert_fail(
-            &report,
-            "P6",
-            "the error frame's classification is CLASSIFICATION_UNSPECIFIED — a refusal must \
-             carry a real classification",
-        );
-    }
-
-    /// A refused handshake cascades: EVERY wire clause fails with the
-    /// one cause — including P7, whose only failure mode this is (its
-    /// map shape is enforced by protobuf decoding itself).
-    #[tokio::test]
-    async fn a_refused_handshake_cascades_every_wire_clause() {
-        let report = certify_rogue(
-            RogueSource {
-                handshake: HandshakeScript::Refuse {
-                    message: "the config document is not mine",
-                },
-                streams: vec![],
-                read_declared: vec![],
-                read_undeclared: vec![],
-                read_hold_open: false,
-            },
-            "rogue",
-        )
-        .await;
-        for clause in SOURCE_WIRE_CLAUSES {
-            assert_fail(
-                &report,
-                clause,
-                "the handshake was refused (FATAL): the config document is not mine",
-            );
-        }
-    }
-
-    /// The silent-but-alive rogue: it binds, the transport is up, and
-    /// the handshake never answers — the shape the SIGKILL matrix
-    /// cannot produce (a dead socket errors out) and the one only a
-    /// deadline catches. Certification must yield the TYPED timeout
-    /// outcome on every wire clause, never a hang: the test itself is
-    /// bounded at 45s (the clause budget plus margin) so a broken
-    /// budget fails THIS test, and the paused clock auto-advances the
-    /// waits so neither bound costs wall time (the P10 hang pin's
-    /// idiom). No new clause id: silence is not a new connector
-    /// obligation — every clause already carries the budget, and the
-    /// cascade with the one timeout spelling IS the typed verdict.
-    #[tokio::test(start_paused = true)]
-    async fn a_silent_but_alive_connector_fails_every_wire_clause_typed_not_hung() {
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(45),
-            certify_rogue(
-                RogueSource {
-                    handshake: HandshakeScript::Silence,
-                    streams: vec![],
-                    read_declared: vec![],
-                    read_undeclared: vec![],
-                    read_hold_open: false,
-                },
-                "rogue",
-            ),
-        )
-        .await;
-        let report = outcome.expect("the certifier must outlive the silence — the budget fired");
-        for clause in SOURCE_WIRE_CLAUSES {
-            assert_fail(
-                &report,
-                clause,
-                "clause timed out after 30s — a connector that stalls fails the clause",
-            );
-        }
-    }
 }
 
 #[cfg(test)]
 mod parked_tests {
-    //! The abandonment cleanups the slot carries (round-4 fix): a
-    //! caller that aborts an attach MID-DIAL must still be able to
+    //! The abandonment cleanups the slot carries: a caller that
+    //! aborts an attach MID-DIAL must still be able to
     //! unlink the advertised socket and await the child's death
     //! through [`reap_parked`] — dropping the future alone only ran
     //! Drop and only SENT the SIGKILL, and knew no socket path at all.
@@ -1876,9 +1153,8 @@ mod parked_tests {
     /// Abort mid-dial: the advertised socket is bound but NEVER
     /// accepted, so the h2 handshake pends forever and the abort lands
     /// inside the dial. The abandoning caller's reap_parked must
-    /// unlink the socket file and leave nothing parked — the old
-    /// attach's every-abandonment-path unlink guarantee, restored on
-    /// the one path the round-3 slot lost.
+    /// unlink the socket file and leave nothing parked — the
+    /// every-abandonment-path unlink guarantee.
     #[tokio::test]
     async fn an_attach_aborted_mid_dial_leaves_no_socket_file_or_child() {
         let dir = tempfile::tempdir().expect("tempdir");

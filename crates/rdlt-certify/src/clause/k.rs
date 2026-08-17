@@ -1,6 +1,6 @@
 //! The kill matrix — the K-vocabulary: SIGKILL the served connector at
 //! every message boundary and hold the wire to two promises. First,
-//! TYPED-ERROR-NOT-HANG: within [`KILL_ERROR_WINDOW`] of the kill the
+//! TYPED-ERROR-NOT-HANG: within `KILL_ERROR_WINDOW` (10 s) of the kill the
 //! client side must surface an error — a certifier (or an engine) that
 //! outlives a dead connector by hanging has failed the connector's
 //! author twice. Second, for the destination arms, EXACTLY-ONCE
@@ -20,11 +20,10 @@
 //! THE CONVERGENCE PIPELINE SCOPE, decided not defaulted: the arms
 //! killed while their session was live (K-D1..K-D5) re-run under a
 //! sibling pipeline (`{pipeline}-r`), not the killed one. A destination
-//! may hold a durable per-pipeline session claim — the file
-//! destination's lease is the recorded case (037): a SIGKILLed holder
-//! cannot release it, dead-process takeover was considered and REJECTED
-//! by the owner, and the claim stands until a 300 s TTL no clause
-//! budget can pay. Convergence is therefore judged on the DATA (the
+//! may hold a durable per-pipeline session claim (a staging lease): a
+//! SIGKILLed holder cannot release it, dead-process takeover is
+//! deliberately not attempted, and the claim can stand for a TTL no
+//! clause budget can pay. Convergence is therefore judged on the DATA (the
 //! probe's exact count over the shared table), which the sibling scope
 //! reaches without waiting out a claim the connector is CORRECT to
 //! enforce. K-D6 killed a process whose session had already closed —
@@ -32,7 +31,7 @@
 //! additionally proves the receipt was durable across processes.
 //!
 //! The source arms dial with a deliberately SMALL h2 window budget
-//! ([`READ_BUDGET_BYTES`]): flow control then caps how much of the
+//! (`READ_BUDGET_BYTES`): flow control then caps how much of the
 //! stream can be in flight, so against a fixture larger than the window
 //! the server is provably still mid-stream when the kill lands — with
 //! the frame-ceiling window a small stream could be fully buffered
@@ -49,14 +48,11 @@ use rdlt_connector_client::handshake::Role;
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_testkit::conformance::destination::TableProbe;
 
-use crate::destination::NO_PROBE_SKIP;
-use crate::report::{CLAUSE_TIMEOUT, Entry, Report, timed_out};
-use crate::target::{Target, resolve_binary};
-use crate::wire::{
-    FIXTURE_IDS, RawFrame, WireProbe, WireSession, decode_read_frame, ensure_request, expect,
-    meta_json_for, open_wire_session, publish_request, read_state_request, receipt_reply,
-    replay_request, write_request,
-};
+use crate::clause::d;
+use crate::clock;
+use crate::report::{self, Entry, Report};
+use crate::target::{self, Target};
+use crate::wire::{self, RawFrame, WireProbe, WireSession};
 
 /// How long the wire gets to surface a typed error after the SIGKILL
 /// before the arm fails as a hang.
@@ -71,12 +67,12 @@ const KILL_SEQ: u64 = 1;
 
 /// The source K-clauses in matrix order — zipped with their boundaries
 /// at the matrix loop.
-pub(crate) const SOURCE_KILL_CLAUSES: [&str; 3] = ["K-S1", "K-S2", "K-S3"];
+pub const SOURCE: [&str; 3] = ["K-S1", "K-S2", "K-S3"];
 
 /// The destination K-clauses in matrix order — zipped with their
 /// boundaries at the matrix loop, and the Skip set when no probe was
 /// supplied.
-pub(crate) const DEST_KILL_CLAUSES: [&str; 6] = ["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"];
+pub const DESTINATION: [&str; 6] = ["K-D1", "K-D2", "K-D3", "K-D4", "K-D5", "K-D6"];
 
 /// The one spelling a post-kill hang fails with.
 fn no_error() -> String {
@@ -104,7 +100,7 @@ fn record(
         Ok(Ok(Outcome::Pass)) => report.pass(clause),
         Ok(Ok(Outcome::Skip(why))) => report.skip(clause, why),
         Ok(Err(why)) => report.fail(clause, why),
-        Err(_elapsed) => report.fail(clause, timed_out()),
+        Err(_elapsed) => report.fail(clause, report::timed_out()),
     }
 }
 
@@ -122,27 +118,27 @@ enum SourceBoundary {
 /// The source half of the kill matrix: one spawned connector per
 /// boundary, killed there, the wire held to typed-error-not-hang.
 /// Entries come back in K order, every clause present.
-pub async fn kill_matrix_source(target: &Target) -> Vec<Entry> {
+pub async fn source(target: &Target) -> Vec<Entry> {
     let mut report = Report::default();
-    for (clause, boundary) in SOURCE_KILL_CLAUSES.into_iter().zip([
+    for (clause, boundary) in SOURCE.into_iter().zip([
         SourceBoundary::PostHandshake,
         SourceBoundary::AfterFirstFrame,
         SourceBoundary::AfterFirstCheckpoint,
     ]) {
-        // The arm's spawn parks in this slot (round-4 fix): a
-        // CLAUSE_TIMEOUT firing mid-arm drops the arm future — and
-        // with it the probe — but the child stays claimable, so the
-        // timeout path awaits its DEATH before the next arm spawns.
-        let slot = crate::wire::ChildSlot::default();
+        // The arm's spawn parks in this slot: a clause timeout firing
+        // mid-arm drops the arm future — and with it the probe — but
+        // the child stays claimable, so the timeout path awaits its
+        // DEATH before the next arm spawns.
+        let slot = wire::ChildSlot::default();
         let outcome =
-            tokio::time::timeout(CLAUSE_TIMEOUT, source_arm(target, boundary, &slot)).await;
-        // Reap UNCONDITIONALLY (round-6 fix): a clause timeout dropped
-        // the arm, but an arm that returned Err on its own — a failed
-        // handshake, an unreachable boundary — also left its spawn
-        // merely parked. A clean arm already killed its probe, so the
-        // reap is a no-op there; every exit path now ends with the
-        // child dead and the socket unlinked before the next arm.
-        crate::wire::reap_parked(&slot).await;
+            tokio::time::timeout(report::CLAUSE_TIMEOUT, source_arm(target, boundary, &slot)).await;
+        // Reap UNCONDITIONALLY: a clause timeout dropped the arm, but
+        // an arm that returned Err on its own — a failed handshake, an
+        // unreachable boundary — also left its spawn merely parked. A
+        // clean arm already killed its probe, so the reap is a no-op
+        // there; every exit path ends with the child dead and the
+        // socket unlinked before the next arm.
+        wire::reap_parked(&slot).await;
         record(&mut report, clause, outcome);
     }
     report.entries
@@ -152,9 +148,9 @@ pub async fn kill_matrix_source(target: &Target) -> Vec<Entry> {
 async fn source_arm(
     target: &Target,
     boundary: SourceBoundary,
-    slot: &crate::wire::ChildSlot,
+    slot: &wire::ChildSlot,
 ) -> Result<Outcome, String> {
-    let bin = resolve_binary(&target.requirement)?;
+    let bin = target::resolve_binary(&target.requirement)?;
     let mut probe = WireProbe::attach(&bin, Role::Source, &target.config, READ_BUDGET_BYTES, slot)
         .await
         .map_err(|why| format!("could not spawn the connector: {why}"))?;
@@ -194,7 +190,7 @@ async fn source_arm(
     // Pull frames until the boundary frame arrives.
     loop {
         match stream.message().await {
-            Ok(Some(frame)) => match decode_read_frame(frame) {
+            Ok(Some(frame)) => match wire::decode_read_frame(frame) {
                 RawFrame::Error(error) => {
                     return Err(format!(
                         "the read failed before the boundary: {}",
@@ -264,7 +260,7 @@ enum DestBoundary {
 
 /// One destination arm's identities — its own pipeline, load and table
 /// so no arm's commits, claims or rows can mask another's, with the
-/// invocation's entropy in the LOAD and TABLE (round-13): loads meet
+/// invocation's entropy in the LOAD and TABLE: loads meet
 /// durable load-keyed receipts and the convergence count expects the
 /// fixture rows EXACTLY, so a previous certification of the same
 /// warehouse would replay-mask the load and double the count. The
@@ -291,22 +287,19 @@ impl ArmIdentity {
 /// a FRESH spawn re-runs the load and the probe's count must be exact.
 /// Without a probe every arm Skips with the read-back reason — never
 /// silently narrowed, never vacuously passed.
-pub async fn kill_matrix_destination(
-    target: &Target,
-    probe: Option<&dyn TableProbe>,
-) -> Vec<Entry> {
+pub async fn destination(target: &Target, probe: Option<&dyn TableProbe>) -> Vec<Entry> {
     let mut report = Report::default();
     let Some(probe) = probe else {
-        for clause in DEST_KILL_CLAUSES {
-            report.skip(clause, NO_PROBE_SKIP.to_string());
+        for clause in DESTINATION {
+            report.skip(clause, d::NO_PROBE_SKIP.to_string());
         }
         return report.entries;
     };
-    // One entropy suffix for THIS invocation's arm identities
-    // (round-13, see `mint_run_entropy`): stable across an arm's kill
-    // and convergence re-run, fresh across invocations.
-    let entropy = crate::target::mint_run_entropy();
-    for (clause, boundary) in DEST_KILL_CLAUSES.into_iter().zip([
+    // One entropy suffix for THIS invocation's arm identities: stable
+    // across an arm's kill and convergence re-run, fresh across
+    // invocations.
+    let entropy = target::mint_run_entropy();
+    for (clause, boundary) in DESTINATION.into_iter().zip([
         DestBoundary::PostOpen,
         DestBoundary::PostEnsure,
         DestBoundary::PostWrite,
@@ -316,28 +309,26 @@ pub async fn kill_matrix_destination(
     ]) {
         // The arm's spawns (boundary AND convergence — they never
         // overlap, so one slot serves both) park here; a mid-arm
-        // CLAUSE_TIMEOUT claims and awaits the child's death before
-        // the next arm races it for a single-writer store lock
-        // (round-4 fix — the same discipline as every other spawn
-        // seam since 042 Task 6).
-        let slot = crate::wire::ChildSlot::default();
-        // The clause budget bounds wire traffic alone (round-5 fix):
-        // the convergence read-back's probe time is metered out of the
-        // deadline, exactly as in the D-suite — the probe's own budget
-        // is its only bound and its failures name itself.
-        let (metered, probe_clock) = crate::clock::StopClockProbe::new(probe);
-        let outcome = crate::clock::timeout_excluding_probe(
-            CLAUSE_TIMEOUT,
+        // clause timeout claims and awaits the child's death before
+        // the next arm races it for a single-writer store lock.
+        let slot = wire::ChildSlot::default();
+        // The clause budget bounds wire traffic alone: the convergence
+        // read-back's probe time is metered out of the deadline,
+        // exactly as in the D-suite — the probe's own budget is its
+        // only bound and its failures name itself.
+        let (metered, probe_clock) = clock::StopClockProbe::new(probe);
+        let outcome = clock::timeout_excluding_probe(
+            report::CLAUSE_TIMEOUT,
             &probe_clock,
             destination_arm(target, &metered, clause, boundary, &slot, &entropy),
         )
         .await;
-        // Reap UNCONDITIONALLY (round-6 fix — the source loop's twin):
-        // an arm's own Err return (spawn_destination's failed
-        // handshake, converge's failed re-spawn) left the child parked
-        // just like a timeout did; a clean arm's slot is already
-        // empty, so this is a no-op there.
-        crate::wire::reap_parked(&slot).await;
+        // Reap UNCONDITIONALLY (the source loop's twin): an arm's own
+        // Err return (spawn_destination's failed handshake, converge's
+        // failed re-spawn) left the child parked just like a timeout
+        // did; a clean arm's slot is already empty, so this is a no-op
+        // there.
+        wire::reap_parked(&slot).await;
         record(&mut report, clause, outcome);
     }
     report.entries
@@ -350,19 +341,19 @@ async fn destination_arm(
     probe: &dyn TableProbe,
     clause: &str,
     boundary: DestBoundary,
-    slot: &crate::wire::ChildSlot,
+    slot: &wire::ChildSlot,
     entropy: &str,
 ) -> Result<Outcome, String> {
     let identity = ArmIdentity::for_clause(clause, entropy);
-    let bin = resolve_binary(&target.requirement)?;
-    let (mut wire, socket) = spawn_destination(&bin, target, slot).await?;
+    let bin = target::resolve_binary(&target.requirement)?;
+    let (mut probe_wire, socket) = spawn_destination(&bin, target, slot).await?;
 
     // Drive to the boundary; a failure on the way REAPS the spawn
-    // before returning (the converge discipline, 042 Task 6): dropping
-    // the probe only SENDS the SIGKILL, and on a single-writer store
-    // the dying process would race the next arm's spawn for the lock.
+    // before returning: dropping the probe only SENDS the SIGKILL, and
+    // on a single-writer store the dying process would race the next
+    // arm's spawn for the lock.
     let staged = async {
-        let mut session = open_wire_session(&socket, &identity.pipeline, &identity.load)
+        let mut session = wire::open_wire_session(&socket, &identity.pipeline, &identity.load)
             .await
             .map_err(|error| {
                 format!(
@@ -387,19 +378,19 @@ async fn destination_arm(
     let session = match staged {
         Ok(session) => session,
         Err(why) => {
-            wire.kill().await;
+            probe_wire.kill().await;
             return Err(why);
         }
     };
 
-    wire.kill().await;
+    probe_wire.kill().await;
 
     // Typed-error-not-hang on the dead wire: a live session's next
     // request must fail; after a closed session (K-D6) the dead socket
     // must refuse a fresh dial.
     match session {
         Some(mut session) => {
-            let request = session.request(read_state_request(&identity.pipeline));
+            let request = session.request(wire::read_state_request(&identity.pipeline));
             match tokio::time::timeout(KILL_ERROR_WINDOW, request).await {
                 Ok(Err(_typed)) => {}
                 Ok(Ok(reply)) => {
@@ -413,7 +404,7 @@ async fn destination_arm(
             }
         }
         None => {
-            let open = open_wire_session(&socket, &identity.pipeline, &identity.load);
+            let open = wire::open_wire_session(&socket, &identity.pipeline, &identity.load);
             match tokio::time::timeout(KILL_ERROR_WINDOW, open).await {
                 Ok(Err(_typed)) => {}
                 Ok(Ok(_session)) => {
@@ -436,9 +427,9 @@ async fn destination_arm(
 async fn spawn_destination(
     bin: &Path,
     target: &Target,
-    slot: &crate::wire::ChildSlot,
+    slot: &wire::ChildSlot,
 ) -> Result<(WireProbe, PathBuf), String> {
-    let mut wire = WireProbe::attach(
+    let mut probe = WireProbe::attach(
         bin,
         Role::Destination,
         &target.config,
@@ -447,14 +438,15 @@ async fn spawn_destination(
     )
     .await
     .map_err(|why| format!("could not spawn the connector: {why}"))?;
-    wire.handshake_raw()
+    probe
+        .handshake_raw()
         .await
         .map_err(|why| format!("the handshake failed: {why}"))?;
-    let socket = wire
+    let socket = probe
         .socket()
         .expect("attach spawned this probe, so it carries the socket")
         .to_path_buf();
-    Ok((wire, socket))
+    Ok((probe, socket))
 }
 
 /// Drive an open session up to (and including) `boundary`'s last
@@ -466,31 +458,37 @@ async fn drive_session(
     boundary: DestBoundary,
 ) -> Result<(), String> {
     if boundary >= DestBoundary::PostEnsure {
-        expect(
-            session.request(ensure_request(&identity.table)).await?,
+        wire::expect(
+            session
+                .request(wire::ensure_request(&identity.table))
+                .await?,
             "ensure",
             "ensured",
         )?;
     }
     if boundary >= DestBoundary::PostWrite {
-        expect(
-            session.request(write_request(&identity.table)).await?,
+        wire::expect(
+            session
+                .request(wire::write_request(&identity.table))
+                .await?,
             "write",
             "written",
         )?;
     }
     if boundary >= DestBoundary::PrePublish {
-        let receipt = receipt_reply(session, &identity.load, KILL_SEQ).await?;
+        let receipt = wire::receipt_reply(session, &identity.load, KILL_SEQ).await?;
         if boundary >= DestBoundary::PostPublish {
-            let meta = meta_json_for(&identity.pipeline, &identity.load, KILL_SEQ);
+            let meta = wire::meta_json_for(&identity.pipeline, &identity.load, KILL_SEQ);
             match receipt {
-                None => expect(
-                    session.request(publish_request(&meta)).await?,
+                None => wire::expect(
+                    session.request(wire::publish_request(&meta)).await?,
                     "publish",
                     "published",
                 )?,
-                Some(receipt) => expect(
-                    session.request(replay_request(&meta, receipt)).await?,
+                Some(receipt) => wire::expect(
+                    session
+                        .request(wire::replay_request(&meta, receipt))
+                        .await?,
                     "replay",
                     "replayed",
                 )?,
@@ -498,9 +496,9 @@ async fn drive_session(
         }
     }
     if boundary >= DestBoundary::PostClose {
-        expect(
+        wire::expect(
             session
-                .request(read_state_request(&identity.pipeline))
+                .request(wire::read_state_request(&identity.pipeline))
                 .await?,
             "read_state",
             "state",
@@ -522,9 +520,9 @@ async fn converge(
     bin: &Path,
     identity: &ArmIdentity,
     boundary: DestBoundary,
-    slot: &crate::wire::ChildSlot,
+    slot: &wire::ChildSlot,
 ) -> Result<Outcome, String> {
-    let (mut wire, socket) = spawn_destination(bin, target, slot)
+    let (mut probe_wire, socket) = spawn_destination(bin, target, slot)
         .await
         .map_err(|why| format!("the convergence run failed: {why}"))?;
     let no_op = boundary == DestBoundary::PostClose;
@@ -536,18 +534,17 @@ async fn converge(
     let session = converge_session(&socket, &pipeline, identity, no_op)
         .await
         .map_err(|why| format!("the convergence run failed: {why}"));
-    // Reap the convergence spawn BEFORE counting or judging (042 Task 6;
-    // the count moved after the reap in the round-2 fix wave): the data
+    // Reap the convergence spawn BEFORE counting or judging: the data
     // is committed and durable by now, and a single-writer destination
     // (duckdb) holds its store's cross-process lock until this process
     // is DEAD — dropping the probe only SENDS the SIGKILL. A read-back
     // taken beside the live process (an operator's --probe-cmd opening
     // the same store) is refused by that lock and false-fails every
     // arm, and the next arm's spawn races the dying process for it.
-    wire.kill().await;
+    probe_wire.kill().await;
     session?;
 
-    let expected = FIXTURE_IDS.len() as u64;
+    let expected = wire::FIXTURE_IDS.len() as u64;
     let found = probe
         .count(&TableName::new(&identity.table))
         .await
@@ -571,42 +568,51 @@ async fn converge_session(
     identity: &ArmIdentity,
     no_op: bool,
 ) -> Result<(), String> {
-    let mut session = open_wire_session(socket, pipeline, &identity.load)
+    let mut session = wire::open_wire_session(socket, pipeline, &identity.load)
         .await
         .map_err(render_open_error)?;
-    let meta = meta_json_for(pipeline, &identity.load, KILL_SEQ);
+    let meta = wire::meta_json_for(pipeline, &identity.load, KILL_SEQ);
     if no_op {
-        let Some(receipt) = receipt_reply(&mut session, &identity.load, KILL_SEQ).await? else {
+        let Some(receipt) = wire::receipt_reply(&mut session, &identity.load, KILL_SEQ).await?
+        else {
             return Err(
                 "no receipt was found for a load the killed process had cleanly closed — the \
                  receipt must be durable across processes"
                     .to_string(),
             );
         };
-        expect(
-            session.request(replay_request(&meta, receipt)).await?,
+        wire::expect(
+            session
+                .request(wire::replay_request(&meta, receipt))
+                .await?,
             "replay",
             "replayed",
         )?;
     } else {
-        expect(
-            session.request(ensure_request(&identity.table)).await?,
+        wire::expect(
+            session
+                .request(wire::ensure_request(&identity.table))
+                .await?,
             "ensure",
             "ensured",
         )?;
-        expect(
-            session.request(write_request(&identity.table)).await?,
+        wire::expect(
+            session
+                .request(wire::write_request(&identity.table))
+                .await?,
             "write",
             "written",
         )?;
-        match receipt_reply(&mut session, &identity.load, KILL_SEQ).await? {
-            None => expect(
-                session.request(publish_request(&meta)).await?,
+        match wire::receipt_reply(&mut session, &identity.load, KILL_SEQ).await? {
+            None => wire::expect(
+                session.request(wire::publish_request(&meta)).await?,
                 "publish",
                 "published",
             )?,
-            Some(receipt) => expect(
-                session.request(replay_request(&meta, receipt)).await?,
+            Some(receipt) => wire::expect(
+                session
+                    .request(wire::replay_request(&meta, receipt))
+                    .await?,
                 "replay",
                 "replayed",
             )?,
@@ -616,12 +622,12 @@ async fn converge_session(
 }
 
 /// Render a raw-session open failure for an evidence line.
-fn render_open_error(error: crate::wire::WireOpenError) -> String {
+fn render_open_error(error: wire::WireOpenError) -> String {
     match error {
-        crate::wire::WireOpenError::Ceiling(status) => {
+        wire::WireOpenError::Ceiling(status) => {
             format!("the session was refused at the one-session ceiling: {status}")
         }
-        crate::wire::WireOpenError::Other(why) => why,
+        wire::WireOpenError::Other(why) => why,
     }
 }
 
@@ -635,8 +641,7 @@ mod tests {
     //! post-kill wire then keeps answering (K-S1's still-answered
     //! arm) or holds a read stream open in silence (K-S2/K-S3's
     //! window exhaustion). No built bin, so this rides the bare
-    //! (ungated) suite — the target.rs P2/P4 precedent, one seam
-    //! down.
+    //! (ungated) suite.
     //!
     //! THE RELINK TRICK, load-bearing: every arm's probe drop unlinks
     //! the socket path its handshake line advertised, which would
@@ -718,10 +723,10 @@ mod tests {
         let script = write_relinking_fake(dir.path(), "survives-the-kill", &real, &link);
         let target = Target::resolve_path(script, serde_json::json!({}));
 
-        let entries = kill_matrix_source(&target).await;
+        let entries = source(&target).await;
 
         let clauses: Vec<&str> = entries.iter().map(|entry| entry.clause).collect();
-        assert_eq!(clauses, SOURCE_KILL_CLAUSES, "the K-vocabulary, in order");
+        assert_eq!(clauses, SOURCE, "the K-vocabulary, in order");
         assert_fail(
             &entries,
             "K-S1",

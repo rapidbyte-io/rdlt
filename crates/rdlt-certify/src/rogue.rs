@@ -6,9 +6,8 @@
 //! scripted frames, a two-batch write accepted), which is the
 //! whole point: certification demands every clause be PROVEN able to
 //! fail, and only a server willing to violate the rules can prove it.
-//! The 039 idiom (rdlt-connector-client's rogue fixture) promoted into
-//! the certifier: raw tonic services on an in-process UDS — no spawn,
-//! no built bin, so the rogue suites ride the bare (ungated) run.
+//! Raw tonic services on an in-process UDS — no spawn, no built bin,
+//! so the rogue suites ride the bare (ungated) run.
 //!
 //! Test-only by construction (`#[cfg(test)]` at the `lib.rs` mod
 //! declaration): nothing shipped can reach a rogue.
@@ -96,7 +95,7 @@ pub(crate) fn oversized_read_frame() -> proto::ReadFrame {
     }
 }
 
-/// One `arrow_ipc` read frame carrying the GIVEN bytes — the 5H1
+/// One `arrow_ipc` read frame carrying the GIVEN bytes — the crafted
 /// rogues' seat: bytes a real encoder would never emit (overdeclared
 /// lengths, panic-driving metadata) need a rogue that serves them
 /// verbatim.
