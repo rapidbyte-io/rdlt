@@ -623,8 +623,9 @@ mod byte_size_tests {
     //! slice of the one message-body allocation, so any metric that sums
     //! parent-allocation capacities charges that body once PER BUFFER.
     //!
-    //! THE FIXTURE HERE IS THIS CRATE'S OWN: testkit depends on THIS
-    //! crate, so these unit tests cannot import its shared IPC fixture.
+    //! THE FIXTURE HERE IS THIS CRATE'S OWN: the shared IPC fixture lives
+    //! in rdlt-engine's tests and this crate sits below it, so these unit
+    //! tests carry a private twin.
     //! This one is shaped for the channel pins alone — wider (more
     //! buffers) so capacity-summing lands further outside every bound —
     //! and the two need not agree.

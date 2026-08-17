@@ -111,8 +111,9 @@ missing runtime never panics,
 because a panic there is indistinguishable from a real failure and trains
 people to ignore red. There is no environment override — one posture.
 
-Every container started in this workspace carries `gate::RECLAIM_LABEL`
-(`rdlt-test=1`) so `make reclaim` removes leaked containers and their
+Every container started in this workspace carries the label key
+`gate::RECLAIM_LABEL` (`rdlt-test`; start sites write `--label
+rdlt-test=1`) so `make reclaim` removes leaked containers and their
 volumes in one scoped command. A suite killed mid-run never reaches
 `Drop`, and orphaned anonymous volumes fill disks; a label rather than a
 name pattern, because volumes do not inherit their container's name.

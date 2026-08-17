@@ -17,8 +17,9 @@ use std::path::Path;
 ///
 /// Some names are armed INDIRECTLY — the `crash_point!` takes a variable and the
 /// literal lives at the constructor supplying it — so they are absent here by
-/// design and covered instead by the "declared names must appear twice" half of
-/// `assert_registry_matches_sources`.
+/// design and covered instead by the other direction of
+/// `assert_registry_matches_sources`: every declared name must appear as a
+/// literal somewhere in the sources outside its declaration.
 /// The connector crates' rows live in the rdlt-connectors repository's
 /// own gate, beside the sources they count (including the two-spellings
 /// and indirect-arming evidence). The scanner itself is shared, so the

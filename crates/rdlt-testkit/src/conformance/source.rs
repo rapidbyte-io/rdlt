@@ -15,9 +15,7 @@
 //! renumbering these is forbidden.
 
 use rdlt_connector::channel::{PushPayload, records};
-
 use rdlt_connector::core::cursor::Cursor;
-
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use serde_json::Value;
 
