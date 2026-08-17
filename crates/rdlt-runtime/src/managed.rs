@@ -119,10 +119,12 @@ pub struct Managed<A> {
 }
 
 impl<A> Managed<A> {
-    /// Wrap a connected adapter. `guard` is `None` for a provider whose
-    /// connector's lifetime is managed elsewhere (a pool, an embedder's
-    /// own child).
-    pub(crate) fn new(adapter: A, outcome: Outcome, guard: Option<Guard>) -> Self {
+    /// The constructor a [`crate::provider::Provider`] implementation
+    /// uses to hand back a connected adapter: `outcome` is what the
+    /// client's verified `connect` established, and `guard` is `None`
+    /// for a connector whose process lifetime is owned elsewhere (a
+    /// pool, an embedder's own child).
+    pub fn new(adapter: A, outcome: Outcome, guard: Option<Guard>) -> Self {
         Self {
             adapter,
             outcome,

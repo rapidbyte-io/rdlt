@@ -41,9 +41,9 @@ use crate::spawn;
 /// log channel), stdin null. EXACTLY ONE stdout line is read, under
 /// [`Self::with_line_timeout`]'s budget; everything after — dial,
 /// handshake, identity and version verification — is the client
-/// crate's, and the resulting adapter is wrapped with a
-/// [`crate::managed::Guard`] so the process dies with the managed
-/// object.
+/// crate's, and the resulting adapter is wrapped in a
+/// [`crate::managed::Managed`] with its [`crate::managed::Guard`] so
+/// the process dies with the managed object.
 #[derive(Debug, Clone)]
 pub struct Local {
     line_timeout: Duration,
@@ -183,14 +183,11 @@ impl Local {
     /// the way out.
     async fn probe(&self, requirement: &Requirement, role: Role) -> Result<ConnectorSpec, Error> {
         let (path, binary) = self.resolve(requirement)?;
-        let role = match role {
-            Role::Source => "source",
-            Role::Destination => "destination",
-        };
         // The guard exists from the moment the child does — it and its
         // socket die with this scope whether the RPC below answers or
         // refuses.
-        let (_guard, line) = spawn::spawn(&path, &binary, role, true, self.line_timeout).await?;
+        let (_guard, line) =
+            spawn::spawn(&path, &binary, role_arg(role), true, self.line_timeout).await?;
         let channel = dial(
             &line.socket_path,
             self.budget_bytes,
@@ -249,6 +246,14 @@ fn binary_name(id: &str) -> String {
     format!("rdlt-connector-{segment}")
 }
 
+/// The `--role=` spelling a connector binary is spawned under.
+fn role_arg(role: Role) -> &'static str {
+    match role {
+        Role::Source => "source",
+        Role::Destination => "destination",
+    }
+}
+
 /// `which`-style candidacy: a regular file with any execute bit set.
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -265,8 +270,14 @@ impl Provider for Local {
         config: &serde_json::Value,
     ) -> Result<Managed<source::Remote>, Error> {
         let (path, binary) = self.resolve(requirement)?;
-        let (guard, line) =
-            spawn::spawn(&path, &binary, "source", false, self.line_timeout).await?;
+        let (guard, line) = spawn::spawn(
+            &path,
+            &binary,
+            role_arg(Role::Source),
+            false,
+            self.line_timeout,
+        )
+        .await?;
         // The guard exists from the moment the child does: any failure
         // below drops it, which kills the child AND unlinks whatever
         // the connector may already have bound.
@@ -282,8 +293,14 @@ impl Provider for Local {
         config: &serde_json::Value,
     ) -> Result<Managed<destination::Remote>, Error> {
         let (path, binary) = self.resolve(requirement)?;
-        let (guard, line) =
-            spawn::spawn(&path, &binary, "destination", false, self.line_timeout).await?;
+        let (guard, line) = spawn::spawn(
+            &path,
+            &binary,
+            role_arg(Role::Destination),
+            false,
+            self.line_timeout,
+        )
+        .await?;
         let (adapter, outcome) =
             destination::Remote::connect(&line.socket_path, self.budget_bytes, config, requirement)
                 .await?;
