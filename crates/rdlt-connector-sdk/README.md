@@ -40,6 +40,21 @@ Atomicity and staging invisibility remain the backend's
 storage contract — properties no wrapper can add — and the kits verify
 them.
 
+## The connector-author batteries
+
+Beside the seams, four modules carry the shared config and
+implementation vocabulary whose consumers are connector authors, not
+hosts — which is why they live here rather than in the protocol-only
+SPI: `parquet` (`parquet::Options`/`parquet::Compression` — how a
+destination writes parquet, stated as intentions each connector
+translates at its own library boundary), `parts` (`parts::Options` —
+the format-agnostic part-rolling policy), `pem` (`pem::Material` — PEM
+material given inline or as a path, rendering paths and hiding inline
+bytes), and, behind
+the `object-store` feature, `store` (`store::is_recoverable` — the one
+object-store recoverability rule). Connectors re-export these from
+their own config paths.
+
 ## Proof discipline
 
 The crate's own suite certifies a complete in-memory example connector
