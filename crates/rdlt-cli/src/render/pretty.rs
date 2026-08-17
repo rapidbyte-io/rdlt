@@ -82,7 +82,6 @@ impl Pretty {
                     ProgressStyle::with_template("  {spinner:.cyan} {wide_msg}")
                         .expect("static template"),
                 );
-                bar.enable_steady_tick(REDRAW_EVERY);
                 // The declared stream name is connector-controlled
                 // text and indicatif writes messages straight to the
                 // terminal, so it is escaped here with the IDENTIFIER
@@ -131,22 +130,19 @@ impl Pretty {
                 line.push_str(&format!(" out {:<9}", format::bytes(written.output_bytes)));
             }
             if done {
-                // live-but-still, NOT finished: `finish_with_message` commits
-                // the row to scrollback beyond `clear()`'s reach (indicatif
-                // treats a finished bar as permanent output, not a
-                // redrawable line), which is exactly the one-✔-row-per-
-                // stream residue `clear()` is supposed to remove. Style
-                // first so the ✔ template is in effect when the message
-                // renders, disable the steady tick so a done bar stops
-                // ticking (nothing left to animate), then set — never
-                // finish — the message.
+                // Style first so the ✔ template is in effect when the
+                // message renders; set — never finish — the message, so
+                // the row stays clearable (see `clear`).
                 bar.set_style(
                     ProgressStyle::with_template("  ✔ {wide_msg}").expect("static template"),
                 );
-                bar.disable_steady_tick();
                 line.push_str(" done");
                 bar.set_message(line);
             } else {
+                // The feed loop is the one driver: this tick advances the
+                // spinner, so no per-stream ticker thread exists to race
+                // the teardown.
+                bar.tick();
                 bar.set_message(line);
             }
         }
@@ -166,16 +162,11 @@ impl Pretty {
     /// Tear the ENTIRE live display down — header, every stream row,
     /// totals — leaving nothing behind: the summary or the error text
     /// that follows is the durable record. Every row stays clearable
-    /// because `redraw`'s done branch never `finish`es a bar (indicatif
-    /// keeps a finished row as committed output beyond a clear's reach).
-    /// The steady ticks stop first so no tick redraws a cleared display,
-    /// and the target goes hidden after the clear so dropping the bar
-    /// handles — which reaps rows and would redraw the rest — draws
-    /// nothing more.
+    /// because `redraw` never `finish`es a bar (indicatif keeps a
+    /// finished row as committed output beyond a clear's reach). The
+    /// target goes hidden after the clear so dropping the bar handles —
+    /// which reaps rows and would redraw the rest — draws nothing more.
     pub(crate) fn clear(self) {
-        for bar in self.streams.values() {
-            bar.disable_steady_tick();
-        }
         let _ = self.multi.clear();
         self.multi.set_draw_target(ProgressDrawTarget::hidden());
     }
@@ -251,6 +242,11 @@ mod tests {
             !moves.contains("Str("),
             "nothing is drawn after the clear:\n{moves}"
         );
+        // No ticker thread exists to draw late: a redraw interval later
+        // the terminal is still blank and untouched.
+        std::thread::sleep(REDRAW_EVERY * 2);
+        assert_eq!(term.contents(), "");
+        assert_eq!(term.moves_since_last_check(), "");
     }
 
     /// A narrow terminal truncates rows, never wraps them: the region

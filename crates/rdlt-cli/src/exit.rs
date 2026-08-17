@@ -25,20 +25,13 @@ impl Error {
     /// Best-effort reporting: even with stderr closed, the CODE is the
     /// contract and must still be exited with.
     pub(crate) fn exit(self) -> ExitCode {
-        match self {
-            Error::Io(message) => {
-                render::stderr::line(&format!("error: {message}"));
-                ExitCode::from(74)
-            }
-            Error::Usage(message) => {
-                render::stderr::line(&format!("error: {message}"));
-                ExitCode::from(2)
-            }
-            Error::Run(error) => {
-                render::stderr::line(&format!("error: {error}"));
-                ExitCode::from(code_for(&error))
-            }
-        }
+        let (message, code) = match self {
+            Error::Io(message) => (message, 74),
+            Error::Usage(message) => (message, 2),
+            Error::Run(error) => (error.to_string(), code_for(&error)),
+        };
+        render::stderr::line(&format!("error: {message}"));
+        ExitCode::from(code)
     }
 }
 
