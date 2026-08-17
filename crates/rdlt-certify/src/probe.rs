@@ -36,12 +36,23 @@ pub struct Shell {
     template: String,
 }
 
+/// The spelling a placeholder-less template is refused with; the
+/// message names the placeholder alone, never the line.
+pub const MISSING_PLACEHOLDER: &str = "the probe command must contain the `{{table}}` \
+                                        placeholder — the line runs once per counted table \
+                                        with `{{table}}` substituted for the table name";
+
 impl Shell {
-    /// Wrap `command`, the operator's shell line — it must contain the
-    /// `{{table}}` placeholder (the certifier CLI refuses one without
-    /// it at argument time).
-    pub fn new(command: String) -> Self {
-        Self { template: command }
+    /// Wrap `command`, the operator's shell line. It must contain the
+    /// `{{table}}` placeholder: without one the line would count ONE
+    /// fixed target for every clause — wrong verdicts in both
+    /// directions with no error naming the mistake — so it is refused
+    /// here with [`MISSING_PLACEHOLDER`], never accepted and run.
+    pub fn new(command: String) -> Result<Self, String> {
+        if !command.contains("{{table}}") {
+            return Err(MISSING_PLACEHOLDER.to_string());
+        }
+        Ok(Self { template: command })
     }
 }
 
@@ -294,11 +305,11 @@ async fn drain_output(child: &mut tokio::process::Child) -> std::io::Result<Vec<
 
 #[cfg(test)]
 mod tests {
-    //! The shell probe's byte bound: probe stdout is an arbitrary
+    //! The shell probe's byte bound — probe stdout is an arbitrary
     //! operator command's output, so the drain is CAPPED in bytes, not
-    //! just in time — a read-to-EOF would buffer whatever the command
+    //! just in time (a read-to-EOF would buffer whatever the command
     //! emitted until the 20s timeout, which bounds patience but not
-    //! memory.
+    //! memory) — and the placeholder precondition.
 
     use super::*;
 
@@ -308,7 +319,11 @@ mod tests {
     /// itself is pinned so drifting it is a deliberate act.
     #[tokio::test]
     async fn probe_stdout_flood_is_refused_at_the_cap() {
-        let probe = Shell::new(format!("head -c {} /dev/zero", 4 * MAX_PROBE_STDOUT_BYTES));
+        let probe = Shell::new(format!(
+            ": {{{{table}}}}; head -c {} /dev/zero",
+            4 * MAX_PROBE_STDOUT_BYTES
+        ))
+        .expect("the template carries the placeholder");
         let error = probe
             .count(&TableName::new("t"))
             .await
@@ -328,7 +343,23 @@ mod tests {
     /// the capped drain.
     #[tokio::test]
     async fn probe_stdout_one_number_still_counts_under_the_cap() {
-        let probe = Shell::new("echo 42".to_string());
+        let probe = Shell::new(": {{table}}; echo 42".to_string())
+            .expect("the template carries the placeholder");
         assert_eq!(probe.count(&TableName::new("t")).await.expect("counts"), 42);
+    }
+
+    /// A template without `{{table}}` is refused at construction with
+    /// the pinned spelling — the line is never run, so no fixed table
+    /// can be counted for every clause — and the refusal repeats the
+    /// placeholder only, never the line.
+    #[test]
+    fn a_template_without_the_placeholder_is_refused_at_construction() {
+        let error = Shell::new("echo 42 --password=hunter2".to_string())
+            .expect_err("a placeholder-less template is refused");
+        assert_eq!(error, MISSING_PLACEHOLDER);
+        assert!(
+            !error.contains("hunter2"),
+            "the refusal must not echo the line: {error}"
+        );
     }
 }

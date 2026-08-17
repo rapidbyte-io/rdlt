@@ -259,8 +259,10 @@ report::assert_in_order(&arms, &k::DESTINATION, Some("seed a larger fixture"));
 - The frozen skip reasons for cells to name: `clause::d::NO_PROBE_SKIP`,
   `clause::d::NO_MERGE_SKIP`, `clause::p::SOURCE_DUAL_ROLE_SKIP`,
   `clause::p::DESTINATION_DUAL_ROLE_SKIP`.
-- `probe::Shell::new(line)` — the `--probe-cmd` runner as a
-  `TableProbe`, for embedders that want the CLI's shell probe.
+- `probe::Shell::new(line)` → `Result<Shell, String>` — the
+  `--probe-cmd` runner as a `TableProbe`, for embedders that want the
+  CLI's shell probe; a line without the `{{table}}` placeholder is
+  refused at construction (`probe::MISSING_PLACEHOLDER`), never run.
 - `contract::assert_bin_arg_contract(bin, unserved_roles, version)` and
   `contract::assert_spec_identity(bin, role, id, version)` — the pins
   every served connector bin answers to (the argument contract is

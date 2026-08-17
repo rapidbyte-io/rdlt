@@ -239,4 +239,17 @@ mod acknowledgment_tests {
         assert!(failures.is_empty(), "{failures:?}");
         assert_eq!(acknowledged.len(), 2, "both skips render honestly");
     }
+
+    /// `CLAUSES` keeps the report's render order, but its SET must
+    /// equal the testkit suite's own asserted set — a clause added to
+    /// the suite without a certify entry (or the other way round) would
+    /// silently narrow one side's report; the drift fails here by name
+    /// instead.
+    #[test]
+    fn source_clauses_cover_exactly_the_testkit_suites_asserted_set() {
+        use std::collections::BTreeSet;
+        let report_side: BTreeSet<&str> = CLAUSES.into_iter().collect();
+        let suite_side: BTreeSet<&str> = source::ASSERTED_CLAUSES.into_iter().collect();
+        assert_eq!(report_side, suite_side);
+    }
 }

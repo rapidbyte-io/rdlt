@@ -65,9 +65,72 @@ pub const SESSION: [&str; 5] = ["P8", "P9", "P10", "P11", "P12"];
 /// clause timeout rides INSIDE the probe so its reap runs even on a
 /// timeout.
 pub(crate) async fn report_p1(report: &mut Report, target: &Target, role: Role) {
-    match target::probe_handshake_line(target, role, report::CLAUSE_TIMEOUT).await {
+    match probe_handshake_line(target, role, report::CLAUSE_TIMEOUT).await {
         Ok(()) => report.pass("P1"),
         Err(why) => report.fail("P1", why),
+    }
+}
+
+/// How long the P1 probe listens for a SECOND stdout line after the
+/// handshake line. Stdout is the machine channel and carries EXACTLY one
+/// line; anything more within this window is a P1 violation.
+const SECOND_LINE_WINDOW: Duration = Duration::from_millis(500);
+
+/// The P1 probe: spawn the binary directly under `role`, read the FIRST
+/// stdout line, parse it as a handshake line, then listen
+/// [`SECOND_LINE_WINDOW`] for any further stdout byte — one is a
+/// violation (stdout is the machine channel; logs belong on stderr).
+/// `budget` (the caller's clause timeout) wraps the probe I/O alone
+/// and [`wire::reap_parked`] sits outside it, so on every exit, timeout
+/// included, the child is dead AND reaped and any socket its line
+/// advertised is unlinked — the P1 child is a live server holding its
+/// store while the P2 spawn follows immediately.
+async fn probe_handshake_line(target: &Target, role: Role, budget: Duration) -> Result<(), String> {
+    let path = target::resolve_binary(&target.requirement)?;
+    let slot = wire::ChildSlot::default();
+    let verdict =
+        match tokio::time::timeout(budget, first_line_discipline(&path, role, &slot)).await {
+            Ok(verdict) => verdict,
+            Err(_elapsed) => Err(report::timed_out()),
+        };
+    wire::reap_parked(&slot).await;
+    verdict
+}
+
+/// The P1 judgments proper, over the shared funnel; the caller owns
+/// the one reap on the way out (a helper error path has already
+/// reaped — [`wire::reap_parked`] is idempotent).
+async fn first_line_discipline(
+    path: &Path,
+    role: Role,
+    slot: &wire::ChildSlot,
+) -> Result<(), String> {
+    let (mut reader, line) = wire::spawn_and_read_line(path, role, slot).await?;
+    if !line.ends_with('\n') && line.len() as u64 >= target::MAX_LINE_BYTES {
+        return Err(format!(
+            "wrote {} bytes of stdout without completing a handshake line",
+            target::MAX_LINE_BYTES
+        ));
+    }
+    let parsed = Line::parse(line.trim_end_matches(['\n', '\r']))
+        .map_err(|error| format!("the first stdout line is not a handshake line: {error}"))?;
+    // The advertised socket joins the parked state the moment it is
+    // KNOWN, so the caller's reap unlinks it too.
+    slot.lock()
+        .expect("child slot lock")
+        .park_socket(parsed.socket_path);
+
+    // The second-line poll: silence (or EOF — nothing more CAN be
+    // spoken) passes; any byte fails.
+    let mut byte = [0u8; 1];
+    match tokio::time::timeout(SECOND_LINE_WINDOW, reader.read(&mut byte)).await {
+        Err(/* window elapsed in silence */ _) | Ok(Ok(0)) => Ok(()),
+        Ok(Ok(_more)) => Err(
+            "stdout spoke after the handshake line — stdout is the machine channel and \
+             carries EXACTLY one line; logs belong on stderr"
+                .to_string(),
+        ),
+        Ok(Err(error)) => Err(format!("reading stdout after the handshake line: {error}")),
     }
 }
 
@@ -1205,9 +1268,48 @@ fn role_refusal_violation(
 }
 
 #[cfg(test)]
+mod support {
+    //! The verdict lookups the rogue suites share: find one clause's
+    //! entry in a report and hold it to a pinned Fail or a Pass.
+
+    use super::Report;
+    use crate::report::Verdict;
+
+    pub(super) fn verdict<'a>(report: &'a Report, clause: &str) -> &'a Verdict {
+        &report
+            .entries
+            .iter()
+            .find(|entry| entry.clause == clause)
+            .unwrap_or_else(|| panic!("no {clause} entry:\n{}", report.render_text()))
+            .verdict
+    }
+
+    #[track_caller]
+    pub(super) fn assert_fail(report: &Report, clause: &str, evidence: &str) {
+        match verdict(report, clause) {
+            Verdict::Fail(why) => assert_eq!(why, evidence, "clause {clause}"),
+            other => panic!(
+                "{clause} must Fail, got {other:?}:\n{}",
+                report.render_text()
+            ),
+        }
+    }
+
+    #[track_caller]
+    pub(super) fn assert_pass(report: &Report, clause: &str) {
+        assert!(
+            matches!(verdict(report, clause), Verdict::Pass),
+            "{clause} must Pass:\n{}",
+            report.render_text()
+        );
+    }
+}
+
+#[cfg(test)]
 mod generic_tests {
-    //! The P2/P4/P13 rogue suite: each designated rogue proves its
-    //! clause CAN fail, with the evidence pinned full-string. P2 and P4
+    //! The P1 reap pins and the P2/P4/P13 rogue suite: each designated
+    //! rogue proves its clause CAN fail, with the evidence pinned
+    //! full-string. P2 and P4
     //! probe through the PROVIDER's spawn path, so each rogue is two
     //! halves — an in-process tonic server bound to a UDS plus a
     //! spawnable script fake that prints one valid handshake line
@@ -1219,6 +1321,7 @@ mod generic_tests {
     use rdlt_runtime::local::Local;
     use rdlt_runtime::provider::Provider;
 
+    use super::support::{assert_fail, verdict};
     use super::*;
     use crate::report::Verdict;
     use crate::rogue::{self, HandshakeScript, RogueSource};
@@ -1244,21 +1347,83 @@ mod generic_tests {
         path
     }
 
-    #[track_caller]
-    fn assert_fail(report: &Report, clause: &str, evidence: &str) {
-        let verdict = &report
-            .entries
-            .iter()
-            .find(|entry| entry.clause == clause)
-            .unwrap_or_else(|| panic!("no {clause} entry:\n{}", report.render_text()))
-            .verdict;
-        match verdict {
-            Verdict::Fail(why) => assert_eq!(why, evidence, "clause {clause}"),
-            other => panic!(
-                "{clause} must Fail, got {other:?}:\n{}",
-                report.render_text()
+    /// Write an executable script fake into `dir`: `body` is the whole
+    /// script after the `#!/bin/sh` shebang.
+    fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("the fake script writes");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake script becomes executable");
+        path
+    }
+
+    /// An EARLY P1 failure (here the fastest one — an unparseable
+    /// first line) must kill AND REAP the probe child
+    /// before returning. `kill_on_drop` only SENDS SIGKILL, and a
+    /// dying-not-dead child of the single-writer class still holds its
+    /// store lock while the immediately-following wire spawn opens the
+    /// same store. Reaped means no zombie: the child's `/proc` entry is
+    /// gone the moment the probe returns.
+    #[tokio::test]
+    async fn a_failed_handshake_probe_reaps_its_child_before_returning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("pid");
+        let script = write_script(
+            dir.path(),
+            "garbage-liner",
+            &format!(
+                "echo $$ > {}\necho 'not a handshake line'\nexec sleep 30",
+                pidfile.display()
             ),
-        }
+        );
+
+        let target = Target::resolve_path(script, serde_json::json!({}));
+        let error = probe_handshake_line(&target, Role::Source, report::CLAUSE_TIMEOUT)
+            .await
+            .expect_err("a garbage first line fails P1");
+        assert!(
+            error.contains("not a handshake line"),
+            "the failure names the parse refusal: {error}"
+        );
+
+        let pid = std::fs::read_to_string(&pidfile)
+            .expect("the script wrote its pid before its first line")
+            .trim()
+            .to_owned();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the probe child (pid {pid}) must be dead AND reaped when the probe returns — \
+             a zombie or a dying process still holds single-writer store locks"
+        );
+    }
+
+    /// The P1 twin of the P13 timeout-reap pin: probe_handshake_line's
+    /// reap also survives its budget — this child is a live server
+    /// holding its store, and the P2 spawn follows immediately, so a
+    /// cancelled reap here is the WORSE instance of the same hazard.
+    #[tokio::test]
+    async fn a_timed_out_handshake_probe_still_reaps_its_child() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("pid");
+        let script = write_script(
+            dir.path(),
+            "staller",
+            &format!("echo $$ > {}\nexec sleep 30", pidfile.display()),
+        );
+        let target = Target::resolve_path(script, serde_json::json!({}));
+        let error = probe_handshake_line(&target, Role::Source, Duration::from_millis(300))
+            .await
+            .expect_err("a stalled probe times out");
+        assert_eq!(error, report::timed_out());
+        let pid = std::fs::read_to_string(&pidfile)
+            .expect("the script wrote its pid before stalling")
+            .trim()
+            .to_owned();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the probe child (pid {pid}) must be dead AND reaped when the probe returns"
+        );
     }
 
     /// P2's designated rogue: a connector whose config gate accepts
@@ -1386,15 +1551,6 @@ mod generic_tests {
     }
 
     #[track_caller]
-    fn p13_verdict(report: &Report) -> &Verdict {
-        &report
-            .entries
-            .iter()
-            .find(|entry| entry.clause == "P13")
-            .unwrap_or_else(|| panic!("no P13 entry:\n{}", report.render_text()))
-            .verdict
-    }
-
     /// The positive arm: a single-role connector refusing the unserved
     /// role the documented way — exit code 2, zero stdout bytes, while
     /// the served role handshakes from the same bare argv (the
@@ -1417,7 +1573,7 @@ mod generic_tests {
         let mut report = Report::default();
         report_p13(&mut report, &target, Role::Source).await;
         assert!(
-            matches!(p13_verdict(&report), Verdict::Pass),
+            matches!(verdict(&report, "P13"), Verdict::Pass),
             "P13 must Pass:\n{}",
             report.render_text()
         );
@@ -1432,7 +1588,7 @@ mod generic_tests {
     #[tokio::test]
     async fn an_unconditional_exit_2_fails_p13_as_unattributable() {
         let report = p13_report_for("exit 2", Role::Source).await;
-        match p13_verdict(&report) {
+        match verdict(&report, "P13") {
             Verdict::Fail(why) => assert_eq!(
                 why,
                 "the unserved --role=destination exited with code 2 and no stdout, but the \
@@ -1482,7 +1638,7 @@ mod generic_tests {
     #[tokio::test]
     async fn a_noisy_wrong_exit_fails_p13_naming_bytes_and_code() {
         let report = p13_report_for("echo 'stdout noise'\nexit 3", Role::Source).await;
-        match p13_verdict(&report) {
+        match verdict(&report, "P13") {
             Verdict::Fail(why) => assert_eq!(
                 why,
                 "the unserved --role=destination must be refused with exit code 2 before any \
@@ -1499,7 +1655,7 @@ mod generic_tests {
     #[tokio::test]
     async fn a_silent_wrong_exit_code_fails_p13() {
         let report = p13_report_for("exit 0", Role::Source).await;
-        match p13_verdict(&report) {
+        match verdict(&report, "P13") {
             Verdict::Fail(why) => assert_eq!(
                 why,
                 "the unserved --role=destination must be refused with exit code 2 before any \
@@ -1530,7 +1686,7 @@ mod generic_tests {
 
         let mut report = Report::default();
         report_p13(&mut report, &target, Role::Source).await;
-        match p13_verdict(&report) {
+        match verdict(&report, "P13") {
             Verdict::Skip(reason) => assert_eq!(reason, SOURCE_DUAL_ROLE_SKIP),
             other => panic!("P13 must Skip, got {other:?}:\n{}", report.render_text()),
         }
@@ -1562,7 +1718,7 @@ mod generic_tests {
 
         let mut report = Report::default();
         report_p13(&mut report, &target, Role::Destination).await;
-        match p13_verdict(&report) {
+        match verdict(&report, "P13") {
             Verdict::Skip(reason) => assert_eq!(reason, DESTINATION_DUAL_ROLE_SKIP),
             other => panic!("P13 must Skip, got {other:?}:\n{}", report.render_text()),
         }
@@ -1579,6 +1735,7 @@ mod wire_tests {
 
     use proto::Classification;
 
+    use super::support::{assert_fail, assert_pass, verdict};
     use super::*;
     use crate::report::Verdict;
     use crate::rogue::{self, HandshakeScript, RogueSource};
@@ -1607,35 +1764,6 @@ mod wire_tests {
         let mut report = Report::default();
         source_wire(&mut report, &mut probe, required_id).await;
         report
-    }
-
-    fn verdict<'a>(report: &'a Report, clause: &str) -> &'a Verdict {
-        &report
-            .entries
-            .iter()
-            .find(|entry| entry.clause == clause)
-            .unwrap_or_else(|| panic!("no {clause} entry:\n{}", report.render_text()))
-            .verdict
-    }
-
-    #[track_caller]
-    fn assert_fail(report: &Report, clause: &str, evidence: &str) {
-        match verdict(report, clause) {
-            Verdict::Fail(why) => assert_eq!(why, evidence, "clause {clause}"),
-            other => panic!(
-                "{clause} must Fail, got {other:?}:\n{}",
-                report.render_text()
-            ),
-        }
-    }
-
-    #[track_caller]
-    fn assert_pass(report: &Report, clause: &str) {
-        assert!(
-            matches!(verdict(report, clause), Verdict::Pass),
-            "{clause} must Pass:\n{}",
-            report.render_text()
-        );
     }
 
     /// A well-shaped induced refusal: FATAL, bare cause text.

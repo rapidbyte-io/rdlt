@@ -14,14 +14,9 @@ use rdlt_certify::report::{self, Verdict};
 use rdlt_certify::target::Target;
 use serde_json::json;
 
+use super::support::NO_PROBE_REASON;
 use super::support::bins::built_bin;
 use super::support::probe::JsonlDirProbe;
-
-/// The skip reason a probe-less run stamps on every D-clause.
-const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
-     (the library API takes a TableProbe directly). Single-writer stores (duckdb) refuse \
-     every open beside the live connector, a read-only one included — probe a COPY: copy \
-     the store file plus its WAL sidecar, then count in the copy";
 
 fn reference_target(out_root: &std::path::Path) -> Target {
     let config = json!({ "path": out_root.display().to_string() });

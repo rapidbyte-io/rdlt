@@ -21,17 +21,9 @@ use rdlt_certify::report::{Entry, Verdict};
 use rdlt_certify::target::Target;
 use serde_json::json;
 
+use super::support::NO_PROBE_REASON;
 use super::support::bins::built_bin;
 use super::support::probe::JsonlDirProbe;
-
-/// The skip reason a probe-less run stamps on every destination
-/// K-clause — `clause::d::NO_PROBE_SKIP`'s spelling, restated here
-/// byte-identical so the frozen text is pinned from outside the
-/// crate.
-const NO_PROBE_REASON: &str = "no table probe supplied — read-back clauses need one; pass --probe-cmd '<sh line>' \
-     (the library API takes a TableProbe directly). Single-writer stores (duckdb) refuse \
-     every open beside the live connector, a read-only one included — probe a COPY: copy \
-     the store file plus its WAL sidecar, then count in the copy";
 
 /// Render entries the report way, for failure messages.
 fn render(entries: &[Entry]) -> String {

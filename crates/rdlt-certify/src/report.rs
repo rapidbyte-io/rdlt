@@ -498,6 +498,7 @@ pub(crate) fn never_reached() -> String {
 /// a verdict for a clause that never ran — and every other entry is
 /// `Pass`. An empty `allowed_skips` is the strict all-Pass form. Panics
 /// with the rendered report otherwise.
+#[track_caller]
 pub fn assert_all_pass(report: &Report, expected: &[&str], allowed_skips: &[(&str, &str)]) {
     let clauses: Vec<&str> = report.entries.iter().map(|entry| entry.clause).collect();
     for clause in expected

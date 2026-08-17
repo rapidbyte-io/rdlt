@@ -171,7 +171,9 @@ fn main() -> ExitCode {
         }
     };
     let target = resolve(&named, config);
-    let probe = args.probe_cmd.map(Shell::new);
+    let probe = args
+        .probe_cmd
+        .map(|line| Shell::new(line).expect("the argument check above required the placeholder"));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
