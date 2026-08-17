@@ -1,5 +1,5 @@
 //! `wire::dial` + `handshake::run` against this crate's echo pair
-//! served in-process through the sdk's `serve_on` seam — the exact
+//! served in-process through the sdk's `run_on` seam — the exact
 //! wire a spawned connector process would answer on, minus the spawn.
 
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ fn source_config(rows: u64) -> serde_json::Value {
 #[tokio::test]
 async fn a_source_handshake_populates_the_outcome() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
 
@@ -83,7 +83,7 @@ async fn a_source_handshake_populates_the_outcome() {
 #[tokio::test]
 async fn a_destination_handshake_carries_capabilities() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
 
@@ -116,7 +116,7 @@ async fn a_destination_handshake_carries_capabilities() {
 #[tokio::test]
 async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
 
@@ -153,7 +153,7 @@ async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
 #[tokio::test]
 async fn an_oversized_serialized_config_is_refused_before_send() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
 
@@ -183,7 +183,7 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
 #[tokio::test]
 async fn an_id_mismatch_refuses_typed() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
 
@@ -214,7 +214,7 @@ async fn an_id_mismatch_refuses_typed() {
 #[tokio::test]
 async fn a_version_mismatch_refuses_typed() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
 
@@ -244,7 +244,7 @@ async fn a_version_mismatch_refuses_typed() {
 #[tokio::test]
 async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
 

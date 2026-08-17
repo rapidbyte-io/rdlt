@@ -92,7 +92,7 @@ fn arrow_frame(schema: &arrow::datatypes::Schema, batches: &[RecordBatch]) -> pr
 #[tokio::test]
 async fn spec_is_cached_from_the_handshake() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
     let (remote, outcome) = connect_echo(&path, serde_json::json!({"rows": 1})).await;
@@ -107,7 +107,7 @@ async fn spec_is_cached_from_the_handshake() {
 #[tokio::test]
 async fn check_answers_ok_over_the_wire() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 1})).await;
@@ -122,7 +122,7 @@ async fn check_answers_ok_over_the_wire() {
 #[tokio::test]
 async fn a_failing_check_round_trips_the_classified_cause() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 1, "fail_check": true})).await;
@@ -140,7 +140,7 @@ async fn a_failing_check_round_trips_the_classified_cause() {
 #[tokio::test]
 async fn streams_round_trips_the_declaration() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 1})).await;
@@ -155,7 +155,7 @@ async fn streams_round_trips_the_declaration() {
 #[tokio::test]
 async fn a_full_read_forwards_frames_in_order() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 3})).await;
@@ -197,7 +197,7 @@ async fn a_full_read_forwards_frames_in_order() {
 #[tokio::test]
 async fn a_terminal_error_renders_one_classification_frame() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 1, "fail_read": true})).await;
@@ -222,7 +222,7 @@ async fn a_terminal_error_renders_one_classification_frame() {
 #[tokio::test]
 async fn dropping_the_receiver_cancels_the_read_as_ok() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::source::serve_on::<EchoSource>(&path)
+    let (_line, _handle) = serve::source::run_on::<EchoSource>(&path)
         .await
         .expect("bind");
     // Enough rows that the read CANNOT finish without the receiver

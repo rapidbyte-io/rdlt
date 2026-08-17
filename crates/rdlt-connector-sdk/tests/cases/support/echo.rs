@@ -209,7 +209,7 @@ pub struct EchoDestinationConfig {
     #[serde(default)]
     pub fail_publish: bool,
     /// Makes `existing_receipt` answer `Some` (a fixed receipt) instead
-    /// of `None` — the 038 T5 review F1 knob: a wire test can drive the
+    /// of `None`, so a wire test can drive the
     /// `ExistingReceipt` → `Some` → `Replay` leg (never reached by the
     /// `None` → `Publish` leg the default choreography test exercises)
     /// and assert `replay` shows in the call log WITHOUT `publish`.
@@ -217,19 +217,18 @@ pub struct EchoDestinationConfig {
     pub receipt_exists: bool,
     /// Makes the FIRST `connect` call fail transient — every call after
     /// that (on the SAME `EchoDestination` instance, i.e. the same
-    /// served process) succeeds normally. The 038 T5 review round 2,
-    /// item 2 knob: a wire test drives Open (→ ErrorFrame TRANSIENT),
-    /// then Open again on the SAME stream, and asserts the retry
+    /// served process) succeeds normally, so a wire test drives Open
+    /// (→ ErrorFrame TRANSIENT), then Open again on the SAME stream,
+    /// and asserts the retry
     /// succeeds — proving a failed connect does not poison the guard.
     #[serde(default)]
     pub fail_connect: bool,
     /// Makes `validate()` fail — the destination-role twin of
-    /// `EchoConfig::rows == 0` on the source side. Task 6's handshake
-    /// refusal matrix needed a "config failing validate" row for the
-    /// destination role and none of the existing knobs above fail
-    /// validation (they only change post-handshake `Backend` behavior),
-    /// so this field exists solely to give that row something to fail
-    /// on.
+    /// `EchoConfig::rows == 0` on the source side, and the handshake
+    /// refusal matrix's "config failing validate" row: none of the knobs
+    /// above fail validation (they only change post-handshake `Backend`
+    /// behavior), so this field exists solely to give that row something
+    /// to fail on.
     #[serde(default)]
     pub invalid: bool,
 }

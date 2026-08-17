@@ -1,16 +1,15 @@
 //! `serve::destination` end to end: a raw tonic client dials the UDS
-//! `serve_on` binds and drives `OpenSession` — one bidi stream carrying
+//! `run_on` binds and drives `OpenSession` — one bidi stream carrying
 //! the whole session — against the echo destination.
 //!
-//! Written against ADR D5 (038 T5 review round 1): the wire session
-//! drives the connector's raw `Backend` directly (`Ensure`/`Write`/
-//! `ExistingReceipt`/`Replay`/`Publish`/`ReadState`/`Close` each reach
-//! their own `Backend` method), NOT a collapsed `LoadSession::commit` —
-//! see `serve::destination`'s own module doc for the full rationale.
+//! The wire session drives the connector's raw `Backend` directly
+//! (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/`Publish`/`ReadState`/
+//! `Close` each reach their own `Backend` method), NOT a collapsed
+//! `LoadSession::commit`.
 //!
 //! `dial`/`socket_path` mirror `test_serve_source`'s identical helpers
-//! (see there for why `serve_on`, not the print-and-block `destination`,
-//! is the seam these tests use).
+//! (see there for why `run_on`, not the print-and-block `run`, is the
+//! seam these tests use).
 
 use std::os::fd::AsFd;
 use std::path::PathBuf;
@@ -25,7 +24,7 @@ use rdlt_connector_protocol::proto::{
     self, Classification, HandshakeRequest, SessionReply, SessionRequest, SpecRequest,
     handshake_reply, session_reply, session_request,
 };
-use rdlt_connector_sdk::serve::destination::serve_on;
+use rdlt_connector_sdk::serve::destination::run_on;
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
@@ -64,7 +63,7 @@ async fn dial(path: &std::path::Path) -> Channel {
 /// that uses this later calls `.shutdown(Shutdown::Both)` on it to
 /// sever the connection abruptly, out from under the client's own h2
 /// machinery — see that test's doc comment for why this, rather than
-/// aborting `serve_on`'s `JoinHandle`, is what actually proves a
+/// aborting `run_on`'s `JoinHandle`, is what actually proves a
 /// transport error surfaces.
 async fn dial_severable(path: &std::path::Path) -> (Channel, std::os::unix::net::UnixStream) {
     let path = path.to_path_buf();
@@ -115,10 +114,10 @@ fn echo_destination_config_fail_connect() -> Vec<u8> {
 
 /// Same reasoning as `echo_destination_config_fail_connect` above:
 /// `invalid` induces a `Document::validate` failure (see
-/// `EchoDestinationConfig::invalid`'s own doc) — Task 6's handshake
-/// refusal matrix needed a "config failing validate" row for the
-/// destination role, and none of the existing knobs describe anything
-/// but post-handshake `Backend` behavior.
+/// `EchoDestinationConfig::invalid`'s own doc) — the handshake refusal
+/// matrix's "config failing validate" row for the destination role;
+/// no other knob describes anything but post-handshake `Backend`
+/// behavior.
 fn echo_destination_config_invalid() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"invalid": true}))
         .expect("echo destination config serializes")
@@ -136,9 +135,8 @@ fn encode_arrow_ipc(batch: &rdlt_connector::arrow::RecordBatch) -> Vec<u8> {
 }
 
 /// One `Write` frame whose Arrow IPC stream carries MULTIPLE record
-/// batches — `decode_arrow_ipc`'s F3 refusal pin (038 T5 review): a
-/// second batch message refuses with its own distinct spelling rather
-/// than silently keeping only the first.
+/// batches: a second batch message refuses with its own distinct
+/// spelling rather than silently keeping only the first.
 fn write_frame_multi(table: &str, batches: &[&[i64]]) -> SessionRequest {
     let batches: Vec<_> = batches.iter().map(|ids| batch_of(ids)).collect();
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batches[0].schema_ref())
@@ -201,8 +199,8 @@ fn write_frame_malformed(table: &str) -> SessionRequest {
 /// A valid first batch followed by a SECOND message that is present
 /// (not simply absent — `decode_arrow_ipc` must not treat this as "one
 /// clean batch") but truncated, so decoding it fails rather than
-/// succeeding — `decode_arrow_ipc`'s `Some(Err(_))` leg (038 T5 review
-/// round 2, item 4), distinct from both "no second message" (`None`)
+/// succeeding — `decode_arrow_ipc`'s `Some(Err(_))` leg, distinct from
+/// both "no second message" (`None`)
 /// and "a second, DECODABLE batch" (`Some(Ok(_))`, the multi-batch
 /// refusal `write_frame_multi` pins).
 fn write_frame_corrupt_second_batch(table: &str, ids: &[i64]) -> SessionRequest {
@@ -332,12 +330,12 @@ async fn handshake(
 /// `published`, pinning the interleave the callback's synchronicity
 /// promises), ReadState (→ `None`), Close (→ clean end) — and the echo
 /// backend's own call log proves every frame reached its OWN `Backend`
-/// method (ADR D5), not a collapsed `commit`.
+/// method, not a collapsed `commit`.
 #[tokio::test]
 async fn the_full_choreography_pins_part_closed_before_published() {
     echo::clear_call_log();
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -503,14 +501,14 @@ async fn the_full_choreography_pins_part_closed_before_published() {
             "read_state".to_string(),
             "close".to_string(),
         ],
-        "every wire frame reaches its OWN Backend method (ADR D5) — the \
+        "every wire frame reaches its OWN Backend method — the \
          wire ExistingReceipt frame touches the backend directly, and \
          Publish does NOT run its own internal existing_receipt lookup \
          first (that choreography is the CALLER's job, not this server's)"
     );
 }
 
-/// ADR D5's reversal, pinned directly: `ExistingReceipt` answers `Some`
+/// Pinned directly: `ExistingReceipt` answers `Some`
 /// (a real receipt) when the backend has one, and `Replay` reaches
 /// `Backend::replay` for real — both visible in the call log, proving
 /// the wire genuinely dispatches to the backend rather than answering
@@ -519,7 +517,7 @@ async fn the_full_choreography_pins_part_closed_before_published() {
 async fn existing_receipt_and_replay_reach_the_real_backend() {
     echo::clear_call_log();
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -595,7 +593,7 @@ async fn existing_receipt_and_replay_reach_the_real_backend() {
 #[tokio::test]
 async fn a_failed_publish_classifies_transient_and_the_session_stays_usable() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -656,7 +654,7 @@ async fn a_failed_publish_classifies_transient_and_the_session_stays_usable() {
 #[tokio::test]
 async fn a_write_before_open_refuses_with_the_frozen_spelling() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -691,7 +689,7 @@ async fn a_write_before_open_refuses_with_the_frozen_spelling() {
 #[tokio::test]
 async fn a_write_before_ensure_refuses_with_the_frozen_spelling() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -748,7 +746,7 @@ async fn a_write_before_ensure_refuses_with_the_frozen_spelling() {
 #[tokio::test]
 async fn a_second_open_and_an_empty_frame_refuse_with_pinned_spellings() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -816,8 +814,8 @@ async fn a_second_open_and_an_empty_frame_refuse_with_pinned_spellings() {
     );
 }
 
-/// F3 fix pin (038 T5 review round 1): a `Write` frame whose Arrow IPC
-/// stream carries a SECOND record batch refuses with its own distinct
+/// A `Write` frame whose Arrow IPC stream carries a SECOND record batch
+/// refuses with its own distinct
 /// spelling — not silently accepted with only the first batch written
 /// (the defect this refusal exists to prevent: measured row loss
 /// reported as success). No `write` call log entry exists, since the
@@ -826,7 +824,7 @@ async fn a_second_open_and_an_empty_frame_refuse_with_pinned_spellings() {
 async fn a_multi_batch_write_frame_refuses_with_its_own_spelling() {
     echo::clear_call_log();
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -879,14 +877,14 @@ async fn a_multi_batch_write_frame_refuses_with_its_own_spelling() {
     );
 }
 
-/// Minor 1 fix pin (038 T5 review round 1): bytes that are not a
-/// decodable Arrow IPC stream at all refuse with the frozen prefix PLUS
+/// Bytes that are not a decodable Arrow IPC stream at all refuse with
+/// the frozen prefix PLUS
 /// the arrow error that actually caused it — not the bare prefix alone,
 /// which would discard exactly the detail a connector author needs.
 #[tokio::test]
 async fn an_undecodable_write_frame_carries_the_arrow_cause() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -937,17 +935,14 @@ async fn an_undecodable_write_frame_carries_the_arrow_cause() {
     }
 }
 
-/// Item 4 fix pin (038 T5 review round 2): a SECOND message that IS
-/// present but fails to decode gets the undecodable-write refusal PLUS
-/// its own arrow cause — not the multi-batch spelling (which only
-/// applies when the second message decodes CLEANLY) and not a silently
-/// dropped cause (an earlier version of `decode_arrow_ipc` folded
-/// `Some(Err(_))` into the multi-batch arm, discarding exactly this
-/// detail).
+/// A SECOND message that IS present but fails to decode gets the
+/// undecodable-write refusal PLUS its own arrow cause — not the
+/// multi-batch spelling (which only applies when the second message
+/// decodes CLEANLY) and not a silently dropped cause.
 #[tokio::test]
 async fn a_corrupt_second_batch_carries_the_undecodable_refusal_and_its_cause() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -998,25 +993,21 @@ async fn a_corrupt_second_batch_carries_the_undecodable_refusal_and_its_cause() 
     }
 }
 
-/// B1 fix pin (038 review round 1): a `Write` frame carrying ONE Arrow
-/// batch bigger than tonic's 4 MiB DEFAULT receive cap
-/// (`DEFAULT_MAX_RECV_MESSAGE_SIZE`, tonic 0.14.6) round-trips to
-/// `Written` under the raised 64 MiB ceiling
-/// (`serve::common::MAX_FRAME_BYTES`, installed by both `serve_on`s).
-/// Before the fix nothing configured the served services' receive cap,
-/// so this exact frame — legal under the SPI's 8-64 MiB byte-budget
-/// channels, and unsplittable under the frozen one-batch-per-frame
-/// rule — killed the session instead of producing ANY reply. Verified
-/// red by running this test with the `max_decoding_message_size` calls
-/// removed: the server's own request-decode refusal surfaces in
+/// A `Write` frame carrying ONE Arrow batch bigger than tonic's 4 MiB
+/// DEFAULT receive cap round-trips to `Written` under the raised 64 MiB
+/// ceiling (`MAX_FRAME_BYTES`, installed by both `run_on`s). Without
+/// that installation this exact frame — legal under the SPI's
+/// byte-budget channels, and unsplittable under the frozen
+/// one-batch-per-frame rule — kills the session instead of producing
+/// ANY reply (verified red with the `max_decoding_message_size` calls
+/// removed): the server's own request-decode refusal surfaces in
 /// `drive_session`'s `incoming.message()` as a transport-arm `Err`, the
 /// loop breaks, and the client observes its reply stream END with the
-/// `Written` reply never arriving — wire-undeliverable, with nothing
-/// naming why.
+/// `Written` reply never arriving.
 #[tokio::test]
 async fn a_write_frame_beyond_tonics_default_cap_round_trips_to_written() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1085,20 +1076,18 @@ async fn a_write_frame_beyond_tonics_default_cap_round_trips_to_written() {
         .expect("closed");
 }
 
-/// Item 2 fix pin (038 T5 review round 2): a Transient `connect` failure
-/// on `Open` does NOT poison the stream — the guard is only marked open
-/// on a SUCCESSFUL connect (`WriteGuard::mark_open`, called after
-/// `shell.connect` returns `Ok`), so a second `Open` frame on the SAME
-/// stream, after the first failed, is a legal retry rather than a
-/// misleading "at most one Open frame" refusal. Before this fix, the
-/// guard was marked open EAGERLY (before attempting `connect`), so this
-/// retry would have hit that refusal instead of a real second attempt —
-/// downgrading a retryable Transient failure into one with no documented
-/// recovery short of redialing the whole connector process.
+/// A Transient `connect` failure on `Open` does NOT poison the stream —
+/// the guard is only marked open on a SUCCESSFUL connect
+/// (`WriteGuard::mark_open`, called after `shell.connect` returns
+/// `Ok`), so a second `Open` frame on the SAME stream, after the first
+/// failed, is a legal retry rather than a misleading "at most one Open
+/// frame" refusal. An EAGER mark would downgrade a retryable Transient
+/// failure into one with no recovery short of redialing the whole
+/// connector process.
 #[tokio::test]
 async fn a_failed_open_does_not_poison_the_stream_for_a_retry() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1162,13 +1151,11 @@ async fn a_failed_open_does_not_poison_the_stream_for_a_retry() {
     );
 }
 
-/// I1 fix pin (038 T5 review round 1, the 037 US2 T7 leak class
-/// reopened for the wire): a session ABANDONED without ever sending
-/// `Close` — both client halves simply dropped, the shape a crashed or
-/// killed client leaves behind — still gets its backend closed.
-/// `drive_session`'s F2 best-effort cleanup is what makes this true;
-/// before this fix, letting the backend fall out of scope dropped it
-/// WITHOUT ever calling `close()` on it. Polling with a timeout (not
+/// A session ABANDONED without ever sending `Close` — both client halves
+/// simply dropped, the shape a crashed or killed client leaves behind —
+/// still gets its backend closed. `drive_session`'s best-effort cleanup
+/// is what makes this true; letting the backend fall out of scope would
+/// drop it WITHOUT ever calling `close()`. Polling with a timeout (not
 /// asserting immediately) because the server task needs real scheduling
 /// time after the drop to notice and run the cleanup — the same idiom
 /// `test_serve_source`'s cancellation test uses.
@@ -1176,7 +1163,7 @@ async fn a_failed_open_does_not_poison_the_stream_for_a_retry() {
 async fn an_abandoned_session_still_closes_the_backend() {
     echo::clear_call_log();
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1217,17 +1204,17 @@ async fn an_abandoned_session_still_closes_the_backend() {
 
 /// The destination-side twin of `test_serve_source`'s
 /// `streams_before_a_handshake_refuses_as_a_status`/
-/// `read_before_a_handshake_refuses_as_a_status` (038 T6): `OpenSession`
+/// `read_before_a_handshake_refuses_as_a_status`: `OpenSession`
 /// arriving before `Handshake` has completed is a protocol-state
 /// violation, not a connector outcome, so it answers as a raw `Status`
 /// (`FailedPrecondition`, `handshake has not completed` — the SAME
 /// message `DestinationServer::shell` raises for `Check` too), never a
-/// `SessionReply`. See `serve::mod`'s module doc for the full
+/// `SessionReply`. See `serve::wire`'s module doc for the full
 /// Status-vs-ErrorFrame rule this pins one more instance of.
 #[tokio::test]
 async fn open_session_before_a_handshake_refuses_as_a_status() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let mut destination = DestinationServiceClient::new(dial(&path).await);
 
     let error = destination
@@ -1244,12 +1231,11 @@ async fn open_session_before_a_handshake_refuses_as_a_status() {
 /// just above pins. It serves the connector's static identity
 /// (`C::NAME`/`C::VERSION`/`C::config_schema()`) without ever touching
 /// the handshake-populated shell, so a provider can ask a spawned
-/// connector what it IS before deciding what config to hand it (039:
-/// the schema command's path).
+/// connector what it IS before deciding what config to hand it.
 #[tokio::test]
 async fn spec_answers_before_any_handshake() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -1267,20 +1253,19 @@ async fn spec_answers_before_any_handshake() {
     );
 }
 
-/// F5 fix pin (038 T5 review round 1): v0 allows exactly one live
-/// session per connector process — a second concurrent `OpenSession`
+/// Exactly one live session per connector process — a second
+/// concurrent `OpenSession`
 /// while the first is still active refuses outright, at the RPC level
 /// (`Status::failed_precondition`, not a `SessionReply`), with the
 /// frozen wording. This proves the slot is HELD; it does NOT prove the
 /// slot is ever RELEASED — see
 /// `the_session_slot_releases_after_close_so_a_later_open_session_succeeds`
-/// below for the other half (038 T5 review round 2, item 1), which a
-/// by-hand mutation of `SessionSlot::drop` proved THIS test alone could
-/// not catch.
+/// below for the other half, which a by-hand mutation of
+/// `SessionSlot::drop` proved THIS test alone could not catch.
 #[tokio::test]
 async fn a_second_concurrent_open_session_refuses_while_the_first_is_active() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1297,8 +1282,8 @@ async fn a_second_concurrent_open_session_refuses_while_the_first_is_active() {
     assert_eq!(error.message(), "one session per connector process");
 }
 
-/// F5 fix pin, the RELEASE half (038 T5 review round 2, item 1): the
-/// previous pin proves the slot is HELD while a session is active but
+/// The RELEASE half: the previous pin proves the slot is HELD while a
+/// session is active but
 /// never proves it is RELEASED when one ends — a `SessionSlot::drop`
 /// that silently did nothing would leave every OTHER assertion in this
 /// file green while the ceiling stuck at "one session, ever" for the
@@ -1307,13 +1292,13 @@ async fn a_second_concurrent_open_session_refuses_while_the_first_is_active() {
 /// SAME server and asserts it succeeds — the only way to observe the
 /// slot came back. Red-proved by hand: emptying `SessionSlot::drop`'s
 /// body left `a_second_concurrent_open_session_refuses_while_the_first_is_active`
-/// (and the whole rest of the 46-test suite) green while THIS test
+/// (and the whole rest of the suite) green while THIS test
 /// failed, because it is the only one that ever asks for a session
 /// AFTER a prior one closed.
 #[tokio::test]
 async fn the_session_slot_releases_after_close_so_a_later_open_session_succeeds() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1360,46 +1345,40 @@ async fn the_session_slot_releases_after_close_so_a_later_open_session_succeeds(
     );
 }
 
-/// First wire-level crash test (038): with a session established and a
+/// The wire-level crash test: with a session established and a
 /// successful `Write` behind it, the underlying transport is severed
 /// abruptly (no `Close`, no GOAWAY) — the client's next `recv` must
 /// surface a genuine transport error rather than hang, or worse, look
 /// identical to a clean end.
 ///
-/// This does NOT abort `serve_on`'s `JoinHandle` to do it, and that is
-/// a measured finding, not a stylistic choice: this workspace's pinned
-/// tonic 0.14.6 spawns EACH accepted connection onto its own
-/// independent `tokio::spawn`'d task deep inside
-/// `serve_connection` (`transport/server/mod.rs`) — the `JoinHandle`
-/// `serve_on` returns owns only the ACCEPT LOOP. An earlier version of
-/// this test called `handle.abort()` after `Write` and it reliably
-/// HUNG (proved red, not assumed): the already-established session's
-/// task keeps running untouched, because tonic never exposes a handle
-/// reaching that far down. What DOES reliably sever an established
-/// connection, with no `unsafe` and no production-code changes: a safe
-/// `dup()` of the CLIENT's own connecting socket
-/// (`BorrowedFd::try_clone_to_owned`, stable std), captured by
-/// `dial_severable` at connect time, then `shutdown(Both)`'d here —
-/// collapsing the h2 connection out from under the client's own
-/// machinery exactly as abruptly as a vanished peer would. `handle.
-/// abort()` is still called too, alongside it: it does not reach the
-/// live session, but it IS still the correct half of "make the server
-/// go away" for the accept loop.
+/// This does NOT abort `run_on`'s `JoinHandle` to do it, and that is
+/// a measured finding: tonic spawns EACH accepted connection onto its
+/// own independent task deep inside `serve_connection`, so the
+/// `JoinHandle` `run_on` returns owns only the ACCEPT LOOP — aborting
+/// it after `Write` reliably HUNG this test (proved red), because the
+/// already-established session's task keeps running untouched. What
+/// DOES reliably sever an established connection, with no `unsafe` and
+/// no production-code changes: a safe `dup()` of the CLIENT's own
+/// connecting socket (`BorrowedFd::try_clone_to_owned`, stable std),
+/// captured by `dial_severable` at connect time, then `shutdown(Both)`'d
+/// here — collapsing the h2 connection out from under the client's own
+/// machinery exactly as abruptly as a vanished peer would.
+/// `handle.abort()` is still called too: it does not reach the live
+/// session, but it IS the correct half of "make the server go away" for
+/// the accept loop.
 ///
 /// The TRUE process-kill matrix — SIGKILL against a real out-of-process
 /// connector mid-session, at every message boundary, with exactly-once
-/// convergence proven by re-run — now EXISTS as the standalone
-/// certifier's kill matrix (`rdlt-certify --kill-matrix`, built by
-/// feature 040 under ADR 0001 D8). This case stays the wire-level
+/// convergence proven by re-run — is the standalone certifier's kill
+/// matrix (`rdlt-certify --kill-matrix`). This case is the wire-level
 /// approximation reachable in-process: it needs no spawned binary, so
 /// it runs in this crate's own offline suite.
 ///
-/// F-7 fix pin (038 T5 review round 2): the severed transport is ALSO an
-/// abandoned-session exit path (I1/F2's `close`-on-every-non-`Close`-exit
-/// guarantee, from round 1) — a client-side socket `shutdown` makes the
-/// SERVER's own `incoming.message()` read error out too (the connection
-/// is gone from both ends at once), so `drive_session`'s loop `break`s
-/// via the transport-error arm, not the graceful `Close` arm, and F2's
+/// The severed transport is ALSO an abandoned-session exit path — a
+/// client-side socket `shutdown` makes the SERVER's own
+/// `incoming.message()` read error out too (the connection is gone from
+/// both ends at once), so `drive_session`'s loop `break`s via the
+/// transport-error arm, not the graceful `Close` arm, and the
 /// best-effort cleanup runs. Polled with a timeout, same idiom as
 /// `an_abandoned_session_still_closes_the_backend`: the cleanup runs
 /// after the server task notices the severed read, not synchronously
@@ -1408,7 +1387,7 @@ async fn the_session_slot_releases_after_close_so_a_later_open_session_succeeds(
 async fn a_severed_transport_mid_session_surfaces_as_a_client_error() {
     echo::clear_call_log();
     let (_dir, path) = socket_path();
-    let (_line, handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let (channel, severable) = dial_severable(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1464,7 +1443,7 @@ async fn a_severed_transport_mid_session_surfaces_as_a_client_error() {
     assert!(
         observed.is_ok(),
         "a severed transport is an abandoned-session exit too — the backend must still be \
-         closed (F2), within the timeout"
+         closed, within the timeout"
     );
 }
 
@@ -1488,7 +1467,7 @@ struct Row {
 }
 
 /// How a row's refusal message is checked: [`Expect::Exact`] for a
-/// spelling `serve::common::handshake` owns outright — pinned byte-exact
+/// spelling `serve::wire::handshake` owns outright — pinned byte-exact
 /// already, on the source side, by the dedicated tests in
 /// `test_serve_source.rs`, so a row here proves the SAME hoisted path
 /// produces the SAME spelling for the destination role too — and
@@ -1555,49 +1534,30 @@ async fn run_row(connector: &mut ConnectorClient<Channel>, row: &Row) {
     }
 }
 
-/// The destination half of Task 6's handshake refusal matrix: every row
-/// not already pinned on the source side by `test_serve_source.rs`, run
-/// against the destination role through the SAME hoisted
-/// `serve::common::handshake` path — this is the destination role's
-/// FIRST handshake-refusal coverage of any kind; every OTHER test in
-/// this file starts from a handshake that already succeeds.
+/// The destination half of the handshake refusal matrix: every row
+/// pinned on the source side by `test_serve_source.rs`'s dedicated
+/// tests, run against the destination role through the SAME hoisted
+/// `serve::wire::handshake` path — every OTHER test in this file starts
+/// from a handshake that already succeeds.
 ///
-/// Two rows the brief names that this table deliberately does NOT
-/// carry, and why:
-/// - **version-below-min** has no legal input to construct it with:
-///   `PROTOCOL_VERSION` is `u32`'s minimum, so `serve::common::handshake`
-///   collapses its range check to `!=` rather than `< min || > max` (see
-///   that function's own comment, and `test_serve_source.rs`'s
-///   `an_out_of_range_protocol_version_refuses_fatal` for the same note
-///   on the source side) — there is no `u32` value smaller than zero to
-///   send.
-/// - **role mismatch, source-asked-for-destination**, and
-///   **unrecognized role**, and **config failing validate**, and
-///   **protocol version above max**, and **second handshake** ARE all
-///   pinned already — but only for the SOURCE role, by
-///   `test_serve_source.rs`'s dedicated tests. This table is what closes
-///   that gap for the destination role, which had none of them before
-///   this test (`EchoDestinationConfig::invalid` was added alongside
-///   this test for exactly the "config failing validate" row — every
-///   OTHER existing knob on that config describes post-handshake
-///   `Backend` behavior, none of them fail `validate`).
+/// One row this table deliberately does NOT carry: **version-below-min**
+/// has no legal input to construct it with — `PROTOCOL_VERSION` is
+/// `u32`'s minimum, so `serve::wire::handshake` collapses its range
+/// check to `!=` rather than `< min || > max`, and there is no `u32`
+/// value smaller than zero to send. (`EchoDestinationConfig::invalid`
+/// exists for the "config failing validate" row — every OTHER knob on
+/// that config describes post-handshake `Backend` behavior.)
 ///
-/// STATUS VS ERRORFRAME, recorded as a deliberate rule rather than an
-/// inconsistency (038 T6; originated as 038 T4's review finding — see
-/// `test_serve_source.rs`'s `streams_before_a_handshake_refuses_as_a_status`
-/// and `serve::mod`'s module doc, `rdlt-connector-sdk::serve`, for the
-/// full rule): a refusal reached BEFORE a handshake has completed
-/// answers as a raw tonic `Status` (`failed_precondition`) — never
-/// exercised by this table, which only drives the `Handshake` RPC
-/// itself, but pinned on the destination side by
+/// STATUS VS ERRORFRAME (`serve::wire`'s module doc states the rule): a
+/// refusal reached BEFORE a handshake has completed answers as a raw
+/// tonic `Status` — never exercised by this table, which only drives
+/// the `Handshake` RPC itself, but pinned on the destination side by
 /// `open_session_before_a_handshake_refuses_as_a_status` above — while
 /// every refusal this table DOES drive, produced BY the handshake/config
 /// path, answers as a `HandshakeReply` carrying a `proto::ErrorFrame`
-/// instead (the same convention this file's OWN session-frame refusals
-/// use, e.g. `a_write_before_open_refuses_with_the_frozen_spelling`
-/// above). Two different error shapes for two different refusal
-/// classes, on purpose for v0: a pre-handshake RPC refusal is a
-/// protocol-level violation the RPC layer itself rejects; a
+/// (the same convention this file's OWN session-frame refusals use). Two
+/// error shapes for two refusal classes, on purpose: a pre-handshake RPC
+/// refusal is a protocol-level violation the RPC layer itself rejects; a
 /// handshake/config refusal is DATA a caller is meant to inspect
 /// uniformly.
 #[tokio::test]
@@ -1661,20 +1621,20 @@ async fn handshake_refusal_matrix_pins_every_remaining_arm() {
 
     for row in &rows {
         let (_dir, path) = socket_path();
-        let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+        let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
         let mut connector = ConnectorClient::new(dial(&path).await);
         run_row(&mut connector, row).await;
     }
 }
 
-/// 6M3: row count is the memory dimension the framing pre-pass cannot
-/// see — Null columns carry millions of rows in almost no body bytes,
+/// Row count is the memory dimension the framing pre-pass cannot see —
+/// Null columns carry millions of rows in almost no body bytes,
 /// and the batch goes straight to the connector's own backend. A tiny
 /// Write frame over the shared row cap refuses typed, naming the cap.
 #[tokio::test]
 async fn a_write_over_the_row_cap_refuses_typed() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1749,14 +1709,14 @@ async fn a_write_over_the_row_cap_refuses_typed() {
     }
 }
 
-/// 7L5: the serve seat's boundary discipline — a batch at EXACTLY the
-/// row cap is legal and writes (the client's mirror seat pins its own
+/// The serve seat's boundary discipline — a batch at EXACTLY the row
+/// cap is legal and writes (the client's mirror seat pins its own
 /// boundary; the two seats are hand-mirrored implementations, so a
 /// serve-only `>=` regression would pass the suite without this).
 #[tokio::test]
 async fn a_write_at_exactly_the_row_cap_writes() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1816,14 +1776,14 @@ async fn a_write_at_exactly_the_row_cap_writes() {
     }
 }
 
-/// 7L5: precedence — a frame carrying TWO batches whose first is over
+/// Precedence — a frame carrying TWO batches whose first is over
 /// the row cap gets the ROW-CAP refusal (the memory dimension outranks
 /// the structural violation; both are fatal either way), pinning the
 /// order the two seats share.
 #[tokio::test]
 async fn a_two_batch_frame_with_an_over_cap_first_batch_gets_the_row_cap_refusal() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1897,13 +1857,13 @@ async fn a_two_batch_frame_with_an_over_cap_first_batch_gets_the_row_cap_refusal
     }
 }
 
-/// 8L7: the wave-8 serve gates, pinned — an oversized session document
-/// (the SPI ceiling) refuses typed BEFORE the backend is reached, so a
-/// dropped gate call can never pass the suite silently.
+/// An oversized session document (the SPI ceiling) refuses typed BEFORE
+/// the backend is reached, so a dropped gate call can never pass the
+/// suite silently.
 #[tokio::test]
 async fn an_oversized_ensure_document_refuses_before_the_backend() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);
@@ -1948,12 +1908,12 @@ async fn an_oversized_ensure_document_refuses_before_the_backend() {
     }
 }
 
-/// 8L7: the identifier-length half — an oversized Open load id refuses
+/// The identifier-length half — an oversized Open load id refuses
 /// before any session exists.
 #[tokio::test]
 async fn an_oversized_open_identifier_refuses_before_the_session() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoDestination>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut destination = DestinationServiceClient::new(channel);

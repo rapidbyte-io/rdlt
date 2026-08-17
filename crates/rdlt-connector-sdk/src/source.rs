@@ -1,10 +1,9 @@
 //! The source framework: implement [`SourceConnector`], get the SPI.
 //!
-//! What the framework owns — the plumbing every source used to hand-roll
-//! in its own SPI-impl shell: `spec()` assembly, stream declaration
-//! dispatch, the per-read hand-off, and the closed-channel idiom. What
-//! the author owns: how streams are declared from the config and how one
-//! stream's records are produced.
+//! The framework owns the plumbing — `spec()` assembly, stream
+//! declaration dispatch, the per-read hand-off, and the closed-channel
+//! idiom. The author owns how streams are declared from the config and
+//! how one stream's records are produced.
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
@@ -79,8 +78,7 @@ pub trait SourceConnector: Send + Sync + 'static {
 /// closed-channel-is-cancellation contract a property of the TYPE:
 /// every push returns [`ControlFlow`], and `Break` means the host hung
 /// up — return `Ok(())` promptly, it is an instruction to stop, never
-/// an error. Before this type, every connector hand-wrote the
-/// `is_err() → return Ok(())` idiom at each push site.
+/// an error.
 #[derive(Debug)]
 pub struct Feed {
     out: RecordsOut,
@@ -135,9 +133,7 @@ pub struct Shell<C> {
     connector: C,
 }
 
-/// Wrap a framework connector as an SPI [`Source`].
-///
-/// Written once, here, instead of once per connector: `spec()` assembled
+/// Wrap a framework connector as an SPI [`Source`]: `spec()` assembled
 /// from the connector's constants and schema, `check`/`streams`
 /// delegated, and each read's channel wrapped into a [`Feed`] before the
 /// hand-off.
@@ -145,10 +141,9 @@ pub fn shell<C: SourceConnector>(connector: C) -> Shell<C> {
     Shell { connector }
 }
 
-/// The from-text constructor family every connector used to hand-roll —
-/// written once, here: parse (through the config's [`Document`] gate),
-/// assemble, shell. `Shell::<Rest>::from_yaml(yaml)` is a running
-/// SPI source in one call.
+/// The from-text constructor family: parse (through the config's
+/// [`Document`] gate), assemble, shell. `Shell::<Rest>::from_yaml(yaml)`
+/// is a running SPI source in one call.
 impl<C: SourceConnector> Shell<C> {
     /// Validate an already-parsed document, assemble, and shell — the
     /// entry for a caller holding a config VALUE rather than text (a

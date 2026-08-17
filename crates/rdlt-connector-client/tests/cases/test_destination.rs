@@ -141,7 +141,7 @@ fn meta_for(seq: u64) -> CommitMeta {
 #[tokio::test]
 async fn the_full_choreography_crosses_the_wire_as_a_load_session() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({})).await;
@@ -190,7 +190,7 @@ async fn the_full_choreography_crosses_the_wire_as_a_load_session() {
 #[tokio::test]
 async fn a_replayed_commit_takes_the_replay_path_over_the_wire() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({"replay_seq": 7})).await;
@@ -238,7 +238,7 @@ async fn a_replayed_commit_takes_the_replay_path_over_the_wire() {
 #[tokio::test]
 async fn part_events_reach_the_callback_before_commit_returns() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({"emit_parts": 2})).await;
@@ -285,7 +285,7 @@ async fn part_events_reach_the_callback_before_commit_returns() {
 #[tokio::test]
 async fn a_failed_publish_round_trips_the_classified_cause() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({"fail_publish": true})).await;
@@ -318,7 +318,7 @@ async fn a_failed_publish_round_trips_the_classified_cause() {
 #[tokio::test]
 async fn a_refused_connect_maps_the_open_error() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({"fail_connect": true})).await;
@@ -343,7 +343,7 @@ async fn a_refused_connect_maps_the_open_error() {
 #[tokio::test]
 async fn a_write_before_ensure_maps_the_servers_frozen_refusal() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({})).await;
@@ -380,7 +380,7 @@ async fn a_write_before_ensure_maps_the_servers_frozen_refusal() {
 #[tokio::test]
 async fn a_call_after_the_session_ended_is_the_frozen_fatal() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({})).await;
@@ -406,7 +406,7 @@ async fn a_call_after_the_session_ended_is_the_frozen_fatal() {
 #[tokio::test]
 async fn a_second_session_maps_the_status_refusal_fatal() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, _handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let remote = connect_echo(&path, serde_json::json!({})).await;
@@ -488,7 +488,7 @@ async fn a_mid_stream_status_fails_the_in_flight_call_transport_fatal() {
 #[tokio::test]
 async fn capabilities_answer_from_the_handshake_cache_without_an_rpc() {
     let (_dir, path) = socket_path();
-    let (_line, handle) = serve::destination::serve_on::<EchoDestination>(&path)
+    let (_line, handle) = serve::destination::run_on::<EchoDestination>(&path)
         .await
         .expect("bind");
     let (remote, outcome) = Remote::connect(

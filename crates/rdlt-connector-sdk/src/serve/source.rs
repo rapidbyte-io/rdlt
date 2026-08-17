@@ -1,29 +1,27 @@
-//! The source half of `serve()`: `SourceServer` answers both halves of
-//! the wire protocol a source connector implements — `Connector`
-//! (handshake, check) and `SourceService` (streams, read) — over one
-//! [`SourceConnector`] shell.
+//! The source role: one server answers both halves of the wire protocol
+//! a source implements — `Connector` (handshake, check, spec) and
+//! `SourceService` (streams, read) — over one [`SourceConnector`] shell.
 //!
-//! One handshake populates the shell (config document validated the
-//! same way an in-process embedder would validate it, through
-//! [`Shell::from_value`]); every RPC before that handshake, and every
-//! handshake attempt after it, is refused. [`source`] is what a spawned
-//! connector process actually runs; [`serve_on`] is the seam under it —
-//! bind at an explicit path without printing anything, so a test can
-//! drive the very listener `source` would have started, without stdout
-//! capture.
+//! One handshake populates the shell (the config document validated the
+//! same way an in-process embedder would, through [`Shell::from_value`]);
+//! every RPC before that handshake, and every handshake attempt after
+//! it, is refused. [`run`] is what a spawned connector process runs;
+//! [`run_on`] is the seam under it — bind at an explicit path without
+//! printing anything, so a test can drive the very listener `run` would
+//! have started.
 
+use std::future::Future as _;
 use std::io::Write as _;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
-use rdlt_connector::channel::{PushPayload, records};
-
+use rdlt_connector::channel::{
+    ByteReceiver, ByteSender, ByteSized, ChannelClosed, PushPayload, RecordsIn, records,
+};
 use rdlt_connector::error::SourceError;
-
 use rdlt_connector::source::Source as _;
-use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
@@ -31,26 +29,26 @@ use rdlt_connector_protocol::proto::{
     self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeReply, HandshakeRequest,
     StreamList, StreamsReply, StreamsRequest, check_reply, read_frame, streams_reply,
 };
-use tokio::sync::{Semaphore, mpsc, watch};
+use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
-use super::common::{self, ServeError};
+use super::wire;
 use crate::config::Document;
 use crate::source::{Shell, SourceConnector};
 
 /// Serve-side channel budget for one `Read` call — bounds how far the
 /// connector's producer can get ahead of this process's own forwarding
 /// loop before it parks, exactly like an in-process `Source::read`
-/// caller. It is IN-CONNECTOR-BUFFER ONLY: unrelated to gRPC/h2 flow
-/// control between this process and whatever dials it (see
-/// `serve/common.rs`), and unrelated to the engine's own read budget,
-/// which governs the far side of that wire starting at 039's adapter.
+/// caller. IN-CONNECTOR-BUFFER ONLY: unrelated to gRPC/h2 flow control
+/// between this process and whatever dials it, and unrelated to the
+/// engine's own read budget on the far side of that wire.
 ///
-/// Public but hidden from docs: not API — exposed so the integration
-/// pin derives its admission ceiling from this constant rather than
+/// Public but hidden from docs: not API — exposed so the integration pin
+/// derives its admission ceiling from this constant rather than
 /// restating it as a literal that could silently drift.
 #[doc(hidden)]
 pub const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
@@ -59,84 +57,75 @@ pub const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 /// BYTES of already-encoded `ReadFrame`s QUEUED between the forwarding
 /// loop and the gRPC response stream while the CLIENT stalls reading
 /// (the connector's producer parks behind it, against
-/// [`READ_CHANNEL_BUDGET`]'s byte budget on the SPI push channel).
+/// [`READ_CHANNEL_BUDGET`] on the SPI push channel).
 ///
-/// THE WORST-CASE SUM for a spawned source's in-flight read memory —
-/// authoritative; the operator docs and `BatchPolicy::every_bytes`'s
-/// doc both delegate the arithmetic here:
+/// THE WORST-CASE SUM for a spawned source's in-flight read memory:
+/// this budget (32 MiB) of encoded frames queued for the wire;
+/// [`READ_CHANNEL_BUDGET`] (8 MiB) of SPI pushes queued behind them; the
+/// ONE push the forwarding loop holds in hand while parked — as large
+/// as the connector made it (the wire refuses above `MAX_FRAME_BYTES`,
+/// 64 MiB), momentarily near TWICE that for an Arrow push whose decoded
+/// batch and encoded IPC bytes coexist while [`read_frame_of`] runs; and
+/// whatever tonic has already pulled for the wire, deliberately NOT
+/// covered — each frame's permit drops at the handover, nothing on this
+/// side can know when tonic frees the bytes, and h2 flow control paces
+/// that hold (measured at one frame with the peer stalled).
 ///
-/// - this budget (32 MiB) of encoded frames queued for the wire;
-/// - [`READ_CHANNEL_BUDGET`] (8 MiB) of SPI pushes queued behind them;
-/// - the ONE push the forwarding loop holds in hand while parked on
-///   this budget — as large as the connector made it (the wire refuses
-///   above `common::MAX_FRAME_BYTES`, 64 MiB), and momentarily near
-///   TWICE that for an Arrow push, whose decoded batch and encoded IPC
-///   bytes coexist while [`read_frame_of`] runs;
-/// - whatever tonic has already pulled for the wire, which this budget
-///   deliberately does NOT cover: each frame's permit drops at the
-///   handover (nothing on this side can know when tonic frees the
-///   bytes), and h2 flow control is what paces that hold — the
-///   admission pin measured it at one frame with the peer stalled.
+/// It counts BYTES because counting frames priced them all the same: a
+/// count bound of 16 frames let a source producing ~10 MiB frames
+/// plateau near 500 MB with no knob that reached it. 32 MiB is four
+/// times the read channel, an order of magnitude below that, and above
+/// any single frame a source in this tree produces — so the
+/// at-least-one admission rule stays the exception. No operator knob,
+/// deliberately: one honest constant beats a dial nobody has a number
+/// for; the door, should a workload need one, is a `with_*` builder on
+/// the entry points, never a config key.
 ///
-/// IT COUNTS BYTES BECAUSE COUNTING FRAMES PRICED THEM ALL THE SAME.
-/// This channel was bounded at 16 already-encoded frames regardless of
-/// size, which for a postgres source's ~10 MiB frames measured a ~500 MB
-/// out-of-box plateau (043's operator finding) — and no engine-side knob
-/// reached it: `batch_policy.every_bytes` is the ENGINE's accumulate
-/// cadence, not this buffer, so an operator watching a spawned
-/// connector's memory had nothing to turn. A byte budget prices a
-/// 64-byte checkpoint and an 8 MiB batch as what they are.
-///
-/// 32 MiB (D-046-1): four times the read channel, an order of
-/// magnitude below that old worst case, and above any single frame a
-/// source in this tree produces — so the at-least-one rule below stays
-/// the exception it is meant to be rather than the normal path.
-///
-/// NO OPERATOR KNOB, deliberately (YAGNI): one honest constant beats a
-/// dial nobody has a number for. Should a real workload ever need one,
-/// the door is a `with_*` builder on the serve entry points — not a
-/// config key, which would put a memory bound in the same document as
-/// connection details and make it part of the frozen config vocabulary.
-///
-/// Public but hidden from docs: not API — exposed so the integration
-/// pin derives its admission ceiling from this constant rather than
+/// Public but hidden from docs: not API — exposed so the integration pin
+/// derives its admission ceiling from this constant rather than
 /// restating it as a literal that could silently drift.
 #[doc(hidden)]
 pub const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
 
-/// Secondary message cap on the frame channel, for the same reason the
-/// SPI's records channel keeps one: the byte budget prices a zero-byte
-/// message at nothing, so without a message cap frames carrying no
-/// payload (an empty push, a terminal `ErrorFrame`) could queue without
+/// Secondary message cap on the frame channel: the byte budget prices a
+/// zero-byte frame at nothing, so without a message cap payload-free
+/// frames (an empty push, a terminal `ErrorFrame`) could queue without
 /// limit while never touching the budget.
 const FRAME_MESSAGE_CAPACITY: usize = 64;
 
-/// The role a source's handshake must be asked for — the mirrored
-/// spelling lives on the destination side (`serve::destination`'s own
-/// `EXPECTED_ROLE`).
+/// The role a source's handshake must be asked for.
 const EXPECTED_ROLE: &str = "source";
 
-// ---- the byte-budgeted frame channel ---------------------------------------
+// ---- the frame channel -----------------------------------------------------
 //
-// The admission rule is the SPI's (`rdlt_connector::channel`): a budget
-// in bytes, a permit that travels WITH the value and releases when the
-// value is taken, a secondary message cap, and at-least-one admission so
-// an over-budget value still passes rather than deadlocking. The SPI
-// owns that rule for pushes; this is the same rule over ENCODED frames,
-// written here rather than reused because the receiving half must be a
-// `Stream` for tonic to poll, and the SPI's `ByteReceiver` exposes only
-// an `async fn recv`. Any fix to the rule belongs in both places.
+// The SPI's byte-budgeted channel over ENCODED frames: a permit that
+// travels with the frame and releases when tonic takes it, a secondary
+// message cap, and at-least-one admission so an over-budget frame passes
+// alone rather than deadlocking. What the sdk adds is the tonic-facing
+// `Stream` over the receiver and a hang-up signal the forwarding loop
+// can observe while parked on the connector's pushes.
 
-/// One encoded frame plus the budget it was admitted under. The permit
-/// rides WITH the frame and drops the moment [`FrameStream`] hands the
-/// frame to tonic, so the budget bounds QUEUED frames only: bytes
-/// tonic has pulled for the wire are the transport's, deliberately
-/// unbudgeted — nothing on this side of the handover can know when
-/// tonic frees them, and h2 flow control is what paces that hold.
-/// [`BYTE_FRAME_BUDGET`]'s worst-case sum names the transport term.
-struct BudgetedFrame {
-    frame: Result<proto::ReadFrame, Status>,
-    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+/// One frame with the cost the budget charges it: the payload it
+/// carries. The protobuf envelope is a handful of bytes and is not
+/// modelled — the budget bounds the data a stalled reader lets pile up,
+/// and every byte that can pile up is in one of the payload arms. An
+/// `ErrorFrame` is terminal, tiny, and priced at nothing so it can
+/// always reach a client whose budget is spent; a transport `Status`
+/// ends the stream and carries no payload.
+struct Frame(Result<proto::ReadFrame, Status>);
+
+impl ByteSized for Frame {
+    fn byte_size(&self) -> usize {
+        match &self.0 {
+            Ok(frame) => match &frame.frame {
+                Some(read_frame::Frame::RawJson(bytes))
+                | Some(read_frame::Frame::ArrowIpc(bytes))
+                | Some(read_frame::Frame::CheckpointCursorJson(bytes)) => bytes.len(),
+                Some(read_frame::Frame::Error(_)) | None => 0,
+            },
+            Err(_) => 0,
+        }
+    }
 }
 
 /// The response stream is gone: the client hung up, or the stream
@@ -147,13 +136,14 @@ struct StreamGone;
 
 /// The sending half the forwarding loop holds.
 struct FrameSender {
-    frames: mpsc::Sender<BudgetedFrame>,
-    budget: Arc<Semaphore>,
-    budget_total: usize,
+    frames: ByteSender<Frame>,
     gone: watch::Receiver<bool>,
 }
 
 impl FrameSender {
+    /// Resolves once the response stream has been dropped — what lets
+    /// the forwarding loop learn of a hang-up while it is parked on the
+    /// connector's next push rather than on a send.
     async fn stream_gone(&self) {
         let mut gone = self.gone.clone();
         if *gone.borrow() {
@@ -162,53 +152,20 @@ impl FrameSender {
         let _ = gone.changed().await;
     }
 
-    /// Send one frame, parking until its encoded bytes fit inside the
-    /// budget (and a message slot is free).
-    ///
-    /// A frame larger than the ENTIRE budget must still pass — refusing
-    /// it, or waiting on permits that cannot exist, would deadlock a
-    /// legal read — so its request is capped at the budget total and it
-    /// degrades to "wait for the whole budget, then go alone". The
-    /// `u32` saturation matters only for a budget above `u32::MAX`
-    /// (semaphore permits are `u32`), where a saturated request is
-    /// still the same drain-everything request.
+    /// Send one frame, parking until its bytes fit inside the budget and
+    /// a message slot is free.
     async fn send(&self, frame: Result<proto::ReadFrame, Status>) -> Result<(), StreamGone> {
-        let bytes = match &frame {
-            Ok(frame) => frame_bytes(frame),
-            // A transport `Status` carries diagnostic text and ends the
-            // stream; there is no payload to budget.
-            Err(_) => 0,
-        };
-        let requested = bytes.min(self.budget_total).try_into().unwrap_or(u32::MAX);
-        // Zero-byte frames skip the semaphore entirely — the message cap
-        // is what bounds them. Acquiring zero permits would also
-        // succeed; skipping states the intent, and keeps such a frame
-        // passing even against a fully spent budget.
-        let permit = if requested > 0 {
-            Some(
-                Arc::clone(&self.budget)
-                    .acquire_many_owned(requested)
-                    .await
-                    .map_err(|_| StreamGone)?,
-            )
-        } else {
-            None
-        };
         self.frames
-            .send(BudgetedFrame {
-                frame,
-                _permit: permit,
-            })
+            .send(Frame(frame))
             .await
-            .map_err(|_| StreamGone)
+            .map_err(|ChannelClosed| StreamGone)
     }
 }
 
 /// The `Read` response stream: frames in the order the forwarding loop
-/// sent them, each releasing its budget as it is pulled.
+/// sent them, each releasing its budget as tonic pulls it.
 struct FrameStream {
-    frames: mpsc::Receiver<BudgetedFrame>,
-    budget: Arc<Semaphore>,
+    frames: ByteReceiver<Frame>,
     gone: watch::Sender<bool>,
 }
 
@@ -216,79 +173,46 @@ impl Stream for FrameStream {
     type Item = Result<proto::ReadFrame, Status>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Taking `frame` out of the wrapper drops the permit with it:
-        // the budget releases exactly when tonic takes the frame for
-        // the wire, not when the forwarding loop sent it.
-        self.frames
-            .poll_recv(cx)
-            .map(|budgeted| budgeted.map(|budgeted| budgeted.frame))
+        // A fresh `recv` future per poll: the SPI receiver exposes only
+        // the async form, and tokio's channel receive is cancel-safe, so
+        // dropping the future on `Pending` loses nothing. Taking the
+        // value out of its permit is what releases the budget — exactly
+        // when tonic takes the frame for the wire.
+        let recv = std::pin::pin!(self.frames.recv());
+        recv.poll(cx)
+            .map(|next| next.map(|permitted| permitted.into_value().0))
     }
 }
 
 impl Drop for FrameStream {
-    /// A client hang-up drops this stream, and a sender PARKED on the
-    /// byte budget is waiting on the SEMAPHORE — a wait the message
-    /// queue's own closure says nothing about. Closing both makes the
-    /// hang-up an event the forwarding loop observes from EITHER wait,
-    /// exactly as the SPI's `ByteReceiver::close` closes both halves of
-    /// a records channel.
-    ///
-    /// It is deliberately explicit rather than left to emerge: dropping
-    /// the receiver also drops the frames still queued, releasing their
-    /// permits, which would eventually let a parked sender acquire and
-    /// then fail on the closed queue instead — so a test cannot tell
-    /// the two apart, and removing these lines leaves the suite green.
-    /// That equivalence rests on when a dropped receiver releases
-    /// buffered messages, which is tokio's business and not a promise
-    /// this cancellation path should be built on: the connector's read
-    /// task hanging forever is the failure at the other end of it.
+    /// A client hang-up drops this stream. Closing the receiver closes
+    /// both the message queue and the byte-budget semaphore, so a sender
+    /// parked on EITHER wait observes the hang-up; the watch tells a
+    /// forwarding loop parked on the connector's pushes.
     fn drop(&mut self) {
         let _ = self.gone.send(true);
         self.frames.close();
-        self.budget.close();
     }
 }
 
-/// A frame channel: `byte_budget` caps the encoded bytes in flight,
-/// `message_capacity` is the secondary cap that keeps payload-free
-/// frames from queueing without limit.
 fn frame_channel(byte_budget: usize, message_capacity: usize) -> (FrameSender, FrameStream) {
-    let budget = Arc::new(Semaphore::new(byte_budget));
-    let (frames_tx, frames_rx) = mpsc::channel(message_capacity);
+    let (frames_tx, frames_rx) = rdlt_connector::channel::bytes(byte_budget, message_capacity);
     let (gone_tx, gone_rx) = watch::channel(false);
     (
         FrameSender {
             frames: frames_tx,
-            budget: Arc::clone(&budget),
-            budget_total: byte_budget,
             gone: gone_rx,
         },
         FrameStream {
             frames: frames_rx,
-            budget,
             gone: gone_tx,
         },
     )
 }
 
-/// What a frame costs the budget: the payload it carries. The protobuf
-/// envelope around that payload is a handful of bytes on top and is
-/// deliberately not modelled — the budget bounds the data a stalled
-/// reader lets pile up, and every byte that can actually pile up is in
-/// one of these arms. An `ErrorFrame` is terminal, tiny, and priced at
-/// nothing so it can always reach a client whose budget is spent.
-fn frame_bytes(frame: &proto::ReadFrame) -> usize {
-    match &frame.frame {
-        Some(read_frame::Frame::RawJson(bytes)) => bytes.len(),
-        Some(read_frame::Frame::ArrowIpc(bytes)) => bytes.len(),
-        Some(read_frame::Frame::CheckpointCursorJson(bytes)) => bytes.len(),
-        Some(read_frame::Frame::Error(_)) | None => 0,
-    }
-}
-
 /// The gRPC surface over one [`SourceConnector`]. `shell` is empty until
-/// a handshake succeeds; `Arc` (not a bare `Shell<C>`) because the `Read`
-/// RPC hands a clone to a spawned task that outlives the request.
+/// a handshake succeeds; `Arc` because the `Read` RPC hands a clone to a
+/// spawned task that outlives the request.
 struct SourceServer<C: SourceConnector> {
     shell: OnceLock<Arc<Shell<C>>>,
 }
@@ -300,19 +224,16 @@ impl<C: SourceConnector> SourceServer<C> {
         }
     }
 
-    /// The shell, once handshake has populated it — every RPC but
+    /// The shell, once a handshake has populated it — every RPC but
     /// `Handshake` itself and the config-free `Spec` needs this.
     fn shell(&self) -> Result<&Arc<Shell<C>>, Status> {
         self.shell
             .get()
-            .ok_or_else(|| Status::failed_precondition(common::HANDSHAKE_NOT_COMPLETED))
+            .ok_or_else(|| Status::failed_precondition(wire::HANDSHAKE_NOT_COMPLETED))
     }
 }
 
-/// What [`common::handshake`] needs from this shell — see
-/// [`common::HandshakeShell`] for why this lives per-module rather than
-/// on `Shell<C>` itself.
-impl<C: SourceConnector> common::HandshakeShell for Shell<C> {
+impl<C: SourceConnector> wire::HandshakeShell for Shell<C> {
     type Error = <C::Config as Document>::Error;
 
     fn from_config(value: serde_json::Value) -> Result<Self, Self::Error> {
@@ -332,8 +253,7 @@ impl<C: SourceConnector> common::HandshakeShell for Shell<C> {
     }
 
     fn capabilities_json(&self) -> Vec<u8> {
-        // Deliberately empty: the proto's own field doc names
-        // capabilities as a DESTINATION concern (merge/replace/widen
+        // Capabilities are a DESTINATION concern (merge/replace/widen
         // support) — a source has none to advertise.
         Vec::new()
     }
@@ -343,26 +263,15 @@ impl<C: SourceConnector> common::HandshakeShell for Shell<C> {
 /// the classification as the enum, the INNER cause's text as the
 /// message, and the rate-limit hint when there is one.
 ///
-/// THE CONTRACT (039 fix round 1): `ErrorFrame.message` is the CAUSE
-/// text; classification travels only as the enum; the receiving client
-/// renders the classification frame exactly once on reconstruction.
-/// Shipping `error.to_string()` here — as this function first did —
-/// put the SPI `Display` frame ON the wire, and a client mapping the
-/// frame back to a `SourceError` then framed it again ("fatal source
-/// error: fatal source error: …" — the 026 double-frame class, end to
-/// end). The third-party argument decides which side owns the frame: a
-/// foreign server authors its own cause text and cannot know rdlt's
-/// SPI `Display` spellings, so the wire carries causes, never frames.
-/// Nothing is lost — `SourceError::context` already folds context into
-/// the inner cause string.
-///
-/// The wildcard arm is required: `SourceError` is `#[non_exhaustive]`
-/// from OUTSIDE its defining crate, which this crate is. A future
-/// classification this match has not been taught about lands FATAL
-/// rather than failing to compile a shipped server — and, with no way
-/// to reach an unknown variant's inner cause, it keeps the full
-/// rendered `Display` as its message: a safe fallback that may
-/// double-frame on reconstruction, preferred over dropping text.
+/// `ErrorFrame.message` is the CAUSE text, never the SPI's `Display`
+/// frame: the receiving client renders the classification frame exactly
+/// once on reconstruction, and a foreign server authoring its own cause
+/// text cannot know rdlt's spellings anyway. Nothing is lost — context
+/// is already folded into the inner cause. The wildcard arm is required
+/// (`SourceError` is `#[non_exhaustive]` from outside its crate): an
+/// unknown classification lands FATAL with the full rendered `Display`
+/// as its message — a fallback that may double-frame on reconstruction,
+/// preferred over dropping text.
 fn source_error_frame(error: &SourceError) -> ErrorFrame {
     let (classification, message, retry_after) = match error {
         SourceError::Transient(cause) => (Classification::Transient, cause.to_string(), None),
@@ -377,7 +286,7 @@ fn source_error_frame(error: &SourceError) -> ErrorFrame {
         SourceError::Fatal(cause) => (Classification::Fatal, cause.to_string(), None),
         _ => (Classification::Fatal, error.to_string(), None),
     };
-    common::error_frame(classification, message, retry_after)
+    wire::error_frame(classification, message, retry_after)
 }
 
 #[tonic::async_trait]
@@ -386,7 +295,7 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeReply>, Status> {
-        Ok(common::handshake(
+        Ok(wire::handshake(
             &self.shell,
             EXPECTED_ROLE,
             request.into_inner(),
@@ -408,11 +317,9 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
         &self,
         _request: Request<proto::SpecRequest>,
     ) -> Result<Response<proto::SpecReply>, Status> {
-        // Config-free static identity — the schema command's path (039):
-        // answered from `C::NAME`/`C::VERSION`/`C::config_schema()`
-        // alone, exempted from the pre-handshake refusal BY
-        // CONSTRUCTION since it never calls `shell()`.
-        Ok(common::spec_reply(C::NAME, C::VERSION, C::config_schema()))
+        // Static identity: exempt from the pre-handshake refusal BY
+        // CONSTRUCTION, since it never calls `shell()`.
+        Ok(wire::spec_reply(C::NAME, C::VERSION, C::config_schema()))
     }
 }
 
@@ -450,60 +357,50 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let shell = Arc::clone(self.shell()?);
         let request = request.into_inner();
 
-        // A request payload that fails to decode answers INSIDE the
+        // A request document that fails its gate answers INSIDE the
         // response stream — first and only frame a terminal FATAL
-        // `ErrorFrame` — never as a `Status` (038 review round 1, B2):
-        // the twice-recorded Status-vs-ErrorFrame rule (serve/mod.rs;
-        // the protocol crate's README) allows exactly two refusal
-        // shapes, and an undecodable payload is a connector-outcome
-        // refusal like the destination side's `*_json` decode
-        // refusals, not a protocol-state violation.
-        // The document ceiling before the parse (7M2's fifth serve
-        // seat): a `StreamSpec` is a typed shell, but the read path's
-        // adversary is the client, and the spec travels with a cursor
-        // document into a RETAINED read request — the same
-        // raw-bytes-first discipline the other session seats run.
+        // `ErrorFrame`, never a `Status`: an undecodable payload is a
+        // connector-outcome refusal, not a protocol-state violation.
+        // The size gates run BEFORE each parse: a compact document
+        // materializes as an untyped `Value` at many times its wire
+        // size, and both documents are RETAINED for the read's lifetime.
+        // The cursor's bound is the cursor contract's own — tighter than
+        // the config ceiling, and the same constant the client enforces
+        // pre-send, so the two ends cannot disagree.
         if let Err(message) = rdlt_connector::gate::refuse_oversized_document(
             "stream_spec_json",
             &request.stream_spec_json,
         ) {
-            return Ok(error_stream(message));
+            return Ok(error_stream(message).await);
         }
         let stream_spec = match serde_json::from_slice(&request.stream_spec_json) {
             Ok(spec) => spec,
             Err(error) => {
-                // Kind-and-location, not serde's verbatim Display (5L6 —
-                // it can quote the parsed fragment back over the wire).
                 return Ok(error_stream(format!(
                     "invalid stream_spec_json: {}",
-                    common::describe_config_parse_error(&error)
-                )));
+                    rdlt_connector::gate::describe_parse_error(&error)
+                ))
+                .await);
             }
         };
         let since = match &request.since_cursor_json {
             None => None,
-            // The size gate runs BEFORE the parse, like the handshake's
-            // config gate: a compact document materializes as an
-            // untyped `Value` at many times its wire size, and this one
-            // is RETAINED inside the `Cursor` for the read's lifetime.
-            // The bound is the cursor contract's
-            // (`rdlt_connector::gate::MAX_CURSOR_BYTES`, 5L3) — deliberately
-            // tighter than the config ceiling, and the same constant the
-            // client enforces pre-send, so the two ends cannot disagree.
             Some(bytes) if bytes.len() as u64 > rdlt_connector::gate::MAX_CURSOR_BYTES => {
-                return Ok(error_stream(common::oversized_document(
+                return Ok(error_stream(wire::oversized_document(
                     "since_cursor_json",
                     bytes.len(),
                     rdlt_connector::gate::MAX_CURSOR_BYTES,
-                )));
+                ))
+                .await);
             }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
                 Ok(value) => Some(rdlt_connector::core::Cursor::new(value)),
                 Err(error) => {
                     return Ok(error_stream(format!(
                         "invalid since_cursor_json: {}",
-                        common::describe_config_parse_error(&error)
-                    )));
+                        rdlt_connector::gate::describe_parse_error(&error)
+                    ))
+                    .await);
                 }
             },
         };
@@ -533,24 +430,20 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
 /// exit path — client hang-up, encode failure, or the connector's own
 /// end of stream.
 ///
-/// `encode` is the push-to-frame translation ([`read_frame_of`] in
-/// production). It is a parameter, not a hardcoded call, because its
-/// failure arm cannot be reached from data: a well-formed batch encodes
-/// its own schema infallibly, so the suite injects a failing encoder to
-/// drive the encode-failure interleavings deterministically.
+/// `encode` is a parameter, not a hardcoded call, because its failure
+/// arm cannot be reached from data: a well-formed batch encodes its own
+/// schema infallibly, so the suite injects a failing encoder to drive
+/// the encode-failure interleavings deterministically.
 async fn forward_read_frames(
-    mut records_in: rdlt_connector::channel::RecordsIn,
+    mut records_in: RecordsIn,
     frame_tx: FrameSender,
     read_task: JoinHandle<Result<(), SourceError>>,
     encode: fn(PushPayload) -> Result<proto::ReadFrame, String>,
 ) {
-    // Whether the encode-failure arm below has already emitted
-    // its ErrorFrame. The proto calls the Error frame TERMINAL,
-    // so once one is on the stream nothing may follow it — in
-    // particular the read task's own eventual `Err` (its push
-    // observed the closed channel and the connector may return
-    // an error rather than `Ok`) must not append a second
-    // "terminal" frame behind the first.
+    // The proto calls the Error frame TERMINAL: once one is on the
+    // stream nothing may follow it — in particular the read task's own
+    // eventual `Err` (its push observed the closed channel) must not
+    // append a second "terminal" frame behind the first.
     let mut terminal_sent = false;
     let mut abort_reader = false;
     loop {
@@ -568,18 +461,13 @@ async fn forward_read_frames(
         let frame = match encode(push.payload) {
             Ok(frame) => frame,
             Err(message) => {
-                // An Arrow batch that failed to encode must not
-                // just vanish: silently dropping it here would
-                // make a truncated read look identical to a
-                // clean end of stream to whatever is on the
-                // other end. Send ONE terminal error frame
-                // instead, then close the SPI channel exactly
-                // like a client hang-up below — the connector's
-                // read task winds down via Break rather than
-                // continuing to push into a channel nobody
-                // drains.
+                // A batch that failed to encode must not just vanish —
+                // silently dropping it makes a truncated read look like
+                // a clean end of stream. Send ONE terminal error frame,
+                // then close the SPI channel exactly like a client
+                // hang-up: the read task winds down via Break.
                 let frame = proto::ReadFrame {
-                    frame: Some(read_frame::Frame::Error(common::error_frame(
+                    frame: Some(read_frame::Frame::Error(wire::error_frame(
                         Classification::Fatal,
                         message,
                         None,
@@ -593,12 +481,10 @@ async fn forward_read_frames(
             }
         };
         if frame_tx.send(Ok(frame)).await.is_err() {
-            // The client hung up (or the stream errored out from
-            // under us): closing BOTH halves of the SPI channel
-            // — the message queue and the byte-budget semaphore
-            // a producer may be parked on — turns that into the
-            // Break the connector's next push observes, per the
-            // SPI's closed-channel-is-cancellation contract.
+            // The client hung up: closing BOTH halves of the SPI channel
+            // — the message queue and the byte-budget semaphore a
+            // producer may be parked on — turns that into the Break the
+            // connector's next push observes.
             records_in.close();
             abort_reader = true;
             break;
@@ -617,16 +503,13 @@ async fn forward_read_frames(
             };
             let _ = frame_tx.send(Ok(frame)).await;
         }
-        // A terminal ErrorFrame is already on the stream — the
-        // encode failure it reported is the diagnosis; the read
-        // task's follow-on error is downstream noise.
+        // A terminal ErrorFrame is already on the stream — the encode
+        // failure it reported is the diagnosis; the read task's
+        // follow-on error is downstream noise.
         Ok(Err(_)) => {}
-        // Gated exactly like the arm above: when the encode-failure arm
-        // already ended the stream with the protocol's TERMINAL
-        // ErrorFrame, the abort this loop itself requested turns the
-        // read task's completion into a cancelled JoinError — transport
-        // noise behind a diagnosis already delivered, and nothing may
-        // follow the terminal frame.
+        // Same gate: the abort this loop itself requested turns the read
+        // task's completion into a cancelled JoinError — transport noise
+        // behind a diagnosis already delivered.
         Err(join_error) if !terminal_sent => {
             let _ = frame_tx
                 .send(Err(Status::internal(format!(
@@ -640,37 +523,29 @@ async fn forward_read_frames(
 
 /// An already-terminated `Read` response stream whose first and only
 /// frame is a terminal FATAL [`ErrorFrame`] carrying `message` — what a
-/// request-decode failure answers with (see the comment inside
-/// `SourceServer::read` for why this is a frame, not a `Status`).
-fn error_stream(message: String) -> Response<FrameStream> {
-    // One terminal frame and nothing else, so the channel needs one
-    // message slot and no byte budget at all: an `ErrorFrame` is priced
-    // at nothing (see [`frame_bytes`]), which is what lets this be
-    // placed synchronously — the enqueue below cannot park.
+/// request-decode failure answers with. One message slot and no byte
+/// budget: an `ErrorFrame` is priced at nothing, so the enqueue cannot
+/// park.
+async fn error_stream(message: String) -> Response<FrameStream> {
     let (frame_tx, frame_rx) = frame_channel(0, 1);
     let frame = proto::ReadFrame {
-        frame: Some(read_frame::Frame::Error(common::error_frame(
+        frame: Some(read_frame::Frame::Error(wire::error_frame(
             Classification::Fatal,
             message,
             None,
         ))),
     };
     frame_tx
-        .frames
-        .try_send(BudgetedFrame {
-            frame: Ok(frame),
-            _permit: None,
-        })
+        .send(Ok(frame))
+        .await
         .expect("a fresh channel with capacity 1 accepts its one frame");
     Response::new(frame_rx)
 }
 
 /// One SPI push, translated to its wire shape — the payload picks the
-/// oneof arm; nothing here inspects the connector or the request.
-///
-/// `Err` only for the Arrow arm: encoding is the one fallible step in
-/// this translation (the caller turns it into a terminal `ErrorFrame`
-/// rather than a panic — see the forwarding loop above).
+/// oneof arm; nothing here inspects the connector or the request. `Err`
+/// only for the Arrow arm, the one fallible step (the caller turns it
+/// into a terminal `ErrorFrame` rather than a panic).
 fn read_frame_of(payload: PushPayload) -> Result<proto::ReadFrame, String> {
     let frame = match payload {
         PushPayload::RawJson(bytes) => read_frame::Frame::RawJson(bytes.to_vec()),
@@ -684,14 +559,11 @@ fn read_frame_of(payload: PushPayload) -> Result<proto::ReadFrame, String> {
 
 /// One Arrow batch as an IPC *stream* (not the `File` container — no
 /// footer, a schema message followed by one record-batch message,
-/// exactly what a single-batch push needs): the format
-/// [`rdlt_connector::channel::PushPayload::Arrow`]'s wire counterpart names.
-///
-/// Writing into an in-memory `Vec` fails only on a schema/batch mismatch
-/// the connector itself produced — an `expect()` would turn that into a
-/// panicked task indistinguishable, from the client's side, from a
-/// clean end of stream. Rendered as a plain `String`: the caller wraps
-/// it in a terminal `ErrorFrame`, which only needs text.
+/// exactly what a single-batch push needs). Writing into an in-memory
+/// `Vec` fails only on a schema/batch mismatch the connector itself
+/// produced — an `expect()` would turn that into a panicked task
+/// indistinguishable, from the client's side, from a clean end of
+/// stream.
 fn encode_arrow_ipc(batch: &rdlt_connector::arrow::RecordBatch) -> Result<Vec<u8>, String> {
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
         .map_err(|error| format!("opening an arrow ipc stream writer: {error}"))?;
@@ -705,40 +577,38 @@ fn encode_arrow_ipc(batch: &rdlt_connector::arrow::RecordBatch) -> Result<Vec<u8
 
 /// Bind at an explicit path and return the [`Line`] a spawning host
 /// would read from stdout, plus a handle for the serving task — WITHOUT
-/// printing anything. [`source`] is this at a self-minted temp path,
-/// with the printing a spawned connector process must do; this is the
-/// seam a test drives directly, against the very listener `source` would
-/// have started.
+/// printing anything. [`run`] is this at a self-minted temp path plus
+/// the printing a spawned connector process must do; this is the seam a
+/// test drives directly.
 ///
-/// Both gRPC services ([`Connector`] and [`SourceService`]) are wired to
-/// the SAME `SourceServer` instance (`from_arc`, not two independent
-/// `new`s) — they share one handshake-populated shell, so a `Streams` or
-/// `Read` call sees the config a prior `Handshake` validated.
-pub async fn serve_on<C: SourceConnector>(
+/// Both gRPC services are wired to the SAME `SourceServer` instance
+/// (`from_arc`, not two independent `new`s) — they share one
+/// handshake-populated shell, so a `Streams` or `Read` call sees the
+/// config a prior `Handshake` validated. `max_decoding_message_size` on
+/// BOTH: tonic's 4 MiB default receive cap is below what one legitimate
+/// frame may carry.
+pub async fn run_on<C: SourceConnector>(
     path: impl AsRef<Path>,
-) -> Result<(Line, JoinHandle<Result<(), ServeError>>), ServeError> {
+) -> Result<(Line, JoinHandle<Result<(), wire::Error>>), wire::Error> {
     let path = path.as_ref();
-    let listener = common::bind_uds(path)?;
+    let listener = wire::bind(path)?;
     let incoming = UnixListenerStream::new(listener);
 
     let server = Arc::new(SourceServer::<C>::new());
-    // `max_decoding_message_size` on BOTH services: tonic's 4 MiB
-    // default receive cap is below what one legitimate frame may carry
-    // — see `common::MAX_FRAME_BYTES`'s own doc.
     let serving = tonic::transport::Server::builder()
         .add_service(
             ConnectorServer::from_arc(Arc::clone(&server))
-                .max_decoding_message_size(common::MAX_FRAME_BYTES)
-                .max_encoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(MAX_FRAME_BYTES)
+                .max_encoding_message_size(MAX_FRAME_BYTES),
         )
         .add_service(
             SourceServiceServer::from_arc(server)
-                .max_decoding_message_size(common::MAX_FRAME_BYTES)
-                .max_encoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(MAX_FRAME_BYTES)
+                .max_encoding_message_size(MAX_FRAME_BYTES),
         )
         .serve_with_incoming(incoming);
 
-    let handle = tokio::spawn(async move { serving.await.map_err(ServeError::Serve) });
+    let handle = tokio::spawn(async move { serving.await.map_err(wire::Error::Serve) });
 
     Ok((
         Line {
@@ -755,29 +625,27 @@ pub async fn serve_on<C: SourceConnector>(
 /// under the system temp directory, print the handshake line on stdout
 /// (flushed — the spawning host is reading a pipe, not a TTY), then
 /// serve until the process is killed.
-pub async fn source<C: SourceConnector>() -> Result<(), ServeError> {
-    let (line, handle) = serve_on::<C>(common::temp_socket_path()?).await?;
+pub async fn run<C: SourceConnector>() -> Result<(), wire::Error> {
+    let (line, handle) = run_on::<C>(wire::socket_path()?).await?;
 
-    // `writeln!`, not `println!`: a spawning host that exits (or never
-    // reads its child's stdout — a misconfigured pipe) leaves this
-    // write facing a broken pipe, and `println!` panics on an IO error
-    // rather than surfacing one. `ServeError::Stdout` already exists
-    // for exactly this write, so both the line and the flush that
-    // follows report through it instead.
+    // `writeln!`, not `println!`: a spawning host that exits or never
+    // reads its child's stdout leaves this write facing a broken pipe,
+    // and `println!` panics on an IO error rather than surfacing one.
     let mut stdout = std::io::stdout();
-    writeln!(stdout, "{}", line.render()).map_err(ServeError::Stdout)?;
-    stdout.flush().map_err(ServeError::Stdout)?;
+    writeln!(stdout, "{}", line.render()).map_err(wire::Error::Stdout)?;
+    stdout.flush().map_err(wire::Error::Stdout)?;
 
-    handle.await.map_err(ServeError::Join)?
+    handle.await.map_err(wire::Error::Join)?
 }
 
 #[cfg(test)]
 mod tests {
-    //! The frame channel's admission rule, driven directly: the budget
-    //! is in BYTES, an over-budget frame still passes alone, and a
-    //! parked sender learns when the stream goes away. The wire-level
-    //! consequence — what a STALLED reader lets pile up end to end —
-    //! is pinned separately in `tests/cases/test_serve_source.rs`.
+    //! The frame channel's sdk-side properties, driven directly: what
+    //! each frame costs the budget, and that a dropped stream reaches a
+    //! parked sender and ends the stream at a terminal frame. The
+    //! admission rule itself is the SPI channel's, pinned there; the
+    //! wire-level consequence — what a STALLED reader lets pile up end
+    //! to end — is pinned in `tests/cases/test_serve_source.rs`.
     use std::time::Duration;
 
     use tokio_stream::StreamExt as _;
@@ -790,13 +658,11 @@ mod tests {
     const BOUND: Duration = Duration::from_secs(5);
 
     /// Long enough that a send which is going to complete has, short
-    /// enough to keep the suite quick — the same bounded-negative idiom
-    /// the SPI channel's own budget tests use.
+    /// enough to keep the suite quick.
     const PARKED: Duration = Duration::from_millis(50);
 
     /// Roomy enough that the message cap can never fire first — these
-    /// tests are about the BYTE budget, and a message-count stall would
-    /// be a different mechanism passing for it.
+    /// tests are about the BYTE budget.
     const ROOMY: usize = 256;
 
     fn frame_of(bytes: usize) -> Result<proto::ReadFrame, Status> {
@@ -807,7 +673,7 @@ mod tests {
 
     fn error_frame_of(message: &str) -> Result<proto::ReadFrame, Status> {
         Ok(proto::ReadFrame {
-            frame: Some(read_frame::Frame::Error(common::error_frame(
+            frame: Some(read_frame::Frame::Error(wire::error_frame(
                 Classification::Fatal,
                 message.to_string(),
                 None,
@@ -816,86 +682,26 @@ mod tests {
     }
 
     #[test]
-    fn frame_bytes_prices_every_payload_arm_by_what_it_carries() {
-        assert_eq!(frame_bytes(&frame_of(1234).unwrap()), 1234);
+    fn a_frame_costs_the_payload_it_carries() {
+        assert_eq!(Frame(frame_of(1234)).byte_size(), 1234);
         assert_eq!(
-            frame_bytes(&proto::ReadFrame {
+            Frame(Ok(proto::ReadFrame {
                 frame: Some(read_frame::Frame::ArrowIpc(vec![0; 77])),
-            }),
+            }))
+            .byte_size(),
             77
         );
         assert_eq!(
-            frame_bytes(&proto::ReadFrame {
+            Frame(Ok(proto::ReadFrame {
                 frame: Some(read_frame::Frame::CheckpointCursorJson(vec![0; 9])),
-            }),
+            }))
+            .byte_size(),
             9
         );
-        // Terminal, tiny, and deliberately free — see `frame_bytes`.
-        assert_eq!(frame_bytes(&error_frame_of("boom").unwrap()), 0);
-        assert_eq!(frame_bytes(&proto::ReadFrame { frame: None }), 0);
-    }
-
-    #[tokio::test]
-    async fn the_budget_counts_bytes_not_frames() {
-        let (sender, mut stream) = frame_channel(100, ROOMY);
-        // Fifty small frames pass — a count bound of 16 (what this
-        // channel used to carry) would have parked at the seventeenth.
-        for _ in 0..50 {
-            sender.send(frame_of(2)).await.expect("small frames fit");
-        }
-        for _ in 0..50 {
-            stream
-                .next()
-                .await
-                .expect("the queued frames")
-                .expect("a frame, not a status");
-        }
-        // …while the second of two large frames parks until the first is
-        // pulled for the wire.
-        sender
-            .send(frame_of(80))
-            .await
-            .expect("the first large frame");
-        let parked = sender.send(frame_of(80));
-        tokio::pin!(parked);
-        tokio::select! {
-            _ = &mut parked => panic!("the byte budget did not park the second large frame"),
-            _ = tokio::time::sleep(PARKED) => {}
-        }
-        stream
-            .next()
-            .await
-            .expect("the first large frame")
-            .expect("a frame, not a status");
-        tokio::time::timeout(BOUND, parked)
-            .await
-            .expect("pulling a frame releases its budget")
-            .expect("the stream is still there");
-    }
-
-    #[tokio::test]
-    async fn a_frame_larger_than_the_whole_budget_passes_alone() {
-        // Degrades to drain-the-budget rather than waiting on permits
-        // that cannot exist — refusing it would deadlock a legal read.
-        let (sender, mut stream) = frame_channel(16, ROOMY);
-        tokio::time::timeout(BOUND, sender.send(frame_of(1_000_000)))
-            .await
-            .expect("an over-budget frame must pass rather than park forever")
-            .expect("the stream is still there");
-        // ALONE: nothing else is admitted beside it until it is pulled.
-        let beside = tokio::time::timeout(PARKED, sender.send(frame_of(16))).await;
-        assert!(
-            beside.is_err(),
-            "an over-budget frame holds the whole budget while it waits to be pulled"
-        );
-        assert_eq!(
-            frame_bytes(&stream.next().await.expect("the big frame").expect("ok")),
-            1_000_000
-        );
-        tokio::time::timeout(BOUND, sender.send(frame_of(16)))
-            .await
-            .expect("the budget released with the big frame")
-            .expect("the stream is still there");
+        // Terminal, tiny, and deliberately free.
+        assert_eq!(Frame(error_frame_of("boom")).byte_size(), 0);
+        assert_eq!(Frame(Ok(proto::ReadFrame { frame: None })).byte_size(), 0);
+        assert_eq!(Frame(Err(Status::internal("gone"))).byte_size(), 0);
     }
 
     #[tokio::test]
@@ -912,7 +718,10 @@ mod tests {
             .await
             .expect("a payload-free frame must not wait on the budget")
             .expect("the stream is still there");
-        assert_eq!(frame_bytes(&stream.next().await.unwrap().unwrap()), 100);
+        assert_eq!(
+            Frame(Ok(stream.next().await.unwrap().unwrap())).byte_size(),
+            100
+        );
         assert!(matches!(
             stream.next().await.unwrap().unwrap().frame,
             Some(read_frame::Frame::Error(_))
@@ -923,20 +732,18 @@ mod tests {
     /// ErrorFrame even when the connector's read task is still running:
     /// the loop aborts that task, the abort surfaces as a `JoinError`,
     /// and the join arm must NOT append a transport `Status` behind the
-    /// terminal frame — the proto's contract is that nothing follows
-    /// it. The encoder is injected because a well-formed batch cannot
-    /// make the production encoder fail (see [`forward_read_frames`]).
+    /// terminal frame. The encoder is injected because a well-formed
+    /// batch cannot make the production encoder fail.
     #[tokio::test]
     async fn an_encode_failure_while_the_reader_runs_ends_the_stream_at_the_terminal_frame() {
         fn refuse(_: PushPayload) -> Result<proto::ReadFrame, String> {
             Err("induced encode failure".to_string())
         }
         let (mut out, records_in) = records(1 << 20);
-        // The reader is STILL RUNNING when the encode fails: a task
-        // parked forever stands in for a connector mid-read, so the
-        // loop's abort turns its completion into a cancelled JoinError —
-        // exactly the interleaving under test.
-        let read_task: tokio::task::JoinHandle<Result<(), rdlt_connector::error::SourceError>> =
+        // A task parked forever stands in for a connector mid-read, so
+        // the loop's abort turns its completion into a cancelled
+        // JoinError — exactly the interleaving under test.
+        let read_task: tokio::task::JoinHandle<Result<(), SourceError>> =
             tokio::spawn(async { std::future::pending().await });
         out.rows([serde_json::json!({"n": 1})])
             .await
@@ -957,8 +764,6 @@ mod tests {
             }
             other => panic!("expected the terminal ErrorFrame, got {other:?}"),
         }
-        // Nothing may follow the terminal frame: the aborted read
-        // task's JoinError must not become a trailing Status.
         let after = tokio::time::timeout(BOUND, stream.next())
             .await
             .expect("the stream ends rather than hanging");
@@ -978,11 +783,7 @@ mod tests {
         // A client hang-up must reach a sender waiting on the
         // SEMAPHORE, not just one waiting for a message slot —
         // otherwise the forwarding loop never learns to cancel the
-        // connector, and the read task hangs on forever. This pins the
-        // OUTCOME, not the mechanism: `FrameStream::drop`'s own comment
-        // records that the semaphore close it performs is belt to the
-        // queue-drop's braces, so this test stays green if that line is
-        // removed.
+        // connector, and the read task hangs on forever.
         let (sender, stream) = frame_channel(8, ROOMY);
         sender
             .send(frame_of(8))
@@ -999,5 +800,19 @@ mod tests {
             result.is_err(),
             "the woken sender is told the stream is gone, so the read can be cancelled"
         );
+    }
+
+    /// The hang-up signal reaches a forwarding loop parked on the
+    /// connector's NEXT push, not only one parked on a send.
+    #[tokio::test]
+    async fn dropping_the_stream_resolves_stream_gone() {
+        let (sender, stream) = frame_channel(8, ROOMY);
+        let parked = tokio::spawn(async move { sender.stream_gone().await });
+        tokio::time::sleep(PARKED).await;
+        drop(stream);
+        tokio::time::timeout(BOUND, parked)
+            .await
+            .expect("the hang-up resolves the wait")
+            .expect("task joins");
     }
 }

@@ -1,109 +1,55 @@
-//! The destination half of `serve()`: `DestinationServer` answers both
-//! halves of the wire protocol a destination connector implements —
-//! `Connector` (handshake, check) and `DestinationService` (the
-//! `OpenSession` bidi stream) — driving the connector's raw [`Backend`]
-//! directly, NOT a [`rdlt_connector::destination::LoadSession`] wrapper (038 T5
-//! review, ADR D5: an earlier version of this module wrapped
-//! `Shell::open`'s `Box<dyn LoadSession>`, which made the wire's
-//! `ExistingReceipt`/`Replay` frames inert stubs rather than real
-//! answers — the design doc's amendment records the reversal).
+//! The destination role: one server answers both halves of the wire
+//! protocol a destination implements — `Connector` (handshake, check,
+//! spec) and `DestinationService` (the `OpenSession` bidi stream) —
+//! driving the connector's raw [`Backend`] directly, not a
+//! `LoadSession` wrapper, so every wire frame reaches a REAL backend
+//! method rather than a stub.
 //!
 //! ONE long-lived bidirectional stream IS the session: it mirrors a
 //! [`Backend`]'s own lifetime (a stream reset is the session's crash
-//! class; a client half-close is its orderly end). Every wire frame
+//! class; a client half-close is its orderly end). Every frame
 //! (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/`Publish`/`ReadState`/
 //! `Close`) maps 1:1 onto its own [`Backend`] method — the wire speaks
-//! the REAL exactly-once grammar, not a collapsed `commit`.
+//! the real exactly-once grammar, not a collapsed `commit`.
 //!
 //! The choreography splits along the trust boundary this server sits
-//! on. [`crate::destination::WriteGuard`] (write-before-ensure,
-//! open-once) is enforced HERE, directly against the frames as they
-//! arrive, because a bidi stream carrying client-supplied ORDER never
-//! trusts that order — the same rule an in-process caller gets for free
-//! by construction (one [`crate::destination::Session`] per
-//! `Destination::open` call) has to be policed by hand against a wire
-//! client that might get it wrong. The D3 commit choreography
-//! (`existing_receipt` → `replay` → `publish`) is NOT enforced here at
-//! all: each of those three frames reaches its own `Backend` method
-//! independently, and the CALLER decides which to send next — an
-//! in-process embedder never sees this layer (it gets the choreography
-//! for free from `Session::commit`), and 039's remote-backend adapter
-//! reconstructs it client-side over the SAME `Session<B>` generic,
-//! reused by identical type rather than reimplemented against the
-//! wire. A foreign client that gets the choreography wrong — for
-//! instance, sending `Publish` twice for one `(load_id, commit_seq)`
-//! without ever asking `ExistingReceipt` first — is not this server's
-//! problem to referee: see [`crate::destination::Backend::existing_receipt`]'s
-//! own doc for why a transactional backend keeps its own durable guard
-//! as defense in depth, independent of whatever choreography a caller
-//! was supposed to run ("Backends whose receipts live in the same
-//! transaction as their publish keep their internal guard too; this is
-//! the protocol fast path").
+//! on. [`WriteGuard`] (write-before-ensure, open-once) is enforced HERE,
+//! directly against the frames as they arrive, because a bidi stream
+//! carrying client-supplied ORDER never trusts that order. The commit
+//! choreography (`existing_receipt` → `replay` → `publish`) is NOT
+//! refereed here: each of those frames reaches its own `Backend` method
+//! independently and the CALLER decides which to send next — the client
+//! crate's remote-backend adapter reconstructs it over the same
+//! `Session<B>` type an in-process embedder gets for free. So a foreign
+//! client CAN send `Publish` twice for one `(load_id, commit_seq)`
+//! without ever asking `ExistingReceipt`, and the ONLY thing that saves
+//! exactly-once is the destination's own durable receipt guard inside
+//! `Backend::publish` — the certifier drives exactly that sequence over
+//! the wire and demands a replay or a refusal, never a fresh mint.
 //!
-//! LOUD, because it is easy to read past: v0's wire literally does not
-//! sequence commit frames. A foreign client CAN send `Publish` twice for
-//! the same `(load_id, commit_seq)` without ever asking `ExistingReceipt`
-//! first, and nothing in THIS SERVER stops it — see the paragraph just
-//! above, this server does not referee frame order. The ONLY thing that
-//! saves exactly-once here is the destination's OWN durable receipt
-//! guard inside `Backend::publish`; a shipped `Backend` that does not
-//! keep one is wire-reachably double-publishable. This was first a
-//! RECORDED gap (038 T5 review round 2, F-4): the sdk's own black-box
-//! conformance kit only exercises the in-process `Session<B>` path,
-//! where the choreography above IS enforced by the caller. The
-//! Backend-direct D3-companion clause the record asked for now exists
-//! (GLM round-8, 8M5): the certifier's P10 pass 3 drives `Publish`
-//! twice over the WIRE with no `ExistingReceipt`/`Replay` in between
-//! and asserts the second either replays the first receipt or is
-//! refused — never a fresh mint.
+//! `OpenContext::part_events` is a SYNC callback, so any part it
+//! reports while a `Backend` call is in flight is already sitting in
+//! the unbounded channel by the time that call's `await` returns.
+//! Draining that channel immediately BEFORE sending the reply for the
+//! call that produced it is what the ordering promise covers: every
+//! part already queued when a call returns precedes that call's own
+//! reply. A part a buffering backend fires from a task this server
+//! never awaited carries no such promise; it arrives as its own
+//! `PartClosedEvent` reply as soon as the request loop next turns.
 //!
-//! `OpenContext::part_events` is the other place this server departs
-//! from a plain request/reply shape: the listener is a SYNC callback,
-//! so any part it reports while a `Backend` call is in flight is
-//! already sitting in the unbounded channel by the time that call's
-//! `await` returns. Draining that channel immediately BEFORE sending
-//! the reply for the call that (may have) produced it is what the
-//! ordering promise actually covers: every part already queued when a
-//! call returns precedes that call's own reply. An asynchronously
-//! emitted part — one a buffering backend fires from a task this server
-//! never directly awaited — carries no such promise; it simply arrives
-//! as its own `PartClosedEvent` reply as soon as the request loop next
-//! turns (the `biased` `select!` in `drive_session`), which may land
-//! before, after, or interleaved with any particular request's reply.
+//! One live session per served listener: a second concurrent
+//! `OpenSession` is refused outright, `Status::failed_precondition`,
+//! frozen wording `one session per connector process` — [`run`], the
+//! only entry a spawned process runs, opens exactly one listener per
+//! process, so the two ceilings coincide as shipped. Deliberate:
+//! loosening it later is additive; a backend's own per-session staging
+//! guard is defense in depth BEHIND this ceiling, not a replacement.
+//! There is no idle timeout: a stalled client holds the slot until the
+//! provider supervising the connector process evicts it.
 //!
-//! v0 allows exactly ONE live session per served listener
-//! (`DestinationServer::session_active` — one `DestinationServer` per
-//! call to [`serve_on`]) — a second concurrent `OpenSession` is refused
-//! outright, `Status::failed_precondition`, frozen wording `one session
-//! per connector process`. The wording says "process" rather than
-//! "listener" because [`destination`], the only entry a spawned
-//! connector process actually runs, opens exactly one listener per
-//! process — so "per served listener" and "per connector process" name
-//! the SAME ceiling as shipped; a caller embedding [`serve_on`] directly
-//! (as every test in this crate does) could in principle stand up more
-//! than one listener in one process, and the frozen text does not
-//! promise anything about that case. This is a deliberate ceiling, not
-//! a discovered limitation: loosening it later (one listener serving
-//! several concurrent sessions) is additive; shipping against the
-//! current single-session assumption and tightening it later would not
-//! be. A real backend's own per-session staging guard (the file
-//! connector's S6 lease is the precedent) is the defense-in-depth
-//! BEHIND this ceiling, not a replacement for it — refusing the RPC up
-//! front means no backend ever has to detect a second concurrent
-//! session on its own.
-//!
-//! v0 has no idle timeout (038 T5 review round 2, F-8): `OpenSession`
-//! spawns one task per pipeline session, and a stalled or hung client
-//! holds the one-session slot above indefinitely — nothing in this
-//! layer evicts it. 039's provider (whatever supervises the connector
-//! process) owns liveness — heartbeats, process-level timeouts,
-//! restart-on-hang — not this layer.
-//!
-//! [`destination`] is what a spawned connector process actually runs;
-//! [`serve_on`] is the seam under it, mirroring
-//! [`super::source::serve_on`] — bind at an explicit path without
-//! printing anything, so a test can drive the very listener
-//! [`destination`] would have started.
+//! [`run`] is what a spawned connector process runs; [`run_on`] is the
+//! seam under it — bind at an explicit path without printing anything,
+//! so a test can drive the very listener [`run`] would have started.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -115,7 +61,6 @@ use rdlt_connector::core::{
 };
 use rdlt_connector::destination::{Destination, OpenContext, PartCloseReason, PartClosed};
 use rdlt_connector::error::DestinationError;
-use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::destination_service_server::{
@@ -126,55 +71,39 @@ use rdlt_connector_protocol::proto::{
     PartClosedEvent, Published, ReceiptReply, SessionReply, SessionRequest, StateReply,
     check_reply, session_reply, session_request,
 };
+use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::{Request, Response, Status, Streaming};
 
-use super::common::{self, ServeError};
+use super::wire;
 use crate::config::Document;
 use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 
-/// Bound on the reply channel one session forwards into. Every reply on
-/// it is triggered by ONE client frame (request/reply-paced, not a
-/// throughput stream) except `PartClosedEvent`s: those QUEUE in the
-/// unbounded `part_tx`/`part_rx` pair, but each still traverses this
-/// SAME bounded channel as its own reply when forwarded. So the bound
-/// caps how many already-produced replies — request replies and
-/// forwarded part events alike — can sit unread while the CLIENT stalls
-/// reading its own stream; a telemetry burst beyond it parks in the
-/// unbounded pair (the forwarding loop parking with it) rather than
-/// growing this channel, so this is not a throughput budget. 16:
-/// headroom.
-///
-/// A COUNT stays the unit here, unlike the source side's frame channel
-/// (byte-bounded by 046 after a count let 16 multi-megabyte frames
-/// pile up), because reply PRODUCTION is client-paced: a reply exists
-/// only because the client sent the frame that asked for it, so the
-/// replies queued here can never outnumber the requests the client
-/// itself chose to send before reading — the sdk's own `Session` never
-/// pipelines (one frame, one awaited reply) — plus whatever part
-/// events those calls emitted. What a count does NOT bound is bytes:
-/// most replies are small control messages (five arms are empty, a
-/// part event is a table name plus two scalars, a receipt is
-/// identifiers), but `StateReply` carries the pipeline's whole state
-/// document, which is WORKLOAD-sized — file-family cursors run to
-/// megabytes — so the worst case held here is 16 such documents,
-/// reachable only by a client that pipelines 16 `ReadState` frames and
-/// reads none of the replies. The bulk data path proper (`Write`
-/// frames carrying Arrow IPC) travels the OTHER way, client to server,
-/// and never touches this channel: h2 flow control paces it and
-/// `common::MAX_FRAME_BYTES` caps any single frame.
+/// Bound on the reply channel one session forwards into: how many
+/// already-produced replies — request replies and forwarded part events
+/// alike — can sit unread while the CLIENT stalls reading its own
+/// stream. A COUNT, unlike the source side's byte-bounded frame
+/// channel, because reply production is client-paced: a reply exists
+/// only because the client sent the frame that asked for it, so queued
+/// replies can never outnumber the requests the client chose to send
+/// before reading, plus whatever part events those calls emitted. What
+/// a count does not bound is bytes: `StateReply` carries the pipeline's
+/// whole state document, which is workload-sized, so the worst case
+/// held here is 16 such documents, reachable only by a client that
+/// pipelines 16 `ReadState` frames and reads none of the replies. The
+/// bulk data path (`Write` frames carrying Arrow IPC) travels the OTHER
+/// way and never touches this channel.
 const REPLY_CHANNEL_BUDGET: usize = 16;
 
-/// The role a destination's handshake must be asked for — mirrors
-/// `EXPECTED_ROLE` on the source side.
+/// The role a destination's handshake must be asked for.
 const EXPECTED_ROLE: &str = "destination";
 
 /// The gRPC surface over one [`DestinationConnector`]. `shell` is empty
 /// until a handshake succeeds; `Arc` because `OpenSession` hands a clone
-/// to a spawned task that outlives the request. `session_active` is F5's
-/// one-session-per-process ceiling — see the module doc.
+/// to a spawned task that outlives the request. `session_active` is the
+/// one-session-per-process ceiling.
 struct DestinationServer<C: DestinationConnector> {
     shell: OnceLock<Arc<Shell<C>>>,
     session_active: Arc<AtomicBool>,
@@ -188,19 +117,16 @@ impl<C: DestinationConnector> DestinationServer<C> {
         }
     }
 
-    /// The shell, once handshake has populated it — every RPC but
+    /// The shell, once a handshake has populated it — every RPC but
     /// `Handshake` itself and the config-free `Spec` needs this.
     fn shell(&self) -> Result<&Arc<Shell<C>>, Status> {
         self.shell
             .get()
-            .ok_or_else(|| Status::failed_precondition(common::HANDSHAKE_NOT_COMPLETED))
+            .ok_or_else(|| Status::failed_precondition(wire::HANDSHAKE_NOT_COMPLETED))
     }
 }
 
-/// What [`common::handshake`] needs from this shell — see
-/// [`common::HandshakeShell`] for why this lives per-module rather than
-/// on `Shell<C>` itself.
-impl<C: DestinationConnector> common::HandshakeShell for Shell<C> {
+impl<C: DestinationConnector> wire::HandshakeShell for Shell<C> {
     type Error = <C::Config as Document>::Error;
 
     fn from_config(value: serde_json::Value) -> Result<Self, Self::Error> {
@@ -220,9 +146,8 @@ impl<C: DestinationConnector> common::HandshakeShell for Shell<C> {
     }
 
     fn capabilities_json(&self) -> Vec<u8> {
-        // Unlike a source's empty capabilities, a destination's ARE the
-        // host's planning input (merge/replace/widen support): the wire
-        // field carries the destination's capabilities document.
+        // A destination's capabilities ARE the host's planning input
+        // (merge/replace/widen support): the wire field carries them.
         serde_json::to_vec(&self.capabilities())
             .expect("Capabilities serializes to JSON infallibly")
     }
@@ -230,13 +155,11 @@ impl<C: DestinationConnector> common::HandshakeShell for Shell<C> {
 
 /// Flatten a classified [`DestinationError`] into the wire's
 /// [`ErrorFrame`]: the classification as the enum, the INNER cause's
-/// text as the message, the rate-limit hint when there is one — see
-/// the source side's `source_error_frame` twin for the full contract
-/// (`ErrorFrame.message` is the CAUSE text; classification travels
-/// only as the enum; the receiving client renders the classification
-/// frame exactly once on reconstruction) and for why the wildcard arm
-/// is required and keeps the full `Display` (`DestinationError` is
-/// `#[non_exhaustive]` from outside its defining crate).
+/// text as the message (never the SPI's `Display` frame — the receiving
+/// client renders the classification exactly once on reconstruction),
+/// the rate-limit hint when there is one. The wildcard arm is required
+/// (`DestinationError` is `#[non_exhaustive]` from outside its crate)
+/// and keeps the full `Display` rather than dropping text.
 fn destination_error_frame(error: &DestinationError) -> ErrorFrame {
     let (classification, message, retry_after) = match error {
         DestinationError::Transient(cause) => (Classification::Transient, cause.to_string(), None),
@@ -251,53 +174,41 @@ fn destination_error_frame(error: &DestinationError) -> ErrorFrame {
         DestinationError::Fatal(cause) => (Classification::Fatal, cause.to_string(), None),
         _ => (Classification::Fatal, error.to_string(), None),
     };
-    common::error_frame(classification, message, retry_after)
+    wire::error_frame(classification, message, retry_after)
 }
 
-/// A malformed `*_json` payload on an otherwise well-formed request
-/// frame: a FATAL refusal naming which field failed to decode, with the
-/// error rendered KIND-AND-LOCATION (5L6 — serde's verbatim Display can
-/// quote the parsed value, so an oversized or sensitive fragment no
-/// longer rides the refusal back over the wire). Not part of the
-/// frozen-spelling surface (no test pins its exact text) — a client
-/// sending undecodable JSON is a protocol-level bug in whatever built
-/// the frame, not a data outcome.
-fn decode_error_reply(field: &str, error: serde_json::Error) -> session_reply::Reply {
-    session_reply::Reply::Error(common::error_frame(
-        Classification::Fatal,
-        format!(
-            "invalid {field}: {}",
-            super::common::describe_config_parse_error(&error)
-        ),
-        None,
-    ))
+/// A FATAL refusal reply carrying `message` — the shape every in-session
+/// refusal this server itself decides takes.
+fn refuse(message: impl Into<String>) -> session_reply::Reply {
+    session_reply::Reply::Error(wire::error_frame(Classification::Fatal, message, None))
 }
 
-/// Decode one inbound session document: the document ceiling FIRST (on
-/// the raw bytes, bounding the parse's own materialization — the 7M2
-/// serve mirror of the client's gates), then the parse with the shared
-/// kind-and-location renderer. Both refusals are fatal `ErrorFrame`s,
-/// the same shape the parse arm always answered with.
+/// Decode one inbound session document: the document ceiling FIRST, on
+/// the raw bytes, bounding the parse's own materialization; then the
+/// parse, its failure rendered by KIND and location alone (serde's
+/// verbatim `Display` can quote the parsed value back over the wire).
+/// A client sending undecodable JSON is a bug in whatever built the
+/// frame, not a data outcome — the spelling is not frozen.
 fn decode_document<T: serde::de::DeserializeOwned>(
     field: &str,
     bytes: &[u8],
 ) -> Result<T, session_reply::Reply> {
-    rdlt_connector::gate::refuse_oversized_document(field, bytes).map_err(|message| {
-        session_reply::Reply::Error(common::error_frame(Classification::Fatal, message, None))
-    })?;
-    serde_json::from_slice::<T>(bytes).map_err(|error| decode_error_reply(field, error))
+    rdlt_connector::gate::refuse_oversized_document(field, bytes).map_err(refuse)?;
+    serde_json::from_slice::<T>(bytes).map_err(|error| {
+        refuse(format!(
+            "invalid {field}: {}",
+            rdlt_connector::gate::describe_parse_error(&error)
+        ))
+    })
 }
 
-/// The identifier-length half of the wire's identifier rule, at the
-/// session's inbound seats (7M3): the client caps every
-/// connector-authored identifier at the SPI's shared ceiling, and the
-/// serve side owes its own adversary — a rogue same-uid client — the
-/// same bound, because ensured names and session ids are retained for
-/// the session's lifetime (a multi-megabyte name is memory and log
-/// swelling, not vocabulary).
+/// The identifier-length half of the wire's identifier rule at the
+/// session's inbound seats: ensured names and session ids are retained
+/// for the session's lifetime, so a rogue client's multi-megabyte name
+/// is memory and log swelling, refused at the door.
 fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_reply::Reply> {
     if value.len() > rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES {
-        return Err(session_reply::Reply::Error(common::error_frame(
+        return Err(session_reply::Reply::Error(wire::error_frame(
             Classification::Fatal,
             format!(
                 "a session {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
@@ -311,16 +222,6 @@ fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_re
     Ok(())
 }
 
-/// The frozen refusal for any non-`Open` frame arriving before a
-/// session exists.
-fn refuse_before_open() -> session_reply::Reply {
-    session_reply::Reply::Error(common::error_frame(
-        Classification::Fatal,
-        "the session's first frame must be Open",
-        None,
-    ))
-}
-
 /// One closed part, translated to its wire shape.
 fn part_closed_event(part: PartClosed) -> PartClosedEvent {
     PartClosedEvent {
@@ -331,15 +232,12 @@ fn part_closed_event(part: PartClosed) -> PartClosedEvent {
 }
 
 /// [`PartCloseReason`]'s wire spelling, taken DIRECTLY from its own
-/// `Serialize` impl rather than reproduced by hand (038 T5 review, F7):
-/// a hand-maintained match table drifted from the SPI's own spelling
-/// silently, with a wildcard arm swallowing the mismatch as "unknown" —
-/// indistinguishable from a genuinely new variant. A unit-variant enum
+/// `Serialize` impl rather than a hand-maintained match table that
+/// could drift from the SPI's spelling silently. A unit-variant enum
 /// with `#[serde(rename_all = "snake_case")]` always serializes to a
-/// plain JSON string; the `Debug`-formatted fallback only fires if a
-/// FUTURE variant somehow serializes to something else (e.g. a struct
-/// variant would serialize as a JSON object), and its PascalCase
-/// spelling can never collide with a real snake_case reason.
+/// plain JSON string; the `Debug` fallback only fires if a FUTURE
+/// variant serializes to something else, and its PascalCase spelling
+/// can never collide with a real snake_case reason.
 fn part_close_reason_str(reason: PartCloseReason) -> String {
     match serde_json::to_value(reason) {
         Ok(serde_json::Value::String(spelling)) => spelling,
@@ -348,39 +246,27 @@ fn part_close_reason_str(reason: PartCloseReason) -> String {
 }
 
 /// One Arrow IPC *stream*'s exactly-one record batch — the `Write`
-/// frame's wire counterpart to the source side's `encode_arrow_ipc`; the
-/// proto's own comment on `Write` states the one-batch rule. Bytes that
-/// are not a valid IPC stream, a stream with no batch message, or a
-/// stream whose SECOND message fails to decode all collapse to the ONE
-/// frozen prefix (`write carried no decodable record batch`, 038 T5
-/// review's own quoted spelling) with the underlying arrow cause
-/// appended — the same frozen-prefix-plus-cause discipline
-/// [`decode_error_reply`] uses for the `*_json` fields, so none of these
-/// three legs is the one place that silently drops the diagnostic
-/// detail (038 T5 review round 2, item 4: an earlier version folded the
-/// "second message present but corrupt" case into the multi-batch
-/// refusal below, discarding its cause — a genuinely different failure
-/// than "there IS a decodable second batch", which alone gets the
-/// multi-batch spelling). A stream carrying a SECOND, DECODABLE batch
-/// message gets its own, distinct refusal (038 T5 review, F3: silently
-/// taking only the first batch would drop every row after it —
-/// measured as the defect this refusal exists to prevent, not a
-/// hypothetical).
+/// frame's payload. Bytes that are not a valid IPC stream, a stream with
+/// no batch message, or a stream whose SECOND message fails to decode
+/// all collapse to the ONE frozen prefix (`write carried no decodable
+/// record batch`) with the underlying arrow cause appended, so no leg
+/// silently drops the diagnostic; a stream carrying a SECOND, DECODABLE
+/// batch gets its own distinct refusal, because silently taking only
+/// the first would drop every row after it.
 fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::arrow::RecordBatch, String> {
     contained_decode(|| decode_arrow_ipc_erring(bytes))
 }
 
-/// The seat's panic belt. `catch_unwind` contains PANICS only; the
-/// declared-length abort class is closed upstream by the framing
-/// pre-pass inside `decode_arrow_ipc_erring` (5H1 — the two defenses
-/// are disjoint).
+/// The seat's panic belt: `catch_unwind` contains PANICS only. The
+/// declared-length ABORT class is closed by the framing pre-pass inside
+/// `decode_arrow_ipc_erring` — the two defenses are disjoint.
 fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
         Ok(decoded) => decoded,
         Err(payload) => Err(format!(
             "write carried no decodable record batch: the Arrow decoder panicked: {}",
-            // The shared bounded rendering (6L9) — a panic payload is
-            // attacker-adjacent text, and an evidence line is bounded.
+            // A panic payload is attacker-adjacent text; the shared
+            // rendering bounds it.
             rdlt_connector::gate::panic_text(payload.as_ref())
         )),
     }
@@ -389,11 +275,11 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
 fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::arrow::RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
 
-    // The shared framing pre-pass (SPI `ipc` module, 5H1): the panic belt
-    // above catches arrow's unwinds, but the DECLARED-length arms — a
-    // 2 GiB metadata memset, a `bodyLength` allocation whose failure
-    // ABORTS — are neither panics nor errors, so the declarations are
-    // held against the frame's real bytes before the reader runs.
+    // The framing pre-pass: the panic belt catches arrow's unwinds, but
+    // the DECLARED-length arms — a 2 GiB metadata memset, a `bodyLength`
+    // allocation whose failure ABORTS — are neither panics nor errors,
+    // so the declarations are held against the frame's real bytes
+    // before the reader runs.
     rdlt_connector::gate::refuse_overdeclared_framing(bytes)
         .map_err(|reason| format!("{REFUSAL}: {reason}"))?;
     let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
@@ -403,12 +289,10 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::arrow::Record
         Some(Err(error)) => return Err(format!("{REFUSAL}: {error}")),
         None => return Err(REFUSAL.to_string()),
     };
-    // 6M3: row count is the memory dimension the framing pre-pass
-    // cannot see — Null and run-end-encoded columns carry millions of
-    // rows in almost no body bytes, and the batch goes straight to the
-    // connector's own backend. The engine enforces this cap at its
-    // ingress for the read direction; this is the write-direction
-    // mirror, from the SPI's own shared vocabulary.
+    // Row count is the memory dimension the framing pre-pass cannot
+    // see — Null and run-end-encoded columns carry millions of rows in
+    // almost no body bytes, and the batch goes straight to the
+    // connector's own backend.
     if first.num_rows() > rdlt_connector::channel::MAX_RECORD_BATCH_ROWS {
         return Err(format!(
             "{REFUSAL}: the batch carries {} rows, over the {}-row wire cap — row count is \
@@ -433,7 +317,7 @@ impl<C: DestinationConnector> Connector for DestinationServer<C> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeReply>, Status> {
-        Ok(common::handshake(
+        Ok(wire::handshake(
             &self.shell,
             EXPECTED_ROLE,
             request.into_inner(),
@@ -455,11 +339,9 @@ impl<C: DestinationConnector> Connector for DestinationServer<C> {
         &self,
         _request: Request<proto::SpecRequest>,
     ) -> Result<Response<proto::SpecReply>, Status> {
-        // Config-free static identity — the schema command's path (039):
-        // answered from `C::NAME`/`C::VERSION`/`C::config_schema()`
-        // alone, exempted from the pre-handshake refusal BY
-        // CONSTRUCTION since it never calls `shell()`.
-        Ok(common::spec_reply(C::NAME, C::VERSION, C::config_schema()))
+        // Static identity: exempt from the pre-handshake refusal BY
+        // CONSTRUCTION, since it never calls `shell()`.
+        Ok(wire::spec_reply(C::NAME, C::VERSION, C::config_schema()))
     }
 }
 
@@ -529,17 +411,14 @@ async fn finish(
 }
 
 /// The per-session mutable state [`handle_frame`] threads through —
-/// bundled into one struct (rather than three separate `&mut` params)
-/// to keep that function's arity under clippy's `too_many_arguments`
-/// bar; grouping them is also the honest shape, since `guard`/`backend`/
-/// `closed` all describe facets of the SAME one session, not
-/// independent pieces of plumbing.
+/// one struct because `guard`/`backend`/`closed` are facets of the SAME
+/// session, not independent plumbing.
 struct SessionState<C: DestinationConnector> {
     guard: WriteGuard,
     /// `None` until an `Open` frame succeeds, then `Some` for the rest
     /// of the stream's life.
     backend: Option<C::Backend>,
-    /// Set by the explicit `Close` arm so [`drive_session`]'s F2
+    /// Set by the explicit `Close` arm so [`drive_session`]'s
     /// best-effort cleanup does not run `Backend::close` a second time.
     closed: bool,
 }
@@ -555,12 +434,8 @@ impl<C: DestinationConnector> SessionState<C> {
 }
 
 /// Handle one incoming frame against the raw [`Backend`] and its
-/// [`WriteGuard`] (bundled in `state`). Every frame maps to its OWN
-/// `Backend` method call (ADR D5): `ExistingReceipt`/`Replay`/`Publish`
-/// each reach `Backend::existing_receipt`/`replay`/`publish` directly
-/// rather than a collapsed `commit` — see the module doc for why this
-/// server does not referee the D3 choreography those three imply, only
-/// the write-before-ensure/open-once guard.
+/// [`WriteGuard`]. Every frame maps to its OWN `Backend` method call;
+/// only the write-before-ensure/open-once guard is refereed here.
 async fn handle_frame<C: DestinationConnector>(
     shell: &Shell<C>,
     state: &mut SessionState<C>,
@@ -570,32 +445,13 @@ async fn handle_frame<C: DestinationConnector>(
     frame: SessionRequest,
 ) -> Step {
     if let Some(session_request::Request::Open(open)) = frame.request {
-        // 038 T5 review round 2, item 2: the guard is checked BEFORE
-        // attempting `connect`, and marked open ONLY after `connect`
-        // SUCCEEDS — never eagerly. An eager mark would consume the
-        // guard's one Open on a merely Transient connect failure,
-        // leaving `opened == true` with no backend and no way to retry
-        // on the same stream: every later frame (including a retrying
-        // `Open`) would then refuse, downgrading a retryable failure to
-        // one that is not. With the check-then-mark-on-success split, a
-        // failed `Open` is legal to retry on the same stream — the
-        // guard never learns anything happened until it actually did.
+        // The guard is checked BEFORE attempting `connect` and marked
+        // open ONLY after `connect` SUCCEEDS, so a failed `Open` is
+        // legal to retry on the same stream — an eager mark would turn
+        // a Transient connect failure into a permanent refusal.
         let reply = if state.guard.is_open() {
-            // Routed through `destination_error_frame` like a
-            // connector's own failure, but since the flattener ships
-            // the INNER cause (039: the message is the cause text,
-            // never the SPI `Display` frame), the wire shows the bare
-            // spelling below — consistent with its sibling refusals
-            // (`refuse_before_open`, the decode refusals), which were
-            // always bare `common::error_frame` messages. An earlier
-            // comment here recorded the prefix mismatch as
-            // frozen-as-shipped; the cause-text rule dissolved it.
-            session_reply::Reply::Error(destination_error_frame(&DestinationError::fatal(
-                "a session accepts at most one Open frame, and it must be first",
-            )))
+            refuse("a session accepts at most one Open frame, and it must be first")
         } else {
-            // 7M3: the session's ids are retained for its lifetime —
-            // the wire's identifier ceiling applies at the door.
             if let Err(reply) = refuse_oversized_identifier("pipeline id", &open.pipeline)
                 .and_then(|()| refuse_oversized_identifier("load id", &open.load_id))
             {
@@ -605,12 +461,8 @@ async fn handle_frame<C: DestinationConnector>(
             let context =
                 OpenContext::new(PipelineId::new(open.pipeline), LoadId::new(open.load_id))
                     .with_part_events(Arc::new(move |part| {
-                        // The listener is a plain sync callback
-                        // (`OpenContext`'s own contract: "must never
-                        // fail and never block") — an unbounded
-                        // channel is the correct shape for it:
-                        // advisory-volume telemetry, never awaited
-                        // from inside the callback itself.
+                        // A sync callback that must never fail or
+                        // block: an unbounded channel is its shape.
                         let _ = tx.send(part);
                     }));
             match shell.connect(&context).await {
@@ -627,7 +479,12 @@ async fn handle_frame<C: DestinationConnector>(
 
     let guard = &mut state.guard;
     let Some(backend) = state.backend.as_mut() else {
-        return finish(part_rx, reply_tx, refuse_before_open()).await;
+        return finish(
+            part_rx,
+            reply_tx,
+            refuse("the session's first frame must be Open"),
+        )
+        .await;
     };
 
     let reply = match frame.request {
@@ -638,13 +495,12 @@ async fn handle_frame<C: DestinationConnector>(
             let mode = decode_document::<WriteMode>("write_mode_json", &ensure.write_mode_json);
             match (schema, mode) {
                 (Ok(schema), Ok(mode)) => {
-                    // 7M3: the ensured table (and its column names) are
-                    // retained in the session's guard for its lifetime.
+                    // Every identifier the schema and mode carry is
+                    // retained by the session or reaches a backend's
+                    // error text — the same ceiling at each.
                     let identifiers_ok =
                         refuse_oversized_identifier("table name", schema.table.as_str())
                             .and_then(|()| {
-                                // 8L6: the parent link names another
-                                // table the schema carries.
                                 schema.parent.iter().try_for_each(|parent| {
                                     refuse_oversized_identifier(
                                         "parent table name",
@@ -657,7 +513,6 @@ async fn handle_frame<C: DestinationConnector>(
                                     refuse_oversized_identifier("column name", &column.name)
                                 })
                             })
-                            // 8L6: Merge keys name columns — same ceiling.
                             .and_then(|()| match &mode {
                                 WriteMode::Merge { key } => key.iter().try_for_each(|column| {
                                     refuse_oversized_identifier("merge key column", column)
@@ -693,31 +548,11 @@ async fn handle_frame<C: DestinationConnector>(
                         Ok(()) => session_reply::Reply::Written(proto::Empty {}),
                         Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
                     },
-                    Err(message) => session_reply::Reply::Error(common::error_frame(
-                        Classification::Fatal,
-                        message,
-                        None,
-                    )),
+                    Err(message) => refuse(message),
                 },
             }
         }
         Some(session_request::Request::ExistingReceipt(existing)) => {
-            // ADR D5: this touches `Backend::existing_receipt` directly
-            // — a REAL lookup, not a stub. The D3 choreography deciding
-            // whether to follow this with `Replay` or `Publish` is NOT
-            // this server's job: it lives in the CALLER's `Session<B>`
-            // (the client crate's `Session` over its wire backend), the
-            // SAME generic type this sdk's shell composes. A foreign
-            // client that gets the choreography wrong — e.g. double-
-            // publishing one `(load_id, commit_seq)` — is caught by the
-            // destination's own DURABLE receipt guard, not by this
-            // server refereeing wire order: see
-            // `Backend::existing_receipt`'s own doc — "Backends whose
-            // receipts live in the same transaction as their publish
-            // keep their internal guard too; this is the protocol fast
-            // path."
-            // 8L6: the asked-about load id reaches the backend's lookup
-            // and its error text — same ceiling as every identifier seat.
             match refuse_oversized_identifier("load id", &existing.load_id) {
                 Err(reply) => reply,
                 Ok(()) => {
@@ -761,8 +596,6 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::ReadState(read_state)) => {
-            // 8L6: the pipeline id keys the backend's state lookup and
-            // its error text — same ceiling as every identifier seat.
             match refuse_oversized_identifier("pipeline id", &read_state.pipeline) {
                 Err(reply) => reply,
                 Ok(()) => match backend
@@ -785,27 +618,21 @@ async fn handle_frame<C: DestinationConnector>(
                 Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
             };
             // The explicit close ran — `drive_session`'s best-effort
-            // abandoned-session cleanup (F2) must not run it AGAIN.
+            // abandoned-session cleanup must not run it AGAIN.
             state.closed = true;
             let _ = finish(part_rx, reply_tx, reply).await;
             return Step::End;
         }
-        None => session_reply::Reply::Error(common::error_frame(
-            Classification::Fatal,
-            "the session received a request frame with no payload",
-            None,
-        )),
+        None => refuse("the session received a request frame with no payload"),
     };
     finish(part_rx, reply_tx, reply).await
 }
 
 /// Releases [`DestinationServer::session_active`] on drop — covers
-/// EVERY [`drive_session`] exit path (a clean `Close`, a client hangup,
-/// a transport error, a reply the client can no longer receive)
-/// uniformly, so F5's one-session ceiling can never leak stuck-active
-/// from a codepath that forgot to release it by hand. `open_session`
-/// acquires the slot BEFORE spawning `drive_session`, which then owns
-/// it for the rest of the session's life.
+/// EVERY [`drive_session`] exit path uniformly, so the one-session
+/// ceiling can never leak stuck-active from a codepath that forgot to
+/// release it by hand. `open_session` acquires the slot BEFORE spawning
+/// `drive_session`, which then owns it for the session's life.
 struct SessionSlot(Arc<AtomicBool>);
 
 impl Drop for SessionSlot {
@@ -816,44 +643,27 @@ impl Drop for SessionSlot {
 
 /// Run one session's request loop, from its `Open` to whatever ends it —
 /// a clean `Close`, the client hanging up, or a transport error — then
-/// (F2, 038 T5 review) best-effort close the backend on EVERY LOOP EXIT
-/// that is NOT the explicit `Close` frame. `LoadSession::close`'s
-/// contract (unchanged for a raw `Backend`): "Called exactly once
-/// whenever the session ends", and on a failure/cancellation path the
-/// caller invokes it best-effort, ignoring its error — the second
-/// half deliberately unquoted, since it condenses the contract's own
-/// longer sentence. Before this fix, an abandoned session (a
-/// client that vanishes mid-`Write`) leaked whatever the backend opened,
-/// because nothing but the explicit `Close` arm ever called it — the
-/// 037 US2 T7 leak class, reopened for the wire.
+/// best-effort close the backend on EVERY LOOP EXIT that is not the
+/// explicit `Close` frame, per the close contract (called exactly once
+/// whenever the session ends; best-effort on a failure path), so an
+/// abandoned session does not leak whatever the backend opened.
 ///
-/// "Every loop exit" is deliberately narrower than "every way this
-/// function can stop running" (038 T5 review round 2, item 3): this
-/// cleanup is a plain `if` after the `loop`, not `Drop`-based like
-/// `SessionSlot` below, because `Backend::close` is `async` and Rust has
-/// no async `Drop` — there is no safe way to run it from a destructor.
-/// So it runs on every path THIS function's own `loop` takes to a
-/// `break` (client hangup, transport error, a reply the client can no
-/// longer receive), but NOT if something outside this function ever
-/// aborts the task `drive_session` runs in (`JoinHandle::abort`) while
-/// it is parked mid-`select!` — that would skip straight to the
-/// destructor phase, and only synchronous state (like `SessionSlot`'s
-/// atomic release just below) survives that. Nothing in this crate
-/// currently holds such an abort handle (`open_session` spawns and
-/// discards it), so the gap is real but currently unreachable from
-/// inside this codebase — recorded rather than silently covered by
-/// wording that would overclaim what a non-async destructor can do.
+/// "Every loop exit" is narrower than "every way this function can
+/// stop running": `Backend::close` is `async` and Rust has no async
+/// `Drop`, so this cleanup is a plain `if` after the `loop` rather than
+/// destructor-based like `SessionSlot`. It does NOT run if something
+/// outside aborts the task while it is parked mid-`select!` — nothing in
+/// this crate holds such an abort handle, so the gap is real but
+/// unreachable from inside this codebase.
 async fn drive_session<C: DestinationConnector>(
     shell: Arc<Shell<C>>,
     mut incoming: Streaming<SessionRequest>,
     reply_tx: mpsc::Sender<Result<SessionReply, Status>>,
     _slot: SessionSlot,
 ) {
-    // Sync callback, advisory-volume telemetry (`OpenContext`'s own
-    // doc): unbounded is correct here specifically because the sender
-    // side never awaits and never blocks on backpressure — it is not a
-    // general escape hatch from the byte-budget discipline the read
-    // side observes.
+    // Unbounded because the sender is a sync callback that never
+    // awaits: advisory-volume telemetry, not an escape from the
+    // byte-budget discipline the read side observes.
     let (part_tx, mut part_rx) = mpsc::unbounded_channel::<PartClosed>();
     let mut state = SessionState::<C>::new();
 
@@ -861,21 +671,12 @@ async fn drive_session<C: DestinationConnector>(
         // `biased`: a part event queued from a PREVIOUS iteration's
         // `Backend` call is forwarded before this iteration reads its
         // next request frame — the between-requests half of the
-        // ordering guarantee. The within-one-request half (a part event
-        // fired synchronously by the call THIS iteration is about to
-        // run) is handled by `finish`'s explicit drain immediately
-        // before that request's own reply.
-        //
-        // Racing `part_rx.recv()` against `incoming.message()` here
-        // relies on tonic 0.14.6's `Streaming::message` being
-        // cancel-safe: it decodes into a buffer owned by `&mut self`
-        // (the `Streaming` value), not by the returned future, so
-        // dropping the LOSING branch's future on any given `select!`
-        // iteration (as happens to whichever branch does not win) never
-        // discards a partially-decoded frame — the next `.message()`
-        // call resumes cleanly. This reliance is deliberate, not
-        // incidental: a non-cancel-safe read here would need its own
-        // buffering to race safely against `part_rx`.
+        // ordering guarantee (`finish`'s drain is the within-request
+        // half). Racing against `incoming.message()` relies on tonic's
+        // `Streaming::message` being cancel-safe: it decodes into a
+        // buffer owned by the `Streaming` value, not the returned
+        // future, so dropping the losing branch never discards a
+        // partially-decoded frame.
         tokio::select! {
             biased;
             Some(part) = part_rx.recv() => {
@@ -899,8 +700,8 @@ async fn drive_session<C: DestinationConnector>(
         }
     }
 
-    // F2: best-effort close on EVERY exit path above except the
-    // explicit `Close` frame (which already ran it and set `closed`).
+    // Best-effort close on EVERY exit path above except the explicit
+    // `Close` frame (which already ran it and set `closed`).
     if !state.closed
         && let Some(backend) = state.backend.as_mut()
     {
@@ -918,7 +719,7 @@ impl<C: DestinationConnector> DestinationService for DestinationServer<C> {
     ) -> Result<Response<Self::OpenSessionStream>, Status> {
         let shell = Arc::clone(self.shell()?);
 
-        // F5: v0's one-session-per-process ceiling — refuse a second
+        // The one-session-per-process ceiling — refuse a second
         // concurrent `OpenSession` outright, before spawning anything.
         if self
             .session_active
@@ -942,39 +743,35 @@ impl<C: DestinationConnector> DestinationService for DestinationServer<C> {
 
 /// Bind at an explicit path and return the [`Line`] a spawning host
 /// would read from stdout, plus a handle for the serving task — WITHOUT
-/// printing anything. Mirrors the source side's `serve_on` — see there
-/// for why this is the seam tests drive rather than [`destination`]
-/// itself.
+/// printing anything; the seam tests drive rather than [`run`] itself.
 ///
-/// Both gRPC services ([`Connector`] and [`DestinationService`]) are
-/// wired to the SAME `DestinationServer` instance — they share one
-/// handshake-populated shell, so `OpenSession` sees the config a prior
-/// `Handshake` validated.
-pub async fn serve_on<C: DestinationConnector>(
+/// Both gRPC services are wired to the SAME `DestinationServer`
+/// instance — they share one handshake-populated shell, so
+/// `OpenSession` sees the config a prior `Handshake` validated.
+/// `max_decoding_message_size` on BOTH: tonic's 4 MiB default receive
+/// cap is below what one legitimate `Write` frame may carry.
+pub async fn run_on<C: DestinationConnector>(
     path: impl AsRef<Path>,
-) -> Result<(Line, JoinHandle<Result<(), ServeError>>), ServeError> {
+) -> Result<(Line, JoinHandle<Result<(), wire::Error>>), wire::Error> {
     let path = path.as_ref();
-    let listener = common::bind_uds(path)?;
+    let listener = wire::bind(path)?;
     let incoming = UnixListenerStream::new(listener);
 
     let server = Arc::new(DestinationServer::<C>::new());
-    // `max_decoding_message_size` on BOTH services: tonic's 4 MiB
-    // default receive cap is below what one legitimate `Write` frame
-    // may carry — see `common::MAX_FRAME_BYTES`'s own doc.
     let serving = tonic::transport::Server::builder()
         .add_service(
             ConnectorServer::from_arc(Arc::clone(&server))
-                .max_decoding_message_size(common::MAX_FRAME_BYTES)
-                .max_encoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(MAX_FRAME_BYTES)
+                .max_encoding_message_size(MAX_FRAME_BYTES),
         )
         .add_service(
             DestinationServiceServer::from_arc(server)
-                .max_decoding_message_size(common::MAX_FRAME_BYTES)
-                .max_encoding_message_size(common::MAX_FRAME_BYTES),
+                .max_decoding_message_size(MAX_FRAME_BYTES)
+                .max_encoding_message_size(MAX_FRAME_BYTES),
         )
         .serve_with_incoming(incoming);
 
-    let handle = tokio::spawn(async move { serving.await.map_err(ServeError::Serve) });
+    let handle = tokio::spawn(async move { serving.await.map_err(wire::Error::Serve) });
 
     Ok((
         Line {
@@ -990,16 +787,15 @@ pub async fn serve_on<C: DestinationConnector>(
 /// server: bind a fresh Unix domain socket in a private per-process
 /// directory under the system temp directory, print the handshake line
 /// on stdout (flushed — the spawning host is reading a pipe, not a
-/// TTY), then serve until the process is killed. Mirrors the source
-/// side's `source` entry point.
-pub async fn destination<C: DestinationConnector>() -> Result<(), ServeError> {
-    let (line, handle) = serve_on::<C>(common::temp_socket_path()?).await?;
+/// TTY), then serve until the process is killed.
+pub async fn run<C: DestinationConnector>() -> Result<(), wire::Error> {
+    let (line, handle) = run_on::<C>(wire::socket_path()?).await?;
 
     let mut stdout = std::io::stdout();
-    writeln!(stdout, "{}", line.render()).map_err(ServeError::Stdout)?;
-    stdout.flush().map_err(ServeError::Stdout)?;
+    writeln!(stdout, "{}", line.render()).map_err(wire::Error::Stdout)?;
+    stdout.flush().map_err(wire::Error::Stdout)?;
 
-    handle.await.map_err(ServeError::Join)?
+    handle.await.map_err(wire::Error::Join)?
 }
 
 #[cfg(test)]
@@ -1007,9 +803,8 @@ mod tests {
     use super::*;
 
     /// [`part_close_reason_str`]'s whole point: it must never drift from
-    /// [`PartCloseReason`]'s own `Serialize` — the 030 paraphrase class
-    /// (a hand-copied spelling silently diverging from the type it
-    /// mirrors). All FIVE variants, not a sample.
+    /// [`PartCloseReason`]'s own `Serialize`. All FIVE variants, not a
+    /// sample.
     #[test]
     fn part_close_reason_str_matches_the_types_own_serde_spelling() {
         for reason in [
@@ -1032,11 +827,11 @@ mod tests {
         }
     }
 
-    /// The 160-byte fuzz reproducer, served as a Write: the pinned
-    /// property is the TYPED refusal — today this input refuses at the
+    /// A fuzz-found 160-byte reproducer, served as a Write: the pinned
+    /// property is the TYPED refusal — this input refuses at the
     /// framing pre-pass (its declared framing is already over the
-    /// frame's end), which is exactly the division of labor 5H1 wants:
-    /// the pre-pass first, the belt for what the pre-pass cannot see.
+    /// frame's end): the pre-pass first, the belt for what the pre-pass
+    /// cannot see.
     #[test]
     fn a_crafted_write_is_a_typed_decode_refusal_never_an_escape() {
         const REPRO: [u8; 160] = [
@@ -1064,7 +859,7 @@ mod tests {
     /// The belt pinned DIRECTLY (synthetic, because every live input that
     /// once reached it now refuses earlier at the pre-pass): an unwind
     /// inside the decode is classified as a typed refusal, never an
-    /// escape — the same pattern the WAL seat's belt pin uses.
+    /// escape.
     #[test]
     fn a_decoder_panic_is_contained_as_a_typed_refusal() {
         let error = contained_decode::<()>(|| panic!("crafted metadata"))
@@ -1073,12 +868,12 @@ mod tests {
         assert!(error.contains("crafted metadata"), "{error}");
     }
 
-    /// 5H1 at THIS seat: the panic belt above cannot contain the
-    /// DECLARED-length arms — a 4-byte word declaring ~2 GiB of metadata
-    /// makes arrow's reader commit-and-zero the size before discovering
-    /// the bytes are missing. The shared pre-pass must refuse first; the
-    /// refusal spelling is the pre-pass's own, which is the structural
-    /// proof the reader (and its allocation) never ran.
+    /// The panic belt cannot contain the DECLARED-length arms — a 4-byte
+    /// word declaring ~2 GiB of metadata makes arrow's reader
+    /// commit-and-zero the size before discovering the bytes are
+    /// missing. The pre-pass must refuse first; the refusal spelling is
+    /// the pre-pass's own, which is the structural proof the reader
+    /// (and its allocation) never ran.
     #[test]
     fn a_write_declaring_a_huge_metadata_length_refuses_before_arrow_allocates() {
         let mut frame = vec![0xff, 0xff, 0xff, 0xff];

@@ -15,7 +15,7 @@ use rdlt_connector_reference::source::Reference as ReferenceSource;
 rdlt_connector_sdk::serve_main! {
     about: "rdlt reference connector — a protocol server (ADR 0001)",
     roles: {
-        Source => rdlt_connector_sdk::serve::source::source::<ReferenceSource>(),
-        Destination => rdlt_connector_sdk::serve::destination::destination::<ReferenceDestination>(),
+        Source => rdlt_connector_sdk::serve::source::run::<ReferenceSource>(),
+        Destination => rdlt_connector_sdk::serve::destination::run::<ReferenceDestination>(),
     }
 }

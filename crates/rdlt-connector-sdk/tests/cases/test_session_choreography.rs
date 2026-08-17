@@ -36,11 +36,11 @@ enum ReceiptScript {
     None,
     Found(CommitReceipt),
     /// Answer with a receipt whose IDENTITY disagrees with the lookup —
-    /// the 7M1 bug shape (a stale cache, an unkeyed read): the token
-    /// names a different commit than the one asked about.
+    /// the stale-cache/unkeyed-read bug shape: the token names a
+    /// different commit than the one asked about.
     Mismatched(CommitReceipt),
     /// Lookup finds nothing, but `publish` RETURNS a receipt naming a
-    /// different commit — the mirror bug shape (round-8, 5.3).
+    /// different commit — the mirror bug shape.
     PublishForges(CommitReceipt),
     Errors,
 }
@@ -203,7 +203,7 @@ async fn a_replayed_commit_runs_replay_housekeeping_and_never_publishes() {
     assert_eq!(calls(&log), vec![Call::ExistingReceipt, Call::Replay]);
 }
 
-/// 7M1: the receipt is the idempotence TOKEN, and one naming a
+/// The receipt is the idempotence TOKEN, and one naming a
 /// different commit proves nothing — a backend whose lookup returns a
 /// mismatched receipt (stale cache, unkeyed read) must fail the commit
 /// LOUDLY, never skip the publish and let the engine mark the WAL
@@ -233,7 +233,7 @@ async fn a_mismatched_receipt_identity_fails_the_commit_without_publishing() {
     assert_eq!(calls(&log), vec![Call::ExistingReceipt]);
 }
 
-/// 8M4: the same refusal with a HOSTILE identity — control characters
+/// The same refusal with a HOSTILE identity — control characters
 /// riding the forged load id — renders inert: the message cannot carry
 /// the bytes it judges.
 #[tokio::test]
@@ -259,7 +259,7 @@ async fn a_mismatched_receipt_refusal_renders_the_forged_identity_inertly() {
     assert_eq!(calls(&log), vec![Call::ExistingReceipt]);
 }
 
-/// The 7M1 guard's mirror (round-8, 5.3): a `publish` that RETURNS a
+/// The lookup guard's mirror: a `publish` that RETURNS a
 /// receipt naming a different commit fails the commit — the returned
 /// receipt is the same idempotence token, and an embedder holding it
 /// would vouch for this commit with a token naming some other one.

@@ -186,7 +186,7 @@ impl SourceService for Rogue {
 }
 
 /// Bind the rogue at `path` and serve until the returned task is
-/// dropped — the test-side mirror of the sdk's `serve_on`, minus every
+/// dropped — the test-side mirror of the sdk's `run_on`, minus every
 /// gate the sdk enforces.
 pub fn serve(path: &Path, script: ReadScript) -> JoinHandle<()> {
     let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");

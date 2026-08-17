@@ -3,12 +3,12 @@
 //! reaches the SPI through its `spi` re-export. Dev-dependencies are
 //! exempt (the testkit is the verification half).
 //!
-//! Only ADOPTED connectors are bound, and only IN-TREE ones can be:
-//! since the 044 cut the seven first-party connectors (with their
-//! recorded `rdlt-connector-sqlcore` exception for SQL destinations)
-//! live in the rdlt-connectors repository, whose manifests this test
-//! cannot read — the rule binds them there by review. What stays in
-//! this tree is the reference connector, the contract's own.
+//! Only ADOPTED connectors are bound, and only IN-TREE ones can be: the
+//! first-party connectors (with their recorded `rdlt-connector-sqlcore`
+//! exception for SQL destinations) live in the rdlt-connectors
+//! repository, whose manifests this test cannot read — the rule binds
+//! them there by review. What stays in this tree is the reference
+//! connector, the contract's own.
 
 use std::path::Path;
 
@@ -16,7 +16,7 @@ use std::path::Path;
 ///
 /// `rdlt-testkit` may additionally appear OPTIONAL-ONLY (checked below):
 /// a connector that ships container fixtures behind a `fixtures` feature
-/// routes them through the testkit's gate posture by design (D9), and an
+/// routes them through the testkit's gate posture by design, and an
 /// optional dep must live in `[dependencies]` to be feature-gated. A
 /// NON-optional testkit dependency stays a violation.
 const ADOPTED: &[(&str, &[&str])] = &[("rdlt-connector-reference", &["rdlt-connector-sdk"])];
@@ -75,8 +75,8 @@ fn adopted_connectors_depend_on_the_sdk_alone() {
 }
 
 /// The parser itself is checked against a shape that must FAIL — a
-/// vacuously-empty section reading as compliance is the 024 failure
-/// class.
+/// vacuously-empty section reading as compliance would be a vacuous
+/// pass.
 #[test]
 fn the_manifest_parser_sees_dependencies() {
     let manifest = "[dependencies]\nrdlt-connector = { workspace = true }\nserde = \"1\"\n\

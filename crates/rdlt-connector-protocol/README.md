@@ -210,7 +210,7 @@ socket **in the clear**. There is no protocol-level encryption or
 authentication in v0:
 
 - the socket is created owner-only (mode `0600`, enforced by the sdk's
-  `serve::common::bind_uds` — not by anything in this crate, since
+  `serve::wire::bind` — not by anything in this crate, since
   this crate has no server);
 - a spawned connector process inherits its operator's trust exactly
   like any other child process — the same boundary a locally-installed

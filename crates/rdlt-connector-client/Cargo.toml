@@ -35,7 +35,7 @@ tokio-stream = { workspace = true }
 
 [dev-dependencies]
 # The served counterpart the tests dial: this crate's own echo pair
-# served in-process through the sdk's `serve_on` seam.
+# served in-process through the sdk's `run_on` seam.
 rdlt-connector-sdk = { workspace = true, features = ["serve"] }
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }

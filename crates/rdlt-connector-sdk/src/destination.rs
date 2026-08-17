@@ -2,45 +2,39 @@
 //! [`Backend`], get the SPI — with the session choreography's
 //! conformance clauses enforced by construction.
 //!
-//! The split follows what a decade of connector frameworks converged on:
-//! the FRAMEWORK owns the protocol state machine, the connector owns the
-//! system IO. Concretely, the SDK session refuses a write to a table
-//! this session never ensured (the clause-E1 contract violation every
-//! destination had to police itself), asks the backend for an existing
-//! `(load_id, commit_seq)` receipt BEFORE publishing (the clause-D3
-//! replay, so an at-least-once re-commit returns the prior receipt), and
-//! reads state through the backend untouched.
+//! The FRAMEWORK owns the protocol state machine, the connector owns the
+//! system IO. Concretely, the session refuses a write to a table this
+//! session never ensured, asks the backend for an existing
+//! `(load_id, commit_seq)` receipt BEFORE publishing (so an
+//! at-least-once re-commit returns the prior receipt instead of
+//! republishing), and reads state through the backend untouched.
 //!
 //! What the choreography deliberately does NOT own: atomicity and
-//! durability. Staging invisibility (D1), crashed-session reclamation
-//! (D4), and atomic publish-with-state (D2) are properties of the
-//! backend's storage that no wrapper can add from outside — the
-//! [`Backend`] contract states them, the conformance suites verify
-//! them, and a transactional backend should keep its own internal
-//! receipt guard as defense in depth (the framework's replay check is
-//! the protocol fast path, not a substitute for a transactional one).
+//! durability. Staging invisibility, crashed-session reclamation, and
+//! atomic publish-with-state are properties of the backend's storage
+//! that no wrapper can add from outside — the [`Backend`] contract
+//! states them, the conformance suites verify them, and a transactional
+//! backend keeps its own internal receipt guard as defense in depth (the
+//! framework's replay check is the protocol fast path, not a substitute
+//! for a transactional one).
 //!
-//! NOTE on proof: the black-box conformance kit cannot distinguish the
-//! framework's replay choreography from a coincidentally-idempotent
-//! backend, so the choreography's call ordering is pinned by its own
-//! spy-backend suite (`tests/cases/test_session_choreography.rs`), not
-//! by the kit alone.
+//! The black-box conformance kit cannot distinguish the framework's
+//! replay choreography from a coincidentally-idempotent backend, so the
+//! call ORDER is pinned by the crate's own spy-backend suite
+//! (`tests/cases/test_session_choreography.rs`).
 //!
-//! [`WriteGuard`] carries the choreography's TRUST-BOUNDARY-INDEPENDENT
-//! half — write-before-ensure and open-once — split out from [`Session`]
-//! at 038 T5 review (ADR D5) so it can be enforced by TWO different
-//! callers against the SAME rules: [`Session`] composes it for an
-//! in-process embedder, and `serve::destination` (038, behind the
-//! `serve` feature) enforces it directly against raw wire frames, because
-//! a bidi stream carrying client-supplied frame ORDER never trusts that
-//! order — the guard is what stops a malformed or malicious wire client
-//! from doing what an in-process caller structurally cannot. The D3
-//! commit choreography (`existing_receipt` → `replay` → `publish`)
-//! stays composed inside [`Session`] alone: `serve::destination` maps
-//! each of those three wire frames straight onto its own [`Backend`]
-//! method, and the CALLER (039's remote-backend adapter, built on this
-//! same [`Session`] type) is what reassembles the choreography — see
-//! [`Shell::connect`].
+//! [`WriteGuard`] carries the trust-boundary-independent half —
+//! write-before-ensure and open-once — split out from [`Session`] so
+//! TWO callers enforce the SAME rules: [`Session`] composes it for an
+//! in-process embedder, and the serve layer enforces it directly
+//! against raw wire frames, because a bidi stream carrying
+//! client-supplied frame ORDER never trusts that order. The commit
+//! choreography (`existing_receipt` → `replay` → `publish`) stays
+//! composed inside [`Session`] alone: the serve layer maps each of those
+//! three wire frames straight onto its own [`Backend`] method, and the
+//! CALLER — the client crate's remote-backend adapter, built on this same
+//! [`Session`] type over a `Backend` that dials the connector — is what
+//! reassembles the choreography; see [`Shell::connect`].
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
@@ -213,20 +207,15 @@ impl<C: DestinationConnector> Shell<C> {
         Ok(shell(C::assemble(C::Config::from_value(value)?)?))
     }
 
-    /// Open the connector's raw system IO directly — the private
-    /// `self.connector.connect` accessor, promoted to a proper public
-    /// entry (038 T5 review, ADR D5): `serve::destination` drives the
-    /// returned [`Backend`] frame-by-frame instead of going through
-    /// [`Destination::open`]'s [`Session`] wrapper, so every wire frame
-    /// (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/`Publish`/
-    /// `ReadState`/`Close`) reaches a REAL [`Backend`] method rather
-    /// than a stub. This is the LOWER layer [`Destination::open`] is
-    /// built on, not a replacement for it: nothing here enforces
-    /// write-before-ensure or the D3 replay choreography — those stay
-    /// in [`WriteGuard`]/[`Session`], which a caller composes on top
-    /// (as [`Destination::open`] does, and as 039's remote-backend
-    /// adapter does, over a `Backend` that dials this same connector
-    /// out of process).
+    /// Open the connector's raw system IO directly. The serve layer
+    /// drives the returned [`Backend`] frame-by-frame instead of going
+    /// through [`Destination::open`]'s [`Session`] wrapper, so every
+    /// wire frame (`Ensure`/`Write`/`ExistingReceipt`/`Replay`/
+    /// `Publish`/`ReadState`/`Close`) reaches a REAL [`Backend`] method.
+    /// This is the LOWER layer [`Destination::open`] is built on, not a
+    /// replacement for it: nothing here enforces write-before-ensure or
+    /// the replay choreography — those stay in [`WriteGuard`]/[`Session`],
+    /// which a caller composes on top.
     pub async fn connect(&self, context: &OpenContext) -> Result<C::Backend, DestinationError> {
         self.connector.connect(context).await
     }
@@ -256,10 +245,9 @@ impl<C: DestinationConnector> Destination for Shell<C> {
 
 /// The write-before-ensure/open-once enforcement common to EVERY caller
 /// of a [`Backend`], regardless of which side of a trust boundary it
-/// runs on — see the module doc for the full split rationale. Carries no
-/// `Backend` of its own: a caller composes it alongside one (as
-/// [`Session`] does) or drives it directly against raw frames (as
-/// `serve::destination` does).
+/// runs on. Carries no `Backend` of its own: a caller composes it
+/// alongside one (as [`Session`] does) or drives it directly against raw
+/// frames (as the serve layer does).
 #[derive(Debug, Default)]
 pub struct WriteGuard {
     opened: bool,
@@ -276,26 +264,22 @@ impl WriteGuard {
     }
 
     /// Whether the session has ALREADY completed a successful `Open` —
-    /// `serve::destination` checks this BEFORE spending a `Backend::connect`
-    /// attempt on a session it would refuse anyway (038 T5 review round 2,
-    /// item 2). Split from marking open on purpose: see [`WriteGuard::mark_open`].
+    /// checked BEFORE spending a `Backend::connect` attempt on a session
+    /// that would be refused anyway. Split from marking open on purpose:
+    /// see [`WriteGuard::mark_open`].
     pub fn is_open(&self) -> bool {
         self.opened
     }
 
     /// Mark the session open. Call this ONLY after a `Backend::connect`
     /// (or equivalent) attempt has SUCCEEDED — never eagerly before
-    /// attempting it. `serve::destination`'s earlier shape called the
-    /// combined check-and-set before `connect`, so a Transient connect
-    /// failure still consumed the guard's one Open: the stream was left
-    /// with `opened == true` and no backend, and a retrying `Open` frame
-    /// got the misleading "at most one Open frame" refusal instead of a
-    /// real second attempt — downgrading a retryable failure to one that
-    /// is not, with no documented recovery beyond redialing the whole
-    /// connector process. `debug_assert!`s rather than returning
-    /// `Result`: by the time a caller reaches this, [`WriteGuard::is_open`]
-    /// must already have gated the call, so finding `opened` already
-    /// true here is a caller bug, not a wire input to report on.
+    /// attempting it: an eager mark consumes the guard's one Open on a
+    /// merely Transient connect failure, leaving the session with no
+    /// backend and no way to retry, so a retryable failure degrades into
+    /// one that is not. `debug_assert!` rather than `Result`: by the
+    /// time a caller reaches this, [`WriteGuard::is_open`] must already
+    /// have gated the call, so finding `opened` already true is a caller
+    /// bug, not a wire input to report on.
     pub fn mark_open(&mut self) {
         debug_assert!(!self.opened, "mark_open called on an already-open guard");
         self.opened = true;
@@ -321,23 +305,19 @@ impl WriteGuard {
     }
 }
 
-/// The framework-owned session: [`WriteGuard`] plus the D3 commit
+/// The framework-owned session: [`WriteGuard`] plus the commit
 /// choreography (`existing_receipt` → `replay` → `publish`), composed
-/// over a [`Backend`]. The commit choreography stays HERE rather than
-/// moving into [`WriteGuard`] — see the module doc: it is the half that
-/// runs on whichever side of the wire is doing the calling (in-process
-/// embedders and 039's remote-backend adapter alike), not the half a
-/// server enforces against wire ordering it does not trust.
+/// over a [`Backend`]. The choreography stays HERE rather than in
+/// [`WriteGuard`] because it is the half that runs on whichever side of
+/// the wire is doing the calling, not the half a server enforces against
+/// wire ordering it does not trust.
 ///
-/// PUBLIC (038 T5 review round 2, F-2): 039's remote-backend adapter
-/// needs to name this type — it composes the SAME `Session<B>`
-/// client-side, over a `Backend` that dials this connector out of
-/// process, rather than reimplementing the D3 choreography against the
-/// wire (see the module doc's trust-boundary split and
-/// [`Shell::connect`]'s doc). Constructed only through [`Session::new`];
-/// `backend`/`guard` stay private, so nothing outside this module can
-/// reach in and bypass the choreography [`LoadSession::commit`] below
-/// runs.
+/// Public so the client crate's remote-backend adapter can compose the
+/// SAME `Session<B>` over a `Backend` that dials a connector out of
+/// process, rather than reimplementing the choreography against the
+/// wire. Constructed only through [`Session::new`]; `backend`/`guard`
+/// stay private, so nothing outside this module can bypass the
+/// choreography [`LoadSession::commit`] runs.
 #[derive(Debug)]
 pub struct Session<B> {
     backend: B,
@@ -347,9 +327,9 @@ pub struct Session<B> {
 impl<B> Session<B> {
     /// Wrap an already-open `backend` in a fresh session — a new,
     /// unopened [`WriteGuard`] alongside it. The in-process path
-    /// ([`Destination::open`] above) calls this immediately after its
-    /// own `connect` succeeds; 039's remote-backend adapter is the
-    /// second, out-of-process caller this constructor exists for.
+    /// ([`Destination::open`]) calls this immediately after its own
+    /// `connect` succeeds; the remote-backend adapter is the second,
+    /// out-of-process caller.
     pub fn new(backend: B) -> Self {
         Self {
             backend,
@@ -380,11 +360,11 @@ impl<B: Backend> LoadSession for Session<B> {
     }
 
     async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
-        // Clause D3, as choreography: an at-least-once re-commit of the
-        // same (load_id, commit_seq) returns the receipt it already
-        // earned; nothing republishes. The backend's replay hook runs
-        // first — redelivered staging must be cleared and once-per-load
-        // guards re-marked even though the publish is skipped.
+        // An at-least-once re-commit of the same (load_id, commit_seq)
+        // returns the receipt it already earned; nothing republishes.
+        // The backend's replay hook runs first — redelivered staging
+        // must be cleared and once-per-load guards re-marked even
+        // though the publish is skipped.
         if let Some(receipt) = self
             .backend
             .existing_receipt(&meta.load_id, meta.commit_seq)
@@ -392,12 +372,12 @@ impl<B: Backend> LoadSession for Session<B> {
         {
             // The receipt is the protocol's idempotence TOKEN, and a
             // token that names a different commit proves nothing about
-            // this one (GLM round-7, 7M1): a backend whose lookup is
-            // buggy — a stale cache, an unkeyed read — would otherwise
-            // turn every commit into a silent no-op publish while the
-            // engine marks the WAL committed and reclaims segments.
-            // Checked HERE, at the choreography seat every host rides,
-            // so no backend can be trusted to check it itself.
+            // this one: a backend whose lookup is buggy — a stale
+            // cache, an unkeyed read — would otherwise turn every
+            // commit into a silent no-op publish while the engine marks
+            // the WAL committed and reclaims segments. Checked HERE, at
+            // the choreography seat every host rides, so no backend
+            // has to be trusted to check it itself.
             if receipt.load_id != meta.load_id || receipt.commit_seq != meta.commit_seq {
                 return Err(DestinationError::fatal(format!(
                     "the destination answered existing_receipt({}, {}) with a receipt for \
@@ -405,7 +385,7 @@ impl<B: Backend> LoadSession for Session<B> {
                      this one; refusing rather than skipping publish",
                     meta.load_id,
                     meta.commit_seq,
-                    // The forged identity is arbitrary wire text (8M4):
+                    // The forged identity is arbitrary wire text:
                     // render it bounded and escaped — inert, and never a
                     // frame-cap-sized firehose.
                     rdlt_connector::gate::render_diagnostic(receipt.load_id.as_str(), 256),
@@ -415,13 +395,12 @@ impl<B: Backend> LoadSession for Session<B> {
             self.backend.replay(&meta, &receipt).await?;
             return Ok(receipt);
         }
-        // The mirror of the lookup guard above (GLM round-8, 5.3): the
-        // receipt `publish` RETURNS is the same idempotence token — an
-        // embedder holding it (039's remote hosts do) would vouch for
-        // this commit with a token naming some other one. The engine
-        // discards returned receipts, so in-tree this is defense in
-        // depth; checked at the same choreography seat for the same
-        // reason — no backend can be trusted to check it itself.
+        // The mirror of the lookup guard above: the receipt `publish`
+        // RETURNS is the same idempotence token — an embedder holding
+        // it (remote hosts do) would vouch for this commit with a token
+        // naming some other one. The engine discards returned receipts,
+        // so in-tree this is defense in depth; checked at the same seat
+        // for the same reason.
         let (expected_load, expected_seq) = (meta.load_id.clone(), meta.commit_seq);
         let receipt = self.backend.publish(meta).await?;
         if receipt.load_id != expected_load || receipt.commit_seq != expected_seq {
@@ -577,11 +556,11 @@ mod tests {
         assert!(refused.to_string().contains("probe refuses"));
     }
 
-    /// 037 US2 T7 fix round 1: `ProbeBackend` implements neither
-    /// `Backend::close` (default `Ok(())`) — this pins BOTH halves at
-    /// once: the default itself is a trivial success, AND the shell's
-    /// `LoadSession::close` genuinely forwards to it rather than being
-    /// a no-op of its own that never reaches the backend.
+    /// `ProbeBackend` leaves `Backend::close` at its default — this
+    /// pins BOTH halves at once: the default itself is a trivial
+    /// success, AND the shell's `LoadSession::close` genuinely forwards
+    /// to it rather than being a no-op of its own that never reaches
+    /// the backend.
     #[tokio::test]
     async fn the_shells_close_forwards_to_the_backends_default() {
         let destination = shell(Probe);

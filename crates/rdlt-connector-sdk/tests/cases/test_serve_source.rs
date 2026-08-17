@@ -1,13 +1,11 @@
 //! `serve::source` end to end: a raw tonic client dials the UDS
-//! `serve_on` binds — the same tonic-UDS idiom a real out-of-process
-//! host would use (research.md #3:
-//! `Endpoint::try_from(..).connect_with_connector(service_fn(..))`) —
-//! and drives Handshake/Streams/Read against the echo connector.
+//! `run_on` binds — the same tonic-UDS idiom a real out-of-process host
+//! uses (`Endpoint::try_from(..).connect_with_connector(service_fn(..))`)
+//! — and drives Handshake/Streams/Read against the echo connector.
 //!
-//! `serve_on` (not the print-and-block `source()`) is the seam these
-//! tests use: it returns the [`Line`] instead of printing it, so the
-//! rendered line is asserted directly (`Line::render()`, exercised in
-//! the round-trip test below) rather than through stdout capture, which
+//! `run_on` (not the print-and-block `run()`) is the seam these tests
+//! use: it returns the [`Line`] instead of printing it, so the rendered
+//! line is asserted directly rather than through stdout capture, which
 //! is not reliably interceptable in-process.
 
 use std::path::PathBuf;
@@ -18,7 +16,7 @@ use rdlt_connector_protocol::proto::{
     Classification, HandshakeRequest, ReadRequest, SpecRequest, StreamsRequest, handshake_reply,
     read_frame, streams_reply,
 };
-use rdlt_connector_sdk::serve::source::{BYTE_FRAME_BUDGET, READ_CHANNEL_BUDGET, serve_on};
+use rdlt_connector_sdk::serve::source::{BYTE_FRAME_BUDGET, READ_CHANNEL_BUDGET, run_on};
 use tonic::transport::{Channel, Endpoint};
 
 use super::support::echo::{self, EchoSource};
@@ -79,7 +77,7 @@ fn numbers_stream_spec_json() -> Vec<u8> {
 #[tokio::test]
 async fn handshake_streams_and_read_round_trip() {
     let (_dir, path) = socket_path();
-    let (line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     assert_eq!(line.socket_path, path);
     assert_eq!(line.protocol_min, 0);
     assert_eq!(line.protocol_max, 0);
@@ -169,13 +167,11 @@ async fn handshake_streams_and_read_round_trip() {
 
 /// A handshake asking for the wrong role refuses with the frozen
 /// spelling — the mirrored spelling is pinned on the destination side by
-/// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`
-/// (038 T6; this comment used to say "future destination side" before
-/// that test existed).
+/// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`.
 #[tokio::test]
 async fn wrong_role_handshake_refuses_with_the_frozen_spelling() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -207,7 +203,7 @@ async fn wrong_role_handshake_refuses_with_the_frozen_spelling() {
 #[tokio::test]
 async fn unrecognized_role_handshake_refuses_with_its_own_spelling() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -236,7 +232,7 @@ async fn unrecognized_role_handshake_refuses_with_its_own_spelling() {
 #[tokio::test]
 async fn an_invalid_config_refuses_fatal_with_scalar_values_redacted() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -262,20 +258,16 @@ async fn an_invalid_config_refuses_fatal_with_scalar_values_redacted() {
 
 /// `config_json` that is not even valid JSON (never mind failing
 /// `Document::validate`) refuses FATAL too — the arm
-/// `serde_json::from_slice` itself trips inside `common::handshake`,
+/// `serde_json::from_slice` itself trips inside `wire::handshake`,
 /// before a `Document` is ever constructed. The frozen
 /// `invalid config_json: ` prefix is ours; the rest is the error's
 /// kind and location (never serde's own text, which the secrecy pins
 /// below hold), so this asserts the prefix rather than full-string —
-/// the same discipline the destination-role twin of this row uses in
-/// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`
-/// (038 T6 fix round 1: an earlier report of this task falsely claimed
-/// this test already existed here; it did not — this is the first real
-/// source-side pin of this row).
+/// the same discipline the destination-role twin of this row uses.
 #[tokio::test]
 async fn an_undecodable_config_json_refuses_fatal_with_the_frozen_prefix() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -309,7 +301,7 @@ async fn an_undecodable_config_json_refuses_fatal_with_the_frozen_prefix() {
 #[tokio::test]
 async fn an_oversized_config_json_refuses_fatal_by_size_before_any_parse() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     // One byte past the ceiling: `[0,0,0,…]`, padded to exact size with
@@ -360,7 +352,7 @@ async fn an_oversized_config_json_refuses_fatal_by_size_before_any_parse() {
 #[tokio::test]
 async fn an_out_of_range_protocol_version_refuses_fatal() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -389,7 +381,7 @@ async fn an_out_of_range_protocol_version_refuses_fatal() {
 #[tokio::test]
 async fn a_second_handshake_refuses() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let first = connector
@@ -428,15 +420,13 @@ async fn a_second_handshake_refuses() {
 /// `ErrorFrame` — unlike a classified refusal (wrong role, bad config,
 /// a failing check/read), which the wire carries as reply-payload state
 /// so a caller can inspect it uniformly, "you never handshook" is a
-/// client-protocol violation the RPC layer rejects directly. 038 T6
-/// recorded this Status-vs-ErrorFrame split as a DELIBERATE rule rather
-/// than an inconsistency to unify away — see `serve::mod`'s module doc
-/// (`rdlt-connector-sdk::serve`) for the full rule this test pins one
-/// instance of.
+/// client-protocol violation the RPC layer rejects directly — the
+/// Status-vs-ErrorFrame rule `serve::wire`'s module doc states, pinned
+/// here at one instance.
 #[tokio::test]
 async fn streams_before_a_handshake_refuses_as_a_status() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut source = SourceServiceClient::new(dial(&path).await);
 
     let error = source
@@ -452,12 +442,11 @@ async fn streams_before_a_handshake_refuses_as_a_status() {
 /// siblings below pin. It serves the connector's static identity
 /// (`C::NAME`/`C::VERSION`/`C::config_schema()`) without ever touching
 /// the handshake-populated shell, so a provider can ask a spawned
-/// connector what it IS before deciding what config to hand it (039:
-/// the schema command's path).
+/// connector what it IS before deciding what config to hand it.
 #[tokio::test]
 async fn spec_answers_before_any_handshake() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -480,7 +469,7 @@ async fn spec_answers_before_any_handshake() {
 #[tokio::test]
 async fn read_before_a_handshake_refuses_as_a_status() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut source = SourceServiceClient::new(dial(&path).await);
 
     let error = source
@@ -494,20 +483,17 @@ async fn read_before_a_handshake_refuses_as_a_status() {
     assert_eq!(error.message(), "handshake has not completed");
 }
 
-/// B2 fix pin (038 review round 1): an undecodable `stream_spec_json`
-/// answers INSIDE the response stream — the `Read` RPC itself completes
-/// normally, and the stream's first and only frame is a terminal FATAL
-/// `ErrorFrame` with the frozen `invalid stream_spec_json: ` prefix
-/// (the rest is serde's own text, so a fragment is asserted, same
-/// discipline as the config-decode rows). Pre-fix this answered
-/// `Status::invalid_argument` — a THIRD refusal shape the
-/// Status-vs-ErrorFrame rule (serve/mod.rs; the protocol README)
-/// forbids, while the destination side's `*_json` decode failures
-/// already rode `ErrorFrame`.
+/// An undecodable `stream_spec_json` answers INSIDE the response stream
+/// — the `Read` RPC itself completes normally, and the stream's first
+/// and only frame is a terminal FATAL `ErrorFrame` with the frozen
+/// `invalid stream_spec_json: ` prefix (the rest is the error's kind and
+/// location, so a fragment is asserted, same discipline as the
+/// config-decode rows). A `Status::invalid_argument` here would be a
+/// THIRD refusal shape the Status-vs-ErrorFrame rule forbids.
 #[tokio::test]
 async fn an_undecodable_stream_spec_answers_a_terminal_error_frame_not_a_status() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut source = SourceServiceClient::new(channel);
@@ -558,7 +544,7 @@ async fn an_undecodable_stream_spec_answers_a_terminal_error_frame_not_a_status(
 #[tokio::test]
 async fn an_undecodable_since_cursor_answers_a_terminal_error_frame_not_a_status() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut source = SourceServiceClient::new(channel);
@@ -612,7 +598,7 @@ async fn an_undecodable_since_cursor_answers_a_terminal_error_frame_not_a_status
 #[tokio::test]
 async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut source = SourceServiceClient::new(channel);
@@ -626,7 +612,7 @@ async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
         .await
         .expect("handshake rpc");
 
-    // 5L3: the cursor gate is the cursor contract's own bound
+    // The cursor gate is the cursor contract's own bound
     // (`MAX_CURSOR_BYTES`, 4 MiB) — deliberately tighter than the config
     // ceiling, and the same constant the client enforces pre-send.
     let mut cursor_json = Vec::new();
@@ -672,14 +658,14 @@ async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
 
 /// A connector read that fails forwards exactly one terminal `ErrorFrame`
 /// — no rows, no checkpoint, the classification from the `SourceError`
-/// and the message its BARE inner cause (039: the frame carries the
-/// cause text, never the SPI `Display` frame — the receiving client
-/// renders the classification frame exactly once on reconstruction),
-/// and nothing follows it on the stream.
+/// and the message its BARE inner cause (the frame carries the cause
+/// text, never the SPI `Display` frame — the receiving client renders
+/// the classification frame exactly once on reconstruction), and
+/// nothing follows it on the stream.
 #[tokio::test]
 async fn a_failed_read_forwards_one_terminal_error_frame() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut source = SourceServiceClient::new(channel);
@@ -720,9 +706,8 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
     );
 }
 
-/// THE BYTE-BOUND PIN (046, closing the 043 operator finding): what a
-/// STALLED reader lets the serve layer buffer is bounded in BYTES, not
-/// in frames. The client here starts a `Read` and then never polls its
+/// THE BYTE-BOUND PIN: what a STALLED reader lets the serve layer buffer
+/// is bounded in BYTES, not in frames. The client here starts a `Read` and then never polls its
 /// response stream, while the connector pushes 8 MiB documents as fast
 /// as the layer admits them; the echo source counts only pushes that
 /// RETURNED, so the counter reads exactly how much sat buffered before
@@ -738,10 +723,9 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
 /// small frame sizes.
 #[tokio::test]
 async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
-    // 8 MiB frames: the shape the 043 finding measured (a postgres
-    // source's ~10 MiB frames), and far enough above the read
-    // channel's own per-frame arithmetic that the two regimes cannot
-    // be confused.
+    // 8 MiB frames: the shape a postgres source's ~10 MiB frames take
+    // in practice, and far enough above the read channel's own
+    // per-frame arithmetic that the two regimes cannot be confused.
     const FRAME_BYTES: usize = 8 * 1024 * 1024;
     // More rows than any regime can admit, so admission — not the row
     // supply — is what stops the producer.
@@ -757,7 +741,7 @@ async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
     const CEILING: u64 = (BYTE_FRAME_BUDGET + READ_CHANNEL_BUDGET + 4 * FRAME_BYTES) as u64;
 
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut source = SourceServiceClient::new(channel);
@@ -811,9 +795,9 @@ async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
     );
 }
 
-/// The cancellation chain, load-bearing for 039's out-of-process
-/// adapter: a client that drops its `Read` response stream mid-flight
-/// must not leave the connector's producer running forever.
+/// The cancellation chain, load-bearing for the out-of-process adapter:
+/// a client that drops its `Read` response stream mid-flight must not
+/// leave the connector's producer running forever.
 /// `rows: 10_000_000` keeps `EchoSource` producing well past the drop;
 /// pulling a few frames first proves the producer is actually running
 /// ahead of the client when the drop happens. Cancellation may either
@@ -822,7 +806,7 @@ async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
 #[tokio::test]
 async fn a_dropped_response_stream_drops_the_connector_task_within_a_timeout() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut source = SourceServiceClient::new(channel);
@@ -871,7 +855,7 @@ async fn a_dropped_response_stream_drops_the_connector_task_within_a_timeout() {
 #[tokio::test]
 async fn a_dropped_response_stream_aborts_a_connector_parked_between_pushes() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
     let mut connector = ConnectorClient::new(channel.clone());
     let mut source = SourceServiceClient::new(channel);
@@ -920,7 +904,7 @@ async fn a_dropped_response_stream_aborts_a_connector_parked_between_pushes() {
 #[tokio::test]
 async fn a_truncated_config_refusal_never_echoes_the_document() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -957,7 +941,7 @@ async fn a_truncated_config_refusal_never_echoes_the_document() {
 #[tokio::test]
 async fn a_wrong_typed_config_refusal_redacts_the_secret_value() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -993,7 +977,7 @@ async fn a_wrong_typed_config_refusal_redacts_the_secret_value() {
 #[tokio::test]
 async fn a_validate_refusal_redacts_a_repeated_scalar_value() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let reply = connector
@@ -1024,7 +1008,7 @@ async fn a_validate_refusal_redacts_a_repeated_scalar_value() {
 #[tokio::test]
 async fn a_debug_escaped_secret_is_redacted_too() {
     let (_dir, path) = socket_path();
-    let (_line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let mut connector = ConnectorClient::new(dial(&path).await);
 
     let secret = "pa\"ss\\word";

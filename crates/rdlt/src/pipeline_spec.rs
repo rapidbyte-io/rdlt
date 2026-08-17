@@ -190,17 +190,17 @@ impl std::fmt::Debug for ConfigSource {
 /// fed to a recursive parser. Shared with the CLI's spec read AND with
 /// the connector sdk's own `Document::from_yaml` gate, so every
 /// document read answers to one number.
-pub const MAX_DOCUMENT_BYTES: u64 = rdlt_connector_sdk::yaml::MAX_DOCUMENT_BYTES;
+pub const MAX_DOCUMENT_BYTES: u64 = rdlt_connector_sdk::spi::gate::MAX_DOCUMENT_BYTES;
 
 fn parse_yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
     // The raw-text graph gate runs BEFORE deserialization: `serde_yaml_ng`
     // expands anchors and aliases while constructing the target value,
     // so an input-byte cap cannot bound the resulting allocation.
     // Pipeline and connector config documents are trees; graph syntax
-    // is refused. The gate lives in the sdk (`rdlt_connector_sdk::yaml`)
+    // is refused. The gate lives in the sdk (`rdlt_connector_sdk::config`)
     // so this parse and every connector's `Document::from_yaml` answer
     // to the same scanner.
-    rdlt_connector_sdk::yaml::reject_graph_syntax(text)?;
+    rdlt_connector_sdk::config::reject_graph_syntax(text)?;
     serde_yaml_ng::from_str(text).map_err(|error| error.to_string())
 }
 
