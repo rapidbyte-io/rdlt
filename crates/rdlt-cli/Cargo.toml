@@ -30,6 +30,9 @@ console = { workspace = true }
 indicatif = { workspace = true }
 libc = { workspace = true }
 rdlt = { workspace = true }
+# The connector requirement and role the `schema` command hands the
+# runtime's provider, spelled at the client crate's own paths.
+rdlt-connector-client = { workspace = true }
 rdlt-connector-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

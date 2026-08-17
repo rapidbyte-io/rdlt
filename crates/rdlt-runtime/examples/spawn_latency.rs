@@ -22,7 +22,9 @@
 
 use std::time::Instant;
 
-use rdlt_runtime::{ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider};
+use rdlt_connector_client::handshake::Requirement;
+use rdlt_runtime::local::Local;
+use rdlt_runtime::provider::Provider;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -39,14 +41,14 @@ async fn main() {
     // wrong. Say what the expect already promises.
     assert!(n > 0, "N (argv[2]) must be a positive integer, got 0");
 
-    let mut requirement = ConnectorRequirement::new("io.rapidbyte.reference");
+    let mut requirement = Requirement::new("io.rapidbyte.reference");
     if let Some(bin) = &bin {
         requirement = requirement.with_path(bin);
     }
     // Validated by the connector's LOCAL config gate at the handshake;
     // the file need not exist for the handshake to complete.
     let config = serde_json::json!({ "path": "spawn-latency-probe.jsonl" });
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
 
     let mut samples_ms: Vec<f64> = Vec::with_capacity(n);
     for spawn in 1..=n {

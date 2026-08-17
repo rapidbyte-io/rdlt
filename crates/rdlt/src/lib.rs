@@ -48,9 +48,9 @@ pub use rdlt_core::metrics::{self, Metrics};
 pub use rdlt_core::report::{self, ResumedFrom};
 pub use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
 /// The out-of-process connector runtime, re-exported for embedders that
-/// supply their own [`runtime::ConnectorProvider`] to
+/// supply their own [`runtime::provider::Provider`] to
 /// [`pipeline_spec::build_pipeline_with`] — or configure the default
-/// [`runtime::LocalBinaryConnectorProvider`] the no-provider form uses.
+/// [`runtime::local::Local`] the no-provider form uses.
 pub use rdlt_runtime as runtime;
 
 /// Glob-import target for pipeline authors.

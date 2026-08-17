@@ -45,12 +45,15 @@ use rdlt_connector::core::id::{LoadId, PipelineId};
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::spec::ConnectorSpec;
+use rdlt_connector_client::destination::Remote;
+use rdlt_connector_client::error::Error as ClientError;
+use rdlt_connector_client::handshake::Role;
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, destination_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::proto::SessionRequest;
-use rdlt_runtime::{
-    ClientError, ConnectorProvider, LocalBinaryConnectorProvider, ManagedDestination, Role,
-};
+use rdlt_runtime::local::Local;
+use rdlt_runtime::managed::Managed;
+use rdlt_runtime::provider::Provider;
 use rdlt_testkit::conformance::destination::{TableProbe, verify_destination};
 use serde_json::Value;
 
@@ -127,7 +130,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
     // so a dual-role serving child holds no store either way).
     report_role_refusal(&mut report, target, Role::Destination).await;
 
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
 
     // The Spec reply feeds P4 below — and, for a path-only target,
     // identity: the operator named a binary, not an id, so the id the
@@ -389,7 +392,7 @@ fn is_session_ceiling_refusal(error: &DestinationError) -> bool {
 /// Any OTHER failure surfaces immediately, and exhausting the window
 /// surfaces the refusal itself.
 async fn settle_open(
-    dest: &ManagedDestination,
+    dest: &Managed<Remote>,
     pipeline: &str,
     load_id: &str,
 ) -> Result<Box<dyn LoadSession>, DestinationError> {
@@ -413,7 +416,7 @@ async fn settle_open(
 /// the raw adapter. Owns the managed destination because the SPI's
 /// `Destination` demands `'static`.
 struct SettledDestination {
-    inner: ManagedDestination,
+    inner: Managed<Remote>,
 }
 
 #[async_trait]

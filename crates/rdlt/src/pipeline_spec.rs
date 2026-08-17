@@ -9,7 +9,7 @@
 //! `duckdb:`, …) are sugar for the explicit `connector:` form: each
 //! desugars to the same [`ConnectorRef`] through the one
 //! [`connector_id`] table, and every reference — rich or explicit — is
-//! resolved through a [`rdlt_runtime::ConnectorProvider`] at build
+//! resolved through a [`rdlt_runtime::provider::Provider`] at build
 //! time into a spawned connector binary.
 //!
 //! The config document inside any arm is OPAQUE here: it crosses the
@@ -23,7 +23,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rdlt_runtime::{ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider};
+use rdlt_connector_client::handshake::Requirement;
+use rdlt_runtime::local::Local;
+use rdlt_runtime::provider::Provider;
 use serde::Deserialize;
 
 use crate::{CommitPolicy, Pipeline, WriteMode};
@@ -403,8 +405,8 @@ impl ConnectorRef {
 
     /// The provider-facing half of the document — everything except the
     /// config, which travels beside it.
-    fn requirement(&self) -> ConnectorRequirement {
-        let mut requirement = ConnectorRequirement::new(&self.id);
+    fn requirement(&self) -> Requirement {
+        let mut requirement = Requirement::new(&self.id);
         if let Some(version) = &self.version {
             requirement = requirement.with_version(version);
         }
@@ -505,7 +507,7 @@ fn resolved_workdir(spec: &Spec, base: &Path) -> PathBuf {
 
 /// Turn a parsed [`Spec`] into a runnable [`Pipeline`]. Construction only —
 /// no data moves — but BOTH arms desugar to connector requirements and are
-/// resolved through the default [`LocalBinaryConnectorProvider`]: spawn,
+/// resolved through the default [`Local`] provider: spawn,
 /// dial, handshake (where the CONNECTOR validates its own config), wrap.
 /// Reading a path-form config file is the one other I/O. The typestate
 /// builder's `build` re-checks against destination capabilities before any
@@ -520,18 +522,17 @@ fn resolved_workdir(spec: &Spec, base: &Path) -> PathBuf {
 /// of the spawn seam; embedders with their own provider (a pool, a
 /// remote scheduler) use [`build_pipeline_with`].
 pub async fn build_pipeline(spec: &Spec, base: &Path) -> Result<Pipeline, SpecError> {
-    let provider =
-        LocalBinaryConnectorProvider::default().with_engine_budget_bytes(engine_budget_bytes(spec));
+    let provider = Local::default().with_budget_bytes(engine_budget_bytes(spec));
     build_pipeline_with(spec, base, &provider).await
 }
 
-/// [`build_pipeline`] with the caller's own [`ConnectorProvider`] deciding how
+/// [`build_pipeline`] with the caller's own [`Provider`] deciding how
 /// connector requirements become processes (or pool members, or anything
 /// else) — the engine never learns which.
 pub async fn build_pipeline_with(
     spec: &Spec,
     base: &Path,
-    provider: &dyn ConnectorProvider,
+    provider: &dyn Provider,
 ) -> Result<Pipeline, SpecError> {
     let builder = Pipeline::builder(spec.pipeline.as_str());
     let builder = match &spec.write_mode {

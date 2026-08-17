@@ -45,8 +45,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rdlt_connector::core::id::TableName;
+use rdlt_connector_client::handshake::Role;
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
-use rdlt_runtime::Role;
 use rdlt_testkit::conformance::destination::TableProbe;
 
 use crate::destination::NO_PROBE_SKIP;

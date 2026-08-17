@@ -14,7 +14,8 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use rdlt_runtime::{ConnectorRequirement, LocalBinaryConnectorProvider, Role};
+use rdlt_connector_client::handshake::{Requirement, Role};
+use rdlt_runtime::local::Local;
 
 /// The pinned ARGUMENT contract every served connector bin speaks: no
 /// args → clap's exit 2; `--role=nonsense` → exit 2; and each role in
@@ -63,13 +64,13 @@ pub fn assert_bin_arg_contract(bin: &Path, unserved_roles: &[&str], version: &st
 
 /// The config-free Spec RPC identity for one role, through the same
 /// provider the runtime spawns with: the reported name IS the
-/// reverse-DNS `id` (the 039 identity rule), the version is the
+/// reverse-DNS `id` (the identity rule), the version is the
 /// crate's, and a config schema is present.
 pub async fn assert_spec_identity(bin: &Path, role: Role, id: &str, version: &str) {
-    let provider = LocalBinaryConnectorProvider::new();
-    let requirement = ConnectorRequirement::new(id).with_path(bin);
+    let provider = Local::new();
+    let requirement = Requirement::new(id).with_path(bin);
     let spec = provider
-        .spec_for_role(&requirement, role)
+        .spec(&requirement, Some(role))
         .await
         .unwrap_or_else(|error| panic!("the {role:?} half answers the Spec RPC: {error}"));
     assert_eq!(spec.name, id, "the NAME const is the connector id");

@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 
 use rdlt::pipeline_spec::{ConfigSource, Spec, build_pipeline_with};
-use rdlt::runtime::LocalBinaryConnectorProvider;
+use rdlt::runtime::local::Local;
 
 /// The directory holding the reference bin this suite spawns, through
 /// the testkit's ONE spawn scaffold — building it under
@@ -73,7 +73,7 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
     // No `path:` overrides anywhere in the document, so this exercises
     // the full id → discovery route: the provider's search path stands
     // in for PATH, pointing at the built bin.
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(bins);
+    let provider = Local::new().with_search_path(bins);
     let report = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both connector arms resolve to spawned connectors")

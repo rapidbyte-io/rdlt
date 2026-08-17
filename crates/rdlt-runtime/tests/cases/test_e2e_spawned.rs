@@ -1,21 +1,21 @@
-//! THE 039 HEADLINE (T8): a full engine run with the spawned
+//! THE HEADLINE: a full engine run with the spawned
 //! `rdlt-connector-reference` binary on BOTH sides of the wire — the
 //! YAML `connector:` vocabulary through the facade's `build_pipeline`,
-//! the D3 choreography (receipts, state, part events) crossing two
+//! the commit choreography (receipts, state, part events) crossing two
 //! Unix sockets, rows landing exactly-once, and the spawned processes
 //! dying with their guards. The reference connector is the spawn
-//! subject because it lives beside the engine forever; the seven
-//! first-party connectors move to their own repository (044) and prove
-//! this same choreography in their own suites there.
+//! subject because it lives beside the engine forever; the first-party
+//! connectors prove this same choreography in their own repository's
+//! suites.
 //!
 //! Plus ONE crash arm: SIGKILL the destination child mid-run — the run
 //! fails with the typed transport-fatal destination error, nothing
 //! uncommitted becomes visible, the WAL survives, and a fresh run (new
 //! spawns) converges to exactly-once. The full kill MATRIX at every
-//! message boundary is 040's; this is the single proving arm.
+//! message boundary is the certifier's; this is the single proving arm.
 //!
 //! Bin location and the `RDLT_BUILD_CONNECTOR_BINS` build guard are
-//! shared with the T6 smoke (`test_spawned_bins::built_bin`).
+//! shared with the spawn smoke (`test_spawned_bins::built_bin`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -24,10 +24,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rdlt::pipeline_spec::{Spec, build_pipeline, build_pipeline_with};
 use rdlt::{Error, PipelineEvent};
-use rdlt_runtime::{
-    ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider, ManagedDestination,
-    ManagedSource, ProviderError,
-};
+use rdlt_connector_client::handshake::Requirement;
+use rdlt_connector_client::{destination, source};
+use rdlt_runtime::local::Local;
+use rdlt_runtime::managed::Managed;
+use rdlt_runtime::provider::{self, Provider};
 
 use super::test_spawned_bins::built_bin;
 
@@ -39,21 +40,21 @@ struct SpawnRecord {
     socket: PathBuf,
 }
 
-/// [`LocalBinaryConnectorProvider`] by delegation, recording each
+/// [`Local`] by delegation, recording each
 /// spawn's pid and socket path on the way past — the crash arm kills by
 /// the recorded pid, and the headline's "processes are GONE after drop"
 /// assertion polls it. Pure observation: the managed objects are handed
 /// to the engine untouched, so the run under test IS the production
 /// spawn path.
 struct RecordingProvider {
-    inner: LocalBinaryConnectorProvider,
+    inner: Local,
     spawned: Mutex<Vec<SpawnRecord>>,
 }
 
 impl RecordingProvider {
     fn new() -> Self {
         Self {
-            inner: LocalBinaryConnectorProvider::new(),
+            inner: Local::new(),
             spawned: Mutex::new(Vec::new()),
         }
     }
@@ -70,12 +71,12 @@ impl RecordingProvider {
 }
 
 #[async_trait]
-impl ConnectorProvider for RecordingProvider {
+impl Provider for RecordingProvider {
     async fn source(
         &self,
-        requirement: &ConnectorRequirement,
+        requirement: &Requirement,
         config: &serde_json::Value,
-    ) -> Result<ManagedSource, ProviderError> {
+    ) -> Result<Managed<source::Remote>, provider::Error> {
         let managed = self.inner.source(requirement, config).await?;
         let guard = managed
             .guard()
@@ -93,9 +94,9 @@ impl ConnectorProvider for RecordingProvider {
 
     async fn destination(
         &self,
-        requirement: &ConnectorRequirement,
+        requirement: &Requirement,
         config: &serde_json::Value,
-    ) -> Result<ManagedDestination, ProviderError> {
+    ) -> Result<Managed<destination::Remote>, provider::Error> {
         let managed = self.inner.destination(requirement, config).await?;
         let guard = managed
             .guard()

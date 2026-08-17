@@ -1,25 +1,22 @@
-//! The T6 smoke: the REAL `rdlt-connector-reference` binary — the
+//! The spawn smoke: the REAL `rdlt-connector-reference` binary — the
 //! contract's own connector, dual-role — spawned and driven through the
 //! provider, plus the bin's pinned arg behavior (exit codes and the
 //! version string; clap's usage TEXT is deliberately unasserted — clap
-//! owns it). The seven first-party connectors are not spawn subjects
-//! here: an engine gate that leaned on them would go dark when they
-//! move to their own repository (044), while the reference connector
+//! owns it). The first-party connectors are not spawn subjects here:
+//! they live in their own repository, while the reference connector
 //! lives beside the engine forever.
 //!
-//! These are also the pins for THE IDENTITY RULE (039 T6): a
-//! connector's `NAME` const IS its connector id, spelled reverse-DNS
+//! These are also the pins for THE IDENTITY RULE: a connector's `NAME`
+//! const IS its connector id, spelled reverse-DNS
 //! (`io.rapidbyte.reference`), so the strict-equality handshake
-//! verification (D-039-2) and D-039-1's last-segment binary discovery
-//! both derive from one const. The handshakes below succeeding against
-//! the real bin with a reverse-DNS requirement id is that rule holding
-//! end-to-end.
+//! verification and the last-segment binary discovery both derive from
+//! one const. The handshakes below succeeding against the real bin
+//! with a reverse-DNS requirement id is that rule holding end-to-end.
 //!
 //! Bin location goes through the testkit's ONE spawn scaffold
-//! (`rdlt_testkit::spawn::built_connector_bin`, the 042 dedup): the
-//! `CARGO_TARGET_DIR` resolution, the `RDLT_BUILD_CONNECTOR_BINS`
-//! build guard and the loud missing-bin refusal live there once for
-//! every spawn suite.
+//! (`rdlt_testkit::spawn::built_connector_bin`): the `CARGO_TARGET_DIR`
+//! resolution, the `RDLT_BUILD_CONNECTOR_BINS` build guard and the
+//! loud missing-bin refusal live there once for every spawn suite.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -27,19 +24,19 @@ use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use rdlt_connector_client::error::Error as ClientError;
+use rdlt_connector_client::handshake::{Requirement, Role};
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, connector_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::SpecRequest;
-use rdlt_runtime::{
-    ClientError, ConnectorProvider, ConnectorRequirement, LocalBinaryConnectorProvider,
-    ProviderError, Role,
-};
+use rdlt_runtime::local::Local;
+use rdlt_runtime::provider::{Error, Provider};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// The built reference bin, through the shared scaffold. `pub(crate)`
-/// because the T8 headline e2e (`test_e2e_spawned`) spawns the same
-/// bin — one helper, one location rule.
+/// because the headline e2e (`test_e2e_spawned`) spawns the same bin —
+/// one helper, one location rule.
 pub(crate) fn built_bin() -> PathBuf {
     rdlt_testkit::spawn::built_connector_bin(env!("CARGO_MANIFEST_DIR"), "rdlt-connector-reference")
 }
@@ -96,19 +93,22 @@ async fn the_reference_bin_serves_a_source_handshake_and_streams() {
     std::fs::write(&file, "{\"id\":1}\n{\"id\":2}\n").expect("the fixture file writes");
     let config = serde_json::json!({ "path": file });
 
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
     let managed = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.reference").with_path(&bin),
+            &Requirement::new("io.rapidbyte.reference").with_path(&bin),
             &config,
         )
         .await
         .expect("spawn + handshake against the real source bin succeeds");
 
-    assert_eq!(managed.identity(), "io.rapidbyte.reference");
+    assert_eq!(managed.outcome().connector_id, "io.rapidbyte.reference");
     // One workspace version everywhere, so this crate's own version IS
     // the reference connector's.
-    assert_eq!(managed.resolved_version(), env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        managed.outcome().connector_version,
+        env!("CARGO_PKG_VERSION")
+    );
 
     let streams = rdlt_connector::source::Source::streams(&managed)
         .await
@@ -118,17 +118,17 @@ async fn the_reference_bin_serves_a_source_handshake_and_streams() {
 }
 
 /// The reference bin serves its DESTINATION half — same shape, plus the
-/// exact-version pin (D-039-2) exercised against the real binary.
+/// exact-version pin exercised against the real binary.
 #[tokio::test]
 async fn the_reference_bin_serves_a_destination_handshake() {
     let bin = built_bin();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = serde_json::json!({ "path": dir.path().join("out") });
 
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
     let managed = provider
         .destination(
-            &ConnectorRequirement::new("io.rapidbyte.reference")
+            &Requirement::new("io.rapidbyte.reference")
                 .with_path(&bin)
                 .with_version(env!("CARGO_PKG_VERSION")),
             &config,
@@ -136,8 +136,11 @@ async fn the_reference_bin_serves_a_destination_handshake() {
         .await
         .expect("spawn + handshake against the real destination bin succeeds");
 
-    assert_eq!(managed.identity(), "io.rapidbyte.reference");
-    assert_eq!(managed.resolved_version(), env!("CARGO_PKG_VERSION"));
+    assert_eq!(managed.outcome().connector_id, "io.rapidbyte.reference");
+    assert_eq!(
+        managed.outcome().connector_version,
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 /// The reference bin answers the config-free `Spec` RPC — its static
@@ -187,8 +190,8 @@ async fn the_reference_bin_answers_the_spec_rpc_before_any_handshake() {
     assert_eq!(spec["name"], "io.rapidbyte.reference");
     assert_eq!(spec["version"], env!("CARGO_PKG_VERSION"));
 
-    // The consumer contract every production path honors
-    // (LifecycleGuard, the certifier's guard and probe): whoever read
+    // The consumer contract every production path honors (the
+    // runtime's Guard, the certifier's guard and probe): whoever read
     // the handshake line unlinks the socket FILE on cleanup — the
     // SIGKILLed child (`kill_on_drop`) cannot do it itself, and an
     // orphaned socket keeps its private serve directory non-empty
@@ -197,7 +200,7 @@ async fn the_reference_bin_answers_the_spec_rpc_before_any_handshake() {
     let _ = std::fs::remove_file(&parsed.socket_path);
 }
 
-/// THE ID UX pin (039 T7): the reverse-DNS spelling IS the id. A
+/// THE ID UX pin: the reverse-DNS spelling IS the id. A
 /// dotless `id: reference` reaches the same binary — discovery's
 /// convention takes the last `.`-segment, so both spellings resolve to
 /// `rdlt-connector-reference` — but the handshake then REFUSES it as
@@ -206,16 +209,16 @@ async fn the_reference_bin_answers_the_spec_rpc_before_any_handshake() {
 #[tokio::test]
 async fn a_dotless_id_reaches_the_binary_but_is_refused_as_an_identity_mismatch() {
     let bin = built_bin();
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
     let error = provider
         .source(
-            &ConnectorRequirement::new("reference").with_path(&bin),
+            &Requirement::new("reference").with_path(&bin),
             &serde_json::json!({ "path": "/tmp/absent.jsonl" }),
         )
         .await
         .expect_err("a dotless id must not pass the strict-identity handshake");
     match &error {
-        ProviderError::Client(ClientError::IdentityMismatch { expected, reported }) => {
+        Error::Client(ClientError::IdentityMismatch { expected, reported }) => {
             assert_eq!(expected, "reference");
             assert_eq!(reported, "io.rapidbyte.reference");
         }
@@ -238,11 +241,14 @@ async fn a_dotless_id_reaches_the_binary_but_is_refused_as_an_identity_mismatch(
 /// fakes: no single-role first-party bin lives in this repo.)
 #[tokio::test]
 async fn the_spec_probe_answers_source_first_for_the_dual_role_bin() {
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
 
     let bin = built_bin();
     let spec = provider
-        .spec(&ConnectorRequirement::new("io.rapidbyte.reference").with_path(&bin))
+        .spec(
+            &Requirement::new("io.rapidbyte.reference").with_path(&bin),
+            None,
+        )
         .await
         .expect("the dual-role reference bin answers the source probe");
     assert_eq!(spec.name, "io.rapidbyte.reference");
@@ -256,7 +262,7 @@ async fn the_spec_probe_answers_source_first_for_the_dual_role_bin() {
     );
 }
 
-/// The `Spec` probe verifies identity like the run path (D-039-2): the
+/// The `Spec` probe verifies identity like the run path: the
 /// last-segment convention resolves `com.example.reference` to the
 /// REAL `rdlt-connector-reference`, and without this gate `rdlt schema
 /// com.example.reference` would print the wrong connector's schema as
@@ -269,13 +275,13 @@ async fn the_spec_probe_refuses_a_discovered_binary_with_the_wrong_identity() {
     // Discovery, not a path override: the built bin's directory IS the
     // search path, so `com.example.reference` resolves the real bin.
     let _ = built_bin();
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(target_debug_dir());
+    let provider = Local::new().with_search_path(target_debug_dir());
     let error = provider
-        .spec(&ConnectorRequirement::new("com.example.reference"))
+        .spec(&Requirement::new("com.example.reference"), None)
         .await
         .expect_err("a foreign id must not pass the Spec probe's identity gate");
     match &error {
-        ProviderError::Client(ClientError::IdentityMismatch { expected, reported }) => {
+        Error::Client(ClientError::IdentityMismatch { expected, reported }) => {
             assert_eq!(expected, "com.example.reference");
             assert_eq!(reported, "io.rapidbyte.reference");
         }
@@ -289,7 +295,7 @@ async fn the_spec_probe_refuses_a_discovered_binary_with_the_wrong_identity() {
     );
 }
 
-/// The rdlt CLI itself, for the `schema --role` door (040 T9): built
+/// The rdlt CLI itself, for the `schema --role` door: built
 /// under the same env guard as the connector bins (the Makefile's
 /// spawn-bins line sets it), located by the same target-dir rule, and
 /// failing loudly with instructions when absent — never building
@@ -331,26 +337,26 @@ fn built_cli() -> PathBuf {
     path
 }
 
-/// `spec_for_role` asks exactly the named half — no probing, no silent
-/// retry as the other role. Against the dual-role reference bin the two
-/// halves answer DIFFERENT schemas (one file in, one directory out),
-/// and the role-less `spec()` probe answers the SOURCE one (039's
-/// source-first behavior, now by delegation). Against a
-/// destination-only arg gate — the script fake, since no single-role
-/// first-party bin lives in this repo — Source is a spawn-tier refusal
-/// (exit 2, no handshake line ever arrives), never a silent retry.
+/// `spec` under an explicit role asks exactly the named half — no
+/// probing, no silent retry as the other role. Against the dual-role
+/// reference bin the two halves answer DIFFERENT schemas (one file in,
+/// one directory out), and the role-less probe answers the SOURCE one
+/// (source-first, by delegation). Against a destination-only arg gate
+/// — the script fake, since no single-role first-party bin lives in
+/// this repo — Source is a spawn-tier refusal (exit 2, no handshake
+/// line ever arrives), never a silent retry.
 #[tokio::test]
-async fn spec_for_role_asks_exactly_the_named_half() {
-    let provider = LocalBinaryConnectorProvider::new();
+async fn an_explicit_role_asks_exactly_the_named_half() {
+    let provider = Local::new();
 
     let bin = built_bin();
-    let requirement = ConnectorRequirement::new("io.rapidbyte.reference").with_path(&bin);
+    let requirement = Requirement::new("io.rapidbyte.reference").with_path(&bin);
     let source = provider
-        .spec_for_role(&requirement, Role::Source)
+        .spec(&requirement, Some(Role::Source))
         .await
         .expect("the reference bin answers its source half");
     let destination = provider
-        .spec_for_role(&requirement, Role::Destination)
+        .spec(&requirement, Some(Role::Destination))
         .await
         .expect("the reference bin answers its destination half");
     assert_eq!(source.name, "io.rapidbyte.reference");
@@ -360,23 +366,23 @@ async fn spec_for_role_asks_exactly_the_named_half() {
         "the two halves publish different config schemas"
     );
     let probed = provider
-        .spec(&requirement)
+        .spec(&requirement, None)
         .await
         .expect("the role-less probe still answers");
     assert_eq!(
         probed.config_schema, source.config_schema,
-        "no role = 039's source-first probe, byte-for-byte the source schema"
+        "no role = the source-first probe, byte-for-byte the source schema"
     );
 
     let dir = tempfile::tempdir().expect("tempdir");
     let fake = write_destination_only_fake(dir.path());
-    let requirement = ConnectorRequirement::new("io.rapidbyte.destonly").with_path(&fake);
+    let requirement = Requirement::new("io.rapidbyte.destonly").with_path(&fake);
     let error = provider
-        .spec_for_role(&requirement, Role::Source)
+        .spec(&requirement, Some(Role::Source))
         .await
         .expect_err("the destination-only arg gate refuses the source role");
     match error {
-        ProviderError::ExitedBeforeHandshake { status, .. } => {
+        Error::ExitedBeforeHandshake { status, .. } => {
             assert_eq!(status.code(), Some(2), "the arg-gate refusal is exit 2")
         }
         other => panic!(
@@ -386,25 +392,24 @@ async fn spec_for_role_asks_exactly_the_named_half() {
     }
 }
 
-/// `spec_for_role` keeps the id-resolution identity gate (D-039-2,
-/// the 040 T7 rule): a DISCOVERED binary whose reported name differs
-/// from the requirement id is refused — the last-segment convention
-/// would otherwise resolve `com.example.reference` to the real
-/// `rdlt-connector-reference` and answer with the wrong connector's
-/// schema.
+/// The explicit-role probe keeps the id-resolution identity gate: a
+/// DISCOVERED binary whose reported name differs from the requirement
+/// id is refused — the last-segment convention would otherwise resolve
+/// `com.example.reference` to the real `rdlt-connector-reference` and
+/// answer with the wrong connector's schema.
 #[tokio::test]
-async fn spec_for_role_refuses_a_discovered_binary_with_the_wrong_identity() {
+async fn an_explicit_role_refuses_a_discovered_binary_with_the_wrong_identity() {
     let _ = built_bin();
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(target_debug_dir());
+    let provider = Local::new().with_search_path(target_debug_dir());
     let error = provider
-        .spec_for_role(
-            &ConnectorRequirement::new("com.example.reference"),
-            Role::Source,
+        .spec(
+            &Requirement::new("com.example.reference"),
+            Some(Role::Source),
         )
         .await
         .expect_err("a foreign id must not pass the role probe's identity gate");
     match &error {
-        ProviderError::Client(ClientError::IdentityMismatch { expected, reported }) => {
+        Error::Client(ClientError::IdentityMismatch { expected, reported }) => {
             assert_eq!(expected, "com.example.reference");
             assert_eq!(reported, "io.rapidbyte.reference");
         }
@@ -418,13 +423,12 @@ async fn spec_for_role_refuses_a_discovered_binary_with_the_wrong_identity() {
     );
 }
 
-/// The CLI door on `spec_for_role` (040 T9): `rdlt schema <bin>
-/// --role destination` prints the DESTINATION schema, different from
-/// the flagless output — which itself stays 039's source-first probe,
-/// byte-identical to `--role source`. ONE tier since the 043 D1 swap:
-/// every spelling spawns, so there is no compiled output to compare
-/// against — the two halves answering differently over the same bin
-/// is the whole claim.
+/// The CLI door on the explicit-role probe: `rdlt schema <bin> --role
+/// destination` prints the DESTINATION schema, different from the
+/// flagless output — which itself stays the source-first probe,
+/// byte-identical to `--role source`. ONE tier: every spelling spawns,
+/// so there is no compiled output to compare against — the two halves
+/// answering differently over the same bin is the whole claim.
 #[test]
 fn the_cli_schema_role_flag_selects_the_destination_half() {
     let cli = built_cli();
@@ -449,7 +453,7 @@ fn the_cli_schema_role_flag_selects_the_destination_half() {
     );
     assert_eq!(
         flagless, source,
-        "no flag stays 039's source-first probe, byte-identical to --role source"
+        "no flag stays the source-first probe, byte-identical to --role source"
     );
 }
 

@@ -1,25 +1,24 @@
 //! The local provider against SCRIPT FAKES — shell scripts standing in
 //! for connector binaries, so every pre-gRPC seam (discovery, the
-//! override, the one-line read, the timeout, the guard) is measured
-//! without a served connector existing yet (T6 builds the real ones;
-//! T8 drives them end to end).
+//! override, the one-line read, the timeout, the spec probe) is
+//! measured without a served connector; the spawn suites drive the
+//! real reference binary.
 //!
 //! The success-shaped fakes print a valid handshake line naming a
 //! socket NOTHING listens on, so a run that consumed the line fails
-//! next at the dial — `ProviderError::Client(ClientError::Dial)`
-//! carrying that socket path is the proof the line was read, parsed,
-//! and followed.
+//! next at the dial — `Error::Client(ClientError::Dial)` carrying that
+//! socket path is the proof the line was read, parsed, and followed.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rdlt_connector::spec::ConnectorSpec;
+use rdlt_connector_client::error::Error as ClientError;
+use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::{self, SpecReply};
-use rdlt_runtime::{
-    ClientError, ConnectorProvider, ConnectorRequirement, LifecycleGuard,
-    LocalBinaryConnectorProvider, ProviderError,
-};
+use rdlt_runtime::local::Local;
+use rdlt_runtime::provider::{Error, Provider};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
@@ -48,9 +47,9 @@ fn line_fake_body(role: &str, socket: &Path) -> String {
 }
 
 /// Unwrap the `Client(Dial)` arm and return the socket path it names.
-fn dial_path(error: ProviderError) -> PathBuf {
+fn dial_path(error: Error) -> PathBuf {
     match error {
-        ProviderError::Client(ClientError::Dial { path, .. }) => path,
+        Error::Client(ClientError::Dial { path, .. }) => path,
         other => panic!("expected Client(Dial), got {other:?}"),
     }
 }
@@ -124,13 +123,15 @@ async fn the_spec_probe_retries_only_a_clean_role_refusal() {
         "hanging-fake",
         &spec_probe_body(&hanging_socket, "exec sleep 30"),
     );
-    let provider =
-        LocalBinaryConnectorProvider::new().with_line_timeout(Duration::from_millis(300));
+    let provider = Local::new().with_line_timeout(Duration::from_millis(300));
     let error = provider
-        .spec(&ConnectorRequirement::new("io.rapidbyte.fake").with_path(&hanging_bin))
+        .spec(
+            &Requirement::new("io.rapidbyte.fake").with_path(&hanging_bin),
+            None,
+        )
         .await
         .expect_err("a hung source probe must propagate its timeout");
-    assert!(matches!(error, ProviderError::Timeout { .. }), "{error:?}");
+    assert!(matches!(error, Error::Timeout { .. }), "{error:?}");
     hanging_server.abort();
 
     let refusing = tempfile::tempdir().expect("tempdir");
@@ -142,7 +143,10 @@ async fn the_spec_probe_retries_only_a_clean_role_refusal() {
         &spec_probe_body(&refusing_socket, "exit 2"),
     );
     let spec = provider
-        .spec(&ConnectorRequirement::new("io.rapidbyte.fake").with_path(&refusing_bin))
+        .spec(
+            &Requirement::new("io.rapidbyte.fake").with_path(&refusing_bin),
+            None,
+        )
         .await
         .expect("a clean source-role refusal retries as destination");
     assert_eq!(spec.name, "io.rapidbyte.fake");
@@ -164,10 +168,10 @@ async fn discovery_resolves_the_convention_and_consumes_the_line() {
         &line_fake_body("source", &socket),
     );
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let provider = Local::new().with_search_path(dir.path());
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
@@ -187,10 +191,10 @@ async fn spawned_connectors_do_not_inherit_the_hosts_home_or_secret_environment(
     );
     write_script(dir.path(), "rdlt-connector-fake", &body);
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let provider = Local::new().with_search_path(dir.path());
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
@@ -207,16 +211,16 @@ async fn a_handshake_failure_kills_forked_connector_descendants() {
         grandchild_pid.display()
     );
     let binary = write_script(dir.path(), "forking-fake", &body);
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
 
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake").with_path(binary),
+            &Requirement::new("io.rapidbyte.fake").with_path(binary),
             &serde_json::json!({}),
         )
         .await
         .expect_err("the malformed line refuses");
-    assert!(matches!(error, ProviderError::HandshakeLine { .. }));
+    assert!(matches!(error, Error::HandshakeLine { .. }));
 
     let pid: u32 = std::fs::read_to_string(&grandchild_pid)
         .expect("the script recorded its child before writing the line")
@@ -245,10 +249,10 @@ async fn a_destination_spawn_carries_its_role() {
         &line_fake_body("destination", &socket),
     );
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let provider = Local::new().with_search_path(dir.path());
     let error = provider
         .destination(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
@@ -277,10 +281,10 @@ async fn the_path_override_bypasses_discovery() {
         &line_fake_body("source", &override_socket),
     );
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(on_path.path());
+    let provider = Local::new().with_search_path(on_path.path());
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake").with_path(&override_binary),
+            &Requirement::new("io.rapidbyte.fake").with_path(&override_binary),
             &serde_json::json!({}),
         )
         .await
@@ -297,15 +301,15 @@ async fn the_path_override_bypasses_discovery() {
 #[tokio::test]
 async fn a_missing_binary_refuses_with_the_frozen_spelling() {
     let empty = tempfile::tempdir().expect("tempdir");
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(empty.path());
+    let provider = Local::new().with_search_path(empty.path());
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.nosuch"),
+            &Requirement::new("io.rapidbyte.nosuch"),
             &serde_json::json!({}),
         )
         .await
         .expect_err("an empty search path finds nothing");
-    assert!(matches!(error, ProviderError::NotFound { .. }), "{error:?}");
+    assert!(matches!(error, Error::NotFound { .. }), "{error:?}");
     assert_eq!(
         error.to_string(),
         "connector `io.rapidbyte.nosuch`: no binary `rdlt-connector-nosuch` on PATH \
@@ -325,18 +329,18 @@ async fn a_silent_binary_times_out() {
         "#!/bin/sh\nexec sleep 30\n",
     );
 
-    let provider = LocalBinaryConnectorProvider::new()
+    let provider = Local::new()
         .with_search_path(dir.path())
         .with_line_timeout(Duration::from_millis(300));
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
         .expect_err("a silent binary must time out");
     match error {
-        ProviderError::Timeout { binary } => assert_eq!(binary, "rdlt-connector-fake"),
+        Error::Timeout { binary } => assert_eq!(binary, "rdlt-connector-fake"),
         other => panic!("expected Timeout, got {other:?}"),
     }
 }
@@ -357,16 +361,16 @@ async fn a_newline_less_flood_refuses_at_the_cap() {
         "#!/bin/sh\nhead -c 262144 /dev/zero | tr '\\0' 'x'\nexec sleep 30\n",
     );
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let provider = Local::new().with_search_path(dir.path());
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
         .expect_err("a newline-less flood must refuse");
     match &error {
-        ProviderError::HandshakeLineOverflow { binary, limit } => {
+        Error::HandshakeLineOverflow { binary, limit } => {
             assert_eq!(binary, "rdlt-connector-fake");
             assert_eq!(*limit, 64 * 1024);
         }
@@ -393,11 +397,11 @@ async fn a_closed_stdout_with_a_live_child_refuses_without_the_line_deadline() {
         "#!/bin/sh\nexec >&- \nexec sleep 30\n",
     );
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let provider = Local::new().with_search_path(dir.path());
     let started = std::time::Instant::now();
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
@@ -409,7 +413,7 @@ async fn a_closed_stdout_with_a_live_child_refuses_without_the_line_deadline() {
         started.elapsed()
     );
     match &error {
-        ProviderError::HandshakeLine { binary, .. } => assert_eq!(binary, "rdlt-connector-fake"),
+        Error::HandshakeLine { binary, .. } => assert_eq!(binary, "rdlt-connector-fake"),
         other => panic!("expected HandshakeLine, got {other:?}"),
     }
 }
@@ -425,16 +429,16 @@ async fn a_garbage_line_refuses_typed() {
         "#!/bin/sh\necho 'this is not a handshake line'\nexec sleep 30\n",
     );
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let provider = Local::new().with_search_path(dir.path());
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
         .expect_err("garbage must refuse");
     match &error {
-        ProviderError::HandshakeLine { binary, .. } => assert_eq!(binary, "rdlt-connector-fake"),
+        Error::HandshakeLine { binary, .. } => assert_eq!(binary, "rdlt-connector-fake"),
         other => panic!("expected HandshakeLine, got {other:?}"),
     }
     assert!(
@@ -459,75 +463,11 @@ fn process_dead(pid: u32) -> bool {
     }
 }
 
-/// Dropping the guard kills the child and unlinks the socket file —
-/// red-proven: with the `Drop` body emptied, this test fails on BOTH
-/// asserts (the sleep survives the bound, the socket file remains).
-///
-/// The child is spawned WITHOUT `kill_on_drop`, so the kill observed
-/// here can only be the guard's own `start_kill`, not the `Child`
-/// destructor's belt.
-#[tokio::test]
-async fn the_guard_drop_kills_the_child_and_unlinks_the_socket() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("guarded.sock");
-    // A REAL socket, not a stand-in file: the guard's unlink is
-    // deliberately socket-only (045 GROK 8), so the unlink half of
-    // this pin needs the genuine article on disk.
-    let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("the socket binds");
-
-    let child = tokio::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .expect("sleep spawns");
-    let guard = LifecycleGuard::new(child, &socket);
-    let pid = guard.pid().expect("a just-spawned child has a pid");
-    assert!(!process_dead(pid), "the child is alive while guarded");
-    assert_eq!(guard.socket_path(), socket);
-
-    drop(guard);
-
-    let mut dead = false;
-    for _ in 0..100 {
-        if process_dead(pid) {
-            dead = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(dead, "the guard's drop must kill the child (pid {pid})");
-    assert!(
-        !socket.exists(),
-        "the guard's drop must unlink the socket file"
-    );
-}
-
-/// The guard unlinks ONLY a socket (045 external findings, GROK 8 /
-/// KIMI 3): the path comes verbatim from the child's stdout handshake
-/// line, so a connector naming an unrelated regular file must not
-/// commission the host to delete it on cleanup.
-#[tokio::test]
-async fn the_guard_drop_leaves_a_non_socket_path_alone() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let important = dir.path().join("important-file");
-    std::fs::write(&important, b"operator data").expect("the file writes");
-
-    let child = tokio::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .expect("sleep spawns");
-    drop(LifecycleGuard::new(child, &important));
-
-    assert!(
-        important.exists(),
-        "a handshake line naming a non-socket must not get it deleted"
-    );
-}
-
-/// The handshake line's protocol range is HONORED (045 external
-/// findings, GROK 7): a connector advertising a range that excludes
-/// this host's protocol version refuses typed AT THE LINE — the fake's
-/// socket has no listener, so surviving to a `Client(Dial)` error
-/// would mean the range was parsed and ignored, exactly the defect.
+/// The handshake line's protocol range is HONORED: a connector
+/// advertising a range that excludes this host's protocol version
+/// refuses typed AT THE LINE — the fake's socket has no listener, so
+/// surviving to a `Client(Dial)` error would mean the range was parsed
+/// and ignored, exactly the defect.
 #[tokio::test]
 async fn a_protocol_range_outside_ours_refuses_before_dialing() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -537,10 +477,10 @@ async fn a_protocol_range_outside_ours_refuses_before_dialing() {
         "#!/bin/sh\necho 'rdlt-connector|1|7|9|/nowhere.sock'\nexec sleep 30\n",
     );
 
-    let provider = LocalBinaryConnectorProvider::new().with_search_path(dir.path());
+    let provider = Local::new().with_search_path(dir.path());
     let error = provider
         .source(
-            &ConnectorRequirement::new("io.rapidbyte.fake"),
+            &Requirement::new("io.rapidbyte.fake"),
             &serde_json::json!({}),
         )
         .await
@@ -601,16 +541,16 @@ async fn a_silent_spec_probe_times_out_typed() {
     });
     let bin = write_script(dir.path(), "mute-fake", &line_fake_body("source", &socket));
 
-    let provider = LocalBinaryConnectorProvider::new();
-    let requirement = ConnectorRequirement::new("io.rapidbyte.fake")
+    let provider = Local::new();
+    let requirement = Requirement::new("io.rapidbyte.fake")
         .with_path(&bin)
         .with_rpc_deadline(Duration::from_millis(300));
-    let error = tokio::time::timeout(Duration::from_secs(10), provider.spec(&requirement))
+    let error = tokio::time::timeout(Duration::from_secs(10), provider.spec(&requirement, None))
         .await
         .expect("the probe fails within the bound — never hangs")
         .expect_err("a silent Spec must time out");
     match error {
-        ProviderError::Client(ClientError::Timeout { .. }) => {}
+        Error::Client(ClientError::Timeout { .. }) => {}
         other => panic!("expected Client(Timeout), got {other:?}"),
     }
     server.abort();
@@ -618,7 +558,7 @@ async fn a_silent_spec_probe_times_out_typed() {
 
 /// A connector control-plane fake whose `Spec` reply is over the 8 MiB
 /// document ceiling — within the 64 MiB transport frame cap, so only
-/// the probe's own gate (7M4) stands between it and an unbounded parse.
+/// the probe's own gate stands between it and an unbounded parse.
 #[derive(Debug)]
 struct OversizedSpecServer;
 
@@ -652,9 +592,9 @@ impl Connector for OversizedSpecServer {
     }
 }
 
-/// 8L7: the probe's document ceiling (7M4) is pinned — an over-ceiling
-/// `spec_json` refuses typed BEFORE any parse, naming the ceiling, so
-/// deleting the gate call cannot pass the suite silently.
+/// The probe's document ceiling is pinned — an over-ceiling `spec_json`
+/// refuses typed BEFORE any parse, naming the ceiling, so deleting the
+/// gate call cannot pass the suite silently.
 #[tokio::test]
 async fn an_oversized_spec_reply_refuses_at_the_document_ceiling() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -672,14 +612,14 @@ async fn an_oversized_spec_reply_refuses_at_the_document_ceiling() {
         &line_fake_body("source", &socket),
     );
 
-    let provider = LocalBinaryConnectorProvider::new();
-    let requirement = ConnectorRequirement::new("io.rapidbyte.fake").with_path(&bin);
+    let provider = Local::new();
+    let requirement = Requirement::new("io.rapidbyte.fake").with_path(&bin);
     let error = provider
-        .spec(&requirement)
+        .spec(&requirement, None)
         .await
         .expect_err("an over-ceiling spec_json must refuse");
     match error {
-        ProviderError::Client(ClientError::Protocol(message)) => assert!(
+        Error::Client(ClientError::Protocol(message)) => assert!(
             message.contains("document ceiling"),
             "the refusal names the ceiling: {message}"
         ),

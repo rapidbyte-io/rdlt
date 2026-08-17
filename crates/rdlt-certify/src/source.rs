@@ -11,7 +11,9 @@
 //! FAILS the clause, the certifier never hangs — and no failure message
 //! ever carries config bytes.
 
-use rdlt_runtime::{ConnectorProvider, LocalBinaryConnectorProvider, Role};
+use rdlt_connector_client::handshake::Role;
+use rdlt_runtime::local::Local;
+use rdlt_runtime::provider::Provider;
 use rdlt_testkit::conformance::source::verify_source;
 use rdlt_testkit::conformance::{ConformanceFailure, ConformanceSkip};
 
@@ -62,7 +64,7 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     // cascade point.
     report_role_refusal(&mut report, target, Role::Source).await;
 
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
 
     // The Spec reply feeds P4 below — and, for a path-only target,
     // identity: the operator named a binary, not an id, so the id the

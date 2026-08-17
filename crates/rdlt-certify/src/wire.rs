@@ -27,6 +27,7 @@ use rdlt_connector::core::commit::WriteMode;
 use rdlt_connector::core::id::{LoadId, PipelineId};
 use rdlt_connector::source::StreamSpec;
 use rdlt_connector::spec::ConnectorSpec;
+use rdlt_connector_client::handshake::{Requirement, Role};
 use rdlt_connector_client::wire::{
     DEFAULT_DEADLINE, connector_client, destination_client, dial, source_client,
 };
@@ -35,7 +36,6 @@ use rdlt_connector_protocol::proto::{
     self, handshake_reply, read_frame, session_reply, session_request, streams_reply,
 };
 use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
-use rdlt_runtime::{ConnectorRequirement, Role};
 use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -214,7 +214,7 @@ impl Parked {
 pub(crate) type ChildSlot = std::sync::Arc<std::sync::Mutex<Parked>>;
 
 /// Unlink `path` ONLY when a socket actually sits there — every certify
-/// unlink seat's one rule, the runtime `LifecycleGuard`'s own: the path
+/// unlink seat's one rule, the runtime `Guard`'s own: the path
 /// came verbatim from the connector's stdout handshake line, and rogue
 /// connectors are this tool's explicit subject, so a rogue naming an
 /// unrelated file must not commission the certifier to delete it. The
@@ -415,7 +415,7 @@ impl WireProbe {
 
     /// SIGKILL the spawned connector and wait until it is reaped — the
     /// house mechanism (`tokio::process::Child::start_kill`, the same
-    /// signal the runtime's `LifecycleGuard` sends on drop), never a
+    /// signal the runtime's `Guard` sends on drop), never a
     /// shelled-out `kill(1)`. `start_kill` only SENDS the signal, so
     /// the wait is what makes "the process is dead" true when this
     /// returns rather than eventually.
@@ -586,7 +586,7 @@ pub(crate) fn decode_read_frame(frame: proto::ReadFrame) -> RawFrame {
 /// resolution the P1 probe uses ([`resolve_binary`] — one helper, no
 /// fourth copy), then [`WireProbe::attach`].
 pub(crate) async fn attach_for(
-    requirement: &ConnectorRequirement,
+    requirement: &Requirement,
     role: Role,
     config: &Value,
     slot: &ChildSlot,
@@ -1932,9 +1932,9 @@ mod parked_tests {
     /// must not commission the certifier to delete it — rogue
     /// connectors are this tool's explicit subject, so the advertised
     /// path is squarely adversarial. Both unlink seats are judged: the
-    /// shared reap and the spawned probe's drop. (The runtime's
-    /// `LifecycleGuard` has guarded the identical operation since 039;
-    /// the certifier's seats ride the same lstat-is-socket rule.)
+    /// shared reap and the spawned probe's drop. (The runtime's `Guard`
+    /// guards the identical operation; the certifier's seats ride the
+    /// same lstat-is-socket rule.)
     #[tokio::test]
     async fn a_rogue_advertising_a_regular_file_does_not_get_it_deleted() {
         let dir = tempfile::tempdir().expect("tempdir");

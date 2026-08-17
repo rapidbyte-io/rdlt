@@ -25,12 +25,14 @@ rdlt-connector-sdk = { workspace = true }
 rdlt-core = { workspace = true }
 rdlt-connector = { workspace = true }
 rdlt-engine = { workspace = true }
-# The out-of-process connector seam (039; the ONLY seam since the 043
-# D1 swap): every pipeline-document arm resolves through a
-# ConnectorProvider into a spawned binary; the facade holds the default
-# local-binary one. The wire contract those crates carry is FROZEN (ADR
-# 0001 D8's amendment), but they remain unpublished pending the
-# separate publish wave — and rdlt itself cannot publish until they do.
+# The out-of-process connector seam, the ONLY seam: every
+# pipeline-document arm resolves through a runtime Provider into a
+# spawned binary; the facade holds the default local one, and spells
+# the connector requirement at the client crate's own path. The wire
+# contract those crates carry is FROZEN, but they remain unpublished
+# pending the separate publish wave — and rdlt itself cannot publish
+# until they do.
+rdlt-connector-client = { workspace = true }
 rdlt-runtime = { workspace = true }
 # tokio-util only: `cancellation_token()` hands one out. tokio itself is a
 # DEV dependency — the facade's own source never names it, and a library that

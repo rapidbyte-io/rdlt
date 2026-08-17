@@ -1,40 +1,34 @@
-//! # rdlt-runtime — the provider layer over spawned connectors (039)
+//! # rdlt-runtime
 //!
-//! The client crate ([`rdlt_connector_client`]) knows how to DRIVE a
-//! served connector once a socket exists; this crate knows how to GET
-//! one: [`ConnectorProvider`] turns a [`ConnectorRequirement`] plus the
-//! connector's own config document into a ready-to-use SPI object, and
-//! [`LocalBinaryConnectorProvider`] is its first implementation —
-//! resolve a binary (D-039-1's PATH convention, or the requirement's
-//! explicit `path` override), spawn it, read the one stdout handshake
-//! line, dial, handshake (the client verifies identity, D-039-2), and
-//! wrap the adapter with a [`LifecycleGuard`] so the process dies and
-//! its socket unlinks when the last holder lets go.
+//! The provider layer over spawned connectors. The client crate knows
+//! how to DRIVE a served connector once a socket exists; this crate
+//! knows how to GET one — it owns the lifecycle of a connector PROCESS:
+//! resolve, spawn, supervise, kill.
 //!
-//! [`ManagedSource`]/[`ManagedDestination`] are what a provider hands
-//! back: the wire adapter plus what the handshake established
-//! (identity, resolved version, negotiated protocol,
-//! state-format versions) plus the guard — and they IMPLEMENT the
-//! SPI's `Source`/`Destination` by delegation, so `Engine::new` takes
-//! them unchanged and the guard's lifetime rides the engine's `Arc`
-//! (the connector process provably outlives the run).
+//! [`provider::Provider`] turns a connector requirement plus the
+//! connector's own config document into a ready SPI object, and
+//! [`local::Local`] is its implementation for binaries on this machine:
+//! resolve by the PATH convention (or the requirement's explicit
+//! `path`), spawn under the frozen contract, read the one stdout
+//! handshake line, then hand the socket to the client crate to dial and
+//! verify. The private `spawn` module is the OS seam alone.
 //!
-//! The wire underneath this layer is FROZEN (2026-08-07; ADR 0001 D8's
-//! amendment): a provider may resolve, spawn and supervise connector
-//! binaries against a contract whose field numbers never move and whose
-//! evolution is additive only. The crate stays unpublished alongside
-//! the protocol and client crates — that posture is a separate,
-//! owner-scheduled decision and did not move with the freeze.
+//! [`managed::Managed`] is what a provider hands back: the wire adapter
+//! plus the handshake's findings plus a [`managed::Guard`]. It
+//! implements the SPI's `Source`/`Destination` by delegation, so
+//! `Engine::new` takes it unchanged and the guard's lifetime rides the
+//! engine's `Arc` — the connector process provably outlives the run,
+//! and dies with its socket unlinked when the last holder lets go.
 //!
-//! The modules are private and the surface below is the one canonical
-//! path to every name.
+//! Every type the client crate names — the requirement, the handshake
+//! outcome, roles, the client's error — is spelled at the client's own
+//! paths; nothing is re-exported here.
+//!
+//! The wire underneath is frozen (field numbers never move, evolution
+//! is additive), and this crate stays unpublished alongside the
+//! protocol and client crates until publishing is scheduled.
 
-mod local;
-mod managed;
-mod provider;
-mod requirement;
-
-pub use local::LocalBinaryConnectorProvider;
-pub use managed::{LifecycleGuard, ManagedDestination, ManagedSource};
-pub use provider::{ConnectorProvider, ProviderError};
-pub use requirement::{Classification, ClientError, ConnectorRequirement, HandshakeOutcome, Role};
+pub mod local;
+pub mod managed;
+pub mod provider;
+mod spawn;

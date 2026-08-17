@@ -1765,6 +1765,7 @@ name = "rdlt"
 version = "0.3.0"
 dependencies = [
  "rdlt-connector",
+ "rdlt-connector-client",
  "rdlt-connector-sdk",
  "rdlt-core",
  "rdlt-engine",
@@ -1823,6 +1824,7 @@ dependencies = [
  "indicatif",
  "libc",
  "rdlt",
+ "rdlt-connector-client",
  "rdlt-connector-protocol",
  "rdlt-testkit",
  "serde",

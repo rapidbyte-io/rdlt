@@ -35,7 +35,9 @@ use rdlt_certify::{
     kill_matrix_source,
 };
 use rdlt_connector::core::id::TableName;
-use rdlt_runtime::{LocalBinaryConnectorProvider, ProviderError, Role};
+use rdlt_connector_client::handshake::Role;
+use rdlt_runtime::local::Local;
+use rdlt_runtime::provider;
 use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 use serde_json::Value;
 
@@ -564,20 +566,20 @@ async fn run(
 /// instead. A pre-flight that stalls past its budget also falls
 /// through — every clause is timeout-bounded on its own.
 async fn preflight(target: &Target, role: Role) -> Option<String> {
-    let provider = LocalBinaryConnectorProvider::new();
+    let provider = Local::new();
     let outcome = tokio::time::timeout(
         PREFLIGHT_TIMEOUT,
-        provider.spec_for_role(&target.requirement, role),
+        provider.spec(&target.requirement, Some(role)),
     )
     .await;
     match outcome {
         Ok(Err(
-            error @ (ProviderError::NotFound { .. }
-            | ProviderError::Spawn { .. }
-            | ProviderError::ExitedBeforeHandshake { .. }
-            | ProviderError::HandshakeLine { .. }
-            | ProviderError::HandshakeLineOverflow { .. }
-            | ProviderError::Timeout { .. }),
+            error @ (provider::Error::NotFound { .. }
+            | provider::Error::Spawn { .. }
+            | provider::Error::ExitedBeforeHandshake { .. }
+            | provider::Error::HandshakeLine { .. }
+            | provider::Error::HandshakeLineOverflow { .. }
+            | provider::Error::Timeout { .. }),
         )) => Some(error.to_string()),
         // A good Spec, a served-wire error, or a stalled pre-flight:
         // certification judges it.

@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use rdlt_connector_client::error::Error as ClientError;
+use rdlt_connector_client::handshake::{Requirement, Role};
 use rdlt_connector_protocol::handshake::Line;
-use rdlt_runtime::{
-    ClientError, ConnectorRequirement, LocalBinaryConnectorProvider, ProviderError, Role,
-};
+use rdlt_runtime::local::Local;
+use rdlt_runtime::provider;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
@@ -28,7 +29,7 @@ use crate::wire;
 #[derive(Clone)]
 pub struct Target {
     /// Which connector, and how the provider resolves it.
-    pub requirement: ConnectorRequirement,
+    pub requirement: Requirement,
     /// The connector's own config document for the honest (non-probe)
     /// spawns.
     pub config: Value,
@@ -57,7 +58,7 @@ impl Target {
     /// path bypasses discovery, D-039-1).
     pub fn resolve_path(path: PathBuf, config: Value) -> Self {
         Self {
-            requirement: ConnectorRequirement::new("").with_path(path),
+            requirement: Requirement::new("").with_path(path),
             config,
         }
     }
@@ -67,7 +68,7 @@ impl Target {
     /// this id at handshake (D-039-2).
     pub fn resolve_id(id: &str, config: Value) -> Self {
         Self {
-            requirement: ConnectorRequirement::new(id),
+            requirement: Requirement::new(id),
             config,
         }
     }
@@ -134,11 +135,11 @@ pub(crate) fn role_arg(role: Role) -> &'static str {
 /// resolution; either consumer renders the error its own way, so the
 /// failure is carried as the message string.
 pub(crate) async fn fetch_spec(
-    provider: &LocalBinaryConnectorProvider,
-    requirement: &ConnectorRequirement,
+    provider: &Local,
+    requirement: &Requirement,
     role: Role,
 ) -> Result<rdlt_connector::spec::ConnectorSpec, String> {
-    match tokio::time::timeout(CLAUSE_TIMEOUT, provider.spec_for_role(requirement, role)).await {
+    match tokio::time::timeout(CLAUSE_TIMEOUT, provider.spec(requirement, Some(role))).await {
         Ok(Ok(spec)) => Ok(spec),
         Ok(Err(error)) => Err(error.to_string()),
         Err(_elapsed) => Err(timed_out()),
@@ -151,9 +152,9 @@ pub(crate) async fn fetch_spec(
 /// the run to the connector's OWN claim, and any skew between its Spec
 /// and its handshake surfaces as a refusal.
 pub(crate) fn resolved_requirement(
-    requirement: &ConnectorRequirement,
+    requirement: &Requirement,
     spec: &Result<rdlt_connector::spec::ConnectorSpec, String>,
-) -> Result<ConnectorRequirement, String> {
+) -> Result<Requirement, String> {
     if !requirement.id.is_empty() {
         return Ok(requirement.clone());
     }
@@ -177,7 +178,7 @@ pub(crate) fn resolved_requirement(
 /// two certifications' probes differ in.
 pub(crate) fn report_p2<T>(
     report: &mut Report,
-    outcome: Result<Result<T, ProviderError>, tokio::time::error::Elapsed>,
+    outcome: Result<Result<T, provider::Error>, tokio::time::error::Elapsed>,
 ) {
     match outcome {
         Ok(Ok(_accepted)) => report.fail(
@@ -186,7 +187,7 @@ pub(crate) fn report_p2<T>(
              the config gate must refuse unknown fields with a typed handshake refusal"
                 .to_string(),
         ),
-        Ok(Err(ProviderError::Client(ClientError::Handshake { .. }))) => report.pass("P2"),
+        Ok(Err(provider::Error::Client(ClientError::Handshake { .. }))) => report.pass("P2"),
         Ok(Err(error)) => report.fail(
             "P2",
             format!(
@@ -563,7 +564,7 @@ fn role_refusal_violation(
 /// ONE resolution helper, not a fourth copy): the explicit path as
 /// given, else the provider's own D-039-1 convention (last
 /// `.`-segment, `rdlt-connector-` prefix) walked over `$PATH`.
-pub(crate) fn resolve_binary(requirement: &ConnectorRequirement) -> Result<PathBuf, String> {
+pub(crate) fn resolve_binary(requirement: &Requirement) -> Result<PathBuf, String> {
     if let Some(path) = &requirement.path {
         return Ok(path.clone());
     }
@@ -608,7 +609,7 @@ mod tests {
     //! report's Fail entries.
 
     use rdlt_connector::spec::ConnectorSpec;
-    use rdlt_runtime::ConnectorProvider;
+    use rdlt_runtime::provider::Provider;
 
     use super::*;
     use crate::report::Verdict;
@@ -679,8 +680,8 @@ mod tests {
         // The requirement a path-resolved certification runs under: the
         // id learned from the connector's own claim (the truthful
         // script reports `rogue`), the binary as the operator named it.
-        let requirement = ConnectorRequirement::new("rogue").with_path(&script);
-        let provider = LocalBinaryConnectorProvider::new();
+        let requirement = Requirement::new("rogue").with_path(&script);
+        let provider = Local::new();
         // The certifier's own probe document — `certify_source`'s exact
         // spelling.
         let bogus = serde_json::json!({ "__rdlt_certify_bogus__": true });
@@ -710,8 +711,8 @@ mod tests {
         let _serving = rogue::serve_spec(&socket, spec);
         let script = write_connector_fake(dir.path(), "blank-spec", &socket);
 
-        let requirement = ConnectorRequirement::new("").with_path(&script);
-        let provider = LocalBinaryConnectorProvider::new();
+        let requirement = Requirement::new("").with_path(&script);
+        let provider = Local::new();
         let spec = fetch_spec(&provider, &requirement, Role::Source).await;
         let mut report = Report::default();
         report_p4(&mut report, &spec);

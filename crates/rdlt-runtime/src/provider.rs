@@ -1,37 +1,38 @@
-//! [`ConnectorProvider`] — the seam between "I need connector X" and a
-//! ready SPI object — and [`ProviderError`], its typed failure surface.
+//! [`Provider`] — the seam between "I need connector X" and a ready SPI
+//! object — and [`Error`], its typed failure surface.
 
 use async_trait::async_trait;
+use rdlt_connector_client::handshake::Requirement;
+use rdlt_connector_client::{destination, source};
 use rdlt_connector_protocol::handshake;
 
-use crate::managed::{ManagedDestination, ManagedSource};
-use crate::requirement::{ClientError, ConnectorRequirement};
+use crate::managed::Managed;
 
-/// Turns a [`ConnectorRequirement`] plus the connector's own config
-/// document into a managed SPI object. The facade holds a default
-/// [`crate::LocalBinaryConnectorProvider`]; embedders supply their own
-/// implementation (a pooled provider, a remote scheduler) through the
-/// same trait — the engine never learns which.
+/// Turns a [`Requirement`] plus the connector's own config document
+/// into a managed SPI object. The facade holds a default
+/// [`crate::local::Local`]; embedders supply their own implementation
+/// (a pooled provider, a remote scheduler) through the same trait — the
+/// engine never learns which.
 ///
 /// `config` is the connector's OWN document, opaque here: it crosses
 /// the wire in the handshake and the connector's config gate is the
-/// thing that validates it (a refusal comes back as
-/// [`ClientError::Handshake`] inside [`ProviderError::Client`]).
+/// thing that validates it (a refusal comes back as the client's
+/// handshake error inside [`Error::Client`]).
 #[async_trait]
-pub trait ConnectorProvider: Send + Sync {
+pub trait Provider: Send + Sync {
     /// Provide `requirement` as a source, configured by `config`.
     async fn source(
         &self,
-        requirement: &ConnectorRequirement,
+        requirement: &Requirement,
         config: &serde_json::Value,
-    ) -> Result<ManagedSource, ProviderError>;
+    ) -> Result<Managed<source::Remote>, Error>;
 
     /// Provide `requirement` as a destination, configured by `config`.
     async fn destination(
         &self,
-        requirement: &ConnectorRequirement,
+        requirement: &Requirement,
         config: &serde_json::Value,
-    ) -> Result<ManagedDestination, ProviderError>;
+    ) -> Result<Managed<destination::Remote>, Error>;
 }
 
 /// What providing a connector can report.
@@ -41,8 +42,8 @@ pub trait ConnectorProvider: Send + Sync {
 /// with a wildcard arm.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum ProviderError {
-    /// Discovery found nothing: no binary by the D-039-1 convention on
+pub enum Error {
+    /// Discovery found nothing: no binary by the naming convention on
     /// PATH, and the requirement carried no explicit path. The spelling
     /// is FROZEN — it names both the convention and the override, and
     /// tests pin it full-string.
@@ -120,9 +121,9 @@ pub enum ProviderError {
     },
     /// Everything past the handshake line is the client crate's to
     /// classify: dialing the advertised socket, the handshake RPC,
-    /// identity/version verification (D-039-2).
+    /// identity and version verification.
     #[error(transparent)]
-    Client(#[from] ClientError),
+    Client(#[from] rdlt_connector_client::error::Error),
     /// The OS refused the spawn, or the child's stdout pipe failed
     /// while the line was being read.
     #[error("spawning connector `{binary}`: {source}")]

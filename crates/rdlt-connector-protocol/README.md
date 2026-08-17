@@ -288,9 +288,10 @@ statics alone, so a provider can ask a spawned connector what it IS
 before deciding what config to hand it. `state_format_versions` on
 `HandshakeOk` is a **v0 HOLE, not an oversight**: v0 servers send an
 empty map, and the dialing client (`rdlt-connector-client`, surfaced
-through `rdlt-runtime`) threads it through to embedders UNREAD
-(`ManagedSource`/`ManagedDestination::state_format_versions`) — with
-one format version per state kind there is nothing to negotiate yet.
+through `rdlt-runtime`) threads it through to embedders UNREAD (the
+handshake `Outcome`'s `state_format_versions`, reachable through the
+runtime's `Managed::outcome`) — with one format version per state kind
+there is nothing to negotiate yet.
 Negotiation semantics are owned by the feature that adds a second
 format version; the map ships empty until then.
 
