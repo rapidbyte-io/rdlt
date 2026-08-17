@@ -718,7 +718,7 @@ async fn probe_order_book(socket: &Path, entropy: &str) -> Result<(), String> {
     if !receipt_matches(&existing, &p10_load, P10_SEQ) {
         return Err(format!(
             "the durable receipt names a DIFFERENT commit than the one asked about ({}) — \
-             the 7M1 bug shape, surviving certification otherwise",
+             a receipt naming another (load_id, commit_seq) proves nothing about this commit",
             render_receipt(&existing)
         ));
     }

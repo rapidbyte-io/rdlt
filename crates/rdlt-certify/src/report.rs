@@ -67,7 +67,7 @@ pub const CLAUSES: &[Clause] = &[
                      declares no cursor field at all: an honestly-declared snapshot stream is \
                      skipped with the reason, never vacuously passed. Certification refuses a \
                      skipped source clause unless its stream is acknowledged by name \
-                     (certify_source's accept_skips stream list; the CLI's \
+                     (the source certifier's accept_skips stream list; the CLI's \
                      --accept-skips <stream[,stream]>).",
     },
     Clause {

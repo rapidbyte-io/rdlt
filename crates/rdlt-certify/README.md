@@ -117,7 +117,7 @@ The same vocabulary `--explain` prints, verbatim:
 | Id | Title | Definition |
 |----|-------|------------|
 | S1 | checkpoint resume law | For every checkpoint the source emits, one full read equals the rows covered by that checkpoint followed by a resumed read since it — resuming from any checkpoint loses nothing and repeats nothing. |
-| S2 | checkpoint coverage | A stream must checkpoint at least once during a read. A stream that never checkpoints cannot be certified for resume and fails by name — unless it declares no cursor field at all: an honestly-declared snapshot stream is skipped with the reason, never vacuously passed. Certification refuses a skipped source clause unless its stream is acknowledged by name (certify_source's accept_skips stream list; the CLI's --accept-skips <stream[,stream]>). |
+| S2 | checkpoint coverage | A stream must checkpoint at least once during a read. A stream that never checkpoints cannot be certified for resume and fails by name — unless it declares no cursor field at all: an honestly-declared snapshot stream is skipped with the reason, never vacuously passed. Certification refuses a skipped source clause unless its stream is acknowledged by name (the source certifier's accept_skips stream list; the CLI's --accept-skips <stream[,stream]>). |
 | S4 | prompt cancellation | When the record channel closes mid-read, the source stops promptly and returns Ok — never an error, never a hang. |
 | D1 | staging invisibility | Rows written into a load session but not yet committed are invisible to readers of the table. |
 | D2 | atomic state-with-data commit | A commit persists the pipeline's state document atomically with the data: reading state back afterward returns exactly the committed cursor. |
