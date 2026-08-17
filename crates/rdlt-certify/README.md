@@ -227,7 +227,11 @@ report::assert_all_pass(
 // A destination with a read-back probe (any `TableProbe`), plus the
 // kill matrix held to its fixed clause order with fixture advice on a Skip.
 let report = d::certify(&target, Some(&probe)).await;
-report::assert_all_pass(&report, &["D1", "D2", "D3", "D4", "D5", "D6", /* P… */], &[("D8", d::NO_MERGE_SKIP)]);
+report::assert_all_pass(
+    &report,
+    &["D1", "D2", "D3", "D4", "D5", "D6", "P1", "P2", "P3", "P4", "P7", "P8", "P9", "P10", "P11", "P12"],
+    &[("D8", d::NO_MERGE_SKIP), ("P13", p::DESTINATION_DUAL_ROLE_SKIP)],
+);
 let arms = k::destination(&target, Some(&probe)).await;
 report::assert_in_order(&arms, &k::DESTINATION, Some("seed a larger fixture"));
 ```

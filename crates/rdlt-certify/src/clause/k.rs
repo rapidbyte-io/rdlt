@@ -18,10 +18,13 @@
 //! The arms killed with a live session (K-D1..K-D5) re-run under a
 //! sibling pipeline (`{pipeline}-r`), not the killed one: a destination
 //! may hold a durable per-pipeline claim (a staging lease) that a
-//! SIGKILLed holder cannot release and no clause budget can wait out,
-//! so convergence is judged on the DATA — the probe's exact count over
-//! the shared table — which the sibling scope reaches without waiting
-//! out a claim the connector is correct to enforce. K-D6's session had
+//! SIGKILLed holder cannot release and no clause budget can wait out.
+//! The matrix deliberately does NOT take over a dead process's socket
+//! or lease (a takeover would exercise a path no real embedder runs)
+//! and does not wait such a claim out; convergence is judged on the
+//! DATA — the probe's exact count over the shared table — which the
+//! sibling scope reaches without waiting out a claim the connector is
+//! correct to enforce. K-D6's session had
 //! already closed, its claim released, so its rerun rides the SAME
 //! pipeline and additionally proves the receipt durable across
 //! processes.

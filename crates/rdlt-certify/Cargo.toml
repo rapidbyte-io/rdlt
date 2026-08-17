@@ -3,7 +3,7 @@ name = "rdlt-certify"
 description = "rdlt connector certifier: spawns an out-of-process connector binary and certifies it against the conformance clauses over the wire"
 # The wire this certifier drives is frozen, but publishing is a
 # separate decision that moves with the protocol/client/runtime trio;
-# until that wave runs this stays false and the workspace dep entry
+# until that decision is taken this stays false and the workspace dep entry
 # stays path-only.
 publish = false
 version.workspace = true
