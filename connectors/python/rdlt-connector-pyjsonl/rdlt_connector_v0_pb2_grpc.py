@@ -68,7 +68,7 @@ class ConnectorServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Spec(self, request, context):
-        """Config-free static identity (039): answers BEFORE any handshake —
+        """Config-free static identity: answers BEFORE any handshake —
         it carries no session state, so the pre-handshake refusal does not
         apply to it. spec_json is ConnectorSpec (name, version,
         config_schema), served from the connector's statics alone.
