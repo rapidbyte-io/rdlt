@@ -1,44 +1,25 @@
-//! US1 independent test: the self-test cell runs the full protocol end to end
-//! under nextest — declare → select → warmup+runs → medians + artifact shape —
-//! with zero containers and zero release-CLI dependency.
+//! The self-test cell runs the full protocol end to end under nextest —
+//! declare → select → warmup+runs → medians + artifact shape — with zero
+//! containers and zero release-CLI dependency.
 
 use std::collections::BTreeMap;
 
-use rdlt_bench::paths::Paths;
-use rdlt_bench::{artifact, cells, fixtures, runner};
+use rdlt_bench::{artifact, bar, cell, fixture, matrix, product};
 
-fn repo_paths() -> Paths {
-    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crates/rdlt-bench sits two levels below the repo root")
-        .to_path_buf();
-    Paths {
-        cells_dir: repo.join("benches/harness/cells"),
-        fixtures_toml: repo.join("benches/harness/fixtures/fixtures.toml"),
-        bars_toml: repo.join("benches/bars.toml"),
-        results: repo.join("benches/results"),
-        recorded_results: repo.join("benches/results"),
-        recorded_history: repo.join("benches/history.jsonl"),
-        cli: repo.join("target/release/rdlt"),
-        bins: repo.join("target/release"),
-        benches: repo.join("benches"),
-        repo,
-    }
-}
+use crate::cases::support;
 
 #[test]
 fn selftest_cell_runs_the_full_protocol() {
-    let paths = repo_paths();
+    let paths = support::repo_paths();
 
     // The checked-in registry must load and cross-validate as a whole.
-    let all_cells = cells::load_cells(&paths.cells_dir).expect("cells load");
+    let all_cells = cell::load(&paths.cells_dir).expect("cells load");
     let bars = if paths.bars_toml.is_file() {
-        cells::load_bars(&paths.bars_toml).expect("bars load")
+        bar::load(&paths.bars_toml).expect("bars load")
     } else {
         Vec::new()
     };
-    cells::cross_validate(&all_cells, &bars).expect("gated↔bar bijection");
+    bar::cross_validate(&all_cells, &bars).expect("every bar names a cell");
 
     let cell = all_cells
         .iter()
@@ -46,23 +27,24 @@ fn selftest_cell_runs_the_full_protocol() {
         .expect("selftest cell declared in benches/harness/cells/selftest.toml");
     assert_eq!(cell.runs, 3);
 
-    let defs = fixtures::load_fixtures(&paths.fixtures_toml).expect("fixtures load");
+    let defs = fixture::load(&paths.fixtures_toml).expect("fixtures load");
     let def = defs
         .iter()
         .find(|f| f.id == cell.primary_fixture())
         .expect("fixture registered");
-    let started = fixtures::start(def, &BTreeMap::new()).expect("none fixture starts");
+    let live = fixture::start(def, &BTreeMap::new()).expect("none fixture starts");
 
-    let result = runner::run_cell(
+    let subs = product::substitutions(&paths, &live);
+    let measured = product::run(cell, &paths, &[&live], &subs).expect("protocol runs end to end");
+    let result = matrix::assemble(
         cell,
-        &paths,
-        &[&started],
+        measured,
+        &[&live],
         BTreeMap::new(),
         BTreeMap::new(),
         None,
         false,
-    )
-    .expect("protocol runs end to end");
+    );
 
     assert_eq!(result.cell_id, "selftest-protocol");
     assert_eq!(

@@ -1,36 +1,25 @@
-//! The five e2e cell pipeline templates (connector-spawning documents,
-//! born as 041's `-remote` twins and owning the base cell ids since the
-//! 043 D1 swap) are LIVE documents,
-//! not dead files that fail only in the recorded session. Each one is
-//! rendered exactly as the runner renders it (the same `substitute` over
-//! the same keys the runner provides), then pushed through the REAL
-//! gates a run would hit:
-//!
-//!   1. the facade's `pipeline_spec::Spec` parse (deny_unknown_fields —
-//!      a typoed top-level or `connector:` key dies here);
-//!   2. both sides must be the `connector:` arm with the expected
-//!      reverse-DNS id and a `{{bins}}`-resolved path override.
-//!
-//! The OPAQUE `config:` blocks — which the Spec parse deliberately does
-//! not validate — used to be pushed through the named connectors' own
-//! `Document` gates here as well. Those crates live in the sibling
-//! rdlt-connectors repository since the cut (044), so that half of the
-//! pin lives with them; in a live run the spawned connector's own gate
-//! still validates the block at the handshake, in its own wording.
-//!
-//! The cell registry side (ids, verify, competitor arms) is load-checked
-//! by `selftest.rs`'s whole-registry load; this suite owns the pipeline
-//! documents.
+//! The five e2e cell pipeline templates are LIVE documents, not dead files
+//! that fail only in the recorded session. Each one is rendered exactly as
+//! a run renders it (the same `substitute` over the same keys the product
+//! side provides), then pushed through the REAL gates a run would hit: the
+//! facade's `pipeline_spec::Spec` parse (deny_unknown_fields — a typoed
+//! top-level or `connector:` key dies here), and both sides must be the
+//! `connector:` arm with the expected reverse-DNS id and a
+//! `{{bins}}`-resolved path override. The opaque `config:` blocks are
+//! validated by the spawned connector's own gate at the handshake, in the
+//! connectors repository. The cell registry side (ids, verify, competitor
+//! arms) is load-checked by the selftest case's whole-registry load.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use rdlt::pipeline_spec::{DestSpec, SourceSpec, Spec};
-use rdlt_bench::runner::PIPELINE_SUBSTITUTION_KEYS;
+use rdlt_bench::product::SUBSTITUTION_KEYS;
 use rdlt_bench::template::substitute;
 
+use crate::cases::support;
+
 /// The five cell pipelines and the connector each side must name.
-const REMOTE_PIPELINES: &[(&str, &str, &str)] = &[
+const PIPELINES: &[(&str, &str, &str)] = &[
     (
         "pg-to-pg.yaml",
         "io.rapidbyte.postgres",
@@ -58,33 +47,16 @@ const REMOTE_PIPELINES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-fn pipelines_dir() -> PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("crates/rdlt-bench sits two levels below the repo root")
-        .join("benches/harness/cells/pipelines")
-}
-
-/// The runner's render-time substitution map with stand-in values,
-/// built from the runner's OWN key slice — so a template referencing
-/// anything the runner does not provide leaves `{{…}}` behind and fails
-/// the no-residue assertion below.
-///
-/// The keys are read from [`rdlt_bench::runner::PIPELINE_SUBSTITUTION_KEYS`],
-/// never restated here. A hand-written copy used to sit in this
-/// function, and it made the test agree with itself: renaming a key in
-/// the runner left this list stale, every template still rendered
-/// against the OLD name, and the suite stayed green while a live
-/// session would die on an unrendered `{{bins}}`. The runner's `put`
-/// guard closes the other direction (a substitution the slice does not
-/// name refuses at the source), so neither side can drift alone.
-///
-/// The values are shaped only where a value is inspected: `bins` must
-/// look like a release directory because the assertions below check the
-/// rendered `path:` overrides came from it. Everything else is a
-/// placeholder.
-fn runner_subs() -> BTreeMap<String, String> {
+/// The render-time substitution map with stand-in values, built from the
+/// product's OWN key slice — so a template referencing anything the product
+/// does not provide leaves `{{…}}` behind and fails the no-residue
+/// assertion. A hand-written copy would make the test agree with itself:
+/// a key renamed in the product would leave this list stale and the suite
+/// green while a live session died on an unrendered key. The values are
+/// shaped only where a value is inspected: `bins` must look like a release
+/// directory because the assertions check the rendered `path:` overrides
+/// came from it.
+fn stand_in_subs() -> BTreeMap<String, String> {
     let value = |key: &str| match key {
         "repo" => "/repo",
         "benches" => "/repo/benches",
@@ -95,24 +67,24 @@ fn runner_subs() -> BTreeMap<String, String> {
         "port" => "5439",
         "workdir" => "/workdir",
         "run" => "0",
-        // A key added to the runner without a stand-in here would
+        // A key added to the product without a stand-in here would
         // otherwise render as an empty string and quietly pass.
         other => panic!(
-            "runner::PIPELINE_SUBSTITUTION_KEYS gained `{other}` — give it a stand-in \
+            "product::SUBSTITUTION_KEYS gained `{other}` — give it a stand-in \
              value here so the templates are rendered the way a run renders them"
         ),
     };
-    PIPELINE_SUBSTITUTION_KEYS
+    SUBSTITUTION_KEYS
         .iter()
         .map(|key| ((*key).to_owned(), value(key).to_owned()))
         .collect()
 }
 
 #[test]
-fn the_five_remote_pipelines_render_parse_and_name_their_connectors() {
-    let dir = pipelines_dir();
-    let subs = runner_subs();
-    for (file, source_id, destination_id) in REMOTE_PIPELINES {
+fn the_five_pipelines_render_parse_and_name_their_connectors() {
+    let dir = support::repo_paths().cells_dir.join("pipelines");
+    let subs = stand_in_subs();
+    for (file, source_id, destination_id) in PIPELINES {
         let path = dir.join(file);
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
@@ -120,7 +92,7 @@ fn the_five_remote_pipelines_render_parse_and_name_their_connectors() {
         assert!(
             !rendered.contains("{{"),
             "{file}: a `{{{{…}}}}` key survived rendering — the template references \
-             a key the runner does not provide:\n{rendered}"
+             a key the product side does not provide:\n{rendered}"
         );
 
         let spec: Spec = serde_yaml_ng::from_str(&rendered).unwrap_or_else(|e| {

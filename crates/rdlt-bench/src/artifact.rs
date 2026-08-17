@@ -1,20 +1,22 @@
-//! Versioned result artifacts. One committed
-//! JSON per cell under `benches/results/`; raw sampler series under
-//! `results/raw/` (gitignored). Serde-stable: `format_version` gates readers.
+//! The FROZEN result record: one committed JSON per cell under
+//! `benches/results/` (selftest output under `results/raw/`, gitignored).
+//! Serde-stable — `format_version` gates readers, and every key here is a
+//! wire spelling.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BenchError, Result};
+use crate::error::{Error, Result};
+use crate::measure;
 
 /// The archive commit where every retired v1 cell/fixture/artifact/bar stays
-/// checkout-able (feature 018 migration, BR1). Named in the v1-rejection
-/// message so a stale artifact points a reader at its recorded history.
+/// checkout-able. Named in the v1-rejection message so a stale artifact
+/// points a reader at its recorded history.
 pub const ARCHIVE_COMMIT: &str = "40841ab";
 
-pub const ARTIFACT_FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Fingerprint {
@@ -103,14 +105,13 @@ pub enum CompetitorSide {
     Missing { reason: String },
 }
 
-/// The verified destination shape: every table the cell declared, mapped to the
-/// row count it actually held. `verify_outcome` returns an error (never this)
-/// on any mismatch, so a recorded outcome is always a full match.
-///
-/// The whole SET is recorded, not just one table, because the set is the
-/// evidence: two arms are comparable only if they moved the same tables, and a
-/// record holding a single table's count cannot show that.
-pub type VerifyOutcome = std::collections::BTreeMap<String, u64>;
+/// A destination shape: every table, mapped to a row count. As a cell's
+/// declaration it is the claim; as the recorded outcome it is the delivered
+/// set — a run that mismatches errors instead, so a recorded outcome is
+/// always a full match. The whole SET is recorded, not one table, because
+/// the set is the evidence: two arms are comparable only if they moved the
+/// same tables.
+pub type Verify = BTreeMap<String, u64>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Artifact {
@@ -124,7 +125,7 @@ pub struct Artifact {
     pub rdlt: RdltSide,
     #[serde(default)]
     pub competitors: BTreeMap<String, CompetitorSide>,
-    pub verify: Option<VerifyOutcome>,
+    pub verify: Option<Verify>,
     /// Set when `RDLT_BENCH_FORCE=1` overrode the quiet guard on a loaded
     /// machine — the number is context, not evidence, and says so.
     #[serde(default)]
@@ -135,7 +136,7 @@ pub struct Artifact {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-pub fn fingerprint(
+pub(crate) fn fingerprint(
     dataset_hashes: BTreeMap<String, String>,
     competitor_pins: BTreeMap<String, String>,
     quiet_note: Option<String>,
@@ -165,12 +166,12 @@ pub fn fingerprint(
         rustc,
         competitor_pins,
         dataset_hashes,
-        loadavg_at_start: crate::protocol::loadavg_1min().unwrap_or(-1.0),
+        loadavg_at_start: measure::loadavg_1min().unwrap_or(-1.0),
         quiet_note,
     }
 }
 
-pub fn recorded_at() -> String {
+pub(crate) fn recorded_at() -> String {
     std::process::Command::new("date")
         .arg("-I")
         .output()
@@ -184,7 +185,7 @@ pub fn write(results_dir: &Path, artifact: &Artifact) -> Result<std::path::PathB
     std::fs::create_dir_all(results_dir)?;
     let path = results_dir.join(format!("{}.json", artifact.cell_id));
     let json = serde_json::to_string_pretty(artifact)
-        .map_err(|e| BenchError(format!("serializing artifact: {e}")))?;
+        .map_err(|e| Error(format!("serializing artifact: {e}")))?;
     std::fs::write(&path, json + "\n")?;
     Ok(path)
 }
@@ -192,7 +193,7 @@ pub fn write(results_dir: &Path, artifact: &Artifact) -> Result<std::path::PathB
 pub fn read(results_dir: &Path, cell_id: &str) -> Result<Artifact> {
     let path = results_dir.join(format!("{cell_id}.json"));
     let raw = std::fs::read_to_string(&path).map_err(|e| {
-        BenchError(format!(
+        Error(format!(
             "no artifact for `{cell_id}` ({}): {e}",
             path.display()
         ))
@@ -203,9 +204,9 @@ pub fn read(results_dir: &Path, cell_id: &str) -> Result<Artifact> {
     let version = serde_json::from_str::<serde_json::Value>(&raw)
         .ok()
         .and_then(|v| v.get("format_version").and_then(serde_json::Value::as_u64));
-    if version != Some(ARTIFACT_FORMAT_VERSION as u64) {
-        return Err(BenchError(format!(
-            "artifact {} is format v{} (this harness reads v{ARTIFACT_FORMAT_VERSION} only); \
+    if version != Some(FORMAT_VERSION as u64) {
+        return Err(Error(format!(
+            "artifact {} is format v{} (this harness reads v{FORMAT_VERSION} only); \
              re-record it with a measurement session — v1 history lives at commit \
              {ARCHIVE_COMMIT}, and v2 artifacts predate the delivered-vs-declared \
              table check, so their timings may cover tables the cell never declared",
@@ -214,7 +215,7 @@ pub fn read(results_dir: &Path, cell_id: &str) -> Result<Artifact> {
         )));
     }
     let artifact: Artifact = serde_json::from_str(&raw)
-        .map_err(|e| BenchError(format!("parsing {}: {e}", path.display())))?;
+        .map_err(|e| Error(format!("parsing {}: {e}", path.display())))?;
     Ok(artifact)
 }
 
@@ -224,7 +225,7 @@ pub(crate) mod tests {
 
     pub(crate) fn minimal(cell_id: &str) -> Artifact {
         Artifact {
-            format_version: ARTIFACT_FORMAT_VERSION,
+            format_version: FORMAT_VERSION,
             cell_id: cell_id.into(),
             recorded_at: "2026-07-24".into(),
             fingerprint: Fingerprint {

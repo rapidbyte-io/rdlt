@@ -1,7 +1,7 @@
 //! The measurement protocol as executable code: quiet-machine guard, warmups,
-//! N runs, medians/percentiles. Prose rules become refusals.
+//! N counted runs, medians/percentiles. Prose rules become refusals.
 
-use crate::{BenchError, Result};
+use crate::error::{Error, Result};
 
 /// A machine is "quiet" when 1-minute loadavg is below this fraction of the
 /// core count — background compile jobs and browsers blow straight past it.
@@ -9,49 +9,51 @@ const QUIET_LOAD_PER_CORE: f64 = 0.25;
 
 /// Env var to run on a loaded machine anyway (the run is then loudly annotated
 /// in the artifact — `forced: true` — instead of refused).
-pub const FORCE_ENV: &str = "RDLT_BENCH_FORCE";
+pub(crate) const FORCE_ENV: &str = "RDLT_BENCH_FORCE";
 
+/// The quiet guard's outcome for a run that proceeds.
 #[derive(Debug, Clone, PartialEq)]
-pub enum QuietVerdict {
-    Quiet,
+pub(crate) enum Quiet {
+    Settled,
     /// Machine is loaded; a forced run proceeds with this annotation recorded
     /// in the artifact.
     Annotated(String),
 }
 
-pub fn loadavg_1min() -> Result<f64> {
+pub(crate) fn loadavg_1min() -> Result<f64> {
     let raw = std::fs::read_to_string("/proc/loadavg")?;
     raw.split_whitespace()
         .next()
         .and_then(|f| f.parse().ok())
-        .ok_or_else(|| BenchError(format!("unparseable /proc/loadavg: {raw}")))
+        .ok_or_else(|| Error(format!("unparseable /proc/loadavg: {raw}")))
 }
 
 fn cores() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-/// Whether the quiet guard is being overridden this invocation (`RDLT_BENCH_FORCE=1`).
-/// Recorded as `forced` in every artifact written under the override.
-pub fn forced() -> bool {
+/// Whether the quiet guard is being overridden this invocation
+/// (`RDLT_BENCH_FORCE=1`). Recorded as `forced` in every artifact written
+/// under the override.
+pub(crate) fn forced() -> bool {
     std::env::var(FORCE_ENV).is_ok_and(|v| v == "1")
 }
 
 /// One classless rule: every measured run REFUSES on a loaded machine unless
-/// forced — then it proceeds loudly annotated. There is no measurement
-/// configuration that is exempt.
-pub fn quiet_guard(load1: f64, ncores: usize, forced: bool) -> Result<QuietVerdict> {
+/// forced — then it proceeds loudly annotated. No measurement configuration
+/// is exempt.
+fn guard_at(load1: f64, ncores: usize, forced: bool) -> Result<Quiet> {
     let threshold = QUIET_LOAD_PER_CORE * ncores as f64;
     if load1 <= threshold {
-        return Ok(QuietVerdict::Quiet);
+        return Ok(Quiet::Settled);
     }
     let note = format!(
         "MACHINE NOT QUIET: loadavg {load1:.2} > {threshold:.2} ({ncores} cores) — number is context, not evidence"
     );
     if forced {
-        Ok(QuietVerdict::Annotated(note))
+        Ok(Quiet::Annotated(note))
     } else {
-        Err(BenchError(format!(
+        Err(Error(format!(
             "refusing run: {note} (set {FORCE_ENV}=1 to run annotated)"
         )))
     }
@@ -61,33 +63,29 @@ pub fn quiet_guard(load1: f64, ncores: usize, forced: bool) -> Result<QuietVerdi
 /// settle first (container spin-up and fixture builds from earlier cells linger
 /// in the 1-minute loadavg) — refusal is for load that never decays, i.e.
 /// something ELSE is running. A forced run skips the wait and annotates.
-pub fn quiet_guard_now() -> Result<QuietVerdict> {
+pub(crate) fn guard() -> Result<Quiet> {
     let forced = forced();
     let ncores = cores();
     if forced {
-        return quiet_guard(loadavg_1min()?, ncores, forced);
+        return guard_at(loadavg_1min()?, ncores, forced);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         let load1 = loadavg_1min()?;
         if load1 <= QUIET_LOAD_PER_CORE * ncores as f64 {
-            return Ok(QuietVerdict::Quiet);
+            return Ok(Quiet::Settled);
         }
         if std::time::Instant::now() >= deadline {
-            return quiet_guard(load1, ncores, forced);
+            return guard_at(load1, ncores, forced);
         }
         eprintln!("   waiting for quiet machine (loadavg {load1:.2}) ...");
         std::thread::sleep(std::time::Duration::from_secs(15));
     }
 }
 
-// ---------------------------------------------------------------------------
-// Statistics
-// ---------------------------------------------------------------------------
-
 /// Median of the samples (mean-of-middle-two for even N). Panics on empty —
 /// the protocol never records zero runs.
-pub fn median(samples: &[f64]) -> f64 {
+pub(crate) fn median(samples: &[f64]) -> f64 {
     assert!(!samples.is_empty(), "median of zero runs");
     let mut sorted = samples.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
@@ -99,29 +97,8 @@ pub fn median(samples: &[f64]) -> f64 {
     }
 }
 
-/// The last stdout line that parses as a JSON object carrying `field`, and
-/// that field's value. The self-timing convention the dlt baselines, the
-/// shred-only example, and the subprocess `self_json_seconds` timing all
-/// share: a run may print noise, then one JSON summary line last.
-pub(crate) fn last_json_field(stdout: &str, field: &str) -> Option<serde_json::Value> {
-    stdout.lines().rev().find_map(|line| {
-        serde_json::from_str::<serde_json::Value>(line.trim())
-            .ok()
-            .and_then(|v| v.get(field).cloned())
-    })
-}
-
-/// The last JSON line as a whole object — for consumers that need more than
-/// one field of the summary line (e.g. the driver `extra{}` pass-through).
-pub(crate) fn last_json(stdout: &str) -> Option<serde_json::Value> {
-    stdout
-        .lines()
-        .rev()
-        .find_map(|line| serde_json::from_str(line.trim()).ok())
-}
-
 /// Nearest-rank p95 (the sample at ceil(0.95·N), 1-indexed).
-pub fn p95(samples: &[f64]) -> f64 {
+pub(crate) fn p95(samples: &[f64]) -> f64 {
     assert!(!samples.is_empty(), "p95 of zero runs");
     let mut sorted = samples.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
@@ -129,22 +106,22 @@ pub fn p95(samples: &[f64]) -> f64 {
     sorted[rank - 1]
 }
 
-/// One measured sample: wall time plus whatever the mode's collector attached.
+/// One measured run: wall time plus whatever the collector attached.
 #[derive(Debug, Clone)]
-pub struct Sample<T> {
-    pub wall_ms: f64,
-    pub detail: T,
+pub(crate) struct Measured<T> {
+    pub(crate) wall_ms: f64,
+    pub(crate) detail: T,
 }
 
 /// The uniform loop: `warmups` uncounted runs, then `runs` counted ones.
 /// The closure receives `counted` so collectors can skip warmup sampling.
-pub fn run_protocol<T>(
+pub(crate) fn run<T>(
     warmups: u32,
     runs: u32,
-    mut one_run: impl FnMut(bool) -> Result<Sample<T>>,
-) -> Result<Vec<Sample<T>>> {
+    mut one_run: impl FnMut(bool) -> Result<Measured<T>>,
+) -> Result<Vec<Measured<T>>> {
     if runs == 0 {
-        return Err(BenchError("protocol requires runs >= 1".into()));
+        return Err(Error("protocol requires runs >= 1".into()));
     }
     for _ in 0..warmups {
         one_run(false)?;
@@ -172,25 +149,25 @@ mod tests {
 
     #[test]
     fn loaded_machine_refuses_unless_forced() {
-        let err = quiet_guard(6.0, 8, false).unwrap_err().to_string();
+        let err = guard_at(6.0, 8, false).unwrap_err().to_string();
         assert!(err.contains("refusing run"), "{err}");
         assert!(err.contains(FORCE_ENV), "{err}");
-        let forced = quiet_guard(6.0, 8, true).unwrap();
-        assert!(matches!(forced, QuietVerdict::Annotated(ref n) if n.contains("NOT QUIET")));
+        let forced = guard_at(6.0, 8, true).unwrap();
+        assert!(matches!(forced, Quiet::Annotated(ref n) if n.contains("NOT QUIET")));
     }
 
     #[test]
     fn quiet_machine_passes_regardless_of_force() {
-        assert_eq!(quiet_guard(0.5, 8, false).unwrap(), QuietVerdict::Quiet);
-        assert_eq!(quiet_guard(0.5, 8, true).unwrap(), QuietVerdict::Quiet);
+        assert_eq!(guard_at(0.5, 8, false).unwrap(), Quiet::Settled);
+        assert_eq!(guard_at(0.5, 8, true).unwrap(), Quiet::Settled);
     }
 
     #[test]
     fn protocol_counts_warmups_separately() {
         let mut calls = Vec::new();
-        let samples = run_protocol(2, 3, |counted| {
+        let samples = run(2, 3, |counted| {
             calls.push(counted);
-            Ok(Sample {
+            Ok(Measured {
                 wall_ms: 1.0,
                 detail: (),
             })
@@ -199,7 +176,7 @@ mod tests {
         assert_eq!(samples.len(), 3);
         assert_eq!(calls, vec![false, false, true, true, true]);
         assert!(
-            run_protocol(0, 0, |_| Ok(Sample {
+            run(0, 0, |_| Ok(Measured {
                 wall_ms: 0.0,
                 detail: ()
             }))

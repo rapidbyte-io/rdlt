@@ -133,13 +133,13 @@ fn scan_tree(root: u32) -> Option<(Vec<StatLine>, StatLine)> {
 /// Samples a child's process tree until [`Sampler::stop`]. Sub-interval
 /// processes report null + note.
 #[derive(Debug)]
-pub struct Sampler {
+pub(crate) struct Sampler {
     stop: Arc<AtomicBool>,
     handle: std::thread::JoinHandle<ResourceUsage>,
 }
 
 impl Sampler {
-    pub fn spawn(pid: u32) -> Self {
+    pub(crate) fn spawn(pid: u32) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
         let handle = std::thread::spawn(move || {
@@ -188,7 +188,7 @@ impl Sampler {
         Self { stop, handle }
     }
 
-    pub fn stop(self) -> ResourceUsage {
+    pub(crate) fn stop(self) -> ResourceUsage {
         self.stop.store(true, Ordering::Relaxed);
         self.handle.join().unwrap_or_default()
     }

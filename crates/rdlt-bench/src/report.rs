@@ -1,15 +1,15 @@
-//! RESULTS.md generation: the matrix and trends tables regenerate from
-//! artifacts (and the append-only history feed) between explicit markers; the
-//! hand-written narrative outside the markers is preserved byte-for-byte. No
-//! markers → refusal, never guessing.
-
-use std::path::Path;
+//! RESULTS.md generation: the matrix and trends tables regenerate from the
+//! recorded artifacts and the history feed between explicit markers; the
+//! hand-written narrative outside the markers is preserved byte-for-byte.
+//! No markers → refusal, never guessing. The same row builder renders the
+//! terminal run summary, so the two views can never drift.
 
 use crate::artifact::{Artifact, CompetitorSide};
-use crate::cells::{Bar, BarKind, Cell};
-use crate::{BenchError, Result};
-
-use crate::is_selftest;
+use crate::bar::{self, Bar, Kind};
+use crate::cell::{self, Cell};
+use crate::error::{Error, Result};
+use crate::paths::Paths;
+use crate::{artifact, history};
 
 pub(crate) fn begin_marker(section: &str) -> String {
     format!("<!-- rdlt-bench:BEGIN {section} -->")
@@ -18,7 +18,7 @@ pub(crate) fn end_marker(section: &str) -> String {
     format!("<!-- rdlt-bench:END {section} -->")
 }
 
-fn fmt_ms(ms: f64) -> String {
+pub(crate) fn fmt_ms(ms: f64) -> String {
     if ms >= 1000.0 {
         format!("{:.2} s", ms / 1000.0)
     } else {
@@ -50,9 +50,9 @@ fn rdlt_cell(artifact: &Artifact) -> String {
 
 fn bar_target(bar: Option<&Bar>) -> String {
     match bar.map(|b| &b.kind) {
-        Some(BarKind::RatioVs { min_ratio, .. }) => format!("≥ {min_ratio}×"),
-        Some(BarKind::AbsoluteMs { max_ms }) => format!("≤ {max_ms} ms abs"),
-        Some(BarKind::RssRatioVs { max_rss_ratio, .. }) => {
+        Some(Kind::RatioVs { min_ratio, .. }) => format!("≥ {min_ratio}×"),
+        Some(Kind::AbsoluteMs { max_ms }) => format!("≤ {max_ms} ms abs"),
+        Some(Kind::RssRatioVs { max_rss_ratio, .. }) => {
             format!("≤ 1/{:.0}", 1.0 / max_rss_ratio)
         }
         None => "—".into(),
@@ -64,7 +64,7 @@ fn bar_target(bar: Option<&Bar>) -> String {
 fn status(artifact: &Artifact, bar: Option<&Bar>) -> String {
     match bar {
         Some(bar) => {
-            if crate::gate::evaluate(bar, artifact).passed() {
+            if bar::evaluate(bar, artifact).passed() {
                 "PASS".into()
             } else {
                 "FAIL".into()
@@ -86,8 +86,8 @@ const HEADERS: [&str; 8] = [
 ];
 
 /// The shared ROW builder — both renderers (markdown for RESULTS.md, aligned
-/// text for the run summary) consume these cells, so the two views can never
-/// drift. Emphasis (`**`) is markdown-layer decoration, added there only.
+/// text for the run summary) consume these cells. Emphasis (`**`) is
+/// markdown-layer decoration, added there only.
 fn rows_for(artifacts: &[&Artifact], bars: &[Bar]) -> Vec<[String; 8]> {
     let mut rows = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
@@ -227,7 +227,7 @@ fn provenance(artifacts: &[&Artifact], source: &str) -> String {
 
 /// The run-summary rendering: the same rows as the RESULTS.md matrix, aligned
 /// for a terminal instead of markdown.
-pub fn summary_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
+pub(crate) fn summary_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     let footer = provenance(artifacts, "Measured by this invocation");
     format!(
         "{}{}",
@@ -236,153 +236,13 @@ pub fn summary_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
-// History feed (Trends)
-// ---------------------------------------------------------------------------
-
-/// One recorded data point per cell×variant. `ts` is taken from the artifact's
-/// own timestamp — the feed introduces no new clock source.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HistoryLine {
-    pub ts: String,
-    pub cell: String,
-    pub variant: String,
-    pub median_ms: f64,
-    pub rows: Option<u64>,
-    /// Recorded on a machine that failed the quiet guard.
-    ///
-    /// The artifact carries this flag precisely so a forced number is never
-    /// mistaken for evidence; dropping it here let a forced median into the
-    /// trends table indistinguishable from a recorded-session one — the same
-    /// confusion, one layer over. Optional so existing history files still read.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub forced: bool,
-}
-
-/// Append one line per cell×variant for this recorded invocation (rdlt plus
-/// every competitor that produced a median). Append-only: the file is the
-/// Trends section's whole memory.
-pub fn append_history(path: &Path, artifact: &Artifact) -> Result<()> {
-    let mut lines = vec![HistoryLine {
-        ts: artifact.recorded_at.clone(),
-        cell: artifact.cell_id.clone(),
-        variant: "rdlt".into(),
-        median_ms: artifact.rdlt.median_ms,
-        rows: artifact.rdlt.rows,
-        forced: artifact.forced,
-    }];
-    // Every arm of a cell delivers the SAME declared stream set — that is what
-    // the delivered-vs-declared check enforces — so the cell's declared total
-    // is each competitor's row count too.
-    //
-    // Recording it is what lets the trends guard fire on a competitor row. It
-    // was `None` here, and the guard compares before/now row counts, so a
-    // scope correction was rendered as a plain percentage for every arm except
-    // rdlt's — precisely the misleading output the guard exists to prevent,
-    // just on the other side of the comparison.
-    let declared: Option<u64> = artifact.verify.as_ref().map(|v| v.values().copied().sum());
-    for (variant, side) in &artifact.competitors {
-        if let CompetitorSide::Ok { median_ms, .. } = side {
-            lines.push(HistoryLine {
-                ts: artifact.recorded_at.clone(),
-                cell: artifact.cell_id.clone(),
-                variant: variant.clone(),
-                median_ms: *median_ms,
-                rows: declared,
-                forced: artifact.forced,
-            });
-        }
-    }
-    let mut body = String::new();
-    for line in &lines {
-        let json = serde_json::to_string(line)
-            .map_err(|e| BenchError(format!("serializing history line: {e}")))?;
-        body.push_str(&json);
-        body.push('\n');
-    }
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| BenchError(format!("opening {}: {e}", path.display())))?;
-    file.write_all(body.as_bytes())
-        .map_err(|e| BenchError(format!("appending {}: {e}", path.display())))?;
-    Ok(())
-}
-
-fn read_history(path: &Path) -> Result<Vec<HistoryLine>> {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Ok(Vec::new()); // no feed yet → empty Trends
-    };
-    let mut lines = Vec::new();
-    for (n, line) in raw.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let parsed: HistoryLine = serde_json::from_str(line)
-            .map_err(|e| BenchError(format!("{}:{}: {e}", path.display(), n + 1)))?;
-        lines.push(parsed);
-    }
-    Ok(lines)
-}
-
-/// Trends: the latest two recorded medians per cell×variant, and the delta
-/// between them — the "is it drifting?" view fed only by the history feed.
-/// Selftest lines are filtered by the same rule the matrix uses: harness
-/// machinery is never a product row, in either table.
-fn trends_table(history: &[HistoryLine]) -> String {
-    use std::collections::BTreeMap;
-    // Preserve append order (chronological) per key; keep the last two.
-    let mut by_key: BTreeMap<(String, String), Vec<&HistoryLine>> = BTreeMap::new();
-    for line in history.iter().filter(|l| !is_selftest(&l.cell)) {
-        by_key
-            .entry((line.cell.clone(), line.variant.clone()))
-            .or_default()
-            .push(line);
-    }
-    let mut out = String::new();
-    out.push_str("| Cell | Variant | Latest | Previous | Δ |\n");
-    out.push_str("|---|---|---|---|---|\n");
-    for ((cell, variant), points) in &by_key {
-        let latest = points.last().expect("non-empty by construction");
-        let prev = points.iter().rev().nth(1);
-        // A percentage is only meaningful between runs that moved the same
-        // volume. When the row counts differ the two points measured different
-        // work, so render the counts instead — a cell whose scope was corrected
-        // would otherwise publish the correction as a speedup.
-        let delta = prev.map_or_else(
-            || "—".to_owned(),
-            |p| match (latest.rows, p.rows) {
-                (Some(now), Some(before)) if now != before => {
-                    format!("rows {before} → {now}")
-                }
-                _ => {
-                    let pct = (latest.median_ms - p.median_ms) / p.median_ms * 100.0;
-                    format!("{pct:+.1}%")
-                }
-            },
-        );
-        out.push_str(&format!(
-            "| {cell} | {variant} | {} | {} | {delta} |\n",
-            fmt_ms(latest.median_ms),
-            prev.map_or_else(|| "—".to_owned(), |p| fmt_ms(p.median_ms)),
-        ));
-    }
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Splice + regenerate
-// ---------------------------------------------------------------------------
-
 /// Splice `body` between the section's markers. Everything outside the
 /// markers — the narrative — is preserved byte-for-byte.
-pub fn splice(results_md: &str, section: &str, body: &str) -> Result<String> {
+pub(crate) fn splice(results_md: &str, section: &str, body: &str) -> Result<String> {
     let begin = begin_marker(section);
     let end = end_marker(section);
     let start = results_md.find(&begin).ok_or_else(|| {
-        BenchError(format!(
+        Error(format!(
             "RESULTS.md has no `{begin}` marker — insert the marker pair where the {section} table belongs"
         ))
     })?;
@@ -390,7 +250,7 @@ pub fn splice(results_md: &str, section: &str, body: &str) -> Result<String> {
     let end_at = results_md[after_begin..]
         .find(&end)
         .map(|i| after_begin + i)
-        .ok_or_else(|| BenchError(format!("RESULTS.md has `{begin}` but no `{end}`")))?;
+        .ok_or_else(|| Error(format!("RESULTS.md has `{begin}` but no `{end}`")))?;
     let mut out = String::with_capacity(results_md.len() + body.len());
     out.push_str(&results_md[..after_begin]);
     out.push('\n');
@@ -400,28 +260,21 @@ pub fn splice(results_md: &str, section: &str, body: &str) -> Result<String> {
     Ok(out)
 }
 
-/// Regenerate the two generated regions — `matrix` (from the artifacts in
-/// `results_dir`) and `trends` (from the history feed at `history_path`) —
-/// from disk. The caller says WHICH ledger both read (the recorded ledger
-/// the gate's bars bind against — see `cmd_report`); the hand-written sections are
-/// preserved byte-for-byte. A cell with an artifact file that cannot be
-/// read (corrupt, format-version mismatch) fails loudly.
-pub fn regenerate(
-    results_md_path: &Path,
-    cells: &[Cell],
-    bars: &[Bar],
-    results_dir: &Path,
-    history_path: &Path,
-) -> Result<Vec<String>> {
-    let mut content = std::fs::read_to_string(results_md_path)
-        .map_err(|e| BenchError(format!("reading {}: {e}", results_md_path.display())))?;
+/// Regenerate the two generated regions of `paths.results_md` — `matrix`
+/// from the recorded artifacts, `trends` from the history feed — with the
+/// hand-written sections preserved byte-for-byte. A cell with an artifact
+/// file that cannot be read (corrupt, format-version mismatch) fails loudly;
+/// a not-yet-measured cell is simply absent from the matrix.
+pub(crate) fn regenerate(paths: &Paths, cells: &[Cell], bars: &[Bar]) -> Result<Vec<String>> {
+    let mut content = std::fs::read_to_string(&paths.results_md)
+        .map_err(|e| Error(format!("reading {}: {e}", paths.results_md.display())))?;
 
     let mut artifacts: Vec<Artifact> = Vec::new();
-    for cell in cells.iter().filter(|c| !is_selftest(&c.id)) {
-        if !results_dir.join(format!("{}.json", cell.id)).is_file() {
-            continue; // not-yet-measured: simply absent from the matrix
+    for cell in cells.iter().filter(|c| !cell::is_selftest(&c.id)) {
+        if !paths.results.join(format!("{}.json", cell.id)).is_file() {
+            continue;
         }
-        artifacts.push(crate::artifact::read(results_dir, &cell.id)?);
+        artifacts.push(artifact::read(&paths.results, &cell.id)?);
     }
     let refs: Vec<&Artifact> = artifacts.iter().collect();
 
@@ -435,10 +288,10 @@ pub fn regenerate(
     );
     content = splice(&content, "matrix", &matrix_body)?;
 
-    let history = read_history(history_path)?;
-    content = splice(&content, "trends", &trends_table(&history))?;
+    let history = history::read(&paths.history)?;
+    content = splice(&content, "trends", &history::trends(&history))?;
 
-    std::fs::write(results_md_path, content)?;
+    std::fs::write(&paths.results_md, content)?;
     Ok(vec!["matrix".to_owned(), "trends".to_owned()])
 }
 
@@ -513,105 +366,34 @@ mod tests {
         assert_eq!(table.lines().count(), 2, "{table}");
     }
 
+    /// Regenerate renders the artifacts and history feed of the ONE ledger
+    /// the paths name — the same recorded artifacts the gate's bars bind
+    /// against — so a report run re-renders the tables the bars cite.
     #[test]
-    fn history_round_trips_and_trends_show_the_delta() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.jsonl");
-        let mut a1 = crate::artifact::tests::minimal("pg-to-pg-1m");
-        a1.recorded_at = "2026-07-24".into();
-        a1.rdlt.median_ms = 1000.0;
-        append_history(&path, &a1).unwrap();
-        let mut a2 = crate::artifact::tests::minimal("pg-to-pg-1m");
-        a2.recorded_at = "2026-07-25".into();
-        a2.rdlt.median_ms = 1100.0;
-        append_history(&path, &a2).unwrap();
-
-        let history = read_history(&path).unwrap();
-        assert_eq!(history.len(), 2);
-        let table = trends_table(&history);
-        assert!(table.contains("pg-to-pg-1m"), "{table}");
-        assert!(table.contains("rdlt"), "{table}");
-        assert!(table.contains("+10.0%"), "{table}");
-    }
-
-    /// The recorded/live agreement's report half: regenerate renders
-    /// the artifacts and history feed it is POINTED AT — cmd_report
-    /// points it at the recorded ledger the gate's bars bind against,
-    /// so a report run re-renders the recorded tables the bars cite,
-    /// never some other ledger's.
-    #[test]
-    fn regenerate_renders_the_artifacts_and_history_it_is_pointed_at() {
-        let dir = tempfile::tempdir().unwrap();
-        let recorded = dir.path().join("recorded");
-        std::fs::create_dir(&recorded).unwrap();
+    fn regenerate_renders_the_ledgers_artifacts_and_history() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::rooted(root.path().to_path_buf(), root.path().join("target"));
         let mut artifact = crate::artifact::tests::minimal("pg-cell");
         artifact.rdlt.median_ms = 1234.0;
-        crate::artifact::write(&recorded, &artifact).unwrap();
-        let history = recorded.join("history.jsonl");
-        append_history(&history, &artifact).unwrap();
+        crate::artifact::write(&paths.results, &artifact).unwrap();
+        history::append(&paths.history, &artifact).unwrap();
 
-        let results_md = dir.path().join("RESULTS.md");
         std::fs::write(
-            &results_md,
+            &paths.results_md,
             "# Results\n\n<!-- rdlt-bench:BEGIN matrix -->\nstale\n<!-- rdlt-bench:END matrix -->\n\
              \n<!-- rdlt-bench:BEGIN trends -->\nstale\n<!-- rdlt-bench:END trends -->\n",
         )
         .unwrap();
         let cell: Cell = toml::from_str("id = \"pg-cell\"\nfixtures = []").unwrap();
 
-        let updated = regenerate(&results_md, &[cell], &[], &recorded, &history).unwrap();
+        let updated = regenerate(&paths, &[cell], &[]).unwrap();
         assert_eq!(updated, ["matrix", "trends"]);
-        let out = std::fs::read_to_string(&results_md).unwrap();
+        let out = std::fs::read_to_string(&paths.results_md).unwrap();
         assert!(
             out.matches("| pg-cell |").count() >= 2,
             "both the matrix and the trends table carry the recorded cell: {out}"
         );
         assert!(out.contains("1.23 s"), "{out}");
         assert!(!out.contains("stale"), "{out}");
-    }
-
-    /// Selftest history lines never reach the Trends table — the matrix
-    /// filters harness machinery and Trends filters by the SAME rule; a
-    /// feed carrying a selftest line renders only the product rows.
-    #[test]
-    fn selftest_history_lines_never_reach_the_trends_table() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.jsonl");
-        let mut product = crate::artifact::tests::minimal("pg-to-pg-1m");
-        product.rdlt.median_ms = 1000.0;
-        append_history(&path, &product).unwrap();
-        let mut machinery = crate::artifact::tests::minimal("selftest-protocol");
-        machinery.rdlt.median_ms = 22.0;
-        append_history(&path, &machinery).unwrap();
-
-        let table = trends_table(&read_history(&path).unwrap());
-        assert!(table.contains("pg-to-pg-1m"), "{table}");
-        assert!(!table.contains("selftest"), "{table}");
-    }
-
-    /// A cell whose scope is corrected moves fewer rows than it did before, so
-    /// its wall time drops for a reason that is not a speedup. Publishing that
-    /// drop as a percentage would advertise the correction as an improvement.
-    #[test]
-    fn a_delta_across_different_row_counts_shows_the_rows_not_a_percentage() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("history.jsonl");
-        let mut before = crate::artifact::tests::minimal("pg-to-pg-dedup-1m");
-        before.recorded_at = "2026-07-24".into();
-        before.rdlt.median_ms = 14_784.0;
-        before.rdlt.rows = Some(3_000_000);
-        append_history(&path, &before).unwrap();
-        let mut after = crate::artifact::tests::minimal("pg-to-pg-dedup-1m");
-        after.recorded_at = "2026-07-25".into();
-        after.rdlt.median_ms = 5_028.0;
-        after.rdlt.rows = Some(1_000_000);
-        append_history(&path, &after).unwrap();
-
-        let table = trends_table(&read_history(&path).unwrap());
-        assert!(table.contains("rows 3000000 → 1000000"), "{table}");
-        assert!(
-            !table.contains('%'),
-            "a scope change is not a speedup: {table}"
-        );
     }
 }
