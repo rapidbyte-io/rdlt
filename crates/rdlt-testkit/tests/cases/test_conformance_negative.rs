@@ -553,7 +553,7 @@ async fn an_abort_mid_suite_still_closes_the_held_session() {
     );
 }
 
-/// 047 L5: the harness RETAINS every observed row (S1 is a content
+/// The harness RETAINS every observed row (S1 is a content
 /// law), so retention is the price of the assertion — and a source
 /// flooding past the retention ceiling must fail BY NAME rather than
 /// OOM the harness. Raw JSON is conservatively charged before parsing,

@@ -49,16 +49,16 @@ const RETENTION_CEILING_BYTES: usize = 64 << 20;
 
 /// The most ONE raw-JSON push may weigh on the wire. Retention is
 /// metered post-parse (see [`retained_bytes`]), but the PARSER'S
-/// transient still needs a bound, and it is this one: the worst whole-push expansion is the
-/// chain form, ~376 bytes per level for ~2 wire bytes (a 72-byte
-/// `Value` plus its one-element `Vec` heap block, capacity-4 and
-/// align-16 rounded, under this lockfile's 72-byte preserve_order
-/// layout) ≈ 188× — so 4 MiB of wire keeps the parse transient under
-/// ~1 GiB with the 256 factor covering it (the dense-array form, ~3
-/// coexisting slots per element during `Vec` doubling, is ~108× —
-/// lower). A source under certification streams fixtures in ordinary
-/// row pushes; a single push past this bound fails by name rather
-/// than materializing the transient.
+/// transient still needs a bound, and it is this one: the worst
+/// whole-push expansion is the chain form, ~376 bytes per level for ~2
+/// wire bytes (a 72-byte `Value` plus its one-element `Vec` heap block,
+/// capacity-4 and align-16 rounded, under this lockfile's 72-byte
+/// preserve_order layout) ≈ 188× — so 4 MiB of wire keeps the parse
+/// transient under ~1 GiB with the 256 factor covering it (the
+/// dense-array form, ~3 coexisting slots per element during `Vec`
+/// doubling, is ~108× — lower). A source under certification streams
+/// fixtures in ordinary row pushes; a single push past this bound
+/// fails by name rather than materializing the transient.
 const MAX_SINGLE_PUSH_BYTES: usize = 4 * 1024 * 1024;
 
 /// The transient factor's derivation, asserted in the pins below:
@@ -67,10 +67,10 @@ const TRANSIENT_FACTOR: usize = 256;
 
 /// The heap bytes one parsed value actually retains — a post-parse
 /// measure, where a flat wire×factor charge refused honest multi-MiB
-/// reads: one `Value` slot each, strings at capacity, containers at length times
-/// slot size, recursing. An approximation (Vec/IndexMap capacity slack,
-/// index bytes and allocator rounding are not modeled — the 64 MiB
-/// ceiling it feeds is the flood guard, not an accountant).
+/// reads: one `Value` slot each, strings at capacity, containers at
+/// length times slot size, recursing. An approximation (Vec/IndexMap
+/// capacity slack, index bytes and allocator rounding are not modeled —
+/// the 64 MiB ceiling it feeds is the flood guard, not an accountant).
 fn retained_bytes(value: &Value) -> usize {
     const SLOT: usize = std::mem::size_of::<Value>();
     match value {
