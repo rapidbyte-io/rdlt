@@ -7,11 +7,12 @@
 //! stream's records are produced.
 
 use async_trait::async_trait;
+use rdlt_connector::arrow::RecordBatch;
+use rdlt_connector::channel::{ChannelClosed, RecordsOut};
 use rdlt_connector::core::Cursor;
-use rdlt_connector::{
-    ChannelClosed, ConnectorSpec, ReadRequest, RecordBatch, RecordsOut, Source, SourceError,
-    StreamSpec,
-};
+use rdlt_connector::error::SourceError;
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 use std::ops::ControlFlow;
 
 use crate::config::Document;
@@ -282,7 +283,7 @@ mod tests {
         assert!(spec.config_schema.is_none(), "default: no schema declared");
         source.check().await.expect("default probe");
 
-        let (out, mut input) = rdlt_connector::records_channel(1 << 16);
+        let (out, mut input) = rdlt_connector::channel::records(1 << 16);
         let streams = source.streams().await.expect("declared");
         source
             .read(ReadRequest::new(streams[0].clone(), None, out))
@@ -290,7 +291,7 @@ mod tests {
             .expect("read");
         let push = input.recv().await.expect("one push");
         match push.payload {
-            rdlt_connector::PushPayload::RawJson(bytes) => {
+            rdlt_connector::channel::PushPayload::RawJson(bytes) => {
                 assert_eq!(&bytes[..], b"{\"n\":7}\n");
             }
             other => panic!("rows land as RawJson: {other:?}"),
@@ -302,7 +303,7 @@ mod tests {
     /// contract.
     #[tokio::test]
     async fn a_closed_channel_is_break_not_error() {
-        let (out, mut input) = rdlt_connector::records_channel(1 << 16);
+        let (out, mut input) = rdlt_connector::channel::records(1 << 16);
         input.close();
         let mut feed = Feed::new(out);
         assert!(feed.rows([serde_json::json!({})]).await.is_break());
@@ -322,7 +323,7 @@ mod tests {
     /// A source-native Arrow batch flows through the Feed unrepackaged.
     #[tokio::test]
     async fn an_arrow_batch_arrives_as_arrow() {
-        let (out, mut input) = rdlt_connector::records_channel(1 << 16);
+        let (out, mut input) = rdlt_connector::channel::records(1 << 16);
         let mut feed = Feed::new(out);
         assert!(
             feed.arrow(rdlt_testkit::batch_of(&[1, 2, 3]))
@@ -332,7 +333,7 @@ mod tests {
         drop(feed);
         let push = input.recv().await.expect("one push");
         match push.payload {
-            rdlt_connector::PushPayload::Arrow(batch) => assert_eq!(batch.num_rows(), 3),
+            rdlt_connector::channel::PushPayload::Arrow(batch) => assert_eq!(batch.num_rows(), 3),
             other => panic!("arrow stays arrow: {other:?}"),
         }
     }

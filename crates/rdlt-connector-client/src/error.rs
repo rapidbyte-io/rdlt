@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rdlt_connector::{DestinationError, SourceError};
+use rdlt_connector::error::{DestinationError, SourceError};
 use rdlt_connector_protocol::proto;
 
 use crate::{gate, wire};

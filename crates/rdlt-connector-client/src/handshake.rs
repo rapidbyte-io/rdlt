@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rdlt_connector::{ConnectorSpec, DestinationCapabilities};
+use rdlt_connector::destination::Capabilities;
+
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto::{self, handshake_reply};
 use tonic::transport::Channel;
@@ -118,7 +120,7 @@ pub struct Outcome {
     pub spec: ConnectorSpec,
     /// The destination's declared capabilities — `None` for a source
     /// (the proto pins `capabilities_json` empty for sources).
-    pub capabilities: Option<DestinationCapabilities>,
+    pub capabilities: Option<Capabilities>,
     /// Per-state-kind format versions (e.g. `"cursor" -> 2`). v0
     /// servers send an empty map, carried through to embedders unread;
     /// negotiation is owned by the feature that adds a second format
@@ -161,13 +163,13 @@ pub async fn run(
     // actually happened.
     let config_json =
         serde_json::to_vec(config).expect("a serde_json::Value serializes to JSON infallibly");
-    if config_json.len() as u64 > rdlt_connector::MAX_DOCUMENT_BYTES {
+    if config_json.len() as u64 > rdlt_connector::gate::MAX_DOCUMENT_BYTES {
         return Err(error::Error::Protocol(format!(
             "the config document serializes to {} bytes of JSON, over the protocol's \
              {}-byte document ceiling (YAML→JSON re-serialization can inflate a \
              just-legal source file past it) — shrink the document",
             config_json.len(),
-            rdlt_connector::MAX_DOCUMENT_BYTES
+            rdlt_connector::gate::MAX_DOCUMENT_BYTES
         )));
     }
     let mut client = wire::connector_client(channel.clone());
@@ -227,7 +229,7 @@ pub async fn run(
     let spec: ConnectorSpec = serde_json::from_slice(&ok.spec_json).map_err(|error| {
         error::Error::Protocol(format!(
             "undecodable spec_json in the handshake reply: {}",
-            rdlt_connector::json::describe_parse_error(&error)
+            rdlt_connector::gate::describe_parse_error(&error)
         ))
     })?;
     // The spec's own name/version are identifiers too — they travel
@@ -251,16 +253,16 @@ pub async fn run(
     }
     // Empty means "a source" per the proto field's own doc — only a
     // non-empty payload claims to be a capabilities document.
-    let capabilities: Option<DestinationCapabilities> = if ok.capabilities_json.is_empty() {
+    let capabilities: Option<Capabilities> = if ok.capabilities_json.is_empty() {
         None
     } else {
-        let capabilities: DestinationCapabilities = serde_json::from_slice(&ok.capabilities_json)
-            .map_err(|error| {
-            error::Error::Protocol(format!(
-                "undecodable capabilities_json in the handshake reply: {}",
-                rdlt_connector::json::describe_parse_error(&error)
-            ))
-        })?;
+        let capabilities: Capabilities =
+            serde_json::from_slice(&ok.capabilities_json).map_err(|error| {
+                error::Error::Protocol(format!(
+                    "undecodable capabilities_json in the handshake reply: {}",
+                    rdlt_connector::gate::describe_parse_error(&error)
+                ))
+            })?;
         // The declared `ident_rules.max_len` is untrusted wire input
         // and drives the engine's naming probe loop — validate it HERE,
         // at the trust boundary, so an exhaustible bound can never

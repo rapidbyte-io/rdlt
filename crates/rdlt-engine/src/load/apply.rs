@@ -6,7 +6,9 @@
 //! `wal::resume::replay` (the pre-loop table ensure and the per-record delta arm)
 //! route through here, so recovery reproduces the live path byte-for-byte.
 
-use rdlt_connector::{DestinationCapabilities, LoadSession, RecordBatch};
+use rdlt_connector::arrow::RecordBatch;
+
+use rdlt_connector::destination::{Capabilities, LoadSession};
 use rdlt_core::{RdltError, StateDoc, TableName, TableSchema, WriteMode};
 
 use super::lowering;
@@ -19,7 +21,7 @@ use super::lowering;
 pub(crate) async fn apply_delta(
     session: &mut dyn LoadSession,
     state: &mut StateDoc,
-    capabilities: &DestinationCapabilities,
+    capabilities: &Capabilities,
     schema: &TableSchema,
     mode: &WriteMode,
 ) -> Result<(), RdltError> {
@@ -40,7 +42,7 @@ pub(crate) async fn apply_delta(
 /// replay.
 pub(crate) async fn apply_batch(
     session: &mut dyn LoadSession,
-    capabilities: &DestinationCapabilities,
+    capabilities: &Capabilities,
     table: &TableName,
     batch: &RecordBatch,
 ) -> Result<(), RdltError> {

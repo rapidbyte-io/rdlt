@@ -647,7 +647,7 @@ mod tests {
 
     use std::path::{Path, PathBuf};
 
-    use rdlt_connector::StreamSpec;
+    use rdlt_connector::source::StreamSpec;
 
     use super::*;
     use crate::report::Verdict;

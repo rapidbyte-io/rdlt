@@ -10,10 +10,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rdlt_connector::channel::{PushPayload, records};
 use rdlt_connector::core::{LoadId, PipelineId};
-use rdlt_connector::{
-    OpenContext, PushPayload, ReadRequest, Source as _, SourceError, records_channel,
-};
+use rdlt_connector::destination::OpenContext;
+use rdlt_connector::error::SourceError;
+use rdlt_connector::source::{ReadRequest, Source as _};
 use rdlt_connector_client::error::Error;
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, Operation};
@@ -194,8 +195,8 @@ async fn a_stalled_read_stream_times_out_typed_after_forwarding_its_frames() {
     .await
     .expect("the rogue handshakes");
 
-    let (out, mut input) = records_channel(1 << 20);
-    let stream = rdlt_connector::StreamSpec::new("numbers");
+    let (out, mut input) = records(1 << 20);
+    let stream = rdlt_connector::source::StreamSpec::new("numbers");
     let read = tokio::spawn(async move { remote.read(ReadRequest::new(stream, None, out)).await });
 
     for n in 0..2u64 {
@@ -251,8 +252,8 @@ async fn a_slow_dripping_stream_inside_the_deadline_survives() {
     .await
     .expect("the rogue handshakes");
 
-    let (out, mut input) = records_channel(1 << 20);
-    let stream = rdlt_connector::StreamSpec::new("numbers");
+    let (out, mut input) = records(1 << 20);
+    let stream = rdlt_connector::source::StreamSpec::new("numbers");
     let started = std::time::Instant::now();
     let read = tokio::spawn(async move { remote.read(ReadRequest::new(stream, None, out)).await });
 

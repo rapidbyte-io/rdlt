@@ -4,10 +4,9 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use rdlt_connector::{
-    DestinationCapabilities, PushPayload, ReadRequest, Source, StreamSpec, channel::ByteSender,
-    channel::SharedBudget, records_channel_shared,
-};
+use rdlt_connector::channel::{ByteSender, PushPayload, SharedBudget, records_shared};
+use rdlt_connector::destination::Capabilities;
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use rdlt_core::{
     Cursor, LoadId, PipelineEvent, RdltError, SchemaPolicy, StreamName, TableName, WriteMode,
 };
@@ -92,7 +91,7 @@ impl ShredOwner {
         mode: WriteMode,
         policy: SchemaPolicy,
         max_batch_cells: usize,
-        capabilities: DestinationCapabilities,
+        capabilities: Capabilities,
     ) -> Result<(Self, Result<Vec<LoadItem>, RdltError>), RdltError> {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.passthrough");
@@ -117,7 +116,7 @@ impl ShredOwner {
 /// plan whole instead of eight loose values.
 pub(super) struct StreamPlan {
     pub(super) spec: StreamSpec,
-    pub(super) capabilities: DestinationCapabilities,
+    pub(super) capabilities: Capabilities,
     pub(super) since: Option<Cursor>,
     pub(super) mode: WriteMode,
     pub(super) root_table: TableName,
@@ -163,7 +162,7 @@ pub(super) async fn stream_task(
         registry: SchemaRegistry::default(),
     };
 
-    let (out, mut input) = records_channel_shared(&records_budget);
+    let (out, mut input) = records_shared(&records_budget);
     let request = ReadRequest::new(spec.clone(), since, out);
     let read_source = Arc::clone(&source);
     let mut reader = tokio::spawn(async move { read_source.read(request).await });

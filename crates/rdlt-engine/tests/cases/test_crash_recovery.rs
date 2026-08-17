@@ -24,7 +24,7 @@ fn batches() -> Vec<MemoryBatch> {
 }
 
 fn source() -> MemorySource {
-    stream_with_batches(rdlt_connector::StreamSpec::new("events"), batches())
+    stream_with_batches(rdlt_connector::source::StreamSpec::new("events"), batches())
 }
 
 fn config(workdir: &std::path::Path) -> EngineConfig {
@@ -54,7 +54,8 @@ async fn row1_source_crash_mid_extraction() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest = MemoryDestination::new();
     let crashing = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::StreamSpec::new("events"), batches()).fatal_after(1),
+        MemoryStream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
+            .fatal_after(1),
     ]);
     let err = Engine::new(config(dir.path()), crashing, dest.clone())
         .run()
@@ -270,7 +271,7 @@ async fn cancellation_recovers_like_a_crash() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest = MemoryDestination::new();
     let slow = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::StreamSpec::new("events"), batches())
+        MemoryStream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
             .batch_delay(std::time::Duration::from_millis(40)),
     ]);
     let engine = Engine::new(config(dir.path()), slow, dest.clone());
@@ -300,7 +301,7 @@ async fn dropped_run_recovers_like_a_crash() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest = MemoryDestination::new();
     let slow = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::StreamSpec::new("events"), batches())
+        MemoryStream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
             .batch_delay(std::time::Duration::from_millis(40)),
     ]);
     let run = tokio::spawn(Engine::new(config(dir.path()), slow, dest.clone()).run());
@@ -329,7 +330,7 @@ async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
         .map(|i| json!({"n": i, "pad": "x".repeat(200)}))
         .collect();
     let source = MemorySource::new(vec![MemoryStream::new(
-        rdlt_connector::StreamSpec::new("events"),
+        rdlt_connector::source::StreamSpec::new("events"),
         (0..20)
             .map(|_| MemoryBatch::new(big_rows.clone()))
             .collect(),
@@ -355,8 +356,11 @@ async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
 async fn cancellation_surfaces_the_cancelled_error() {
     let dest = MemoryDestination::new();
     let source = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::StreamSpec::new("s"), three_batches())
-            .batch_delay(std::time::Duration::from_millis(200)),
+        MemoryStream::new(
+            rdlt_connector::source::StreamSpec::new("s"),
+            three_batches(),
+        )
+        .batch_delay(std::time::Duration::from_millis(200)),
     ]);
     let engine = Engine::new(EngineConfig::new("cancel"), source, dest);
     let token = engine.cancellation_token();
@@ -374,7 +378,9 @@ async fn cancellation_surfaces_the_cancelled_error() {
 /// an embedder forever on a wire source idle between frames.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_parked_source_returns_promptly() {
-    use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+    use rdlt_connector::error::SourceError;
+    use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+    use rdlt_connector::spec::ConnectorSpec;
 
     /// `read` never yields, never pushes, and never watches its
     /// channel — the wire-source-idle-between-frames shape reduced to
@@ -421,7 +427,9 @@ async fn cancelling_a_parked_source_returns_promptly() {
 /// Cancellation must still win over the longer clean-finish grace.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
-    use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+    use rdlt_connector::error::SourceError;
+    use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+    use rdlt_connector::spec::ConnectorSpec;
 
     struct CloseThenPark(std::sync::Arc<tokio::sync::Notify>);
 
@@ -472,11 +480,13 @@ async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
 /// red.
 mod run_started_first_on_replay {
     use super::*;
-    use rdlt_connector::{CommitMeta, CommitReceipt, DestinationError, RecordBatch, StateDoc};
-    use rdlt_connector::{
-        Destination, DestinationCapabilities, LoadSession, OpenContext, PartCloseReason,
-        PartClosed, PartEventFn,
+    use rdlt_connector::arrow::RecordBatch;
+    use rdlt_connector::core::{CommitMeta, CommitReceipt, StateDoc};
+    use rdlt_connector::destination::{
+        Capabilities, Destination, LoadSession, OpenContext, PartCloseReason, PartClosed,
+        PartEventFn,
     };
+    use rdlt_connector::error::DestinationError;
     use rdlt_core::PipelineEvent;
 
     /// MemoryDestination, plus a part report per commit — the shape of
@@ -493,10 +503,10 @@ mod run_started_first_on_replay {
 
     #[async_trait::async_trait]
     impl Destination for PartEmitting {
-        fn spec(&self) -> rdlt_connector::ConnectorSpec {
+        fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
             self.inner.spec()
         }
-        fn capabilities(&self) -> DestinationCapabilities {
+        fn capabilities(&self) -> Capabilities {
             self.inner.capabilities()
         }
         async fn open(
@@ -513,14 +523,14 @@ mod run_started_first_on_replay {
     impl LoadSession for PartEmittingSession {
         async fn ensure_table(
             &mut self,
-            schema: &rdlt_connector::TableSchema,
-            mode: &rdlt_connector::WriteMode,
+            schema: &rdlt_connector::core::TableSchema,
+            mode: &rdlt_connector::core::WriteMode,
         ) -> Result<(), DestinationError> {
             self.inner.ensure_table(schema, mode).await
         }
         async fn write(
             &mut self,
-            table: &rdlt_connector::TableName,
+            table: &rdlt_connector::core::TableName,
             batch: RecordBatch,
         ) -> Result<(), DestinationError> {
             self.inner.write(table, batch).await
@@ -528,7 +538,7 @@ mod run_started_first_on_replay {
         async fn commit(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
             if let Some(listener) = &self.listener {
                 listener(PartClosed::new(
-                    rdlt_connector::TableName::new("events"),
+                    rdlt_connector::core::TableName::new("events"),
                     64,
                     PartCloseReason::Commit,
                 ));
@@ -537,7 +547,7 @@ mod run_started_first_on_replay {
         }
         async fn read_state(
             &mut self,
-            pipeline: &rdlt_connector::PipelineId,
+            pipeline: &rdlt_connector::core::PipelineId,
         ) -> Result<Option<StateDoc>, DestinationError> {
             self.inner.read_state(pipeline).await
         }

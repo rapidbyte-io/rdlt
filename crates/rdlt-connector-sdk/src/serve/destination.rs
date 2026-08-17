@@ -2,7 +2,7 @@
 //! halves of the wire protocol a destination connector implements —
 //! `Connector` (handshake, check) and `DestinationService` (the
 //! `OpenSession` bidi stream) — driving the connector's raw [`Backend`]
-//! directly, NOT a [`rdlt_connector::LoadSession`] wrapper (038 T5
+//! directly, NOT a [`rdlt_connector::destination::LoadSession`] wrapper (038 T5
 //! review, ADR D5: an earlier version of this module wrapped
 //! `Shell::open`'s `Box<dyn LoadSession>`, which made the wire's
 //! `ExistingReceipt`/`Replay` frames inert stubs rather than real
@@ -113,7 +113,8 @@ use std::sync::{Arc, OnceLock};
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector::{Destination, DestinationError, OpenContext, PartCloseReason, PartClosed};
+use rdlt_connector::destination::{Destination, OpenContext, PartCloseReason, PartClosed};
+use rdlt_connector::error::DestinationError;
 use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
@@ -223,7 +224,7 @@ impl<C: DestinationConnector> common::HandshakeShell for Shell<C> {
         // host's planning input (merge/replace/widen support) — the
         // proto field doc names this explicitly.
         serde_json::to_vec(&self.capabilities())
-            .expect("DestinationCapabilities serializes to JSON infallibly")
+            .expect("Capabilities serializes to JSON infallibly")
     }
 }
 
@@ -281,7 +282,7 @@ fn decode_document<T: serde::de::DeserializeOwned>(
     field: &str,
     bytes: &[u8],
 ) -> Result<T, session_reply::Reply> {
-    rdlt_connector::json::refuse_oversized_document(field, bytes).map_err(|message| {
+    rdlt_connector::gate::refuse_oversized_document(field, bytes).map_err(|message| {
         session_reply::Reply::Error(common::error_frame(Classification::Fatal, message, None))
     })?;
     serde_json::from_slice::<T>(bytes).map_err(|error| decode_error_reply(field, error))
@@ -295,14 +296,14 @@ fn decode_document<T: serde::de::DeserializeOwned>(
 /// the session's lifetime (a multi-megabyte name is memory and log
 /// swelling, not vocabulary).
 fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_reply::Reply> {
-    if value.len() > rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES {
+    if value.len() > rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES {
         return Err(session_reply::Reply::Error(common::error_frame(
             Classification::Fatal,
             format!(
                 "a session {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
                  refused at the session boundary",
                 value.len(),
-                rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES
+                rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES
             ),
             None,
         )));
@@ -365,7 +366,7 @@ fn part_close_reason_str(reason: PartCloseReason) -> String {
 /// taking only the first batch would drop every row after it —
 /// measured as the defect this refusal exists to prevent, not a
 /// hypothetical).
-fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
+fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::arrow::RecordBatch, String> {
     contained_decode(|| decode_arrow_ipc_erring(bytes))
 }
 
@@ -380,12 +381,12 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
             "write carried no decodable record batch: the Arrow decoder panicked: {}",
             // The shared bounded rendering (6L9) — a panic payload is
             // attacker-adjacent text, and an evidence line is bounded.
-            rdlt_connector::ipc::panic_text(payload.as_ref())
+            rdlt_connector::gate::panic_text(payload.as_ref())
         )),
     }
 }
 
-fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, String> {
+fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::arrow::RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
 
     // The shared framing pre-pass (SPI `ipc` module, 5H1): the panic belt
@@ -393,7 +394,7 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::RecordBatch, 
     // 2 GiB metadata memset, a `bodyLength` allocation whose failure
     // ABORTS — are neither panics nor errors, so the declarations are
     // held against the frame's real bytes before the reader runs.
-    rdlt_connector::ipc::refuse_overdeclared_ipc_framing(bytes)
+    rdlt_connector::gate::refuse_overdeclared_framing(bytes)
         .map_err(|reason| format!("{REFUSAL}: {reason}"))?;
     let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
         .map_err(|error| format!("{REFUSAL}: {error}"))?;
@@ -1104,7 +1105,7 @@ mod tests {
         use std::sync::Arc;
 
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let batch = rdlt_connector::RecordBatch::try_new(
+        let batch = rdlt_connector::arrow::RecordBatch::try_new(
             Arc::clone(&schema),
             vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
         )

@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use rdlt_connector::core::{LoadId, PipelineId, WriteMode};
-use rdlt_connector::{ConnectorSpec, StreamSpec};
+use rdlt_connector::source::StreamSpec;
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_client::wire::{
     DEFAULT_DEADLINE, connector_client, destination_client, dial, source_client,
 };
@@ -794,7 +795,7 @@ fn retain_p5_violation(
 /// panic arms, so a crafted frame fails the clause TYPED instead of
 /// killing the certifier.
 pub(crate) fn count_batches(bytes: &[u8]) -> Result<usize, String> {
-    rdlt_connector::ipc::refuse_overdeclared_ipc_framing(bytes)?;
+    rdlt_connector::gate::refuse_overdeclared_framing(bytes)?;
     caught_decode(|| count_batches_decoding(bytes))
 }
 
@@ -809,7 +810,7 @@ fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
             // capped at `MAX_P5_VIOLATIONS`, but the count cap never
             // bounded each string's LENGTH — a payload embedding
             // frame-derived text would ride the report file whole.
-            rdlt_connector::ipc::panic_text(payload.as_ref())
+            rdlt_connector::gate::panic_text(payload.as_ref())
         ))
     })
 }

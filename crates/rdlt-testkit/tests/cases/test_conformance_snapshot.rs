@@ -11,7 +11,7 @@ use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
 use serde_json::json;
 
 /// One stream over `spec` whose batches never checkpoint.
-fn checkpointless(spec: rdlt_connector::StreamSpec) -> MemorySource {
+fn checkpointless(spec: rdlt_connector::source::StreamSpec) -> MemorySource {
     MemorySource::new(vec![MemoryStream::new(
         spec,
         vec![MemoryBatch::new(vec![json!({"a": 1}), json!({"a": 2})])],
@@ -23,7 +23,7 @@ fn checkpointless(spec: rdlt_connector::StreamSpec) -> MemorySource {
 /// renders it verbatim on its SKIP line.
 #[tokio::test]
 async fn an_honest_snapshot_stream_skips_s2_with_the_reason() {
-    let source = checkpointless(rdlt_connector::StreamSpec::new("events"));
+    let source = checkpointless(rdlt_connector::source::StreamSpec::new("events"));
 
     let outcome = verify_source(&source).await;
     // The explicit acknowledgment path — this cell's whole subject is
@@ -53,7 +53,8 @@ async fn an_honest_snapshot_stream_skips_s2_with_the_reason() {
 /// none.
 #[tokio::test]
 async fn a_cursored_stream_with_no_checkpoints_still_fails_s2() {
-    let source = checkpointless(rdlt_connector::StreamSpec::new("events").with_cursor_field("a"));
+    let source =
+        checkpointless(rdlt_connector::source::StreamSpec::new("events").with_cursor_field("a"));
 
     let outcome = verify_source(&source).await;
     let (raw_failures, skips, _concluded) = outcome.tolerating_skips();
@@ -82,7 +83,7 @@ async fn a_cursored_stream_with_no_checkpoints_still_fails_s2() {
 /// cursor.
 #[tokio::test]
 async fn expecting_no_skips_promotes_the_skip_to_a_failure() {
-    let source = checkpointless(rdlt_connector::StreamSpec::new("events"));
+    let source = checkpointless(rdlt_connector::source::StreamSpec::new("events"));
 
     let failures = verify_source(&source).await.expecting_no_skips();
 

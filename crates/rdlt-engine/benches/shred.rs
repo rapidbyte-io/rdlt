@@ -39,8 +39,10 @@ fn bench_shred(c: &mut Criterion) {
     group.throughput(Throughput::Elements(ROWS as u64));
     group.bench_function("nested_json_10k_rows", |b| {
         b.iter(|| {
-            let source =
-                MemorySource::single_stream(rdlt_connector::StreamSpec::new("bench"), rows.clone());
+            let source = MemorySource::single_stream(
+                rdlt_connector::source::StreamSpec::new("bench"),
+                rows.clone(),
+            );
             let dest = MemoryDestination::new();
             let report = runtime
                 .block_on(Engine::new(EngineConfig::new("bench"), source, dest).run())

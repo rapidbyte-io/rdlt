@@ -5,9 +5,10 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use rdlt_connector::{
-    ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec, core::StreamName,
-};
+use rdlt_connector::core::{Cursor, StreamName};
+use rdlt_connector::error::SourceError;
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 
 /// One pushed unit: rows followed by an optional checkpoint.
 #[derive(Debug, Clone)]

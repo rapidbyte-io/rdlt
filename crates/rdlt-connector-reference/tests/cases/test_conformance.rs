@@ -7,7 +7,8 @@
 
 use rdlt_connector_reference::{destination, source};
 use rdlt_connector_sdk::spi::core::{CommitReceipt, LoadId, PipelineId, TableName, WriteMode};
-use rdlt_connector_sdk::spi::{Destination, OpenContext, Source};
+use rdlt_connector_sdk::spi::destination::{Destination, OpenContext};
+use rdlt_connector_sdk::spi::source::Source;
 use rdlt_testkit::{
     TableProbe, assert_conformant, batch_of, commit_meta_for, schema_for, verify_destination,
     verify_source,

@@ -2,7 +2,7 @@
 //! config error naming the offender — none may slip through to run time.
 
 use rdlt::prelude::*;
-use rdlt_connector::Destination as _;
+use rdlt_connector::destination::Destination as _;
 use rdlt_testkit::{MemoryDestination, MemorySource};
 
 fn source() -> MemorySource {

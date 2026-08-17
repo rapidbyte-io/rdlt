@@ -11,7 +11,10 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use async_trait::async_trait;
-use rdlt_connector::{ConnectorSpec, Cursor, ReadRequest, Source, SourceError, StreamSpec};
+use rdlt_connector::core::Cursor;
+use rdlt_connector::error::SourceError;
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_core::{PolicyAction, RdltError, SchemaPolicy, TableName, schema::system_columns};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{CrashDestination, FaultPoint, MemoryDestination};

@@ -43,13 +43,13 @@
 //! [`Shell::connect`].
 
 use async_trait::async_trait;
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
-    OpenContext, RecordBatch,
-};
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::DestinationError;
+use rdlt_connector::spec::ConnectorSpec;
 
 use crate::config::Document;
 
@@ -80,7 +80,7 @@ pub trait DestinationConnector: Send + Sync + 'static {
     }
 
     /// Truthful capability declaration — the host plans from this.
-    fn capabilities(&self) -> DestinationCapabilities;
+    fn capabilities(&self) -> Capabilities;
 
     /// A cheap connectivity probe — the SPI's `check` contract verbatim.
     async fn check(&self) -> Result<(), DestinationError> {
@@ -244,7 +244,7 @@ impl<C: DestinationConnector> Destination for Shell<C> {
         self.connector.check().await
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.connector.capabilities()
     }
 
@@ -408,7 +408,7 @@ impl<B: Backend> LoadSession for Session<B> {
                     // The forged identity is arbitrary wire text (8M4):
                     // render it bounded and escaped — inert, and never a
                     // frame-cap-sized firehose.
-                    rdlt_connector::json::render_diagnostic(receipt.load_id.as_str(), 256),
+                    rdlt_connector::gate::render_diagnostic(receipt.load_id.as_str(), 256),
                     receipt.commit_seq
                 )));
             }
@@ -429,7 +429,7 @@ impl<B: Backend> LoadSession for Session<B> {
                 "the destination answered publish({expected_load}, {expected_seq}) with a \
                  receipt for ({}, {}) — a receipt naming a different commit proves nothing \
                  about this one; refusing rather than certifying the publish",
-                rdlt_connector::json::render_diagnostic(receipt.load_id.as_str(), 256),
+                rdlt_connector::gate::render_diagnostic(receipt.load_id.as_str(), 256),
                 receipt.commit_seq
             )));
         }
@@ -526,8 +526,8 @@ mod tests {
             Some(serde_json::json!({"type": "object"}))
         }
 
-        fn capabilities(&self) -> DestinationCapabilities {
-            DestinationCapabilities::default().with_structs(true)
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default().with_structs(true)
         }
 
         async fn check(&self) -> Result<(), DestinationError> {

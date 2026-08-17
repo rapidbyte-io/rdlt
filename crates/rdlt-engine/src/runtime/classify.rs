@@ -1,15 +1,15 @@
 //! Map connector-classified errors onto the embedder taxonomy, preserving
 //! retryability for the run-level retry driver.
 
-use rdlt_connector::SourceError;
+use rdlt_connector::error::SourceError;
 use rdlt_core::{RdltError, StreamName};
 
 /// Map a connector-classified destination error onto the embedder taxonomy,
 /// preserving retryability for the run-level driver — a transient warehouse
 /// failure (lock, rate limit, network) restarts the run from committed state
 /// exactly like a transient source failure, instead of aborting.
-pub(crate) fn classify_dest_error(e: &rdlt_connector::DestinationError) -> RdltError {
-    use rdlt_connector::DestinationError;
+pub(crate) fn classify_dest_error(e: &rdlt_connector::error::DestinationError) -> RdltError {
+    use rdlt_connector::error::DestinationError;
     match e {
         DestinationError::Transient(inner) => {
             RdltError::destination_retryable(format!("transient: {inner}"), None)

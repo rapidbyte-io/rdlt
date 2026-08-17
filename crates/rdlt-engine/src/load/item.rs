@@ -1,9 +1,8 @@
 //! The unit of work flowing shred → load, and how the byte budget prices it.
 
-use rdlt_connector::{
-    RecordBatch,
-    channel::{ByteSized, arrow_batch_footprint},
-};
+use rdlt_connector::arrow::RecordBatch;
+
+use rdlt_connector::channel::{ByteSized, arrow_batch_footprint};
 use rdlt_core::{Cursor, SchemaDelta, StreamName, TableName, TableSchema, WriteMode};
 
 /// One unit of work flowing shred → load. Per-table order within the channel is the
@@ -63,7 +62,7 @@ impl ByteSized for LoadItem {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use rdlt_connector::channel::{Permitted, byte_channel};
+    use rdlt_connector::channel::{Permitted, bytes};
     use rdlt_core::StreamName;
 
     use super::*;
@@ -93,7 +92,7 @@ mod tests {
         let size = arrow_batch_footprint(&batch);
         assert!(size > 0, "a real batch occupies memory");
 
-        let (tx, mut rx) = byte_channel::<LoadItem>(size, STAGE_MSG_CAPACITY);
+        let (tx, mut rx) = bytes::<LoadItem>(size, STAGE_MSG_CAPACITY);
         tx.send(LoadItem::batch(TableName::new("t"), batch.clone()))
             .await
             .expect("a batch at exactly the budget sends");
@@ -170,7 +169,7 @@ mod tests {
     /// never completes on a zero budget.
     #[tokio::test]
     async fn zero_sized_markers_pass_a_zero_budget() {
-        let (tx, mut rx) = byte_channel::<LoadItem>(0, STAGE_MSG_CAPACITY);
+        let (tx, mut rx) = bytes::<LoadItem>(0, STAGE_MSG_CAPACITY);
         for item in [
             LoadItem::Checkpoint {
                 stream: StreamName::new("s"),

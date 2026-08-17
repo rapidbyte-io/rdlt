@@ -766,13 +766,13 @@ mod tests {
     }
 
     /// The cursor half of the same face (5L3): a Checkpoint line carrying a
-    /// maximal-contract cursor (4 MiB, `rdlt_connector::MAX_CURSOR_BYTES`)
+    /// maximal-contract cursor (4 MiB, `rdlt_connector::gate::MAX_CURSOR_BYTES`)
     /// plus its envelope and trailer must fit the cap — the cursor contract
     /// is only honest if the WAL can actually record one.
     #[test]
     fn the_line_cap_admits_a_maximal_cursor_line() {
         let cursor = rdlt_core::Cursor::new(serde_json::Value::String(
-            "x".repeat(rdlt_connector::MAX_CURSOR_BYTES as usize),
+            "x".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize),
         ));
         let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
             stream: rdlt_core::StreamName::new("s"),

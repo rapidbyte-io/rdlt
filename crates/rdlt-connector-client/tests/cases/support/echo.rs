@@ -27,13 +27,16 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
+use rdlt_connector::arrow::RecordBatch;
+use rdlt_connector::core::Cursor;
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector::{
-    Cursor, DestinationCapabilities, DestinationError, OpenContext, PartCloseReason, PartClosed,
-    PartEventFn, RecordBatch, SourceError, StreamSpec,
+use rdlt_connector::destination::{
+    Capabilities, OpenContext, PartCloseReason, PartClosed, PartEventFn,
 };
+use rdlt_connector::error::{DestinationError, SourceError};
+use rdlt_connector::source::StreamSpec;
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
@@ -202,13 +205,11 @@ impl DestinationConnector for EchoDestination {
         })
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         // Deliberately non-default: a handshake test comparing against
         // an all-false `Default` could pass with the capabilities
         // payload silently dropped on the wire.
-        DestinationCapabilities::default()
-            .with_merge(true)
-            .with_structs(true)
+        Capabilities::default().with_merge(true).with_structs(true)
     }
 
     async fn connect(&self, context: &OpenContext) -> Result<EchoBackend, DestinationError> {

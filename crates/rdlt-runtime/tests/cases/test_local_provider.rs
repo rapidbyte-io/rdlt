@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rdlt_connector::ConnectorSpec;
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::{self, SpecReply};
 use rdlt_runtime::{
@@ -647,7 +647,7 @@ impl Connector for OversizedSpecServer {
         _request: Request<proto::SpecRequest>,
     ) -> Result<Response<SpecReply>, Status> {
         Ok(Response::new(SpecReply {
-            spec_json: vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1],
+            spec_json: vec![b'x'; rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1],
         }))
     }
 }

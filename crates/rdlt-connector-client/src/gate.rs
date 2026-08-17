@@ -19,7 +19,7 @@ use rdlt_connector_protocol::proto::{self, Classification};
 
 /// The most bytes a wire identifier may carry — the SPI's constant,
 /// re-exported so seats read it beside the gate they pair it with.
-pub(crate) use rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES;
+pub(crate) use rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES;
 
 /// Refuse an identifier that is oversized or carries control or
 /// invisible characters. Length is checked first so the escaped
@@ -65,7 +65,7 @@ pub(crate) fn count(seat: &str, n: usize, cap: usize) -> Result<(), String> {
 /// Delegated to the SPI's one implementation so this crate and the
 /// serving side cannot drift.
 pub(crate) fn document(field: &str, bytes: &[u8]) -> Result<(), String> {
-    rdlt_connector::json::refuse_oversized_document(field, bytes)
+    rdlt_connector::gate::refuse_oversized_document(field, bytes)
 }
 
 /// Serialize a cursor and refuse it when the SERIALIZED form exceeds
@@ -77,13 +77,13 @@ pub(crate) fn document(field: &str, bytes: &[u8]) -> Result<(), String> {
 pub(crate) fn cursor(value: &serde_json::Value) -> Result<Vec<u8>, String> {
     let bytes =
         serde_json::to_vec(value).expect("a serde_json::Value serializes to JSON infallibly");
-    if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES {
+    if bytes.len() as u64 > rdlt_connector::gate::MAX_CURSOR_BYTES {
         return Err(format!(
             "a cursor serializes to {} bytes, over the {}-byte cursor contract — the connector \
              must summarize its state (a high-water mark, an offset, a resume token) rather \
              than embed the data",
             bytes.len(),
-            rdlt_connector::MAX_CURSOR_BYTES
+            rdlt_connector::gate::MAX_CURSOR_BYTES
         ));
     }
     Ok(bytes)
@@ -269,12 +269,13 @@ mod tests {
     #[test]
     fn the_cursor_ceiling_is_inclusive_at_the_boundary() {
         let at_cap = serde_json::Value::String("c".repeat(
-            rdlt_connector::MAX_CURSOR_BYTES as usize - 2, // quotes round it to exactly the cap
+            rdlt_connector::gate::MAX_CURSOR_BYTES as usize - 2, // quotes round it to exactly the cap
         ));
         let bytes = cursor(&at_cap).expect("a cursor at the cap passes");
-        assert_eq!(bytes.len() as u64, rdlt_connector::MAX_CURSOR_BYTES);
-        let over =
-            serde_json::Value::String("c".repeat(rdlt_connector::MAX_CURSOR_BYTES as usize - 1));
+        assert_eq!(bytes.len() as u64, rdlt_connector::gate::MAX_CURSOR_BYTES);
+        let over = serde_json::Value::String(
+            "c".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize - 1),
+        );
         let error = cursor(&over).expect_err("one byte over refuses");
         assert!(
             error.contains("cursor contract"),
@@ -294,7 +295,7 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&floats).expect("compact exponent notation parses");
         assert!(
-            floats.len() < rdlt_connector::MAX_CURSOR_BYTES as usize,
+            floats.len() < rdlt_connector::gate::MAX_CURSOR_BYTES as usize,
             "the wire form is well under the ceiling: {}",
             floats.len()
         );
@@ -305,7 +306,7 @@ mod tests {
         );
         // The same numbers spelled the way serde re-serializes them sit
         // over the ceiling — the measurement is honest, not synthetic.
-        assert!(format!("{parsed}").len() > rdlt_connector::MAX_CURSOR_BYTES as usize);
+        assert!(format!("{parsed}").len() > rdlt_connector::gate::MAX_CURSOR_BYTES as usize);
     }
 
     /// The count gate is inclusive at its cap and its refusal names the

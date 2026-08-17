@@ -8,13 +8,14 @@
 //! last: default async trait methods (`check`) are exactly the kind of
 //! addition that can quietly disturb dyn-compatibility.
 
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
-    OpenContext, ReadRequest, Source, SourceError, StreamSpec,
-};
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::{DestinationError, SourceError};
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 
 struct InertSource;
 
@@ -47,7 +48,7 @@ impl LoadSession for InertSession {
     async fn write(
         &mut self,
         _table: &TableName,
-        _batch: rdlt_connector::RecordBatch,
+        _batch: RecordBatch,
     ) -> Result<(), DestinationError> {
         Ok(())
     }
@@ -70,8 +71,8 @@ impl Destination for InertDestination {
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("inert-destination", "0.0.0")
     }
-    fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities::default()
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
     }
     async fn open(&self, _context: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
         Ok(Box::new(InertSession))

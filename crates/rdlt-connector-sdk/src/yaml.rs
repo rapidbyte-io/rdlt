@@ -57,7 +57,7 @@
 /// file read, this parse gate, the serve-side document ceiling, and the
 /// client's pre-send check, so the seats cannot drift apart); aliased
 /// here so existing paths keep working.
-pub const MAX_DOCUMENT_BYTES: u64 = rdlt_connector::MAX_DOCUMENT_BYTES;
+pub const MAX_DOCUMENT_BYTES: u64 = rdlt_connector::gate::MAX_DOCUMENT_BYTES;
 
 /// Which sink the scanner is inside, when it is inside one.
 enum Mode {

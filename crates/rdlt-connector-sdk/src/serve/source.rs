@@ -18,7 +18,11 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
-use rdlt_connector::{PushPayload, Source as _, SourceError, records_channel};
+use rdlt_connector::channel::{PushPayload, records};
+
+use rdlt_connector::error::SourceError;
+
+use rdlt_connector::source::Source as _;
 use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
@@ -459,7 +463,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         // adversary is the client, and the spec travels with a cursor
         // document into a RETAINED read request — the same
         // raw-bytes-first discipline the other session seats run.
-        if let Err(message) = rdlt_connector::json::refuse_oversized_document(
+        if let Err(message) = rdlt_connector::gate::refuse_oversized_document(
             "stream_spec_json",
             &request.stream_spec_json,
         ) {
@@ -483,18 +487,18 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             // untyped `Value` at many times its wire size, and this one
             // is RETAINED inside the `Cursor` for the read's lifetime.
             // The bound is the cursor contract's
-            // (`rdlt_connector::MAX_CURSOR_BYTES`, 5L3) — deliberately
+            // (`rdlt_connector::gate::MAX_CURSOR_BYTES`, 5L3) — deliberately
             // tighter than the config ceiling, and the same constant the
             // client enforces pre-send, so the two ends cannot disagree.
-            Some(bytes) if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES => {
+            Some(bytes) if bytes.len() as u64 > rdlt_connector::gate::MAX_CURSOR_BYTES => {
                 return Ok(error_stream(common::oversized_document(
                     "since_cursor_json",
                     bytes.len(),
-                    rdlt_connector::MAX_CURSOR_BYTES,
+                    rdlt_connector::gate::MAX_CURSOR_BYTES,
                 )));
             }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
-                Ok(value) => Some(rdlt_connector::Cursor::new(value)),
+                Ok(value) => Some(rdlt_connector::core::Cursor::new(value)),
                 Err(error) => {
                     return Ok(error_stream(format!(
                         "invalid since_cursor_json: {}",
@@ -504,8 +508,8 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             },
         };
 
-        let (out, records_in) = records_channel(READ_CHANNEL_BUDGET);
-        let read_request = rdlt_connector::ReadRequest::new(stream_spec, since, out);
+        let (out, records_in) = records(READ_CHANNEL_BUDGET);
+        let read_request = rdlt_connector::source::ReadRequest::new(stream_spec, since, out);
 
         let read_task: JoinHandle<Result<(), SourceError>> =
             tokio::spawn(async move { shell.read(read_request).await });
@@ -535,7 +539,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
 /// its own schema infallibly, so the suite injects a failing encoder to
 /// drive the encode-failure interleavings deterministically.
 async fn forward_read_frames(
-    mut records_in: rdlt_connector::RecordsIn,
+    mut records_in: rdlt_connector::channel::RecordsIn,
     frame_tx: FrameSender,
     read_task: JoinHandle<Result<(), SourceError>>,
     encode: fn(PushPayload) -> Result<proto::ReadFrame, String>,
@@ -681,14 +685,14 @@ fn read_frame_of(payload: PushPayload) -> Result<proto::ReadFrame, String> {
 /// One Arrow batch as an IPC *stream* (not the `File` container — no
 /// footer, a schema message followed by one record-batch message,
 /// exactly what a single-batch push needs): the format
-/// [`rdlt_connector::PushPayload::Arrow`]'s wire counterpart names.
+/// [`rdlt_connector::channel::PushPayload::Arrow`]'s wire counterpart names.
 ///
 /// Writing into an in-memory `Vec` fails only on a schema/batch mismatch
 /// the connector itself produced — an `expect()` would turn that into a
 /// panicked task indistinguishable, from the client's side, from a
 /// clean end of stream. Rendered as a plain `String`: the caller wraps
 /// it in a terminal `ErrorFrame`, which only needs text.
-fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Result<Vec<u8>, String> {
+fn encode_arrow_ipc(batch: &rdlt_connector::arrow::RecordBatch) -> Result<Vec<u8>, String> {
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
         .map_err(|error| format!("opening an arrow ipc stream writer: {error}"))?;
     writer
@@ -927,12 +931,12 @@ mod tests {
         fn refuse(_: PushPayload) -> Result<proto::ReadFrame, String> {
             Err("induced encode failure".to_string())
         }
-        let (mut out, records_in) = records_channel(1 << 20);
+        let (mut out, records_in) = records(1 << 20);
         // The reader is STILL RUNNING when the encode fails: a task
         // parked forever stands in for a connector mid-read, so the
         // loop's abort turns its completion into a cancelled JoinError —
         // exactly the interleaving under test.
-        let read_task: tokio::task::JoinHandle<Result<(), rdlt_connector::SourceError>> =
+        let read_task: tokio::task::JoinHandle<Result<(), rdlt_connector::error::SourceError>> =
             tokio::spawn(async { std::future::pending().await });
         out.rows([serde_json::json!({"n": 1})])
             .await

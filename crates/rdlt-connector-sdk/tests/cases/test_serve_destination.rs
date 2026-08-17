@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rdlt_connector::DestinationCapabilities;
 use rdlt_connector::core::{CommitReceipt, LoadId, PipelineId, WriteMode};
+use rdlt_connector::destination::Capabilities;
 use rdlt_connector_protocol::proto::connector_client::ConnectorClient;
 use rdlt_connector_protocol::proto::destination_service_client::DestinationServiceClient;
 use rdlt_connector_protocol::proto::{
@@ -124,7 +124,7 @@ fn echo_destination_config_invalid() -> Vec<u8> {
         .expect("echo destination config serializes")
 }
 
-fn encode_arrow_ipc(batch: &rdlt_connector::RecordBatch) -> Vec<u8> {
+fn encode_arrow_ipc(batch: &rdlt_connector::arrow::RecordBatch) -> Vec<u8> {
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
         .expect("open an arrow ipc stream writer");
     writer
@@ -354,7 +354,7 @@ async fn the_full_choreography_pins_part_closed_before_published() {
     match reply.outcome {
         Some(handshake_reply::Outcome::Ok(ok)) => {
             assert_eq!(ok.connector_id, "echo-destination");
-            let capabilities: DestinationCapabilities =
+            let capabilities: Capabilities =
                 serde_json::from_slice(&ok.capabilities_json).expect("capabilities json");
             assert!(capabilities.merge, "the declared capability, not a default");
             assert!(
@@ -1048,8 +1048,8 @@ async fn a_write_frame_beyond_tonics_default_cap_round_trips_to_written() {
     let schema = Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("payload", arrow::datatypes::DataType::Utf8, false),
     ]));
-    let big_batch =
-        rdlt_connector::RecordBatch::try_new(schema, vec![column]).expect("a 5 MiB batch builds");
+    let big_batch = rdlt_connector::arrow::RecordBatch::try_new(schema, vec![column])
+        .expect("a 5 MiB batch builds");
     let arrow_ipc = encode_arrow_ipc(&big_batch);
     assert!(
         arrow_ipc.len() > 4 * 1024 * 1024,
@@ -1257,7 +1257,7 @@ async fn spec_answers_before_any_handshake() {
         .await
         .expect("pre-handshake Spec")
         .into_inner();
-    let spec: rdlt_connector::ConnectorSpec =
+    let spec: rdlt_connector::spec::ConnectorSpec =
         serde_json::from_slice(&reply.spec_json).expect("ConnectorSpec JSON");
     assert_eq!(spec.name, "echo-destination");
     assert_eq!(spec.version, "0.0.0");
@@ -1704,7 +1704,7 @@ async fn a_write_over_the_row_cap_refuses_typed() {
     let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Boolean, false),
     ]));
-    let batch = rdlt_connector::RecordBatch::try_new(
+    let batch = rdlt_connector::arrow::RecordBatch::try_new(
         schema,
         vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
             false; rows
@@ -1782,7 +1782,7 @@ async fn a_write_at_exactly_the_row_cap_writes() {
     let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Boolean, false),
     ]));
-    let batch = rdlt_connector::RecordBatch::try_new(
+    let batch = rdlt_connector::arrow::RecordBatch::try_new(
         schema,
         vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
             false; rows
@@ -1849,14 +1849,14 @@ async fn a_two_batch_frame_with_an_over_cap_first_batch_gets_the_row_cap_refusal
     let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Boolean, false),
     ]));
-    let over = rdlt_connector::RecordBatch::try_new(
+    let over = rdlt_connector::arrow::RecordBatch::try_new(
         std::sync::Arc::clone(&schema),
         vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
             false; rows
         ]))],
     )
     .expect("an over-cap batch constructs");
-    let tiny = rdlt_connector::RecordBatch::try_new(
+    let tiny = rdlt_connector::arrow::RecordBatch::try_new(
         schema,
         vec![std::sync::Arc::new(arrow::array::BooleanArray::from(vec![
             true,
@@ -1918,7 +1918,7 @@ async fn an_oversized_ensure_document_refuses_before_the_backend() {
         .expect("opened");
 
     let oversized = serde_json::to_vec(&schema_for(
-        &"x".repeat(rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1),
+        &"x".repeat(rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1),
     ))
     .expect("schema json serializes");
     req_tx
@@ -1964,7 +1964,7 @@ async fn an_oversized_open_identifier_refuses_before_the_session() {
     req_tx
         .send(open_frame(
             "p",
-            &"l".repeat(rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES + 1),
+            &"l".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1),
         ))
         .await
         .expect("send the oversized open");

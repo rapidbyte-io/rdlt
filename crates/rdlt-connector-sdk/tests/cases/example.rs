@@ -12,13 +12,14 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, Cursor, LoadId, PipelineId, StateDoc, TableName, TableSchema,
     WriteMode,
 };
-use rdlt_connector::{
-    DestinationCapabilities, DestinationError, OpenContext, RecordBatch, SourceError, StreamSpec,
-};
+use rdlt_connector::destination::{Capabilities, OpenContext};
+use rdlt_connector::error::{DestinationError, SourceError};
+use rdlt_connector::source::StreamSpec;
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
@@ -173,11 +174,11 @@ impl DestinationConnector for Sink {
         })
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         // Deliberately merge-less: the example certifies the append
         // choreography; merge semantics are a backend concern the
         // framework does not choreograph.
-        DestinationCapabilities::default()
+        Capabilities::default()
             .with_structs(true)
             .with_scalar_lists(true)
             .with_json_type(true)

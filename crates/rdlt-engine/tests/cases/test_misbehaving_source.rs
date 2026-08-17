@@ -5,7 +5,9 @@
 
 use arrow::array::RecordBatch;
 use async_trait::async_trait;
-use rdlt_connector::{ConnectorSpec, ReadRequest, Source, SourceError, StreamSpec};
+use rdlt_connector::error::SourceError;
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_core::RdltError;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryDestination, batch_of};

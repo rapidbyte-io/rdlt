@@ -10,13 +10,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
+use rdlt_connector::arrow::RecordBatch;
+use rdlt_connector::core::Cursor;
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector::{
-    Cursor, DestinationCapabilities, DestinationError, OpenContext, PartCloseReason, PartClosed,
-    RecordBatch, SourceError, StreamSpec,
-};
+use rdlt_connector::destination::{Capabilities, OpenContext, PartCloseReason, PartClosed};
+use rdlt_connector::error::{DestinationError, SourceError};
+use rdlt_connector::source::StreamSpec;
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::source::{Feed, SourceConnector};
@@ -278,13 +279,11 @@ impl DestinationConnector for EchoDestination {
         })
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         // Non-default on purpose: a `capabilities_json` round-trip test
         // that happened to compare against an all-`false` default would
         // pass even if the wire plumbing silently dropped the payload.
-        DestinationCapabilities::default()
-            .with_merge(true)
-            .with_structs(true)
+        Capabilities::default().with_merge(true).with_structs(true)
     }
 
     async fn connect(&self, context: &OpenContext) -> Result<EchoBackend, DestinationError> {
@@ -307,7 +306,7 @@ pub struct EchoBackend {
     log: Arc<Mutex<Vec<String>>>,
     fail_publish: bool,
     receipt_exists: bool,
-    part_events: Option<rdlt_connector::PartEventFn>,
+    part_events: Option<rdlt_connector::destination::PartEventFn>,
 }
 
 impl EchoBackend {

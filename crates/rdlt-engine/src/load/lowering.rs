@@ -18,18 +18,16 @@ use arrow::{
     buffer::NullBuffer,
     record_batch::RecordBatch,
 };
-use rdlt_connector::{DestinationCapabilities, channel::MAX_ARROW_DEPTH};
+use rdlt_connector::channel::MAX_ARROW_DEPTH;
+use rdlt_connector::destination::Capabilities;
 use rdlt_core::{ColumnDef, ColumnType, LogicalType, RdltError, TableSchema, naming::UniqueNamer};
 
-fn needs_lowering(capabilities: &DestinationCapabilities) -> bool {
+fn needs_lowering(capabilities: &Capabilities) -> bool {
     !capabilities.structs || !capabilities.decimal
 }
 
 /// Lower a schema for the destination's capabilities.
-pub(crate) fn lower_schema(
-    schema: &TableSchema,
-    capabilities: &DestinationCapabilities,
-) -> TableSchema {
+pub(crate) fn lower_schema(schema: &TableSchema, capabilities: &Capabilities) -> TableSchema {
     if !needs_lowering(capabilities) {
         return schema.clone();
     }
@@ -48,7 +46,7 @@ pub(crate) fn lower_schema(
 fn lower_column(
     column: &ColumnDef,
     path: &[&str],
-    capabilities: &DestinationCapabilities,
+    capabilities: &Capabilities,
     namer: &mut UniqueNamer,
     out: &mut Vec<ColumnDef>,
 ) {
@@ -82,7 +80,7 @@ fn lower_column(
 /// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
 pub(crate) fn lower_batch(
     batch: &RecordBatch,
-    capabilities: &DestinationCapabilities,
+    capabilities: &Capabilities,
 ) -> Result<RecordBatch, RdltError> {
     if !needs_lowering(capabilities) {
         return Ok(batch.clone());
@@ -109,7 +107,7 @@ fn flatten_array(
     field: &arrow::datatypes::Field,
     path: &[&str],
     array: ArrayRef,
-    capabilities: &DestinationCapabilities,
+    capabilities: &Capabilities,
     namer: &mut UniqueNamer,
     fields: &mut Vec<arrow::datatypes::Field>,
     out: &mut Vec<ArrayRef>,
@@ -242,8 +240,8 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use rdlt_core::{Provenance, TableName};
 
-    fn capabilities(structs: bool, decimal: bool) -> DestinationCapabilities {
-        DestinationCapabilities::default()
+    fn capabilities(structs: bool, decimal: bool) -> Capabilities {
+        Capabilities::default()
             .with_structs(structs)
             .with_decimal(decimal)
     }
@@ -601,8 +599,8 @@ mod parity_tests {
     use proptest::prelude::*;
     use rdlt_core::{Provenance, TableName};
 
-    fn capabilities(structs: bool, decimal: bool) -> DestinationCapabilities {
-        DestinationCapabilities::default()
+    fn capabilities(structs: bool, decimal: bool) -> Capabilities {
+        Capabilities::default()
             .with_structs(structs)
             .with_decimal(decimal)
     }

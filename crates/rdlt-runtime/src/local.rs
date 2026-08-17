@@ -8,7 +8,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt_connector::ConnectorSpec;
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_client::wire::{self, connector_client, dial};
 use rdlt_connector_client::{destination, source};
 use rdlt_connector_protocol::handshake::Line;
@@ -416,14 +416,14 @@ impl LocalBinaryConnectorProvider {
         // the wave-7 sweep converted every client seat and missed this,
         // the runtime's own probe.
         if let Err(message) =
-            rdlt_connector::json::refuse_oversized_document("spec_json", &reply.spec_json)
+            rdlt_connector::gate::refuse_oversized_document("spec_json", &reply.spec_json)
         {
             return Err(ProviderError::Client(ClientError::Protocol(message)));
         }
         let spec: ConnectorSpec = serde_json::from_slice(&reply.spec_json).map_err(|error| {
             ProviderError::Client(ClientError::Protocol(format!(
                 "undecodable spec_json in the Spec reply: {}",
-                rdlt_connector::json::describe_parse_error(&error)
+                rdlt_connector::gate::describe_parse_error(&error)
             )))
         })?;
         if requirement.path.is_none() && spec.name != requirement.id {

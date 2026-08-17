@@ -2,11 +2,14 @@
 //! naming the violated clause (spec US5 acceptance scenario 2).
 
 use async_trait::async_trait;
-use rdlt_connector::{
-    CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenContext, PipelineId, ReadRequest, RecordBatch, Source,
-    SourceError, StateDoc, StreamSpec, TableName, TableSchema, WriteMode,
+use rdlt_connector::arrow::RecordBatch;
+use rdlt_connector::core::{
+    CommitMeta, CommitReceipt, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::{DestinationError, SourceError};
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_testkit::conformance::{destination::verify_destination, source::verify_source};
 use rdlt_testkit::{MemoryDestination, ProbeError, TableProbe};
 use serde_json::json;
@@ -31,7 +34,10 @@ impl Source for AmnesiacSource {
                 return Ok(());
             }
         }
-        let _ = req.out.checkpoint(rdlt_connector::Cursor::new(2)).await;
+        let _ = req
+            .out
+            .checkpoint(rdlt_connector::core::Cursor::new(2))
+            .await;
         Ok(())
     }
 }
@@ -57,7 +63,7 @@ impl Destination for ForgetfulDest {
         ConnectorSpec::new("forgetful", "0.0.0")
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.inner.capabilities().with_merge(false)
     }
 
@@ -227,8 +233,8 @@ impl Destination for Unopenable {
         ConnectorSpec::new("unopenable", "0.0.0")
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities::default()
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
     }
 
     async fn open(&self, _ctx: OpenContext) -> Result<Box<dyn LoadSession>, DestinationError> {
@@ -340,7 +346,7 @@ impl Destination for ThirdOpenFails {
         ConnectorSpec::new("third-open-fails", "0.0.0")
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
 
@@ -395,7 +401,7 @@ impl Source for TeardownFailingSource {
         if out.rows([json!({"a": 1})]).await.is_err() {
             return Ok(());
         }
-        let _ = out.checkpoint(rdlt_connector::Cursor::new(1)).await;
+        let _ = out.checkpoint(rdlt_connector::core::Cursor::new(1)).await;
         drop(out); // every sender gone — the harness channel drains NOW
         // Yield so the harness OBSERVES the drain before this error
         // exists — the pin must exercise the wait-for-the-reader path,
@@ -442,7 +448,7 @@ impl Destination for CloseRecordingDest {
         ConnectorSpec::new("close-recording", "0.0.0")
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.inner.capabilities().with_merge(false)
     }
 

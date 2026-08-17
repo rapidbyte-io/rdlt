@@ -2,7 +2,9 @@
 //! so the out-of-workspace `fuzz/` targets can reach `pub(crate)` hot paths;
 //! they are not API and may change at any time.
 
-use rdlt_connector::{DestinationCapabilities, StreamSpec};
+use rdlt_connector::destination::Capabilities;
+
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{LoadId, SchemaPolicy, TableName, WriteMode};
 
 /// Raw-JSON slab parsing only (NDJSON / array / single doc) through the
@@ -20,7 +22,7 @@ pub fn parse_slab(bytes: &[u8]) {
 /// The FULL (tape) shred path over arbitrary bytes: parse, observe, resolve,
 /// build. Asserts the cheap invariants inline (unique destination names).
 pub fn shred_slab(bytes: &[u8]) {
-    let capabilities = DestinationCapabilities::default();
+    let capabilities = Capabilities::default();
     let Ok(mut shredder) = crate::shred::TapeShredder::new(
         StreamSpec::new("fuzz"),
         capabilities,
@@ -87,7 +89,7 @@ pub fn wal_segment_decode(bytes: &[u8]) {
 
 /// Production (tape) shred path over one raw slab; returns emitted row count.
 pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
-    let capabilities = DestinationCapabilities::default();
+    let capabilities = Capabilities::default();
     let mut shredder = crate::shred::TapeShredder::new(
         StreamSpec::new("bench"),
         capabilities,
@@ -139,7 +141,7 @@ pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("bench passthrough succeeds");
     items

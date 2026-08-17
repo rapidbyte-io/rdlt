@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Destination identifier constraints (a projection of `DestinationCapabilities` ident rules).
+/// Destination identifier constraints (a projection of `destination::Capabilities` ident rules).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentRules {
     /// Maximum identifier byte length (e.g. 63 for Postgres).

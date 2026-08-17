@@ -70,7 +70,7 @@ const TRAILER_LEN: usize = 1 + 64;
 /// allow 4,096 source columns with identifiers at the destination's
 /// `IdentRules` length, ~150 JSON bytes each, the schema serialized TWICE —
 /// ~1.3 MiB); and a Checkpoint carrying a maximal cursor — the SPI's cursor
-/// contract (`rdlt_connector::MAX_CURSOR_BYTES`, 4 MiB) plus the record
+/// contract (`rdlt_connector::gate::MAX_CURSOR_BYTES`, 4 MiB) plus the record
 /// envelope and checksum trailer. Five mebibytes covers both with headroom
 /// while still bounding what a hostile line can make recovery allocate. A
 /// record past this cap is REFUSED AT WRITE TIME (see `Wal::append`), so an

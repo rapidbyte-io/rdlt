@@ -12,10 +12,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession,
-    OpenContext, ReadRequest, Source, SourceError, StreamSpec,
-};
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::{DestinationError, SourceError};
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_client::{destination, source};
 use tokio::process::Child;
 
@@ -289,7 +289,7 @@ impl Destination for ManagedDestination {
         self.adapter.check().await
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.adapter.capabilities()
     }
 

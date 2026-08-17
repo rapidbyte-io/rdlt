@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use rdlt_connector::{Destination, Source};
+use rdlt_connector::destination::Destination;
+
+use rdlt_connector::source::Source;
 use rdlt_core::{PipelineEvent, RdltError, RunReport};
 use tokio_util::sync::CancellationToken;
 

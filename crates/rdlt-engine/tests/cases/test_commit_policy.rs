@@ -155,10 +155,13 @@ mod delta_flushes_pending_first {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    use rdlt_connector::{
-        CommitMeta, CommitReceipt, Destination, DestinationCapabilities, DestinationError,
-        LoadSession, OpenContext, RecordBatch, StateDoc,
-    };
+    use rdlt_connector::arrow::RecordBatch;
+
+    use rdlt_connector::core::{CommitMeta, CommitReceipt, StateDoc};
+
+    use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+
+    use rdlt_connector::error::DestinationError;
     use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
     use serde_json::json;
 
@@ -177,10 +180,10 @@ mod delta_flushes_pending_first {
 
     #[async_trait::async_trait]
     impl Destination for Recording {
-        fn spec(&self) -> rdlt_connector::ConnectorSpec {
+        fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
             self.inner.spec()
         }
-        fn capabilities(&self) -> DestinationCapabilities {
+        fn capabilities(&self) -> Capabilities {
             self.inner.capabilities()
         }
         async fn open(
@@ -199,8 +202,8 @@ mod delta_flushes_pending_first {
     impl LoadSession for RecordingSession {
         async fn ensure_table(
             &mut self,
-            schema: &rdlt_connector::TableSchema,
-            mode: &rdlt_connector::WriteMode,
+            schema: &rdlt_connector::core::TableSchema,
+            mode: &rdlt_connector::core::WriteMode,
         ) -> Result<(), DestinationError> {
             self.ops
                 .lock()
@@ -210,7 +213,7 @@ mod delta_flushes_pending_first {
         }
         async fn write(
             &mut self,
-            table: &rdlt_connector::TableName,
+            table: &rdlt_connector::core::TableName,
             batch: RecordBatch,
         ) -> Result<(), DestinationError> {
             self.ops
@@ -224,7 +227,7 @@ mod delta_flushes_pending_first {
         }
         async fn read_state(
             &mut self,
-            pipeline: &rdlt_connector::PipelineId,
+            pipeline: &rdlt_connector::core::PipelineId,
         ) -> Result<Option<StateDoc>, DestinationError> {
             self.inner.read_state(pipeline).await
         }
@@ -235,7 +238,7 @@ mod delta_flushes_pending_first {
         use rdlt_core::BatchPolicy;
 
         let source = MemorySource::new(vec![MemoryStream::new(
-            rdlt_connector::StreamSpec::new("s"),
+            rdlt_connector::source::StreamSpec::new("s"),
             vec![
                 MemoryBatch::new(vec![json!({"a": 1}), json!({"a": 2})]).with_checkpoint(1),
                 MemoryBatch::new(vec![json!({"a": 3, "b": "late"})]).with_checkpoint(2),

@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rdlt_connector::RecordBatch;
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_core::{LoadId, PipelineId, RdltError, crash_point};
 
 use crate::load::LoadItem;

@@ -1,4 +1,4 @@
-//! [`PemSource`] — PEM material given inline or as a path to it.
+//! [`Material`] — PEM material given inline or as a path to it.
 //!
 //! One shared type for every connector that takes a certificate, a trust
 //! root, or a private key. The discriminator is the PEM armour itself:
@@ -9,13 +9,13 @@
 //!
 //! Serde-transparent, so config documents keep plain strings in and out;
 //! the `schemars::JsonSchema` impl rides the crate's `schema` feature,
-//! like [`crate::Secret`].
+//! like [`crate::secret::Secret`].
 //!
-//! Deliberately NOT wrapped in a [`crate::Secret`]: a path is not a
-//! credential, and inline material is usually a certificate rather than a
-//! key. A connector taking a PRIVATE key pairs this with its own secrecy
-//! handling — this type says where the bytes come from, not how sensitive
-//! they are.
+//! Deliberately NOT wrapped in a [`Secret`](crate::secret::Secret): a
+//! path is not a credential, and inline material is usually a certificate
+//! rather than a key. A connector taking a PRIVATE key pairs this with
+//! its own secrecy handling — this type says where the bytes come from,
+//! not how sensitive they are.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
-pub struct PemSource(pub String);
+pub struct Material(String);
 
 /// A PATH renders as itself; INLINE material renders as a placeholder.
 ///
@@ -32,19 +32,26 @@ pub struct PemSource(pub String);
 /// reach for — inline bytes must not survive it. A path is not a
 /// credential, and it is exactly what an operator needs to see to fix an
 /// unreadable-key report; hiding it would make that report useless.
-impl std::fmt::Debug for PemSource {
+impl std::fmt::Debug for Material {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.is_inline() {
             // Named, not starred: the reader learns WHAT is hidden and
             // that a value is present at all.
-            formatter.write_str("PemSource(<inline PEM>)")
+            formatter.write_str("Material(<inline PEM>)")
         } else {
-            write!(formatter, "PemSource({:?})", self.0)
+            write!(formatter, "Material({:?})", self.0)
         }
     }
 }
 
-impl PemSource {
+impl Material {
+    /// Wrap a value, taking it as given: whether it is inline material
+    /// or a path is decided by [`Material::is_inline`] at use, never
+    /// stored.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
     /// Is the material inline rather than a path?
     ///
     /// True when the value opens with PEM armour. Leading whitespace is
@@ -80,7 +87,7 @@ impl PemSource {
     }
 }
 
-impl<T: Into<String>> From<T> for PemSource {
+impl<T: Into<String>> From<T> for Material {
     fn from(value: T) -> Self {
         Self(value.into())
     }
@@ -92,25 +99,25 @@ mod tests {
 
     #[test]
     fn armour_at_the_start_means_inline_and_anything_else_is_a_path() {
-        assert!(PemSource::from("-----BEGIN PRIVATE KEY-----\nMIIB\n").is_inline());
+        assert!(Material::new("-----BEGIN PRIVATE KEY-----\nMIIB\n").is_inline());
         // YAML block scalars indent; the armour still decides.
-        assert!(PemSource::from("\n  -----BEGIN CERTIFICATE-----\n").is_inline());
-        assert!(!PemSource::from("/etc/ssl/key.pem").is_inline());
-        assert!(!PemSource::from("relative/key.p8").is_inline());
+        assert!(Material::new("\n  -----BEGIN CERTIFICATE-----\n").is_inline());
+        assert!(!Material::new("/etc/ssl/key.pem").is_inline());
+        assert!(!Material::new("relative/key.p8").is_inline());
         // A path CONTAINING the armour text is still a path: the check is
         // anchored at the start.
-        assert!(!PemSource::from("/keys/-----BEGIN/x.pem").is_inline());
+        assert!(!Material::new("/keys/-----BEGIN/x.pem").is_inline());
     }
 
     #[test]
     fn inline_material_reads_back_without_touching_the_filesystem() {
         let material = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
         assert_eq!(
-            PemSource::from(material).read().expect("inline"),
+            Material::new(material).read().expect("inline"),
             material.as_bytes()
         );
         assert_eq!(
-            PemSource::from(material).read_to_string().expect("inline"),
+            Material::new(material).read_to_string().expect("inline"),
             material
         );
     }
@@ -121,22 +128,33 @@ mod tests {
         std::fs::create_dir_all(&directory).expect("temp dir");
         let path = directory.join("material.pem");
         std::fs::write(&path, b"-----BEGIN X-----\n").expect("write");
-        let source = PemSource::from(path.to_string_lossy().into_owned());
+        let source = Material::new(path.to_string_lossy().into_owned());
         assert!(!source.is_inline());
         assert_eq!(source.read().expect("file"), b"-----BEGIN X-----\n");
         std::fs::remove_dir_all(&directory).ok();
 
-        let missing = PemSource::from("/no/such/material.pem").read().unwrap_err();
+        let missing = Material::new("/no/such/material.pem").read().unwrap_err();
         assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
     fn the_wire_form_is_a_plain_string() {
-        let source: PemSource = serde_json::from_str("\"/k.pem\"").expect("parses");
-        assert_eq!(source, PemSource::from("/k.pem"));
+        let source: Material = serde_json::from_str("\"/k.pem\"").expect("parses");
+        assert_eq!(source, Material::new("/k.pem"));
         assert_eq!(
             serde_json::to_string(&source).expect("renders"),
             "\"/k.pem\""
+        );
+    }
+
+    /// The `From` construction path (what a config field assignment
+    /// uses) agrees with `new`.
+    #[test]
+    fn from_and_new_agree() {
+        assert_eq!(Material::from("/k.pem"), Material::new("/k.pem"));
+        assert_eq!(
+            Material::from(String::from("/k.pem")),
+            Material::new("/k.pem")
         );
     }
 
@@ -145,19 +163,19 @@ mod tests {
     /// the guarantee survives a derived Debug on a holder.
     #[test]
     fn debug_hides_inline_material_and_shows_paths() {
-        let key = PemSource::from("-----BEGIN PRIVATE KEY-----\nSECRET-BYTES\n");
+        let key = Material::new("-----BEGIN PRIVATE KEY-----\nSECRET-BYTES\n");
         let rendered = format!("{key:?}");
         assert!(!rendered.contains("SECRET-BYTES"), "{rendered}");
         assert!(rendered.contains("inline"), "{rendered}");
 
-        assert!(format!("{:?}", PemSource::from("/etc/rdlt/key.p8")).contains("/etc/rdlt/key.p8"));
+        assert!(format!("{:?}", Material::new("/etc/rdlt/key.p8")).contains("/etc/rdlt/key.p8"));
 
         #[derive(Debug)]
         struct Holder {
-            key: PemSource,
+            key: Material,
         }
         let holder = Holder {
-            key: PemSource::from("-----BEGIN CERTIFICATE-----\nPUBLIC-ENOUGH\n"),
+            key: Material::new("-----BEGIN CERTIFICATE-----\nPUBLIC-ENOUGH\n"),
         };
         assert!(!format!("{holder:?}").contains("PUBLIC-ENOUGH"));
         // Redaction is a rendering property, not storage: the material

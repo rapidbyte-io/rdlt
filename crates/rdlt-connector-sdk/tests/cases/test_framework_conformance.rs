@@ -4,7 +4,8 @@
 //! itself owns.
 
 use rdlt_connector::core::TableName;
-use rdlt_connector::{Destination, Source};
+use rdlt_connector::destination::Destination;
+use rdlt_connector::source::Source;
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::source::SourceConnector;
 use rdlt_connector_sdk::{destination, source};
@@ -63,7 +64,7 @@ async fn the_session_refuses_a_write_before_ensure() {
     use rdlt_connector::core::{LoadId, PipelineId};
     let shell = destination::shell(Sink::with_store(SharedStore::default()));
     let mut session = shell
-        .open(rdlt_connector::OpenContext::new(
+        .open(rdlt_connector::destination::OpenContext::new(
             PipelineId::from("p"),
             LoadId::from("l"),
         ))

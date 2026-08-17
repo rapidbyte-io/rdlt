@@ -28,10 +28,8 @@ use arrow::{
     datatypes::{DataType, TimeUnit},
     record_batch::RecordBatch,
 };
-use rdlt_connector::{
-    DestinationCapabilities,
-    channel::{MAX_ARROW_DEPTH, MAX_RECORD_BATCH_ROWS},
-};
+use rdlt_connector::channel::{MAX_ARROW_DEPTH, MAX_RECORD_BATCH_ROWS};
+use rdlt_connector::destination::Capabilities;
 use rdlt_core::{
     ColumnDef, ColumnType, LogicalType, PolicyAction, Provenance, RdltError, SchemaChange,
     TableName, TableSchema, naming::UniqueNamer, schema::system_columns,
@@ -52,7 +50,7 @@ pub(crate) fn passthrough_items(
     batch: &RecordBatch,
     table: &TableName,
     ctx: ShredContext,
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
 ) -> Result<Vec<LoadItem>, RdltError> {
     if batch.num_rows() > MAX_RECORD_BATCH_ROWS {
         return Err(RdltError::config(format!(
@@ -437,7 +435,7 @@ fn refuse_sub_microsecond(inexact: bool, path: &str, kind: &str) -> Result<(), S
 fn schema_from_arrow(
     batch: &RecordBatch,
     table: &TableName,
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
 ) -> Result<(TableSchema, Vec<(String, usize)>), RdltError> {
     if batch.num_columns() > MAX_SOURCE_COLUMNS_PER_TABLE {
         return Err(RdltError::config(format!(
@@ -686,7 +684,7 @@ mod tests {
                 policy: &policy,
                 max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
-            DestinationCapabilities::default(),
+            Capabilities::default(),
         )
         .expect("an empty wide bootstrap registers");
         // One 125 KB boolean column at the full row cap: the assembly would
@@ -713,7 +711,7 @@ mod tests {
                 policy: &policy,
                 max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
-            DestinationCapabilities::default(),
+            Capabilities::default(),
         )
         .expect_err("the columns × rows product must refuse");
         assert!(
@@ -760,7 +758,7 @@ mod tests {
                     policy,
                     max_batch_cells: crate::shred::MAX_BATCH_CELLS,
                 },
-                DestinationCapabilities::default(),
+                Capabilities::default(),
             )
             .expect("pass")
         }
@@ -889,7 +887,7 @@ mod tests {
                 policy: &policy,
                 max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
-            DestinationCapabilities::default(),
+            Capabilities::default(),
         )
         .expect_err("oversized row count must refuse");
 
@@ -917,12 +915,8 @@ mod tests {
             RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
                 "s", wide, true,
             )])));
-        let error = schema_from_arrow(
-            &batch,
-            &TableName::new("events"),
-            DestinationCapabilities::default(),
-        )
-        .expect_err("cap struct fields beside one column exceed the cap");
+        let error = schema_from_arrow(&batch, &TableName::new("events"), Capabilities::default())
+            .expect_err("cap struct fields beside one column exceed the cap");
         let rendered = error.to_string();
         assert!(
             rendered.contains("source-column cap"),
@@ -945,12 +939,8 @@ mod tests {
             RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
                 "s", modest, true,
             )])));
-        schema_from_arrow(
-            &batch,
-            &TableName::new("events"),
-            DestinationCapabilities::default(),
-        )
-        .expect("ordinary struct breadth still maps");
+        schema_from_arrow(&batch, &TableName::new("events"), Capabilities::default())
+            .expect("ordinary struct breadth still maps");
     }
 
     /// The cross-batch join APPENDS unseen struct fields, so per-batch caps
@@ -988,7 +978,7 @@ mod tests {
                 policy: &policy,
                 max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
-            DestinationCapabilities::default(),
+            Capabilities::default(),
         )
         .expect("the first batch sits under the cap");
         let error = passthrough_items(
@@ -1001,7 +991,7 @@ mod tests {
                 policy: &policy,
                 max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
-            DestinationCapabilities::default(),
+            Capabilities::default(),
         )
         .expect_err("disjoint fields join past the cap and must refuse");
         assert!(
@@ -1016,12 +1006,8 @@ mod tests {
             .map(|index| arrow::datatypes::Field::new(format!("f{index}"), DataType::Null, true))
             .collect::<Vec<_>>();
         let batch = RecordBatch::new_empty(Arc::new(arrow::datatypes::Schema::new(fields)));
-        let error = schema_from_arrow(
-            &batch,
-            &TableName::new("events"),
-            DestinationCapabilities::default(),
-        )
-        .expect_err("one field beyond the cap must refuse");
+        let error = schema_from_arrow(&batch, &TableName::new("events"), Capabilities::default())
+            .expect_err("one field beyond the cap must refuse");
         assert!(error.to_string().contains("source-column cap"));
     }
 
@@ -1181,7 +1167,7 @@ fn an_inexact_int64_to_float64_widening_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("the Float64 column registers");
 
@@ -1206,7 +1192,7 @@ fn an_inexact_int64_to_float64_widening_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect_err("an inexact widening must refuse");
     let rendered = error.to_string();
@@ -1235,7 +1221,7 @@ fn an_inexact_int64_to_float64_widening_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("an exact widening passes");
 }
@@ -1291,7 +1277,7 @@ fn a_nested_struct_int_widening_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("the struct column registers");
 
@@ -1310,7 +1296,7 @@ fn a_nested_struct_int_widening_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect_err("a nested inexact widening must refuse");
     let rendered = error.to_string();
@@ -1370,7 +1356,7 @@ fn a_nested_list_int_widening_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("the list column registers");
 
@@ -1392,7 +1378,7 @@ fn a_nested_list_int_widening_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect_err("a list-element inexact widening must refuse");
     assert!(
@@ -1435,7 +1421,7 @@ fn a_sub_microsecond_timestamp_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("the µs column registers");
 
@@ -1460,7 +1446,7 @@ fn a_sub_microsecond_timestamp_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect_err("a sub-microsecond nanosecond value must refuse");
     assert!(
@@ -1481,7 +1467,7 @@ fn a_sub_microsecond_timestamp_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("a microsecond-divisible nanosecond value casts exactly");
 }
@@ -1518,7 +1504,7 @@ fn a_pre_epoch_intra_day_date64_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect("the Date column registers");
 
@@ -1542,7 +1528,7 @@ fn a_pre_epoch_intra_day_date64_refuses_typed() {
             policy: &policy,
             max_batch_cells: crate::shred::MAX_BATCH_CELLS,
         },
-        DestinationCapabilities::default(),
+        Capabilities::default(),
     )
     .expect_err("a pre-epoch intra-day Date64 must refuse");
     assert!(
@@ -1568,7 +1554,7 @@ fn a_pre_epoch_intra_day_date64_refuses_typed() {
                 policy: &policy,
                 max_batch_cells: crate::shred::MAX_BATCH_CELLS,
             },
-            DestinationCapabilities::default(),
+            Capabilities::default(),
         )
         .expect("a whole-day or post-epoch intra-day Date64 casts");
     }

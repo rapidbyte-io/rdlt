@@ -137,7 +137,7 @@ pub(crate) async fn fetch_spec(
     provider: &LocalBinaryConnectorProvider,
     requirement: &ConnectorRequirement,
     role: Role,
-) -> Result<rdlt_connector::ConnectorSpec, String> {
+) -> Result<rdlt_connector::spec::ConnectorSpec, String> {
     match tokio::time::timeout(CLAUSE_TIMEOUT, provider.spec_for_role(requirement, role)).await {
         Ok(Ok(spec)) => Ok(spec),
         Ok(Err(error)) => Err(error.to_string()),
@@ -152,7 +152,7 @@ pub(crate) async fn fetch_spec(
 /// and its handshake surfaces as a refusal.
 pub(crate) fn resolved_requirement(
     requirement: &ConnectorRequirement,
-    spec: &Result<rdlt_connector::ConnectorSpec, String>,
+    spec: &Result<rdlt_connector::spec::ConnectorSpec, String>,
 ) -> Result<ConnectorRequirement, String> {
     if !requirement.id.is_empty() {
         return Ok(requirement.clone());
@@ -200,7 +200,10 @@ pub(crate) fn report_p2<T>(
 
 /// Judge P4 from the Spec reply: name/version non-empty and a JSON
 /// -object config schema, answered with no config at all.
-pub(crate) fn report_p4(report: &mut Report, spec: &Result<rdlt_connector::ConnectorSpec, String>) {
+pub(crate) fn report_p4(
+    report: &mut Report,
+    spec: &Result<rdlt_connector::spec::ConnectorSpec, String>,
+) {
     match spec {
         Ok(spec) => {
             let mut problems = Vec::new();
@@ -604,7 +607,7 @@ mod tests {
     //! directly with the exact strings `certify_source` folds into the
     //! report's Fail entries.
 
-    use rdlt_connector::ConnectorSpec;
+    use rdlt_connector::spec::ConnectorSpec;
     use rdlt_runtime::ConnectorProvider;
 
     use super::*;

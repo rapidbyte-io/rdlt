@@ -14,7 +14,11 @@
 //! source clauses have no check here yet; adding one is deferred work,
 //! renumbering these is forbidden.
 
-use rdlt_connector::{Cursor, PushPayload, ReadRequest, Source, StreamSpec, records_channel};
+use rdlt_connector::channel::{PushPayload, records};
+
+use rdlt_connector::core::Cursor;
+
+use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use serde_json::Value;
 
 use super::{Conformance, ConformanceFailure, ConformanceSkip};
@@ -174,7 +178,7 @@ async fn read_all_unbounded<S: Source>(
     spec: &StreamSpec,
     since: Option<Cursor>,
 ) -> Result<Observed, String> {
-    let (out, mut input) = records_channel(CHANNEL_BYTE_BUDGET);
+    let (out, mut input) = records(CHANNEL_BYTE_BUDGET);
     let request = ReadRequest::new(spec.clone(), since, out);
     let reader = source.read(request);
     tokio::pin!(reader);
@@ -389,7 +393,7 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
 
         // S4: a closed channel means cancellation — return promptly, without
         // error.
-        let (out, mut input) = records_channel(CHANNEL_BYTE_BUDGET);
+        let (out, mut input) = records(CHANNEL_BYTE_BUDGET);
         input.close();
         drop(input);
         let request = ReadRequest::new(spec.clone(), None, out);
@@ -516,7 +520,9 @@ mod retention_tests {
 
 #[cfg(test)]
 mod deadline_tests {
-    use rdlt_connector::{ConnectorSpec, ReadRequest, SourceError};
+    use rdlt_connector::error::SourceError;
+    use rdlt_connector::source::ReadRequest;
+    use rdlt_connector::spec::ConnectorSpec;
 
     use super::*;
 

@@ -68,7 +68,8 @@ fn sized_echo_config(rows: u64, push_bytes: usize) -> Vec<u8> {
 }
 
 fn numbers_stream_spec_json() -> Vec<u8> {
-    serde_json::to_vec(&rdlt_connector::StreamSpec::new("numbers")).expect("stream spec json")
+    serde_json::to_vec(&rdlt_connector::source::StreamSpec::new("numbers"))
+        .expect("stream spec json")
 }
 
 /// A full pass: handshake ok (and the `Line` it was reached through
@@ -119,7 +120,7 @@ async fn handshake_streams_and_read_round_trip() {
             .stream_spec_json
             .iter()
             .map(|bytes| {
-                let spec: rdlt_connector::StreamSpec =
+                let spec: rdlt_connector::source::StreamSpec =
                     serde_json::from_slice(bytes).expect("stream spec json");
                 spec.name.as_str().to_string()
             })
@@ -464,7 +465,7 @@ async fn spec_answers_before_any_handshake() {
         .await
         .expect("pre-handshake Spec")
         .into_inner();
-    let spec: rdlt_connector::ConnectorSpec =
+    let spec: rdlt_connector::spec::ConnectorSpec =
         serde_json::from_slice(&reply.spec_json).expect("ConnectorSpec JSON");
     assert_eq!(spec.name, "echo-source");
     assert_eq!(spec.version, "0.0.0");

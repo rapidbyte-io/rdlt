@@ -122,7 +122,7 @@ async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
 
     let mut config = serde_json::json!({ "rows": 3, "pad": "" });
     let base = serde_json::to_vec(&config).expect("serialize").len();
-    let ceiling = rdlt_connector_sdk::spi::MAX_DOCUMENT_BYTES as usize;
+    let ceiling = rdlt_connector_sdk::spi::gate::MAX_DOCUMENT_BYTES as usize;
     // Lengthening the string by N grows the document by exactly N.
     config["pad"] = serde_json::Value::String("x".repeat(ceiling - base));
     assert_eq!(
@@ -162,7 +162,7 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
         .expect("dial");
     let oversized = serde_json::json!({
         "rows": 1,
-        "pad": "x".repeat(rdlt_connector_sdk::spi::MAX_DOCUMENT_BYTES as usize),
+        "pad": "x".repeat(rdlt_connector_sdk::spi::gate::MAX_DOCUMENT_BYTES as usize),
     });
     let error = handshake::run(
         &channel,
@@ -374,7 +374,7 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
 #[tokio::test]
 async fn an_oversized_spec_json_is_refused_at_the_handshake() {
     let (_dir, path) = socket_path();
-    let spec = rdlt_connector::ConnectorSpec::new("rogue", "0.0.0");
+    let spec = rdlt_connector::spec::ConnectorSpec::new("rogue", "0.0.0");
     let mut ok = rdlt_connector_protocol::proto::HandshakeOk {
         connector_id: "rogue".to_string(),
         connector_version: "0.0.0".to_string(),
@@ -382,7 +382,7 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
         capabilities_json: Vec::new(),
         state_format_versions: Default::default(),
     };
-    ok.spec_json = vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1];
+    ok.spec_json = vec![b'x'; rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1];
     let _serving = rogue::serve_handshake_ok(&path, ok);
 
     let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)

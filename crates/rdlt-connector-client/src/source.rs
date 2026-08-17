@@ -1,5 +1,5 @@
 //! [`Remote`] — the SPI read seam over the wire: an SPI
-//! [`rdlt_connector::Source`] whose every method is an RPC against a
+//! [`rdlt_connector::source::Source`] whose every method is an RPC against a
 //! served connector, so an engine (or any embedder holding a `dyn
 //! Source`) drives a spawned connector without learning the wire
 //! exists.
@@ -17,15 +17,18 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::Cursor;
-use rdlt_connector::{ConnectorSpec, ReadRequest, RecordBatch, SourceError, StreamSpec};
+use rdlt_connector::error::SourceError;
+use rdlt_connector::source::{ReadRequest, StreamSpec};
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_protocol::proto::{self, read_frame, streams_reply};
 use tonic::transport::Channel;
 
 use crate::error::FromWire;
 use crate::{error, gate, handshake, wire};
 
-/// An SPI [`rdlt_connector::Source`] over the wire: the dialed channel
+/// An SPI [`rdlt_connector::source::Source`] over the wire: the dialed channel
 /// plus the handshake's cached spec and the requirement's RPC deadline
 /// (every await below is bounded by it — a silent connector fails
 /// typed, never hangs). Constructed only through [`Remote::connect`],
@@ -185,7 +188,7 @@ pub(crate) fn decode_one_batch(bytes: &[u8]) -> Result<RecordBatch, SourceError>
         Ok(decoded) => decoded,
         Err(payload) => Err(SourceError::fatal(format!(
             "{ONE_BATCH_REFUSAL}: the arrow decoder panicked: {}",
-            rdlt_connector::ipc::panic_text(payload.as_ref())
+            rdlt_connector::gate::panic_text(payload.as_ref())
         ))),
     }
 }
@@ -203,7 +206,7 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
     // frame, which the reader would otherwise allocate on trust. The
     // SPI owns the one implementation for every wire decode seat; this
     // seat wraps its reasons in the frozen one-batch prefix.
-    rdlt_connector::ipc::refuse_overdeclared_ipc_framing(bytes)
+    rdlt_connector::gate::refuse_overdeclared_framing(bytes)
         .map_err(|reason| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {reason}")))?;
     let mut reader =
         arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
@@ -239,7 +242,7 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
 }
 
 #[async_trait]
-impl rdlt_connector::Source for Remote {
+impl rdlt_connector::source::Source for Remote {
     /// The handshake's cached document — no RPC: the spec was verified
     /// and decoded once at [`Remote::connect`], and a connector's
     /// self-description does not change mid-session.
@@ -270,7 +273,7 @@ impl rdlt_connector::Source for Remote {
                     let spec = serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
                         SourceError::protocol(format!(
                             "undecodable stream_spec_json in the streams reply: {}",
-                            rdlt_connector::json::describe_parse_error(&error)
+                            rdlt_connector::gate::describe_parse_error(&error)
                         ))
                     })?;
                     refuse_untrusted_stream_spec(&spec)?;
@@ -351,20 +354,20 @@ impl rdlt_connector::Source for Remote {
                     // several hundred MB of `Value` here, and the oversized
                     // cursor would then poison persisted state (every later
                     // resume refused at the gates that DO cap).
-                    if bytes.len() as u64 > rdlt_connector::MAX_CURSOR_BYTES {
+                    if bytes.len() as u64 > rdlt_connector::gate::MAX_CURSOR_BYTES {
                         return Err(SourceError::protocol(format!(
                             "a checkpoint cursor of {} bytes exceeds the {}-byte cursor \
                              contract — the connector must summarize its state rather than \
                              embed the data",
                             bytes.len(),
-                            rdlt_connector::MAX_CURSOR_BYTES
+                            rdlt_connector::gate::MAX_CURSOR_BYTES
                         )));
                     }
                     let value: serde_json::Value =
                         serde_json::from_slice(&bytes).map_err(|error| {
                             SourceError::protocol(format!(
                                 "undecodable checkpoint_cursor_json in a read frame: {}",
-                                rdlt_connector::json::describe_parse_error(&error)
+                                rdlt_connector::gate::describe_parse_error(&error)
                             ))
                         })?;
                     // The contract is on the form the host PERSISTS, so
@@ -416,7 +419,7 @@ mod stream_spec_gate_tests {
     //! on the helper the streams decode runs every spec through.
 
     use super::*;
-    use rdlt_connector::StreamSpec;
+    use rdlt_connector::source::StreamSpec;
 
     /// An OSC-52-shaped name (the clipboard-write escape) refuses
     /// fatal, and the refusal's own rendering is inert — the escaped

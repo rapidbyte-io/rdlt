@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use rdlt_connector::{
-    CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenContext, PipelineId, RecordBatch, StateDoc, TableName,
-    TableSchema, WriteMode,
+use rdlt_connector::arrow::RecordBatch;
+use rdlt_connector::core::{
+    CommitMeta, CommitReceipt, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::DestinationError;
+use rdlt_connector::spec::ConnectorSpec;
 
 /// Where to inject the fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +74,7 @@ impl<D: Destination + Clone> Destination for CrashDestination<D> {
         self.inner.spec()
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
 

@@ -7,7 +7,7 @@
 //! its declared precision, and a hint the engine cannot honour reaching a code
 //! path that panics.
 
-use rdlt_connector::StreamSpec;
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::LogicalType;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource};

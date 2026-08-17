@@ -13,7 +13,11 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use rdlt_connector::{DestinationCapabilities, StreamSpec, channel::MAX_RECORD_BATCH_ROWS};
+use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
+
+use rdlt_connector::destination::Capabilities;
+
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{
     ParentLink, RdltError, RowId, TableName, identity::child_row_id, naming::child_table_name,
 };
@@ -96,7 +100,7 @@ struct Queued {
 /// tree is ever materialized.
 pub(crate) struct TapeShredder {
     spec: StreamSpec,
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
     /// Root first, children after, in first-seen order.
     tables: Vec<TableBuffer>,
     /// Normalized table name → index into `tables`, maintained beside the
@@ -111,7 +115,7 @@ pub(crate) struct TapeShredder {
 impl TapeShredder {
     pub(crate) fn new(
         spec: StreamSpec,
-        capabilities: DestinationCapabilities,
+        capabilities: Capabilities,
         root_table: TableName,
     ) -> Result<Self, RdltError> {
         let mut root = TableBuffer::new(root_table.clone(), None, capabilities.ident_rules);
@@ -415,7 +419,7 @@ mod cardinality_tests {
     fn shredder() -> TapeShredder {
         TapeShredder::new(
             StreamSpec::new("events"),
-            DestinationCapabilities::default(),
+            Capabilities::default(),
             TableName::new("events"),
         )
         .expect("shredder")
@@ -572,7 +576,7 @@ mod cardinality_tests {
             shredder.tables.push(TableBuffer::new(
                 TableName::new(format!("t{index}")),
                 None,
-                DestinationCapabilities::default().ident_rules,
+                Capabilities::default().ident_rules,
             ));
         }
         let mut rows: Vec<Vec<TapeRow>> = shredder.tables.iter().map(|_| Vec::new()).collect();
@@ -615,7 +619,7 @@ mod cardinality_tests {
     fn a_parent_refuses_a_new_child_key_at_the_child_table_cap() {
         let mut shredder = TapeShredder::new(
             StreamSpec::new("events"),
-            DestinationCapabilities::default(),
+            Capabilities::default(),
             TableName::new("events"),
         )
         .expect("shredder");

@@ -19,7 +19,7 @@
 //!
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! let source = MemorySource::new(vec![MemoryStream::new(
-//!     rdlt_connector::StreamSpec::new("events"),
+//!     rdlt_connector::source::StreamSpec::new("events"),
 //!     vec![
 //!         MemoryBatch::new(vec![json!({"id": 1}), json!({"id": 2})]).with_checkpoint(1),
 //!         MemoryBatch::new(vec![json!({"id": 3})]).with_checkpoint(2),

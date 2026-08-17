@@ -47,11 +47,11 @@ pub(super) use rdlt_connector_protocol::MAX_FRAME_BYTES;
 /// same ceiling before SEND, so a host-side document that inflates past
 /// it under YAML→JSON re-serialization is refused at the host with a
 /// clearer error than this seat's post-receive one.
-pub(super) const MAX_DOCUMENT_BYTES: usize = rdlt_connector::MAX_DOCUMENT_BYTES as usize;
+pub(super) const MAX_DOCUMENT_BYTES: usize = rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize;
 
 /// The typed size refusal for an oversized `*_json` document payload —
 /// one spelling for every seat that enforces a document ceiling
-/// ([`MAX_DOCUMENT_BYTES`] for config, `rdlt_connector::MAX_CURSOR_BYTES`
+/// ([`MAX_DOCUMENT_BYTES`] for config, `rdlt_connector::gate::MAX_CURSOR_BYTES`
 /// for cursors — the cursor contract is deliberately tighter, 5L3), so
 /// the refusals cannot drift apart.
 pub(super) fn oversized_document(field: &str, len: usize, ceiling: u64) -> String {
@@ -354,7 +354,7 @@ pub(crate) fn spec_reply(
     version: &'static str,
     config_schema: Option<serde_json::Value>,
 ) -> tonic::Response<proto::SpecReply> {
-    let mut spec = rdlt_connector::ConnectorSpec::new(name, version);
+    let mut spec = rdlt_connector::spec::ConnectorSpec::new(name, version);
     spec.config_schema = config_schema;
     tonic::Response::new(proto::SpecReply {
         spec_json: serde_json::to_vec(&spec)
@@ -386,7 +386,7 @@ pub(crate) fn refuse_handshake(
 /// (6L7): the client's decode seats import the same function, so the
 /// two sides of the wire cannot drift.
 pub(super) fn describe_config_parse_error(error: &serde_json::Error) -> String {
-    rdlt_connector::json::describe_parse_error(error)
+    rdlt_connector::gate::describe_parse_error(error)
 }
 
 /// Every non-null scalar LEAF the config document carries, in document order —
@@ -492,7 +492,7 @@ pub(crate) trait HandshakeShell: Sized {
     /// The shell's `ConnectorSpec`, pre-serialized.
     fn spec_json(&self) -> Vec<u8>;
     /// Destination capabilities, pre-serialized — empty for a source
-    /// (the proto field's own doc: "DestinationCapabilities; empty for
+    /// (the proto field's own doc: "Capabilities; empty for
     /// sources").
     fn capabilities_json(&self) -> Vec<u8>;
 }

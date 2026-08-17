@@ -6,7 +6,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rdlt_connector::{Destination, Source, WriteMode};
+use rdlt_connector::core::WriteMode;
+
+use rdlt_connector::destination::Destination;
+
+use rdlt_connector::source::Source;
 use rdlt_core::{CommitPolicy, RdltError, RunReport, SchemaPolicy, StreamName};
 use rdlt_engine::{Engine, EngineConfig};
 

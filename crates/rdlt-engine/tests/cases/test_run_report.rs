@@ -5,7 +5,7 @@
 //! Several tests here are mutation-report closures; each names the mutant
 //! class it kills.
 
-use rdlt_connector::StreamSpec;
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{PipelineEvent, TableName};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination};
@@ -16,7 +16,10 @@ use super::common::{evolving_batches, stream_with_batches, three_batch_source};
 #[tokio::test]
 async fn events_are_causally_ordered_and_report_matches_reality() {
     let dest = MemoryDestination::new();
-    let source = stream_with_batches(rdlt_connector::StreamSpec::new("s"), evolving_batches());
+    let source = stream_with_batches(
+        rdlt_connector::source::StreamSpec::new("s"),
+        evolving_batches(),
+    );
     let mut config = EngineConfig::new("obs");
     config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
 
@@ -154,17 +157,20 @@ struct CloseFailsDest {
 }
 
 #[async_trait::async_trait]
-impl rdlt_connector::Destination for CloseFailsDest {
-    fn spec(&self) -> rdlt_connector::ConnectorSpec {
+impl rdlt_connector::destination::Destination for CloseFailsDest {
+    fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
         self.inner.spec()
     }
-    fn capabilities(&self) -> rdlt_connector::DestinationCapabilities {
+    fn capabilities(&self) -> rdlt_connector::destination::Capabilities {
         self.inner.capabilities()
     }
     async fn open(
         &self,
-        ctx: rdlt_connector::OpenContext,
-    ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
+        ctx: rdlt_connector::destination::OpenContext,
+    ) -> Result<
+        Box<dyn rdlt_connector::destination::LoadSession>,
+        rdlt_connector::error::DestinationError,
+    > {
         Ok(Box::new(CloseFailsSession {
             inner: self.inner.open(ctx).await?,
         }))
@@ -172,40 +178,40 @@ impl rdlt_connector::Destination for CloseFailsDest {
 }
 
 struct CloseFailsSession {
-    inner: Box<dyn rdlt_connector::LoadSession>,
+    inner: Box<dyn rdlt_connector::destination::LoadSession>,
 }
 
 #[async_trait::async_trait]
-impl rdlt_connector::LoadSession for CloseFailsSession {
+impl rdlt_connector::destination::LoadSession for CloseFailsSession {
     async fn ensure_table(
         &mut self,
         schema: &rdlt_core::TableSchema,
         mode: &rdlt_core::WriteMode,
-    ) -> Result<(), rdlt_connector::DestinationError> {
+    ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
     async fn write(
         &mut self,
         table: &rdlt_core::TableName,
-        batch: rdlt_connector::RecordBatch,
-    ) -> Result<(), rdlt_connector::DestinationError> {
+        batch: rdlt_connector::arrow::RecordBatch,
+    ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.write(table, batch).await
     }
     async fn commit(
         &mut self,
-        meta: rdlt_connector::CommitMeta,
-    ) -> Result<rdlt_connector::CommitReceipt, rdlt_connector::DestinationError> {
+        meta: rdlt_connector::core::CommitMeta,
+    ) -> Result<rdlt_connector::core::CommitReceipt, rdlt_connector::error::DestinationError> {
         self.inner.commit(meta).await
     }
     async fn read_state(
         &mut self,
         pipeline: &rdlt_core::PipelineId,
-    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError> {
         self.inner.read_state(pipeline).await
     }
-    async fn close(&mut self) -> Result<(), rdlt_connector::DestinationError> {
+    async fn close(&mut self) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.close().await?;
-        Err(rdlt_connector::DestinationError::transient(
+        Err(rdlt_connector::error::DestinationError::transient(
             "injected close failure",
         ))
     }
@@ -259,17 +265,20 @@ struct CountersDest {
 }
 
 #[async_trait::async_trait]
-impl rdlt_connector::Destination for CountersDest {
-    fn spec(&self) -> rdlt_connector::ConnectorSpec {
+impl rdlt_connector::destination::Destination for CountersDest {
+    fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
         self.inner.spec()
     }
-    fn capabilities(&self) -> rdlt_connector::DestinationCapabilities {
+    fn capabilities(&self) -> rdlt_connector::destination::Capabilities {
         self.inner.capabilities()
     }
     async fn open(
         &self,
-        ctx: rdlt_connector::OpenContext,
-    ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
+        ctx: rdlt_connector::destination::OpenContext,
+    ) -> Result<
+        Box<dyn rdlt_connector::destination::LoadSession>,
+        rdlt_connector::error::DestinationError,
+    > {
         Ok(Box::new(CountersSession {
             inner: self.inner.open(ctx).await?,
             seen: std::sync::Arc::clone(&self.seen),
@@ -278,37 +287,37 @@ impl rdlt_connector::Destination for CountersDest {
 }
 
 struct CountersSession {
-    inner: Box<dyn rdlt_connector::LoadSession>,
+    inner: Box<dyn rdlt_connector::destination::LoadSession>,
     seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::CommitCounters>>>,
 }
 
 #[async_trait::async_trait]
-impl rdlt_connector::LoadSession for CountersSession {
+impl rdlt_connector::destination::LoadSession for CountersSession {
     async fn ensure_table(
         &mut self,
         schema: &rdlt_core::TableSchema,
         mode: &rdlt_core::WriteMode,
-    ) -> Result<(), rdlt_connector::DestinationError> {
+    ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
     async fn write(
         &mut self,
         table: &rdlt_core::TableName,
-        batch: rdlt_connector::RecordBatch,
-    ) -> Result<(), rdlt_connector::DestinationError> {
+        batch: rdlt_connector::arrow::RecordBatch,
+    ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.write(table, batch).await
     }
     async fn commit(
         &mut self,
-        meta: rdlt_connector::CommitMeta,
-    ) -> Result<rdlt_connector::CommitReceipt, rdlt_connector::DestinationError> {
+        meta: rdlt_connector::core::CommitMeta,
+    ) -> Result<rdlt_connector::core::CommitReceipt, rdlt_connector::error::DestinationError> {
         self.seen.lock().expect("seen").push(meta.counters);
         self.inner.commit(meta).await
     }
     async fn read_state(
         &mut self,
         pipeline: &rdlt_core::PipelineId,
-    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError> {
         self.inner.read_state(pipeline).await
     }
 }
@@ -584,7 +593,10 @@ async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
 #[tokio::test]
 async fn read_commit_and_heartbeat_events_hold_their_order() {
     let dest = MemoryDestination::new();
-    let source = stream_with_batches(rdlt_connector::StreamSpec::new("s"), evolving_batches());
+    let source = stream_with_batches(
+        rdlt_connector::source::StreamSpec::new("s"),
+        evolving_batches(),
+    );
     let mut config = EngineConfig::new("obs-036");
     config = config.with_commit_policy(rdlt_core::CommitPolicy::every_checkpoints(1));
 
@@ -649,7 +661,10 @@ async fn read_commit_and_heartbeat_events_hold_their_order() {
 #[tokio::test]
 async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
     let dest = MemoryDestination::new();
-    let source = stream_with_batches(rdlt_connector::StreamSpec::new("s"), evolving_batches());
+    let source = stream_with_batches(
+        rdlt_connector::source::StreamSpec::new("s"),
+        evolving_batches(),
+    );
     let engine = Engine::new(EngineConfig::new("obs-fold"), source, dest.clone());
     let mut events = engine.events();
     let report = engine.run().await.expect("run");

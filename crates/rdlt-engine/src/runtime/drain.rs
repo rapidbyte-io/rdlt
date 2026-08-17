@@ -116,7 +116,8 @@ mod drain_loader_tests {
     use super::*;
     use crate::load::Sink;
     use crate::runtime::STAGE_MSG_CAPACITY;
-    use rdlt_connector::{DestinationCapabilities, LoadSession, channel::byte_channel};
+    use rdlt_connector::channel::bytes;
+    use rdlt_connector::destination::{Capabilities, LoadSession};
     use rdlt_core::{
         CommitMeta, CommitPolicy, CommitReceipt, LoadId, PipelineId, StateDoc, TableName,
         TableSchema, WriteMode,
@@ -133,20 +134,20 @@ mod drain_loader_tests {
             &mut self,
             _: &TableSchema,
             _: &WriteMode,
-        ) -> Result<(), rdlt_connector::DestinationError> {
+        ) -> Result<(), rdlt_connector::error::DestinationError> {
             Ok(())
         }
         async fn write(
             &mut self,
             _: &TableName,
-            _: rdlt_connector::RecordBatch,
-        ) -> Result<(), rdlt_connector::DestinationError> {
+            _: rdlt_connector::arrow::RecordBatch,
+        ) -> Result<(), rdlt_connector::error::DestinationError> {
             Ok(())
         }
         async fn commit(
             &mut self,
             meta: CommitMeta,
-        ) -> Result<CommitReceipt, rdlt_connector::DestinationError> {
+        ) -> Result<CommitReceipt, rdlt_connector::error::DestinationError> {
             Ok(CommitReceipt {
                 load_id: meta.load_id,
                 commit_seq: meta.commit_seq,
@@ -155,7 +156,7 @@ mod drain_loader_tests {
         async fn read_state(
             &mut self,
             _: &PipelineId,
-        ) -> Result<Option<StateDoc>, rdlt_connector::DestinationError> {
+        ) -> Result<Option<StateDoc>, rdlt_connector::error::DestinationError> {
             Ok(None)
         }
     }
@@ -167,7 +168,7 @@ mod drain_loader_tests {
         Loader::new(
             Sink {
                 session: Box::new(AcceptingSession),
-                capabilities: DestinationCapabilities::default(),
+                capabilities: Capabilities::default(),
             },
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
@@ -185,7 +186,7 @@ mod drain_loader_tests {
     /// Dropping the sender closes the loader's input, so `recv` returns `None`
     /// immediately and the loader's own result is `Ok`.
     fn closed_input() -> ByteReceiver<LoadItem> {
-        let (tx, rx) = byte_channel::<LoadItem>(4096, STAGE_MSG_CAPACITY);
+        let (tx, rx) = bytes::<LoadItem>(4096, STAGE_MSG_CAPACITY);
         drop(tx);
         rx
     }

@@ -7,13 +7,13 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::{
     CommitCounters, CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName,
     TableSchema, WriteMode,
 };
-use rdlt_connector::{
-    Destination, DestinationCapabilities, DestinationError, LoadSession, OpenContext, RecordBatch,
-};
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::DestinationError;
 use rdlt_connector_sdk::destination::{self, Backend, DestinationConnector};
 use rdlt_testkit::{batch_of, schema_for};
 
@@ -66,8 +66,8 @@ impl DestinationConnector for Spy {
         unreachable!("spies are built directly by the tests")
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
-        DestinationCapabilities::default()
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
     }
 
     async fn connect(&self, _context: &OpenContext) -> Result<SpyBackend, DestinationError> {

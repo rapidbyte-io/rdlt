@@ -13,7 +13,7 @@ use super::common::stream_with_batches;
 
 fn two_batch_source(batch2_rows: Vec<serde_json::Value>) -> MemorySource {
     stream_with_batches(
-        rdlt_connector::StreamSpec::new("t"),
+        rdlt_connector::source::StreamSpec::new("t"),
         vec![
             MemoryBatch::new(vec![json!({"id": 1, "v": 10})]).with_checkpoint(1),
             MemoryBatch::new(batch2_rows).with_checkpoint(2),
@@ -176,7 +176,7 @@ async fn discard_row_on_middle_table_cascades_to_grandchildren() {
     );
 
     let source = stream_with_batches(
-        rdlt_connector::StreamSpec::new("orders"),
+        rdlt_connector::source::StreamSpec::new("orders"),
         vec![
             // Batch 1 establishes the items schema (no `bad` column).
             MemoryBatch::new(vec![json!({
@@ -268,7 +268,7 @@ async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
 
     // Batch 1 establishes BOTH t and its child; batch 2 adds a column to the CHILD.
     let source = stream_with_batches(
-        rdlt_connector::StreamSpec::new("t"),
+        rdlt_connector::source::StreamSpec::new("t"),
         vec![
             MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
             MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b", "qty": 3}]})])
@@ -295,7 +295,7 @@ async fn freeze_allows_the_tables_the_first_drain_establishes() {
     let mut config = EngineConfig::new("freeze-bootstrap");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     let source = stream_with_batches(
-        rdlt_connector::StreamSpec::new("t"),
+        rdlt_connector::source::StreamSpec::new("t"),
         vec![
             MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
             MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b"}]})]).with_checkpoint(2),

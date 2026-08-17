@@ -11,14 +11,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::{
     ColumnDef, ColumnType, CommitCounters, CommitMeta, LoadId, LogicalType, PipelineId, Provenance,
     StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector::{
-    Destination as _, DestinationError, LoadSession, OpenContext, PartCloseReason, PartClosed,
-    RecordBatch,
+use rdlt_connector::destination::{
+    Destination as _, LoadSession, OpenContext, PartCloseReason, PartClosed,
 };
+use rdlt_connector::error::DestinationError;
 use rdlt_connector_client::destination::Remote;
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_sdk::destination::Backend as _;
@@ -77,7 +78,7 @@ async fn an_out_of_range_ident_rules_declaration_refuses_the_handshake() {
             message: "unused".to_string(),
         },
         Some(
-            rdlt_connector::DestinationCapabilities::default()
+            rdlt_connector::destination::Capabilities::default()
                 .with_ident_rules(rdlt_connector::core::naming::IdentRules { max_len: 2 }),
         ),
     );
@@ -584,7 +585,7 @@ async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
     let _serving = rogue::serve_destination(
         &path,
         SessionScript::AnswerReadStateWith {
-            state_doc_json: vec![b'x'; rdlt_connector::MAX_DOCUMENT_BYTES as usize + 1],
+            state_doc_json: vec![b'x'; rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1],
         },
     );
     let remote = Remote::connect(
@@ -636,7 +637,7 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
         }),
     );
     let doc = serde_json::to_vec(&doc).expect("a StateDoc serializes");
-    assert!(doc.len() < rdlt_connector::MAX_DOCUMENT_BYTES as usize);
+    assert!(doc.len() < rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize);
 
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_destination(

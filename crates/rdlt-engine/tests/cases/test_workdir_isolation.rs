@@ -24,7 +24,7 @@ fn batches() -> Vec<MemoryBatch> {
 
 fn source() -> MemorySource {
     MemorySource::new(vec![MemoryStream::new(
-        rdlt_connector::StreamSpec::new("events"),
+        rdlt_connector::source::StreamSpec::new("events"),
         batches(),
     )])
 }

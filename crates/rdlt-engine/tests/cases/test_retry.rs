@@ -3,7 +3,7 @@
 //! ever publishing a staged row twice. Several tests here are mutation-report
 //! closures; each names the mutant class it kills.
 
-use rdlt_connector::StreamSpec;
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{PipelineEvent, RdltError};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
@@ -61,8 +61,11 @@ async fn transient_failures_retry_exactly_and_are_counted() {
 async fn transient_source_failures_are_retried_and_counted() {
     let dest = MemoryDestination::new();
     let source = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::StreamSpec::new("s"), evolving_batches())
-            .transient_start_failures(2),
+        MemoryStream::new(
+            rdlt_connector::source::StreamSpec::new("s"),
+            evolving_batches(),
+        )
+        .transient_start_failures(2),
     ]);
 
     let engine = Engine::new(EngineConfig::new("retry"), source, dest.clone());
@@ -86,8 +89,11 @@ async fn transient_source_failures_are_retried_and_counted() {
 async fn retry_budget_exhaustion_is_a_classified_error() {
     let dest = MemoryDestination::new();
     let source = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::StreamSpec::new("s"), evolving_batches())
-            .transient_start_failures(100),
+        MemoryStream::new(
+            rdlt_connector::source::StreamSpec::new("s"),
+            evolving_batches(),
+        )
+        .transient_start_failures(100),
     ]);
     let err = Engine::new(EngineConfig::new("retry-exhaust"), source, dest)
         .run()
@@ -160,7 +166,7 @@ async fn mid_stream_transient_retry_does_not_duplicate_staged_rows() {
     let dest = MemoryDestination::new();
     let source = MemorySource::new(vec![
         MemoryStream::new(
-            rdlt_connector::StreamSpec::new("s"),
+            rdlt_connector::source::StreamSpec::new("s"),
             vec![
                 MemoryBatch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
                 MemoryBatch::new(vec![json!({"seq": 3})]), // staged, NOT checkpointed…
@@ -198,17 +204,20 @@ struct TransientCommitDest {
 }
 
 #[async_trait::async_trait]
-impl rdlt_connector::Destination for TransientCommitDest {
-    fn spec(&self) -> rdlt_connector::ConnectorSpec {
+impl rdlt_connector::destination::Destination for TransientCommitDest {
+    fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
         self.inner.spec()
     }
-    fn capabilities(&self) -> rdlt_connector::DestinationCapabilities {
+    fn capabilities(&self) -> rdlt_connector::destination::Capabilities {
         self.inner.capabilities()
     }
     async fn open(
         &self,
-        ctx: rdlt_connector::OpenContext,
-    ) -> Result<Box<dyn rdlt_connector::LoadSession>, rdlt_connector::DestinationError> {
+        ctx: rdlt_connector::destination::OpenContext,
+    ) -> Result<
+        Box<dyn rdlt_connector::destination::LoadSession>,
+        rdlt_connector::error::DestinationError,
+    > {
         let session = self.inner.open(ctx).await?;
         Ok(Box::new(TransientCommitSession {
             inner: session,
@@ -218,43 +227,43 @@ impl rdlt_connector::Destination for TransientCommitDest {
 }
 
 struct TransientCommitSession {
-    inner: Box<dyn rdlt_connector::LoadSession>,
+    inner: Box<dyn rdlt_connector::destination::LoadSession>,
     remaining: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[async_trait::async_trait]
-impl rdlt_connector::LoadSession for TransientCommitSession {
+impl rdlt_connector::destination::LoadSession for TransientCommitSession {
     async fn ensure_table(
         &mut self,
         schema: &rdlt_connector::core::TableSchema,
         mode: &rdlt_core::WriteMode,
-    ) -> Result<(), rdlt_connector::DestinationError> {
+    ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.ensure_table(schema, mode).await
     }
     async fn write(
         &mut self,
         table: &rdlt_core::TableName,
-        batch: rdlt_connector::RecordBatch,
-    ) -> Result<(), rdlt_connector::DestinationError> {
+        batch: rdlt_connector::arrow::RecordBatch,
+    ) -> Result<(), rdlt_connector::error::DestinationError> {
         self.inner.write(table, batch).await
     }
     async fn read_state(
         &mut self,
         pipeline: &rdlt_core::PipelineId,
-    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+    ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError> {
         self.inner.read_state(pipeline).await
     }
     async fn commit(
         &mut self,
-        meta: rdlt_connector::CommitMeta,
-    ) -> Result<rdlt_connector::CommitReceipt, rdlt_connector::DestinationError> {
+        meta: rdlt_connector::core::CommitMeta,
+    ) -> Result<rdlt_connector::core::CommitReceipt, rdlt_connector::error::DestinationError> {
         use std::sync::atomic::Ordering;
         if self
             .remaining
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok()
         {
-            return Err(rdlt_connector::DestinationError::transient(
+            return Err(rdlt_connector::error::DestinationError::transient(
                 "injected transient commit failure",
             ));
         }

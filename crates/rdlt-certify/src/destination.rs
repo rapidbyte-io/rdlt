@@ -42,9 +42,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rdlt_connector::core::{LoadId, PipelineId};
-use rdlt_connector::{
-    ConnectorSpec, Destination, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
-};
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::DestinationError;
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_client::wire::{DEFAULT_DEADLINE, destination_client, dial};
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::proto::SessionRequest;
@@ -426,7 +426,7 @@ impl Destination for SettledDestination {
         self.inner.check().await
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
 

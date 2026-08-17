@@ -70,7 +70,7 @@ pub use rdlt_connector as spi;
 /// async fn _streams<S: SourceConnector>(source: &S) -> Result<Vec<StreamSpec>, SourceError> {
 ///     source.streams().await
 /// }
-/// fn _capabilities<D: DestinationConnector>(destination: &D) -> DestinationCapabilities {
+/// fn _capabilities<D: DestinationConnector>(destination: &D) -> Capabilities {
 ///     destination.capabilities()
 /// }
 /// # fn main() {}
@@ -86,8 +86,9 @@ pub mod prelude {
     // comes from.
     pub use crate::destination::{Backend, DestinationConnector, Session};
     pub use crate::source::{Feed, SourceConnector};
-    pub use rdlt_connector::{
-        Cursor, DestinationCapabilities, DestinationError, OpenContext, RecordBatch, SourceError,
-        StreamSpec,
-    };
+    pub use rdlt_connector::arrow::RecordBatch;
+    pub use rdlt_connector::core::Cursor;
+    pub use rdlt_connector::destination::{Capabilities, OpenContext};
+    pub use rdlt_connector::error::{DestinationError, SourceError};
+    pub use rdlt_connector::source::StreamSpec;
 }

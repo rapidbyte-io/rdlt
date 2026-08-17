@@ -11,11 +11,14 @@ use std::sync::{Arc, Mutex};
 
 use arrow::json::writer::{JsonArray, WriterBuilder};
 use async_trait::async_trait;
-use rdlt_connector::{
-    CommitMeta, CommitReceipt, ConnectorSpec, Destination, DestinationCapabilities,
-    DestinationError, LoadSession, OpenContext, PipelineId, RecordBatch, StateDoc, TableName,
-    TableSchema, WriteMode, core::LoadId, core::schema::system_columns,
+use rdlt_connector::arrow::RecordBatch;
+use rdlt_connector::core::{
+    CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
+    schema::system_columns,
 };
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::error::DestinationError;
+use rdlt_connector::spec::ConnectorSpec;
 use serde_json::{Map, Value};
 
 /// One committed or staged row: a JSON object keyed by column name, the
@@ -73,7 +76,7 @@ struct Inner {
 #[derive(Debug, Clone, Default)]
 pub struct MemoryDestination {
     inner: Arc<Mutex<Inner>>,
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
 }
 
 impl MemoryDestination {
@@ -83,7 +86,7 @@ impl MemoryDestination {
     pub fn new() -> Self {
         Self {
             inner: Arc::default(),
-            capabilities: DestinationCapabilities::default()
+            capabilities: Capabilities::default()
                 .with_merge(true)
                 .with_structs(true)
                 .with_scalar_lists(true)
@@ -93,7 +96,7 @@ impl MemoryDestination {
     }
 
     /// Replace the declared capabilities (lowering tests).
-    pub fn with_capabilities(mut self, capabilities: DestinationCapabilities) -> Self {
+    pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
         self
     }
@@ -158,7 +161,7 @@ impl Destination for MemoryDestination {
         ConnectorSpec::new("memory-destination", env!("CARGO_PKG_VERSION"))
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
 

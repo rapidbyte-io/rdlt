@@ -20,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rdlt_connector::StreamSpec;
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{CommitPolicy, schema::system_columns};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource};

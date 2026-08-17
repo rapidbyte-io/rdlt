@@ -25,13 +25,14 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
-use rdlt_connector::{
-    CommitMeta, Destination, LoadSession, OpenContext, WriteMode,
-    core::{
+use rdlt_connector::core::{
+    CommitMeta, WriteMode,
+    {
         ColumnDef, ColumnType, CommitCounters, Cursor, LoadId, LogicalType, PipelineId, Provenance,
         StateDoc, StreamName, TableName, TableSchema, schema::system_columns,
     },
 };
+use rdlt_connector::destination::{Destination, LoadSession, OpenContext};
 
 use super::{Conformance, ConformanceFailure, ConformanceSkip};
 use crate::fixtures;

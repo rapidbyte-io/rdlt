@@ -4,10 +4,10 @@
 
 use std::path::PathBuf;
 
+use rdlt_connector_sdk::spi::channel::{PushPayload, records};
 use rdlt_connector_sdk::spi::core::{Cursor, TableName};
-use rdlt_connector_sdk::spi::{
-    PushPayload, ReadRequest, Source, SourceError, StreamSpec, records_channel,
-};
+use rdlt_connector_sdk::spi::error::SourceError;
+use rdlt_connector_sdk::spi::source::{ReadRequest, Source, StreamSpec};
 use rdlt_testkit::{ProbeError, TableProbe};
 
 /// Counts reader-VISIBLE rows for a table: the lines of every published
@@ -59,7 +59,7 @@ pub async fn read_stream<S: Source>(
     spec: &StreamSpec,
     since: Option<Cursor>,
 ) -> Result<(Vec<serde_json::Value>, Option<Cursor>), SourceError> {
-    let (out, mut input) = records_channel(1 << 20);
+    let (out, mut input) = records(1 << 20);
     source
         .read(ReadRequest::new(spec.clone(), since, out))
         .await?;

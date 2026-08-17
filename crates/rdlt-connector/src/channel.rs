@@ -6,20 +6,20 @@
 //! no matter how wide the rows are. Awaiting a push IS the flow control —
 //! a source never polls, sleeps, or counts.
 //!
-//! Two layers live here. The generic core ([`byte_channel`],
+//! Two layers live here. The generic core ([`bytes()`],
 //! [`ByteSender`]/[`ByteReceiver`], [`ByteSized`], [`Permitted`]) is the one
 //! implementation of the byte-budget rule for the whole tree — the SPI
 //! states the backpressure contract, so the SPI owns the code; a second
 //! copy elsewhere would let a fix to the rule apply to one path only. The
-//! records layer ([`records_channel`], [`RecordsOut`]/[`RecordsIn`],
+//! records layer ([`records()`], [`RecordsOut`]/[`RecordsIn`],
 //! [`PushPayload`]) is that core specialized to what sources push.
 
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
 use bytes::Bytes;
 use tokio::sync::{Semaphore, mpsc};
 
-use crate::RecordBatch;
 use crate::core::Cursor;
 
 /// Secondary message-count cap on the records channel.
@@ -55,7 +55,7 @@ pub const MAX_ARROW_DEPTH: usize = 64;
 pub const MAX_RECORD_BATCH_ROWS: usize = 1_000_000;
 
 /// The most JSON VALUES one raw push may carry — every object entry and
-/// every nested array element counts one (GLM round-5, 5M5/5M4). Distinct
+/// every nested array element counts one. Distinct
 /// from the row cap, deliberately: rows materialize lineage and per-row
 /// output, while each VALUE spends its arena node at parse. On the
 /// pinned toolchain the measured layout is a ~24-byte `ArenaNode` (the
@@ -100,7 +100,7 @@ pub struct Permitted<T> {
     value: T,
     /// The value's metered footprint, captured ONCE at send — receivers
     /// that report byte totals read this instead of re-walking the
-    /// value (round-7: the read-side twin of the LoadItem carry).
+    /// value.
     bytes: usize,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -109,11 +109,6 @@ impl<T> Permitted<T> {
     /// Take the value, releasing its budget.
     pub fn into_value(self) -> T {
         self.value
-    }
-
-    /// Borrow the value; the budget stays held.
-    pub fn value(&self) -> &T {
-        &self.value
     }
 
     /// Split value from permit (the metered footprint riding along),
@@ -150,7 +145,7 @@ pub struct ByteReceiver<T> {
     messages: mpsc::Receiver<Permitted<T>>,
     budget: Arc<Semaphore>,
     /// Whether [`Self::close`] closes the budget semaphore too. Channels
-    /// drawing from a SHARED budget ([`records_channel_shared`]) must not:
+    /// drawing from a SHARED budget ([`records_shared`]) must not:
     /// closing the shared semaphore would fail every OTHER channel's parked
     /// producer, turning one stream's teardown into a cascade.
     close_budget: bool,
@@ -219,10 +214,7 @@ impl<T> ByteReceiver<T> {
 /// A byte-budgeted channel: `byte_budget` caps unconsumed bytes in flight;
 /// `message_capacity` is the secondary cap that keeps zero-byte markers
 /// from queueing without limit.
-pub fn byte_channel<T>(
-    byte_budget: usize,
-    message_capacity: usize,
-) -> (ByteSender<T>, ByteReceiver<T>) {
+pub fn bytes<T>(byte_budget: usize, message_capacity: usize) -> (ByteSender<T>, ByteReceiver<T>) {
     let budget = Arc::new(Semaphore::new(byte_budget));
     let (messages, receiver) = mpsc::channel(message_capacity);
     (
@@ -264,30 +256,9 @@ pub enum PushPayload {
 impl ByteSized for PushPayload {
     /// What the payload actually holds. A checkpoint holds no rows, costs
     /// nothing, and must never be gated by the budget — a marker that
-    /// could not enqueue would stall the commit it announces.
-    ///
-    /// The Arrow arm meters the batch's buffer tree itself rather than
-    /// calling `RecordBatch::get_array_memory_size()`, because that
-    /// method sums each buffer's `capacity()` — once PER BUFFER. Arrow's
-    /// IPC reader allocates an entire message body as ONE buffer and
-    /// hands every column a zero-copy slice of it, so per-buffer
-    /// capacity-summing charges the body once per buffer (measured
-    /// ≈10-17× its footprint), and a wire source burns its budget that
-    /// many times too fast. [`arrow_batch_footprint`] charges each
-    /// distinct ALLOCATION once instead, so a decoded batch meters ≈
-    /// the body it decodes from.
-    ///
-    /// A HISTORY NOTE so the intermediate design does not return: the
-    /// meter previously summed slice lengths (D-042-4 deliberately
-    /// excluded builder capacity slack, judged on a recorded −31 MB RSS
-    /// measurement). Length-summing turned out to be an under-counting
-    /// hole, not a refinement — arrow's typed wrappers trim a
-    /// fixed-width values buffer to its node window while the trimmed
-    /// slice keeps the whole allocation resident, so a crafted 64 MiB
-    /// frame metered 8 bytes and the budget was uncapped. Charging
-    /// allocations whole closes that; the builder slack it re-admits is
-    /// bounded (≤2× by `Vec` growth) and errs on the throttling side,
-    /// which outranks the RSS nicety the length-sum bought.
+    /// could not enqueue would stall the commit it announces. The Arrow
+    /// arm meters through [`arrow_batch_footprint`]; the charging rule
+    /// and its rationale live on `data_footprint`.
     fn byte_size(&self) -> usize {
         match self {
             PushPayload::RawJson(bytes) => bytes.len(),
@@ -300,26 +271,12 @@ impl ByteSized for PushPayload {
 /// The bytes an Arrow batch holds resident: the summed sizes of the
 /// distinct underlying ALLOCATIONS reachable from its columns (values,
 /// offsets, nulls, and nested child data, recursively), each counted
-/// once.
-///
-/// Distinctness is by allocation identity — the allocation's base
-/// pointer plus its size. Any number of buffers slicing one allocation
-/// (every column of an IPC-decoded batch slices the one message body)
-/// charge it once, because ONE allocation is what stays resident; the
-/// identical array reachable twice (one `Arc`'d array as two columns,
-/// a shared dictionary) likewise counts its allocations once. The
-/// budget's failure directions are asymmetric (over-counting narrows a
-/// healthy window, under-counting uncaps memory), so every ambiguity
-/// here breaks toward counting. arrow 58 exposes no footprint API with
-/// these semantics, hence the walk.
+/// once. The charging rule and its rationale live on `data_footprint`.
 ///
 /// Public because this is the ONE byte meter for Arrow batches wherever
-/// a budget, commit policy, or report counts them: batches decoded from
-/// an IPC stream (a remote connector's wire) hold zero-copy slices of
-/// one message-body allocation, and `RecordBatch::get_array_memory_size`
-/// capacity-sums that body once per buffer (measured ≈10-17x the true
-/// footprint). A host metering batches by any other rule inflates its
-/// accounting by exactly that factor.
+/// a budget, commit policy, or report counts them — a host metering
+/// batches by any other rule inflates or uncaps its accounting (arrow
+/// 58 exposes no footprint API with these semantics, hence the walk).
 pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
     let mut seen = std::collections::HashSet::new();
     // Saturating: a column nested past [`MAX_ARROW_DEPTH`] charges
@@ -332,28 +289,32 @@ pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
 
 /// One node of the walk: this array's own buffers — each charged as
 /// its whole underlying ALLOCATION, once per walk — then its children.
+/// This comment is the ONE full telling of the charging rule that
+/// `PushPayload::byte_size` and [`arrow_batch_footprint`] point at.
 ///
-/// Allocation-level charging is deliberate, and it superseded the
-/// earlier per-layout node-length windows: arrow-data validates buffer
-/// sizes only as a MINIMUM and the IPC reader preserves wire-declared
-/// buffer lengths, so any layout can carry far more resident bytes
-/// than its node length references — a 64 MiB `Int64` values buffer
-/// with node length 1 metered 8 bytes, and with the meter neutralized
-/// a slow consumer queues gigabytes against a 64 MiB budget
-/// (under-count uncaps memory, the budget's one unsafe direction).
-/// Buffer LENGTHS cannot answer this either: arrow's typed wrappers
-/// trim a fixed-width values buffer to its node window on
-/// construction (`ScalarBuffer::new` slices it), while the trimmed
-/// slice keeps the entire allocation alive — length-summing still
-/// meters 8 bytes against 64 MiB resident. So the meter charges what
+/// The budget's failure directions are asymmetric — over-counting
+/// narrows a healthy window, under-counting uncaps memory, the one
+/// unsafe direction — so every ambiguity breaks toward counting, and
+/// both obvious meters fail: `RecordBatch::get_array_memory_size`
+/// capacity-sums each buffer's parent allocation once PER BUFFER, and
+/// an IPC-decoded batch's columns are all zero-copy slices of ONE
+/// message-body allocation, so it charges that body once per buffer
+/// (measured ≈10-17× the true footprint) and a wire source burns its
+/// budget that many times too fast. Summing buffer LENGTHS fails the
+/// other way: arrow-data validates buffer sizes only as a MINIMUM, the
+/// IPC reader preserves wire-declared buffer lengths, and arrow's
+/// typed wrappers trim a fixed-width values buffer to its node window
+/// on construction while the trimmed slice keeps the entire allocation
+/// alive — a crafted 64 MiB `Int64` values buffer with node length 1
+/// metered 8 bytes, and with the meter neutralized a slow consumer
+/// queues gigabytes against a 64 MiB budget. So the meter charges what
 /// is actually RESIDENT: each distinct allocation (identity =
-/// `data_ptr()`, the allocation's base), once, at its full
-/// `capacity()`. An IPC-decoded batch's columns are all slices of the
-/// one message-body allocation, so an honest frame meters ≈ the body
-/// it decodes from — the dedup is exactly what keeps the measured
-/// 10-17× per-buffer capacity-summing pathology dead. The remaining
+/// `data_ptr()`, the allocation's base, plus its size), once, at its
+/// full `capacity()` — the dedup is what keeps the capacity-summing
+/// pathology dead, and an `Arc`'d array reachable twice (two columns,
+/// a shared dictionary) counts once for the same reason. The remaining
 /// costs sit on the over-count side only: builder-built buffers'
-/// capacity slack now counts (bounded ≤2× by `Vec` growth), and a
+/// capacity slack counts (bounded ≤2× by `Vec` growth), and a
 /// `RecordBatch::slice` chunk charges its parent's allocations whole
 /// (they remain resident through the chunk). No buffer content or
 /// window arithmetic is read at all, so IPC-skewed `offset`/`len`
@@ -363,7 +324,7 @@ fn data_footprint(
     seen: &mut std::collections::HashSet<(usize, usize)>,
     depth: usize,
 ) -> usize {
-    // THE DEPTH CAP (047 M1): nesting is connector-controlled and a stack
+    // THE DEPTH CAP: nesting is connector-controlled and a stack
     // overflow is an abort. The meter must never error the send path, so
     // past the cap it stops and charges `usize::MAX` — the over-count
     // direction, the budget's safe side: `send` clamps the request to
@@ -491,15 +452,15 @@ impl RecordsIn {
 
 /// The push channel between a host and one `Source::read` call.
 /// `byte_budget` caps in-flight bytes; the message count is secondary.
-pub fn records_channel(byte_budget: usize) -> (RecordsOut, RecordsIn) {
-    let (sender, receiver) = byte_channel(byte_budget, RECORDS_MESSAGE_CAPACITY);
+pub fn records(byte_budget: usize) -> (RecordsOut, RecordsIn) {
+    let (sender, receiver) = bytes(byte_budget, RECORDS_MESSAGE_CAPACITY);
     (
         RecordsOut { channel: sender },
         RecordsIn { channel: receiver },
     )
 }
 
-/// ONE byte budget shared by several records channels (GLM round-4, 4H2):
+/// ONE byte budget shared by several records channels:
 /// the engine runs one channel per stream, and per-channel budgets meant a
 /// run's total in-flight allowance was `streams × budget` — unbounded on
 /// the one axis discovery never capped. Channels drawn from one
@@ -537,10 +498,10 @@ impl SharedBudget {
     }
 }
 
-/// The shared-budget twin of [`records_channel`] — see [`SharedBudget`]
+/// The shared-budget twin of [`records()`] — see [`SharedBudget`]
 /// for the two semantic differences (shared backpressure; close does not
 /// close the pool).
-pub fn records_channel_shared(budget: &SharedBudget) -> (RecordsOut, RecordsIn) {
+pub fn records_shared(budget: &SharedBudget) -> (RecordsOut, RecordsIn) {
     let (messages, receiver) = mpsc::channel(RECORDS_MESSAGE_CAPACITY);
     (
         RecordsOut {
@@ -581,7 +542,7 @@ mod budget_tests {
 
     #[tokio::test]
     async fn the_budget_counts_bytes_not_messages() {
-        let (sender, mut receiver) = byte_channel::<Weighted>(100, ROOMY);
+        let (sender, mut receiver) = bytes::<Weighted>(100, ROOMY);
         // Fifty small values pass though they exceed any small item count…
         for _ in 0..50 {
             sender.send(Weighted(2)).await.unwrap();
@@ -605,7 +566,7 @@ mod budget_tests {
 
     #[tokio::test]
     async fn a_send_at_exactly_the_budget_passes_and_the_next_waits() {
-        let (sender, mut receiver) = byte_channel::<Weighted>(100, ROOMY);
+        let (sender, mut receiver) = bytes::<Weighted>(100, ROOMY);
         sender
             .send(Weighted(100))
             .await
@@ -624,15 +585,15 @@ mod budget_tests {
     async fn a_value_larger_than_the_whole_budget_still_passes() {
         // Degrades to drain-the-budget rather than waiting for permits
         // that cannot exist.
-        let (sender, mut receiver) = byte_channel::<Weighted>(16, ROOMY);
+        let (sender, mut receiver) = bytes::<Weighted>(16, ROOMY);
         sender.send(Weighted(1_000_000)).await.unwrap();
-        assert_eq!(receiver.recv().await.unwrap().value().0, 1_000_000);
+        assert_eq!(receiver.recv().await.unwrap().into_value().0, 1_000_000);
     }
 
     #[tokio::test]
     async fn receiving_without_dropping_keeps_the_budget_spent() {
         // The distinction `Permitted` exists for: receiving ≠ releasing.
-        let (sender, mut receiver) = byte_channel::<Weighted>(100, ROOMY);
+        let (sender, mut receiver) = bytes::<Weighted>(100, ROOMY);
         sender
             .send(Weighted(100))
             .await
@@ -662,13 +623,11 @@ mod byte_size_tests {
     //! slice of the one message-body allocation, so any metric that sums
     //! parent-allocation capacities charges that body once PER BUFFER.
     //!
-    //! THE FIXTURE HERE IS THIS CRATE'S OWN (round-7 truthfulness fix:
-    //! an earlier comment claimed it mirrored
-    //! `rdlt_testkit::fixtures::ipc_fixture`, which had already
-    //! drifted). testkit depends on THIS crate, so these unit tests
-    //! cannot import the shared fixture; this one is shaped for the
-    //! channel pins alone — wider (more buffers) so capacity-summing
-    //! lands further outside every bound — and the two need not agree.
+    //! THE FIXTURE HERE IS THIS CRATE'S OWN: testkit depends on THIS
+    //! crate, so these unit tests cannot import its shared IPC fixture.
+    //! This one is shaped for the channel pins alone — wider (more
+    //! buffers) so capacity-summing lands further outside every bound —
+    //! and the two need not agree.
     use std::sync::Arc;
 
     use arrow::ipc::reader::StreamReader;
@@ -772,7 +731,7 @@ mod byte_size_tests {
         );
     }
 
-    /// 2H3: Arrow permits a values buffer to contain bytes no offset
+    /// Arrow permits a values buffer to contain bytes no offset
     /// references. Those bytes still remain resident in the decoded batch and
     /// therefore belong to the byte budget in full.
     #[test]
@@ -804,7 +763,7 @@ mod byte_size_tests {
         );
     }
 
-    /// The 2H3 sibling for every other layout: arrow-data validates
+    /// The unreferenced-values sibling for every other layout: arrow-data validates
     /// buffer sizes as a MINIMUM and the IPC reader preserves
     /// wire-declared buffer lengths, so a fixed-width column can carry
     /// a values buffer (or validity bitmap) far larger than its node
@@ -861,8 +820,8 @@ mod byte_size_tests {
         );
     }
 
-    /// THE EMPTY-OFFSETS PIN (round-10 fix, kept through whole-buffer
-    /// charging): Arrow permits a zero-length variable-width array to
+    /// THE EMPTY-OFFSETS PIN, kept through whole-buffer
+    /// charging: Arrow permits a zero-length variable-width array to
     /// carry an EMPTY offsets buffer — arrow-data 58's own validation
     /// allows 0 offsets ("An empty list-like array can have 0
     /// offsets") — and an earlier windowed meter panicked reading it.
@@ -896,18 +855,7 @@ mod byte_size_tests {
         );
     }
 
-    // NOTE on a retired pin: the round-13 "oversized offsets buffer"
-    // test (a 13-byte offsets buffer for a 2-element array, legal by
-    // Arrow's minimum-size rule) guarded the windowed meter's offsets
-    // DECODE against a `typed_data` panic. The allocation walk reads
-    // no buffer content at all — only `data_ptr`/`len`/`capacity` —
-    // so the code path the pin guarded no longer exists, and the shape
-    // cannot be constructed for a batch-level pin without `unsafe`
-    // (`ArrayData::try_new` asserts on it; the workspace denies
-    // unsafe). The empty-offsets pin below keeps the
-    // hostile-shape-never-panics posture on a constructible shape.
-
-    /// 047 M1: the meter walks connector-controlled nesting, and a stack
+    /// The meter walks connector-controlled nesting, and a stack
     /// overflow is an ABORT no task containment can absorb. Past
     /// [`MAX_ARROW_DEPTH`] the walk stops and charges `usize::MAX` — the
     /// over-count direction, the budget's safe side (`send` clamps it to
@@ -983,7 +931,7 @@ mod records_tests {
 
     #[tokio::test]
     async fn a_push_at_the_budget_passes_and_the_next_waits() {
-        let (mut out, mut input) = records_channel(100);
+        let (mut out, mut input) = records(100);
         out.raw_json(Bytes::from(vec![b'x'; 100]))
             .await
             .expect("exactly the budget");
@@ -1003,7 +951,7 @@ mod records_tests {
     async fn a_checkpoint_passes_even_on_a_zero_budget() {
         // A checkpoint that could not enqueue would stall the commit it
         // announces — markers are never budgeted.
-        let (mut out, mut input) = records_channel(0);
+        let (mut out, mut input) = records(0);
         tokio::time::timeout(
             BOUND,
             out.checkpoint(Cursor::new(serde_json::json!("watermark"))),
@@ -1018,7 +966,7 @@ mod records_tests {
     async fn close_wakes_a_push_parked_on_the_budget() {
         // A producer parked on the semaphore learns about the close too;
         // otherwise "stop" would only reach sources between pushes.
-        let (mut out, mut input) = records_channel(8);
+        let (mut out, mut input) = records(8);
         out.raw_json(Bytes::from_static(b"12345678"))
             .await
             .expect("first push fits");
@@ -1033,15 +981,15 @@ mod records_tests {
         assert_eq!(result, Err(ChannelClosed), "the woken producer is told why");
     }
 
-    /// The shared budget's whole point (4H2): two channels drawn from one
+    /// The shared budget's whole point: two channels drawn from one
     /// [`SharedBudget`] spend from ONE pool — a full first channel parks
     /// the second channel's producer even though the second channel's own
     /// queue is empty, and draining the first frees the second.
     #[tokio::test]
     async fn channels_sharing_a_budget_share_one_in_flight_ceiling() {
         let budget = SharedBudget::new(100);
-        let (mut out_a, mut in_a) = records_channel_shared(&budget);
-        let (mut out_b, mut in_b) = records_channel_shared(&budget);
+        let (mut out_a, mut in_a) = records_shared(&budget);
+        let (mut out_b, mut in_b) = records_shared(&budget);
         out_a
             .raw_json(Bytes::from(vec![b'x'; 100]))
             .await
@@ -1070,8 +1018,8 @@ mod records_tests {
     #[tokio::test]
     async fn closing_one_shared_channel_never_closes_the_pool() {
         let budget = SharedBudget::new(8);
-        let (_out_a, mut in_a) = records_channel_shared(&budget);
-        let (mut out_b, mut in_b) = records_channel_shared(&budget);
+        let (_out_a, mut in_a) = records_shared(&budget);
+        let (mut out_b, mut in_b) = records_shared(&budget);
         in_a.close();
         out_b
             .raw_json(Bytes::from_static(b"12345678"))
@@ -1082,7 +1030,7 @@ mod records_tests {
 
     #[tokio::test]
     async fn close_refuses_further_pushes() {
-        let (mut out, mut input) = records_channel(1024);
+        let (mut out, mut input) = records(1024);
         input.close();
         let refused = tokio::time::timeout(BOUND, out.raw_json(Bytes::from_static(b"{\"row\":1}")))
             .await
@@ -1092,7 +1040,7 @@ mod records_tests {
 
     #[tokio::test]
     async fn rows_serialize_once_to_ndjson_and_an_empty_iterator_is_a_no_op() {
-        let (mut out, mut input) = records_channel(1024);
+        let (mut out, mut input) = records(1024);
         out.rows([serde_json::json!({"id": 1}), serde_json::json!({"id": 2})])
             .await
             .expect("rows push");

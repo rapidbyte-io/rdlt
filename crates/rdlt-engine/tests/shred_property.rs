@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use proptest::prelude::*;
-use rdlt_connector::StreamSpec;
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::schema::system_columns;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};

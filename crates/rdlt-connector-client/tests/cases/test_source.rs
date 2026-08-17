@@ -8,9 +8,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use rdlt_connector::{
-    PushPayload, ReadRequest, RecordBatch, Source as _, SourceError, StreamSpec, records_channel,
-};
+use rdlt_connector::arrow::RecordBatch;
+
+use rdlt_connector::channel::{PushPayload, records};
+
+use rdlt_connector::error::SourceError;
+
+use rdlt_connector::source::{ReadRequest, Source as _, StreamSpec};
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_client::source::Remote;
 use rdlt_connector_protocol::proto::{self, read_frame};
@@ -157,7 +161,7 @@ async fn a_full_read_forwards_frames_in_order() {
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 3})).await;
 
     let stream = remote.streams().await.expect("streams").remove(0);
-    let (out, mut input) = records_channel(1 << 20);
+    let (out, mut input) = records(1 << 20);
     tokio::time::timeout(BOUND, remote.read(ReadRequest::new(stream, None, out)))
         .await
         .expect("the read completes")
@@ -199,7 +203,7 @@ async fn a_terminal_error_renders_one_classification_frame() {
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 1, "fail_read": true})).await;
 
     let stream = remote.streams().await.expect("streams").remove(0);
-    let (out, _input) = records_channel(1 << 20);
+    let (out, _input) = records(1 << 20);
     let error = tokio::time::timeout(BOUND, remote.read(ReadRequest::new(stream, None, out)))
         .await
         .expect("the read fails promptly")
@@ -230,7 +234,7 @@ async fn dropping_the_receiver_cancels_the_read_as_ok() {
     let (remote, _) = connect_echo(&path, serde_json::json!({"rows": 10000})).await;
 
     let stream = remote.streams().await.expect("streams").remove(0);
-    let (out, mut input) = records_channel(BUDGET_BYTES as usize);
+    let (out, mut input) = records(BUDGET_BYTES as usize);
     let read = tokio::spawn(async move { remote.read(ReadRequest::new(stream, None, out)).await });
 
     let first = tokio::time::timeout(BOUND, input.recv())
@@ -272,7 +276,7 @@ async fn an_arrow_frame_forwards_as_exactly_one_batch() {
     .await
     .expect("connect");
 
-    let (out, mut input) = records_channel(1 << 20);
+    let (out, mut input) = records(1 << 20);
     tokio::time::timeout(
         BOUND,
         remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
@@ -311,7 +315,7 @@ async fn a_two_batch_frame_is_refused_at_the_client_seat() {
     .await
     .expect("connect");
 
-    let (out, _input) = records_channel(1 << 20);
+    let (out, _input) = records(1 << 20);
     let error = tokio::time::timeout(
         BOUND,
         remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
@@ -353,7 +357,7 @@ async fn a_malformed_checkpoint_is_refused_typed() {
     .await
     .expect("connect");
 
-    let (out, _input) = records_channel(1 << 20);
+    let (out, _input) = records(1 << 20);
     let error = tokio::time::timeout(
         BOUND,
         remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
@@ -386,7 +390,7 @@ async fn an_oversized_checkpoint_cursor_is_refused_at_the_decode_seat() {
         ReadScript::Frames(vec![proto::ReadFrame {
             frame: Some(read_frame::Frame::CheckpointCursorJson(vec![
                 b'x';
-                rdlt_connector::MAX_CURSOR_BYTES
+                rdlt_connector::gate::MAX_CURSOR_BYTES
                     as usize
                     + 1
             ])),
@@ -401,7 +405,7 @@ async fn an_oversized_checkpoint_cursor_is_refused_at_the_decode_seat() {
     .await
     .expect("connect");
 
-    let (out, _input) = records_channel(1 << 20);
+    let (out, _input) = records(1 << 20);
     let error = tokio::time::timeout(
         BOUND,
         remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
@@ -434,10 +438,10 @@ async fn an_oversized_stored_cursor_is_refused_before_resend() {
     .await
     .expect("connect");
 
-    let oversized = rdlt_connector::Cursor::new(serde_json::Value::String(
-        "x".repeat(rdlt_connector::MAX_CURSOR_BYTES as usize),
+    let oversized = rdlt_connector::core::Cursor::new(serde_json::Value::String(
+        "x".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize),
     ));
-    let (out, _input) = records_channel(1 << 20);
+    let (out, _input) = records(1 << 20);
     let error = tokio::time::timeout(
         BOUND,
         remote.read(ReadRequest::new(
@@ -493,7 +497,7 @@ async fn a_tiny_window_bounds_an_unread_blast() {
 
     // An SPI budget of exactly one frame: the first forward fills it,
     // the second parks — the host never drains.
-    let (out, mut input) = records_channel(FRAME_BYTES);
+    let (out, mut input) = records(FRAME_BYTES);
     let read = tokio::spawn(async move {
         remote
             .read(ReadRequest::new(StreamSpec::new("blast"), None, out))
@@ -560,7 +564,7 @@ async fn a_control_character_cursor_value_is_data_not_refused() {
     .await
     .expect("connect");
 
-    let (out, mut input) = records_channel(1 << 20);
+    let (out, mut input) = records(1 << 20);
     let stream = StreamSpec::new("numbers");
     tokio::time::timeout(BOUND, remote.read(ReadRequest::new(stream, None, out)))
         .await
@@ -597,7 +601,7 @@ async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
     // ~1.4 MiB of compact wire bytes — well under the 4 MiB raw gate —
     // whose re-serialization crosses it.
     let floats = format!("[{}]", vec!["1e15"; 300_000].join(","));
-    assert!(floats.len() < rdlt_connector::MAX_CURSOR_BYTES as usize);
+    assert!(floats.len() < rdlt_connector::gate::MAX_CURSOR_BYTES as usize);
 
     let (_dir, path) = socket_path();
     let _serving = rogue::serve(
@@ -615,7 +619,7 @@ async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
     .await
     .expect("connect");
 
-    let (out, _input) = records_channel(1 << 20);
+    let (out, _input) = records(1 << 20);
     let error = tokio::time::timeout(
         BOUND,
         remote.read(ReadRequest::new(StreamSpec::new("scripted"), None, out)),
@@ -639,9 +643,9 @@ async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
 async fn a_checkpoint_at_exactly_the_cursor_ceiling_is_accepted() {
     // A JSON string whose serialized length is exactly the ceiling
     // (2 quote bytes around the padding).
-    let cursor = "c".repeat(rdlt_connector::MAX_CURSOR_BYTES as usize - 2);
+    let cursor = "c".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize - 2);
     let frame = format!("\"{cursor}\"").into_bytes();
-    assert_eq!(frame.len() as u64, rdlt_connector::MAX_CURSOR_BYTES);
+    assert_eq!(frame.len() as u64, rdlt_connector::gate::MAX_CURSOR_BYTES);
 
     let (_dir, path) = socket_path();
     let _serving = rogue::serve(
@@ -659,7 +663,7 @@ async fn a_checkpoint_at_exactly_the_cursor_ceiling_is_accepted() {
     .await
     .expect("connect");
 
-    let (out, mut input) = records_channel(1 << 20);
+    let (out, mut input) = records(1 << 20);
     remote
         .read(ReadRequest::new(StreamSpec::new("scripted"), None, out))
         .await

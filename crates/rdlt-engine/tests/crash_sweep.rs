@@ -22,7 +22,9 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use rdlt_connector::{Destination, Source, StreamSpec};
+use rdlt_connector::destination::Destination;
+
+use rdlt_connector::source::{Source, StreamSpec};
 use rdlt_core::{WriteMode, failpoint::fail};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
@@ -240,12 +242,12 @@ fn sweep_covers_entire_registry() {
 struct KeyedArrowSource;
 
 #[async_trait::async_trait]
-impl rdlt_connector::Source for KeyedArrowSource {
-    fn spec(&self) -> rdlt_connector::ConnectorSpec {
-        rdlt_connector::ConnectorSpec::new("keyed-arrow-sweep", "0.0.0")
+impl rdlt_connector::source::Source for KeyedArrowSource {
+    fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
+        rdlt_connector::spec::ConnectorSpec::new("keyed-arrow-sweep", "0.0.0")
     }
 
-    async fn streams(&self) -> Result<Vec<StreamSpec>, rdlt_connector::SourceError> {
+    async fn streams(&self) -> Result<Vec<StreamSpec>, rdlt_connector::error::SourceError> {
         Ok(vec![
             StreamSpec::new("s")
                 .with_structured()
@@ -255,8 +257,8 @@ impl rdlt_connector::Source for KeyedArrowSource {
 
     async fn read(
         &self,
-        mut req: rdlt_connector::ReadRequest,
-    ) -> Result<(), rdlt_connector::SourceError> {
+        mut req: rdlt_connector::source::ReadRequest,
+    ) -> Result<(), rdlt_connector::error::SourceError> {
         use std::sync::Arc;
 
         use arrow::array::{Int64Array, StringArray};
@@ -268,7 +270,7 @@ impl rdlt_connector::Source for KeyedArrowSource {
         for b in start..4 {
             let ids: Vec<i64> = (0..25).map(|i| (b * 25 + i) as i64).collect();
             let names: Vec<String> = ids.iter().map(|i| format!("row-{i}")).collect();
-            let batch = rdlt_connector::RecordBatch::try_new(
+            let batch = rdlt_connector::arrow::RecordBatch::try_new(
                 Arc::new(Schema::new(vec![
                     Field::new("id", DataType::Int64, false),
                     Field::new("name", DataType::Utf8, true),
@@ -286,7 +288,7 @@ impl rdlt_connector::Source for KeyedArrowSource {
             }
             if req
                 .out
-                .checkpoint(rdlt_connector::Cursor::new((b + 1) as u64))
+                .checkpoint(rdlt_connector::core::Cursor::new((b + 1) as u64))
                 .await
                 .is_err()
             {

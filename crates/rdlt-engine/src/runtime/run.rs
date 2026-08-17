@@ -21,7 +21,11 @@ use std::{
     time::Instant,
 };
 
-use rdlt_connector::{Destination, Source, channel::byte_channel};
+use rdlt_connector::channel::bytes;
+
+use rdlt_connector::destination::Destination;
+
+use rdlt_connector::source::Source;
 use rdlt_core::{LoadId, PipelineEvent, RdltError, RunReport, StreamName, WriteMode};
 use tokio::{sync::broadcast, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -271,13 +275,13 @@ async fn run_once(
         Arc::default();
 
     // ---- Wire the graph ----
-    let (load_tx, load_rx) = byte_channel::<LoadItem>(config.byte_budget, STAGE_MSG_CAPACITY);
+    let (load_tx, load_rx) = bytes::<LoadItem>(config.byte_budget, STAGE_MSG_CAPACITY);
     // ONE read-side budget for the whole run (4H2/4H3): every stream's
     // records channel spends from this single pool, so peak in-flight read
     // memory is the configured budget regardless of how many streams the
     // source declared — per-stream budgets multiplied the cap by the one
     // axis a rogue source controls directly.
-    let records_budget = rdlt_connector::SharedBudget::new(config.byte_budget);
+    let records_budget = rdlt_connector::channel::SharedBudget::new(config.byte_budget);
     let mut stream_tasks: JoinSet<Result<(), RdltError>> = JoinSet::new();
 
     for spec in streams {

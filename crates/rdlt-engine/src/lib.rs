@@ -4,7 +4,7 @@
 //! orchestration over byte-bounded channels.
 //!
 //! ```rust,no_run
-//! # use rdlt_connector::StreamSpec;
+//! # use rdlt_connector::source::StreamSpec;
 //! # use rdlt_engine::{Engine, EngineConfig};
 //! # use rdlt_testkit::{MemoryDestination, MemorySource};
 //! # use serde_json::json;

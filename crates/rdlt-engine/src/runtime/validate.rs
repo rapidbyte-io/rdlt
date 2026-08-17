@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::{Destination, DestinationCapabilities, StreamSpec};
+use rdlt_connector::destination::{Capabilities, Destination};
+
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{LogicalType, RdltError, StreamName, TableName, WriteMode};
 
 use crate::EngineConfig;
@@ -102,7 +104,7 @@ fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
 pub(super) fn validate_streams(
     config: &EngineConfig,
     streams: &[StreamSpec],
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
     destination: &dyn Destination,
 ) -> Result<(), RdltError> {
     // Durable-identity destinations declare per-run, not per-stream; refuse
@@ -153,12 +155,12 @@ pub(super) fn validate_streams(
         // identifier ceiling; this seat mirrors it for in-process
         // sources, so an embedded mega-name cannot ride into plan
         // diagnostics (and the WAL lines that name streams) unbounded.
-        if spec.name.as_str().len() > rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES {
+        if spec.name.as_str().len() > rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES {
             return Err(RdltError::config(format!(
                 "stream name of {} bytes exceeds the {}-byte identifier ceiling — a \
                  name is vocabulary, not a data channel",
                 spec.name.as_str().len(),
-                rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES
+                rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES
             )));
         }
         let table = root_table(&spec.name, capabilities.ident_rules);
@@ -510,9 +512,8 @@ mod hint_validation_tests {
     }
 
     fn durable_identity_dest() -> MemoryDestination {
-        MemoryDestination::new().with_capabilities(
-            DestinationCapabilities::default().with_requires_durable_identity(true),
-        )
+        MemoryDestination::new()
+            .with_capabilities(Capabilities::default().with_requires_durable_identity(true))
     }
 
     fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), RdltError> {
@@ -590,8 +591,7 @@ mod hint_validation_tests {
     #[test]
     fn an_out_of_range_ident_rules_declaration_is_refused() {
         let dest = MemoryDestination::new().with_capabilities(
-            DestinationCapabilities::default()
-                .with_ident_rules(rdlt_core::naming::IdentRules { max_len: 2 }),
+            Capabilities::default().with_ident_rules(rdlt_core::naming::IdentRules { max_len: 2 }),
         );
         let error = check_with(no_workdir_config(), dest)
             .expect_err("an exhaustible max_len refuses at plan time");
@@ -602,8 +602,7 @@ mod hint_validation_tests {
         // The edges: the floor and the default are both fine.
         for max_len in [rdlt_core::naming::MIN_IDENT_MAX_LEN, 63, 255] {
             let dest = MemoryDestination::new().with_capabilities(
-                DestinationCapabilities::default()
-                    .with_ident_rules(rdlt_core::naming::IdentRules { max_len }),
+                Capabilities::default().with_ident_rules(rdlt_core::naming::IdentRules { max_len }),
             );
             check_with(no_workdir_config(), dest).expect("in-range rules validate");
         }
@@ -638,7 +637,7 @@ mod hint_validation_tests {
     /// vocabulary the wire edge uses.
     #[test]
     fn an_in_process_stream_name_past_the_identifier_ceiling_refuses() {
-        let spec = StreamSpec::new("n".repeat(rdlt_connector::MAX_WIRE_IDENTIFIER_BYTES + 1));
+        let spec = StreamSpec::new("n".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1));
         let dest = MemoryDestination::new();
         let error = validate_streams(
             &EngineConfig::new("names"),

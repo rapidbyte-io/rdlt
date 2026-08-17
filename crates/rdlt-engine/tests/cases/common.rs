@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::StreamSpec;
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{TableName, schema::system_columns};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row};
 use serde_json::json;

@@ -12,7 +12,7 @@ use serde_json::json;
 #[tokio::test]
 async fn memory_source_is_conformant() {
     let source = MemorySource::new(vec![MemoryStream::new(
-        rdlt_connector::StreamSpec::new("events"),
+        rdlt_connector::source::StreamSpec::new("events"),
         vec![
             MemoryBatch::new(vec![json!({"a": 1}), json!({"a": 2})]).with_checkpoint(1),
             MemoryBatch::new(vec![json!({"a": 3})]).with_checkpoint(2),
@@ -30,7 +30,7 @@ async fn memory_source_is_conformant() {
 async fn an_honest_multi_mib_read_is_conformant() {
     let row = || json!({"filler": "x".repeat(1 << 16), "n": 1});
     let source = MemorySource::new(vec![MemoryStream::new(
-        rdlt_connector::StreamSpec::new("events"),
+        rdlt_connector::source::StreamSpec::new("events"),
         (1..=8)
             .map(|i| {
                 // 8 rows × 64 KiB per batch ≈ 512 KiB of wire per push,
@@ -46,7 +46,7 @@ struct MemoryProbe(MemoryDestination);
 
 #[async_trait]
 impl TableProbe for MemoryProbe {
-    async fn count(&self, table: &rdlt_connector::TableName) -> Result<u64, ProbeError> {
+    async fn count(&self, table: &rdlt_connector::core::TableName) -> Result<u64, ProbeError> {
         Ok(self.0.committed_rows(table.as_str()).len() as u64)
     }
 }

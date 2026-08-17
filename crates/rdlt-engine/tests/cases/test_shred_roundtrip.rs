@@ -45,7 +45,7 @@ fn rows_strategy() -> impl Strategy<Value = Vec<Value>> {
 }
 
 async fn run_once(rows: Vec<Value>) -> MemoryDestination {
-    let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("t"), rows);
+    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows);
     let dest = MemoryDestination::new();
     Engine::new(EngineConfig::new("roundtrip"), source, dest.clone())
         .run()

@@ -14,7 +14,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rdlt_connector::{ConnectorSpec, DestinationCapabilities};
+use rdlt_connector::destination::Capabilities;
+
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::destination_service_server::{
     DestinationService, DestinationServiceServer,
@@ -237,7 +239,7 @@ pub struct RogueDestination {
     script: SessionScript,
     /// Overrides the handshake's capabilities sheet when `Some` — so a
     /// rogue can declare an out-of-range `ident_rules.max_len`.
-    capabilities: Option<DestinationCapabilities>,
+    capabilities: Option<Capabilities>,
 }
 
 #[tonic::async_trait]
@@ -520,7 +522,7 @@ pub fn serve_destination(path: &Path, script: SessionScript) -> JoinHandle<()> {
 pub fn serve_destination_with_capabilities(
     path: &Path,
     script: SessionScript,
-    capabilities: Option<DestinationCapabilities>,
+    capabilities: Option<Capabilities>,
 ) -> JoinHandle<()> {
     let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");
     let incoming = UnixListenerStream::new(listener);

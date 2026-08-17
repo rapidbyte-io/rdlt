@@ -53,7 +53,9 @@
 
 use std::{collections::BTreeMap, fmt::Write as _, path::PathBuf};
 
-use rdlt_connector::{DestinationCapabilities, StreamSpec};
+use rdlt_connector::destination::Capabilities;
+
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::schema::system_columns;
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryDestination, MemorySource};
@@ -280,7 +282,7 @@ async fn run(case: &Case) -> MemoryDestination {
     }
     let source = MemorySource::single_stream(spec, case.rows.clone());
     let dest = MemoryDestination::new().with_capabilities(
-        DestinationCapabilities::default()
+        Capabilities::default()
             .with_merge(true)
             .with_structs(true)
             .with_scalar_lists(case.scalar_lists)

@@ -46,7 +46,7 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
     })]);
 
     let source = MemorySource::new(vec![MemoryStream::new(
-        rdlt_connector::StreamSpec::new("items"),
+        rdlt_connector::source::StreamSpec::new("items"),
         vec![batch1, batch2],
     )]);
     let dest = MemoryDestination::new();
@@ -189,7 +189,8 @@ async fn scalar_lists_follow_destination_capabilities() {
 
     // Full-featured destination: native list column.
     let dest = MemoryDestination::new();
-    let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("s"), rows.clone());
+    let source =
+        MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows.clone());
     Engine::new(EngineConfig::new("lists-native"), source, dest.clone())
         .run()
         .await
@@ -204,12 +205,12 @@ async fn scalar_lists_follow_destination_capabilities() {
 
     // Degraded destination: child table instead.
     let dest = MemoryDestination::new().with_capabilities(
-        rdlt_connector::DestinationCapabilities::default()
+        rdlt_connector::destination::Capabilities::default()
             .with_structs(true)
             .with_json_type(true)
             .with_decimal(true),
     );
-    let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("s"), rows);
+    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("lists-child"), source, dest.clone())
         .run()
         .await
@@ -227,12 +228,12 @@ async fn scalar_lists_follow_destination_capabilities() {
 async fn structless_destination_gets_flattened_columns() {
     let rows = vec![json!({"id": 1, "profile": {"city": "NYC", "geo": {"lat": 1.5}}})];
     let dest = MemoryDestination::new().with_capabilities(
-        rdlt_connector::DestinationCapabilities::default()
+        rdlt_connector::destination::Capabilities::default()
             .with_scalar_lists(true)
             .with_json_type(true)
             .with_decimal(true),
     );
-    let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("s"), rows);
+    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("flatten"), source, dest.clone())
         .run()
         .await
@@ -252,7 +253,7 @@ async fn structless_destination_gets_flattened_columns() {
 async fn json_field_named_like_system_column_is_suffixed() {
     let dest = MemoryDestination::new();
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("s"),
+        rdlt_connector::source::StreamSpec::new("s"),
         vec![json!({"id": 1, "_rdlt_id": "upstream"})],
     );
     Engine::new(EngineConfig::new("sysname"), source, dest.clone())

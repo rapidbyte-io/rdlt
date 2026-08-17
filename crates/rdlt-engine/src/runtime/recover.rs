@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use rdlt_connector::{Destination, DestinationCapabilities, LoadSession, OpenContext};
+use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_core::{LoadId, RdltError, ResumedFrom, StateDoc};
 
 use crate::EngineConfig;
@@ -19,7 +19,7 @@ pub(super) async fn recover_wal(
     config: &EngineConfig,
     load_id: &LoadId,
     wal_dir: Option<&Path>,
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
     events: &tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
     output_totals: &std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
 ) -> Result<(Box<dyn LoadSession>, StateDoc, ResumedFrom, WalResidue), RdltError> {
@@ -192,7 +192,7 @@ async fn replay_span(
     config: &EngineConfig,
     wal_dir: &Path,
     span: crate::wal::resume::RecoverySpan,
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
 ) -> Result<Option<ResumedFrom>, RdltError> {
     // The replay session gets NO part-event listener: its parts belong
     // to the CRASHED load, and the feed describes THIS run — replayed
@@ -278,12 +278,12 @@ async fn replay_span(
 fn part_event_forwarder(
     events: tokio::sync::broadcast::Sender<rdlt_core::PipelineEvent>,
     output_totals: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
-) -> rdlt_connector::PartEventFn {
-    std::sync::Arc::new(move |part: rdlt_connector::PartClosed| {
+) -> rdlt_connector::destination::PartEventFn {
+    std::sync::Arc::new(move |part: rdlt_connector::destination::PartClosed| {
         if let Ok(mut totals) = output_totals.lock() {
             *totals.entry(part.table.as_str().to_owned()).or_default() += part.encoded_bytes;
         }
-        use rdlt_connector::PartCloseReason as Spi;
+        use rdlt_connector::destination::PartCloseReason as Spi;
         let reason = match part.reason {
             Spi::Target => rdlt_core::PartClose::Target,
             Spi::Time => rdlt_core::PartClose::Time,

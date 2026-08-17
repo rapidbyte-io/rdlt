@@ -7,7 +7,7 @@ use serde_json::json;
 #[tokio::test]
 async fn full_sync_through_the_facade() {
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("users"),
+        rdlt_connector::source::StreamSpec::new("users"),
         vec![
             json!({"id": 1, "name": "ada", "emails": [{"addr": "a@x"}]}),
             json!({"id": 2, "name": "grace", "emails": []}),
@@ -34,7 +34,7 @@ async fn full_sync_through_the_facade() {
 #[test]
 fn build_rejects_merge_against_non_merge_destination() {
     let dest = MemoryDestination::new()
-        .with_capabilities(rdlt_connector::DestinationCapabilities::default().with_merge(false));
+        .with_capabilities(rdlt_connector::destination::Capabilities::default().with_merge(false));
     let err = Pipeline::builder("bad")
         .source(MemorySource::default())
         .destination(dest)
@@ -127,7 +127,7 @@ destination:
 #[tokio::test]
 async fn the_builder_plumbs_the_engine_knobs() {
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("users"),
+        rdlt_connector::source::StreamSpec::new("users"),
         vec![
             json!({"id": 1, "name": "ada"}),
             json!({"id": 2, "name": "grace"}),

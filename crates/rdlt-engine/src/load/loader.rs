@@ -10,7 +10,9 @@
 
 use std::time::Instant;
 
-use rdlt_connector::{DestinationCapabilities, LoadSession, RecordBatch};
+use rdlt_connector::arrow::RecordBatch;
+
+use rdlt_connector::destination::{Capabilities, LoadSession};
 use rdlt_core::{
     CommitCounters, CommitMeta, CommitPolicy, LoadId, RdltError, RunReport, StateDoc, TableName,
     crash_point,
@@ -25,7 +27,7 @@ use super::{apply, item::LoadItem};
 /// travel as one.
 pub(crate) struct Sink {
     pub(crate) session: Box<dyn LoadSession>,
-    pub(crate) capabilities: DestinationCapabilities,
+    pub(crate) capabilities: Capabilities,
 }
 
 pub(crate) struct Loader {
@@ -605,7 +607,7 @@ impl Loader {
 mod tests {
     use std::time::Duration;
 
-    use rdlt_connector::RecordBatch;
+    use rdlt_connector::arrow::RecordBatch;
     use rdlt_core::{PipelineId, TableSchema, WriteMode};
 
     use super::*;
@@ -621,26 +623,26 @@ mod tests {
             &mut self,
             _: &TableSchema,
             _: &WriteMode,
-        ) -> Result<(), rdlt_connector::DestinationError> {
+        ) -> Result<(), rdlt_connector::error::DestinationError> {
             unreachable!("policy_triggers never touches the destination")
         }
         async fn write(
             &mut self,
             _: &TableName,
             _: RecordBatch,
-        ) -> Result<(), rdlt_connector::DestinationError> {
+        ) -> Result<(), rdlt_connector::error::DestinationError> {
             unreachable!("policy_triggers never touches the destination")
         }
         async fn commit(
             &mut self,
             _: CommitMeta,
-        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError> {
             unreachable!("policy_triggers never touches the destination")
         }
         async fn read_state(
             &mut self,
             _: &PipelineId,
-        ) -> Result<Option<StateDoc>, rdlt_connector::DestinationError> {
+        ) -> Result<Option<StateDoc>, rdlt_connector::error::DestinationError> {
             unreachable!("policy_triggers never touches the destination")
         }
     }
@@ -652,7 +654,7 @@ mod tests {
         Loader::new(
             Sink {
                 session: Box::new(UnusedSession),
-                capabilities: DestinationCapabilities::default(),
+                capabilities: Capabilities::default(),
             },
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
@@ -680,20 +682,20 @@ mod tests {
             &mut self,
             _: &TableSchema,
             _: &WriteMode,
-        ) -> Result<(), rdlt_connector::DestinationError> {
+        ) -> Result<(), rdlt_connector::error::DestinationError> {
             Ok(())
         }
         async fn write(
             &mut self,
             _: &TableName,
             _: RecordBatch,
-        ) -> Result<(), rdlt_connector::DestinationError> {
+        ) -> Result<(), rdlt_connector::error::DestinationError> {
             Ok(())
         }
         async fn commit(
             &mut self,
             meta: CommitMeta,
-        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+        ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError> {
             let receipt = rdlt_core::CommitReceipt {
                 load_id: meta.load_id.clone(),
                 commit_seq: meta.commit_seq,
@@ -704,7 +706,7 @@ mod tests {
         async fn read_state(
             &mut self,
             _: &PipelineId,
-        ) -> Result<Option<StateDoc>, rdlt_connector::DestinationError> {
+        ) -> Result<Option<StateDoc>, rdlt_connector::error::DestinationError> {
             Ok(None)
         }
     }
@@ -721,7 +723,7 @@ mod tests {
                 session: Box::new(RecordingSession {
                     commits: std::sync::Arc::clone(&commits),
                 }),
-                capabilities: DestinationCapabilities::default(),
+                capabilities: Capabilities::default(),
             },
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
@@ -1031,21 +1033,22 @@ mod tests {
                 &mut self,
                 _: &TableSchema,
                 _: &WriteMode,
-            ) -> Result<(), rdlt_connector::DestinationError> {
+            ) -> Result<(), rdlt_connector::error::DestinationError> {
                 Ok(())
             }
             async fn write(
                 &mut self,
                 _: &TableName,
                 _: RecordBatch,
-            ) -> Result<(), rdlt_connector::DestinationError> {
+            ) -> Result<(), rdlt_connector::error::DestinationError> {
                 *self.0.lock().expect("count lock") += 1;
                 Ok(())
             }
             async fn commit(
                 &mut self,
                 meta: CommitMeta,
-            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError>
+            {
                 Ok(rdlt_core::CommitReceipt {
                     load_id: meta.load_id,
                     commit_seq: meta.commit_seq,
@@ -1054,10 +1057,11 @@ mod tests {
             async fn read_state(
                 &mut self,
                 _: &rdlt_core::PipelineId,
-            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError>
+            {
                 Ok(None)
             }
-            async fn close(&mut self) -> Result<(), rdlt_connector::DestinationError> {
+            async fn close(&mut self) -> Result<(), rdlt_connector::error::DestinationError> {
                 Ok(())
             }
         }
@@ -1069,7 +1073,7 @@ mod tests {
         let mut loader = Loader::new(
             crate::load::Sink {
                 session: Box::new(CountingSession(Arc::clone(&writes))),
-                capabilities: DestinationCapabilities::default(),
+                capabilities: Capabilities::default(),
             },
             RunReport::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),

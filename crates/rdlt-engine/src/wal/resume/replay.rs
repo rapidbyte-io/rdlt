@@ -3,7 +3,7 @@
 
 use std::{fs::File, io::BufReader, path::Path};
 
-use rdlt_connector::LoadSession;
+use rdlt_connector::destination::LoadSession;
 use rdlt_core::{CommitMeta, RdltError, StateDoc};
 
 use crate::wal::WalRecord;
@@ -275,7 +275,7 @@ fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, Strin
             "the Arrow IPC decoder panicked on the WAL segment: {}",
             // The shared bounded rendering (6L9) — every Arrow-decode
             // belt renders its payload through the ONE implementation.
-            rdlt_connector::ipc::panic_text(payload.as_ref())
+            rdlt_connector::gate::panic_text(payload.as_ref())
         )),
     }
 }
@@ -315,7 +315,7 @@ pub(crate) async fn replay(
     span: RecoverySpan,
     session: &mut dyn LoadSession,
     state: &mut StateDoc,
-    capabilities: rdlt_connector::DestinationCapabilities,
+    capabilities: rdlt_connector::destination::Capabilities,
 ) -> Result<Option<u64>, RdltError> {
     // Pass 1 — validate: every segment must fully decode BEFORE any write
     // reaches the session. Batches are decoded one at a time and dropped,
@@ -440,7 +440,7 @@ pub(crate) async fn replay(
                             Ok(item) => Ok((reader, item)),
                             Err(payload) => Err(format!(
                                 "the Arrow IPC decoder panicked on the WAL segment: {}",
-                                rdlt_connector::ipc::panic_text(payload.as_ref())
+                                rdlt_connector::gate::panic_text(payload.as_ref())
                             )),
                         }
                     })
@@ -1042,12 +1042,12 @@ mod tests {
             swapped: bool,
         }
         #[async_trait::async_trait]
-        impl rdlt_connector::LoadSession for SwappingSession {
+        impl rdlt_connector::destination::LoadSession for SwappingSession {
             async fn ensure_table(
                 &mut self,
                 _schema: &rdlt_core::TableSchema,
                 _mode: &rdlt_core::WriteMode,
-            ) -> Result<(), rdlt_connector::DestinationError> {
+            ) -> Result<(), rdlt_connector::error::DestinationError> {
                 if !self.swapped {
                     self.swapped = true;
                     // Four rows where the manifest (and pass 1) saw
@@ -1070,22 +1070,24 @@ mod tests {
                 &mut self,
                 _table: &rdlt_core::TableName,
                 _batch: RecordBatch,
-            ) -> Result<(), rdlt_connector::DestinationError> {
+            ) -> Result<(), rdlt_connector::error::DestinationError> {
                 Ok(())
             }
             async fn commit(
                 &mut self,
                 _meta: rdlt_core::CommitMeta,
-            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::DestinationError> {
+            ) -> Result<rdlt_core::CommitReceipt, rdlt_connector::error::DestinationError>
+            {
                 panic!("a degraded replay never reaches commit")
             }
             async fn read_state(
                 &mut self,
                 _pipeline: &rdlt_core::PipelineId,
-            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::DestinationError> {
+            ) -> Result<Option<rdlt_core::StateDoc>, rdlt_connector::error::DestinationError>
+            {
                 Ok(None)
             }
-            async fn close(&mut self) -> Result<(), rdlt_connector::DestinationError> {
+            async fn close(&mut self) -> Result<(), rdlt_connector::error::DestinationError> {
                 Ok(())
             }
         }
@@ -1124,7 +1126,7 @@ mod tests {
             span,
             &mut *session,
             &mut state,
-            rdlt_connector::DestinationCapabilities::default(),
+            rdlt_connector::destination::Capabilities::default(),
         )
         .await
         .expect("replay returns Ok so the caller can degrade");
@@ -1153,7 +1155,7 @@ mod tests {
         use arrow::array::Int64Array;
         use arrow::datatypes::{DataType, Field, Schema};
         use arrow::record_batch::RecordBatch;
-        use rdlt_connector::Destination;
+        use rdlt_connector::destination::Destination;
         use std::sync::Arc;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1189,7 +1191,7 @@ mod tests {
 
         // Truthful line: replay proceeds.
         let mut session = rdlt_testkit::MemoryDestination::new()
-            .open(rdlt_connector::OpenContext::new(
+            .open(rdlt_connector::destination::OpenContext::new(
                 PipelineId::new("p"),
                 LoadId::new("l"),
             ))
@@ -1201,7 +1203,7 @@ mod tests {
             span(3),
             &mut *session,
             &mut state,
-            rdlt_connector::DestinationCapabilities::default(),
+            rdlt_connector::destination::Capabilities::default(),
         )
         .await
         .expect("replay");
@@ -1209,7 +1211,7 @@ mod tests {
 
         // Lying line: the segment really holds 3, the manifest claims 7.
         let mut session = rdlt_testkit::MemoryDestination::new()
-            .open(rdlt_connector::OpenContext::new(
+            .open(rdlt_connector::destination::OpenContext::new(
                 PipelineId::new("p"),
                 LoadId::new("l"),
             ))
@@ -1221,7 +1223,7 @@ mod tests {
             span(7),
             &mut *session,
             &mut state,
-            rdlt_connector::DestinationCapabilities::default(),
+            rdlt_connector::destination::Capabilities::default(),
         )
         .await
         .expect("replay returns Ok so the caller can degrade");

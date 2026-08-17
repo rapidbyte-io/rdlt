@@ -19,7 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rdlt_connector::core::{CommitMeta, CommitReceipt, LoadId, TableSchema};
-use rdlt_connector::{ConnectorSpec, StreamSpec};
+use rdlt_connector::source::StreamSpec;
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::destination_service_server::{

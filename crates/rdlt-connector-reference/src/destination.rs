@@ -27,12 +27,12 @@ use async_trait::async_trait;
 use fs4::fs_std::FileExt as _;
 use rdlt_connector_sdk::config::{self, Document};
 use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
+use rdlt_connector_sdk::spi::arrow::RecordBatch;
 use rdlt_connector_sdk::spi::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector_sdk::spi::{
-    DestinationCapabilities, DestinationError, OpenContext, RecordBatch,
-};
+use rdlt_connector_sdk::spi::destination::{Capabilities, OpenContext};
+use rdlt_connector_sdk::spi::error::DestinationError;
 
 /// The append-only receipt log: one json line per published commit,
 /// `{"load_id":<string>,"commit_seq":<u64>}` — what `existing_receipt`
@@ -121,11 +121,11 @@ impl DestinationConnector for Reference {
         Some(config::schema_of::<Config>())
     }
 
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         // Truthful: arrow's json writer renders structs, lists, json
         // and decimals into the parts. Merge stays undeclared — jsonl
         // parts are append-only files with no upsert machinery.
-        DestinationCapabilities::default()
+        Capabilities::default()
             .with_structs(true)
             .with_scalar_lists(true)
             .with_json_type(true)

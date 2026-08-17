@@ -1,5 +1,5 @@
 //! [`Remote`] and [`Backend`] — the SPI write seam over the wire: an
-//! SPI [`rdlt_connector::Destination`] whose sessions run the sdk's
+//! SPI [`rdlt_connector::destination::Destination`] whose sessions run the sdk's
 //! exactly-once commit choreography CLIENT-side, over a [`Backend`]
 //! whose every method is a frame on the `OpenSession` bidi stream.
 //!
@@ -9,7 +9,7 @@
 //! `Publish`/`ReadState`/`Close`, each frame one method), and the
 //! commit choreography (`existing_receipt` → `replay` → `publish`) is
 //! NOT reimplemented against the wire —
-//! [`Destination::open`](rdlt_connector::Destination::open)
+//! [`Destination::open`](rdlt_connector::destination::Destination::open)
 //! boxes the sdk's own [`Session`]`::new(Backend)`, the SAME
 //! generic type the sdk's serving shell composes, so the choreography
 //! runs here by identical code. The server does not referee that
@@ -41,13 +41,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, StateDoc, TableName, TableSchema, WriteMode,
 };
-use rdlt_connector::{
-    ConnectorSpec, DestinationCapabilities, DestinationError, LoadSession, OpenContext,
-    PartCloseReason, PartClosed, PartEventFn, RecordBatch,
+use rdlt_connector::destination::{
+    Capabilities, LoadSession, OpenContext, PartCloseReason, PartClosed, PartEventFn,
 };
+use rdlt_connector::error::DestinationError;
+use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_protocol::proto::{self, session_reply, session_request};
 use rdlt_connector_sdk::destination::Session;
 use tokio::sync::mpsc;
@@ -61,7 +63,7 @@ use crate::{error, gate, handshake, wire};
 /// waiting on its reply — the session is over, whoever ended it.
 const SESSION_ENDED: &str = "the connector session ended before replying";
 
-/// An SPI [`rdlt_connector::Destination`] over the wire: the dialed
+/// An SPI [`rdlt_connector::destination::Destination`] over the wire: the dialed
 /// channel plus the handshake's cached spec AND capabilities — both
 /// answered synchronously, with no RPC left to make. Constructed only
 /// through [`Remote::connect`], so there is no way to hold one whose
@@ -70,7 +72,7 @@ const SESSION_ENDED: &str = "the connector session ended before replying";
 pub struct Remote {
     channel: Channel,
     spec: ConnectorSpec,
-    capabilities: DestinationCapabilities,
+    capabilities: Capabilities,
     deadline: Duration,
 }
 
@@ -114,7 +116,7 @@ impl Remote {
     }
 
     /// Open the raw wire [`Backend`] directly — the lower layer
-    /// [`Destination::open`](rdlt_connector::Destination::open)
+    /// [`Destination::open`](rdlt_connector::destination::Destination::open)
     /// composes [`Session`] on top of, mirroring
     /// the sdk's `Shell::connect` split: nothing here enforces
     /// write-before-ensure or the commit choreography (the SERVER's
@@ -158,7 +160,7 @@ impl Remote {
 }
 
 #[async_trait]
-impl rdlt_connector::Destination for Remote {
+impl rdlt_connector::destination::Destination for Remote {
     /// The handshake's cached document — no RPC: the spec was verified
     /// and decoded once at [`Remote::connect`], and a connector's
     /// self-description does not change mid-session.
@@ -174,7 +176,7 @@ impl rdlt_connector::Destination for Remote {
     /// shape ("the host plans from this and does not re-verify at
     /// runtime") already forbids an RPC here, and the cache is what
     /// makes the answer honest rather than a default.
-    fn capabilities(&self) -> DestinationCapabilities {
+    fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
 
@@ -421,7 +423,7 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                     serde_json::from_slice::<CommitReceipt>(&bytes).map_err(|error| {
                         DestinationError::protocol(format!(
                             "undecodable receipt_json in a session reply: {}",
-                            rdlt_connector::json::describe_parse_error(&error)
+                            rdlt_connector::gate::describe_parse_error(&error)
                         ))
                     })
                 })
@@ -461,7 +463,7 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                 serde_json::from_slice::<CommitReceipt>(&published.receipt_json).map_err(|error| {
                     DestinationError::protocol(format!(
                         "undecodable receipt_json in a session reply: {}",
-                        rdlt_connector::json::describe_parse_error(&error)
+                        rdlt_connector::gate::describe_parse_error(&error)
                     ))
                 })
             }
@@ -492,7 +494,7 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                     let doc = serde_json::from_slice::<StateDoc>(&bytes).map_err(|error| {
                         DestinationError::protocol(format!(
                             "undecodable state_doc_json in a session reply: {}",
-                            rdlt_connector::json::describe_parse_error(&error)
+                            rdlt_connector::gate::describe_parse_error(&error)
                         ))
                     })?;
                     // And every cursor it carries honors the cursor

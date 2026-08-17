@@ -2,7 +2,7 @@
 //!
 //! Second runs move only new data; merge replaces a record's whole subtree.
 
-use rdlt_connector::StreamSpec;
+use rdlt_connector::source::StreamSpec;
 use rdlt_core::{CommitPolicy, Cursor, WriteMode};
 use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
@@ -23,7 +23,7 @@ async fn second_run_resumes_from_committed_cursor() {
     let dest = MemoryDestination::new();
 
     // Run 1: fresh — reads everything, commits per checkpoint.
-    let source1 = stream_with_batches(rdlt_connector::StreamSpec::new("events"), batches());
+    let source1 = stream_with_batches(rdlt_connector::source::StreamSpec::new("events"), batches());
     let log1 = source1.since_log();
     let mut config = EngineConfig::new("incr");
     config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
@@ -48,7 +48,7 @@ async fn second_run_resumes_from_committed_cursor() {
 
     // Run 2: same destination, fresh source instance — MUST be told to resume from 3
     // and therefore emit nothing new.
-    let source2 = stream_with_batches(rdlt_connector::StreamSpec::new("events"), batches());
+    let source2 = stream_with_batches(rdlt_connector::source::StreamSpec::new("events"), batches());
     let log2 = source2.since_log();
     let report2 = Engine::new(config, source2, dest.clone())
         .run()
@@ -70,7 +70,7 @@ async fn second_run_resumes_from_committed_cursor() {
 /// Scenario 2: merge replaces the updated record AND its entire child subtree.
 #[tokio::test]
 async fn merge_replaces_whole_subtree() {
-    let spec = || rdlt_connector::StreamSpec::new("users").with_primary_key(["id"]);
+    let spec = || rdlt_connector::source::StreamSpec::new("users").with_primary_key(["id"]);
     let dest = MemoryDestination::new();
     let mut config = EngineConfig::new("merge");
     config = config.with_write_mode(WriteMode::Merge {
@@ -130,7 +130,8 @@ async fn keyless_merge_dedups_identical_rows() {
     // explicit key and that stays — this exercises the engine layer directly.
 
     let rows = vec![json!({"x": 1}), json!({"x": 1}), json!({"x": 2})];
-    let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("t"), rows.clone());
+    let source =
+        MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows.clone());
     Engine::new(config.clone(), source, dest.clone())
         .run()
         .await
@@ -138,7 +139,7 @@ async fn keyless_merge_dedups_identical_rows() {
     assert_eq!(dest.committed_rows("t").len(), 2, "identical rows collapse");
 
     // Re-delivering the same rows (redelivery window) changes nothing.
-    let source = MemorySource::single_stream(rdlt_connector::StreamSpec::new("t"), rows);
+    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows);
     Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -163,7 +164,7 @@ async fn replace_mode_replaces_per_run_not_per_commit() {
         MemoryBatch::new(vec![json!({"v": "run1-a"})]).with_checkpoint(1),
         MemoryBatch::new(vec![json!({"v": "run1-b"})]).with_checkpoint(2),
     ];
-    let source = stream_with_batches(rdlt_connector::StreamSpec::new("t"), batches);
+    let source = stream_with_batches(rdlt_connector::source::StreamSpec::new("t"), batches);
     Engine::new(config.clone(), source, dest.clone())
         .run()
         .await
@@ -177,7 +178,7 @@ async fn replace_mode_replaces_per_run_not_per_commit() {
     // A later full run replaces everything again. (No cursor: replace typically pairs
     // with full re-reads.)
     let source = MemorySource::single_stream(
-        rdlt_connector::StreamSpec::new("t"),
+        rdlt_connector::source::StreamSpec::new("t"),
         vec![json!({"v": "run2"})],
     );
     Engine::new(config, source, dest.clone())

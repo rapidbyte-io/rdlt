@@ -110,7 +110,7 @@ async fn the_reference_bin_serves_a_source_handshake_and_streams() {
     // the reference connector's.
     assert_eq!(managed.resolved_version(), env!("CARGO_PKG_VERSION"));
 
-    let streams = rdlt_connector::Source::streams(&managed)
+    let streams = rdlt_connector::source::Source::streams(&managed)
         .await
         .expect("streams() answers over the wire");
     assert_eq!(streams.len(), 1);
