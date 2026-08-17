@@ -22,8 +22,13 @@ rdlt-connector-sdk = { workspace = true, features = ["schema"] }
 The protocol (SPI) is reached through the sdk's re-export — `use
 rdlt_connector_sdk::spi::{SourceError, StreamSpec, ...}`, vocabulary via
 `spi::core` — never as a direct dependency. The sdk forwards every SPI
-feature under the same spelling: `failpoints` (crash sweeps), `schema`
-(generated config schemas), `object-store`. `rdlt-testkit` is a
+feature under the same spelling: `failpoints` (crash sweeps) and
+`schema` (generated config schemas). Storage-, format-, and
+driver-specific pieces (parquet options, part rolling, PEM material,
+object-store retry rules) are the connector's own: the sdk carries only
+what is true of every connector by virtue of the protocol, so a
+connector that needs one of those owns its copy, sized to its use.
+`rdlt-testkit` is a
 **dev**-dependency (the verification half), tolerated in
 `[dependencies]` only as an *optional* dep behind a `fixtures` feature.
 One recorded exception exists: SQL destinations may depend on

@@ -177,8 +177,8 @@ fn calls(log: &Log) -> Vec<Call> {
     log.lock().expect("log lock").clone()
 }
 
-/// D3 as the framework's own promise: the receipt lookup precedes the
-/// publish, and a first commit publishes exactly once.
+/// Exactly-once as the framework's own promise: the receipt lookup
+/// precedes the publish, and a first commit publishes exactly once.
 #[tokio::test]
 async fn a_first_commit_consults_the_receipt_then_publishes_once() {
     let (mut session, log) = open_spy(ReceiptScript::None).await;

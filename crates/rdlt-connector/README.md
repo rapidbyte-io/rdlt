@@ -8,12 +8,11 @@ trust-boundary gate, and `Secret`. The engine and every connector build
 against this crate, and a connector can be written against it alone.
 
 The crate is deliberately protocol-only: everything in it is vocabulary
-BOTH sides of the contract speak — hosts and connectors alike. The
-connector-author batteries (parquet write intentions, part-rolling
-policy, PEM material, the object-store recoverability rule) are
-config and implementation vocabulary only the connector side consumes,
-and live in `rdlt-connector-sdk` as its `parquet`, `parts`, `pem`, and
-`store` modules.
+BOTH sides of the contract speak — hosts and connectors alike.
+Storage-, format-, and driver-specific vocabulary (parquet write
+options, part-rolling policy, PEM material, an object store's
+recoverability rule) belongs to the individual connector that needs it,
+not to this crate and not to `rdlt-connector-sdk`.
 
 ## The modules — the crate's table of contents
 
