@@ -1,13 +1,14 @@
-// rdlt connector protocol v0 — FROZEN 2026-08-07 (ADR 0001 D8, which
-// records the evidence: a standalone certifier driving any connector
-// binary in any language against 29 fail-proven clauses plus a SIGKILL
-// matrix, a non-Rust connector certified by it, and the throughput
-// bars holding out of process). The version NUMBER stays 0 — it is the
-// handshake's negotiated identifier and moving it would break every
-// shipped connector for a freeze that changes no byte; "v1" names the
-// frozen CONTRACT. Binding from here: field numbers are never
-// renumbered, repurposed, or recycled (a retired number is reserved);
-// evolution is ADDITIVE ONLY — new fields take fresh numbers, new
+// rdlt connector protocol v0 — FROZEN 2026-08-07, closing an
+// experimental period on evidence: a standalone certifier driving any
+// connector binary in any language against 29 fail-proven clauses plus
+// a SIGKILL matrix, a non-Rust connector certified by that same
+// certifier, and every throughput bar holding with the connectors out
+// of process. The version NUMBER stays 0 — it is the handshake's
+// negotiated identifier and moving it would break every shipped
+// connector for a freeze that changes no byte; "v1" names the frozen
+// CONTRACT. Binding from here: field numbers are never renumbered,
+// repurposed, or recycled (a retired number is reserved); evolution is
+// ADDITIVE ONLY — new fields take fresh numbers, new
 // messages/RPCs/oneof arms/enum values may be added, nothing is
 // removed, narrowed or given a second meaning; a receiver tolerates
 // what a newer peer sends (an unrecognized Classification normalizes
@@ -27,24 +28,24 @@
 // both directions, byte for byte, proving the generated encoder really
 // emits the numbers declared here.
 //
-// Trust model (owner decision D-038-1): config documents cross this
-// LOCAL socket in the clear; a spawned connector inherits the
-// operator's trust like any child process. Secret references are
-// the recorded future for network transports.
+// Trust model: config documents cross this LOCAL socket in the clear;
+// a spawned connector inherits the operator's trust like any child
+// process. Secret references are the recorded future for network
+// transports.
 //
-// Payload discipline (ADR 0001 D4): *_json fields carry serde
-// documents (their own format_version gates are the source of
-// truth); arrow_ipc fields carry Arrow IPC stream bytes.
+// Payload discipline: *_json fields carry serde documents (their own
+// format_version gates are the source of truth); arrow_ipc fields
+// carry Arrow IPC stream bytes.
 //
 // credits: recorded fallback, not in v0 — a 2026-08-05 measurement
 // bounded peak in-flight bytes to the h2 window plus <=2 chunks, so
 // `Read` stays server-streaming with no client credit arm and no
 // byte-budget/window field anywhere in this file: backpressure rides
-// h2 flow control by design (ADR 0001 D6), with the engine's own
-// byte-budget channel remaining the authority. A `ReadCredit` message
-// is the documented escape hatch if a future measurement finds that
-// bound insufficient — an ADDITIVE addition the freeze permits, not a
-// message this file declares today.
+// h2 flow control by design, with the engine's own byte-budget channel
+// remaining the authority. A `ReadCredit` message is the documented
+// escape hatch if a future measurement finds that bound insufficient —
+// an ADDITIVE addition the freeze permits, not a message this file
+// declares today.
 syntax = "proto3";
 package rdlt.connector.v0;
 
@@ -76,15 +77,15 @@ message HandshakeOk {
   string connector_version = 2;
   bytes spec_json = 3;           // ConnectorSpec (name, version, config_schema)
   bytes capabilities_json = 4;   // DestinationCapabilities; empty for sources
-  // e.g. "cursor" -> 2. v0 servers send an empty map; 039 threads it
-  // through unread — negotiation belongs to the feature that adds a
-  // second format version; see the README.
+  // e.g. "cursor" -> 2. v0 servers send an empty map; the dialing
+  // client threads it through unread — negotiation belongs to the
+  // feature that adds a second format version; see the README.
   map<string, uint32> state_format_versions = 5;
 }
 service Connector {
   rpc Handshake(HandshakeRequest) returns (HandshakeReply);
   rpc Check(CheckRequest) returns (CheckReply);
-  // Config-free static identity (039): answers BEFORE any handshake —
+  // Config-free static identity: answers BEFORE any handshake —
   // it carries no session state, so the pre-handshake refusal does not
   // apply to it. spec_json is ConnectorSpec (name, version,
   // config_schema), served from the connector's statics alone.
@@ -118,7 +119,7 @@ message ReadFrame {
     // This direction is server-streamed, so the refusal seat is the
     // CLIENT's: a conforming client refuses a frame carrying a second
     // batch message rather than silently taking the first. That
-    // client-side posture is 039's decode contract.
+    // client-side posture is the dialing client's decode contract.
     bytes arrow_ipc = 2;
     bytes checkpoint_cursor_json = 3;
     ErrorFrame error = 4;            // terminal: read() returned Err
@@ -151,13 +152,13 @@ message Open { string pipeline = 1; string load_id = 2; }
 message Ensure { bytes table_schema_json = 1; bytes write_mode_json = 2; }
 // arrow_ipc carries EXACTLY ONE record batch as an Arrow IPC stream. A
 // second batch message in the same stream is refused FATAL, not
-// silently accepted with only the first written (038 T5 review, F3:
-// that was measured as silent row loss, not a hypothetical) — a
-// multi-batch write is several Write frames, one batch each.
+// silently accepted with only the first written (measured live as
+// silent row loss, not a hypothetical) — a multi-batch write is
+// several Write frames, one batch each.
 message Write { string table = 1; bytes arrow_ipc = 2; }
 // Answered from the destination's OWN Backend::existing_receipt — a
-// real, durable lookup, not a stub. The server does not run the D3
-// choreography (deciding Replay vs Publish next) on the client's
+// real, durable lookup, not a stub. The server does not run the
+// commit choreography (deciding Replay vs Publish next) on the client's
 // behalf: each of Ensure/Write/ExistingReceipt/Replay/Publish/
 // ReadState/Close reaches its own Backend method independently, and
 // the CALLER decides which to send next (the sdk's serve::destination
@@ -183,7 +184,7 @@ message ReadState { string pipeline = 1; }
 //   from the RPC outcome alone. This is a deliberate v0 simplification:
 //   a Close error is terminal for the session either way, and it is the
 //   destination's OWN durability guards (the same ones ExistingReceipt's
-//   comment above cites for the D3 choreography) that make a fresh
+//   comment above cites for the commit choreography) that make a fresh
 //   re-run of the WHOLE session safe — not a retry of Close itself,
 //   which this protocol does not offer.
 message Close {}

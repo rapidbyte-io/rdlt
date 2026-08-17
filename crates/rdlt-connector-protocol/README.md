@@ -11,15 +11,14 @@ This crate is deliberately thin: a handshake-line parser/renderer
 ([`proto`]). It carries no server and no client — the sdk's `serve`
 module (`rdlt-connector-sdk`, feature `serve`) turns an sdk connector
 into a server over this protocol; a provider that DIALS a connector
-(feature 039) is the client. This crate is the one thing both sides
-depend on.
+(`rdlt-connector-client`) is the client. This crate is the one thing
+both sides depend on.
 
 ## FROZEN contract — "v1", frozen 2026-08-07
 
-Governed by `docs/adr/0001-out-of-process-connectors.md`, decision D8,
-whose experimental period this freeze CLOSES; the ADR carries the
-amendment and the evidence. In short, three things beat on this wire
-before it froze: a standalone certifier (`rdlt-certify`) that drives
+The freeze closed the protocol's experimental period on evidence, not
+on a date. Three things beat on this wire before it froze: a
+standalone certifier (`rdlt-certify`) that drives
 any connector executable, in any language, against 29 conformance
 clauses — each one proven capable of FAILING against a deliberately
 broken connector, and including a `SIGKILL` matrix at every message
@@ -153,8 +152,8 @@ and none of it is less frozen for going unlisted here.
   fixture batch), so P11 sends a deliberate two-batch `Write` frame on
   the live socket and requires it refused FATAL, never partially
   accepted. A third-party DESTINATION that silently kept the first
-  batch of a multi-batch `Write` — the shape of the 038 T5 defect this
-  rule exists to forbid — fails clause P11 by name;
+  batch of a multi-batch `Write` — exactly the measured silent row
+  loss this rule exists to forbid — fails clause P11 by name;
 - **the error-frame cause-text contract** — `ErrorFrame.message` is
   CAUSE text only; classification travels solely as the enum, and no
   server writes a rendered classification into `message`. **The
@@ -168,9 +167,9 @@ and none of it is less frozen for going unlisted here.
   by the same standard — a real classification value and bare cause
   text, never a rendered classification. A third-party DESTINATION
   that rendered `"fatal destination error: …"` into
-  `ErrorFrame.message` — the 026 double-frame class, where the
-  receiving client renders the frame a second time — fails clause P12
-  by name;
+  `ErrorFrame.message` — the double-frame defect class, where the
+  receiving client renders the classification a second time around
+  text already carrying one — fails clause P12 by name;
 - **the one-session-per-process ceiling** — a second concurrent
   `OpenSession` on a live socket is refused `FailedPrecondition`
   (clause P8);
@@ -204,7 +203,7 @@ growth.
 The proto file's own header comment and `src/lib.rs` both mirror this
 status rather than being the one place it is recorded.
 
-## Trust model (owner decision D-038-1)
+## Trust model
 
 Config documents — which may carry credentials — cross the Unix domain
 socket **in the clear**. There is no protocol-level encryption or
@@ -224,7 +223,7 @@ authentication in v0:
 an environment variable, a secret-manager path — rather than carrying
 the credential's value) are the recorded direction for a future network
 transport, not built in v0. Network transports (TCP+mTLS for
-provider-managed remote fleets — ADR 0001 D3) are a future binding of
+provider-managed remote fleets) are a future binding of
 this SAME proto; a different trust model belongs to that binding when
 it's built, not retrofitted onto UDS today.
 
@@ -236,7 +235,7 @@ that with exactly one line on stdout, then falls silent (stderr stays
 the human log channel):
 
 ```
-rdlt-connector|1|<proto_min>|<proto_max>|<socket_path>
+rdlt-connector|1|<protocol_min>|<protocol_max>|<socket_path>
 ```
 
 Five pipe-separated fields, FROZEN format (not versioned the same way
@@ -246,8 +245,8 @@ the RPC protocol is — see below):
 |---|---|
 | `rdlt-connector` | leading token; anything else and the line is not one of ours |
 | `1` | the LINE FORMAT's own version — independent of `PROTOCOL_VERSION` below; the line could reach format `2` while the RPC protocol stays at `0` |
-| `proto_min` | lowest `PROTOCOL_VERSION` this connector process will accept over `Handshake` |
-| `proto_max` | highest `PROTOCOL_VERSION` this connector process will accept |
+| `protocol_min` | lowest `PROTOCOL_VERSION` this connector process will accept over `Handshake` |
+| `protocol_max` | highest `PROTOCOL_VERSION` this connector process will accept |
 | `socket_path` | the Unix domain socket to dial `Connector`/`SourceService`/`DestinationService` on |
 
 Parsing splits on the FIRST FOUR pipes only (`splitn(5, '|')`) — the
@@ -288,8 +287,8 @@ JSON (name, version, config_schema), served from the connector's
 statics alone, so a provider can ask a spawned connector what it IS
 before deciding what config to hand it. `state_format_versions` on
 `HandshakeOk` is a **v0 HOLE, not an oversight**: v0 servers send an
-empty map, and 039's client (`rdlt-connector-client`, surfaced through
-`rdlt-runtime`) threads it through to embedders UNREAD
+empty map, and the dialing client (`rdlt-connector-client`, surfaced
+through `rdlt-runtime`) threads it through to embedders UNREAD
 (`ManagedSource`/`ManagedDestination::state_format_versions`) — with
 one format version per state kind there is nothing to negotiate yet.
 Negotiation semantics are owned by the feature that adds a second
@@ -306,23 +305,23 @@ session: every frame (`Open`/`Ensure`/`Write`/`ExistingReceipt`/
 `Replay`/`Publish`/`ReadState`/`Close`) maps 1:1 onto its own method on
 the connector's raw `Backend` — the wire speaks the real exactly-once
 grammar directly, not a collapsed `commit` call. This is an AMENDMENT
-from the design's original shape (038 Task 5 review, ADR D5): an
-earlier version wrapped the sdk's own `LoadSession`, which made
-`ExistingReceipt`/`Replay` inert stubs instead of real answers.
+from the design's original shape: an earlier version wrapped the sdk's
+own `LoadSession`, which made `ExistingReceipt`/`Replay` inert stubs
+instead of real answers.
 
 **The one-batch `Write` rule.** `Write.arrow_ipc` carries EXACTLY ONE
 record batch as an Arrow IPC *stream* (one schema message, one
 record-batch message). A second batch message in the same `Write` frame
 refuses FATAL rather than being silently accepted with only the first
-batch written — that was measured as silent row loss during 038 Task 5's
-review, not a hypothetical. A multi-batch write is several `Write`
-frames, one batch each; the proto's own comment on `Write` states this
+batch written — that was measured live as silent row loss before this
+rule existed, not a hypothetical. A multi-batch write is several
+`Write` frames, one batch each; the proto's own comment on `Write` states this
 rule verbatim. The same one-batch rule governs the read direction:
 `ReadFrame.arrow_ipc` carries exactly one batch per frame, but that
 direction is server-streamed, so enforcement sits with conforming
 CLIENTS — a frame carrying a second batch message is refused, not
-silently truncated to its first batch (the client-side posture is
-feature 039's decode contract; the proto's comment on
+silently truncated to its first batch (the client-side posture is the
+dialing client's decode contract; the proto's comment on
 `ReadFrame.arrow_ipc` states the rule).
 
 The amendment has a consequence a wire client MUST understand: **this
@@ -331,8 +330,8 @@ service does not sequence commit frames for you.** Driving
 sending `Publish` twice for one `(load_id, commit_seq)` without asking
 `ExistingReceipt` first, is the CALLER's job — the same job the sdk's
 own `Session<B>` type does for a caller holding the shell directly,
-and the SAME generic 039's wire adapter reuses rather than
-reimplements.
+and the SAME generic the dialing client's wire adapter reuses rather
+than reimplements.
 A foreign client that gets this wrong is not refereed by this server.
 **The only thing that actually saves exactly-once here is the
 destination's OWN durable receipt guard inside `Backend::publish`** —
@@ -354,8 +353,8 @@ flow-control window once enough unread replies queue up server-side.
 The proto's own comment on `DestinationService` carries this same
 warning in substance.
 
-**The `PartClosedEvent` ordering promise — narrowed, on purpose (038 T5
-review).** Copied verbatim from the sdk's `serve::destination` module
+**The `PartClosedEvent` ordering promise — narrowed, on
+purpose.** Copied verbatim from the sdk's `serve::destination` module
 doc, the one place this rule is authored (this README quotes it rather
 than re-deriving it, so the two can't drift):
 
@@ -398,8 +397,9 @@ first over-4 MiB frame a server legally sends.
 ## Document ceilings, and the cursor contract
 
 Distinct from the frame ceiling, the UNTYPED `*_json` document payloads
-are capped at both ends — one constant per kind, both spelled in the
-SPI crate (`rdlt-connector`):
+are capped at both ends — one constant per kind, both spelled once in
+the SPI crate (`rdlt-connector`; this crate stays a dependency leaf for
+foreign integrators, so the constants live there, not here):
 
 - `config_json`: **8 MiB** (`MAX_DOCUMENT_BYTES`). The serve side
   refuses an oversized document before parsing it (an untyped JSON
@@ -433,7 +433,8 @@ because that is what crosses the wire back and what the WAL records
 mark, an offset, a resume token) instead of embedding the data, or its
 reads refuse typed at the gates above. Typed `*_json` fields (stream
 specs' fixed vocabulary, schemas, receipts) ride typed serde structs
-and are deliberately outside these ceilings.
+with a roughly 1x parse footprint and are deliberately outside these
+ceilings, which exist to bound untyped-`Value` expansion.
 
 ## `Status` vs `ErrorFrame`: two refusal shapes, on purpose
 
@@ -509,12 +510,13 @@ in-flight bytes per stream," not "64 KiB." If a memory ceiling on
 in-flight streamed bytes actually matters to a caller (a provider
 holding many concurrent connector sessions, say), set both window
 sizes explicitly rather than relying on the default. This crate has no
-opinion on the number — it's a client `Endpoint` concern, which is
-039's adapter, not this crate or the sdk's `serve` listener (the accept
-side of the same connection has no `Endpoint` to configure).
+opinion on the number — it's a client `Endpoint` concern, which
+belongs to the dialing client, not this crate or the sdk's `serve`
+listener (the accept side of the same connection has no `Endpoint` to
+configure).
 
 **`state_format_versions` is empty in v0, on purpose — see above.** A
 provider reading `HandshakeOk` today gets an empty map, not an omission
-bug; 039's client threads it through to embedders unread, and the
+bug; the dialing client threads it through to embedders unread, and the
 resume-format negotiation this field exists for is owned by the feature
 that adds a second format version.
