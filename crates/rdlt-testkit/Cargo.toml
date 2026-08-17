@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-testkit"
-description = "rdlt connector certification kit: conformance suites, the in-memory connector pair, shared fixtures, the skip-not-fail container gate, the spawn scaffold, and the crash-point registry scanner"
+description = "rdlt connector certification kit: conformance suites, in-memory connector pair, fixtures, container gate, spawn scaffold, crash-point registry scanner"
 keywords = ["elt", "testing", "conformance", "connector", "certification"]
 categories = ["development-tools::testing", "database"]
 documentation = "https://docs.rs/rdlt-testkit"

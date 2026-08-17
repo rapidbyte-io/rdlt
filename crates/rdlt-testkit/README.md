@@ -103,9 +103,11 @@ pipeline.run().await?;
 ## The gate: skip, never fail
 
 `gate::runtime_available` is the ONE container-runtime probe for the
-workspace, std-only and always compiled. A fixture's `start()` returns
-`Option`: without a runtime it prints a visible `SKIP` line and returns
-`None`, and the caller returns early. A missing runtime never panics,
+workspace, std-only and always compiled. Skip-not-fail exists so a
+contributor without containers or credentials can still run the gate.
+A fixture's `start()` returns `Option`: without a runtime it prints a
+visible `SKIP` line and returns `None`, and the caller returns early. A
+missing runtime never panics,
 because a panic there is indistinguishable from a real failure and trains
 people to ignore red. There is no environment override — one posture.
 
@@ -120,7 +122,9 @@ indistinguishable from one that passed. The net is count discipline, not
 a knob — the runner prints run/skip counts for every binary, every gate
 of record states the expected ones, and a leg that quietly stopped
 running surfaces as a moved number. `make counts` reports tests run per
-binary; read a change by direction:
+binary rather than failing on a moved number, deliberately: a check that
+fails on every legitimate test addition trains people to update it
+without reading it. Read a change by direction:
 
 | observation | reading |
 |---|---|
@@ -144,9 +148,11 @@ quietly skipping — either would be a silent pass wearing a new hat.
 checks that a crate's declared crash points and the sites armed in its
 own sources agree. Every crate that arms points calls it from its sweep
 binary. It reads the sources rather than comparing the registry to
-itself, because `fired == registry` stays true when a point is deleted
-from the code and the list together — the sweep matrix shrinks and the
-assertion still passes.
+itself, because a constant compared against itself always agrees — a
+declared name that arms nothing is caught only by looking outside the
+declaration. It cannot see a point deleted from the code and the
+registry together; that silent shrink is caught separately, by
+`scanner::armed_crash_points` against a committed per-crate site count.
 
 Do not simplify it. Three plausible designs each fail open: set equality
 reports indirectly-armed points (a name supplied by a variable, its
