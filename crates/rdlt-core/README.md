@@ -44,9 +44,11 @@ re-exports.
 
 ## Persisted formats
 
-Three of these types are persisted, and their serde layout is a
-compatibility contract: field names, tags, and renames change only through
-an explicit, versioned format migration, never incidentally. It is the
+Three persisted documents anchor the crate (the state document, the run
+report, the schema hash); every other serde form here is wire-frozen the
+same way. That serde layout is a compatibility contract: field names, tags,
+and renames change only through an explicit, versioned format migration,
+never incidentally. It is the
 serde form that is frozen, not the Rust identifiers: a Rust field or type
 may be renamed as long as the serialized bytes do not move (`Column`'s
 wire key stays `type`; a `SchemaHash` stays 64 hex digits). `cargo

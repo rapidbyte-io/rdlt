@@ -153,7 +153,7 @@ pub enum PipelineEvent {
 pub enum PartCloseReason {
     /// The part reached its size target.
     Target,
-    /// The part was open longer than `roll_after_seconds`.
+    /// The part was open longer than the configured time bound.
     Time,
     /// The memory ceiling across open parts closed it early.
     Budget,

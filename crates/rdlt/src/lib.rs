@@ -60,7 +60,10 @@ pub use rdlt_runtime as runtime;
 /// name everything a pipeline definition touches without reaching for the submodules;
 /// the module-nouned outcome types stay behind their nouns — [`report::Run`] and
 /// [`metrics::Snapshot`] — because bare `Run`/`Table`/`Snapshot` in a glob would
-/// collide with an author's own names.
+/// collide with an author's own names. [`Error`] is the deliberate exception: a
+/// crate's own `Error` at the root and in the prelude is the usual convention, and
+/// the only name it can shadow is the `std::error::Error` trait, which is not a
+/// type-name clash.
 pub mod prelude {
     pub use crate::{
         BatchPolicy, CommitPolicy, Cursor, Error, Metrics, PartCloseReason, Pipeline,
