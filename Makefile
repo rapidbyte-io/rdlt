@@ -144,10 +144,10 @@ cargo nextest run --workspace
 # (the 024 zero-second-pass class). `-E 'test(schema_of)'` so an empty
 # selection — a renamed test — fails rather than passing vacuously.
 cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
-# Same class, the SPI's `store` module: no workspace member enables
+# Same class, the sdk's `store` module: no workspace member enables
 # `object-store`, so a plain workspace run compiles neither the module
 # nor its four unit tests.
-cargo nextest run -p rdlt-connector --features object-store -E 'test(store::)'
+cargo nextest run -p rdlt-connector-sdk --features object-store -E 'test(store::)'
 # Same class, `serve` (038): OFF by default so a plain workspace run
 # compiles neither serve/ nor its tests. FOUR SEPARATE `-E`
 # invocations, not one combined `or` expression: measured that a
