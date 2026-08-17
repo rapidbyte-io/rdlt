@@ -145,16 +145,18 @@ cargo nextest run --workspace
 # selection — a renamed test — fails rather than passing vacuously.
 cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
 # Same class, `serve` (038): OFF by default so a plain workspace run
-# compiles neither serve/ nor its tests. FOUR SEPARATE `-E`
+# compiles neither serve/ nor its tests. FIVE SEPARATE `-E`
 # invocations, not one combined `or` expression: measured that a
 # combined `test(a) or test(b) or ...` fails CLOSED only when EVERY
-# clause goes empty at once — renaming just one of the four modules
-# still selects the other three and exits 0, silently dropping
+# clause goes empty at once — renaming just one of the five modules
+# still selects the other four and exits 0, silently dropping
 # coverage. Each side's own unit tests first (`serve::wire::tests`,
-# `serve::destination::tests`), then the tonic-over-UDS integration
-# suites for each half. Same binary each time (already built after the
-# first), so this costs nothing beyond the four short nextest startups.
+# `serve::source::tests`, `serve::destination::tests`), then the
+# tonic-over-UDS integration suites for each half. Same binary each
+# time (already built after the first), so this costs nothing beyond
+# the five short nextest startups.
 cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::wire)'
+cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::source)'
 cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(serve::destination)'
 cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_source)'
 cargo nextest run -p rdlt-connector-sdk --features serve -E 'test(test_serve_destination)'

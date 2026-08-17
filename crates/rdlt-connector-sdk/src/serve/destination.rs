@@ -187,8 +187,7 @@ fn refuse(message: impl Into<String>) -> session_reply::Reply {
 /// the raw bytes, bounding the parse's own materialization; then the
 /// parse, its failure rendered by KIND and location alone (serde's
 /// verbatim `Display` can quote the parsed value back over the wire).
-/// The `invalid {field}: …` prefix is a frozen wire spelling that
-/// hosts match on.
+/// The `invalid {field}: …` prefix is a frozen wire spelling.
 fn decode_document<T: serde::de::DeserializeOwned>(
     field: &str,
     bytes: &[u8],

@@ -23,7 +23,7 @@ use rdlt_connector_sdk::destination::{Backend, DestinationConnector};
 use rdlt_connector_sdk::spi::{SourceError, StreamSpec};
 ```
 
-`spi` is the crate's only re-export: a connector depends on the sdk
+`spi` is the crate root's only re-export: a connector depends on the sdk
 alone and reaches the SPI through it, so a connector crate has one
 foundation dependency and one version of every protocol type. The
 SPI's `schema` and `failpoints` features forward under the same names.
@@ -35,7 +35,8 @@ provided entry points `from_yaml`, `from_json`, and `from_value` parse
 THEN validate, by construction; the associated error type absorbs the
 two parser errors through the connector's own `From` impls, so every
 connector-specific message spelling stays the connector's. The seam
-renders no text. The YAML entry is also a text-security seat:
+renders no validation text of its own. The YAML entry is also a
+text-security seat:
 `config::reject_graph_syntax` refuses anchors and aliases at the raw
 text boundary, before the parser can expand them.
 

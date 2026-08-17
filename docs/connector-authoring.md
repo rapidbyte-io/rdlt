@@ -28,9 +28,9 @@ driver-specific pieces (parquet options, part rolling, PEM material,
 object-store retry rules) are the connector's own: the sdk carries only
 what is true of every connector by virtue of the protocol, so a
 connector that needs one of those owns its copy, sized to its use.
-`rdlt-testkit` is a
-**dev**-dependency (the verification half), tolerated in
-`[dependencies]` only as an *optional* dep behind a `fixtures` feature.
+`rdlt-testkit` is a **dev**-dependency (the verification half),
+tolerated in `[dependencies]` only as an *optional* dep behind a
+`fixtures` feature.
 One recorded exception exists: SQL destinations may depend on
 `rdlt-connector-sqlcore` (the shared merge core, which lives with them
 in rdlt-connectors), and nothing else. `rdlt-connector-sdk`'s

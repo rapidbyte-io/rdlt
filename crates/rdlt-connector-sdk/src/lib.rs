@@ -27,8 +27,9 @@
 //! the protocol: nothing storage-, format-, or driver-specific lives
 //! here, and every frozen message spelling, error classification key,
 //! cursor rule and SQL plan stays in the connector. The framework
-//! renders no operator-facing text of its own beyond the one refusal it
-//! owns (write-before-ensure).
+//! renders no operator-facing text of its own beyond the refusals it
+//! owns: write-before-ensure, the receipt-identity checks at commit,
+//! and the raw-YAML gates ahead of the parser.
 
 // Warn, not deny: an undocumented public item is a gap to fill, not a
 // reason to fail a contributor's build; the docs build holds the
