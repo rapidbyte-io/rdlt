@@ -106,7 +106,7 @@ rdlt_connector_sdk::serve_main! {
     about: "my connector — what goes in, what comes out",
     roles: {
         Source => rdlt_connector_sdk::serve::source::run::<MySource>(),
-        Destination => rdlt_connector_sdk::serve::destination::run::<MyDest>(),
+        Destination => rdlt_connector_sdk::serve::destination::run::<MyDestination>(),
     }
 }
 ```
@@ -144,7 +144,7 @@ You write the system IO; the sdk session owns the protocol
 choreography:
 
 ```rust
-impl DestinationConnector for MyDest {
+impl DestinationConnector for MyDestination {
     ...same constants/config as a source...
     type Backend = MyBackend;
     fn capabilities(&self) -> DestinationCapabilities { ... }  // truthful!
@@ -207,7 +207,7 @@ assert_conformant(conformance::destination::verify(&shell, &probe).await.expecti
 
 `shell` is the face your test builds in-process
 (`Shell::<MySource>::from_value(..)`); the wire-side certifier
-(`rdlt-certify`, `rdlt certify` in the CLI) judges the BUILT binary
+(the `rdlt-certify` binary) judges the BUILT binary
 against the same clauses plus the protocol and kill clauses, which is
 what this repo's gates run against the reference connector. The kits
 run anywhere — no network, no containers. Container-backed suites

@@ -25,10 +25,10 @@
 //!
 //! [`WriteGuard`] carries the trust-boundary-independent half —
 //! write-before-ensure and open-once — split out from [`Session`] so
-//! TWO callers enforce the SAME rules: [`Session`] composes it for a
-//! caller driving the shell as an SPI [`Destination`] (the client
-//! crate's remote-backend adapter, a connector's own tests), and the
-//! serve layer enforces it directly
+//! TWO callers enforce the SAME rules: [`Session`] composes it for
+//! every `Session` holder — [`Destination::open`] on the shell (a
+//! connector's own tests) and the client crate's remote-backend
+//! adapter — and the serve layer enforces it directly
 //! against raw wire frames, because a bidi stream carrying
 //! client-supplied frame ORDER never trusts that order. The commit
 //! choreography (`existing_receipt` → `replay` → `publish`) stays
