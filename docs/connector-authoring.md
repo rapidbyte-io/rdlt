@@ -222,8 +222,10 @@ sweep matrix.
 
 - **Naming**: module paths are canonical (no crate-root re-export
   soup); types don't repeat their module's noun (`source::Postgres`,
-  `tls::Policy`); no `name.rs` beside a `name/` directory — pure-TOC
-  `mod.rs`, code under its noun; tests are `integration.rs` +
+  `tls::Policy`), and the connector type itself lives at
+  `<role>::connector::<Name>` (`source::connector::Reference`,
+  `destination::connector::Reference`); no `name.rs` beside a `name/`
+  directory — pure-TOC `mod.rs`, code under its noun; tests are `integration.rs` +
   `cases/test_<noun>.rs` with sentence-style names.
 - **Frozen surfaces**: operator-facing message spellings, YAML/JSON
   vocabulary, persisted state formats, and wire behavior are frozen

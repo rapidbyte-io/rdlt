@@ -71,6 +71,12 @@ impl Session {
         self.staged.push((table.clone(), batch));
         Ok(())
     }
+
+    /// Retire everything staged, footprint included.
+    fn clear_staging(&mut self) {
+        self.staged.clear();
+        self.staged_bytes = 0;
+    }
 }
 
 #[async_trait]
@@ -135,8 +141,7 @@ impl Backend for Session {
         // The redelivered unit was already published under this receipt;
         // dropping its staging is what keeps a LATER commit from
         // publishing it a second time.
-        self.staged.clear();
-        self.staged_bytes = 0;
+        self.clear_staging();
         Ok(())
     }
 
@@ -167,8 +172,7 @@ impl Backend for Session {
         store::append_receipt(&self.dir, &receipt)?;
         // The commit is fully durable — only now does its staging
         // retire, so no later commit can publish it a second time.
-        self.staged.clear();
-        self.staged_bytes = 0;
+        self.clear_staging();
         Ok(receipt)
     }
 
@@ -208,8 +212,7 @@ impl Backend for Session {
         // predecessor whose handle is still in scope. Dropping the
         // file releases the advisory lock; an unclosed drop (crash,
         // error path) releases it the same way.
-        self.staged.clear();
-        self.staged_bytes = 0;
+        self.clear_staging();
         self.lease = None;
         Ok(())
     }

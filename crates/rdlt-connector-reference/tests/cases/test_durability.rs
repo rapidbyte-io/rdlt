@@ -71,37 +71,32 @@ fn publish_persists_parts_and_state_before_the_receipt_append() {
             "store::persist(",
             "STATE_FILE",
             "store::append_receipt(",
-            "self.staged.clear()",
+            "self.clear_staging()",
         ],
         "publish",
     );
 }
 
-/// `persist_part` is the same atomic-durable shape as `persist` —
-/// stream-encoded, but the barrier is identical: file fsync BEFORE the
-/// rename, directory fsync after.
+/// `durable_write` is THE atomic-durable write: the temporary fsynced
+/// BEFORE the rename (a rename must never land pointing at unwritten
+/// cache), the directory fsynced after (the rename itself must survive
+/// power loss) — and both `persist` (bytes) and `persist_part`
+/// (stream-encoded jsonl) go through it, so the barrier is pinned once
+/// and holds for every published file.
 #[test]
-fn persist_part_syncs_the_file_before_the_rename_and_the_directory_after() {
+fn every_persisted_file_syncs_before_the_rename_and_the_directory_after() {
     let source = destination_source("store.rs");
     assert_in_order(
-        body_of(&source, "persist_part"),
+        body_of(&source, "durable_write"),
         &["sync_all", "rename", "sync_dir"],
-        "persist_part",
+        "durable_write",
     );
-}
-
-/// `persist` is the atomic-durable write: the temporary fsynced BEFORE
-/// the rename (a rename must never land pointing at unwritten cache),
-/// the directory fsynced after (the rename itself must survive power
-/// loss).
-#[test]
-fn persist_syncs_the_file_before_the_rename_and_the_directory_after() {
-    let source = destination_source("store.rs");
-    assert_in_order(
-        body_of(&source, "persist"),
-        &["sync_all", "rename", "sync_dir"],
-        "persist",
-    );
+    for writer in ["persist", "persist_part"] {
+        assert!(
+            body_of(&source, writer).contains("durable_write("),
+            "`{writer}` must write through `durable_write` — the barrier is pinned there"
+        );
+    }
 }
 
 /// `append_receipt` fsyncs the log after the write — an unsynced

@@ -14,7 +14,7 @@
 //! its deterministic part names.
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rdlt_connector_sdk::spi::arrow::RecordBatch;
 use rdlt_connector_sdk::spi::core::commit::CommitReceipt;
@@ -39,33 +39,15 @@ pub(crate) const STATE_FILE: &str = "_reference_state.json";
 /// process death, so a crashed run never blocks its own recovery.
 pub(crate) const LEASE_FILE: &str = "_reference_lease.lock";
 
-/// Write `bytes` to `name` atomically AND durably: to an
-/// underscore-prefixed temporary first (invisible to any table-prefix
-/// reader), fsynced BEFORE the same-directory rename so the rename can
-/// never land pointing at unwritten cache, then the directory fsynced
-/// so the rename itself survives power loss.
+/// Write `bytes` to `name` atomically AND durably (see [`durable_write`]).
 pub(crate) fn persist(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), DestinationError> {
-    let temp = dir.join(format!("_staged-{name}"));
-    let target = dir.join(name);
-    let framed = |verb: &str, path: &PathBuf, error: std::io::Error| {
-        DestinationError::transient(format!(
-            "reference destination: {verb} {}: {error}",
-            path.display()
-        ))
-    };
-    let mut file = std::fs::File::create(&temp).map_err(|error| framed("write", &temp, error))?;
-    file.write_all(bytes)
-        .map_err(|error| framed("write", &temp, error))?;
-    file.sync_all()
-        .map_err(|error| framed("sync", &temp, error))?;
-    drop(file);
-    std::fs::rename(&temp, &target).map_err(|error| framed("publish", &target, error))?;
-    sync_dir(dir)?;
-    Ok(())
+    durable_write(dir, name, |file, temp| {
+        file.write_all(bytes)
+            .map_err(|error| io_refusal("write", temp, &error))
+    })
 }
 
-/// Persist one table's part with [`persist`]'s exact atomic-durable
-/// shape — temporary, fsync, rename, directory fsync — but
+/// Persist one table's part with the same atomic-durable shape, but
 /// STREAM-ENCODED: the jsonl encoder writes straight into the buffered
 /// temporary file instead of one in-memory `Vec`. The staging ceiling
 /// meters the Arrow footprint of what a session retains; a whole-part
@@ -83,36 +65,45 @@ pub(crate) fn persist_part(
     table: &TableName,
     batches: &[&RecordBatch],
 ) -> Result<(), DestinationError> {
+    durable_write(dir, name, |file, temp| {
+        let arrow_refusal = |error: arrow::error::ArrowError| match error {
+            arrow::error::ArrowError::IoError(_, io_error) => io_refusal("write", temp, &io_error),
+            error => DestinationError::fatal(format!(
+                "reference destination: encode `{table}` as jsonl: {error}"
+            )),
+        };
+        let mut writer = arrow::json::LineDelimitedWriter::new(file);
+        for batch in batches {
+            writer.write(batch).map_err(arrow_refusal)?;
+        }
+        writer.finish().map_err(arrow_refusal)
+    })
+}
+
+/// THE atomic-durable write every published file goes through: `fill`
+/// writes into an underscore-prefixed temporary (invisible to any
+/// table-prefix reader), the temporary is fsynced BEFORE the
+/// same-directory rename so the rename can never land pointing at
+/// unwritten cache, then the directory is fsynced so the rename itself
+/// survives power loss.
+fn durable_write(
+    dir: &Path,
+    name: &str,
+    fill: impl FnOnce(&mut std::io::BufWriter<std::fs::File>, &Path) -> Result<(), DestinationError>,
+) -> Result<(), DestinationError> {
     let temp = dir.join(format!("_staged-{name}"));
     let target = dir.join(name);
-    let framed = |verb: &str, path: &PathBuf, error: &std::io::Error| {
-        DestinationError::transient(format!(
-            "reference destination: {verb} {}: {error}",
-            path.display()
-        ))
-    };
-    let arrow_framed = |error: arrow::error::ArrowError| match error {
-        arrow::error::ArrowError::IoError(_, io_error) => framed("write", &temp, &io_error),
-        error => DestinationError::fatal(format!(
-            "reference destination: encode `{table}` as jsonl: {error}"
-        )),
-    };
-    let file = std::fs::File::create(&temp).map_err(|error| framed("write", &temp, &error))?;
-    let mut writer = arrow::json::LineDelimitedWriter::new(std::io::BufWriter::new(file));
-    for batch in batches {
-        writer.write(batch).map_err(arrow_framed)?;
-    }
-    writer.finish().map_err(arrow_framed)?;
+    let file = std::fs::File::create(&temp).map_err(|error| io_refusal("write", &temp, &error))?;
+    let mut writer = std::io::BufWriter::new(file);
+    fill(&mut writer, &temp)?;
     let file = writer
         .into_inner()
-        .into_inner()
-        .map_err(|error| framed("write", &temp, error.error()))?;
+        .map_err(|error| io_refusal("write", &temp, error.error()))?;
     file.sync_all()
-        .map_err(|error| framed("sync", &temp, &error))?;
+        .map_err(|error| io_refusal("sync", &temp, &error))?;
     drop(file);
-    std::fs::rename(&temp, &target).map_err(|error| framed("publish", &target, &error))?;
-    sync_dir(dir)?;
-    Ok(())
+    std::fs::rename(&temp, &target).map_err(|error| io_refusal("publish", &target, &error))?;
+    sync_dir(dir)
 }
 
 /// Append `receipt` to the log durably: torn tail cut, the line written
@@ -127,20 +118,15 @@ pub(crate) fn append_receipt(dir: &Path, receipt: &CommitReceipt) -> Result<(), 
     })?;
     let path = dir.join(RECEIPTS_FILE);
     truncate_torn_tail(&path)?;
-    let framed = |verb: &str, error: std::io::Error| {
-        DestinationError::transient(format!(
-            "reference destination: {verb} {}: {error}",
-            path.display()
-        ))
-    };
     let created = !path.exists();
     let mut log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|error| framed("open", error))?;
-    writeln!(log, "{line}").map_err(|error| framed("append to", error))?;
-    log.sync_all().map_err(|error| framed("sync", error))?;
+        .map_err(|error| io_refusal("open", &path, &error))?;
+    writeln!(log, "{line}").map_err(|error| io_refusal("append to", &path, &error))?;
+    log.sync_all()
+        .map_err(|error| io_refusal("sync", &path, &error))?;
     if created {
         sync_dir(dir)?;
     }
@@ -168,12 +154,7 @@ pub(crate) fn find_receipt(
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(DestinationError::transient(format!(
-                "reference destination: read {}: {error}",
-                path.display()
-            )));
-        }
+        Err(error) => return Err(io_refusal("read", &path, &error)),
     };
     let durable = &bytes[..durable_len(&bytes)];
     let durable = std::str::from_utf8(durable).map_err(|error| {
@@ -203,12 +184,7 @@ pub(crate) fn read_state(dir: &Path) -> Result<Option<StateDoc>, DestinationErro
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(DestinationError::transient(format!(
-                "reference destination: read {}: {error}",
-                path.display()
-            )));
-        }
+        Err(error) => return Err(io_refusal("read", &path, &error)),
     };
     let state: StateDoc = serde_json::from_str(&text).map_err(|error| {
         DestinationError::fatal(format!(
@@ -237,33 +213,18 @@ fn truncate_torn_tail(path: &Path) -> Result<(), DestinationError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(DestinationError::transient(format!(
-                "reference destination: read {}: {error}",
-                path.display()
-            )));
-        }
+        Err(error) => return Err(io_refusal("read", path, &error)),
     };
     let durable = durable_len(&bytes);
     if durable == bytes.len() {
         return Ok(());
     }
-    let log = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .write(true)
         .open(path)
-        .map_err(|error| {
-            DestinationError::transient(format!(
-                "reference destination: open {}: {error}",
-                path.display()
-            ))
-        })?;
-    log.set_len(durable as u64).map_err(|error| {
-        DestinationError::transient(format!(
-            "reference destination: truncate the torn tail of {}: {error}",
-            path.display()
-        ))
-    })?;
-    Ok(())
+        .map_err(|error| io_refusal("open", path, &error))?
+        .set_len(durable as u64)
+        .map_err(|error| io_refusal("truncate the torn tail of", path, &error))
 }
 
 /// Fsync the output directory itself — what makes a rename or a file
@@ -271,10 +232,13 @@ fn truncate_torn_tail(path: &Path) -> Result<(), DestinationError> {
 fn sync_dir(dir: &Path) -> Result<(), DestinationError> {
     std::fs::File::open(dir)
         .and_then(|dir| dir.sync_all())
-        .map_err(|error| {
-            DestinationError::transient(format!(
-                "reference destination: sync {}: {error}",
-                dir.display()
-            ))
-        })
+        .map_err(|error| io_refusal("sync", dir, &error))
+}
+
+/// The one transient IO refusal shape: `<verb> <path>: <os error>`.
+fn io_refusal(verb: &str, path: &Path, error: &std::io::Error) -> DestinationError {
+    DestinationError::transient(format!(
+        "reference destination: {verb} {}: {error}",
+        path.display()
+    ))
 }
