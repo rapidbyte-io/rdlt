@@ -128,7 +128,10 @@ fn a_real_run_holds_the_stdout_stderr_and_report_contract() {
 /// `--output json` is machine mode: stdout is exactly the report JSON
 /// and stderr is silent — the redirected-stdout contract, spelled as a
 /// flag so a terminal gets it too. `--output plain` keeps the line-per-
-/// event feed with the report still on stdout.
+/// event feed with the report still on stdout; on a pipe that is what
+/// `auto` selects anyway, so this half only proves the flag rides the
+/// real run end to end — the mode ladder's unit pin is the proof that
+/// `plain` overrides a terminal.
 #[test]
 fn output_json_prints_the_report_to_stdout() {
     let (_dir, spec) = fresh_pipeline();

@@ -84,11 +84,11 @@ impl Pretty {
                 );
                 bar.enable_steady_tick(REDRAW_EVERY);
                 // The declared stream name is connector-controlled
-                // text; indicatif writes messages straight to the
-                // terminal, so it is escaped at this boundary with the
-                // IDENTIFIER predicate, so even an admitted joiner
-                // can't render the name invisibly or a line break forge
-                // display lines.
+                // text and indicatif writes messages straight to the
+                // terminal, so it is escaped here with the IDENTIFIER
+                // predicate: an admitted joiner cannot render the name
+                // invisibly, and a line break cannot forge display
+                // lines.
                 bar.set_message(stderr::sanitize_identifier(stream.as_str()));
                 self.streams.insert(stream.clone(), bar);
                 self.finished.insert(stream.clone(), false);

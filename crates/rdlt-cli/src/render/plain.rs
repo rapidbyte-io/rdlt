@@ -1,6 +1,7 @@
 //! The line-per-event renderer: CI logs, pipes, anyone who reads
-//! scrollback — selected off-TTY, under `--no-progress`, and at `-v`
-//! (detail lines want scrollback, not a redrawing display).
+//! scrollback — selected off-TTY, under `--no-progress`, under
+//! `--output plain`, and at `-v` (detail lines want scrollback, not a
+//! redrawing display).
 
 use rdlt::prelude::PipelineEvent;
 

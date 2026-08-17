@@ -1828,9 +1828,7 @@ dependencies = [
  "rdlt-connector-client",
  "rdlt-connector-protocol",
  "rdlt-testkit",
- "serde",
  "serde_json",
- "serde_yaml_ng",
  "tempfile",
  "tokio",
 ]
