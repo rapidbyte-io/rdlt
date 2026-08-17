@@ -20,7 +20,7 @@
 //! refereed here: each of those frames reaches its own `Backend` method
 //! independently and the CALLER decides which to send next — the client
 //! crate's remote-backend adapter reconstructs it over the same
-//! `Session<B>` type an in-process embedder gets for free. So a foreign
+//! `Session<B>` type [`Destination::open`] composes for free. So a foreign
 //! client CAN send `Publish` twice for one `(load_id, commit_seq)`
 //! without ever asking `ExistingReceipt`, and the ONLY thing that saves
 //! exactly-once is the destination's own durable receipt guard inside

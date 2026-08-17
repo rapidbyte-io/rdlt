@@ -42,29 +42,32 @@ text boundary, before the parser can expand them.
 
 **`source`**: implement `source::SourceConnector` (name and version
 constants, a `Document` config, `assemble`, `streams`, `read_stream`)
-and `source::Shell` provides the SPI: `spec()` assembled from the
-constants and schema, `check`/`streams` delegated, every read handed a
-`source::Feed`. The `Feed` makes closed-channel-is-cancellation a
+and `source::Shell` is the SPI face `serve` runs over: `spec()`
+assembled from the constants and schema, `check`/`streams` delegated,
+every read handed a `source::Feed`. The `Feed` makes closed-channel-is-cancellation a
 property of the type: each push returns `ControlFlow`, and `Break`
 means the host hung up.
 
 **`destination`**: implement `destination::DestinationConnector` plus a
 `destination::Backend` (the system IO: ensure, write, publish,
-receipts, state) and `destination::Shell` provides the SPI with the
-session choreography enforced by construction. A write to a
+receipts, state) and `destination::Shell` is the SPI face `serve` runs
+over, with the session choreography enforced by construction. A write to a
 never-ensured table is refused, and a re-committed
 `(load_id, commit_seq)` runs the backend's replay housekeeping and
 returns its existing receipt; the publish is never reached. Atomicity
 and staging invisibility remain the backend's storage contract,
 properties no wrapper can add, and the conformance kits verify them.
 
-## `serve`: the same connector out of process
+## `serve`: the connector as a process
 
-Behind the `serve` feature (OFF by default; a connector that never runs
-out of process pays nothing, not even tonic in its dependency tree),
-`serve::source::run` and `serve::destination::run` serve the same
-connector over gRPC on a Unix socket to a host that spawned it, and
-`run_on` is the seam under each for tests and embedders. `serve::wire`
+Production connectors run as processes. Behind the `serve` feature (OFF
+by default; a crate that uses only the framework pays nothing for the
+server, not even tonic in its dependency tree), `serve::source::run` and
+`serve::destination::run` serve the connector's shell over gRPC on a
+Unix socket to the host that spawned it, and `run_on` is the seam under
+each for tests. Building the shell in-process (`Shell::from_value` and
+its text siblings) is what `serve` does with the handshake's config
+document and what a connector's own tests do to drive it directly. `serve::wire`
 carries what both roles share: the socket, `serve::Error`, the
 handshake, and the two refusal shapes. `serve_main!` is a connector
 binary's whole `main`:

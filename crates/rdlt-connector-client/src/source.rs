@@ -81,7 +81,7 @@ impl Remote {
 /// collections themselves. Refused HERE, where third-party bytes become
 /// host vocabulary, deliberately not in `StreamName::new` — the core
 /// type stays free-form for hosts by its own documented contract, and
-/// in-process embedders name their own streams.
+/// a host's own SPI sources (test doubles) name their own streams.
 fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
     // Count caps beside the content gates — a spec with hundreds of
     // thousands of tiny keys passes every per-value gate within one

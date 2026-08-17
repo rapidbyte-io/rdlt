@@ -18,10 +18,11 @@
 //!   write-before-ensure refused, an already-published
 //!   `(load_id, commit_seq)` replayed from its receipt, state
 //!   read-through.
-//! - `serve` (behind the `serve` feature, OFF by default) — the same
-//!   connector dialed over gRPC as an out-of-process protocol server
-//!   instead of called in-process; `serve_main!` is a connector
-//!   binary's whole `main`.
+//! - `serve` (behind the `serve` feature, OFF by default) — the
+//!   connector's shell served over gRPC as an out-of-process protocol
+//!   server, which is how a production connector runs; `serve_main!`
+//!   is a connector binary's whole `main`. Building the shell
+//!   in-process is for `serve` and a connector's own tests.
 //!
 //! The sdk contains only what is true of every connector by virtue of
 //! the protocol: nothing storage-, format-, or driver-specific lives

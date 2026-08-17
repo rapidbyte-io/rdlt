@@ -11,28 +11,23 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# The out-of-process server binary. OFF by default, with
-# `required-features` on the [[bin]], so LIBRARY consumers of this crate
-# never pull tonic or clap into their dependency tree — `cargo tree -p
-# rdlt-connector-reference -i tonic` (and `-i clap`) at default features
-# stays empty.
+# The connector as a process: the protocol-server binary. OFF by
+# default with `required-features` on the [[bin]], so a library consumer
+# of this crate never pulls tonic or clap into its dependency tree.
 bin-serve = ["rdlt-connector-sdk/serve", "dep:clap"]
-# The spawn suite: tests that spawn the REAL built binary. OFF by
-# default — a plain workspace run must not depend on a bin no workspace
-# command builds. The Makefile's own lines enable it AND set
-# RDLT_BUILD_CONNECTOR_BINS=1 so the suite's helper (re)builds the bin
-# via cargo before spawning; without the env var the helper requires the
-# bin to already exist and fails loudly, never silently. It gates the
-# `#[cfg(feature = "spawn-bins")]` test modules in `tests/cases/mod.rs`
-# — nothing else; the suite's dev-deps are NOT optional (cargo rejects
-# an optional dev-dependency), so the feature saves running the cells,
-# not building their support.
+# The spawn suite: the cells that spawn the REAL built binary. OFF by
+# default so a plain workspace run never depends on a bin no workspace
+# command builds; the Makefile enables it together with
+# RDLT_BUILD_CONNECTOR_BINS=1, which lets the spawn helper build the bin
+# before spawning (without it a missing bin fails loudly). The feature
+# gates only the `#[cfg(feature = "spawn-bins")]` modules in
+# `tests/cases/mod.rs`; their dev-deps stay unconditional because cargo
+# has no optional dev-dependencies.
 spawn-bins = []
 
-# Behind `bin-serve` only — `cargo build` at default features never even
-# discovers this target, so no workspace command pays for tonic. The
-# gate compiles it explicitly (Makefile `test:`), so a target no
-# workspace command builds still cannot rot unseen.
+# Behind `bin-serve` only, so `cargo build` at default features never
+# discovers this target; the gate compiles it explicitly (Makefile
+# `test:`) so it cannot rot unseen.
 [[bin]]
 name = "rdlt-connector-reference"
 path = "src/bin/rdlt-connector-reference.rs"
@@ -49,8 +44,8 @@ clap = { workspace = true, optional = true }
 # the SPI's RecordBatch — the destination writes nothing else.
 arrow = { workspace = true }
 async-trait = { workspace = true }
-# The cursor's rewrite-in-place guard (tail hash) — the same hash the
-# file connector's resume rulebook rides.
+# The cursor's rewrite-in-place guard (the tail hash of the consumed
+# bytes) and the part name's tuple digest.
 blake3 = { workspace = true }
 # The session lease: an OS advisory lock beside the state slot, released
 # automatically on process death so a crashed run never blocks recovery.
@@ -64,10 +59,10 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 # The certification cells: the certify library drives the built bin
-# through both role suites against hermetic tempdir fixtures.
-# PACKAGING: rdlt-certify and rdlt-testkit ride the workspace's
-# path-only spellings where required — dev-dependencies never reach a
-# consumer.
+# through both role suites against hermetic tempdir fixtures; the
+# testkit supplies the in-process kits, fixtures and the spawn helper.
+# Dev-dependencies never reach a consumer, so path-only workspace
+# spellings are fine here.
 rdlt-certify = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }

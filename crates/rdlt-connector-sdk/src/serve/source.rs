@@ -2,8 +2,9 @@
 //! a source implements — `Connector` (handshake, check, spec) and
 //! `SourceService` (streams, read) — over one [`SourceConnector`] shell.
 //!
-//! One handshake populates the shell (the config document validated the
-//! same way an in-process embedder would, through [`Shell::from_value`]);
+//! One handshake populates the shell (the config document validated
+//! through the same [`Shell::from_value`] gate a connector's own tests
+//! build the shell with);
 //! every RPC before that handshake, and every handshake attempt after
 //! it, is refused. [`run`] is what a spawned connector process runs;
 //! [`run_on`] is the seam under it — bind at an explicit path without

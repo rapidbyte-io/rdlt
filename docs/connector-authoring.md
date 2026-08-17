@@ -96,13 +96,25 @@ refusal; no other exit or stdout-producing failure means "unsupported
 role." First-party binaries obtain this refusal from clap, and their
 spawn suites pin the exit code and empty stdout.
 
-The sdk's shell provides the whole SPI. Export the canonical face as a
-type alias and the SPI arrives in one call:
+The sdk's shell provides the whole SPI, and a connector runs as a
+PROCESS: `serve` builds the shell from the handshake's config document
+and serves it over the wire, and `serve_main!` is the binary's whole
+`main` — one role arm per half you implement:
 
 ```rust
-pub type Shell = rdlt_connector_sdk::source::Shell<MySource>;
-// callers: Shell::from_yaml(text)?  /  Shell::new(config)?
+rdlt_connector_sdk::serve_main! {
+    about: "my connector — what goes in, what comes out",
+    roles: {
+        Source => rdlt_connector_sdk::serve::source::run::<MySource>(),
+        Destination => rdlt_connector_sdk::serve::destination::run::<MyDest>(),
+    }
+}
 ```
+
+Export no in-process door: a connector's own tests may build the same
+face directly — `rdlt_connector_sdk::source::Shell::<MySource>::from_value(..)`
+(or `from_yaml`/`from_json`/`new`) — to drive it and the kits without
+spawning, and that is the one in-process use.
 
 `Feed` makes cancellation a property of the type: every push returns
 `ControlFlow`, and `Break` means the host hung up — return `Ok(())`
@@ -111,8 +123,7 @@ promptly. Never invent an error for a closed channel.
 Memory, when spawned: the serve loop that carries your frames to the
 wire is BYTE-bounded, so a spawned connector's in-flight encoded
 frames are capped by the sdk's own budget — your producer parks
-behind a slow consumer exactly like an in-process reader would,
-rather than buffering ahead without limit. `BYTE_FRAME_BUDGET` in the
+behind a slow consumer rather than buffering ahead without limit. `BYTE_FRAME_BUDGET` in the
 sdk's `serve/source.rs` owns the numbers and the worst-case
 arithmetic. Two consequences: your own batch/page sizing decides
 FRAME sizes (the budget prices frames by what they weigh, so smaller
@@ -194,7 +205,12 @@ assert_conformant(conformance::source::verify(&shell).await.expecting_no_skips()
 assert_conformant(conformance::destination::verify(&shell, &probe).await.expecting_no_skips()); // + your TableProbe
 ```
 
-They run anywhere — no network, no containers. Container-backed suites
+`shell` is the face your test builds in-process
+(`Shell::<MySource>::from_value(..)`); the wire-side certifier
+(`rdlt-certify`, `rdlt certify` in the CLI) judges the BUILT binary
+against the same clauses plus the protocol and kill clauses, which is
+what this repo's gates run against the reference connector. The kits
+run anywhere — no network, no containers. Container-backed suites
 follow the gate posture: probe `rdlt_testkit::gate::runtime_available`,
 print a visible `SKIP` and return early when absent (never panic), and
 label every container `rdlt-test=1` so `make reclaim` can sweep it.

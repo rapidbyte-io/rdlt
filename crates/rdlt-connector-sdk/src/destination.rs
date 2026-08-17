@@ -25,8 +25,10 @@
 //!
 //! [`WriteGuard`] carries the trust-boundary-independent half —
 //! write-before-ensure and open-once — split out from [`Session`] so
-//! TWO callers enforce the SAME rules: [`Session`] composes it for an
-//! in-process embedder, and the serve layer enforces it directly
+//! TWO callers enforce the SAME rules: [`Session`] composes it for a
+//! caller driving the shell as an SPI [`Destination`] (the client
+//! crate's remote-backend adapter, a connector's own tests), and the
+//! serve layer enforces it directly
 //! against raw wire frames, because a bidi stream carrying
 //! client-supplied frame ORDER never trusts that order. The commit
 //! choreography (`existing_receipt` → `replay` → `publish`) stays
@@ -168,7 +170,9 @@ pub trait Backend: Send {
 }
 
 /// The SPI shell around a [`DestinationConnector`] — what [`shell`]
-/// returns.
+/// returns, and the SPI face `serve` runs over. Production connectors
+/// run as processes; building a shell in-process is the seam `serve`
+/// uses and the one a connector's own tests may use.
 #[derive(Debug, Clone)]
 pub struct Shell<C> {
     connector: C,
@@ -179,9 +183,10 @@ pub fn shell<C: DestinationConnector>(connector: C) -> Shell<C> {
     Shell { connector }
 }
 
-/// The from-text constructor family every connector used to hand-roll —
-/// written once, here: parse (through the config's [`Document`] gate),
-/// assemble, shell.
+/// The constructor family: parse (through the config's [`Document`]
+/// gate), assemble, shell. `serve` enters through [`Shell::from_value`]
+/// with the handshake's document; a connector's tests build the same
+/// face in-process from a value or text.
 impl<C: DestinationConnector> Shell<C> {
     /// Validate an already-parsed document, assemble, and shell — the
     /// entry for a caller holding a config VALUE rather than text (a
@@ -202,8 +207,9 @@ impl<C: DestinationConnector> Shell<C> {
         Ok(shell(C::assemble(C::Config::from_json(json)?)?))
     }
 
-    /// The embedder entry point: an already-parsed `serde_json::Value`
-    /// straight through the same gate.
+    /// The value entry — what `serve` calls with the handshake's config
+    /// document: an already-parsed `serde_json::Value` straight through
+    /// the same gate.
     pub fn from_value(value: serde_json::Value) -> Result<Self, <C::Config as Document>::Error> {
         Ok(shell(C::assemble(C::Config::from_value(value)?)?))
     }
@@ -327,10 +333,10 @@ pub struct Session<B> {
 
 impl<B> Session<B> {
     /// Wrap an already-open `backend` in a fresh session — a new,
-    /// unopened [`WriteGuard`] alongside it. The in-process path
-    /// ([`Destination::open`]) calls this immediately after its own
-    /// `connect` succeeds; the remote-backend adapter is the second,
-    /// out-of-process caller.
+    /// unopened [`WriteGuard`] alongside it. [`Destination::open`] calls
+    /// this immediately after its own `connect` succeeds; the client
+    /// crate's remote-backend adapter is the second caller, over a
+    /// `Backend` that dials the connector process.
     pub fn new(backend: B) -> Self {
         Self {
             backend,

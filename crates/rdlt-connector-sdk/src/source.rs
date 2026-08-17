@@ -128,7 +128,10 @@ impl Feed {
     }
 }
 
-/// The SPI shell around a [`SourceConnector`] — what [`shell`] returns.
+/// The SPI shell around a [`SourceConnector`] — what [`shell`] returns,
+/// and the SPI face `serve` runs over. Production connectors run as
+/// processes; building a shell in-process is the seam `serve` uses and
+/// the one a connector's own tests may use.
 #[derive(Debug, Clone)]
 pub struct Shell<C> {
     connector: C,
@@ -142,9 +145,10 @@ pub fn shell<C: SourceConnector>(connector: C) -> Shell<C> {
     Shell { connector }
 }
 
-/// The from-text constructor family: parse (through the config's
-/// [`Document`] gate), assemble, shell. `Shell::<Rest>::from_yaml(yaml)`
-/// is a running SPI source in one call.
+/// The constructor family: parse (through the config's [`Document`]
+/// gate), assemble, shell. `serve` enters through [`Shell::from_value`]
+/// with the handshake's document; a connector's tests build the same
+/// face in-process from a value or text.
 impl<C: SourceConnector> Shell<C> {
     /// Validate an already-parsed document, assemble, and shell — the
     /// entry for a caller holding a config VALUE rather than text (a
@@ -165,8 +169,9 @@ impl<C: SourceConnector> Shell<C> {
         Ok(shell(C::assemble(C::Config::from_json(json)?)?))
     }
 
-    /// The embedder entry point: an already-parsed `serde_json::Value`
-    /// straight through the same gate.
+    /// The value entry — what `serve` calls with the handshake's config
+    /// document: an already-parsed `serde_json::Value` straight through
+    /// the same gate.
     pub fn from_value(value: serde_json::Value) -> Result<Self, <C::Config as Document>::Error> {
         Ok(shell(C::assemble(C::Config::from_value(value)?)?))
     }
