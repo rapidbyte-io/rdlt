@@ -1,17 +1,16 @@
-//! Locating a connector crate's built binary for spawn suites — the 039
-//! rdlt-runtime pattern, in ONE place (042 round-2 fix wave: five
-//! connector crates carried verbatim copies, so every fix to the shared
-//! mechanics had to land five times or the suites diverged, one crate
-//! certifying a stale binary while another rebuilt).
+//! Locating a connector crate's built binary for spawn suites, in ONE
+//! place: when every connector crate carried its own copy, a fix to the
+//! shared mechanics had to land in each or the suites diverged, one
+//! crate certifying a stale binary while another rebuilt.
 //!
 //! The mechanics: `CARGO_TARGET_DIR` honored when absolute and refused
 //! when relative (see `target_debug_dir`), the build itself guarded by
 //! `RDLT_BUILD_CONNECTOR_BINS` (the Makefile's spawn-bins lines set
 //! it), and a missing bin failing LOUDLY with instructions rather than
 //! building behind the runner's back or quietly skipping — either would
-//! be the 024 silent-pass class wearing a new hat. The binary feature is
-//! the 039 T6 convention every served connector follows: `bin-serve`
-//! gates a `[[bin]]` named after the crate.
+//! be a silent pass wearing a new hat. The binary feature is the
+//! convention every served connector follows: `bin-serve` gates a
+//! `[[bin]]` named after the crate.
 
 use std::path::{Path, PathBuf};
 
@@ -26,8 +25,8 @@ fn workspace_root(manifest_dir: &str) -> PathBuf {
 }
 
 /// Where debug binaries land — `CARGO_TARGET_DIR` honored for ABSOLUTE
-/// values, refused for relative ones (round-4 fix): cargo resolves a
-/// relative value against ITS OWN invocation cwd, and two cargos run
+/// values, refused for relative ones: cargo resolves a relative value
+/// against ITS OWN invocation cwd, and two cargos run
 /// here with different cwds — the test process that looks the binary
 /// up (the harness's cwd) and this scaffold's own `cargo build` (the
 /// workspace root) — so any single resolution would be a guess that
@@ -75,20 +74,20 @@ fn debug_dir_from(
 /// workspace lookup to the caller's tree rather than wherever this
 /// crate's sources live.
 pub fn built_connector_bin(manifest_dir: &str, crate_name: &str) -> PathBuf {
-    // NO once-per-process guard, deliberately (round-7 honesty fix: a
-    // per-process registry sat here and guarded nothing — the gate's
-    // runner is nextest, whose process-per-test model gives every test
-    // its own process). The truth: in rebuild mode EVERY call invokes
-    // cargo, concurrent invocations are serialized by cargo's own
-    // target-directory lock, and a repeat build is an incremental
-    // no-op — correct, bounded, and honestly redundant.
+    // NO once-per-process guard, deliberately: the gate's runner is
+    // nextest, whose process-per-test model gives every test its own
+    // process, so a per-process registry would guard nothing. In
+    // rebuild mode EVERY call invokes cargo, concurrent invocations are
+    // serialized by cargo's own target-directory lock, and a repeat
+    // build is an incremental no-op — correct, bounded, and honestly
+    // redundant.
     if std::env::var_os("RDLT_BUILD_CONNECTOR_BINS").is_none() {
-        // Opt-in rebuild, deliberately (039): the gate line sets the
-        // var, and a developer running this suite in a loop should
-        // not pay a cargo invocation per run. The residue is that a
-        // STALE bin certifies green here, so say so out loud —
-        // silence is what would make an hours-old binary look like
-        // evidence about the current tree.
+        // Opt-in rebuild, deliberately: the gate line sets the var, and
+        // a developer running this suite in a loop should not pay a
+        // cargo invocation per run. The residue is that a STALE bin
+        // certifies green here, so say so out loud — silence is what
+        // would make an hours-old binary look like evidence about the
+        // current tree.
         eprintln!(
             "note: RDLT_BUILD_CONNECTOR_BINS is unset — spawning the \
              {crate_name} binary already on disk WITHOUT rebuilding. \
@@ -132,10 +131,9 @@ mod resolution_tests {
 
     /// The three arms of the rule: unset falls back to the workspace's
     /// own target/, absolute is honored as-is, relative is REFUSED
-    /// with instructions — never resolved by guess (the round-4 fix:
-    /// the old code resolved against the workspace root while cargo
-    /// resolves against the invocation cwd, so the lookup and the
-    /// build could disagree).
+    /// with instructions — never resolved by guess (resolving against
+    /// the workspace root while cargo resolves against the invocation
+    /// cwd let the lookup and the build disagree).
     #[test]
     fn relative_cargo_target_dir_is_refused_not_guessed() {
         let manifest = "/repo/crates/some-crate";

@@ -7,18 +7,19 @@ use rdlt_connector::source::StreamSpec;
 use rdlt_core::error::Error;
 use rdlt_core::event::PipelineEvent;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::{evolving_batches, three_batch_source, three_batches};
+use super::support::scripted;
 
 /// Kills: retry-attempt arithmetic (`attempt + 1`→`*`, `<`→`<=` in the retry
 /// guard) — the attempt COUNT is asserted, not just eventual success/failure.
 #[tokio::test]
 async fn transient_failures_retry_exactly_and_are_counted() {
-    let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![
-        MemoryStream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(2),
+    let dest = memory::Destination::new();
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(2),
     ]);
     let since_log = source.since_log();
     let report = Engine::new(EngineConfig::new("retry"), source, dest.clone())
@@ -33,9 +34,9 @@ async fn transient_failures_retry_exactly_and_are_counted() {
     );
 
     // Budget exhaustion: 5 attempts maximum, then a classified error.
-    let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![
-        MemoryStream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(99),
+    let dest = memory::Destination::new();
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(99),
     ]);
     let since_log = source.since_log();
     let err = Engine::new(EngineConfig::new("retry-out"), source, dest)
@@ -60,9 +61,9 @@ async fn transient_failures_retry_exactly_and_are_counted() {
 /// retry. Retries surface in the report AND as events — never silent.
 #[tokio::test]
 async fn transient_source_failures_are_retried_and_counted() {
-    let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![
-        MemoryStream::new(
+    let dest = memory::Destination::new();
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(
             rdlt_connector::source::StreamSpec::new("s"),
             evolving_batches(),
         )
@@ -88,9 +89,9 @@ async fn transient_source_failures_are_retried_and_counted() {
 /// surfaces as a classified source error.
 #[tokio::test]
 async fn retry_budget_exhaustion_is_a_classified_error() {
-    let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![
-        MemoryStream::new(
+    let dest = memory::Destination::new();
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(
             rdlt_connector::source::StreamSpec::new("s"),
             evolving_batches(),
         )
@@ -122,9 +123,10 @@ async fn retry_budget_exhaustion_is_a_classified_error() {
 /// `MAX_RUN_ATTEMPTS` without a hardcoded count.
 #[tokio::test]
 async fn a_failed_run_closes_best_effort() {
-    let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![
-        MemoryStream::new(StreamSpec::new("s"), evolving_batches()).transient_start_failures(100),
+    let dest = memory::Destination::new();
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(StreamSpec::new("s"), evolving_batches())
+            .transient_start_failures(100),
     ]);
     let err = Engine::new(
         EngineConfig::new("retry-exhaust-closes-best-effort"),
@@ -135,7 +137,7 @@ async fn a_failed_run_closes_best_effort() {
     .await
     .expect_err("must eventually fail");
     // The run's own error is still the ORIGINAL failure — a close
-    // artifact (impossible for `MemoryDestination`, whose close cannot
+    // artifact (impossible for `memory::Destination`, whose close cannot
     // fail, but the shape is pinned regardless) must never leak into
     // or replace it.
     assert!(
@@ -164,14 +166,14 @@ async fn a_failed_run_closes_best_effort() {
 /// the ONLY delivery.
 #[tokio::test]
 async fn mid_stream_transient_retry_does_not_duplicate_staged_rows() {
-    let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![
-        MemoryStream::new(
+    let dest = memory::Destination::new();
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(
             rdlt_connector::source::StreamSpec::new("s"),
             vec![
-                MemoryBatch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
-                MemoryBatch::new(vec![json!({"seq": 3})]), // staged, NOT checkpointed…
-                MemoryBatch::new(vec![json!({"seq": 4})]).with_checkpoint(3),
+                memory::Batch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
+                memory::Batch::new(vec![json!({"seq": 3})]), // staged, NOT checkpointed…
+                memory::Batch::new(vec![json!({"seq": 4})]).with_checkpoint(3),
             ],
         )
         .transient_fail_after_once(2), // …then the source dies transiently
@@ -200,7 +202,7 @@ async fn mid_stream_transient_retry_does_not_duplicate_staged_rows() {
 /// destination's recoverable channel is honored, not aborted on.
 #[derive(Clone)]
 struct TransientCommitDest {
-    inner: MemoryDestination,
+    inner: memory::Destination,
     remaining: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -278,7 +280,7 @@ impl rdlt_connector::destination::LoadSession for TransientCommitSession {
 /// one; a rate-limited/fatal split is asserted via the terminal class.
 #[tokio::test]
 async fn transient_destination_failures_retry_and_are_bounded() {
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let dest = TransientCommitDest {
         inner: inner.clone(),
         remaining: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(2)),
@@ -292,7 +294,7 @@ async fn transient_destination_failures_retry_and_are_bounded() {
 
     // Budget exhaustion: the ceiling applies to destination retries too.
     let dest = TransientCommitDest {
-        inner: MemoryDestination::new(),
+        inner: memory::Destination::new(),
         remaining: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
     };
     let source = three_batch_source();
@@ -345,7 +347,7 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
     // ---- destination side: every commit fails transiently, forever ----
     let remaining = std::sync::Arc::new(AtomicU64::new(u64::MAX));
     let dest = TransientCommitDest {
-        inner: MemoryDestination::new(),
+        inner: memory::Destination::new(),
         remaining: std::sync::Arc::clone(&remaining),
     };
     let source = three_batch_source();
@@ -375,8 +377,9 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
     );
 
     // ---- source side: every read fails transiently, forever ----
-    let source = MemorySource::new(vec![
-        MemoryStream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(u32::MAX),
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(StreamSpec::new("s"), three_batches())
+            .transient_start_failures(u32::MAX),
     ]);
     let since_log = source.since_log();
     let err = tokio::time::timeout(
@@ -384,7 +387,7 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
         Engine::new(
             EngineConfig::new("source-bounded"),
             source,
-            MemoryDestination::new(),
+            memory::Destination::new(),
         )
         .run(),
     )

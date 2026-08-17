@@ -28,7 +28,7 @@ pub struct Missing;
 /// ```compile_fail
 /// // B1: this must NOT compile — no destination was provided.
 /// let _ = rdlt::Pipeline::builder("p")
-///     .source(rdlt_testkit::MemorySource::default())
+///     .source(rdlt_testkit::memory::Source::default())
 ///     .build();
 /// ```
 #[derive(Debug)]
@@ -266,10 +266,10 @@ impl Pipeline {
     /// ```compile_fail
     /// # async fn demo() {
     /// use rdlt::Pipeline;
-    /// use rdlt_testkit::{MemoryDestination, MemorySource};
+    /// use rdlt_testkit::memory;
     /// let pipeline = Pipeline::builder("p")
-    ///     .source(MemorySource::default())
-    ///     .destination(MemoryDestination::new())
+    ///     .source(memory::Source::default())
+    ///     .destination(memory::Destination::new())
     ///     .build()
     ///     .unwrap();
     /// let _ = pipeline.run().await;

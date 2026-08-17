@@ -10,10 +10,9 @@ use rdlt_connector_sdk::spi::core::commit::{CommitReceipt, WriteMode};
 use rdlt_connector_sdk::spi::core::id::{LoadId, PipelineId, TableName};
 use rdlt_connector_sdk::spi::destination::{Destination, OpenContext};
 use rdlt_connector_sdk::spi::source::Source;
-use rdlt_testkit::{
-    TableProbe, assert_conformant, batch_of, commit_meta_for, schema_for, verify_destination,
-    verify_source,
-};
+use rdlt_testkit::conformance::destination::TableProbe;
+use rdlt_testkit::conformance::{self, assert_conformant};
+use rdlt_testkit::fixtures::{batch_of, commit_meta_for, schema_for};
 use serde_json::json;
 
 use super::common::{DirProbe, read_stream};
@@ -46,7 +45,11 @@ fn seeded_source() -> (tempfile::TempDir, std::path::PathBuf, source::Shell) {
 async fn the_source_kit_certifies_the_shell() {
     let (_dir, _path, shell) = seeded_source();
     assert_eq!(shell.spec().name, "io.rapidbyte.reference");
-    assert_conformant(verify_source(&shell).await.expecting_no_skips());
+    assert_conformant(
+        conformance::source::verify(&shell)
+            .await
+            .expecting_no_skips(),
+    );
 }
 
 /// The destination kit: staging invisibility, atomic state, idempotent
@@ -59,7 +62,7 @@ async fn the_destination_kit_certifies_the_shell() {
     assert_eq!(shell.spec().name, "io.rapidbyte.reference");
     let probe = DirProbe(dir.path().to_path_buf());
     assert_conformant(
-        verify_destination(&shell, &probe)
+        conformance::destination::verify(&shell, &probe)
             .await
             .expecting_no_skips(),
     );

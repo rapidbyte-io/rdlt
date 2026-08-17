@@ -7,7 +7,7 @@
 
 use proptest::prelude::*;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 use serde_json::{Value, json};
 
 use super::common::without_load_id;
@@ -44,9 +44,9 @@ fn rows_strategy() -> impl Strategy<Value = Vec<Value>> {
     )
 }
 
-async fn run_once(rows: Vec<Value>) -> MemoryDestination {
-    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows);
-    let dest = MemoryDestination::new();
+async fn run_once(rows: Vec<Value>) -> memory::Destination {
+    let source = memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows);
+    let dest = memory::Destination::new();
     Engine::new(EngineConfig::new("roundtrip"), source, dest.clone())
         .run()
         .await

@@ -7,7 +7,7 @@
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 fn nested_rows(n: usize) -> Vec<serde_json::Value> {
@@ -39,11 +39,11 @@ fn bench_shred(c: &mut Criterion) {
     group.throughput(Throughput::Elements(ROWS as u64));
     group.bench_function("nested_json_10k_rows", |b| {
         b.iter(|| {
-            let source = MemorySource::single_stream(
+            let source = memory::Source::single_stream(
                 rdlt_connector::source::StreamSpec::new("bench"),
                 rows.clone(),
             );
-            let dest = MemoryDestination::new();
+            let dest = memory::Destination::new();
             let report = runtime
                 .block_on(Engine::new(EngineConfig::new("bench"), source, dest).run())
                 .expect("run");

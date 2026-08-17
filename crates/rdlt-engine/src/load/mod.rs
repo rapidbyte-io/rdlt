@@ -3,6 +3,8 @@
 //! apply/lowering seams recovery replays through.
 
 pub(crate) mod apply;
+#[cfg(test)]
+mod ipc_fixture;
 mod item;
 mod loader;
 mod lowering;

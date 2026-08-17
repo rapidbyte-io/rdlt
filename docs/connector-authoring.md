@@ -188,16 +188,19 @@ commit as another's replay, silently.
 The kits are the contract:
 
 ```rust
-assert_conformant(verify_source(&shell).await);
-assert_conformant(verify_destination(&shell, &probe).await);   // + your TableProbe
+use rdlt_testkit::conformance::{self, assert_conformant};
+
+assert_conformant(conformance::source::verify(&shell).await.expecting_no_skips());
+assert_conformant(conformance::destination::verify(&shell, &probe).await.expecting_no_skips()); // + your TableProbe
 ```
 
 They run anywhere — no network, no containers. Container-backed suites
 follow the gate posture: probe `rdlt_testkit::gate::runtime_available`,
 print a visible `SKIP` and return early when absent (never panic), and
 label every container `rdlt-test=1` so `make reclaim` can sweep it.
-Crash points register with `assert_registry_matches_sources` and join
-the sweep matrix.
+Crash points register with
+`rdlt_testkit::scanner::assert_registry_matches_sources` and join the
+sweep matrix.
 
 ## House rules that reviews enforce
 

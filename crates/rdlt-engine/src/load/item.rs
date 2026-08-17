@@ -137,8 +137,7 @@ mod tests {
     /// meter both seams share.
     #[test]
     fn byte_size_of_an_ipc_decoded_batch_is_near_the_body_it_decodes_from() {
-        let (stream_len, decoded, row_payload) =
-            rdlt_testkit::fixtures::ipc_fixture::ipc_round_trip();
+        let (stream_len, decoded, row_payload) = crate::load::ipc_fixture::ipc_round_trip();
         let metered = LoadItem::batch(TableName::new("t"), decoded).byte_size();
         assert!(
             metered >= row_payload,
@@ -157,7 +156,7 @@ mod tests {
     /// between its raw row payload and double it.
     #[test]
     fn byte_size_of_a_builder_built_batch_stays_between_payload_and_double() {
-        let (batch, row_payload) = rdlt_testkit::fixtures::ipc_fixture::wide_batch();
+        let (batch, row_payload) = crate::load::ipc_fixture::wide_batch();
         let metered = LoadItem::batch(TableName::new("t"), batch).byte_size();
         assert!(
             metered >= row_payload && metered <= 2 * row_payload,

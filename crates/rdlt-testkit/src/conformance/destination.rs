@@ -33,15 +33,8 @@ use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::core::types::LogicalType;
 use rdlt_connector::destination::{Destination, LoadSession, OpenContext};
 
-use super::{Conformance, ConformanceFailure, ConformanceSkip};
+use super::{Failure, Skip, Verdict};
 use crate::fixtures;
-
-/// This suite's verdict shape — the shared [`Conformance`]
-/// (`failures` + `skips` + the strict `expecting_no_skips` fold),
-/// named for the suite that produced it. An aborted run's unreached
-/// clauses ride `skips` (never a silent pass — the wave-1 docket fix),
-/// with the aborting clause named in each reason.
-pub type DestinationConformance = Conformance;
 
 /// The one capability the SPI cannot provide: counting reader-VISIBLE
 /// rows in a table (a warehouse query). Implement per destination under
@@ -134,7 +127,7 @@ fn commit_meta(
     }
 }
 
-/// Every clause [`verify_destination`] asserts, in the suite's own
+/// Every clause [`verify`] asserts, in the suite's own
 /// execution order (D8 last — asserted only when the destination
 /// declares the merge capability). THE one clause list: the abort tail
 /// derives its unreached set from it, and certifiers pin their own
@@ -149,26 +142,20 @@ pub const ASSERTED_CLAUSES: [&str; 7] = ["D6", "D1", "D5", "D4", "D2", "D3", "D8
 /// the clause it happened under AND reports every asserted clause whose
 /// checks never concluded as a skip naming the abort — never a silent
 /// pass.
-pub async fn verify_destination<D: Destination>(
-    dest: &D,
-    probe: &dyn TableProbe,
-) -> DestinationConformance {
+pub async fn verify<D: Destination>(dest: &D, probe: &dyn TableProbe) -> Verdict {
     let mut failures = Vec::new();
     // Clauses whose checks all CONCLUDED (with whatever verdict) — what
     // separates "the suite found nothing against it" from "the suite
     // never got there" when an abort cuts the run short.
     let mut concluded: Vec<&'static str> = Vec::new();
     let mut aborted: Option<&'static str> = None;
-    let fail = |clause: &'static str, message: String| ConformanceFailure { clause, message };
+    let fail = |clause: &'static str, message: String| Failure { clause, message };
 
-    // The host's CURRENT session lives OUTSIDE the labeled block
-    // (round-9 fix): `try_step!`'s abort used to jump past the
-    // best-effort close at the block's end, so any mid-suite failure
-    // left the last session open — for a destination holding a
-    // session-scoped lease (the file destination), the certifying
-    // process then reported a lease conflict on its next open instead
-    // of the probe failure that actually aborted. The close now sits
-    // AFTER the label, on both the completed and the aborted path.
+    // The host's CURRENT session lives OUTSIDE the labeled block so
+    // `try_step!`'s abort cannot jump past its close: a mid-suite
+    // failure that left the last session open made a destination
+    // holding a session-scoped lease report a lease conflict on its
+    // next open instead of the failure that actually aborted.
     let mut host_session: Option<Box<dyn LoadSession>> = None;
 
     'suite: {
@@ -196,10 +183,9 @@ pub async fn verify_destination<D: Destination>(
         let schema = fixture_schema("rdlt_conf_t");
 
         // ---- D6: a fresh pipeline has no state ----
-        // Setup failures carry the clause they are setting up (here D6, below
-        // D1) — generation 1 labelled every open "D4" and sent an author whose
-        // open fails to investigate teardown semantics that were never
-        // reached.
+        // Setup failures carry the clause they are setting up (here D6,
+        // below D1): labelling every open "D4" would send an author whose
+        // open fails to investigate teardown semantics never reached.
         let mut session = try_step!(
             "D6",
             "open failed",
@@ -222,9 +208,8 @@ pub async fn verify_destination<D: Destination>(
         }
         concluded.push("D6");
         // Best-effort, unclaused — same reasoning as the host close after
-        // the labeled block (037 US2 fix round 2, M3): the kit is a HOST,
-        // and a well-behaved host closes every session it opens, not only
-        // its last one.
+        // the labeled block: the kit is a HOST, and a well-behaved host
+        // closes every session it opens, not only its last one.
         let _ = session.close().await;
 
         // ---- D1: staged writes are invisible before commit ----
@@ -277,10 +262,10 @@ pub async fn verify_destination<D: Destination>(
             "ensure_table on new session",
             session2.ensure_table(&schema, &WriteMode::Append).await
         );
-        // D5 concludes only HERE (round-7 fix): its clause spans the
-        // first session's repeat-ensure loop AND this new-session
-        // ensure, and an abort between the two used to render D5 a
-        // full PASS with one of its checks never run.
+        // D5 concludes only HERE: its clause spans the first session's
+        // repeat-ensure loop AND this new-session ensure, and an abort
+        // between the two would otherwise render D5 a full PASS with one
+        // of its checks never run.
         concluded.push("D5");
         try_step!(
             "D4",
@@ -404,10 +389,9 @@ pub async fn verify_destination<D: Destination>(
     }
 
     // The kit is itself a HOST, and a well-behaved host closes the
-    // session it holds — on the completed path AND on an abort (037 US2
-    // T7 fix round 1 gave the completed path its close; round 9 moved
-    // it here, past the label, so `try_step!`'s abort routes through it
-    // too). Best-effort and unclaused deliberately: no clause here
+    // session it holds — on the completed path AND on an abort, which
+    // is why this sits past the label where `try_step!` lands.
+    // Best-effort and unclaused deliberately: no clause here
     // certifies `close` itself (a destination with nothing to release
     // on close, which is most of them via the default impl, has nothing
     // to fail), so a close error is not turned into a new failure the
@@ -437,14 +421,14 @@ pub async fn verify_destination<D: Destination>(
                 .filter(|clause| {
                     !concluded.contains(clause) && !failures.iter().any(|f| f.clause == *clause)
                 })
-                .map(|clause| ConformanceSkip {
+                .map(|clause| Skip {
                     clause,
                     reason: format!("not run — the suite aborted at {at} before reaching it"),
                 })
                 .collect()
         }
     };
-    DestinationConformance {
+    Verdict {
         failures,
         skips,
         concluded,

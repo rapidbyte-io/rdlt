@@ -12,22 +12,22 @@ use rdlt_core::error::Error;
 use rdlt_core::id::TableName;
 use rdlt_core::report::ResumedFrom;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{
-    CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream, Row,
-};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::{stream_with_batches, three_batches, without_load_id};
+use super::support::crash::{CrashDestination, FaultPoint};
+use super::support::scripted;
 
-fn batches() -> Vec<MemoryBatch> {
+fn batches() -> Vec<memory::Batch> {
     vec![
-        MemoryBatch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
-        MemoryBatch::new(vec![json!({"seq": 3}), json!({"seq": 4})]).with_checkpoint(2),
-        MemoryBatch::new(vec![json!({"seq": 5})]).with_checkpoint(3),
+        memory::Batch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
+        memory::Batch::new(vec![json!({"seq": 3}), json!({"seq": 4})]).with_checkpoint(2),
+        memory::Batch::new(vec![json!({"seq": 5})]).with_checkpoint(3),
     ]
 }
 
-fn source() -> MemorySource {
+fn source() -> scripted::Source {
     stream_with_batches(rdlt_connector::source::StreamSpec::new("events"), batches())
 }
 
@@ -38,12 +38,12 @@ fn config(workdir: &std::path::Path) -> EngineConfig {
     config
 }
 
-type Snapshot = BTreeMap<TableName, Vec<Row>>;
+type Snapshot = BTreeMap<TableName, Vec<memory::Row>>;
 
 /// The ground truth: what an uninterrupted run produces.
 async fn uninterrupted() -> Snapshot {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     Engine::new(config(dir.path()), source(), dest.clone())
         .run()
         .await
@@ -56,9 +56,9 @@ async fn uninterrupted() -> Snapshot {
 #[tokio::test]
 async fn row1_source_crash_mid_extraction() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest = MemoryDestination::new();
-    let crashing = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
+    let dest = memory::Destination::new();
+    let crashing = scripted::Source::new(vec![
+        scripted::Stream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
             .fatal_after(1),
     ]);
     let err = Engine::new(config(dir.path()), crashing, dest.clone())
@@ -88,7 +88,7 @@ async fn row1_source_crash_mid_extraction() {
 #[tokio::test]
 async fn row2_crash_before_commit_replays_wal() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
@@ -129,7 +129,7 @@ async fn row2_crash_before_commit_replays_wal() {
 #[tokio::test]
 async fn row3_crash_mid_commit_hits_idempotence() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::AfterCommit(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
@@ -167,7 +167,7 @@ async fn row3_crash_mid_commit_hits_idempotence() {
 #[test]
 fn a_fifo_planted_as_the_manifest_after_a_crash_recovers_promptly() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
 
     let runtime = || {
@@ -222,7 +222,7 @@ fn a_fifo_planted_as_the_manifest_after_a_crash_recovers_promptly() {
 #[tokio::test]
 async fn row4_wal_lost_reextracts_from_cursor() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
@@ -252,7 +252,7 @@ async fn row4_wal_lost_reextracts_from_cursor() {
 #[tokio::test]
 async fn row2_variant_crash_before_write() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeWrite(2));
 
     Engine::new(config(dir.path()), source(), flaky.clone())
@@ -273,9 +273,9 @@ async fn row2_variant_crash_before_write() {
 #[tokio::test]
 async fn cancellation_recovers_like_a_crash() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest = MemoryDestination::new();
-    let slow = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
+    let dest = memory::Destination::new();
+    let slow = scripted::Source::new(vec![
+        scripted::Stream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
             .batch_delay(std::time::Duration::from_millis(40)),
     ]);
     let engine = Engine::new(config(dir.path()), slow, dest.clone());
@@ -300,9 +300,9 @@ async fn cancellation_recovers_like_a_crash() {
 #[tokio::test]
 async fn dropped_run_recovers_like_a_crash() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dest = MemoryDestination::new();
-    let slow = MemorySource::new(vec![
-        MemoryStream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
+    let dest = memory::Destination::new();
+    let slow = scripted::Source::new(vec![
+        scripted::Stream::new(rdlt_connector::source::StreamSpec::new("events"), batches())
             .batch_delay(std::time::Duration::from_millis(40)),
     ]);
     let run = tokio::spawn(Engine::new(config(dir.path()), slow, dest.clone()).run());
@@ -323,17 +323,17 @@ async fn dropped_run_recovers_like_a_crash() {
 /// in `send` unblock when the loader drops the receiver).
 #[tokio::test]
 async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner, FaultPoint::BeforeWrite(1));
     // Many sizable batches, no checkpoints, and a tiny byte budget: the channel is
     // guaranteed saturated while the loader fails on the very first write.
     let big_rows: Vec<serde_json::Value> = (0..200)
         .map(|i| json!({"n": i, "pad": "x".repeat(200)}))
         .collect();
-    let source = MemorySource::new(vec![MemoryStream::new(
+    let source = scripted::Source::new(vec![scripted::Stream::new(
         rdlt_connector::source::StreamSpec::new("events"),
         (0..20)
-            .map(|_| MemoryBatch::new(big_rows.clone()))
+            .map(|_| memory::Batch::new(big_rows.clone()))
             .collect(),
     )]);
     let mut config = EngineConfig::new("deadlock");
@@ -355,9 +355,9 @@ async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
 /// a cancelled run must surface EXACTLY `Error::Cancelled`.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancellation_surfaces_the_cancelled_error() {
-    let dest = MemoryDestination::new();
-    let source = MemorySource::new(vec![
-        MemoryStream::new(
+    let dest = memory::Destination::new();
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(
             rdlt_connector::source::StreamSpec::new("s"),
             three_batches(),
         )
@@ -407,7 +407,7 @@ async fn cancelling_a_parked_source_returns_promptly() {
     let engine = Engine::new(
         EngineConfig::new("parked"),
         Parked,
-        MemoryDestination::new(),
+        memory::Destination::new(),
     );
     let token = engine.cancellation_token();
     let run = tokio::spawn(engine.run());
@@ -453,7 +453,7 @@ async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
     let engine = Engine::new(
         EngineConfig::new("close-then-park"),
         CloseThenPark(std::sync::Arc::clone(&closed)),
-        MemoryDestination::new(),
+        memory::Destination::new(),
     );
     let token = engine.cancellation_token();
     let run = tokio::spawn(engine.run());
@@ -488,11 +488,11 @@ mod run_started_first_on_replay {
     use rdlt_connector::error::DestinationError;
     use rdlt_core::event::PipelineEvent;
 
-    /// MemoryDestination, plus a part report per commit — the shape of
+    /// memory::Destination, plus a part report per commit — the shape of
     /// every file-writing destination, reduced to the seam under test.
     #[derive(Clone)]
     struct PartEmitting {
-        inner: MemoryDestination,
+        inner: memory::Destination,
     }
 
     struct PartEmittingSession {
@@ -558,7 +558,7 @@ mod run_started_first_on_replay {
 
         // Run 1: crash during the second commit — a WAL span is left
         // pending with committed work behind it.
-        let crash = CrashDestination::new(MemoryDestination::new(), FaultPoint::BeforeCommit(2));
+        let crash = CrashDestination::new(memory::Destination::new(), FaultPoint::BeforeCommit(2));
         let outcome = Engine::new(config(dir.path()), source(), crash).run().await;
         assert!(outcome.is_err(), "the fixture must crash");
 
@@ -566,7 +566,7 @@ mod run_started_first_on_replay {
         // including replay's, if replay were (wrongly) given a
         // listener.
         let dest = PartEmitting {
-            inner: MemoryDestination::new(),
+            inner: memory::Destination::new(),
         };
         let engine = Engine::new(config(dir.path()), source(), dest);
         let mut events = engine.events();

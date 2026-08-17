@@ -8,17 +8,18 @@ use rdlt_core::error::Error;
 use rdlt_core::id::TableName;
 use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::stream_with_batches;
+use super::support::scripted;
 
-fn two_batch_source(batch2_rows: Vec<serde_json::Value>) -> MemorySource {
+fn two_batch_source(batch2_rows: Vec<serde_json::Value>) -> scripted::Source {
     stream_with_batches(
         rdlt_connector::source::StreamSpec::new("t"),
         vec![
-            MemoryBatch::new(vec![json!({"id": 1, "v": 10})]).with_checkpoint(1),
-            MemoryBatch::new(batch2_rows).with_checkpoint(2),
+            memory::Batch::new(vec![json!({"id": 1, "v": 10})]).with_checkpoint(1),
+            memory::Batch::new(batch2_rows).with_checkpoint(2),
         ],
     )
 }
@@ -26,7 +27,7 @@ fn two_batch_source(batch2_rows: Vec<serde_json::Value>) -> MemorySource {
 /// Scenario 1: default evolve — a new mid-run column lands; earlier rows read null.
 #[tokio::test]
 async fn evolve_applies_new_columns() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = two_batch_source(vec![json!({"id": 2, "v": 20, "extra": "late"})]);
     let report = Engine::new(EngineConfig::new("evolve"), source, dest.clone())
         .run()
@@ -43,7 +44,7 @@ async fn evolve_applies_new_columns() {
 /// table and column, and NO row of the violating batch is published.
 #[tokio::test]
 async fn freeze_fails_fast_and_publishes_nothing_from_violating_batch() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("freeze");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
@@ -70,7 +71,7 @@ async fn freeze_fails_fast_and_publishes_nothing_from_violating_batch() {
 /// Freeze does NOT fire when data conforms.
 #[tokio::test]
 async fn freeze_allows_conforming_data() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("freeze-ok");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     let source = two_batch_source(vec![json!({"id": 2, "v": 20})]);
@@ -85,7 +86,7 @@ async fn freeze_allows_conforming_data() {
 /// the report carries exact counts.
 #[tokio::test]
 async fn discard_row_drops_and_counts() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("discard-row");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardRow));
 
@@ -119,7 +120,7 @@ async fn discard_row_drops_and_counts() {
 /// Scenario 3b: DiscardValue — the offending values null out; rows load; counts land.
 #[tokio::test]
 async fn discard_value_nulls_and_counts() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("discard-value");
     config =
         config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardValue));
@@ -148,7 +149,7 @@ async fn discard_value_nulls_and_counts() {
 /// Per-column override beats the table policy.
 #[tokio::test]
 async fn per_column_policy_overrides_table_policy() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("column-override");
     config = config.with_schema_policy(
         SchemaPolicy::evolve()
@@ -171,7 +172,7 @@ async fn per_column_policy_overrides_table_policy() {
 /// cascade is counted.
 #[tokio::test]
 async fn discard_row_on_middle_table_cascades_to_grandchildren() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("cascade");
     config = config.with_schema_policy(
         SchemaPolicy::evolve().table("orders__items", PolicyAction::DiscardRow),
@@ -181,13 +182,13 @@ async fn discard_row_on_middle_table_cascades_to_grandchildren() {
         rdlt_connector::source::StreamSpec::new("orders"),
         vec![
             // Batch 1 establishes the items schema (no `bad` column).
-            MemoryBatch::new(vec![json!({
+            memory::Batch::new(vec![json!({
                 "id": 1,
                 "items": [{"sku": "a", "tags": [{"t": "x"}]}]
             })]),
             // Batch 2's item carries a new column → DiscardRow fires on the item;
             // its tag (a grandchild of the root) must cascade away with it.
-            MemoryBatch::new(vec![json!({
+            memory::Batch::new(vec![json!({
                 "id": 2,
                 "items": [{"sku": "b", "bad": 1, "tags": [{"t": "y"}]}]
             })]),
@@ -228,7 +229,7 @@ async fn discard_row_on_middle_table_cascades_to_grandchildren() {
 /// happens to have.
 #[tokio::test]
 async fn freeze_refuses_a_child_table_created_mid_run() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("freeze-child");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
@@ -263,7 +264,7 @@ async fn freeze_refuses_a_child_table_created_mid_run() {
 /// contract is only as strong as the shape of the first batch.
 #[tokio::test]
 async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("freeze-inherit");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
@@ -272,8 +273,8 @@ async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
     let source = stream_with_batches(
         rdlt_connector::source::StreamSpec::new("t"),
         vec![
-            MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
-            MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b", "qty": 3}]})])
+            memory::Batch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
+            memory::Batch::new(vec![json!({"id": 2, "items": [{"sku": "b", "qty": 3}]})])
                 .with_checkpoint(2),
         ],
     );
@@ -293,14 +294,14 @@ async fn a_frozen_parent_freezes_the_child_tables_it_creates() {
 /// pipeline's initial shape, however many tables that is.
 #[tokio::test]
 async fn freeze_allows_the_tables_the_first_drain_establishes() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("freeze-bootstrap");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::Freeze));
     let source = stream_with_batches(
         rdlt_connector::source::StreamSpec::new("t"),
         vec![
-            MemoryBatch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
-            MemoryBatch::new(vec![json!({"id": 2, "items": [{"sku": "b"}]})]).with_checkpoint(2),
+            memory::Batch::new(vec![json!({"id": 1, "items": [{"sku": "a"}]})]).with_checkpoint(1),
+            memory::Batch::new(vec![json!({"id": 2, "items": [{"sku": "b"}]})]).with_checkpoint(2),
         ],
     );
     Engine::new(config, source, dest.clone())
@@ -316,7 +317,7 @@ async fn freeze_allows_the_tables_the_first_drain_establishes() {
 /// creating the table anyway.
 #[tokio::test]
 async fn discard_refuses_a_mid_run_child_table_and_counts_its_rows() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("discard-child");
     config = config.with_schema_policy(SchemaPolicy::evolve().table("t", PolicyAction::DiscardRow));
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));

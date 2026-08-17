@@ -6,7 +6,7 @@ use rdlt_connector::source::StreamSpec;
 use rdlt_core::commit::{CommitPolicy, WriteMode};
 use rdlt_core::cursor::Cursor;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::{stream_with_batches, three_batch_source};
@@ -17,11 +17,11 @@ use super::common::{stream_with_batches, three_batch_source};
 async fn second_run_resumes_from_committed_cursor() {
     let batches = || {
         vec![
-            MemoryBatch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(2),
-            MemoryBatch::new(vec![json!({"seq": 3})]).with_checkpoint(3),
+            memory::Batch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(2),
+            memory::Batch::new(vec![json!({"seq": 3})]).with_checkpoint(3),
         ]
     };
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
 
     // Run 1: fresh — reads everything, commits per checkpoint.
     let source1 = stream_with_batches(rdlt_connector::source::StreamSpec::new("events"), batches());
@@ -72,14 +72,14 @@ async fn second_run_resumes_from_committed_cursor() {
 #[tokio::test]
 async fn merge_replaces_whole_subtree() {
     let spec = || rdlt_connector::source::StreamSpec::new("users").with_primary_key(["id"]);
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("merge");
     config = config.with_write_mode(WriteMode::Merge {
         key: vec!["id".into()],
     });
 
     // Run 1: user 1 has two emails; user 2 has one.
-    let source = MemorySource::single_stream(
+    let source = memory::Source::single_stream(
         spec(),
         vec![
             json!({"id": 1, "name": "ada", "emails": [{"addr": "old-a"}, {"addr": "old-b"}]}),
@@ -95,7 +95,7 @@ async fn merge_replaces_whole_subtree() {
 
     // Run 2: user 1 updated with ONE new email. Old children must vanish; user 2 and
     // its child stay untouched.
-    let source = MemorySource::single_stream(
+    let source = memory::Source::single_stream(
         spec(),
         vec![json!({"id": 1, "name": "ada lovelace", "emails": [{"addr": "new"}]})],
     );
@@ -124,7 +124,7 @@ async fn merge_replaces_whole_subtree() {
 /// Keyless merge: byte-identical rows collapse to one (documented dedup semantics).
 #[tokio::test]
 async fn keyless_merge_dedups_identical_rows() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("dedup");
     config = config.with_write_mode(WriteMode::Merge { key: vec![] }); // keyless: content-hash id
     // NOTE: empty key is engine-legal for content dedup; the facade requires an
@@ -132,7 +132,7 @@ async fn keyless_merge_dedups_identical_rows() {
 
     let rows = vec![json!({"x": 1}), json!({"x": 1}), json!({"x": 2})];
     let source =
-        MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows.clone());
+        memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows.clone());
     Engine::new(config.clone(), source, dest.clone())
         .run()
         .await
@@ -140,7 +140,7 @@ async fn keyless_merge_dedups_identical_rows() {
     assert_eq!(dest.committed_rows("t").len(), 2, "identical rows collapse");
 
     // Re-delivering the same rows (redelivery window) changes nothing.
-    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows);
+    let source = memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows);
     Engine::new(config, source, dest.clone())
         .run()
         .await
@@ -156,14 +156,14 @@ async fn keyless_merge_dedups_identical_rows() {
 /// still land as ONE replacement, not repeated truncation.
 #[tokio::test]
 async fn replace_mode_replaces_per_run_not_per_commit() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("replace");
     config = config.with_write_mode(WriteMode::Replace);
     config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
 
     let batches = vec![
-        MemoryBatch::new(vec![json!({"v": "run1-a"})]).with_checkpoint(1),
-        MemoryBatch::new(vec![json!({"v": "run1-b"})]).with_checkpoint(2),
+        memory::Batch::new(vec![json!({"v": "run1-a"})]).with_checkpoint(1),
+        memory::Batch::new(vec![json!({"v": "run1-b"})]).with_checkpoint(2),
     ];
     let source = stream_with_batches(rdlt_connector::source::StreamSpec::new("t"), batches);
     Engine::new(config.clone(), source, dest.clone())
@@ -178,7 +178,7 @@ async fn replace_mode_replaces_per_run_not_per_commit() {
 
     // A later full run replaces everything again. (No cursor: replace typically pairs
     // with full re-reads.)
-    let source = MemorySource::single_stream(
+    let source = memory::Source::single_stream(
         rdlt_connector::source::StreamSpec::new("t"),
         vec![json!({"v": "run2"})],
     );
@@ -195,7 +195,7 @@ async fn replace_mode_replaces_per_run_not_per_commit() {
 /// pipeline with NO committed state must pass `since: None`.
 #[tokio::test]
 async fn fresh_run_reads_with_no_cursor() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = three_batch_source();
     let since_log = source.since_log();
     Engine::new(EngineConfig::new("fresh"), source, dest)
@@ -216,15 +216,15 @@ async fn fresh_run_reads_with_no_cursor() {
 #[tokio::test]
 async fn empty_cursor_state_reports_fresh_resume() {
     use rdlt_core::report::ResumedFrom;
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     // No checkpoints: state commits with an empty cursor map.
-    let stream = MemoryStream::new(
+    let stream = memory::Stream::new(
         StreamSpec::new("s"),
-        vec![MemoryBatch::new(vec![json!({"id": 1})])],
+        vec![memory::Batch::new(vec![json!({"id": 1})])],
     );
     let report = Engine::new(
         EngineConfig::new("nocursor"),
-        MemorySource::new(vec![stream]),
+        memory::Source::new(vec![stream]),
         dest.clone(),
     )
     .run()
@@ -233,13 +233,13 @@ async fn empty_cursor_state_reports_fresh_resume() {
     assert_eq!(report.resumed_from, ResumedFrom::Fresh);
 
     // Second run recovers a StateDoc — but with no cursors it is still Fresh.
-    let stream = MemoryStream::new(
+    let stream = memory::Stream::new(
         StreamSpec::new("s"),
-        vec![MemoryBatch::new(vec![json!({"id": 2})])],
+        vec![memory::Batch::new(vec![json!({"id": 2})])],
     );
     let report = Engine::new(
         EngineConfig::new("nocursor"),
-        MemorySource::new(vec![stream]),
+        memory::Source::new(vec![stream]),
         dest,
     )
     .run()

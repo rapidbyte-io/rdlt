@@ -1,5 +1,5 @@
-//! T051: deliberately non-compliant connectors FAIL conformance with diagnostics
-//! naming the violated clause (spec US5 acceptance scenario 2).
+//! Deliberately non-compliant connectors FAIL conformance with
+//! diagnostics naming the violated clause.
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
@@ -11,8 +11,9 @@ use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenCo
 use rdlt_connector::error::{DestinationError, SourceError};
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;
-use rdlt_testkit::conformance::{destination::verify_destination, source::verify_source};
-use rdlt_testkit::{MemoryDestination, ProbeError, TableProbe};
+use rdlt_testkit::conformance::destination::{self, ProbeError, TableProbe};
+use rdlt_testkit::conformance::source;
+use rdlt_testkit::memory;
 use serde_json::json;
 
 /// Violates S1: ignores `since` and re-emits everything from the beginning.
@@ -45,7 +46,7 @@ impl Source for AmnesiacSource {
 
 #[tokio::test]
 async fn source_ignoring_since_fails_s1_by_name() {
-    let (failures, _skips, _concluded) = verify_source(&AmnesiacSource).await.tolerating_skips();
+    let (failures, _skips, _concluded) = source::verify(&AmnesiacSource).await.tolerating_skips();
     assert!(
         failures.iter().any(|f| f.clause == "S1"),
         "expected an S1 diagnostic, got: {failures:?}"
@@ -55,7 +56,7 @@ async fn source_ignoring_since_fails_s1_by_name() {
 /// Violates D3: every commit returns a fresh receipt (idempotence key ignored).
 #[derive(Clone)]
 struct ForgetfulDest {
-    inner: MemoryDestination,
+    inner: memory::Destination,
 }
 
 #[async_trait]
@@ -114,7 +115,7 @@ impl LoadSession for ForgetfulSession {
     }
 }
 
-struct Probe(MemoryDestination);
+struct Probe(memory::Destination);
 
 #[async_trait]
 impl TableProbe for Probe {
@@ -125,11 +126,11 @@ impl TableProbe for Probe {
 
 #[tokio::test]
 async fn destination_without_idempotent_commit_fails_d3_by_name() {
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let dest = ForgetfulDest {
         inner: inner.clone(),
     };
-    let (failures, _skips, _concluded) = verify_destination(&dest, &Probe(inner))
+    let (failures, _skips, _concluded) = destination::verify(&dest, &Probe(inner))
         .await
         .tolerating_skips();
     assert!(
@@ -139,8 +140,8 @@ async fn destination_without_idempotent_commit_fails_d3_by_name() {
 }
 
 /// Violates S2 (never checkpoints) AND S4 (errors on a closed channel).
-/// Pins the generation-1 defect this generation fixes: the S2 `continue`
-/// skipped the S4 check, so the second violation was never reported.
+/// Pins that the S2 verdict does not short-circuit the S4 check, so the
+/// second violation is reported too.
 /// The stream DECLARES a cursor deliberately — a declared cursor with
 /// no checkpoints is S2's violation, where an undeclared one is the
 /// snapshot door's honest skip (`test_conformance_snapshot.rs`).
@@ -169,7 +170,7 @@ impl Source for DoublyBrokenSource {
 #[tokio::test]
 async fn both_s2_and_s4_are_reported_independently() {
     let (failures, _skips, _concluded) =
-        verify_source(&DoublyBrokenSource).await.tolerating_skips();
+        source::verify(&DoublyBrokenSource).await.tolerating_skips();
     for clause in ["S2", "S4"] {
         assert!(
             failures.iter().any(|f| f.clause == clause),
@@ -205,7 +206,7 @@ impl Source for UnreadableSource {
 /// and S4 concluded (its check runs for every stream regardless).
 #[tokio::test]
 async fn a_failed_baseline_read_withholds_s2_from_concluded() {
-    let (failures, _skips, concluded) = verify_source(&UnreadableSource).await.tolerating_skips();
+    let (failures, _skips, concluded) = source::verify(&UnreadableSource).await.tolerating_skips();
     assert!(
         failures
             .iter()
@@ -222,10 +223,9 @@ async fn a_failed_baseline_read_withholds_s2_from_concluded() {
     );
 }
 
-/// A destination whose `open` always fails. Pins the second generation-1
-/// defect: every open was labelled D4, sending the author to investigate
-/// teardown semantics that were never reached — the setup failure now
-/// carries the clause it was setting up.
+/// A destination whose `open` always fails. Pins that a setup failure
+/// carries the clause it was setting up — labelling every open D4 would
+/// send the author to investigate teardown semantics never reached.
 struct Unopenable;
 
 #[async_trait]
@@ -254,7 +254,7 @@ impl TableProbe for NoProbe {
 
 #[tokio::test]
 async fn an_open_failure_is_attributed_to_the_clause_it_sets_up() {
-    let (failures, _skips, _concluded) = verify_destination(&Unopenable, &NoProbe)
+    let (failures, _skips, _concluded) = destination::verify(&Unopenable, &NoProbe)
         .await
         .tolerating_skips();
     let first = failures.first().expect("an unopenable destination fails");
@@ -284,7 +284,7 @@ impl TableProbe for BrokenProbe {
 #[tokio::test]
 async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
     let (failures, _skips, _concluded) =
-        verify_destination(&MemoryDestination::new(), &BrokenProbe)
+        destination::verify(&memory::Destination::new(), &BrokenProbe)
             .await
             .tolerating_skips();
     assert!(
@@ -295,7 +295,7 @@ async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
     );
 }
 
-/// The 042 fix-wave docket item: an abort mid-suite must leave every
+/// An abort mid-suite must leave every
 /// asserted-but-unreached clause with an honest non-verdict, never a
 /// silent pass. The broken probe aborts the run at D1's first count, so
 /// D4/D2/D3 (and D8 — the memory destination declares merge) were never
@@ -303,12 +303,12 @@ async fn a_broken_probe_fails_the_clause_under_evaluation_by_name() {
 /// fold promotes them to failures.
 #[tokio::test]
 async fn an_abort_reports_every_unreached_clause_as_a_skip_naming_the_abort() {
-    let outcome = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
+    let outcome = destination::verify(&memory::Destination::new(), &BrokenProbe).await;
     let strict = outcome.expecting_no_skips();
-    let outcome = verify_destination(&MemoryDestination::new(), &BrokenProbe).await;
+    let outcome = destination::verify(&memory::Destination::new(), &BrokenProbe).await;
     let (_failures, skips, _concluded) = outcome.tolerating_skips();
-    // D5 is among the unreached (round-7 correction): its clause spans
-    // the new-session ensure too, which the D1 abort never reaches.
+    // D5 is among the unreached: its clause spans the new-session
+    // ensure too, which the D1 abort never reaches.
     for clause in ["D4", "D2", "D3", "D5", "D8"] {
         assert!(
             skips.iter().any(|s| s.clause == clause
@@ -332,12 +332,12 @@ async fn an_abort_reports_every_unreached_clause_as_a_skip_naming_the_abort() {
     );
 }
 
-/// D5 spans two sites (round-7 fix): the first session's repeat-ensure
+/// D5 spans two sites: the first session's repeat-ensure
 /// loop and the NEW session's ensure. An abort at the D4 re-open lands
 /// between them, so D5 must render as unreached — not the full PASS the
 /// early conclusion minted.
 struct ThirdOpenFails {
-    inner: MemoryDestination,
+    inner: memory::Destination,
     opens: std::sync::atomic::AtomicU32,
 }
 
@@ -363,10 +363,10 @@ impl Destination for ThirdOpenFails {
 #[tokio::test]
 async fn an_abort_at_the_reopen_renders_d5_unreached_not_pass() {
     let dest = ThirdOpenFails {
-        inner: MemoryDestination::new(),
+        inner: memory::Destination::new(),
         opens: std::sync::atomic::AtomicU32::new(0),
     };
-    let outcome = verify_destination(&dest, &NoProbe).await;
+    let outcome = destination::verify(&dest, &NoProbe).await;
     let (failures, skips, _concluded) = outcome.tolerating_skips();
     assert!(
         failures
@@ -381,10 +381,10 @@ async fn an_abort_at_the_reopen_renders_d5_unreached_not_pass() {
 }
 
 /// Fails AFTER dropping its output handle: the rows all arrive, the
-/// channel drains, and only then does the read return an error. Pins the
-/// harness hole round 2 closed: `read_all` used to break on the drained
-/// channel and drop the still-pending future, certifying the failure
-/// away (and cancelling the source's teardown mid-flight).
+/// channel drains, and only then does the read return an error. Pins
+/// that the harness waits for the read to finish rather than breaking on
+/// the drained channel and dropping the still-pending future, which would
+/// certify the failure away (and cancel the source's teardown mid-flight).
 struct TeardownFailingSource;
 
 #[async_trait]
@@ -416,7 +416,7 @@ impl Source for TeardownFailingSource {
 
 #[tokio::test]
 async fn a_source_that_fails_after_dropping_its_feed_is_not_certified() {
-    let (failures, _skips, _concluded) = verify_source(&TeardownFailingSource)
+    let (failures, _skips, _concluded) = source::verify(&TeardownFailingSource)
         .await
         .tolerating_skips();
     assert!(
@@ -436,7 +436,7 @@ async fn a_source_that_fails_after_dropping_its_feed_is_not_certified() {
 /// errors at its THIRD count (D3's re-commit read-back), aborting the
 /// suite while `session2` is live.
 struct CloseRecordingDest {
-    inner: MemoryDestination,
+    inner: memory::Destination,
     last_session_closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -503,7 +503,7 @@ impl LoadSession for CloseRecordingSession {
 /// Fails at its `n`th count, delegating every earlier one to the real
 /// read-back.
 struct FailsAtCount {
-    inner: MemoryDestination,
+    inner: memory::Destination,
     calls: std::sync::atomic::AtomicU32,
     fail_at: u32,
 }
@@ -523,7 +523,7 @@ impl TableProbe for FailsAtCount {
 
 #[tokio::test]
 async fn an_abort_mid_suite_still_closes_the_held_session() {
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let last_session_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let dest = CloseRecordingDest {
         inner: inner.clone(),
@@ -537,7 +537,8 @@ async fn an_abort_mid_suite_still_closes_the_held_session() {
         fail_at: 3,
     };
 
-    let (failures, _skips, _concluded) = verify_destination(&dest, &probe).await.tolerating_skips();
+    let (failures, _skips, _concluded) =
+        destination::verify(&dest, &probe).await.tolerating_skips();
 
     assert!(
         failures
@@ -583,7 +584,7 @@ impl Source for FloodingSource {
 
 #[tokio::test]
 async fn a_source_flooding_past_the_retention_ceiling_fails_by_name() {
-    let (failures, _skips, _concluded) = verify_source(&FloodingSource).await.tolerating_skips();
+    let (failures, _skips, _concluded) = source::verify(&FloodingSource).await.tolerating_skips();
     assert!(
         failures.iter().any(|f| f.clause == "S1"
             && f.message

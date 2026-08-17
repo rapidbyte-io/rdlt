@@ -24,10 +24,12 @@ use rdlt_connector::source::StreamSpec;
 use rdlt_core::commit::CommitPolicy;
 use rdlt_core::schema;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::stream_with_batches;
+use super::support::crash::{CrashDestination, FaultPoint};
+use super::support::scripted;
 
 /// A manifest line, re-derived INDEPENDENTLY of the engine's encoder:
 /// `{json}|{blake3-hex-of-the-json-bytes}`. A test computing the envelope by
@@ -47,14 +49,14 @@ fn json_of(line: &str) -> &str {
 /// The corpus behind every pin here: nested rows so the segments carry child
 /// tables and the full lineage column set, across two checkpointed batches in
 /// ONE commit span.
-fn corpus_source() -> MemorySource {
+fn corpus_source() -> scripted::Source {
     let batches = vec![
-        MemoryBatch::new(vec![
+        memory::Batch::new(vec![
             json!({"id": 1, "name": "alpha", "tags": ["x", "y"]}),
             json!({"id": 2, "name": "beta", "tags": []}),
         ])
         .with_checkpoint(json!({"batch": 0})),
-        MemoryBatch::new(vec![
+        memory::Batch::new(vec![
             json!({"id": 3, "name": "gamma", "tags": ["z"]}),
             json!({"id": 4, "name": "delta"}),
         ])
@@ -75,7 +77,7 @@ fn config(workdir: &Path) -> EngineConfig {
 /// corpus into a crash-at-commit destination so the whole span stays
 /// uncommitted and its WAL survives.
 async fn capture_crashed_wal(workdir: &Path) -> PathBuf {
-    let dest = CrashDestination::new(MemoryDestination::new(), FaultPoint::BeforeCommit(1));
+    let dest = CrashDestination::new(memory::Destination::new(), FaultPoint::BeforeCommit(1));
     Engine::new(config(workdir), corpus_source(), dest)
         .run()
         .await
@@ -91,7 +93,7 @@ async fn capture_crashed_wal(workdir: &Path) -> PathBuf {
 /// Render the destination's committed contents as stable text: one line per
 /// row, `table<TAB>row-json`, tables in name order, rows in committed order.
 /// `serde_json::Map` renders keys sorted, so the line is deterministic.
-fn render_committed(dest: &MemoryDestination) -> String {
+fn render_committed(dest: &memory::Destination) -> String {
     let mut out = String::new();
     for (table, rows) in dest.snapshot() {
         for row in rows {
@@ -108,8 +110,8 @@ fn render_committed(dest: &MemoryDestination) -> String {
 /// the crashed run's `_rdlt_load_id`. When recovery REFUSES it, the source
 /// re-extracts from scratch and every row carries the new run's load id
 /// instead. The load id is the witness for which path ran.
-async fn recover_into_destination(workdir: &Path) -> MemoryDestination {
-    let dest = MemoryDestination::new();
+async fn recover_into_destination(workdir: &Path) -> memory::Destination {
+    let dest = memory::Destination::new();
     Engine::new(config(workdir), corpus_source(), dest.clone())
         .run()
         .await
@@ -131,7 +133,7 @@ fn load_id_of(wal_dir: &Path) -> String {
 }
 
 /// Every committed row's `_rdlt_load_id`, deduplicated.
-fn committed_load_ids(dest: &MemoryDestination) -> Vec<String> {
+fn committed_load_ids(dest: &memory::Destination) -> Vec<String> {
     let mut ids: Vec<String> = dest
         .snapshot()
         .values()
@@ -225,7 +227,7 @@ async fn the_writer_emits_the_v1_envelope_on_every_line() {
 async fn a_crashed_wal_replays_to_exactly_a_clean_runs_rows() {
     // The clean control: same corpus, no crash.
     let clean_dir = tempfile::tempdir().expect("tempdir");
-    let clean_dest = MemoryDestination::new();
+    let clean_dest = memory::Destination::new();
     Engine::new(
         config(&clean_dir.path().join("work")),
         corpus_source(),
@@ -255,7 +257,7 @@ async fn a_crashed_wal_replays_to_exactly_a_clean_runs_rows() {
     // Content equality modulo the load id: normalize each rendering's single
     // load id to a placeholder and require byte equality — identity columns
     // (`_rdlt_id`, lineage) are content-derived and must survive verbatim.
-    let normalize = |dest: &MemoryDestination| -> String {
+    let normalize = |dest: &memory::Destination| -> String {
         let ids = committed_load_ids(dest);
         assert_eq!(ids.len(), 1, "one load id per arm: {ids:?}");
         render_committed(dest).replace(&ids[0], "<load-id>")

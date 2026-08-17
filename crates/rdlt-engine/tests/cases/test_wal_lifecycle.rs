@@ -11,11 +11,13 @@
 use std::path::Path;
 
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{CrashDestination, FaultPoint, MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 
 use super::common::three_batch_source;
+use super::support::crash::{CrashDestination, FaultPoint};
+use super::support::scripted;
 
-fn source() -> MemorySource {
+fn source() -> scripted::Source {
     three_batch_source()
 }
 
@@ -38,7 +40,7 @@ async fn a_clean_run_removes_the_wal_directory() {
     let workdir = dir.path().join("work");
     let wal_dir = workdir.join("wal");
 
-    let report = Engine::new(config(&workdir), source(), MemoryDestination::new())
+    let report = Engine::new(config(&workdir), source(), memory::Destination::new())
         .run()
         .await
         .expect("clean run");
@@ -57,7 +59,7 @@ async fn a_failed_run_keeps_its_wal_for_replay() {
     let workdir = dir.path().join("work");
     let wal_dir = workdir.join("wal");
 
-    let dest = CrashDestination::new(MemoryDestination::new(), FaultPoint::BeforeWrite(1));
+    let dest = CrashDestination::new(memory::Destination::new(), FaultPoint::BeforeWrite(1));
     let error = Engine::new(config(&workdir), source(), dest)
         .run()
         .await
@@ -98,7 +100,7 @@ async fn a_wal_open_failure_after_session_recovery_still_closes_the_session() {
     // Occupy the WAL directory's path with a file, not a directory.
     std::fs::write(workdir.join("wal"), b"not a directory").expect("plant a blocking file");
 
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let error = Engine::new(config(&workdir), source(), dest.clone())
         .run()
         .await
@@ -162,7 +164,7 @@ async fn an_uncleanable_damaged_wal_refuses_the_run_naming_the_clear_failure() {
     // Damaged-class: the sidecar does not parse.
     std::fs::write(wal_dir.join("rules.json"), b"not json").expect("corrupt sidecar");
 
-    let error = Engine::new(config(&workdir), source(), MemoryDestination::new())
+    let error = Engine::new(config(&workdir), source(), memory::Destination::new())
         .run()
         .await
         .expect_err("the run must refuse over damaged residue it cannot clear");
@@ -198,7 +200,7 @@ async fn an_uncleanable_discard_class_wal_still_runs_with_a_warning() {
         })),
     );
 
-    let report = Engine::new(config(&workdir), source(), MemoryDestination::new())
+    let report = Engine::new(config(&workdir), source(), memory::Destination::new())
         .run()
         .await
         .expect("resolved residue must not wedge the run");

@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use rdlt_testkit::conformance::{ConformanceFailure, ConformanceSkip};
+use rdlt_testkit::conformance::{Failure, Skip};
 
 /// The certification bar's no-hang rule: every clause is bounded by this
 /// budget — a connector that stalls FAILS the clause, the certifier
@@ -435,8 +435,8 @@ impl Report {
     /// folded in — never dropped.
     pub(crate) fn absorb(
         &mut self,
-        failures: Vec<ConformanceFailure>,
-        skips: Vec<ConformanceSkip>,
+        failures: Vec<Failure>,
+        skips: Vec<Skip>,
         concluded: Concluded<'_>,
         asserted: &[&'static str],
     ) {
@@ -610,15 +610,15 @@ mod tests {
 
     use super::*;
 
-    fn failure(clause: &'static str, message: &str) -> ConformanceFailure {
-        ConformanceFailure {
+    fn failure(clause: &'static str, message: &str) -> Failure {
+        Failure {
             clause,
             message: message.to_string(),
         }
     }
 
-    fn skip(clause: &'static str, reason: &str) -> ConformanceSkip {
-        ConformanceSkip {
+    fn skip(clause: &'static str, reason: &str) -> Skip {
+        Skip {
             clause,
             reason: reason.to_string(),
         }

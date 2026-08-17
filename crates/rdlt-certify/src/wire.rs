@@ -36,7 +36,7 @@ use rdlt_connector_protocol::proto::{
     self, handshake_reply, read_frame, session_reply, session_request, streams_reply,
 };
 use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
-use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+use rdlt_testkit::fixtures::{batch_of, commit_meta_for, schema_for};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;

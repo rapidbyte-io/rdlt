@@ -10,17 +10,18 @@
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::types::LogicalType;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::stream_with_batches;
+use super::support::scripted;
 
 fn discarded_values(report: &rdlt_core::report::Run) -> u64 {
     report.tables.values().map(|t| t.discarded_values).sum()
 }
 
-fn one_batch(spec: StreamSpec, rows: Vec<serde_json::Value>) -> MemorySource {
-    stream_with_batches(spec, vec![MemoryBatch::new(rows).with_checkpoint(1)])
+fn one_batch(spec: StreamSpec, rows: Vec<serde_json::Value>) -> scripted::Source {
+    stream_with_batches(spec, vec![memory::Batch::new(rows).with_checkpoint(1)])
 }
 
 /// A `u64` above `i64::MAX` has no exact `Int64` or `Float64` representation, so
@@ -29,7 +30,7 @@ fn one_batch(spec: StreamSpec, rows: Vec<serde_json::Value>) -> MemorySource {
 /// discard count, a successful run, and the data gone.
 #[tokio::test]
 async fn unsigned_integers_beyond_i64_survive_as_text() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = one_batch(
         StreamSpec::new("t"),
         vec![
@@ -60,7 +61,7 @@ async fn unsigned_integers_beyond_i64_survive_as_text() {
 /// other order resolve the same way. A range-conditional rule would break this.
 #[tokio::test]
 async fn unsigned_widening_is_order_independent() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = one_batch(
         StreamSpec::new("t"),
         vec![
@@ -84,7 +85,7 @@ async fn unsigned_widening_is_order_independent() {
 /// and stored the subtree verbatim, quietly overriding the user's declaration.
 #[tokio::test]
 async fn a_type_hint_is_not_dropped_by_an_object_value() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = one_batch(
         StreamSpec::new("t").with_type_hint("payload", LogicalType::Utf8),
         vec![
@@ -127,7 +128,7 @@ async fn a_type_hint_is_not_dropped_by_an_object_value() {
 /// `LogicalType::Decimal` in `type_hints`. The evidence is therefore SYNTHETIC.
 #[tokio::test]
 async fn a_decimal_beyond_its_declared_precision_is_refused() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = one_batch(
         StreamSpec::new("t").with_type_hint(
             "amount",
@@ -165,7 +166,7 @@ async fn a_decimal_beyond_its_declared_precision_is_refused() {
 /// Embedder-reachable only; the evidence is SYNTHETIC for the same reason as above.
 #[tokio::test]
 async fn an_unrepresentable_type_hint_is_a_typed_config_error() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = one_batch(
         StreamSpec::new("t").with_type_hint(
             "amount",

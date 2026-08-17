@@ -6,14 +6,14 @@
 //! ```rust,no_run
 //! # use rdlt_connector::source::StreamSpec;
 //! # use rdlt_engine::{Engine, EngineConfig};
-//! # use rdlt_testkit::{MemoryDestination, MemorySource};
+//! # use rdlt_testkit::memory;
 //! # use serde_json::json;
 //! # async fn run() -> Result<(), rdlt_core::error::Error> {
-//! let source = MemorySource::single_stream(
+//! let source = memory::Source::single_stream(
 //!     StreamSpec::new("events"),
 //!     vec![json!({"id": 1, "name": "first"})],
 //! );
-//! let destination = MemoryDestination::new();
+//! let destination = memory::Destination::new();
 //!
 //! let config = EngineConfig::new("quickstart");
 //! let engine = Engine::new(config, source, destination.clone());

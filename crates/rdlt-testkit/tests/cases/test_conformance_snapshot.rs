@@ -6,15 +6,15 @@
 //! failing by name, and the strict fold first-party cells use promotes
 //! any skip back to a failure.
 
-use rdlt_testkit::conformance::source::verify_source;
-use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
+use rdlt_testkit::conformance::source;
+use rdlt_testkit::memory;
 use serde_json::json;
 
 /// One stream over `spec` whose batches never checkpoint.
-fn checkpointless(spec: rdlt_connector::source::StreamSpec) -> MemorySource {
-    MemorySource::new(vec![MemoryStream::new(
+fn checkpointless(spec: rdlt_connector::source::StreamSpec) -> memory::Source {
+    memory::Source::new(vec![memory::Stream::new(
         spec,
-        vec![MemoryBatch::new(vec![json!({"a": 1}), json!({"a": 2})])],
+        vec![memory::Batch::new(vec![json!({"a": 1}), json!({"a": 2})])],
     )])
 }
 
@@ -25,7 +25,7 @@ fn checkpointless(spec: rdlt_connector::source::StreamSpec) -> MemorySource {
 async fn an_honest_snapshot_stream_skips_s2_with_the_reason() {
     let source = checkpointless(rdlt_connector::source::StreamSpec::new("events"));
 
-    let outcome = verify_source(&source).await;
+    let outcome = source::verify(&source).await;
     // The explicit acknowledgment path — this cell's whole subject is
     // the skip's shape.
     let (failures, raw_skips, _concluded) = outcome.tolerating_skips();
@@ -56,7 +56,7 @@ async fn a_cursored_stream_with_no_checkpoints_still_fails_s2() {
     let source =
         checkpointless(rdlt_connector::source::StreamSpec::new("events").with_cursor_field("a"));
 
-    let outcome = verify_source(&source).await;
+    let outcome = source::verify(&source).await;
     let (raw_failures, skips, _concluded) = outcome.tolerating_skips();
 
     assert!(
@@ -85,7 +85,7 @@ async fn a_cursored_stream_with_no_checkpoints_still_fails_s2() {
 async fn expecting_no_skips_promotes_the_skip_to_a_failure() {
     let source = checkpointless(rdlt_connector::source::StreamSpec::new("events"));
 
-    let failures = verify_source(&source).await.expecting_no_skips();
+    let failures = source::verify(&source).await.expecting_no_skips();
 
     assert_eq!(failures.len(), 1, "exactly the promoted skip: {failures:?}");
     assert_eq!(failures[0].clause, "S2");

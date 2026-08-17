@@ -315,7 +315,11 @@ mod tests {
                 .await
                 .is_break()
         );
-        assert!(feed.arrow(rdlt_testkit::batch_of(&[1])).await.is_break());
+        assert!(
+            feed.arrow(rdlt_testkit::fixtures::batch_of(&[1]))
+                .await
+                .is_break()
+        );
     }
 
     /// A source-native Arrow batch flows through the Feed unrepackaged.
@@ -324,7 +328,7 @@ mod tests {
         let (out, mut input) = channel::records(1 << 16);
         let mut feed = Feed::new(out);
         assert!(
-            feed.arrow(rdlt_testkit::batch_of(&[1, 2, 3]))
+            feed.arrow(rdlt_testkit::fixtures::batch_of(&[1, 2, 3]))
                 .await
                 .is_continue()
         );

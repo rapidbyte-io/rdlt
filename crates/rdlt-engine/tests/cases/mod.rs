@@ -1,4 +1,5 @@
 mod common;
+mod support;
 mod test_commit_policy;
 mod test_crash_recovery;
 mod test_entry_points;

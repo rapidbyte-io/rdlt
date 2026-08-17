@@ -8,23 +8,22 @@
 use rdlt_core::commit::CommitPolicy;
 use rdlt_core::error::Error;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{
-    CrashDestination, FaultPoint, MemoryBatch, MemoryDestination, MemorySource, MemoryStream,
-};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::without_load_id;
+use super::support::crash::{CrashDestination, FaultPoint};
 
-fn batches() -> Vec<MemoryBatch> {
+fn batches() -> Vec<memory::Batch> {
     vec![
-        MemoryBatch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
-        MemoryBatch::new(vec![json!({"seq": 3}), json!({"seq": 4})]).with_checkpoint(2),
-        MemoryBatch::new(vec![json!({"seq": 5})]).with_checkpoint(3),
+        memory::Batch::new(vec![json!({"seq": 1}), json!({"seq": 2})]).with_checkpoint(1),
+        memory::Batch::new(vec![json!({"seq": 3}), json!({"seq": 4})]).with_checkpoint(2),
+        memory::Batch::new(vec![json!({"seq": 5})]).with_checkpoint(3),
     ]
 }
 
-fn source() -> MemorySource {
-    MemorySource::new(vec![MemoryStream::new(
+fn source() -> memory::Source {
+    memory::Source::new(vec![memory::Stream::new(
         rdlt_connector::source::StreamSpec::new("events"),
         batches(),
     )])
@@ -48,7 +47,7 @@ async fn a_foreign_pipelines_wal_refuses_and_survives() {
     let dir = tempfile::tempdir().expect("tempdir");
 
     // `orders` crashes during commit 2: a replayable span is on disk.
-    let orders_dest = MemoryDestination::new();
+    let orders_dest = memory::Destination::new();
     let crash = CrashDestination::new(orders_dest.clone(), FaultPoint::BeforeCommit(2));
     Engine::new(config("orders", dir.path()), source(), crash)
         .run()
@@ -58,7 +57,7 @@ async fn a_foreign_pipelines_wal_refuses_and_survives() {
     assert!(manifest.exists(), "the crash leaves a manifest");
 
     // `customers` over the same workdir: typed refusal, frozen spelling.
-    let customers_dest = MemoryDestination::new();
+    let customers_dest = memory::Destination::new();
     let err = Engine::new(
         config("customers", dir.path()),
         source(),
@@ -99,7 +98,7 @@ async fn a_foreign_pipelines_wal_refuses_and_survives() {
 
     // Ground truth: an uninterrupted `orders` run in a fresh workdir.
     let clean_dir = tempfile::tempdir().expect("tempdir");
-    let clean_dest = MemoryDestination::new();
+    let clean_dest = memory::Destination::new();
     Engine::new(
         config("orders", clean_dir.path()),
         source(),
@@ -123,7 +122,7 @@ async fn the_workdir_and_wal_are_created_private() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let workdir = dir.path().join("wd");
-    let crash = CrashDestination::new(MemoryDestination::new(), FaultPoint::BeforeCommit(2));
+    let crash = CrashDestination::new(memory::Destination::new(), FaultPoint::BeforeCommit(2));
     Engine::new(config("private", &workdir), source(), crash)
         .run()
         .await

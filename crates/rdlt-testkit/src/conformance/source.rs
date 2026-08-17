@@ -21,20 +21,13 @@ use rdlt_connector::core::cursor::Cursor;
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use serde_json::Value;
 
-use super::{Conformance, ConformanceFailure, ConformanceSkip};
-
-/// This suite's verdict shape — the shared [`Conformance`]
-/// (`failures` + `skips` + the strict `expecting_no_skips` fold),
-/// named for the suite that produced it. Today only the S2 snapshot
-/// door mints its skips.
-pub type SourceConformance = Conformance;
+use super::{Failure, Skip, Verdict};
 
 /// Every clause this suite asserts, in module-doc order — THE one
-/// clause list (the destination suite's `ASSERTED_CLAUSES` precedent):
-/// the terminal conclusion derives from it rather than from a second
-/// inline copy, so a clause added to the suite cannot be forgotten in
-/// one place and fold as NOT-REACHED at certify for conformant
-/// connectors.
+/// clause list: the terminal conclusion derives from it rather than
+/// from a second inline copy, so a clause added to the suite cannot be
+/// forgotten in one place and fold as NOT-REACHED at certify for
+/// conformant connectors.
 pub const ASSERTED_CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 
 /// Byte budget for the harness's record channel — large enough that a
@@ -55,9 +48,8 @@ const CHANNEL_BYTE_BUDGET: usize = 16 << 20;
 const RETENTION_CEILING_BYTES: usize = 64 << 20;
 
 /// The most ONE raw-JSON push may weigh on the wire. Retention is
-/// metered ACTUALLY (post-parse, see [`retained_bytes`]) — so the 5M7
-/// false negatives are gone — but the PARSER'S transient still needs a
-/// bound, and it is this one: the worst whole-push expansion is the
+/// metered post-parse (see [`retained_bytes`]), but the PARSER'S
+/// transient still needs a bound, and it is this one: the worst whole-push expansion is the
 /// chain form, ~376 bytes per level for ~2 wire bytes (a 72-byte
 /// `Value` plus its one-element `Vec` heap block, capacity-4 and
 /// align-16 rounded, under this lockfile's 72-byte preserve_order
@@ -73,9 +65,9 @@ const MAX_SINGLE_PUSH_BYTES: usize = 4 * 1024 * 1024;
 /// `TRANSIENT_FACTOR ≥` the chain form's per-wire-byte expansion.
 const TRANSIENT_FACTOR: usize = 256;
 
-/// The heap bytes one parsed value actually retains (5M7 — replacing the
-/// flat wire×factor charge that refused honest >256 KiB reads): one
-/// `Value` slot each, strings at capacity, containers at length times
+/// The heap bytes one parsed value actually retains — a post-parse
+/// measure, where a flat wire×factor charge refused honest multi-MiB
+/// reads: one `Value` slot each, strings at capacity, containers at length times
 /// slot size, recursing. An approximation (Vec/IndexMap capacity slack,
 /// index bytes and allocator rounding are not modeled — the 64 MiB
 /// ceiling it feeds is the flood guard, not an accountant).
@@ -191,10 +183,9 @@ async fn read_all_unbounded<S: Source>(
         tokio::select! {
             push = input.recv() => match push {
                 Some(push) => {
-                    // 5M7: retention is metered ACTUALLY, post-parse —
-                    // the flat pre-parse factor refused honest multi-MiB
-                    // reads. The parser's transient is bounded separately,
-                    // per push, by the single-push wire bound above.
+                    // Retention is metered post-parse; the parser's
+                    // transient is bounded separately, per push, by the
+                    // single-push wire bound above.
                     match push.payload {
                         PushPayload::RawJson(bytes) => {
                             if bytes.len() > MAX_SINGLE_PUSH_BYTES {
@@ -286,10 +277,10 @@ async fn read_all_unbounded<S: Source>(
 /// For a source that pushes Arrow batches, the S1 row comparison degrades
 /// to row COUNTS (payload content is opaque to the harness); JSON-pushing
 /// sources are certified on full row content.
-pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
+pub async fn verify<S: Source>(source: &S) -> Verdict {
     let mut failures = Vec::new();
     let mut skips = Vec::new();
-    let fail = |clause, message: String| ConformanceFailure { clause, message };
+    let fail = |clause, message: String| Failure { clause, message };
 
     let streams = match source.streams().await {
         Ok(streams) => streams,
@@ -315,8 +306,7 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
         // EVERY stream regardless of this block's outcome — cancellation
         // behavior is independent of whether the stream reads or
         // checkpoints, and skipping it here would under-report a
-        // non-conformant stream's failures (generation 1 did exactly
-        // that, pinned by `both_s2_and_s4_are_reported_independently`).
+        // non-conformant stream's failures.
         match read_all(source, spec, None).await {
             Err(e) => {
                 failures.push(fail("S1", format!("stream `{}`: {e}", spec.name)));
@@ -338,7 +328,7 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
                     // declared cursor that never checkpoints is the
                     // broken promise S2 exists to catch.
                     if spec.cursor_field.is_none() {
-                        skips.push(ConformanceSkip {
+                        skips.push(Skip {
                             clause: "S2",
                             reason: format!(
                                 "stream `{}` declares no cursor_field and never checkpoints — \
@@ -420,7 +410,7 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
     // stream: S1 reaches a verdict per stream even on a failed read, S4
     // runs unconditionally per stream, and S2 is withheld when a failed
     // baseline read skipped its checks above.
-    SourceConformance {
+    Verdict {
         failures,
         skips,
         concluded: ASSERTED_CLAUSES
@@ -434,11 +424,8 @@ pub async fn verify_source<S: Source>(source: &S) -> SourceConformance {
 /// discovery: `concluded` EMPTY deliberately — no clause's checks ran.
 /// S1 carries the discovery failure, and S2/S4 must read as
 /// never-reached to a consumer, not as silently passed.
-fn nothing_concluded(
-    failures: Vec<ConformanceFailure>,
-    skips: Vec<ConformanceSkip>,
-) -> SourceConformance {
-    SourceConformance {
+fn nothing_concluded(failures: Vec<Failure>, skips: Vec<Skip>) -> Verdict {
+    Verdict {
         failures,
         skips,
         concluded: Vec::new(),
@@ -449,14 +436,14 @@ fn nothing_concluded(
 mod retention_tests {
     use super::*;
 
-    /// 5L12: the transient factor must cover the BINDING worst case,
+    /// The transient factor must cover the BINDING worst case,
     /// computed from the real layout — the chain form (`(size +
     /// align16(cap·size + 8)) / 2` per wire byte: one `Value` plus its
     /// first `Vec` block, align-16 rounded). The earlier pin asserted
     /// the dense-array bound, which is NOT the binding case; a `Value`
     /// growth would have re-opened the under-count while the pin stayed
-    /// green. The `Vec`'s first-allocation capacity is MEASURED (6L8),
-    /// not assumed: hardcoding 4 would let a std/allocator change to 8
+    /// green. The `Vec`'s first-allocation capacity is MEASURED, not
+    /// assumed: hardcoding 4 would let a std/allocator change to 8
     /// double the real chain form while the pin stayed green — the same
     /// "asserts the model, not the layout" drift one layer down.
     #[test]
@@ -499,8 +486,8 @@ mod retention_tests {
     }
 
     /// The post-parse metering is REAL: a megabyte of retained string
-    /// charges ≈ a megabyte, not 256× its wire size (5M7's false-negative
-    /// fix, pinned at the walk's own granularity).
+    /// charges ≈ a megabyte, not 256× its wire size — pinned at the
+    /// walk's own granularity.
     #[test]
     fn retained_bytes_measures_the_heap_not_the_wire() {
         let big = Value::String("x".repeat(1 << 20));

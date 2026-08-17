@@ -4,7 +4,7 @@
 
 use rdlt_core::commit::{BatchPolicy, CommitPolicy};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::MemoryDestination;
+use rdlt_testkit::memory;
 
 use super::common::three_batch_source;
 
@@ -13,7 +13,7 @@ use super::common::three_batch_source;
 /// trailing work commits in finish() — exactly 2 commits.
 #[tokio::test]
 async fn commit_policy_boundaries_are_exact() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("policy");
     config = config.with_commit_policy(CommitPolicy::every_checkpoints(2));
     let report = Engine::new(config, three_batch_source(), dest.clone())
@@ -30,7 +30,7 @@ async fn commit_policy_boundaries_are_exact() {
     // batch in `Loader::process`, so this pins the POLICY arm, not
     // `LoadItem::byte_size` (see the note on
     // `report_counters_are_exact_and_clean_runs_emit_no_discards`).
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("policy-bytes");
     config = config.with_commit_policy(CommitPolicy::every_bytes(1));
     let report = Engine::new(config, three_batch_source(), dest.clone())
@@ -54,7 +54,7 @@ async fn commit_policy_boundaries_are_exact() {
 #[tokio::test]
 async fn batch_policy_coalesces_writes_and_loses_nothing() {
     // Baseline: no policy, one write per source batch.
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let config = EngineConfig::new("batch-none");
     let report = Engine::new(config, three_batch_source(), dest.clone())
         .run()
@@ -77,7 +77,7 @@ async fn batch_policy_coalesces_writes_and_loses_nothing() {
     // would flush at every checkpoint and coalesce NOTHING, which is
     // correct behaviour and a real trap: a large `batch_policy` buys
     // nothing against a tight `commit_policy`.
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("batch-coalesced");
     config = config
         .with_batch_policy(BatchPolicy::every_rows(1_000_000))
@@ -112,7 +112,7 @@ async fn batch_policy_coalesces_writes_and_loses_nothing() {
 /// had not been given yet — the receipt would claim more than landed.
 #[tokio::test]
 async fn accumulated_rows_are_written_before_each_commit() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("batch-vs-commit");
     // A threshold far above the whole run, so nothing would ever
     // flush on its own — only the commit boundary can force it.
@@ -159,14 +159,14 @@ mod delta_flushes_pending_first {
     use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 
     use rdlt_connector::error::DestinationError;
-    use rdlt_testkit::{MemoryBatch, MemorySource, MemoryStream};
+    use rdlt_testkit::memory;
     use serde_json::json;
 
-    /// MemoryDestination plus an ordered op log — the ONE observable
+    /// memory::Destination plus an ordered op log — the ONE observable
     /// this pin needs is whether a `write` or an `ensure` came first.
     #[derive(Clone)]
     struct Recording {
-        inner: MemoryDestination,
+        inner: memory::Destination,
         ops: Arc<Mutex<Vec<String>>>,
     }
 
@@ -232,15 +232,15 @@ mod delta_flushes_pending_first {
 
     #[tokio::test]
     async fn pending_batches_flush_before_the_delta_is_ensured() {
-        let source = MemorySource::new(vec![MemoryStream::new(
+        let source = memory::Source::new(vec![memory::Stream::new(
             rdlt_connector::source::StreamSpec::new("s"),
             vec![
-                MemoryBatch::new(vec![json!({"a": 1}), json!({"a": 2})]).with_checkpoint(1),
-                MemoryBatch::new(vec![json!({"a": 3, "b": "late"})]).with_checkpoint(2),
+                memory::Batch::new(vec![json!({"a": 1}), json!({"a": 2})]).with_checkpoint(1),
+                memory::Batch::new(vec![json!({"a": 3, "b": "late"})]).with_checkpoint(2),
             ],
         )]);
         let dest = Recording {
-            inner: MemoryDestination::new(),
+            inner: memory::Destination::new(),
             ops: Arc::new(Mutex::new(Vec::new())),
         };
         let ops_handle = Arc::clone(&dest.ops);

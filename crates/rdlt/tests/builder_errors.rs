@@ -3,15 +3,15 @@
 
 use rdlt::prelude::*;
 use rdlt_connector::destination::Destination as _;
-use rdlt_testkit::{MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 
-fn source() -> MemorySource {
-    MemorySource::new(vec![])
+fn source() -> memory::Source {
+    memory::Source::new(vec![])
 }
 
-fn merge_less() -> MemoryDestination {
-    let caps = MemoryDestination::new().capabilities().with_merge(false);
-    MemoryDestination::new().with_capabilities(caps)
+fn merge_less() -> memory::Destination {
+    let caps = memory::Destination::new().capabilities().with_merge(false);
+    memory::Destination::new().with_capabilities(caps)
 }
 
 /// A destination without merge capability rejects Merge at build — both as
@@ -54,7 +54,7 @@ fn merge_against_a_merge_less_destination_is_rejected_at_build() {
 fn empty_merge_key_is_rejected_at_build() {
     let err = Pipeline::builder("p")
         .source(source())
-        .destination(MemoryDestination::new())
+        .destination(memory::Destination::new())
         .write_mode(WriteMode::Merge { key: vec![] })
         .build()
         .expect_err("empty default key");
@@ -62,7 +62,7 @@ fn empty_merge_key_is_rejected_at_build() {
 
     let err = Pipeline::builder("p")
         .source(source())
-        .destination(MemoryDestination::new())
+        .destination(memory::Destination::new())
         .write_mode_for("orders", WriteMode::Merge { key: vec![] })
         .build()
         .expect_err("empty per-stream key");

@@ -840,8 +840,7 @@ mod tests {
     /// firing byte-based commit policies that many times early.
     #[tokio::test]
     async fn loader_byte_counters_meter_an_ipc_decoded_batch_by_footprint() {
-        let (stream_len, decoded, _row_payload) =
-            rdlt_testkit::fixtures::ipc_fixture::ipc_round_trip();
+        let (stream_len, decoded, _row_payload) = crate::load::ipc_fixture::ipc_round_trip();
 
         let (mut loader, _commits) = recording_loader(CommitPolicy::every_checkpoints(10));
         for item in [

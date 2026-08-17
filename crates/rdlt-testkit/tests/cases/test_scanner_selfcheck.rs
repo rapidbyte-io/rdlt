@@ -19,15 +19,10 @@ use std::path::Path;
 /// literal lives at the constructor supplying it — so they are absent here by
 /// design and covered instead by the "declared names must appear twice" half of
 /// `assert_registry_matches_sources`.
-/// The connector crates' rows (file 14, rest 3, iceberg 3, duckdb 2,
-/// oracle 2, snowflake's two-spellings proof at 4, postgres's
-/// indirect-arming proof at 11) moved with their crates to the
-/// rdlt-connectors repository at the 044 cut and live in ITS gate:
-/// `crates/examples-gate/tests/scanner_selfcheck.rs` there carries the
-/// per-crate counts beside the sources they count, including the
-/// two-spellings and indirect-arming evidence. The scanner itself is
-/// shared (this crate rides both repos as the verification half), so
-/// the selfcheck here keeps the one crate this workspace arms.
+/// The connector crates' rows live in the rdlt-connectors repository's
+/// own gate, beside the sources they count (including the two-spellings
+/// and indirect-arming evidence). The scanner itself is shared, so the
+/// selfcheck here keeps the one crate this workspace arms.
 const EXPECTED_DIRECT_NAMES: &[(&str, usize)] = &[("rdlt-engine", 7)];
 
 #[test]
@@ -37,7 +32,7 @@ fn the_scanner_finds_every_directly_armed_name() {
         .expect("crates/ is the parent of this crate");
     for (crate_name, expected) in EXPECTED_DIRECT_NAMES {
         let src = crates_dir.join(crate_name).join("src");
-        let found = rdlt_testkit::armed_crash_points(&src);
+        let found = rdlt_testkit::scanner::armed_crash_points(&src);
         assert_eq!(
             found.len(),
             *expected,
@@ -57,5 +52,5 @@ fn the_scanner_finds_every_directly_armed_name() {
 #[should_panic(expected = "no crash-point sites found")]
 fn scanning_nowhere_against_a_real_registry_fails() {
     let empty = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/memory");
-    rdlt_testkit::assert_registry_matches_sources(&empty, &[&["some.point"]]);
+    rdlt_testkit::scanner::assert_registry_matches_sources(&empty, &[&["some.point"]]);
 }

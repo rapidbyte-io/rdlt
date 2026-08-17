@@ -6,13 +6,13 @@
 use rdlt_core::schema::{self, ColumnType};
 use rdlt_core::types::LogicalType;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 /// Scenario 1 + 2 + 3 in one run, plus mid-run evolution across two source batches.
 #[tokio::test]
 async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
-    let batch1 = MemoryBatch::new(vec![
+    let batch1 = memory::Batch::new(vec![
         json!({
             "id": 1,
             "score": 10,                     // Int64 …
@@ -35,7 +35,7 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
     // Second push: a brand-new column appears mid-run (evolution, not variant columns),
     // and score sees an Int64 beyond ±2^53 — under an existing Float64 the
     // value-checked lattice must escalate the column to Utf8, never silently round.
-    let batch2 = MemoryBatch::new(vec![json!({
+    let batch2 = memory::Batch::new(vec![json!({
         "id": 3,
         "score": 9_007_199_254_740_993i64,   // 2^53 + 1
         "ratio": 3,
@@ -46,11 +46,11 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
         "note": "late column"
     })]);
 
-    let source = MemorySource::new(vec![MemoryStream::new(
+    let source = memory::Source::new(vec![memory::Stream::new(
         rdlt_connector::source::StreamSpec::new("items"),
         vec![batch1, batch2],
     )]);
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
 
     let report = Engine::new(EngineConfig::new("us1"), source, dest.clone())
         .run()
@@ -189,9 +189,9 @@ async fn scalar_lists_follow_destination_capabilities() {
     let rows = vec![json!({"id": 1, "nums": [1, 2, 3]})];
 
     // Full-featured destination: native list column.
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source =
-        MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows.clone());
+        memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows.clone());
     Engine::new(EngineConfig::new("lists-native"), source, dest.clone())
         .run()
         .await
@@ -205,13 +205,13 @@ async fn scalar_lists_follow_destination_capabilities() {
     );
 
     // Degraded destination: child table instead.
-    let dest = MemoryDestination::new().with_capabilities(
+    let dest = memory::Destination::new().with_capabilities(
         rdlt_connector::destination::Capabilities::default()
             .with_structs(true)
             .with_json_type(true)
             .with_decimal(true),
     );
-    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
+    let source = memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("lists-child"), source, dest.clone())
         .run()
         .await
@@ -228,13 +228,13 @@ async fn scalar_lists_follow_destination_capabilities() {
 #[tokio::test]
 async fn structless_destination_gets_flattened_columns() {
     let rows = vec![json!({"id": 1, "profile": {"city": "NYC", "geo": {"lat": 1.5}}})];
-    let dest = MemoryDestination::new().with_capabilities(
+    let dest = memory::Destination::new().with_capabilities(
         rdlt_connector::destination::Capabilities::default()
             .with_scalar_lists(true)
             .with_json_type(true)
             .with_decimal(true),
     );
-    let source = MemorySource::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
+    let source = memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
     Engine::new(EngineConfig::new("flatten"), source, dest.clone())
         .run()
         .await
@@ -252,8 +252,8 @@ async fn structless_destination_gets_flattened_columns() {
 /// `_rdlt_id` is suffixed, never aliased with the lineage column.
 #[tokio::test]
 async fn json_field_named_like_system_column_is_suffixed() {
-    let dest = MemoryDestination::new();
-    let source = MemorySource::single_stream(
+    let dest = memory::Destination::new();
+    let source = memory::Source::single_stream(
         rdlt_connector::source::StreamSpec::new("s"),
         vec![json!({"id": 1, "_rdlt_id": "upstream"})],
     );

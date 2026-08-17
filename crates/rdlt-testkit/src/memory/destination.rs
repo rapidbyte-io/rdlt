@@ -1,9 +1,8 @@
-//! In-memory destination — the reference implementation of the
-//! destination contract (certified by this crate's own suite) and the
-//! substrate for crash-injection tests.
+//! The in-memory destination — the reference implementation of the
+//! destination contract, certified by this crate's own suite.
 //!
 //! State survives across sessions (`Arc<Mutex<Inner>>`), which is exactly
-//! what lets tests simulate "the process died, a new session opened
+//! what lets a test simulate "the process died, a new session opened
 //! against the same warehouse".
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,7 +15,7 @@ use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
 use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
 use rdlt_connector::core::schema::{self, TableSchema};
 use rdlt_connector::core::state::StateDoc;
-use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
+use rdlt_connector::destination::{Capabilities, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::spec::ConnectorSpec;
 use serde_json::{Map, Value};
@@ -45,12 +44,9 @@ struct Inner {
     committed: BTreeMap<TableName, Vec<Row>>,
     /// Ordered uncommitted writes of the current session.
     staged: Vec<(TableName, Vec<Row>)>,
-    /// Rows per `write` CALL, in order, across the whole run.
-    ///
-    /// The row totals alone cannot distinguish one write of 100 rows
-    /// from ten of 10, which is exactly the difference an engine-side
-    /// batch policy makes — so the granularity is recorded, not just
-    /// the contents.
+    /// Rows per `write` CALL, in order, across the whole run: the totals
+    /// alone cannot distinguish one write of 100 rows from ten of 10,
+    /// which is exactly the difference a host's batch policy makes.
     write_sizes: Vec<usize>,
     schemas: BTreeMap<TableName, TableSchema>,
     modes: BTreeMap<TableName, WriteMode>,
@@ -63,25 +59,24 @@ struct Inner {
     /// The load the `truncated_tables` bookkeeping belongs to; a new load
     /// resets it.
     truncated_load: Option<LoadId>,
-    /// Diagnostics for conformance tests.
+    /// Sessions opened against this warehouse — every open, success or
+    /// not.
     opens: u64,
-    /// How many sessions were closed via [`LoadSession::close`] (037
-    /// US2 T7 fix round 1) — the engine's success-path-only signal,
-    /// distinct from `opens` (which fires on every open, success or
-    /// not).
+    /// Sessions closed through [`LoadSession::close`] — the host's
+    /// success-path-only signal, distinct from `opens`.
     closes: u64,
 }
 
 /// Cloneable handle; every clone shares the same "warehouse".
 #[derive(Debug, Clone, Default)]
-pub struct MemoryDestination {
+pub struct Destination {
     inner: Arc<Mutex<Inner>>,
     capabilities: Capabilities,
 }
 
-impl MemoryDestination {
+impl Destination {
     /// Full-featured by default (merge, structs, lists, json, decimal) so
-    /// engine tests exercise the native paths; degrade with
+    /// a host exercises the native paths; degrade with
     /// [`Self::with_capabilities`] to test lowering.
     pub fn new() -> Self {
         Self {
@@ -101,7 +96,7 @@ impl MemoryDestination {
         self
     }
 
-    // ---- test inspection API ----
+    // ---- read-back oracles ----
 
     /// Reader-visible rows (what a warehouse query would see).
     pub fn committed_rows(&self, table: &str) -> Vec<Row> {
@@ -127,25 +122,25 @@ impl MemoryDestination {
         self.lock().state.clone()
     }
 
-    /// How many sessions were opened against this warehouse.
-    /// Rows per `write` call, in order — how the engine GROUPED the
-    /// rows, which row contents cannot show.
+    /// Rows per `write` call, in order — how the host GROUPED the rows,
+    /// which row contents cannot show.
     pub fn write_sizes(&self) -> Vec<usize> {
         self.lock().write_sizes.clone()
     }
 
+    /// How many sessions were opened against this warehouse.
     pub fn opens(&self) -> u64 {
         self.lock().opens
     }
 
-    /// How many sessions reached an orderly `close` — proof the engine
-    /// calls it on the success path (037 US2 T7 fix round 1).
+    /// How many sessions reached an orderly `close` — proof a host calls
+    /// it on the success path.
     pub fn closes(&self) -> u64 {
         self.lock().closes
     }
 
-    /// Full content snapshot for byte-identical comparisons in crash
-    /// tests.
+    /// Full content snapshot for byte-identical comparisons across
+    /// runs.
     pub fn snapshot(&self) -> BTreeMap<TableName, Vec<Row>> {
         self.lock().committed.clone()
     }
@@ -156,7 +151,7 @@ impl MemoryDestination {
 }
 
 #[async_trait]
-impl Destination for MemoryDestination {
+impl rdlt_connector::destination::Destination for Destination {
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("memory-destination", env!("CARGO_PKG_VERSION"))
     }
@@ -172,7 +167,7 @@ impl Destination for MemoryDestination {
         // becomes invisible and reclaimable.
         inner.staged.clear();
         drop(inner);
-        Ok(Box::new(MemorySession {
+        Ok(Box::new(Session {
             inner: Arc::clone(&self.inner),
             ensured: BTreeSet::new(),
         }))
@@ -180,7 +175,7 @@ impl Destination for MemoryDestination {
 }
 
 #[derive(Debug)]
-struct MemorySession {
+struct Session {
     inner: Arc<Mutex<Inner>>,
     /// Tables ensured on THIS session — real destinations register
     /// publishable tables per session, so writes to un-ensured tables are
@@ -188,14 +183,14 @@ struct MemorySession {
     ensured: BTreeSet<TableName>,
 }
 
-impl MemorySession {
+impl Session {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().expect("memory destination lock")
     }
 }
 
 #[async_trait]
-impl LoadSession for MemorySession {
+impl LoadSession for Session {
     async fn ensure_table(
         &mut self,
         schema: &TableSchema,

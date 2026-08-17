@@ -8,17 +8,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use rdlt_connector::arrow::RecordBatch;
-use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
-use rdlt_connector::core::id::{PipelineId, TableName};
-use rdlt_connector::core::schema::TableSchema;
-use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::spec::ConnectorSpec;
+use rdlt_core::commit::{CommitMeta, CommitReceipt, WriteMode};
+use rdlt_core::id::{PipelineId, TableName};
+use rdlt_core::schema::TableSchema;
+use rdlt_core::state::StateDoc;
 
 /// Where to inject the fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FaultPoint {
+pub(crate) enum FaultPoint {
     /// Fail the Nth `write` call (1-based) before the batch reaches the
     /// inner destination. Models a crash where the WAL has recorded the
     /// batch but the destination never received it; recovery must replay
@@ -42,7 +42,7 @@ pub enum FaultPoint {
 /// a new engine over the same wrapper (already-fired faults don't fire
 /// again).
 #[derive(Debug, Clone)]
-pub struct CrashDestination<D> {
+pub(crate) struct CrashDestination<D> {
     inner: D,
     fault: FaultPoint,
     writes: Arc<AtomicU64>,
@@ -52,7 +52,7 @@ pub struct CrashDestination<D> {
 
 impl<D> CrashDestination<D> {
     /// Wrap `inner`, arming `fault` to fire once.
-    pub fn new(inner: D, fault: FaultPoint) -> Self {
+    pub(crate) fn new(inner: D, fault: FaultPoint) -> Self {
         Self {
             inner,
             fault,
@@ -64,7 +64,7 @@ impl<D> CrashDestination<D> {
 
     /// How many times the fault actually fired (each fault fires at most
     /// once).
-    pub fn fired(&self) -> u64 {
+    pub(crate) fn fired(&self) -> u64 {
         self.fired.load(Ordering::SeqCst)
     }
 }
@@ -152,43 +152,33 @@ impl LoadSession for CrashSession {
         self.inner.read_state(pipeline).await
     }
 
-    /// Forward to the wrapped session (037 US2 fix round 2, I2). A
-    /// decorator that silently accepted the trait's default `Ok(())`
-    /// here instead would be a real bug for any inner destination whose
-    /// `close` DOES something (the file destination's lease release,
-    /// in particular): every crash-sweep run wrapping such a
-    /// destination would leak it, since the wrapper — not the inner
-    /// session — is what the engine actually holds and calls `close`
-    /// on.
+    /// Forward to the wrapped session. A decorator that silently accepted
+    /// the trait's default `Ok(())` here would leak any inner destination
+    /// whose `close` DOES something (a lease release, say): the wrapper —
+    /// not the inner session — is what the engine holds and closes.
     async fn close(&mut self) -> Result<(), DestinationError> {
         self.inner.close().await
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rdlt_connector::core::id::LoadId;
+/// `close` must forward to the wrapped session, not silently resolve to
+/// the trait's own default. The memory destination's `closes()` counter
+/// is the observation; no fault ever fires (`BeforeWrite` at an
+/// unreachable count), so this isolates the forwarding alone.
+#[tokio::test]
+async fn close_forwards_to_the_wrapped_session() {
+    use rdlt_core::id::LoadId;
 
-    /// 037 US2 fix round 2, I2: `close` must forward to the wrapped
-    /// session, not silently resolve to the trait's own default. Wraps
-    /// `MemoryDestination`, whose `closes()` counter (037 US2 T7 fix
-    /// round 1) is exactly the cheap, already-in-crate observation this
-    /// needs — no fault ever fires (`BeforeWrite` at an unreachable
-    /// count), so this isolates the forwarding alone.
-    #[tokio::test]
-    async fn close_forwards_to_the_wrapped_session() {
-        let memory = crate::MemoryDestination::new();
-        let crash = CrashDestination::new(memory.clone(), FaultPoint::BeforeWrite(u64::MAX));
-        let mut session = crash
-            .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
-            .await
-            .expect("open");
-        session.close().await.expect("close");
-        assert_eq!(
-            memory.closes(),
-            1,
-            "the wrapped session's close must have actually run"
-        );
-    }
+    let memory = rdlt_testkit::memory::Destination::new();
+    let crash = CrashDestination::new(memory.clone(), FaultPoint::BeforeWrite(u64::MAX));
+    let mut session = crash
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session.close().await.expect("close");
+    assert_eq!(
+        memory.closes(),
+        1,
+        "the wrapped session's close must have actually run"
+    );
 }

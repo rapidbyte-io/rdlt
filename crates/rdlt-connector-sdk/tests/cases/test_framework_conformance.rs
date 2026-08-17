@@ -9,7 +9,8 @@ use rdlt_connector::source::Source;
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::source::SourceConnector;
 use rdlt_connector_sdk::{destination, source};
-use rdlt_testkit::{ProbeError, TableProbe, assert_conformant, verify_destination, verify_source};
+use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
+use rdlt_testkit::conformance::{self, assert_conformant};
 
 use super::example::{SharedStore, Sink, Ticker, TickerConfig, visible_rows};
 
@@ -34,7 +35,11 @@ async fn a_framework_source_passes_the_conformance_kit() {
     let connector = Ticker::assemble(config).expect("assemble");
     let shell = source::shell(connector);
     assert_eq!(shell.spec().name, "ticker");
-    assert_conformant(verify_source(&shell).await.expecting_no_skips());
+    assert_conformant(
+        conformance::source::verify(&shell)
+            .await
+            .expecting_no_skips(),
+    );
 }
 
 /// The destination kit: fresh state, idempotent DDL, staging
@@ -50,7 +55,7 @@ async fn a_framework_destination_passes_the_conformance_kit() {
     assert_eq!(shell.spec().name, "sink");
     let probe = StoreProbe { store };
     assert_conformant(
-        verify_destination(&shell, &probe)
+        conformance::destination::verify(&shell, &probe)
             .await
             .expecting_no_skips(),
     );
@@ -70,7 +75,7 @@ async fn the_session_refuses_a_write_before_ensure() {
         ))
         .await
         .expect("open");
-    let batch = rdlt_testkit::batch_of(&[1]);
+    let batch = rdlt_testkit::fixtures::batch_of(&[1]);
     let refused = session
         .write(&TableName::new("never_ensured"), batch)
         .await

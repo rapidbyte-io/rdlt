@@ -20,7 +20,7 @@ use proptest::prelude::*;
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::schema;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::memory;
 use serde_json::{Map, Value, json};
 
 // ---------- generation ----------
@@ -149,19 +149,19 @@ fn expected_rows(row: &Value) -> u64 {
 
 // ---------- harness ----------
 
-fn run_engine(batches: Vec<Vec<Value>>) -> MemoryDestination {
-    let dest = MemoryDestination::new();
-    let stream = MemoryStream::new(
+fn run_engine(batches: Vec<Vec<Value>>) -> memory::Destination {
+    let dest = memory::Destination::new();
+    let stream = memory::Stream::new(
         StreamSpec::new("s"),
         batches
             .into_iter()
             .enumerate()
-            .map(|(i, rows)| MemoryBatch::new(rows).with_checkpoint(json!({"b": i})))
+            .map(|(i, rows)| memory::Batch::new(rows).with_checkpoint(json!({"b": i})))
             .collect(),
     );
     let engine = Engine::new(
         EngineConfig::new("prop"),
-        MemorySource::new(vec![stream]),
+        memory::Source::new(vec![stream]),
         dest.clone(),
     );
     tokio::runtime::Builder::new_current_thread()

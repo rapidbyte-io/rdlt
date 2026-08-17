@@ -20,8 +20,10 @@ use rdlt_core::id::TableName;
 use rdlt_core::schema;
 use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{CrashDestination, FaultPoint, MemoryDestination};
+use rdlt_testkit::memory;
 use serde_json::json;
+
+use super::support::crash::{CrashDestination, FaultPoint};
 
 /// Test source pushing pre-built Arrow batches, checkpointing after each.
 struct ArrowSource {
@@ -99,7 +101,7 @@ fn batch_abc(ids: &[i64], names: &[&str], extra: &[&str]) -> RecordBatch {
 /// Scenario 1: contents and types preserved; every row stamped with the run id.
 #[tokio::test]
 async fn passthrough_preserves_data_and_stamps_load_id() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = ArrowSource {
         batches: vec![batch_ab(&[1, 2], &["a", "b"])],
         declare_structured: true,
@@ -131,7 +133,7 @@ async fn passthrough_preserves_data_and_stamps_load_id() {
 /// Scenario 2a: a later batch adds a column → evolve extends the schema.
 #[tokio::test]
 async fn passthrough_schema_evolves_under_default_policy() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = ArrowSource {
         batches: vec![batch_ab(&[1], &["a"]), batch_abc(&[2], &["b"], &["late"])],
         declare_structured: true,
@@ -153,7 +155,7 @@ async fn passthrough_schema_evolves_under_default_policy() {
 /// violating batch published.
 #[tokio::test]
 async fn passthrough_freeze_rejects_before_publication() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = ArrowSource {
         batches: vec![batch_ab(&[1], &["a"]), batch_abc(&[2], &["b"], &["late"])],
         declare_structured: true,
@@ -184,7 +186,7 @@ async fn passthrough_freeze_rejects_before_publication() {
 /// Clause S7: pushing Arrow on a stream NOT declared structured is rejected.
 #[tokio::test]
 async fn undeclared_arrow_push_is_rejected() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = ArrowSource {
         batches: vec![batch_ab(&[1], &["a"])],
         declare_structured: false,
@@ -204,7 +206,7 @@ async fn undeclared_arrow_push_is_rejected() {
 #[tokio::test]
 async fn structured_segments_replay_from_wal() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let inner = MemoryDestination::new();
+    let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
     let mut config = EngineConfig::new("pt-crash");
     config = config.with_workdir(dir.path().to_path_buf());
@@ -247,7 +249,7 @@ async fn structured_segments_replay_from_wal() {
 /// destination is even opened.
 #[tokio::test]
 async fn merge_on_structured_stream_rejected_before_any_io() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = ArrowSource {
         batches: vec![batch_ab(&[1], &["a"])],
         declare_structured: true,
@@ -292,7 +294,7 @@ async fn input_column_named_like_system_column_is_suffixed() {
         ],
     )
     .expect("batch");
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = ArrowSource {
         batches: vec![batch],
         declare_structured: true,
@@ -335,7 +337,7 @@ async fn cross_batch_narrowing_keeps_the_wide_type() {
         vec![Arc::new(Int64Array::from(vec![11]))],
     )
     .expect("batch2");
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = ArrowSource {
         batches: vec![batch1, batch2],
         declare_structured: true,
@@ -408,7 +410,7 @@ fn merge_config(pipeline: &str, key: &[&str]) -> EngineConfig {
 /// re-delivered keys converge to one row per key (last wins).
 #[tokio::test]
 async fn keyed_structured_merge_accepted_and_converges() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = KeyedArrowSource {
         batches: vec![batch_ab(&[1, 2], &["a", "b"])],
         key: vec!["id".into()],
@@ -441,7 +443,7 @@ async fn keyed_structured_merge_accepted_and_converges() {
 /// (reflection returns attnum order, users write DDL order).
 #[tokio::test]
 async fn reordered_composite_merge_key_is_accepted() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = KeyedArrowSource {
         batches: vec![batch_ab(&[1], &["a"])],
         key: vec!["id".into(), "name".into()],
@@ -460,7 +462,7 @@ async fn reordered_composite_merge_key_is_accepted() {
 /// Amended B4: the Merge key must EQUAL the declared primary_key.
 #[tokio::test]
 async fn merge_key_mismatch_rejected_at_plan_time() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = KeyedArrowSource {
         batches: vec![batch_ab(&[1], &["a"])],
         key: vec!["id".into()],
@@ -489,7 +491,7 @@ async fn null_in_merge_key_is_a_typed_write_time_error() {
         ],
     )
     .expect("batch");
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = KeyedArrowSource {
         batches: vec![batch],
         key: vec!["id".into()],
@@ -520,7 +522,7 @@ async fn null_in_merge_key_is_a_typed_write_time_error() {
 /// produces a plausible-looking figure.
 #[tokio::test]
 async fn a_refused_column_is_projected_away_and_counted_per_value() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let mut config = EngineConfig::new("passthrough-discard");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardValue));
 

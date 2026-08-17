@@ -1193,7 +1193,7 @@ mod tests {
         };
 
         // Truthful line: replay proceeds.
-        let mut session = rdlt_testkit::MemoryDestination::new()
+        let mut session = rdlt_testkit::memory::Destination::new()
             .open(rdlt_connector::destination::OpenContext::new(
                 PipelineId::new("p"),
                 LoadId::new("l"),
@@ -1213,7 +1213,7 @@ mod tests {
         assert_eq!(replayed, Some(1), "a truthful manifest line replays");
 
         // Lying line: the segment really holds 3, the manifest claims 7.
-        let mut session = rdlt_testkit::MemoryDestination::new()
+        let mut session = rdlt_testkit::memory::Destination::new()
             .open(rdlt_connector::destination::OpenContext::new(
                 PipelineId::new("p"),
                 LoadId::new("l"),

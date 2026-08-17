@@ -6,12 +6,12 @@
 //! ```no_run
 //! use rdlt::prelude::*;
 //! use rdlt::report;
-//! use rdlt_testkit::{MemoryDestination, MemorySource};
+//! use rdlt_testkit::memory;
 //!
 //! # async fn demo() -> Result<(), Error> {
 //! let pipeline = Pipeline::builder("demo")
-//!     .source(MemorySource::default())
-//!     .destination(MemoryDestination::new())
+//!     .source(memory::Source::default())
+//!     .destination(memory::Destination::new())
 //!     .write_mode(WriteMode::Append)
 //!     .build()?; // config errors die here, pre-I/O
 //! let report: report::Run = pipeline.run().await?;

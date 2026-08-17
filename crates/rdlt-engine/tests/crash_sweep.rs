@@ -28,7 +28,7 @@ use rdlt_connector::source::{Source, StreamSpec};
 use rdlt_core::commit::WriteMode;
 use rdlt_core::failpoint::fail;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination, MemorySource, MemoryStream};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 const TOTAL_ROWS: u64 = 100;
@@ -48,10 +48,10 @@ const ENGINE_POINTS: &[&str] = &[
 
 /// 4 checkpointed batches × 25 rows → 4 commits under EveryCheckpoints(1):
 /// every sweep iteration exercises multi-commit recovery, not a single commit.
-fn source() -> MemorySource {
+fn source() -> memory::Source {
     let batches = (0..4)
         .map(|b| {
-            MemoryBatch::new(
+            memory::Batch::new(
                 (0..25)
                     .map(|i| json!({"id": b * 25 + i, "name": format!("row-{b}-{i}")}))
                     .collect(),
@@ -59,7 +59,7 @@ fn source() -> MemorySource {
             .with_checkpoint(json!({"batch": b}))
         })
         .collect();
-    MemorySource::new(vec![MemoryStream::new(StreamSpec::new("s"), batches)])
+    memory::Source::new(vec![memory::Stream::new(StreamSpec::new("s"), batches)])
 }
 
 fn config(workdir: &Path, mode: &WriteMode) -> EngineConfig {
@@ -164,7 +164,7 @@ async fn sweep_memory_destination() {
             ENGINE_POINTS,
             mode,
             source,
-            |_dir| MemoryDestination::new(),
+            |_dir| memory::Destination::new(),
             |_dir, dest| dest.committed_rows("s").len() as u64,
             ENGINE_POINTS,
         )
@@ -229,7 +229,7 @@ fn sweep_covers_entire_registry() {
     // OPEN — it finds fewer sites and the assertion still passes, so one
     // implementation is the only arrangement where fixing it fixes every user.
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    rdlt_testkit::assert_registry_matches_sources(&src, &[ENGINE_POINTS]);
+    rdlt_testkit::scanner::assert_registry_matches_sources(&src, &[ENGINE_POINTS]);
 }
 
 // ---- Review F11 (re-derived at 044): the KEYED structured-merge arm under
@@ -308,7 +308,7 @@ async fn sweep_memory_keyed_structured_merge() {
             key: vec!["id".into()],
         },
         || KeyedArrowSource,
-        |_dir| MemoryDestination::new(),
+        |_dir| memory::Destination::new(),
         |_dir, dest| dest.committed_rows("s").len() as u64,
         ENGINE_POINTS,
     )

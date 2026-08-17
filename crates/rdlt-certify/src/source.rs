@@ -14,8 +14,7 @@
 use rdlt_connector_client::handshake::Role;
 use rdlt_runtime::local::Local;
 use rdlt_runtime::provider::Provider;
-use rdlt_testkit::conformance::source::verify_source;
-use rdlt_testkit::conformance::{ConformanceFailure, ConformanceSkip};
+use rdlt_testkit::conformance::{Failure, Skip, source};
 
 use crate::report::{CLAUSE_TIMEOUT, Concluded, Report, timed_out};
 use crate::target::{
@@ -172,7 +171,7 @@ pub async fn certify_source(target: &Target, accept_skips: &[&str]) -> Report {
     // itself refuses (the S2 skip is reachable by DEFAULT-absent
     // cursor_field — a source that merely forgot checkpointing must
     // not certify).
-    match tokio::time::timeout(CLAUSE_TIMEOUT, verify_source(&managed)).await {
+    match tokio::time::timeout(CLAUSE_TIMEOUT, source::verify(&managed)).await {
         Ok(outcome) => {
             // Both arms are EXPLICIT consumptions of the outcome
             // (round-7: the fields went private so failures cannot be
@@ -213,10 +212,7 @@ fn skip_stream(reason: &str) -> Option<&str> {
 /// a skip whose named stream is acknowledged stays an honest Skip;
 /// every other skip promotes to a failure naming its stream and the
 /// name-taking acknowledgment.
-fn fold_acknowledged(
-    skips: Vec<ConformanceSkip>,
-    accept_skips: &[&str],
-) -> (Vec<ConformanceFailure>, Vec<ConformanceSkip>) {
+fn fold_acknowledged(skips: Vec<Skip>, accept_skips: &[&str]) -> (Vec<Failure>, Vec<Skip>) {
     let (acknowledged, promoted): (Vec<_>, Vec<_>) = skips.into_iter().partition(|skip| {
         skip_stream(&skip.reason).is_some_and(|stream| accept_skips.contains(&stream))
     });
@@ -247,8 +243,8 @@ mod acknowledgment_tests {
 
     use super::*;
 
-    fn s2_skip(stream: &str) -> ConformanceSkip {
-        ConformanceSkip {
+    fn s2_skip(stream: &str) -> Skip {
+        Skip {
             clause: "S2",
             reason: format!(
                 "stream `{stream}` declares no cursor_field and never checkpoints — an \

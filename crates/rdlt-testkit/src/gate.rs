@@ -39,7 +39,7 @@ pub fn runtime_available() -> bool {
     if std::env::var_os("DOCKER_HOST").is_some() {
         return true;
     }
-    // 2. Rootless podman's user socket (the standing workspace note).
+    // 2. Rootless podman's user socket.
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
         && std::path::Path::new(&dir)
             .join("podman/podman.sock")

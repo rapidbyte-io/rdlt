@@ -10,14 +10,14 @@ use rdlt_core::event::PipelineEvent;
 use rdlt_core::id::TableName;
 use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryBatch, MemoryDestination};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 use super::common::{evolving_batches, stream_with_batches, three_batch_source};
 
 #[tokio::test]
 async fn events_are_causally_ordered_and_report_matches_reality() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = stream_with_batches(
         rdlt_connector::source::StreamSpec::new("s"),
         evolving_batches(),
@@ -99,7 +99,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
 /// `load::tests::byte_size_is_what_makes_backpressure_real`.
 #[tokio::test]
 async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let engine = Engine::new(
         EngineConfig::new("exact"),
         three_batch_source(),
@@ -124,13 +124,13 @@ async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
 
 /// 037 US2 T7 fix round 1: the engine calls `LoadSession::close`
 /// exactly once, on the SUCCESS path — after the run's last commit,
-/// never per-open and never on failure (`MemoryDestination`'s default
+/// never per-open and never on failure (`memory::Destination`'s default
 /// close is a no-op, but the counter proves the CALL happened, not
 /// just that nothing broke). `dest.opens()` alongside it is the
 /// existing instrumentation this pairs with — one session, one close.
 #[tokio::test]
 async fn a_successful_run_closes_its_session_exactly_once() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let engine = Engine::new(
         EngineConfig::new("closes"),
         three_batch_source(),
@@ -145,7 +145,7 @@ async fn a_successful_run_closes_its_session_exactly_once() {
     );
 }
 
-/// A destination wrapping `MemoryDestination` whose session `close`
+/// A destination wrapping `memory::Destination` whose session `close`
 /// ALWAYS fails, classified TRANSIENT by the destination itself — the
 /// exact shape M4 exists to defeat: a destination has no way to know
 /// its own close failure can never be helped by re-running a load that
@@ -155,7 +155,7 @@ async fn a_successful_run_closes_its_session_exactly_once() {
 /// load.
 #[derive(Clone)]
 struct CloseFailsDest {
-    inner: MemoryDestination,
+    inner: memory::Destination,
 }
 
 #[async_trait::async_trait]
@@ -228,7 +228,7 @@ impl rdlt_connector::destination::LoadSession for CloseFailsSession {
 #[tokio::test]
 async fn a_close_failure_after_success_is_never_retried_and_says_data_is_durable() {
     let dest = CloseFailsDest {
-        inner: MemoryDestination::new(),
+        inner: memory::Destination::new(),
     };
     let err = Engine::new(EngineConfig::new("close-fails"), three_batch_source(), dest)
         .run()
@@ -263,7 +263,7 @@ async fn a_close_failure_after_success_is_never_retried_and_says_data_is_durable
 /// permanently zero, while every existing assertion still passed.
 #[derive(Clone)]
 struct CountersDest {
-    inner: MemoryDestination,
+    inner: memory::Destination,
     seen: std::sync::Arc<std::sync::Mutex<Vec<rdlt_core::commit::Counters>>>,
 }
 
@@ -335,7 +335,7 @@ impl rdlt_connector::destination::LoadSession for CountersSession {
 async fn commit_counters_describe_the_unit_they_publish() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let dest = CountersDest {
-        inner: MemoryDestination::new(),
+        inner: memory::Destination::new(),
         seen: std::sync::Arc::clone(&seen),
     };
     // One commit per checkpoint: three units, two rows each.
@@ -365,7 +365,7 @@ async fn commit_counters_describe_the_unit_they_publish() {
 async fn discard_counters_reach_the_commit_unit() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let dest = CountersDest {
-        inner: MemoryDestination::new(),
+        inner: memory::Destination::new(),
         seen: std::sync::Arc::clone(&seen),
     };
     // Freeze the shape after the first batch, then send a row with a NEW column
@@ -373,8 +373,9 @@ async fn discard_counters_reach_the_commit_unit() {
     let mut config = EngineConfig::new("discard-counters");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
-        MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
-        MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"})]).with_checkpoint(json!({"b": 1})),
+        memory::Batch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
+        memory::Batch::new(vec![json!({"id": 2, "surprise": "x"})])
+            .with_checkpoint(json!({"b": 1})),
     ];
     let report = Engine::new(
         config,
@@ -410,7 +411,7 @@ async fn discard_counters_reach_the_commit_unit() {
 async fn discarded_value_counter_reaches_the_commit_unit() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let dest = CountersDest {
-        inner: MemoryDestination::new(),
+        inner: memory::Destination::new(),
         seen: std::sync::Arc::clone(&seen),
     };
     // DiscardValue keeps the row and NULLs the non-conforming value, so the
@@ -418,8 +419,9 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
     let mut config = EngineConfig::new("discard-values");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardValue));
     let batches = vec![
-        MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
-        MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"})]).with_checkpoint(json!({"b": 1})),
+        memory::Batch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
+        memory::Batch::new(vec![json!({"id": 2, "surprise": "x"})])
+            .with_checkpoint(json!({"b": 1})),
     ];
     let report = Engine::new(
         config,
@@ -463,7 +465,7 @@ async fn only_the_table_that_discarded_reports_a_discard() {
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
         // Establishes the root shape AND the child table.
-        MemoryBatch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
+        memory::Batch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
             .with_checkpoint(json!({"b": 0})),
         // `surprise` violates the established shape, so row 2 is discarded —
         // and it has no items, so the child table cascades NOTHING while the
@@ -474,7 +476,7 @@ async fn only_the_table_that_discarded_reports_a_discard() {
         // cascaded away — dropped == 0 while the discarded set is non-empty,
         // which is the only state the creation guard's mutant can corrupt.
         // Row 3 conforms and carries an ordinary child row.
-        MemoryBatch::new(vec![
+        memory::Batch::new(vec![
             json!({"id": 2, "surprise": "x", "extra": [{"z": 1}]}),
             json!({"id": 3, "items": [{"a": 3}]}),
         ])
@@ -483,7 +485,7 @@ async fn only_the_table_that_discarded_reports_a_discard() {
     let engine = Engine::new(
         config,
         stream_with_batches(StreamSpec::new("s"), batches),
-        MemoryDestination::new(),
+        memory::Destination::new(),
     );
     let mut events = engine.events();
     let report = engine.run().await.expect("run");
@@ -541,15 +543,15 @@ async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
         let mut config = EngineConfig::new("discard-clean");
         config = config.with_schema_policy(SchemaPolicy::with_default(action));
         let batches = vec![
-            MemoryBatch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
+            memory::Batch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
                 .with_checkpoint(json!({"b": 0})),
-            MemoryBatch::new(vec![json!({"id": 2, "items": [{"a": 2}]})])
+            memory::Batch::new(vec![json!({"id": 2, "items": [{"a": 2}]})])
                 .with_checkpoint(json!({"b": 1})),
         ];
         let engine = Engine::new(
             config,
             stream_with_batches(StreamSpec::new("s"), batches),
-            MemoryDestination::new(),
+            memory::Destination::new(),
         );
         let mut events = engine.events();
         let report = engine.run().await.expect("run");
@@ -591,7 +593,7 @@ async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
 /// short run (the first tick is immediate by design).
 #[tokio::test]
 async fn read_commit_and_heartbeat_events_hold_their_order() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = stream_with_batches(
         rdlt_connector::source::StreamSpec::new("s"),
         evolving_batches(),
@@ -659,7 +661,7 @@ async fn read_commit_and_heartbeat_events_hold_their_order() {
 /// numbers cannot silently diverge for a clean run.
 #[tokio::test]
 async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
     let source = stream_with_batches(
         rdlt_connector::source::StreamSpec::new("s"),
         evolving_batches(),
@@ -692,15 +694,15 @@ async fn rows_read_includes_discarded_rows() {
     let mut config = EngineConfig::new("discard-read");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
-        MemoryBatch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
+        memory::Batch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
         // The surprise column gets this whole row discarded.
-        MemoryBatch::new(vec![json!({"id": 2, "surprise": "x"}), json!({"id": 3})])
+        memory::Batch::new(vec![json!({"id": 2, "surprise": "x"}), json!({"id": 3})])
             .with_checkpoint(json!({"b": 1})),
     ];
     let report = Engine::new(
         config,
         stream_with_batches(StreamSpec::new("s"), batches),
-        MemoryDestination::new(),
+        memory::Destination::new(),
     )
     .run()
     .await

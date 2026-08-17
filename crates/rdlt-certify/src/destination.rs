@@ -54,7 +54,7 @@ use rdlt_connector_protocol::proto::SessionRequest;
 use rdlt_runtime::local::Local;
 use rdlt_runtime::managed::Managed;
 use rdlt_runtime::provider::Provider;
-use rdlt_testkit::conformance::destination::{TableProbe, verify_destination};
+use rdlt_testkit::conformance::destination::{self, TableProbe};
 use serde_json::Value;
 
 use crate::report::{CLAUSE_TIMEOUT, Concluded, Report, timed_out};
@@ -268,7 +268,7 @@ pub async fn certify_destination(target: &Target, probe: Option<&dyn TableProbe>
             match crate::clock::timeout_excluding_probe(
                 CLAUSE_TIMEOUT,
                 &probe_clock,
-                verify_destination(&managed, &metered),
+                destination::verify(&managed, &metered),
             )
             .await
             {

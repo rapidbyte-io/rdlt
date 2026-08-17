@@ -58,7 +58,7 @@ use rdlt_connector::destination::Capabilities;
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::schema;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 use serde_json::{Value, json};
 
 /// One corpus entry: what to shred, and under which stream shape.
@@ -275,13 +275,13 @@ fn corpus() -> Vec<Case> {
     ]
 }
 
-async fn run(case: &Case) -> MemoryDestination {
+async fn run(case: &Case) -> memory::Destination {
     let mut spec = StreamSpec::new("s");
     if let Some(key) = &case.primary_key {
         spec = spec.with_primary_key(key.iter().copied());
     }
-    let source = MemorySource::single_stream(spec, case.rows.clone());
-    let dest = MemoryDestination::new().with_capabilities(
+    let source = memory::Source::single_stream(spec, case.rows.clone());
+    let dest = memory::Destination::new().with_capabilities(
         Capabilities::default()
             .with_merge(true)
             .with_structs(true)
@@ -300,7 +300,7 @@ async fn run(case: &Case) -> MemoryDestination {
 ///
 /// `_rdlt_load_id` is deliberately excluded: it names the run and changes on
 /// every execution. Everything else here is a function of the input alone.
-fn render(case: &Case, dest: &MemoryDestination) -> String {
+fn render(case: &Case, dest: &memory::Destination) -> String {
     let mut out = String::new();
     let key = match &case.primary_key {
         Some(k) => format!("primary_key={k:?}"),

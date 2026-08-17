@@ -302,12 +302,12 @@ mod hint_validation_tests {
     //! legitimate configuration at plan time, which is a refusal the operator
     //! cannot work around.
     use super::*;
-    use rdlt_testkit::MemoryDestination;
+    use rdlt_testkit::memory;
 
     fn check(precision: u8, scale: u8) -> Result<(), Error> {
         let spec = StreamSpec::new("s")
             .with_type_hint("amount", LogicalType::Decimal { precision, scale });
-        let dest = MemoryDestination::new();
+        let dest = memory::Destination::new();
         validate_streams(
             &EngineConfig::new("hints"),
             std::slice::from_ref(&spec),
@@ -335,7 +335,7 @@ mod hint_validation_tests {
 
     fn check_streams(names: &[&str]) -> Result<(), Error> {
         let specs: Vec<_> = names.iter().map(|&name| StreamSpec::new(name)).collect();
-        let dest = MemoryDestination::new();
+        let dest = memory::Destination::new();
         validate_streams(
             &EngineConfig::new("streams"),
             &specs,
@@ -429,7 +429,7 @@ mod hint_validation_tests {
         let specs: Vec<_> = (0..crate::DEFAULT_MAX_STREAMS_PER_SOURCE + 1)
             .map(|index| StreamSpec::new(format!("s{index}")))
             .collect();
-        let dest = MemoryDestination::new();
+        let dest = memory::Destination::new();
         let error = validate_streams(
             &EngineConfig::new("streams"),
             &specs,
@@ -514,12 +514,12 @@ mod hint_validation_tests {
         EngineConfig::new("test").with_workdir("/tmp/rdlt-test")
     }
 
-    fn durable_identity_dest() -> MemoryDestination {
-        MemoryDestination::new()
+    fn durable_identity_dest() -> memory::Destination {
+        memory::Destination::new()
             .with_capabilities(Capabilities::default().with_requires_durable_identity(true))
     }
 
-    fn check_with(config: EngineConfig, destination: MemoryDestination) -> Result<(), Error> {
+    fn check_with(config: EngineConfig, destination: memory::Destination) -> Result<(), Error> {
         let spec = StreamSpec::new("s");
         validate_streams(
             &config,
@@ -593,7 +593,7 @@ mod hint_validation_tests {
     /// never cross a wire.
     #[test]
     fn an_out_of_range_ident_rules_declaration_is_refused() {
-        let dest = MemoryDestination::new().with_capabilities(
+        let dest = memory::Destination::new().with_capabilities(
             Capabilities::default().with_ident_rules(rdlt_core::schema::IdentRules { max_len: 2 }),
         );
         let error = check_with(no_workdir_config(), dest)
@@ -604,7 +604,7 @@ mod hint_validation_tests {
         );
         // The edges: the floor and the default are both fine.
         for max_len in [rdlt_core::schema::MIN_IDENT_MAX_LEN, 63, 255] {
-            let dest = MemoryDestination::new().with_capabilities(
+            let dest = memory::Destination::new().with_capabilities(
                 Capabilities::default().with_ident_rules(rdlt_core::schema::IdentRules { max_len }),
             );
             check_with(no_workdir_config(), dest).expect("in-range rules validate");
@@ -641,7 +641,7 @@ mod hint_validation_tests {
     #[test]
     fn an_in_process_stream_name_past_the_identifier_ceiling_refuses() {
         let spec = StreamSpec::new("n".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1));
-        let dest = MemoryDestination::new();
+        let dest = memory::Destination::new();
         let error = validate_streams(
             &EngineConfig::new("names"),
             std::slice::from_ref(&spec),

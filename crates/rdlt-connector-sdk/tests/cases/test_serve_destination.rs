@@ -26,7 +26,7 @@ use rdlt_connector_protocol::proto::{
     handshake_reply, session_reply, session_request,
 };
 use rdlt_connector_sdk::serve::destination::run_on;
-use rdlt_testkit::{batch_of, commit_meta_for, schema_for};
+use rdlt_testkit::fixtures::{batch_of, commit_meta_for, schema_for};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint};
 

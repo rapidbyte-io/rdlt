@@ -9,7 +9,7 @@ use rdlt_connector_sdk::spi::core::cursor::Cursor;
 use rdlt_connector_sdk::spi::core::id::TableName;
 use rdlt_connector_sdk::spi::error::SourceError;
 use rdlt_connector_sdk::spi::source::{ReadRequest, Source, StreamSpec};
-use rdlt_testkit::{ProbeError, TableProbe};
+use rdlt_testkit::conformance::destination::{ProbeError, TableProbe};
 
 /// Counts reader-VISIBLE rows for a table: the lines of every published
 /// `<table>-…` jsonl part in the output directory. Bookkeeping files

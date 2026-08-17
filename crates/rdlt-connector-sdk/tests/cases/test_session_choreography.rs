@@ -15,7 +15,7 @@ use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Capabilities, Destination, LoadSession, OpenContext};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector_sdk::destination::{self, Backend, DestinationConnector};
-use rdlt_testkit::{batch_of, schema_for};
+use rdlt_testkit::fixtures::{batch_of, schema_for};
 
 use super::example::{TickerConfig, TickerError};
 

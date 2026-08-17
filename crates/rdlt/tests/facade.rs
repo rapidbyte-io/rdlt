@@ -1,19 +1,19 @@
 //! T027: the US1 flow through the public facade, plus build-time validation (B1–B3).
 
 use rdlt::prelude::*;
-use rdlt_testkit::{MemoryDestination, MemorySource};
+use rdlt_testkit::memory;
 use serde_json::json;
 
 #[tokio::test]
 async fn full_sync_through_the_facade() {
-    let source = MemorySource::single_stream(
+    let source = memory::Source::single_stream(
         rdlt_connector::source::StreamSpec::new("users"),
         vec![
             json!({"id": 1, "name": "ada", "emails": [{"addr": "a@x"}]}),
             json!({"id": 2, "name": "grace", "emails": []}),
         ],
     );
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
 
     let pipeline = Pipeline::builder("facade-demo")
         .source(source)
@@ -33,10 +33,10 @@ async fn full_sync_through_the_facade() {
 
 #[test]
 fn build_rejects_merge_against_non_merge_destination() {
-    let dest = MemoryDestination::new()
+    let dest = memory::Destination::new()
         .with_capabilities(rdlt_connector::destination::Capabilities::default().with_merge(false));
     let err = Pipeline::builder("bad")
-        .source(MemorySource::default())
+        .source(memory::Source::default())
         .destination(dest)
         .write_mode(WriteMode::Merge {
             key: vec!["id".into()],
@@ -50,8 +50,8 @@ fn build_rejects_merge_against_non_merge_destination() {
 #[test]
 fn build_rejects_empty_merge_key() {
     let err = Pipeline::builder("bad")
-        .source(MemorySource::default())
-        .destination(MemoryDestination::new())
+        .source(memory::Source::default())
+        .destination(memory::Destination::new())
         .write_mode(WriteMode::Merge { key: vec![] })
         .build()
         .expect_err("empty key is a config error");
@@ -126,14 +126,14 @@ destination:
 /// HERE, not dropping to raw `EngineConfig`).
 #[tokio::test]
 async fn the_builder_plumbs_the_engine_knobs() {
-    let source = MemorySource::single_stream(
+    let source = memory::Source::single_stream(
         rdlt_connector::source::StreamSpec::new("users"),
         vec![
             json!({"id": 1, "name": "ada"}),
             json!({"id": 2, "name": "grace"}),
         ],
     );
-    let dest = MemoryDestination::new();
+    let dest = memory::Destination::new();
 
     let error = Pipeline::builder("knob-demo")
         .source(source)
@@ -163,8 +163,8 @@ fn build_rejects_a_threshold_less_commit_policy() {
         every_seconds: None,
     };
     let err = Pipeline::builder("bad-policy")
-        .source(MemorySource::default())
-        .destination(MemoryDestination::new())
+        .source(memory::Source::default())
+        .destination(memory::Destination::new())
         .commit_policy(threshold_less)
         .build()
         .expect_err("a policy with no threshold must not build");

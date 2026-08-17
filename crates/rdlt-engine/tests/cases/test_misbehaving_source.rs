@@ -10,7 +10,8 @@ use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;
 use rdlt_core::error::Error;
 use rdlt_engine::{Engine, EngineConfig};
-use rdlt_testkit::{MemoryDestination, batch_of};
+use rdlt_testkit::fixtures::batch_of;
+use rdlt_testkit::memory;
 
 struct ArrowOnUnstructured;
 
@@ -90,7 +91,7 @@ async fn a_typed_refusal_still_reaps_the_reader_task() {
         Engine::new(
             EngineConfig::new("refusal-cleanup"),
             RefusalThenParked { _alive: alive },
-            MemoryDestination::new(),
+            memory::Destination::new(),
         )
         .run(),
     )
@@ -115,7 +116,7 @@ async fn arrow_on_unstructured_stream_fails_typed_and_terminates() {
         Engine::new(
             EngineConfig::new("contract"),
             ArrowOnUnstructured,
-            MemoryDestination::new(),
+            memory::Destination::new(),
         )
         .run(),
     )
