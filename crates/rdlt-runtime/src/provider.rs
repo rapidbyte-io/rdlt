@@ -2,7 +2,7 @@
 //! ready SPI object — and [`ProviderError`], its typed failure surface.
 
 use async_trait::async_trait;
-use rdlt_connector_protocol::handshake::LineError;
+use rdlt_connector_protocol::handshake;
 
 use crate::managed::{ManagedDestination, ManagedSource};
 use crate::requirement::{ClientError, ConnectorRequirement};
@@ -64,7 +64,7 @@ pub enum ProviderError {
         binary: String,
         /// Why the line refused to parse.
         #[source]
-        source: LineError,
+        source: handshake::Error,
     },
     /// The spawned process flooded stdout past the handshake-line cap
     /// without a line terminator — not a connector, refused as soon as

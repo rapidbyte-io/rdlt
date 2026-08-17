@@ -80,8 +80,8 @@ async fn handshake_streams_and_read_round_trip() {
     let (_dir, path) = socket_path();
     let (line, _handle) = serve_on::<EchoSource>(&path).await.expect("bind");
     assert_eq!(line.socket_path, path);
-    assert_eq!(line.proto_min, 0);
-    assert_eq!(line.proto_max, 0);
+    assert_eq!(line.protocol_min, 0);
+    assert_eq!(line.protocol_max, 0);
     assert_eq!(
         line.render(),
         format!("rdlt-connector|1|0|0|{}", path.to_string_lossy()),
@@ -351,7 +351,7 @@ async fn an_oversized_config_json_refuses_fatal_by_size_before_any_parse() {
     }
 }
 
-/// A protocol version outside `[proto_min, proto_max]` refuses FATAL —
+/// A protocol version outside `[protocol_min, protocol_max]` refuses FATAL —
 /// the message pinned byte-exact, like its three siblings above. (No
 /// "below min" sibling exists — see
 /// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`'s

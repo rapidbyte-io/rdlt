@@ -8,14 +8,14 @@
 //! data documents get neither — their one render path, JSON
 //! serialization, already spells control characters inert. The
 //! character inventory itself lives in
-//! `rdlt_connector_protocol::sanitize`, shared with the serving side,
+//! `rdlt_connector_protocol::inventory`, shared with the serving side,
 //! so the two ends of the wire cannot drift.
 
 use std::borrow::Cow;
 use std::time::Duration;
 
+use rdlt_connector_protocol::inventory;
 use rdlt_connector_protocol::proto::{self, Classification};
-use rdlt_connector_protocol::sanitize;
 
 /// The most bytes a wire identifier may carry — the SPI's constant,
 /// re-exported so seats read it beside the gate they pair it with.
@@ -36,7 +36,7 @@ pub(crate) fn identifier(seat: &str, value: &str) -> Result<(), String> {
     }
     if value
         .chars()
-        .any(sanitize::is_control_or_invisible_in_identifier)
+        .any(inventory::is_control_or_invisible_in_identifier)
     {
         return Err(format!(
             "the connector sent a {seat} of `{}` — control or invisible \
@@ -95,12 +95,12 @@ pub(crate) fn cursor(value: &serde_json::Value) -> Result<Vec<u8>, String> {
 /// data) passes byte-identical. Borrowed unchanged when there is
 /// nothing to escape, which is every honest message.
 pub(crate) fn escape(text: &str) -> Cow<'_, str> {
-    if !text.chars().any(sanitize::is_control_or_invisible) {
+    if !text.chars().any(inventory::is_control_or_invisible) {
         return Cow::Borrowed(text);
     }
     let mut escaped = String::with_capacity(text.len() + 8);
     for character in text.chars() {
-        if sanitize::is_control_or_invisible(character) {
+        if inventory::is_control_or_invisible(character) {
             // `escape_debug` passes "printable" characters through, and
             // the inventory's two Hangul fillers are category Lo —
             // printable to it while rendering as blank glyphs — so
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn no_inventory_character_survives_the_escape_raw() {
         let inventory: Vec<char> = ('\u{0}'..='\u{10FFFF}')
-            .filter(|c| sanitize::is_control_or_invisible(*c))
+            .filter(|c| inventory::is_control_or_invisible(*c))
             .collect();
         assert!(inventory.len() > 100, "the sweep covers the inventory");
         for character in inventory {

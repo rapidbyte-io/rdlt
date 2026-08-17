@@ -1,20 +1,12 @@
-//! The wire's ONE control-and-invisible-codepoint inventory, held where
-//! every wire crate can reach it.
-//!
-//! Text authored by a connector process crosses into host vocabulary at
-//! several seats — the handshake line's socket path (this crate), and
-//! the client's identifier and display seats — and each seat used to
-//! carry its own approximation of "invisible". The inventory lives here
-//! because the client depends on this crate, so both sides of the wire
-//! refuse and escape by the same table instead of drifting.
-//!
-//! What the inventory names: everything `char::is_control` covers (C0
-//! including newline, tab and DEL, plus C1), and the invisible or
-//! visual-reordering formatting characters that can conceal, reorder,
-//! or spoof identifier text — the Unicode `Cf` (format) points that
-//! render as nothing, the bidi controls that reorder what a terminal
-//! shows, plus the two Hangul fillers (category `Lo`, not `Cf`, but
-//! they render as blank glyphs and are classic spoofing letters). The
+//! The wire's ONE control-and-invisible-codepoint inventory: everything
+//! `char::is_control` covers (C0 including newline, tab and DEL, plus
+//! C1), and the invisible or visual-reordering formatting characters
+//! that can conceal, reorder, or spoof identifier text — the Unicode
+//! `Cf` points that render as nothing, the bidi controls, plus the two
+//! Hangul fillers (category `Lo`, not `Cf`, but they render as blank
+//! glyphs and are classic spoofing letters). It lives in this crate so
+//! both sides of the wire and the CLI's display seats refuse and escape
+//! by one table instead of each carrying its own approximation. The
 //! table is hand-listed and sorted; extend it in order, with the name
 //! of what each entry is.
 

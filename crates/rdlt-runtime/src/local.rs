@@ -309,11 +309,11 @@ impl LocalBinaryConnectorProvider {
                 // it. The SDK's gRPC handshake would refuse a mismatch
                 // too, but only after the socket exchange — late, and in
                 // whatever shape a version-skewed exchange produces.
-                if !(parsed.proto_min..=parsed.proto_max).contains(&PROTOCOL_VERSION) {
+                if !(parsed.protocol_min..=parsed.protocol_max).contains(&PROTOCOL_VERSION) {
                     return Err(ProviderError::ProtocolRange {
                         binary: binary.to_string(),
-                        min: parsed.proto_min,
-                        max: parsed.proto_max,
+                        min: parsed.protocol_min,
+                        max: parsed.protocol_max,
                         ours: PROTOCOL_VERSION,
                     });
                 }

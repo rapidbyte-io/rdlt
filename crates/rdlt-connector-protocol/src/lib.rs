@@ -1,153 +1,70 @@
 //! # rdlt-connector-protocol — the out-of-process connector wire protocol (v0)
 //!
-//! **FROZEN** as of 2026-08-07
-//! (`docs/adr/0001-out-of-process-connectors.md`, decision D8 — amended
-//! there with the
-//! evidence that closed its experimental period: a standalone certifier
-//! driving any connector executable in any language against 29
-//! fail-proven conformance clauses plus a `SIGKILL` matrix at every
-//! message boundary, a non-Rust connector certified by that same
-//! binary, and a recorded benchmark session in which every throughput
-//! bar held with the connectors out of process).
+//! FROZEN as of 2026-08-07. Frozen means the rules of change bind:
+//! field numbers are never renumbered, repurposed, or recycled — a
+//! retired number is `reserved`; evolution is ADDITIVE ONLY (new fields
+//! take fresh numbers; new messages, RPCs, `oneof` arms and enum values
+//! may be added; nothing is removed, narrowed, or given a second
+//! meaning); and a receiver tolerates what a newer peer sends without
+//! knowing it — an unrecognized [`proto::Classification`] normalizes
+//! safe-loud to `Fatal` rather than being guessed retryable.
 //!
-//! Frozen means the RULES OF CHANGE now bind: field numbers are never
-//! renumbered, repurposed, or recycled — a retired number is
-//! `reserved`; evolution is ADDITIVE ONLY (new fields take fresh
-//! numbers; new messages, RPCs, `oneof` arms and enum values may be
-//! added; nothing is removed, narrowed, or given a second meaning); and
-//! a receiver tolerates what a newer peer sends without knowing it —
-//! an unrecognized [`proto::Classification`] normalizes safe-loud to
-//! `Fatal` rather than being guessed retryable. The `#[non_exhaustive]`
-//! discipline on the SPI and client types the wire maps onto is what
-//! keeps such an addition from being a semver break in Rust.
-//!
-//! The negotiated version NUMBER stays `0` (see [`PROTOCOL_VERSION`]):
-//! it is the identifier both sides compare at the handshake, and
-//! bumping it for a freeze that moves no byte would break every shipped
-//! handshake for nothing. "v1" is the name of the frozen contract, not
-//! a value on the wire. The crate's `README.md` carries the rules in
-//! full, the named frozen clauses, and what the freeze deliberately
-//! leaves open — three additive doors this proto keeps room for: a
-//! `ReadCredit` message should flow control alone ever prove
-//! insufficient for backpressure; negotiation semantics for
-//! [`proto::HandshakeOk::state_format_versions`], whose field is frozen
-//! at its number but ships EMPTY because there is nothing to negotiate
-//! until a second state-format version exists; and network transports
-//! as a future binding of this same proto.
+//! The negotiated version NUMBER stays `0` ([`PROTOCOL_VERSION`]): it
+//! is the identifier both sides compare at the handshake, and bumping
+//! it for a freeze that moves no byte would break every shipped
+//! handshake for nothing — "v1" is the name of the frozen contract, not
+//! a value on the wire.
 //!
 //! Two halves: [`handshake`] is the plaintext stdout line a spawned
-//! connector prints before it starts serving; [`proto`] is the generated
-//! gRPC/protobuf types and services compiled at build time from
-//! `proto/rdlt_connector_v0.proto` (hermetically — `build.rs` vendors its
-//! own `protoc`, so no system install is required). Beside them,
-//! [`sanitize`] carries the wire's shared control-and-invisible
-//! codepoint inventory — the one table the handshake's socket-path gate
-//! and the client's identifier/display seats all refuse and escape by.
+//! connector prints before it starts serving; [`proto`] is the
+//! generated gRPC/protobuf types and services. Beside them,
+//! [`inventory`] carries the wire's shared control-and-invisible
+//! codepoint table — the one table the handshake's socket-path gate and
+//! the client's identifier and display seats all refuse and escape by.
 //!
-//! ## Trust model (owner decision D-038-1)
+//! Trust model: config documents — which may carry credentials — cross
+//! the Unix domain socket in the clear; v0's boundary is the owner-only
+//! (`0600`) socket file plus the operator trust any locally spawned
+//! child process inherits, the same boundary a CLI plugin crosses.
+//! Never log `config_json`, `table_schema_json`, or any other `*_json`
+//! payload verbatim — it may contain a revealed credential.
 //!
-//! Config documents — which may carry credentials — cross the Unix
-//! domain socket **in the clear**. There is no protocol-level
-//! encryption or authentication in v0: the socket file is created
-//! owner-only (`0600`, enforced by the sdk's `serve::common::bind_uds`,
-//! not by anything in this crate), and a spawned connector process
-//! inherits its operator's trust exactly like any other child process —
-//! the same trust boundary a locally-installed CLI plugin or a `sudo`
-//! child crosses. Never log `config_json`/`table_schema_json`/any other
-//! `*_json` payload verbatim; it may contain a `Secret`'s revealed
-//! value. `Secret` references (a config field naming where a credential
-//! lives — an env var, a secret-manager path — rather than carrying the
-//! credential itself) are the recorded direction for network
-//! transports, not built in v0. Network transports (TCP+mTLS for
-//! provider-managed remote fleets, ADR 0001 D3) are a future binding of
-//! this SAME proto — a different trust model belongs to that binding,
-//! not retrofitted onto UDS.
+//! Payload discipline: the proto owns RPC shape and field-number
+//! evolution, never the shape of what rides inside it — every `*_json`
+//! field carries an opaque `serde_json`-encoded document whose OWN
+//! format gate governs its evolution, and `arrow_ipc` fields carry raw
+//! Arrow IPC stream bytes, one batch per frame.
 //!
-//! ## Payload discipline (ADR 0001 D4)
-//!
-//! The proto owns RPC shape and field-number evolution; it does NOT own
-//! the shape of what rides inside it. Every field named `*_json` carries
-//! an opaque `serde_json`-encoded document whose OWN `format_version`
-//! (or equivalent) is the source of truth for its evolution — the proto
-//! never re-derives or re-validates that structure, only moves the
-//! bytes. `arrow_ipc` fields carry raw Arrow IPC *stream* bytes (one
-//! schema message, one record-batch message — see [`proto::Write`] and
-//! [`proto::ReadFrame`]'s own field docs for the one-batch-per-frame
-//! rule), Flight-style without adopting Flight itself. This keeps ONE
-//! evolution system per concern: proto/serde drift is confined to the
-//! envelope, never the payload.
-//!
-//! See the crate's `README.md` for the handshake line format spelled
-//! out field-by-field, the three services' shapes, and the operational
-//! gotchas measured live when the protocol was designed — this module
-//! doc stays scoped to what governs the Rust API surface; the README
-//! is the page a third-party integrator (including a non-Rust one)
-//! actually needs.
+//! The crate's `README.md` is the page an integrator (including a
+//! non-Rust one) actually needs: the handshake line spelled out
+//! field-by-field, the three services, the named freeze clauses and the
+//! doors the freeze deliberately leaves open, the document ceilings,
+//! and the operational gotchas.
 
 pub mod handshake;
-pub mod sanitize;
+pub mod inventory;
 
-/// Generated protobuf/gRPC types for `rdlt.connector.v0`: [`Connector`],
-/// [`SourceService`], [`DestinationService`] and every request/reply
-/// message the proto declares. See `proto/rdlt_connector_v0.proto` for the
-/// source of truth and `src/generated.rs` for how the build-time output
-/// lands here.
-///
-/// [`Connector`]: proto::connector_server::Connector
-/// [`SourceService`]: proto::source_service_server::SourceService
-/// [`DestinationService`]: proto::destination_service_server::DestinationService
-///
-/// ## The document ceilings and the cursor contract (4L10, 5M1)
-///
-/// The UNTYPED `*_json` document payloads are size-capped at both ends,
-/// spelled ONCE each in the SPI crate (this crate stays a leaf for
-/// foreign integrators, so the constants live there):
-///
-/// - `config_json`: **8 MiB** (`rdlt_connector::MAX_DOCUMENT_BYTES`).
-///   The serve side refuses an oversized document before parsing it (an
-///   untyped JSON document expands many-fold over its wire size inside
-///   the connector), and the client refuses to SEND one (a host-side
-///   cap on the YAML source does not bound the re-serialized JSON —
-///   YAML→JSON expansion can push a just-legal file past the ceiling,
-///   and the pre-send refusal names exactly that).
-/// - cursors (`since_cursor_json`, `checkpoint_cursor_json`): **4 MiB**
-///   (`rdlt_connector::MAX_CURSOR_BYTES`) — deliberately tighter,
-///   because a cursor is also recorded in the engine's WAL, whose
-///   per-line cap is sized to carry one maximal cursor line. Enforced
-///   at the serve gate, at the client's inbound frame decode, and at
-///   its pre-send check. Persisted state MUST serialize under this
-///   bound — a connector whose state can outgrow it summarizes (a
-///   high-water mark, an offset, a resume token) instead of embedding
-///   the data.
-///
-/// Typed `*_json` fields (stream specs, schemas, receipts) ride typed
-/// serde structs with a ≈1× parse factor and are deliberately outside
-/// the document ceilings, which exist to bound untyped-`Value`
-/// expansion.
+/// Generated protobuf/gRPC types for `rdlt.connector.v0`, compiled at
+/// build time from `proto/rdlt_connector_v0.proto` (build.rs vendors its
+/// own protoc, so no system install is needed). The include splices the
+/// generated source in as this module's body — the file name follows the
+/// proto `package`. The `*_json` document ceilings and the cursor
+/// contract are spelled out in the crate's `README.md`, beside the SPI
+/// constants that define them.
 pub mod proto {
-    include!("generated.rs");
+    include!(concat!(env!("OUT_DIR"), "/rdlt.connector.v0.rs"));
 }
 
-/// The per-message receive ceiling BOTH sides of the wire install
-/// (`.max_decoding_message_size` on every served service wrapper in the
-/// sdk's `serve::source::serve_on`/`serve::destination::serve_on`, and
-/// the matching decode cap on any client that dials one), replacing
-/// tonic's 4 MiB default decode cap. The SPI's byte-budget channels run
-/// 8-64 MiB, so ONE Arrow batch in a `Write` frame may legitimately
-/// exceed 4 MiB — under tonic's default, such a batch kills the session
-/// with an opaque transport `Status`, and the frozen
-/// one-batch-per-frame rule means there is NO conforming way to
-/// deliver it smaller. h2 flow-control windows remain the PACING
-/// mechanism (see the README's flow-control note); this cap is the hard
-/// refusal ceiling, deliberately above any in-tree budget. Both sides
-/// import THIS constant — a dialing side left at the 4 MiB default dies
-/// the same way on the first over-4 MiB `ReadFrame` a server legally
-/// sends.
+/// The per-message receive ceiling BOTH sides of the wire install in
+/// place of tonic's 4 MiB default: one legal Arrow batch can exceed
+/// 4 MiB and the one-batch-per-frame rule forbids delivering it
+/// smaller. h2 flow-control windows remain the pacing mechanism; this
+/// is the hard refusal ceiling.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
-/// The protocol version this crate's generated code implements — the value
-/// a connector advertises and a provider negotiates over
+/// The protocol version this crate's generated code implements — the
+/// identifier a connector advertises and a provider negotiates over
 /// [`proto::HandshakeRequest::protocol_version`]. Distinct from the
-/// handshake line's own format version, which is pinned separately at `1`
-/// (see [`handshake::Line`]).
+/// handshake line's own format version, which is pinned separately at
+/// `1` (see [`handshake::Line`]).
 pub const PROTOCOL_VERSION: u32 = 0;

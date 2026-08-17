@@ -32,7 +32,7 @@ pub fn stderr_line(line: &str) {
 /// boundary — [`stderr_line`] and the pretty renderer's messages —
 /// never to the data itself.
 pub fn sanitize_display_text(text: &str) -> String {
-    use rdlt_connector_protocol::sanitize::is_control_or_invisible as hostile;
+    use rdlt_connector_protocol::inventory::is_control_or_invisible as hostile;
     if !text.chars().any(|c| hostile(c) && c != '\n' && c != '\t') {
         return text.to_owned();
     }
@@ -59,7 +59,7 @@ pub fn sanitize_display_text(text: &str) -> String {
 pub fn sanitize_identifier(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for character in text.chars() {
-        if rdlt_connector_protocol::sanitize::is_control_or_invisible(character) {
+        if rdlt_connector_protocol::inventory::is_control_or_invisible(character) {
             use std::fmt::Write as _;
             let _ = write!(out, "\\u{{{:x}}}", character as u32);
         } else {

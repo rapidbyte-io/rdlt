@@ -531,7 +531,7 @@ pub(crate) fn handshake<S: HandshakeShell>(
     }
 
     // A range check in spirit — v0 supports exactly `PROTOCOL_VERSION`,
-    // so `proto_min == proto_max == PROTOCOL_VERSION` and the range
+    // so `protocol_min == protocol_max == PROTOCOL_VERSION` and the range
     // collapses to one value. Written as `!=` (not `< min || > max`)
     // because `PROTOCOL_VERSION` is `u32`'s minimum and clippy correctly
     // flags the lower bound as vacuous; widen this back into an explicit

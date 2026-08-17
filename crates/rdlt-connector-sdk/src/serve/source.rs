@@ -739,8 +739,8 @@ pub async fn serve_on<C: SourceConnector>(
     Ok((
         Line {
             socket_path: path.to_path_buf(),
-            proto_min: PROTOCOL_VERSION,
-            proto_max: PROTOCOL_VERSION,
+            protocol_min: PROTOCOL_VERSION,
+            protocol_max: PROTOCOL_VERSION,
         },
         handle,
     ))
