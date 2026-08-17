@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# The out-of-process server binary (039 T6). OFF by default, with
+# The out-of-process server binary. OFF by default, with
 # `required-features` on the [[bin]], so LIBRARY consumers of this crate
 # never pull tonic or clap into their dependency tree — `cargo tree -p
 # rdlt-connector-reference -i tonic` (and `-i clap`) at default features
@@ -31,8 +31,8 @@ spawn-bins = []
 
 # Behind `bin-serve` only — `cargo build` at default features never even
 # discovers this target, so no workspace command pays for tonic. The
-# gate compiles it explicitly (Makefile `test:`, the 024 never-compiled
-# class).
+# gate compiles it explicitly (Makefile `test:`), so a target no
+# workspace command builds still cannot rot unseen.
 [[bin]]
 name = "rdlt-connector-reference"
 path = "src/bin/rdlt-connector-reference.rs"

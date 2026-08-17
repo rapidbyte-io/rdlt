@@ -1,4 +1,4 @@
-//! Shared plumbing for the reference connector's suites: the
+//! Shared support for the reference connector's suites: the
 //! directory-counting probe both kits read visibility through, and a
 //! small full-read harness for the exactly-once pins.
 

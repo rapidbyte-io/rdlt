@@ -53,11 +53,12 @@ blake3 = { workspace = true }
 criterion = { workspace = true }
 iai-callgrind = { workspace = true }
 proptest = { workspace = true }
-# The crash sweep's durable-storage substrate (044): the reference
-# connector's jsonl destination, in-process through the sdk Shell. The
-# first-party connectors' own sweeps live with their crates in the
-# rdlt-connectors repository.
+# The crash sweep's durable-storage substrate: the reference connector's
+# jsonl destination, driven in-process through the sdk shell as a
+# durable test double. The first-party connectors' own sweeps live with
+# their crates in the rdlt-connectors repository.
 rdlt-connector-reference = { workspace = true }
+rdlt-connector-sdk = { workspace = true }
 rdlt-testkit = { workspace = true }
 tempfile = { workspace = true }
 

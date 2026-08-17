@@ -173,20 +173,26 @@ async fn sweep_memory_destination() {
 }
 
 /// The durable-storage arm: the reference connector's jsonl destination
-/// (the sdk Shell, in-process) — part files, an on-disk receipt log and
-/// state document, so recovery here replays against REAL durable state
-/// rather than shared memory. Append only: the reference destination
-/// types-refuses Replace and declares no merge, by design.
+/// (the sdk shell, in-process as a durable test double) — part files, an
+/// on-disk receipt log and state document, so recovery here replays
+/// against REAL durable state rather than shared memory. Append only:
+/// the reference destination types-refuses Replace and declares no
+/// merge, by design.
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_reference_destination() {
-    let config_for = |dir: &Path| rdlt_connector_reference::destination::Config {
+    let config_for = |dir: &Path| rdlt_connector_reference::destination::config::Config {
         path: dir.join("out").to_string_lossy().into_owned(),
     };
     sweep(
         ENGINE_POINTS,
         WriteMode::Append,
         source,
-        |dir| rdlt_connector_reference::destination::Shell::new(config_for(dir)).expect("open"),
+        |dir| {
+            rdlt_connector_sdk::destination::Shell::<
+                rdlt_connector_reference::destination::connector::Reference,
+            >::new(config_for(dir))
+            .expect("open")
+        },
         |dir, _dest| count_reference_rows(&dir.join("out")),
         ENGINE_POINTS,
     )

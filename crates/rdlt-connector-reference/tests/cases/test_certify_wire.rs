@@ -11,7 +11,7 @@ use rdlt_certify::report;
 use rdlt_certify::target::Target;
 use serde_json::json;
 
-use super::common::DirProbe;
+use super::support::DirProbe;
 
 /// The built reference bin, located through the ONE spawn scaffold —
 /// the mechanics (`CARGO_TARGET_DIR` resolution, the

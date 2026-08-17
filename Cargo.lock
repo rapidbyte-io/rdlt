@@ -1963,6 +1963,7 @@ dependencies = [
  "proptest",
  "rdlt-connector",
  "rdlt-connector-reference",
+ "rdlt-connector-sdk",
  "rdlt-core",
  "rdlt-testkit",
  "serde",
