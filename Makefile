@@ -190,7 +190,7 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-b
 # contract pins all need the real bin.
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(spawned_pipeline)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(e2e)'
-RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-cli --features spawn-bins -E 'test(spawned_runs)'
+RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-cli --features spawn-bins -E 'test(test_spawned)'
 # The reference connector's OWN certification cells: the spawned
 # reference bin faces the full clause suite over the wire, BOTH roles —
 # hermetic on tempdirs, no container runtime, never skips. (The

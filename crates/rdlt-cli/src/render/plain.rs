@@ -7,9 +7,9 @@ use rdlt::prelude::PipelineEvent;
 use crate::args::Verbosity;
 
 /// Render one event as its stderr line, or `None` for silence at this
-/// verbosity. The NORMAL lines are the pre-036 CLI's spellings,
-/// unchanged; the VERBOSE additions cover the 036 telemetry.
-pub fn line(event: &PipelineEvent, verbosity: Verbosity) -> Option<String> {
+/// verbosity. The NORMAL lines are the frozen spellings scripts grep
+/// for; the VERBOSE additions are the read/commit-start/part detail.
+pub(crate) fn line(event: &PipelineEvent, verbosity: Verbosity) -> Option<String> {
     if verbosity == Verbosity::Quiet {
         return None;
     }
@@ -61,8 +61,8 @@ mod tests {
     use super::*;
     use rdlt::prelude::TableName;
 
-    /// The NORMAL spellings are the pre-036 CLI's, byte for byte — the
-    /// compatibility contract's stderr half.
+    /// The NORMAL spellings hold byte for byte — the compatibility
+    /// contract's stderr half.
     #[test]
     fn the_frozen_lines_render_unchanged() {
         let event = PipelineEvent::BatchLoaded {
@@ -84,7 +84,7 @@ mod tests {
         );
     }
 
-    /// Quiet silences everything; verbose reveals the 036 lines.
+    /// Quiet silences everything; verbose reveals the detail lines.
     #[test]
     fn verbosity_gates_hold() {
         let read = PipelineEvent::BatchRead {

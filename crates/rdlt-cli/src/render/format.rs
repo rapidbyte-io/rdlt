@@ -1,8 +1,11 @@
-//! Human-scale number rendering, shared by the live display and the
-//! summary so the two can never disagree about what "1.2M" means.
+//! Human-scale number rendering and the two lines both renderers
+//! spell, shared by the live display and the summary so the two can
+//! never disagree about what "1.2M" or "resumed from WAL" means.
+
+use rdlt::prelude::ResumedFrom;
 
 /// Plain digits up to 9,999; `10.0k`, `1.23M`, `4.56B` beyond.
-pub fn count(n: u64) -> String {
+pub(crate) fn count(n: u64) -> String {
     match n {
         0..=9_999 => n.to_string(),
         10_000..=999_999 => format!("{:.1}k", n as f64 / 1_000.0),
@@ -13,7 +16,7 @@ pub fn count(n: u64) -> String {
 
 /// Bytes with binary-ish familiarity but decimal units, matching what
 /// `ls -l`-adjacent tooling shows: `96.4 MB`.
-pub fn bytes(n: u64) -> String {
+pub(crate) fn bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
     let mut value = n as f64;
     let mut unit = 0;
@@ -30,7 +33,7 @@ pub fn bytes(n: u64) -> String {
 
 /// A rate, already per-second: `861k/s` — and `0.4/s` below one,
 /// because a slow pipeline and a stalled one must not read the same.
-pub fn rate(per_sec: f64) -> String {
+pub(crate) fn rate(per_sec: f64) -> String {
     if per_sec > 0.0 && per_sec < 1.0 {
         format!("{per_sec:.1}/s")
     } else {
@@ -40,7 +43,7 @@ pub fn rate(per_sec: f64) -> String {
 
 /// `1 commit`, `2 commits` — the difference between a tool and a
 /// prototype is that the tool conjugates.
-pub fn commits(n: u64) -> String {
+pub(crate) fn commits(n: u64) -> String {
     if n == 1 {
         "1 commit".to_owned()
     } else {
@@ -49,7 +52,7 @@ pub fn commits(n: u64) -> String {
 }
 
 /// A duration for humans: `1.2s`, `450ms`, `3m12s`.
-pub fn duration(d: std::time::Duration) -> String {
+pub(crate) fn duration(d: std::time::Duration) -> String {
     let ms = d.as_millis();
     if ms < 1_000 {
         format!("{ms}ms")
@@ -59,6 +62,31 @@ pub fn duration(d: std::time::Duration) -> String {
         let secs = d.as_secs();
         format!("{}m{:02}s", secs / 60, secs % 60)
     }
+}
+
+/// How the run began, for the header of the live display and the
+/// summary alike.
+pub(crate) fn resumed_from(resumed: &ResumedFrom) -> String {
+    match resumed {
+        ResumedFrom::Fresh => "fresh".to_owned(),
+        ResumedFrom::Cursor => "resumed from cursor".to_owned(),
+        ResumedFrom::Wal { replayed_batches } => {
+            format!("resumed from WAL ({replayed_batches} batches replayed)")
+        }
+        // `#[non_exhaustive]` upstream: an unknown resume kind still
+        // ran — say so without guessing.
+        _ => "resumed".to_owned(),
+    }
+}
+
+/// The totals line's head, `total 1.2M rows · 96.4 MB in-mem`; each
+/// renderer appends its own tail.
+pub(crate) fn totals(rows: u64, bytes_written: u64) -> String {
+    format!(
+        "total {} rows · {} in-mem",
+        count(rows),
+        bytes(bytes_written)
+    )
 }
 
 #[cfg(test)]
@@ -81,5 +109,19 @@ mod tests {
         assert_eq!(commits(3), "3 commits");
         assert_eq!(duration(std::time::Duration::from_millis(450)), "450ms");
         assert_eq!(duration(std::time::Duration::from_secs(192)), "3m12s");
+    }
+
+    /// The two shared lines: the WAL spelling counts batches, the totals
+    /// head reads the same in the live display and the summary.
+    #[test]
+    fn the_shared_lines_spell_once() {
+        assert_eq!(resumed_from(&ResumedFrom::Fresh), "fresh");
+        assert_eq!(
+            resumed_from(&ResumedFrom::Wal {
+                replayed_batches: 2
+            }),
+            "resumed from WAL (2 batches replayed)"
+        );
+        assert_eq!(totals(1_351, 999), "total 1351 rows · 999 B in-mem");
     }
 }

@@ -13,20 +13,20 @@
 use rdlt::runtime::local::Local;
 use rdlt_connector_client::handshake::{Requirement, Role};
 
-use crate::CliError;
 use crate::args::SchemaRole;
+use crate::exit;
 
-pub(crate) async fn print(connector: &str, role: Option<SchemaRole>) -> Result<(), CliError> {
+pub(crate) async fn print(connector: &str, role: Option<SchemaRole>) -> Result<(), exit::Error> {
     let schema = spawned_schema(connector, role).await?;
     let json = serde_json::to_string_pretty(&schema)
-        .map_err(|e| CliError::Usage(format!("encoding schema: {e}")))?;
+        .map_err(|e| exit::Error::Usage(format!("encoding schema: {e}")))?;
     // Not `println!`: a closed stdout must be exit 74, not a panic.
     use std::io::Write as _;
     let mut stdout = std::io::stdout().lock();
     stdout
         .write_all(json.as_bytes())
         .and_then(|()| stdout.write_all(b"\n"))
-        .map_err(|e| CliError::Io(format!("writing schema to stdout: {e}")))?;
+        .map_err(|e| exit::Error::Io(format!("writing schema to stdout: {e}")))?;
     Ok(())
 }
 
@@ -41,7 +41,7 @@ pub(crate) async fn print(connector: &str, role: Option<SchemaRole>) -> Result<(
 async fn spawned_schema(
     value: &str,
     role: Option<SchemaRole>,
-) -> Result<serde_json::Value, CliError> {
+) -> Result<serde_json::Value, exit::Error> {
     let provider = Local::new();
     let path = std::path::Path::new(value);
     let requirement = if let Some(id) = rdlt::pipeline_spec::connector_id(value) {
@@ -61,10 +61,10 @@ async fn spawned_schema(
         .await
         // The provider's typed errors — the frozen NotFound spelling
         // included — render verbatim as config errors (exit 2).
-        .map_err(|e| CliError::Usage(e.to_string()))?;
+        .map_err(|e| exit::Error::Usage(e.to_string()))?;
     spec.config_schema.ok_or_else(|| {
         // Frozen spelling: a connector may legitimately describe
         // nothing, and that is the connector's answer, not an IO error.
-        CliError::Usage(format!("connector `{value}` publishes no config schema"))
+        exit::Error::Usage(format!("connector `{value}` publishes no config schema"))
     })
 }

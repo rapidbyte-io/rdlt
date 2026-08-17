@@ -5,10 +5,9 @@
 use std::time::Duration;
 
 use console::style as style_any;
-use rdlt::prelude::ResumedFrom;
 use rdlt::report;
 
-use super::format;
+use crate::render::{format, stderr};
 
 /// `console::style`, pointed at the stream this module renders for.
 fn style<D>(value: D) -> console::StyledObject<D> {
@@ -20,23 +19,14 @@ fn style<D>(value: D) -> console::StyledObject<D> {
 /// gates a default `style()` on STDOUT's color state, and the common
 /// `rdlt run … > report.json` on a terminal would silently lose
 /// styling (while `--color never` failed to strip it).
-pub fn render(report: &report::Run) -> String {
+pub(crate) fn render(report: &report::Run) -> String {
     let elapsed = Duration::from_millis(report.elapsed_ms);
     let total_rows: u64 = report.tables.values().map(|t| t.rows).sum();
     let total_bytes: u64 = report.tables.values().map(|t| t.bytes).sum();
     let mut out = String::new();
-    let pipeline = super::sanitize_identifier(report.pipeline.as_str());
+    let pipeline = stderr::sanitize_identifier(report.pipeline.as_str());
 
-    let resumed = match &report.resumed_from {
-        ResumedFrom::Fresh => "fresh".to_owned(),
-        ResumedFrom::Cursor => "resumed from cursor".to_owned(),
-        ResumedFrom::Wal { replayed_batches } => {
-            format!("resumed from WAL ({replayed_batches} batches replayed)")
-        }
-        // `#[non_exhaustive]` upstream: an unknown resume kind still
-        // ran — say so without guessing.
-        _ => "resumed".to_owned(),
-    };
+    let resumed = format::resumed_from(&report.resumed_from);
     out.push_str(&format!(
         "\n  {} {} · {} · {} · {} · {resumed}\n",
         style("✔").green().bold(),
@@ -54,7 +44,7 @@ pub fn render(report: &report::Run) -> String {
     let safe_table_names: Vec<String> = report
         .tables
         .keys()
-        .map(|table| super::sanitize_identifier(table.as_str()))
+        .map(|table| stderr::sanitize_identifier(table.as_str()))
         .collect();
     let name_width = safe_table_names
         .iter()
@@ -118,9 +108,8 @@ pub fn render(report: &report::Run) -> String {
         String::new()
     };
     out.push_str(&format!(
-        "\n  total {} rows · {} in-mem{output}{avg}\n",
-        format::count(total_rows),
-        format::bytes(total_bytes),
+        "\n  {}{output}{avg}\n",
+        format::totals(total_rows, total_bytes)
     ));
     let mut facts: Vec<String> = Vec::new();
     match report.schema_migrations.len() {

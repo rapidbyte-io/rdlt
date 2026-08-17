@@ -12,15 +12,16 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use rdlt::prelude::{Metrics, PipelineEvent, ResumedFrom, StreamName};
+use rdlt::prelude::{Metrics, PipelineEvent, StreamName};
 
-use super::format;
+use crate::render::{format, stderr};
 
-/// How often the display redraws. Coarser than the terminal could
-/// take, deliberately: the numbers move faster than eyes read.
-const REDRAW: Duration = Duration::from_millis(100);
+/// How often the display redraws — the driver ticks at this cadence
+/// between events. Coarser than the terminal could take, deliberately:
+/// the numbers move faster than eyes read.
+pub(crate) const REDRAW_EVERY: Duration = Duration::from_millis(100);
 
-pub struct Pretty {
+pub(crate) struct Pretty {
     metrics: Metrics,
     multi: MultiProgress,
     header: ProgressBar,
@@ -30,11 +31,14 @@ pub struct Pretty {
 }
 
 impl Pretty {
-    pub fn new(pipeline: &str) -> Self {
+    pub(crate) fn new(pipeline: &str) -> Self {
         let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(10));
         let header = multi.add(ProgressBar::no_length());
         header.set_style(ProgressStyle::with_template("  {msg}").expect("static template"));
-        header.set_message(format!("pipeline {}", super::sanitize_identifier(pipeline)));
+        header.set_message(format!(
+            "pipeline {}",
+            stderr::sanitize_identifier(pipeline)
+        ));
         let totals = multi.add(ProgressBar::no_length());
         totals.set_style(ProgressStyle::with_template("  {msg}").expect("static template"));
         Self {
@@ -47,30 +51,15 @@ impl Pretty {
         }
     }
 
-    /// The redraw cadence, exposed so the driver can tick between
-    /// events.
-    pub fn redraw_every() -> Duration {
-        REDRAW
-    }
-
     /// Fold one event and update whatever rows it touches.
-    pub fn apply(&mut self, event: &PipelineEvent) {
+    pub(crate) fn apply(&mut self, event: &PipelineEvent) {
         self.metrics.apply(event);
         match event {
             PipelineEvent::RunStarted {
                 load_id,
                 resumed_from,
             } => {
-                let resumed = match resumed_from {
-                    ResumedFrom::Fresh => "fresh".to_owned(),
-                    ResumedFrom::Cursor => "resumed from cursor".to_owned(),
-                    ResumedFrom::Wal { replayed_batches } => {
-                        format!("resumed from WAL ({replayed_batches} replayed)")
-                    }
-                    // `#[non_exhaustive]` upstream: an unknown resume
-                    // kind still ran — say so without guessing.
-                    _ => "resumed".to_owned(),
-                };
+                let resumed = format::resumed_from(resumed_from);
                 let current = self.header.message();
                 self.header
                     .set_message(format!("{current} · load {load_id} · {resumed}"));
@@ -83,15 +72,14 @@ impl Pretty {
                     ProgressStyle::with_template("  {spinner:.cyan} {msg}")
                         .expect("static template"),
                 );
-                bar.enable_steady_tick(REDRAW);
+                bar.enable_steady_tick(REDRAW_EVERY);
                 // The declared stream name is connector-controlled
                 // text; indicatif writes messages straight to the
-                // terminal, so it is escaped at this boundary exactly
-                // like the plain renderer's lines are at stderr_line —
-                // and with the IDENTIFIER predicate (5L14), so even an
-                // admitted joiner can't render the name invisibly or a
-                // line break forge display lines.
-                bar.set_message(super::sanitize_identifier(stream.as_str()));
+                // terminal, so it is escaped at this boundary with the
+                // IDENTIFIER predicate, so even an admitted joiner
+                // can't render the name invisibly or a line break forge
+                // display lines.
+                bar.set_message(stderr::sanitize_identifier(stream.as_str()));
                 self.streams.insert(stream.clone(), bar);
                 self.finished.insert(stream.clone(), false);
             }
@@ -104,7 +92,7 @@ impl Pretty {
     }
 
     /// Recompute every row from the fold — also the periodic tick.
-    pub fn redraw(&mut self) {
+    pub(crate) fn redraw(&mut self) {
         let snap = self.metrics.snapshot();
         for (stream, bar) in &self.streams {
             let read = snap.streams.get(stream).copied().unwrap_or_default();
@@ -122,7 +110,7 @@ impl Pretty {
             let done = self.finished.get(stream).copied().unwrap_or(false);
             // Escaped like the announcement above — same string, same
             // boundary.
-            let name = super::sanitize_identifier(stream.as_str());
+            let name = stderr::sanitize_identifier(stream.as_str());
             let mut line = format!(
                 "{name:<14} read {:<8} written {:<8} {:<9}",
                 format::count(read.rows_read),
@@ -150,11 +138,7 @@ impl Pretty {
                 bar.set_message(line);
             }
         }
-        let mut totals = format!(
-            "total {} rows · {} in-mem",
-            format::count(snap.rows_written),
-            format::bytes(snap.bytes_written),
-        );
+        let mut totals = format::totals(snap.rows_written, snap.bytes_written);
         if let Some(rate) = snap.rows_per_sec {
             totals.push_str(&format!(" · {}", format::rate(rate)));
         }
@@ -178,7 +162,7 @@ impl Pretty {
     /// duplicating what the summary's per-table rows already say) — a
     /// done row must stay merely `set_message`d, live-but-still, so this
     /// `clear()` actually removes it.
-    pub fn clear(self) {
+    pub(crate) fn clear(self) {
         let _ = self.multi.clear();
     }
 }
