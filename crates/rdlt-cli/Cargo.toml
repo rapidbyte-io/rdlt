@@ -16,12 +16,10 @@ name = "rdlt"
 path = "src/main.rs"
 
 [features]
-# The live run-contract pins (tests/cases/test_spawned.rs) run REAL
-# pipelines through the binary, which spawns connector binaries. OFF
-# by default so a plain workspace run never depends on bins no
-# workspace command builds; the Makefile's spawn-bins line enables it
-# AND sets RDLT_BUILD_CONNECTOR_BINS=1, the same discipline as
-# rdlt-runtime's suite.
+# The live run-contract pins (tests/cases/test_spawned.rs) spawn the
+# built reference connector; OFF by default so a plain workspace run
+# never depends on bins no workspace command builds — the Makefile's
+# spawn-bins line enables it and sets RDLT_BUILD_CONNECTOR_BINS=1.
 spawn-bins = []
 
 [dependencies]

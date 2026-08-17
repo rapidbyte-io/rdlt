@@ -1,9 +1,11 @@
 # rdlt-cli
 
-A thin development CLI over the [`rdlt`](https://docs.rs/rdlt) library.
+The pipeline CLI over the [`rdlt`](https://docs.rs/rdlt) library.
 
 ```
-rdlt run <pipeline.yaml> [--report <path>]
+rdlt run <pipeline.yaml> [--report <path>] [--events <path|->]
+rdlt validate <pipeline.yaml>
+rdlt schema <connector> [--role source|destination]
 ```
 
 ONE YAML document describes the whole pipeline: pipeline-wide settings, the
@@ -16,8 +18,16 @@ report. The document model and its construction into a pipeline are shared
 library code (`rdlt::pipeline_spec`), so a platform embedding rdlt builds the
 same pipelines without shelling out.
 
-Events stream to stderr in human-readable form; the run report's JSON goes to
-stdout, or to `--report <path>`.
+Events stream to stderr in human-readable form — a live display on a
+terminal, a line per event elsewhere; the run report's JSON goes to stdout
+(a terminal gets a one-line hint instead), or to `--report <path>`.
+`--output auto|plain|json` overrides the terminal's choice: `plain` logs a
+line per event even on a terminal, `json` silences the feed and prints the
+report JSON to stdout even on a terminal. `--events <path|->` also writes
+every event as NDJSON (`-` needs `--report`, so the two machine outputs
+never share stdout). `validate` builds the pipeline through the real gates
+and runs nothing; `schema` prints a spawned connector's configuration JSON
+Schema.
 
 ## Exit codes
 

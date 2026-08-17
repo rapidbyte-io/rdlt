@@ -8,12 +8,11 @@
 //! renders the event feed on stderr, and emits the run report's JSON on
 //! stdout (or to `--report`). Every number it shows the library computed.
 //!
-//! Exit codes, stable and scriptable: 0 success · 2 config · 3 schema
-//! contract · 4 source · 5 destination · 6 WAL/disk · 7 cancelled ·
-//! 64 usage · 70 internal/unknown · 74 file I/O; `--help`/`--version`
-//! exit 0. The table lives once in [`exit`]; the whole
-//! stdout/stderr/exit contract is pinned against the built binary by
-//! `tests/cases/test_contract.rs` and the gated `test_spawned.rs`.
+//! Exit codes are stable and scriptable; the table lives once in
+//! [`exit`] (the README mirrors it), and `--help`/`--version` exit 0.
+//! The whole stdout/stderr/exit contract is pinned against the built
+//! binary by `tests/cases/test_contract.rs` and the gated
+//! `test_spawned.rs`.
 //!
 //! The modules are the map: [`args`] the flags as data, [`command`] the
 //! three subcommands, [`render`] the stderr renderers and their mode
