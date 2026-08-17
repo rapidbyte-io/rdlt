@@ -56,11 +56,13 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::{
     CommitMeta, CommitReceipt, LoadId, PipelineId, TableName, TableSchema, WriteMode,
 };
 use rdlt_connector::destination::{Destination, OpenContext, PartCloseReason, PartClosed};
 use rdlt_connector::error::DestinationError;
+use rdlt_connector::{channel, gate};
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::destination_service_server::{
@@ -192,11 +194,11 @@ fn decode_document<T: serde::de::DeserializeOwned>(
     field: &str,
     bytes: &[u8],
 ) -> Result<T, session_reply::Reply> {
-    rdlt_connector::gate::refuse_oversized_document(field, bytes).map_err(refuse)?;
+    gate::refuse_oversized_document(field, bytes).map_err(refuse)?;
     serde_json::from_slice::<T>(bytes).map_err(|error| {
         refuse(format!(
             "invalid {field}: {}",
-            rdlt_connector::gate::describe_parse_error(&error)
+            gate::describe_parse_error(&error)
         ))
     })
 }
@@ -206,16 +208,12 @@ fn decode_document<T: serde::de::DeserializeOwned>(
 /// for the session's lifetime, so a rogue client's multi-megabyte name
 /// is memory and log swelling, refused at the door.
 fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_reply::Reply> {
-    if value.len() > rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES {
-        return Err(session_reply::Reply::Error(wire::error_frame(
-            Classification::Fatal,
-            format!(
-                "a session {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
-                 refused at the session boundary",
-                value.len(),
-                rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES
-            ),
-            None,
+    if value.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
+        return Err(refuse(format!(
+            "a session {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
+             refused at the session boundary",
+            value.len(),
+            gate::MAX_WIRE_IDENTIFIER_BYTES
         )));
     }
     Ok(())
@@ -252,7 +250,7 @@ fn part_close_reason_str(reason: PartCloseReason) -> String {
 /// silently drops the diagnostic; a stream carrying a SECOND, DECODABLE
 /// batch gets its own distinct refusal, because silently taking only
 /// the first would drop every row after it.
-fn decode_arrow_ipc(bytes: &[u8]) -> Result<rdlt_connector::arrow::RecordBatch, String> {
+fn decode_arrow_ipc(bytes: &[u8]) -> Result<RecordBatch, String> {
     contained_decode(|| decode_arrow_ipc_erring(bytes))
 }
 
@@ -266,12 +264,12 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
             "write carried no decodable record batch: the Arrow decoder panicked: {}",
             // A panic payload is attacker-adjacent text; the shared
             // rendering bounds it.
-            rdlt_connector::gate::panic_text(payload.as_ref())
+            gate::panic_text(payload.as_ref())
         )),
     }
 }
 
-fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::arrow::RecordBatch, String> {
+fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
 
     // The framing pre-pass: the panic belt catches arrow's unwinds, but
@@ -279,8 +277,7 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::arrow::Record
     // allocation whose failure ABORTS — are neither panics nor errors,
     // so the declarations are held against the frame's real bytes
     // before the reader runs.
-    rdlt_connector::gate::refuse_overdeclared_framing(bytes)
-        .map_err(|reason| format!("{REFUSAL}: {reason}"))?;
+    gate::refuse_overdeclared_framing(bytes).map_err(|reason| format!("{REFUSAL}: {reason}"))?;
     let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
         .map_err(|error| format!("{REFUSAL}: {error}"))?;
     let first = match reader.next() {
@@ -292,12 +289,12 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<rdlt_connector::arrow::Record
     // see — Null and run-end-encoded columns carry millions of rows in
     // almost no body bytes, and the batch goes straight to the
     // connector's own backend.
-    if first.num_rows() > rdlt_connector::channel::MAX_RECORD_BATCH_ROWS {
+    if first.num_rows() > channel::MAX_RECORD_BATCH_ROWS {
         return Err(format!(
             "{REFUSAL}: the batch carries {} rows, over the {}-row wire cap — row count is \
              bounded separately from encoded bytes",
             first.num_rows(),
-            rdlt_connector::channel::MAX_RECORD_BATCH_ROWS
+            channel::MAX_RECORD_BATCH_ROWS
         ));
     }
     match reader.next() {
@@ -899,7 +896,7 @@ mod tests {
         use std::sync::Arc;
 
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let batch = rdlt_connector::arrow::RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Arc::clone(&schema),
             vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
         )

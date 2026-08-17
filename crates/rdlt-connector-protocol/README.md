@@ -358,19 +358,15 @@ purpose.** Copied verbatim from the sdk's `serve::destination` module
 doc, the one place this rule is authored (this README quotes it rather
 than re-deriving it, so the two can't drift):
 
-> `OpenContext::part_events` is the other place this server departs
-> from a plain request/reply shape: the listener is a SYNC callback, so
-> any part it reports while a `Backend` call is in flight is already
-> sitting in the unbounded channel by the time that call's `await`
-> returns. Draining that channel immediately BEFORE sending the reply
-> for the call that (may have) produced it is what the ordering promise
-> actually covers: every part already queued when a call returns
-> precedes that call's own reply. An asynchronously emitted part — one a
-> buffering backend fires from a task this server never directly
-> awaited — carries no such promise; it simply arrives as its own
-> `PartClosedEvent` reply as soon as the request loop next turns (the
-> `biased` `select!` in `drive_session`), which may land before, after,
-> or interleaved with any particular request's reply.
+> `OpenContext::part_events` is a SYNC callback, so any part it
+> reports while a `Backend` call is in flight is already sitting in
+> the unbounded channel by the time that call's `await` returns.
+> Draining that channel immediately BEFORE sending the reply for the
+> call that produced it is what the ordering promise covers: every
+> part already queued when a call returns precedes that call's own
+> reply. A part a buffering backend fires from a task this server
+> never awaited carries no such promise; it arrives as its own
+> `PartClosedEvent` reply as soon as the request loop next turns.
 
 In short: `part_closed` before the reply of the call that (synchronously)
 caused it — a promise about ONE call's own emissions, not a global

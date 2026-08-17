@@ -707,11 +707,11 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
 }
 
 /// THE BYTE-BOUND PIN: what a STALLED reader lets the serve layer buffer
-/// is bounded in BYTES, not in frames. The client here starts a `Read` and then never polls its
-/// response stream, while the connector pushes 8 MiB documents as fast
-/// as the layer admits them; the echo source counts only pushes that
-/// RETURNED, so the counter reads exactly how much sat buffered before
-/// everything parked.
+/// is bounded in BYTES, not in frames. The client here starts a `Read`
+/// and then never polls its response stream, while the connector
+/// pushes 8 MiB documents as fast as the layer admits them; the echo
+/// source counts only pushes that RETURNED, so the counter reads
+/// exactly how much sat buffered before everything parked.
 ///
 /// The ceiling is the sum of the layer's own budgets, each named below
 /// rather than folded into one magic number. Under the frame-COUNT
@@ -723,8 +723,8 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
 /// small frame sizes.
 #[tokio::test]
 async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
-    // 8 MiB frames: the shape a postgres source's ~10 MiB frames take
-    // in practice, and far enough above the read channel's own
+    // 8 MiB frames: the shape a large-frame source's ~10 MiB frames
+    // take in practice, and far enough above the read channel's own
     // per-frame arithmetic that the two regimes cannot be confused.
     const FRAME_BYTES: usize = 8 * 1024 * 1024;
     // More rows than any regime can admit, so admission — not the row

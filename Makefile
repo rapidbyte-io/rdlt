@@ -144,10 +144,13 @@ cargo nextest run --workspace
 # (the 024 zero-second-pass class). `-E 'test(schema_of)'` so an empty
 # selection — a renamed test — fails rather than passing vacuously.
 cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
-# Same class, `serve` (038): OFF by default so a plain workspace run
-# compiles neither serve/ nor its tests. FIVE SEPARATE `-E`
-# invocations, not one combined `or` expression: measured that a
-# combined `test(a) or test(b) or ...` fails CLOSED only when EVERY
+# Same class, `serve`: OFF by default. A plain workspace run reaches
+# serve/ and its tests only through feature unification (in-tree
+# dev-dependencies enable it), which a dependency edit could silently
+# undo — these lines are same-shape explicit guards that do not depend
+# on it. FIVE SEPARATE `-E` invocations, not one combined `or`
+# expression: measured that a combined `test(a) or test(b) or ...`
+# fails CLOSED only when EVERY
 # clause goes empty at once — renaming just one of the five modules
 # still selects the other four and exits 0, silently dropping
 # coverage. Each side's own unit tests first (`serve::wire::tests`,

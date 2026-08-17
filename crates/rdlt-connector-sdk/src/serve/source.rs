@@ -17,11 +17,13 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::channel::{
-    ByteReceiver, ByteSender, ByteSized, ChannelClosed, PushPayload, RecordsIn, records,
+    ByteReceiver, ByteSender, ByteSized, ChannelClosed, PushPayload, RecordsIn,
 };
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::Source as _;
+use rdlt_connector::{channel, core, gate, source};
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
@@ -75,7 +77,7 @@ pub const READ_CHANNEL_BUDGET: usize = 8 * 1024 * 1024;
 /// count bound of 16 frames let a source producing ~10 MiB frames
 /// plateau near 500 MB with no knob that reached it. 32 MiB is four
 /// times the read channel, an order of magnitude below that, and above
-/// any single frame a source in this tree produces — so the
+/// any single frame a source is expected to produce — so the
 /// at-least-one admission rule stays the exception. No operator knob,
 /// deliberately: one honest constant beats a dial nobody has a number
 /// for; the door, should a workload need one, is a `with_*` builder on
@@ -196,7 +198,7 @@ impl Drop for FrameStream {
 }
 
 fn frame_channel(byte_budget: usize, message_capacity: usize) -> (FrameSender, FrameStream) {
-    let (frames_tx, frames_rx) = rdlt_connector::channel::bytes(byte_budget, message_capacity);
+    let (frames_tx, frames_rx) = channel::bytes(byte_budget, message_capacity);
     let (gone_tx, gone_rx) = watch::channel(false);
     (
         FrameSender {
@@ -367,10 +369,9 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         // The cursor's bound is the cursor contract's own — tighter than
         // the config ceiling, and the same constant the client enforces
         // pre-send, so the two ends cannot disagree.
-        if let Err(message) = rdlt_connector::gate::refuse_oversized_document(
-            "stream_spec_json",
-            &request.stream_spec_json,
-        ) {
+        if let Err(message) =
+            gate::refuse_oversized_document("stream_spec_json", &request.stream_spec_json)
+        {
             return Ok(error_stream(message).await);
         }
         let stream_spec = match serde_json::from_slice(&request.stream_spec_json) {
@@ -378,35 +379,35 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             Err(error) => {
                 return Ok(error_stream(format!(
                     "invalid stream_spec_json: {}",
-                    rdlt_connector::gate::describe_parse_error(&error)
+                    gate::describe_parse_error(&error)
                 ))
                 .await);
             }
         };
         let since = match &request.since_cursor_json {
             None => None,
-            Some(bytes) if bytes.len() as u64 > rdlt_connector::gate::MAX_CURSOR_BYTES => {
+            Some(bytes) if bytes.len() as u64 > gate::MAX_CURSOR_BYTES => {
                 return Ok(error_stream(wire::oversized_document(
                     "since_cursor_json",
                     bytes.len(),
-                    rdlt_connector::gate::MAX_CURSOR_BYTES,
+                    gate::MAX_CURSOR_BYTES,
                 ))
                 .await);
             }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
-                Ok(value) => Some(rdlt_connector::core::Cursor::new(value)),
+                Ok(value) => Some(core::Cursor::new(value)),
                 Err(error) => {
                     return Ok(error_stream(format!(
                         "invalid since_cursor_json: {}",
-                        rdlt_connector::gate::describe_parse_error(&error)
+                        gate::describe_parse_error(&error)
                     ))
                     .await);
                 }
             },
         };
 
-        let (out, records_in) = records(READ_CHANNEL_BUDGET);
-        let read_request = rdlt_connector::source::ReadRequest::new(stream_spec, since, out);
+        let (out, records_in) = channel::records(READ_CHANNEL_BUDGET);
+        let read_request = source::ReadRequest::new(stream_spec, since, out);
 
         let read_task: JoinHandle<Result<(), SourceError>> =
             tokio::spawn(async move { shell.read(read_request).await });
@@ -564,7 +565,7 @@ fn read_frame_of(payload: PushPayload) -> Result<proto::ReadFrame, String> {
 /// produced — an `expect()` would turn that into a panicked task
 /// indistinguishable, from the client's side, from a clean end of
 /// stream.
-fn encode_arrow_ipc(batch: &rdlt_connector::arrow::RecordBatch) -> Result<Vec<u8>, String> {
+fn encode_arrow_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
         .map_err(|error| format!("opening an arrow ipc stream writer: {error}"))?;
     writer
@@ -739,7 +740,7 @@ mod tests {
         fn refuse(_: PushPayload) -> Result<proto::ReadFrame, String> {
             Err("induced encode failure".to_string())
         }
-        let (mut out, records_in) = records(1 << 20);
+        let (mut out, records_in) = channel::records(1 << 20);
         // A task parked forever stands in for a connector mid-read, so
         // the loop's abort turns its completion into a cancelled
         // JoinError — exactly the interleaving under test.

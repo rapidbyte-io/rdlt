@@ -113,8 +113,8 @@ tonic-prost-build = "0.14"
 protoc-bin-vendored = "3"
 # The `Stream` adapters over tokio's own primitives that tonic wants:
 # a `UnixListener` as an accept stream and a `mpsc::Receiver` as a
-# session's request or reply frames. A source's `Read` response frames
-# take the sdk's own `FrameStream` over the SPI byte channel instead.
+# session's request or reply frames. A source's `Read` response stream
+# wraps the SPI byte channel for tonic instead.
 tokio-stream = "0.1"
 
 serde_yaml_ng = "0.10"

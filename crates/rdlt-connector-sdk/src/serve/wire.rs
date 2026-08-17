@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use rdlt_connector::{gate, spec};
 use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto;
 use tokio::net::UnixListener;
@@ -288,7 +289,7 @@ pub(crate) fn spec_reply(
     version: &'static str,
     config_schema: Option<serde_json::Value>,
 ) -> tonic::Response<proto::SpecReply> {
-    let mut spec = rdlt_connector::spec::ConnectorSpec::new(name, version);
+    let mut spec = spec::ConnectorSpec::new(name, version);
     spec.config_schema = config_schema;
     tonic::Response::new(proto::SpecReply {
         spec_json: serde_json::to_vec(&spec)
@@ -447,7 +448,7 @@ pub(crate) fn handshake<S: HandshakeShell>(
     // The size gate runs BEFORE the parse: the frame cap bounds only the
     // bytes on the wire, and parsing a compact document into an untyped
     // `Value` multiplies them many times over in this process.
-    let ceiling = rdlt_connector::gate::MAX_DOCUMENT_BYTES;
+    let ceiling = gate::MAX_DOCUMENT_BYTES;
     if request.config_json.len() as u64 > ceiling {
         return refuse_handshake(oversized_document(
             "config_json",
@@ -466,7 +467,7 @@ pub(crate) fn handshake<S: HandshakeShell>(
         Err(error) => {
             return refuse_handshake(format!(
                 "invalid config_json: {}",
-                rdlt_connector::gate::describe_parse_error(&error)
+                gate::describe_parse_error(&error)
             ));
         }
     };

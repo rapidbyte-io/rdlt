@@ -32,9 +32,10 @@ pub use wire::Error;
 ///
 /// ```ignore
 /// rdlt_connector_sdk::serve_main! {
-///     about: "rdlt duckdb connector — a protocol server",
+///     about: "my connector — a protocol server",
 ///     roles: {
-///         Destination => rdlt_connector_sdk::serve::destination::run::<DuckDb>(),
+///         Source => rdlt_connector_sdk::serve::source::run::<MySource>(),
+///         Destination => rdlt_connector_sdk::serve::destination::run::<MyDestination>(),
 ///     }
 /// }
 /// ```
