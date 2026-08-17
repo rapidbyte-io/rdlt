@@ -491,9 +491,8 @@ pub(crate) trait HandshakeShell: Sized {
     fn connector_version(&self) -> &'static str;
     /// The shell's `ConnectorSpec`, pre-serialized.
     fn spec_json(&self) -> Vec<u8>;
-    /// Destination capabilities, pre-serialized — empty for a source
-    /// (the proto field's own doc: "Capabilities; empty for
-    /// sources").
+    /// Destination capabilities, pre-serialized: the wire field carries
+    /// the destination's capabilities document and is empty for sources.
     fn capabilities_json(&self) -> Vec<u8>;
 }
 

@@ -24,6 +24,12 @@
 //!   `(load_id, commit_seq)` replayed from its receipt before anything
 //!   republishes, state read-through.
 //!
+//! Beside the seams, the connector-author batteries — [`parquet`],
+//! [`parts`], [`pem`], and (behind the `object-store` feature) `store`
+//! — shared config vocabulary and policy each connector re-exports from
+//! its own config path, living here rather than in the SPI because
+//! their consumers are connector authors, not hosts.
+//!
 //! WHAT STAYS IN THE CONNECTOR, deliberately: every frozen message
 //! spelling, error classification keys, cursor machinery, and SQL
 //! planning. The framework is choreography and plumbing — it renders no
@@ -45,9 +51,14 @@
 
 pub mod config;
 pub mod destination;
+pub mod parquet;
+pub mod parts;
+pub mod pem;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod source;
+#[cfg(feature = "object-store")]
+pub mod store;
 pub mod yaml;
 
 /// The connector SPI, re-exported: one dependency authors a connector.

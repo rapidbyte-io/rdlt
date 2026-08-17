@@ -79,14 +79,9 @@ pub mod channel;
 pub mod destination;
 pub mod error;
 pub mod gate;
-pub mod parquet;
-pub mod parts;
-pub mod pem;
 pub mod secret;
 pub mod source;
 pub mod spec;
-#[cfg(feature = "object-store")]
-pub mod store;
 
 /// The rdlt vocabulary. Connectors MUST take these types from here — the
 /// single-foundation rule IS this line: one dependency, single-version

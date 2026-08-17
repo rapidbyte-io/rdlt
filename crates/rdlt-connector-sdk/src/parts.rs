@@ -5,8 +5,9 @@
 //! SHARED on purpose: parquet and jsonl parts roll by the same rule,
 //! and a per-connector spelling would mean several defaults and
 //! several rolling bugs. Like the sibling config vocabulary
-//! ([`crate::parquet`], [`crate::secret`]), this is plain data the SPI
-//! owns and each connector re-exports from its own config path.
+//! ([`crate::parquet`], [`crate::spi::secret`]), this is plain data the
+//! connector-builder crate owns and each connector re-exports from its
+//! own config path.
 
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +50,7 @@ use serde::{Deserialize, Serialize};
 /// class this vocabulary exists to end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "PartOptions"))]
 #[serde(deny_unknown_fields)]
 pub struct Options {
     /// Close the part once its ENCODED size reaches this many bytes.
@@ -363,6 +365,18 @@ mod tests {
         assert!(options.should_roll(1, 0));
         assert!(!options.should_roll(0, 0));
         assert_eq!(options.validate(), Ok(()));
+    }
+
+    /// The generated schema keeps the platform-facing name stable
+    /// across the module-canonical Rust name — a bare `Options` would
+    /// also collide with the `parquet` module's `Options` in a config
+    /// schema's one `$defs` map.
+    #[cfg(feature = "schema")]
+    #[test]
+    fn the_schema_name_stays_part_qualified() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(Options)).expect("a schema serializes");
+        assert_eq!(schema["title"], "PartOptions", "{schema}");
     }
 
     /// The serde-default trap (documented on [`crate::parquet`]): an

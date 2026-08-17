@@ -1,12 +1,12 @@
 //! How a destination writes parquet — stated intentions, not a builder.
 //!
 //! One shared vocabulary for every connector that writes parquet, on the
-//! [`crate::secret::Secret`] pattern: plain data in the SPI, `schemars`
-//! behind the `schema` feature, re-exported from each connector's own
-//! config path. **The SPI gains no parquet dependency** — each connector
-//! translates these intentions into its parquet library's
-//! `WriterProperties` at its own boundary, where that library is already
-//! a dependency.
+//! [`crate::spi::secret::Secret`] pattern: plain data the
+//! connector-builder crate owns, `schemars` behind the `schema` feature,
+//! re-exported from each connector's own config path. **The SDK gains no
+//! parquet dependency** — each connector translates these intentions
+//! into its parquet library's `WriterProperties` at its own boundary,
+//! where that library is already a dependency.
 //!
 //! # Why these defaults
 //!
@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "ParquetCompression"))]
 #[non_exhaustive]
 pub enum Compression {
     /// No compression.
@@ -125,6 +126,7 @@ const fn default_dictionary_page_size_limit() -> usize {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "ParquetOptions"))]
 pub struct Options {
     /// Compression codec; defaults to `snappy`.
     #[serde(default = "default_compression")]
@@ -472,6 +474,22 @@ mod tests {
         ] {
             assert!(!levelless.takes_level(), "{}", levelless.as_str());
         }
+    }
+
+    /// The generated schema keeps the platform-facing names stable
+    /// across the module-canonical Rust names — a bare `Options` would
+    /// also collide with the `parts` module's `Options` in a config
+    /// schema's one `$defs` map.
+    #[cfg(feature = "schema")]
+    #[test]
+    fn schema_names_stay_parquet_qualified() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(Options)).expect("a schema serializes");
+        assert_eq!(schema["title"], "ParquetOptions", "{schema}");
+        assert!(
+            schema["$defs"]["ParquetCompression"].is_object(),
+            "{schema}"
+        );
     }
 
     /// Config documents keep their spelling in and out.

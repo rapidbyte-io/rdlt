@@ -26,7 +26,6 @@ arrow-ipc = { workspace = true }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-object_store = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -47,10 +46,7 @@ workspace = true
 # points routes through this feature to the vocabulary crate that defines
 # the `crash_point!` macro.
 failpoints = ["rdlt-core/failpoints"]
-# `schemars::JsonSchema` for the shared config types (Secret, PemSource,
-# parquet options). Opt-in so the SPI carries no mandatory schemars edge;
-# a connector that generates config schemas turns it on.
+# `schemars::JsonSchema` for `Secret`. Opt-in so the SPI carries no
+# mandatory schemars edge; a connector that generates config schemas
+# turns it on.
 schema = ["dep:schemars"]
-# The object-store vocabulary (one shared recoverability rule). Opt-in so
-# only the connectors that reach an object store carry the dependency.
-object-store = ["dep:object_store"]

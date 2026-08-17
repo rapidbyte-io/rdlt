@@ -9,9 +9,9 @@
 //!
 //! Serde-transparent, so config documents keep plain strings in and out;
 //! the `schemars::JsonSchema` impl rides the crate's `schema` feature,
-//! like [`crate::secret::Secret`].
+//! like [`crate::spi::secret::Secret`].
 //!
-//! Deliberately NOT wrapped in a [`Secret`](crate::secret::Secret): a
+//! Deliberately NOT wrapped in a [`Secret`](crate::spi::secret::Secret): a
 //! path is not a credential, and inline material is usually a certificate
 //! rather than a key. A connector taking a PRIVATE key pairs this with
 //! its own secrecy handling — this type says where the bytes come from,

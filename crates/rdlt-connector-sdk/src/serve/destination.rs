@@ -221,8 +221,8 @@ impl<C: DestinationConnector> common::HandshakeShell for Shell<C> {
 
     fn capabilities_json(&self) -> Vec<u8> {
         // Unlike a source's empty capabilities, a destination's ARE the
-        // host's planning input (merge/replace/widen support) — the
-        // proto field doc names this explicitly.
+        // host's planning input (merge/replace/widen support): the wire
+        // field carries the destination's capabilities document.
         serde_json::to_vec(&self.capabilities())
             .expect("Capabilities serializes to JSON infallibly")
     }
