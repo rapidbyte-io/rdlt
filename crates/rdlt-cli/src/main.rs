@@ -9,8 +9,8 @@
 //! binary parses the file, renders the event feed, and emits the report.
 //!
 //! Everything the CLI does, the library does — the CLI adds zero engine
-//! capability. Events stream to stderr (human-readable); the
-//! The run report's JSON goes to stdout or `--report`.
+//! capability. Events stream to stderr (human-readable); the run
+//! report's JSON goes to stdout or `--report`.
 //!
 //! Exit codes mirror `rdlt::Error` variants (stable, scriptable):
 //! 0 success · 2 config · 3 schema contract · 4 source · 5 destination · 6 WAL/disk ·

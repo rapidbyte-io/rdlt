@@ -1,6 +1,6 @@
 [package]
 name = "rdlt-core"
-description = "rdlt vocabulary: pure data contracts and semantic laws (ids, logical types, widening lattice, schemas, cursors, reports)"
+description = "rdlt vocabulary: the persisted formats, wire payloads, reported outcomes, and shared identifiers every side of a pipeline names"
 keywords = ["elt", "schema", "arrow", "data", "types"]
 categories = ["database", "data-structures"]
 documentation = "https://docs.rs/rdlt-core"
@@ -11,17 +11,24 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Charter: pure data + pure functions. If it needs tokio, I/O, or arrow compute,
-# it does not go in this crate.
+# Charter: vocabulary that crosses a boundary — persisted formats, wire
+# payloads, reported outcomes, and the identifiers and policies every side
+# names. Machinery with a single owner is engine code and lives in rdlt-engine.
 [dependencies]
+# Crash-point injection behind the `failpoints` feature only.
 fail = { workspace = true, optional = true }
+# The schema content hash and the short identifier digest.
 blake3 = { workspace = true }
+# Every persisted and wire form; serde_json also backs the opaque Cursor value.
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The error taxonomy and the typed refusals.
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# The widening lattice's laws are property-tested.
 proptest = { workspace = true }
+# The commit and batch policies pin the document form a pipeline file writes.
 serde_yaml_ng = { workspace = true }
 
 [lints]
