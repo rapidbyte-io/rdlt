@@ -697,12 +697,11 @@ mod tests {
         assert!(report.passed(), "a skip is not a failure");
     }
 
-    /// THE ABSORB HARDENING's red pin (silence must not read as a
-    /// pass): a suite that dies half-way reports a failure
-    /// for the clause it died under and NOTHING for the rest — no
-    /// skip tail, no conclusions. The unmentioned, unconcluded tail
-    /// must render NOT-REACHED with the fold's own evidence, and the
-    /// report must refuse.
+    /// Silence must not read as a pass: a suite that dies half-way
+    /// reports a failure for the clause it died under and NOTHING for
+    /// the rest — no skip tail, no conclusions. The unmentioned,
+    /// unconcluded tail must render NOT-REACHED with the fold's own
+    /// evidence, and the report must refuse.
     #[test]
     fn absorb_renders_silent_unconcluded_clauses_not_reached_and_refuses() {
         let mut report = Report::default();
@@ -795,6 +794,72 @@ mod tests {
             assert_all_pass(&drifted, &["D1"], &[("D8", "not exercised")])
         }));
         assert!(outcome.is_err(), "a drifted skip reason must refuse");
+    }
+
+    /// The in-order assert's teeth, which the kill-matrix cells lean on:
+    /// the expected sequence all-Pass passes; a Skip panics FIRST —
+    /// before the order is even compared — and names the fixture advice
+    /// when the cell supplies one; a wrong order and a Fail both panic
+    /// carrying the rendered entries.
+    #[test]
+    fn the_in_order_assert_passes_the_sequence_and_refuses_skip_order_and_fail() {
+        fn panic_text(entries: &[Entry], advice: Option<&str>) -> String {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_in_order(entries, &["K-S1", "K-S2"], advice)
+            }));
+            let payload = outcome.expect_err("the assert must refuse");
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .expect("a panic payload of text")
+        }
+
+        let mut ordered = Report::default();
+        ordered.pass("K-S1");
+        ordered.pass("K-S2");
+        assert_in_order(&ordered.entries, &["K-S1", "K-S2"], None);
+
+        // A Skip refuses first, even where the ORDER is already wrong,
+        // and the message carries the advice when there is one.
+        let mut skipped = Report::default();
+        skipped.pass("K-S2");
+        skipped.skip("K-S1", "the stream ended before the kill".into());
+        let advised = panic_text(&skipped.entries, Some("seed a larger fixture"));
+        assert!(
+            advised.starts_with(
+                "K-S1 skipped — seed a larger fixture: the stream ended before the kill"
+            ),
+            "the skip panic names the clause, the advice and the reason: {advised}"
+        );
+        let unadvised = panic_text(&skipped.entries, None);
+        assert!(
+            unadvised.starts_with(
+                "K-S1 skipped — every arm must Pass: the stream ended before the kill"
+            ),
+            "without advice the skip panic still names the clause and reason: {unadvised}"
+        );
+
+        let mut reordered = Report::default();
+        reordered.pass("K-S2");
+        reordered.pass("K-S1");
+        let text = panic_text(&reordered.entries, None);
+        assert!(
+            text.contains("the clause vocabulary is fixed, in order"),
+            "a wrong order refuses by name: {text}"
+        );
+
+        let mut failed = Report::default();
+        failed.pass("K-S1");
+        failed.fail("K-S2", "the wire hung".into());
+        let text = panic_text(&failed.entries, None);
+        assert!(
+            text.contains("every arm must Pass:\n")
+                && text.contains(
+                    "FAIL K-S2 (SIGKILL mid-read, then typed error not hang): the wire hung"
+                ),
+            "a Fail refuses with the rendered entries: {text}"
+        );
     }
 
     /// The one timeout spelling, full-string — the certification bar's
@@ -901,14 +966,11 @@ mod tests {
         },
     ];
 
-    /// The wire freeze once carried two rules stated for both
-    /// directions but certified on the read direction only (P11 and
-    /// P12 were owed); closing them closed the set. This census holds
-    /// it closed: every two-direction freeze rule must keep a clause
-    /// in a source-direction clause set AND one in a
-    /// destination-direction clause set, asserted against the crate's
-    /// ACTUAL clause constants — never README prose — so a clause-set
-    /// edit that re-opens a one-sided gap fails here BY NAME.
+    /// Every two-direction freeze rule must keep a clause in a
+    /// source-direction clause set AND one in a destination-direction
+    /// clause set, asserted against the crate's ACTUAL clause constants
+    /// — never README prose — so a clause-set edit that leaves a rule
+    /// certified one-sided fails here BY NAME.
     #[test]
     fn every_two_direction_freeze_rule_is_certified_on_both_sides() {
         use std::collections::BTreeSet;

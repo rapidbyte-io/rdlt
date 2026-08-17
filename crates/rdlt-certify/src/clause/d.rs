@@ -7,14 +7,13 @@
 //!
 //! The D-reuse rides a settling adapter, not the managed destination
 //! raw: the in-process suite assumes dropping a session releases it
-//! SYNCHRONOUSLY (its D4 arm drops one session and immediately opens
-//! the next), but over the wire release is asynchronous — the server
-//! must observe the stream end and run its close before the one
-//! session slot frees. The adapter's `open` retries exactly the typed
-//! one-session refusal within the reclaim window, bridging the
-//! timing model WITHOUT masking anything a clause certifies: a
-//! connector that never reclaims still fails (the retry exhausts into
-//! the suite's own failure, and P9 certifies the reclaim explicitly).
+//! synchronously (its D4 arm drops one session and immediately opens
+//! the next), but over the wire the server must observe the stream end
+//! and run its close before the one session slot frees. The adapter's
+//! `open` retries exactly the typed one-session refusal within the
+//! reclaim window, masking nothing a clause certifies — a connector
+//! that never reclaims still fails, and P9 certifies the reclaim
+//! explicitly.
 //!
 //! Every clause rides under the 30 s clause timeout — a stalling
 //! connector FAILS the clause, the certifier never hangs — and no

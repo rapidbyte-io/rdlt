@@ -30,13 +30,12 @@ pub const CLAUSES: [&str; 3] = ["S1", "S2", "S4"];
 /// `accept_skips` is the snapshot-source acknowledgment, BY STREAM
 /// NAME and strict by default: an S-suite skip folds as a FAILURE
 /// naming its stream and the acknowledgment unless that stream is
-/// named in `accept_skips`, so a library caller gating on
-/// [`Report::passed`] refuses a source that never checkpoints exactly
-/// as the CLI does. A blanket acknowledgment would fold a REGRESSED
-/// co-stream green beside a genuine snapshot stream. `Report::passed`
-/// itself deliberately keeps treating `Skip` as passing — the
-/// destination's no-probe and no-merge skips are choices the operator
-/// already made.
+/// named here, so a library caller gating on [`Report::passed`]
+/// refuses a source that never checkpoints exactly as the CLI does; a
+/// blanket acknowledgment would fold a REGRESSED co-stream green beside
+/// a genuine snapshot stream. `Report::passed` itself keeps treating
+/// `Skip` as passing — the destination's no-probe and no-merge skips
+/// are choices the operator already made.
 pub async fn certify(target: &Target, accept_skips: &[&str]) -> Report {
     let mut report = Report::default();
 

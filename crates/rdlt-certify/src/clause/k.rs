@@ -1,44 +1,39 @@
-//! The kill matrix — the K-vocabulary: SIGKILL the served connector at
-//! every message boundary and hold the wire to two promises. First,
-//! TYPED-ERROR-NOT-HANG: within `KILL_ERROR_WINDOW` (10 s) of the kill the
-//! client side must surface an error — a certifier (or an engine) that
-//! outlives a dead connector by hanging has failed the connector's
-//! author twice. Second, for the destination arms, EXACTLY-ONCE
-//! CONVERGENCE proven by re-run: a FRESH spawn drives the same load to
-//! completion and the read-back probe must count the fixture rows
-//! EXACTLY — a kill that lost a committed row and a kill that let one
-//! land twice both break the count.
+//! The kill matrix: SIGKILL the served connector at every message
+//! boundary and hold the wire to two promises. Typed-error-not-hang:
+//! within `KILL_ERROR_WINDOW` (10 s) of the kill the client side must
+//! surface an error, never hang. And for the destination arms,
+//! exactly-once convergence proven by re-run: a FRESH spawn drives the
+//! same load to completion and the read-back probe must count the
+//! fixture rows EXACTLY — a lost committed row and a row landed twice
+//! both break the count.
 //!
-//! The boundaries are fixed at birth: K-S1 post-handshake pre-Read,
-//! K-S2 mid-Read after frame 1, K-S3 after the first checkpoint frame;
-//! K-D1 post-Open, K-D2 post-ensure, K-D3 after a write is accepted,
-//! K-D4 post-write pre-publish (the receipt query answered, the publish
-//! never sent), K-D5 post-publish pre-read_state, K-D6 post-close —
-//! where convergence must be a NO-OP: the receipt outlives the process,
-//! the rerun replays, and the count does not move.
+//! The boundaries: K-S1 post-handshake pre-Read, K-S2 mid-Read after
+//! frame 1, K-S3 after the first checkpoint frame; K-D1 post-Open, K-D2
+//! post-ensure, K-D3 after a write is accepted, K-D4 post-write
+//! pre-publish (the receipt query answered, the publish never sent),
+//! K-D5 post-publish pre-read_state, K-D6 post-close, where convergence
+//! must be a NO-OP: the receipt outlives the process, the rerun
+//! replays, the count does not move.
 //!
-//! THE CONVERGENCE PIPELINE SCOPE, decided not defaulted: the arms
-//! killed while their session was live (K-D1..K-D5) re-run under a
-//! sibling pipeline (`{pipeline}-r`), not the killed one. A destination
-//! may hold a durable per-pipeline session claim (a staging lease): a
-//! SIGKILLed holder cannot release it, dead-process takeover is
-//! deliberately not attempted, and the claim can stand for a TTL no
-//! clause budget can pay. Convergence is therefore judged on the DATA (the
-//! probe's exact count over the shared table), which the sibling scope
-//! reaches without waiting out a claim the connector is CORRECT to
-//! enforce. K-D6 killed a process whose session had already closed —
-//! its claim released — so its rerun rides the SAME pipeline and
-//! additionally proves the receipt was durable across processes.
+//! The arms killed with a live session (K-D1..K-D5) re-run under a
+//! sibling pipeline (`{pipeline}-r`), not the killed one: a destination
+//! may hold a durable per-pipeline claim (a staging lease) that a
+//! SIGKILLed holder cannot release and no clause budget can wait out,
+//! so convergence is judged on the DATA — the probe's exact count over
+//! the shared table — which the sibling scope reaches without waiting
+//! out a claim the connector is correct to enforce. K-D6's session had
+//! already closed, its claim released, so its rerun rides the SAME
+//! pipeline and additionally proves the receipt durable across
+//! processes.
 //!
 //! The source arms dial with a deliberately SMALL h2 window budget
-//! (`READ_BUDGET_BYTES`): flow control then caps how much of the
-//! stream can be in flight, so against a fixture larger than the window
-//! the server is provably still mid-stream when the kill lands — with
-//! the frame-ceiling window a small stream could be fully buffered
-//! (end-of-stream included) before the SIGKILL, and the client would
-//! observe a clean end instead of the failure under test. A stream that
-//! still completes cleanly (or ends before its boundary) earns an
-//! honest Skip naming the fixture, never a vacuous Pass.
+//! (`READ_BUDGET_BYTES`), so against a fixture larger than the window
+//! the server is provably still mid-stream when the kill lands — under
+//! the frame-ceiling window a small stream could be fully buffered,
+//! end-of-stream included, and the client would observe a clean end
+//! instead of the failure under test. A stream that still completes
+//! cleanly, or ends before its boundary, earns an honest Skip naming
+//! the fixture, never a vacuous Pass.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -633,22 +628,18 @@ fn render_open_error(error: wire::WireOpenError) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! The K-S designated rogue (the certification bar's last gap —
-    //! the fail arms were code-present but never PROVEN to fire): a
-    //! script fake prints one valid handshake line naming an
-    //! IN-PROCESS rogue server's socket, so the matrix SIGKILLs the
-    //! SCRIPT while the tonic server SURVIVES on its socket. The
-    //! post-kill wire then keeps answering (K-S1's still-answered
-    //! arm) or holds a read stream open in silence (K-S2/K-S3's
-    //! window exhaustion). No built bin, so this rides the bare
-    //! (ungated) suite.
+    //! The K-S rogue proving each source arm can fail: a script fake
+    //! prints one valid handshake line naming an IN-PROCESS rogue
+    //! server's socket, so the matrix SIGKILLs the script while the
+    //! tonic server survives and the post-kill wire keeps answering
+    //! (K-S1) or holds a read stream open in silence (K-S2/K-S3). No
+    //! built bin, so this rides the ungated suite.
     //!
-    //! THE RELINK TRICK, load-bearing: every arm's probe drop unlinks
-    //! the socket path its handshake line advertised, which would
-    //! sever the NEXT arm from the one surviving rogue. The script
-    //! therefore advertises a SYMLINK it re-creates on every spawn
-    //! (`ln -sf`), so each arm's unlink removes only its own link and
-    //! the rogue's real socket outlives all three arms.
+    //! Every arm's probe drop unlinks the socket path its handshake
+    //! line advertised, which would sever the NEXT arm from the one
+    //! surviving rogue — so the script advertises a symlink it
+    //! re-creates on every spawn (`ln -sf`), and each arm's unlink
+    //! removes only its own link.
 
     use std::path::{Path, PathBuf};
 

@@ -1,23 +1,17 @@
 //! The raw wire substrate BELOW the client adapters, which the P and
-//! K families ride: a spawn-and-attach probe ([`WireProbe`]) whose
-//! every method is a bare RPC with NO verification layered on, so the
-//! clauses see the ACTUAL frames a served connector speaks — the
-//! adapters' own good manners (identity verification at handshake, the
-//! one-batch refusal, classification mapping) would otherwise stand
-//! between the certifier and a misbehaving server, and a clause that
-//! can only see what the adapter lets through certifies the adapter,
-//! not the connector.
-//!
-//! The same layer carries the write direction's raw session substrate:
-//! [`WireSession`] opens with a bare `Open` frame on its own dial and
-//! drives the WHOLE session grammar through [`WireSession::request`]
-//! and [`WireSession::close_judged`] — one tagged reply per request
-//! frame, interleaved `part_closed` events skipped where they are
-//! legal, and a judged end where the reply stream must actually END
-//! after `closed` — plus the certifier-authored request frames and
-//! [`refusal_shape`], the error-frame judgment both wire directions
-//! share. No clause verdict is minted here; the families in
-//! [`crate::clause`] write every report entry.
+//! K families ride: [`WireProbe`] spawns and attaches with bare RPCs
+//! and NO verification layered on, so the clauses see the ACTUAL
+//! frames a served connector speaks — a clause that can only see what
+//! the adapter's good manners let through certifies the adapter, not
+//! the connector. [`WireSession`] is the write direction's raw
+//! session: a bare `Open` on its own dial, the whole grammar through
+//! [`WireSession::request`] (one tagged reply per request frame,
+//! interleaved `part_closed` events skipped where legal) and
+//! [`WireSession::close_judged`] (the reply stream must actually END
+//! after `closed`), plus the certifier-authored request frames and
+//! [`refusal_shape`], the error-frame judgment both directions share.
+//! No clause verdict is minted here; the families in [`crate::clause`]
+//! write every report entry.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -102,14 +96,12 @@ impl RawFrame {
 
 /// The aggregate retention ceiling on ONE read stream's collected
 /// frames: [`WireProbe::read_frames`] holds every frame to the stream's
-/// end, and while each frame is individually capped by the dial's
-/// [`MAX_FRAME_BYTES`] decode limit, the frame COUNT is not — a fast
-/// rogue could otherwise OOM the certifier inside its own clause
-/// timeout. Four frame-ceilings of room is generous for any
+/// end, and the dial's [`MAX_FRAME_BYTES`] caps each frame but not the
+/// COUNT, so without this a fast rogue could OOM the certifier inside
+/// its own clause timeout. Four frame-ceilings is generous for any
 /// certification stream (fixtures are rows, not datasets); a stream
-/// retaining more is refused typed. Per-frame accounting counts the
-/// carried payload plus the collection slot, so a flood of EMPTY
-/// frames is bounded by the same ceiling.
+/// retaining more is refused typed. Each frame counts its payload plus
+/// its collection slot, so a flood of EMPTY frames is bounded too.
 pub(crate) const READ_RETENTION_CEILING: usize = MAX_FRAME_BYTES * 4;
 
 /// The frame census P5's evidence carries: what the read direction
@@ -149,17 +141,14 @@ impl std::fmt::Display for Census {
 
 /// What a wire attach parks for whoever must clean up after it: the
 /// spawned child, and — once the handshake line names it — the
-/// advertised socket's path. The
-/// child lives HERE for the probe's WHOLE life, not in any future, so
-/// a caller that must abandon the attach (a timeout aborting the task)
-/// or the arm holding a live probe (a whole-arm clause timeout) can
-/// still claim the child and await its DEATH: dropping a future only
-/// runs Drop, and `kill_on_drop` only SENDS the SIGKILL, so without
-/// the slot a dying single-writer connector could still hold its store
-/// lock when the next spawn opens the same store. The socket rides
-/// along because the old attach's guarantee — the advertised socket
-/// file is unlinked on EVERY abandonment path — must survive the slot:
-/// an abort landing mid-dial knows the path only through here.
+/// advertised socket's path. The child lives HERE for the probe's whole
+/// life, not in any future, so a caller abandoning the attach or the
+/// arm (a timeout) can still claim the child and await its DEATH:
+/// `kill_on_drop` only SENDS the SIGKILL, and a dying single-writer
+/// connector could still hold its store lock when the next spawn opens
+/// the same store. The socket rides along so it is unlinked on EVERY
+/// abandonment path — an abort landing mid-dial knows the path only
+/// through here.
 #[derive(Default)]
 pub(crate) struct Parked {
     child: Option<tokio::process::Child>,
@@ -229,14 +218,13 @@ pub(crate) async fn reap_parked(slot: &ChildSlot) {
 }
 
 /// Spawn `bin` under `role` with the probes' shared stdio discipline
-/// (stdout piped and capped, stderr nulled, stdin nulled,
-/// `kill_on_drop` as the net under the slot), park the child in
-/// `slot`, and read the FIRST stdout line under
-/// [`target::MAX_LINE_BYTES`] and [`target::LINE_TIMEOUT`] — the one
-/// first-line funnel the wire attach and the P1 line probe both ride,
-/// kill-and-reap included. Error paths REAP the parked child
+/// (stdout piped and capped, stderr and stdin nulled, `kill_on_drop`
+/// as the net under the slot), park the child in `slot`, and read the
+/// FIRST stdout line under [`target::MAX_LINE_BYTES`] and
+/// [`target::LINE_TIMEOUT`] — the one first-line funnel the wire
+/// attach and the P1 probe both ride. Error paths REAP the parked child
 /// before returning; the returned reader carries whatever stdout
-/// follows the line, for callers that keep listening.
+/// follows the line.
 pub(crate) async fn spawn_and_read_line(
     bin: &Path,
     role: Role,
@@ -318,21 +306,16 @@ pub(crate) struct WireProbe {
 }
 
 impl WireProbe {
-    /// Spawn `bin` under `role`, read the one handshake line (the same
-    /// cap and timeout the P1 probe applies), and dial the advertised
-    /// socket RAW — no identity verification, no adapter.
-    /// [`Self::handshake_raw`] is where certification then looks at
-    /// what the line pointed to.
-    ///
+    /// Spawn `bin` under `role`, read the one handshake line (the P1
+    /// probe's cap and timeout), and dial the advertised socket RAW —
+    /// no identity verification, no adapter; [`Self::handshake_raw`] is
+    /// where certification then looks at what the line pointed to.
     /// `budget_bytes` is the dial's h2 window budget ([`dial`] clamps
-    /// it to the workable range): the wire clauses pass the frame
-    /// ceiling, and the kill matrix passes a deliberately SMALL budget
-    /// so a read stream cannot be fully in flight before a mid-stream
-    /// SIGKILL lands.
-    ///
-    /// The child parks in `slot` across every await (see [`ChildSlot`]);
-    /// each error path below reaps it before returning, so an `Err`
-    /// never leaves a live process behind.
+    /// it): the wire clauses pass the frame ceiling, the kill matrix a
+    /// deliberately SMALL budget so a read stream cannot be fully in
+    /// flight before a mid-stream SIGKILL lands. The child parks in
+    /// `slot` across every await, and each error path reaps it before
+    /// returning, so an `Err` never leaves a live process behind.
     pub(crate) async fn attach(
         bin: &Path,
         role: Role,
@@ -576,16 +559,14 @@ pub(crate) async fn attach_for(
     WireProbe::attach(&bin, role, config, MAX_FRAME_BYTES as u64, slot).await
 }
 
-/// The record batches one `arrow_ipc` payload carries.
-///
-/// This seat decodes a CONNECTOR UNDER CERTIFICATION's frames — the
-/// primary adversary — so it gets both halves of the decode defense:
-/// the SPI's shared framing pre-pass holds every declared length
-/// against the frame's real bytes before arrow's reader can allocate
-/// from them (the memset and allocation-abort arms are neither panics
-/// nor errors), and `catch_unwind` contains arrow's panic arms, so a
-/// crafted frame fails the clause TYPED instead of killing the
-/// certifier.
+/// The record batches one `arrow_ipc` payload carries. The frames come
+/// from the connector under certification — the primary adversary — so
+/// both halves of the decode defense apply: the SPI's framing pre-pass
+/// holds every declared length against the frame's real bytes before
+/// arrow's reader can allocate from them (an allocation abort is
+/// neither a panic nor an error), and `catch_unwind` contains arrow's
+/// panic arms, so a crafted frame fails the clause TYPED instead of
+/// killing the certifier.
 pub(crate) fn count_batches(bytes: &[u8]) -> Result<usize, String> {
     rdlt_connector::gate::refuse_overdeclared_framing(bytes)?;
     caught_decode(|| count_batches_decoding(bytes))

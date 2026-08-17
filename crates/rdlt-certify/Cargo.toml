@@ -1,12 +1,10 @@
 [package]
 name = "rdlt-certify"
 description = "rdlt connector certifier: spawns an out-of-process connector binary and certifies it against the conformance clauses over the wire"
-# The wire this certifier drives is FROZEN (2026-08-07; ADR 0001 D8's
-# amendment — this binary's clause runs are half the evidence that
-# closed it). Publishing is a separate, owner-scheduled decision that
-# did not move with the freeze — this stays false until that wave runs,
-# in step with the protocol/client/runtime trio, and the workspace dep
-# entry stays path-only (no version key) for the same reason.
+# The wire this certifier drives is frozen, but publishing is a
+# separate decision that moves with the protocol/client/runtime trio;
+# until that wave runs this stays false and the workspace dep entry
+# stays path-only.
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -15,19 +13,16 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# The certification suite: tests that spawn the REAL file connector bin
-# through the certifier. OFF by default — a plain workspace run must not
-# depend on bins no workspace command builds. The Makefile's own line
-# enables it AND sets RDLT_BUILD_CONNECTOR_BINS=1 so the suite's helper
-# (re)builds the bin via cargo before spawning; without the env var the
-# helper requires the bin to already exist and fails loudly, never
-# silently.
+# The certification cells that spawn the REAL reference connector bin.
+# Off by default so a plain workspace run never depends on a bin no
+# workspace command builds; the Makefile enables it with
+# RDLT_BUILD_CONNECTOR_BINS=1 so the helper builds the bin before
+# spawning, and without that variable a missing bin fails loudly.
 spawn-bins = []
-# The certifier CLI: clap plus a tokio runtime entry point for the
-# `rdlt-certify` bin. Behind `required-features` so no plain workspace
-# command ever compiles the bin — the Makefile builds it explicitly
-# beside the connector bins, and the gated CLI suite enables
-# `spawn-bins,bin` so cargo builds the bin for `CARGO_BIN_EXE_`.
+# The `rdlt-certify` CLI: clap plus a tokio runtime entry point. Behind
+# `required-features` so no plain workspace command compiles the bin;
+# the Makefile builds it explicitly, and the CLI suite enables
+# `spawn-bins,bin` so cargo provides `CARGO_BIN_EXE_rdlt-certify`.
 bin = ["dep:clap", "tokio/rt"]
 
 [[bin]]
@@ -38,46 +33,40 @@ required-features = ["bin"]
 [dependencies]
 clap = { workspace = true, optional = true }
 rdlt-runtime = { workspace = true }
-# P8/P9/P10 drive the LIVE socket directly — a second dial and a raw
-# `OpenSession` are wire moves the managed adapter deliberately never
-# makes, so the certifier reaches under it to the client crate.
+# The session clauses re-dial the LIVE socket and send raw
+# `OpenSession`s — moves the managed adapter never makes — so the
+# certifier reaches under it to the client crate.
 rdlt-connector-client = { workspace = true }
-# For implementing the SPI `Destination` adapter the D-reuse suite runs
-# against (the settling `open`).
+# The SPI `Destination` adapter the reused D-suite runs against.
 async-trait = { workspace = true }
-# For judging the P8 refusal by its typed Status code, and the raw
-# second `OpenSession` P8 sends.
+# P8 is judged by the typed Status code of the second `OpenSession`.
 tonic = { workspace = true }
 tokio-stream = { workspace = true }
-# For naming `ConnectorSpec` — the shape the provider's Spec reply
-# carries, which P4 judges and path-only identity resolution reads.
+# `ConnectorSpec`, the Spec reply P4 judges and path-only identity
+# resolution reads.
 rdlt-connector = { workspace = true }
-# The S/D conformance suites are REUSED, not re-derived: the certifier
-# feeds a managed (spawned, wire-driven) SPI object to the exact suites
-# in-process connectors certify against.
+# The S/D conformance suites are reused, not re-derived: the certifier
+# feeds them a spawned, wire-driven SPI object.
 rdlt-testkit = { workspace = true }
-# The stdout handshake line (`handshake::Line`) for the P1 probe, AND
-# the generated proto types the wire probe drives raw: the wire
-# P-clauses (P3/P5/P6/P7) and the P8/P9/P10 session probes watch actual
-# frames BELOW the client adapters, so a misbehaving server cannot
-# hide behind our own client's good manners.
+# The handshake line P1 parses, and the generated proto types the raw
+# wire probe drives below the client adapters, so a misbehaving server
+# cannot hide behind our own client's good manners.
 rdlt-connector-protocol = { workspace = true }
-# P5 decodes each `arrow_ipc` read frame's IPC stream to COUNT its
-# record batches — the one-batch rule judged on the wire bytes, not on
-# what the client adapter let through.
+# P5 decodes each `arrow_ipc` read frame to count its record batches on
+# the wire bytes.
 arrow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # `process`/`time` ride the workspace feature list; `io-util` is this
-# crate's own need (BufReader/read_line over the probe's piped stdout).
+# crate's own need (buffered line reads over a probe's piped stdout).
 tokio = { workspace = true, features = ["io-util"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# `net` for the in-process rogue servers: they bind their own UDS
-# listeners (`UnixListener`/`UnixListenerStream`) so the rogue suites
-# spawn nothing and need no built bin; `test-util` for the P9 rogue's
-# paused clock (its 10s reclaim window elapses without wall time).
+# `net` for the in-process rogue servers, which bind their own UDS
+# listeners so the rogue suites spawn no bin; `test-util` for the P9
+# rogue's paused clock, so its 10 s reclaim window elapses without
+# wall time.
 tokio = { workspace = true, features = ["net", "test-util"] }
 tokio-stream = { workspace = true, features = ["net"] }
 # The test probe implements the testkit's async `TableProbe` trait.

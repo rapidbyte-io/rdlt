@@ -1,14 +1,11 @@
-//! The clause budget with the PROBE CLOCK STOPPED.
-//!
-//! One 30s clause budget spanning a whole suite phase INCLUDING up to
-//! four table-probe counts that are each individually budgeted 20s is
-//! arithmetic that cannot hold: probe latency well inside its own
-//! budget would exhaust the suite budget and fail every clause with
-//! the timeout spelling blaming the CONNECTOR. So the probe the
-//! certifier passes is wrapped to meter the wall time its counts spend
-//! (in-flight time included), and the deadline extends by exactly that
-//! meter — the clause budget then bounds SPI traffic alone, while each
-//! probe count keeps its own bound and fails naming ITSELF.
+//! The clause budget with the PROBE CLOCK STOPPED: a 30 s clause budget
+//! spanning a suite phase that includes up to four 20 s table-probe
+//! counts cannot hold — probe latency inside its own budget would
+//! exhaust the clause budget and blame the CONNECTOR. So the probe is
+//! wrapped to meter the wall time its counts spend and the deadline
+//! extends by exactly that meter; the clause budget then bounds SPI
+//! traffic alone, while each probe count keeps its own bound and fails
+//! naming ITSELF.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -49,13 +46,11 @@ impl ProbeClock {
     }
 
     /// A count is starting: open the union window if this is the first
-    /// count in flight. The returned guard closes it on Drop — RAII,
-    /// not a paired exit call, deliberately: a count future dropped
-    /// mid-flight (an outer select or timeout) would skip any paired
-    /// exit, leaving the window open forever, the allowance growing
-    /// with wall clock, and the deadline the clock feeds extending
-    /// indefinitely — the module's own no-hang guarantee defeated by
-    /// convention where construction closes the class.
+    /// count in flight. The returned guard closes it on Drop rather
+    /// than by a paired exit call: a count future dropped mid-flight
+    /// (an outer select or timeout) would skip the exit, leaving the
+    /// window open and the deadline extending forever — the no-hang
+    /// guarantee defeated by convention.
     fn enter(&self) -> WindowGuard {
         let mut state = self.0.lock().expect("probe clock lock");
         if state.active_counts == 0 {

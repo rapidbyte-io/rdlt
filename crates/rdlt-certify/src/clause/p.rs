@@ -1,21 +1,18 @@
 //! The protocol clauses P1–P13, top to bottom in clause-id order —
 //! every P verdict the certifier writes is minted in this module.
 //!
-//! Three kinds of probe live here. The role-generic clauses (P1 the
-//! handshake line, P2 typed config refusal, P4 the pre-handshake Spec,
-//! P13 the unserved role's refusal) ride direct spawns and the
-//! provider. The wire clauses (P3 identity/skew, P7 the state-format
-//! map, P5 one-batch, P6 error-frame shape) are judged on the RAW
-//! frames a served connector speaks, through the crate's raw wire probe
-//! below the client adapters — the adapters' own good manners would
-//! otherwise stand between the certifier and a misbehaving server. The
+//! Three kinds of probe: the role-generic clauses (P1 the handshake
+//! line, P2 typed config refusal, P4 the pre-handshake Spec, P13 the
+//! unserved role's refusal) ride direct spawns and the provider; the
+//! wire clauses (P3 identity, P7 the state-format map, P5 one-batch,
+//! P6 error-frame shape) are judged on the RAW frames a served
+//! connector speaks, below the client adapters whose good manners would
+//! otherwise stand between the certifier and a misbehaving server; the
 //! session clauses (P8 the one-session ceiling, P9 abandonment reclaim,
-//! P10 the Backend-direct order book, P11 one batch per write frame,
-//! P12 write-side error text) drive raw sessions on their own dials of
-//! a live destination socket.
-//!
-//! Every probe rides under the 30 s clause timeout: a stalling
-//! connector FAILS its clause and the certifier never hangs.
+//! P10 the order book, P11 one batch per write frame, P12 write-side
+//! error text) drive raw sessions on their own dials of the live
+//! destination socket. Every probe rides under the 30 s clause timeout:
+//! a stalling connector FAILS its clause and the certifier never hangs.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -508,14 +505,12 @@ async fn settle_open_wire(
 
 // ——— P8: one-session-per-process ceiling.
 
-/// The P8 probe, all wire moves on the LIVE socket (the managed
-/// adapter deliberately never makes them — and probing raw is what
-/// lets the rogue suite prove the clause can fail): hold one raw
-/// session, dial the socket a second time, and ask for a second
-/// session with an empty request stream — the refusal must be the
-/// transport-level `FailedPrecondition` status (the RPC never opens),
-/// anything else fails the clause. The held session is closed orderly
-/// afterward whatever P8 concluded.
+/// The P8 probe, all raw moves on the LIVE socket: hold one session,
+/// dial the socket a second time, and ask for a second session with an
+/// empty request stream — the refusal must be the transport-level
+/// `FailedPrecondition` status (the RPC never opens); anything else
+/// fails the clause. The held session is closed orderly afterward
+/// whatever P8 concluded.
 async fn probe_one_session_ceiling(socket: &Path, entropy: &str) -> Result<(), String> {
     let session = settle_open_wire(socket, "rdlt-certify-p8", &format!("certify-p8-{entropy}"))
         .await
@@ -612,25 +607,17 @@ async fn report_p10(report: &mut Report, socket: &Path, entropy: &str) {
     report_session_probe(report, "P10", probe_order_book(socket, entropy)).await;
 }
 
-/// The P10 probe — the Backend-direct order book: the raw destination
-/// choreography driven frame by frame over the live socket, WITHOUT
-/// the sdk `Session`'s good manners between the certifier and the
-/// server, certifying the exactly-once grammar the wire actually
-/// speaks. Four assertions, three session passes:
-///
-/// - reply-per-frame: every request frame is answered with its OWN
-///   tag ([`wire::expect`]; a stream that ends or stalls instead fails);
-/// - write-before-ensure REFUSED: the deliberate out-of-order `write`
-///   is driven FIRST and must earn a typed error frame;
-/// - replay-vs-publish exclusivity: a fresh session must find the
-///   receipt an earlier session committed (`Backend::existing_receipt`
-///   durability), accept `replay` for it, and answer a `publish` of
-///   that same load with a refusal OR the SAME receipt — never a
-///   fresh mint (re-committing the same `(load_id, commit_seq)` must
-///   return the prior receipt without re-publishing);
-/// - part-event legality: `part_closed` events are legal anywhere
-///   before `close`'s answer and NOWHERE after it
-///   ([`WireSession::close_judged`] holds the boundary).
+/// The P10 probe: the raw destination choreography driven frame by
+/// frame over the live socket, with no client manners between the
+/// certifier and the server. Four rules across three session passes:
+/// every request frame is answered with its OWN tag (a stream that ends
+/// or stalls instead fails); the deliberately out-of-order first
+/// `write`, on a never-ensured table, must earn a typed error frame; a
+/// fresh session must find the receipt an earlier session committed,
+/// accept `replay` for it, and answer a `publish` of that same load
+/// with a refusal OR the SAME receipt — never a fresh mint; and
+/// `part_closed` events are legal anywhere before `close`'s answer and
+/// nowhere after it ([`WireSession::close_judged`] holds the boundary).
 async fn probe_order_book(socket: &Path, entropy: &str) -> Result<(), String> {
     let p10_load = format!("{P10_LOAD_PREFIX}-{entropy}");
     let meta_json = wire::meta_json_for(P10_PIPELINE, &p10_load, P10_SEQ);
@@ -831,15 +818,12 @@ const P11_LOAD_PREFIX: &str = "certify-p11";
 /// P11's table.
 const P11_TABLE: &str = "p11_one_batch";
 
-/// The P11 probe — one Arrow batch per write frame, the write
-/// direction's twin of P5's read-side rule, induced rather than
-/// observed (the certifier authors the violation): ensure a table,
-/// then send a `write` whose arrow_ipc payload is ONE IPC stream
-/// carrying TWO record batches. The refusal must arrive as a typed
-/// error frame — its SHAPE is P12's clause, not this one's — while
-/// `written` means every row after the first batch was at the
-/// connector's mercy, and fails. The session is closed best-effort
-/// whatever the verdict: the refusal is answered in-stream, the
+/// The P11 probe, P5's write-direction twin, induced rather than
+/// observed: ensure a table, then send a `write` whose arrow_ipc
+/// payload is ONE IPC stream carrying TWO record batches. The refusal
+/// must arrive as a typed error frame (its shape is P12's clause, not
+/// this one's); `written` fails. The session is closed best-effort
+/// whatever the verdict — the refusal is answered in-stream and the
 /// session outlives it.
 async fn probe_one_batch_write(socket: &Path, entropy: &str) -> Result<(), String> {
     let p11_load = format!("{P11_LOAD_PREFIX}-{entropy}");
@@ -886,15 +870,13 @@ const P12_SEQ: u64 = 1;
 /// P12's table.
 const P12_TABLE: &str = "p12_error_text";
 
-/// The P12 probe — write-side error frames carry cause text: P10's two
-/// induction sites (the out-of-order `write`, the already-receipted
-/// `publish`) re-driven on this clause's OWN sessions, with the
-/// refusal frames READ where P10 deliberately discards them — P10
-/// certifies that the refusals arrive, this clause certifies what they
-/// say. Each frame answers to [`wire::refusal_shape`], the same
-/// judgment P6 holds the read direction to. A violation returns
-/// mid-session; the drop is the wire's abandonment signal and P9
-/// already certified its reclaim.
+/// The P12 probe: P10's two induction sites (the out-of-order `write`,
+/// the already-receipted `publish`) re-driven on this clause's own
+/// sessions, with the refusal frames READ where P10 discards them —
+/// P10 certifies that the refusals arrive, P12 what they say. Each
+/// frame answers to [`wire::refusal_shape`], the judgment P6 holds the
+/// read direction to. A violation returns mid-session; the drop is the
+/// wire's abandonment signal, whose reclaim P9 already certified.
 async fn probe_error_frame_text(socket: &Path, entropy: &str) -> Result<(), String> {
     let p12_load = format!("{P12_LOAD_PREFIX}-{entropy}");
     let meta_json = wire::meta_json_for(P12_PIPELINE, &p12_load, P12_SEQ);
@@ -1038,16 +1020,13 @@ pub(crate) async fn report_p13(report: &mut Report, target: &Target, certified: 
     }
 }
 
-/// The P13 probe proper: the unserved-role spawn (and, on its silent
-/// exit 2, the served-role control) under `budget`, the children
-/// riding the standardized [`wire::ChildSlot`]. The timeout wraps the
-/// probe I/O ALONE and the [`wire::reap_parked`] sits OUTSIDE it, so
-/// the reap runs on EVERY exit path — a reap inside the timed future
-/// would be cancelled with it, leaving a dual-role connector's serving
-/// child merely `kill_on_drop`-signalled (dying, not dead — still
-/// holding any single-writer store lock the certifier's next spawn
-/// races for) and its advertised socket linked. On return the children
-/// are dead AND reaped and any parked socket unlinked.
+/// The P13 probe under `budget`: the unserved-role spawn and, on its
+/// silent exit 2, the served-role control. The timeout wraps the probe
+/// I/O alone and [`wire::reap_parked`] sits outside it, so on every
+/// exit path — timeout included — the children are dead AND reaped and
+/// any advertised socket unlinked; a reap inside the timed future would
+/// be cancelled with it, leaving a serving child merely signalled and
+/// still holding its store lock against the certifier's next spawn.
 async fn probe_role_refusal(
     path: &Path,
     certified: Role,
@@ -1142,19 +1121,14 @@ async fn unserved_role_discipline(
     )))
 }
 
-/// The evidence rule behind a P13 pass (the probe's control): exit 2
-/// with zero stdout is ALSO what a general usage error looks like —
-/// the sdk's own arg gate answers a missing required argument through
-/// clap with exactly that shape, indistinguishable on this probe's
-/// observed channels from the role refusal — so a binary requiring
-/// more argv than `--role=<x>` would mint `PASS P13` for a role it
-/// serves. Before the refusal is trusted, the SERVED role must answer
-/// a handshake line from the same bare argv. A binary whose served
-/// role cannot is FAILED, not excused: the flagless schema probe the
-/// clause exists for spawns exactly this bare shape, so the ambiguity
-/// is itself the defect. The control's child (a live server on
-/// success) parks in `slot` — the caller's reap kills it and unlinks
-/// its parked socket.
+/// The P13 control: exit 2 with no stdout is also clap's usage-error
+/// shape, so a binary needing more argv than `--role=<x>` would mint
+/// `PASS P13` for a role it serves. The refusal counts only once the
+/// SERVED role answers a handshake line from the same bare argv; a
+/// binary whose served role cannot is FAILED, not excused — the
+/// flagless schema probe spawns exactly this shape, so the ambiguity
+/// is itself the defect. The control's live child parks in `slot` for
+/// the caller's reap.
 async fn served_role_control(
     path: &Path,
     certified: Role,
@@ -1470,13 +1444,12 @@ mod generic_tests {
         }
     }
 
-    /// Final-review fix: the reap survives the clause timeout — the
-    /// timeout wraps the probe I/O alone, so an unserved-role spawn
-    /// stalling past the budget still leaves its child dead AND reaped
-    /// when the probe returns. (The reap used to sit INSIDE the timed
-    /// future, so a timeout cancelled it, leaving the child merely
-    /// kill_on_drop-signalled — dying, not dead, while the very next
-    /// wire spawn raced it for any single-writer store it held.)
+    /// The reap survives the clause timeout: the timeout wraps the
+    /// probe I/O alone, so an unserved-role spawn stalling past the
+    /// budget still leaves its child dead AND reaped when the probe
+    /// returns — a reap inside the timed future would be cancelled with
+    /// it, leaving the child merely signalled while the next wire spawn
+    /// raced it for any single-writer store it held.
     #[tokio::test]
     async fn a_timed_out_probe_still_reaps_its_child() {
         let dir = tempfile::tempdir().expect("tempdir");

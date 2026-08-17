@@ -1,28 +1,18 @@
-//! The certifier CLI — the third-party seam's front door: point it at
-//! any connector executable (a path, or a connector id resolved on
-//! PATH by the provider's convention) and it certifies the binary
-//! against the same clauses first-party connectors answer to, one
-//! titled verdict line per clause on stdout.
+//! The certifier CLI: point it at any connector executable (a path, or
+//! a connector id resolved on PATH by the provider's convention) and it
+//! certifies the binary against the same clauses first-party connectors
+//! answer to, one titled verdict line per clause on stdout. Exit codes:
+//! 0 all-pass (skips are honest non-verdicts and do not refuse), 1
+//! clause failures (listed on stdout), 2 when the run was REFUSED
+//! before certification could judge anything — a resolution/spawn
+//! refusal (the runtime's own spelling on stderr), an unusable
+//! `--config`, or bad arguments.
 //!
-//! The exit-code vocabulary: 0 all-pass (skips are honest non-verdicts
-//! and do not refuse), 1 clause failures (listed on stdout), 2 when
-//! the run was REFUSED before certification could judge anything — a
-//! resolution/spawn refusal (the runtime's frozen spelling verbatim on
-//! stderr), an unusable `--config`, or bad arguments (clap's default).
-//!
-//! Destination read-back rides `--probe-cmd '<sh line>'`: the line
-//! runs via `sh -c` once per count with `{{table}}` substituted and
-//! must print one number — the reader-visible row count in that table.
-//! The command line may carry credentials, so it is NEVER echoed: no
-//! report line, refusal or probe-failure message repeats it. Without
-//! the flag the read-back clauses and the kill matrix's convergence
-//! render Skip with the reason; the library API
-//! (`clause::d::certify`, `clause::k::destination`) takes a
-//! `TableProbe` directly.
-//!
-//! The config document is read, parsed, and CARRIED — never printed:
-//! no path through this bin echoes config bytes onto either stream
-//! (the report names clauses; refusal messages name files and causes).
+//! Two things are never echoed onto either stream: the `--probe-cmd`
+//! line (it may carry credentials — no report line, refusal or
+//! probe-failure message repeats it) and the config document, which is
+//! read, parsed and CARRIED (the report names clauses; refusal messages
+//! name files and causes).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

@@ -213,14 +213,12 @@ fn with_note(mut message: String, note: Option<&'static str>) -> String {
     message
 }
 
-/// The one exit sweep every probe arm runs, BEFORE the reap and with
-/// its note surfaced on every arm: SIGKILL the whole group when its id
-/// is known (grandchildren
-/// included — safe because the caller has not reaped the direct child
-/// yet, so the id is anchored), else kill and reap the direct child
-/// alone. The returned degradation note joins every arm's failure
-/// message, and on an otherwise-successful count it fails the count
-/// naming the probe.
+/// The one exit sweep every probe arm runs BEFORE the reap: SIGKILL the
+/// whole group when its id is known (grandchildren included — safe
+/// because the unreaped direct child still anchors the id), else kill
+/// and reap the direct child alone. The returned degradation note joins
+/// every arm's failure message, and on an otherwise-successful count it
+/// fails the count naming the probe.
 async fn sweep_probe_exit(
     pgid: Option<u32>,
     child: &mut tokio::process::Child,
@@ -235,17 +233,14 @@ async fn sweep_probe_exit(
     }
 }
 
-/// SIGKILL the probe's whole process group, then take ONE `kill -0`
-/// reading (a polling window could spend its whole length observing a
-/// pgid RECYCLED to an unrelated live group, then state phantom
-/// survivors as FACT): the direct sh child is reaped BEFORE the
-/// reading (its zombie would answer signal 0 forever), and a positive
-/// answer is
-/// then reported as POSSIBLE residue, because signal 0 cannot
-/// distinguish the probe's own stragglers from an unrelated group
-/// that inherited the recycled id. Returns the degradation note for
-/// the failure message when the group could not be killed or may not
-/// have drained — never a command echo, and never a silent swallow.
+/// SIGKILL the probe's whole process group, reap the direct sh child
+/// (its zombie would answer signal 0 forever), then take ONE `kill -0`
+/// reading — a polling window could spend its length observing a pgid
+/// RECYCLED to an unrelated group and state phantom survivors as fact,
+/// so a positive answer is reported as POSSIBLE residue. Returns the
+/// degradation note for the failure message when the group could not
+/// be killed or may not have drained — never a command echo, never a
+/// silent swallow.
 async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'static str> {
     let target = format!("-{pgid}");
     let signalled = tokio::process::Command::new("kill")
@@ -279,14 +274,13 @@ async fn group_kill(pgid: u32, child: &mut tokio::process::Child) -> Option<&'st
     }
 }
 
-/// Read the probe's stdout to EOF WITHOUT reaping (a reap here would
-/// free the group id before the Ok arms swept, so their SIGKILL could
-/// land on a recycled group): the reap belongs to the arms, AFTER
-/// their sweep, while the unreaped child still anchors the group id.
-/// The read is capped one byte past
+/// Read the probe's stdout to EOF WITHOUT reaping — the reap belongs to
+/// the arms AFTER their sweep, while the unreaped child still anchors
+/// the group id (a reap here would let the sweep's SIGKILL land on a
+/// recycled group). The read is capped one byte past
 /// [`MAX_PROBE_STDOUT_BYTES`] so the caller can tell at-the-cap from
 /// past-it; a probe still writing beyond the cap blocks on its full
-/// pipe until the caller's sweep kills the group.
+/// pipe until the sweep kills the group.
 async fn drain_output(child: &mut tokio::process::Child) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt as _;
     let mut stdout = Vec::new();

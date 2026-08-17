@@ -160,15 +160,11 @@ pub(crate) fn resolved_requirement(
 /// stdout line, parse it as a handshake line, then listen
 /// [`SECOND_LINE_WINDOW`] for any further stdout byte — one is a
 /// violation (stdout is the machine channel; logs belong on stderr).
-/// The spawn and first-line read are the wire attach's own funnel
-/// ([`wire::spawn_and_read_line`]), and the child rides the shared
-/// [`wire::ChildSlot`]. `budget` (the caller's clause timeout) wraps
-/// the probe I/O ALONE and the [`wire::reap_parked`] sits OUTSIDE it: a
-/// timeout wrapped around the whole probe would cancel the reap with
-/// the future, and the P1 child is a live server holding its store
-/// while the P2 spawn follows immediately. On every exit, timeout
+/// `budget` (the caller's clause timeout) wraps the probe I/O alone
+/// and [`wire::reap_parked`] sits outside it, so on every exit, timeout
 /// included, the child is dead AND reaped and any socket its line
-/// advertised is unlinked.
+/// advertised is unlinked — the P1 child is a live server holding its
+/// store while the P2 spawn follows immediately.
 pub(crate) async fn probe_handshake_line(
     target: &Target,
     role: Role,
