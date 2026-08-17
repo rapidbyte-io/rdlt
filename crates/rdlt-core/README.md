@@ -13,7 +13,7 @@ engine and connector, engine and embedder, this engine version and the
 documents an older one wrote. Machinery with a single owner is engine
 code and lives in `rdlt-engine`, however pure it is: row identity,
 collision-safe column and table naming, and schema policy all live there,
-not here. Everything else that builds on rdlt — the engine, the SPI, the
+not here. Everything else in the workspace — the engine, the SPI, the
 connector sdk, the client, the CLI — names this crate's types by their
 module paths.
 

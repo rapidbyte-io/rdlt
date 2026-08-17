@@ -1,7 +1,7 @@
 [package]
 name = "rdlt-core"
 description = "rdlt vocabulary: the persisted formats, wire payloads, reported outcomes, and shared identifiers every side of a pipeline names"
-keywords = ["elt", "schema", "arrow", "data", "types"]
+keywords = ["elt", "schema", "pipeline", "data", "types"]
 categories = ["database", "data-structures"]
 documentation = "https://docs.rs/rdlt-core"
 readme = "README.md"
