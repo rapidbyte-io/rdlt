@@ -1,11 +1,11 @@
-//! The 041 spawn-latency instrument, run BY HAND in the recorded
-//! session (Task 7, then measured against the postgres bin; since the
-//! 044 cut the in-tree default subject is the reference connector —
-//! any bin path works via argv[1]): spawn the connector bin N times
-//! sequentially through the provider and report min/median/p90 of
-//! spawn → handshake-complete (process spawn, handshake line, socket
-//! dial, wire handshake with the connector validating its config —
-//! everything a `connector:` pipeline pays before the first byte).
+//! The spawn-latency instrument, run BY HAND and never gated: spawn a
+//! connector bin N times sequentially through the provider and report
+//! min/median/p90 of spawn → handshake-complete (process spawn,
+//! handshake line, socket dial, wire handshake with the connector
+//! validating its config — everything a `connector:` pipeline pays
+//! before the first byte). The subject is the reference connector, the
+//! only connector bin this workspace builds; argv[1] pins its binary
+//! instead of discovering it on PATH.
 //!
 //! The config is validated LOCALLY by the connector's own gate, so no
 //! live service is needed. Each spawned child is dropped before the
