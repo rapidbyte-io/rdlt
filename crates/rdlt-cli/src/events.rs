@@ -10,37 +10,57 @@ use rdlt::prelude::PipelineEvent;
 
 use crate::{exit, render};
 
+/// Where `--events` points, resolved before anything runs but opened
+/// only once the pipeline is built — a document that refuses must not
+/// truncate an event log from an earlier run.
+pub(crate) enum Target {
+    Stdout,
+    File(PathBuf),
+}
+
+impl Target {
+    /// Resolve the flag, or `None` without it. `--events -` claims
+    /// stdout, which is the report's channel: the two machine outputs
+    /// must never interleave, so it is refused unless `--report` gives
+    /// the report its own destination.
+    pub(crate) fn resolve(
+        path: Option<PathBuf>,
+        report_given: bool,
+    ) -> Result<Option<Target>, exit::Error> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        if path != Path::new("-") {
+            return Ok(Some(Target::File(path)));
+        }
+        if report_given {
+            Ok(Some(Target::Stdout))
+        } else {
+            Err(exit::Error::Usage(
+                "`--events -` writes NDJSON to stdout, where the report would go —              add `--report <path>` to give the report its own destination"
+                    .into(),
+            ))
+        }
+    }
+
+    pub(crate) fn open(self) -> Result<Sink, exit::Error> {
+        match self {
+            Target::Stdout => Ok(Sink::Stdout),
+            Target::File(path) => {
+                let file = File::create(&path)
+                    .map_err(|e| exit::Error::Io(format!("creating {}: {e}", path.display())))?;
+                Ok(Sink::File(BufWriter::new(file)))
+            }
+        }
+    }
+}
+
 pub(crate) enum Sink {
     Stdout,
     File(BufWriter<File>),
 }
 
 impl Sink {
-    /// Open the sink `--events` named, or `None` without the flag.
-    /// `--events -` claims stdout, which is the report's channel: the
-    /// two machine outputs must never interleave, so it is refused
-    /// unless `--report` gives the report its own destination.
-    pub(crate) fn open(
-        path: Option<PathBuf>,
-        report_given: bool,
-    ) -> Result<Option<Sink>, exit::Error> {
-        let Some(path) = path else {
-            return Ok(None);
-        };
-        if path == Path::new("-") {
-            if !report_given {
-                return Err(exit::Error::Usage(
-                    "`--events -` writes NDJSON to stdout, where the report would go —              add `--report <path>` to give the report its own destination"
-                        .into(),
-                ));
-            }
-            return Ok(Some(Sink::Stdout));
-        }
-        let file = File::create(&path)
-            .map_err(|e| exit::Error::Io(format!("creating {}: {e}", path.display())))?;
-        Ok(Some(Sink::File(BufWriter::new(file))))
-    }
-
     pub(crate) fn write(&mut self, event: &PipelineEvent) {
         if let Ok(line) = serde_json::to_string(event) {
             match self {

@@ -210,3 +210,23 @@ fn the_output_flag_is_global_and_refuses_unknown_values() {
     assert_eq!(out.status.code(), Some(74), "{out:?}");
     assert!(out.stdout.is_empty(), "no report without a run");
 }
+
+/// `--events <file>` is opened only once the pipeline is built: a
+/// document that refuses (here: an unreadable path, 74) leaves no
+/// event log behind — and never truncates one from an earlier run.
+#[test]
+fn a_refused_document_leaves_the_events_file_untouched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let events = dir.path().join("events.ndjson");
+    std::fs::write(&events, "earlier run\n").expect("write");
+    let out = rdlt()
+        .args(["run", "definitely-missing.yaml", "--events"])
+        .arg(&events)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(74), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(&events).expect("still there"),
+        "earlier run\n"
+    );
+}

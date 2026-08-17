@@ -20,8 +20,9 @@ pub(crate) async fn run(
     mode: Mode,
     output: Output,
 ) -> Result<(), exit::Error> {
-    let sink = events::Sink::open(events, report.is_some())?;
+    let target = events::Target::resolve(events, report.is_some())?;
     let (pipeline, name) = build(&spec).await?;
+    let sink = target.map(events::Target::open).transpose()?;
     let feed = feed(&pipeline, name, mode, sink, verbosity);
     let run_result = pipeline.run().await;
     // The feed is awaited BEFORE the outcome, on both paths: under
