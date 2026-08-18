@@ -23,7 +23,7 @@ use super::extract::{StreamPlan, stream_task};
 use super::recover::{WalResidue, recover_wal};
 use super::retry::new_load_id;
 use super::validate::validate_streams;
-use super::{load, lock};
+use super::{drain, lock};
 use crate::classify::classify_source_error;
 use crate::config::Config;
 use crate::lineage;
@@ -246,7 +246,7 @@ pub(super) async fn run_once(
     // The loader is one task; its span binds to that future rather than to
     // whichever worker thread happens to poll it.
     let drained = tracing::Instrument::instrument(
-        load::drive(loader, load_rx, stream_tasks, &cancel),
+        drain::drive(loader, load_rx, stream_tasks, &cancel),
         tracing::info_span!("rdlt.load"),
     )
     .await;

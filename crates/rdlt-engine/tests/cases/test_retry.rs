@@ -143,7 +143,7 @@ async fn a_failed_run_closes_best_effort() {
         matches!(err, rdlt_core::error::Error::Source { .. }),
         "the propagated error must be the source failure, not a close artifact: {err:?}"
     );
-    // M5 vacuity guard: without this, a mutant that skipped opening a
+    // The vacuity guard: without this, a mutant that skipped opening a
     // session entirely would still pass a bare `closes() == 0`-shaped
     // assertion (nothing opened, nothing closed, `0 == 0`) — pairing it
     // with a genuine open count proves a session was actually opened

@@ -23,10 +23,10 @@ in place; legacy formats and compatibility shims are not supported.
   identifiers, socket advertisement, and error text are still treated as
   untrusted inputs for host availability, path safety, and terminal safety.
   Bounded for availability: declared streams per source (default 1024,
-  `EngineConfig::with_max_streams_per_source`), rows and JSON values per push
+  `config::Config::with_max_streams_per_source`), rows and JSON values per push
   (1 M rows; 16 M object fields/array elements), columns per table (4096),
   tables per stream (64 Ki), batch-assembly cells (columns × rows, default
-  2²⁸, `EngineConfig::with_max_batch_cells`), wire frames (64 MiB), untyped
+  2²⁸, `config::Config::with_max_batch_cells`), wire frames (64 MiB), untyped
   JSON documents (config, spec, and state documents 8 MiB; cursors 4 MiB
   measured on their serialized form — the WAL line budget), declared
   identifier lengths and key counts (names 1 KiB at the wire, 8–4096 for

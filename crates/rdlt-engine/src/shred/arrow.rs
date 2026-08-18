@@ -368,7 +368,7 @@ mod tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
-                max_batch_cells: limits::MAX_BATCH_CELLS,
+                max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
             },
             Capabilities::default(),
         )

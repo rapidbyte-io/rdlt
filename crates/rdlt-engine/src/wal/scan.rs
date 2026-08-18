@@ -1849,7 +1849,7 @@ mod tests {
     /// A checksum-mismatched line is Damaged even though a torn FINAL
     /// line still tolerates: a tear only shortens, so outside the
     /// embedded-`|`+hex content shape (whose misclassification is
-    /// safe-direction, pinned in record.rs) a complete trailer means
+    /// safe-direction, pinned in format.rs) a complete trailer means
     /// corruption wherever it sits.
     #[test]
     fn a_torn_final_line_still_tolerates_while_a_mismatched_one_degrades() {

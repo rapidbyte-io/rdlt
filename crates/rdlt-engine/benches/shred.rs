@@ -3,7 +3,7 @@
 //!
 //! Run: `cargo bench -p rdlt-engine`
 //! The pinned-dlt comparison lives in `benches/` at the repo root (methodology:
-//! baseline first, same data, same hardware — research.md R12).
+//! baseline first, same data, same hardware).
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::config::Config;

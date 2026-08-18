@@ -11,6 +11,9 @@ use rdlt_core::id::{StreamName, TableName};
 use rdlt_core::types::LogicalType;
 
 use crate::config::Config;
+// The crate's one stream→table attribution mapping, PROVEN injective here
+// before the run wiring, the loader, and the recovery scan build on it.
+use crate::lineage::root_table;
 
 /// Rule 1: `a`'s table plus a trailing `_` equals `b`'s table — a
 /// `_`-leading source field mints the same child table under either root.
@@ -32,12 +35,6 @@ fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str)
          so neither table extends the other"
     ))
 }
-
-/// The destination table a stream owns — the crate's one attribution
-/// mapping ([`crate::lineage::root_table`]), re-exported here because
-/// validation is where the mapping is PROVEN injective before the run
-/// wiring, the loader, and the recovery scan all build on it.
-pub(super) use crate::lineage::root_table;
 
 /// The mixed cursor-less/cursored advisory — CONDITIONAL truth, by
 /// design: a stream declaring no `cursor_field` MAY be a
@@ -166,7 +163,7 @@ pub(super) fn validate_streams(
         }
         let table = root_table(&spec.name, capabilities.ident_rules);
         if let Some(owner) = root_tables.insert(table.clone(), spec.name.clone()) {
-            // Clause E2: exactly one stream owns a table.
+            // Exactly one stream owns a table.
             return Err(Error::config(format!(
                 "streams `{owner}` and `{}` both map to table `{table}`",
                 spec.name
@@ -340,7 +337,7 @@ mod hint_validation_tests {
     #[test]
     fn two_streams_normalizing_to_one_root_table_are_refused() {
         // `Users` and `users` both normalize to root table `users`.
-        let error = check_streams(&["Users", "users"]).expect_err("E2: one stream owns a table");
+        let error = check_streams(&["Users", "users"]).expect_err("one stream owns a table");
         assert!(
             matches!(error, Error::Config { .. }),
             "a root-table collision is a config refusal: {error:?}"

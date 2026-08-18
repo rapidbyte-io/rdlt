@@ -214,24 +214,12 @@ pub(crate) async fn replay(
 mod tests {
     use std::sync::Arc;
 
-    use arrow::array::Int64Array;
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch::RecordBatch;
     use rdlt_core::commit::WriteMode;
     use rdlt_core::id::{LoadId, PipelineId, StreamName, TableName};
 
     use super::*;
-    use crate::testing::FakeSession;
+    use crate::testing::{FakeSession, int_batch};
     use crate::wal::segment::write_segment;
-
-    /// One `id: Int64` column holding `values`.
-    fn ints(values: Vec<i64>) -> RecordBatch {
-        RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(Int64Array::from(values))],
-        )
-        .expect("batch")
-    }
 
     /// A one-segment, one-checkpoint span over table `t` whose manifest line
     /// claims `rows` rows for `l-000000.arrow`.
@@ -286,8 +274,7 @@ mod tests {
     #[tokio::test]
     async fn a_segment_swapped_between_replay_passes_degrades_to_re_extraction() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_segment(&dir.path().join("l-000000.arrow"), &ints(vec![1, 2, 3]))
-            .expect("write segment");
+        write_segment(&dir.path().join("l-000000.arrow"), &int_batch(3)).expect("write segment");
 
         // The between-passes seam: four rows where the manifest (and pass 1)
         // saw three — a same-layout, different-count swap. The writer's
@@ -300,7 +287,7 @@ mod tests {
                 swapped = true;
                 std::fs::remove_file(swap_dir.join("l-000000.arrow"))
                     .expect("clear the original for the swap");
-                write_segment(&swap_dir.join("l-000000.arrow"), &ints(vec![1, 2, 3, 4]))
+                write_segment(&swap_dir.join("l-000000.arrow"), &int_batch(4))
                     .expect("swap the segment");
             }
         });
@@ -331,8 +318,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         // A real, fully decodable segment holding THREE rows.
-        write_segment(&dir.path().join("l-000000.arrow"), &ints(vec![1, 2, 3]))
-            .expect("write segment");
+        write_segment(&dir.path().join("l-000000.arrow"), &int_batch(3)).expect("write segment");
         let open = || async {
             rdlt_testkit::memory::Destination::new()
                 .open(rdlt_connector::destination::OpenContext::new(

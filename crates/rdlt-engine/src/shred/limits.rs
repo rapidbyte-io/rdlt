@@ -17,18 +17,6 @@ pub(crate) const MAX_CHILD_TABLES_PER_PARENT: usize = 1024;
 /// unbounded tables turn one crafted frame into unbounded work and memory.
 pub(crate) const MAX_TABLES_PER_STREAM: usize = 64 * 1024;
 
-/// The most CELLS one outgoing batch may assemble by default — `columns ×
-/// rows`. The row cap and the column cap each bound one axis, but batch
-/// assembly pays their PRODUCT: every schema column is built for every row,
-/// absent columns null-filled and the load id stamped per row, so a wide
-/// registry bootstrapped from a ~50 KB empty batch plus one 1M-row push would
-/// otherwise assemble ~16 GiB of engine-side expansion from ~175 KB of wire —
-/// before any downstream byte metering, which prices inputs, not expansions.
-/// 2²⁸ cells bounds the null-fill transient at ≈1 GiB; a ~260-column table at
-/// the 1M-row cap sits just under it, and wider honest shapes raise the budget
-/// through the engine config, whose default this aliases.
-pub(crate) const MAX_BATCH_CELLS: usize = crate::config::Config::DEFAULT_MAX_BATCH_CELLS;
-
 /// The typed refusal both assembly seats (the Arrow path and the resolve
 /// pipeline's build call) share, so the cap speaks with one voice.
 pub(crate) fn refuse_over_cell_budget(
@@ -55,6 +43,7 @@ pub(crate) fn refuse_over_cell_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
 
     /// The product, not the axes, is what's bounded: at the cap exactly it
     /// passes (the refusal is `>`, not `>=` — an off-by-one here rejects a
@@ -63,20 +52,25 @@ mod tests {
     #[test]
     fn the_cell_budget_is_inclusive_at_its_boundary() {
         let table = TableName::new("t");
-        refuse_over_cell_budget(&table, 1 << 14, MAX_BATCH_CELLS >> 14, MAX_BATCH_CELLS)
-            .expect("exactly the cap assembles");
+        refuse_over_cell_budget(
+            &table,
+            1 << 14,
+            Config::DEFAULT_MAX_BATCH_CELLS >> 14,
+            Config::DEFAULT_MAX_BATCH_CELLS,
+        )
+        .expect("exactly the cap assembles");
         let error = refuse_over_cell_budget(
             &table,
             1 << 14,
-            (MAX_BATCH_CELLS >> 14) + 1,
-            MAX_BATCH_CELLS,
+            (Config::DEFAULT_MAX_BATCH_CELLS >> 14) + 1,
+            Config::DEFAULT_MAX_BATCH_CELLS,
         )
         .expect_err("one cell over the cap refuses");
         assert!(
             error.to_string().contains("cell"),
             "names the budget: {error}"
         );
-        refuse_over_cell_budget(&table, usize::MAX, 2, MAX_BATCH_CELLS)
+        refuse_over_cell_budget(&table, usize::MAX, 2, Config::DEFAULT_MAX_BATCH_CELLS)
             .expect_err("a saturating product refuses, never wraps");
     }
 }

@@ -15,7 +15,7 @@ instead of depending on this directly.
 
 | Stage | Job |
 |---|---|
-| **shred** | JSON → Arrow, inferring and evolving the schema; nested objects become struct columns and nested collections become child tables |
+| **shred** | JSON (or already-typed Arrow) → Arrow, inferring and evolving the schema; nested objects become struct columns and nested collections become child tables |
 | **schema** | the registry and contract enforcement: what changed, and whether policy permits it |
 | **wal** | write-ahead log — durable intent before the destination sees a batch, so recovery replays instead of re-extracting |
 | **load** | drives one `LoadSession` through ensure → write → commit, and owns the run's accounting |

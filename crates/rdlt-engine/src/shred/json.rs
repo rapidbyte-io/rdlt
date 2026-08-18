@@ -408,7 +408,7 @@ mod cardinality_tests {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
-                max_batch_cells: super::super::limits::MAX_BATCH_CELLS,
+                max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
             },
         )
     }
@@ -547,7 +547,7 @@ mod cardinality_tests {
         // Rows needed to trip the product at 4,098 columns (4,096 source +
         // 2 root system): floor(budget / width) + 1 is the first refusal.
         let width = super::super::limits::MAX_SOURCE_COLUMNS_PER_TABLE + 2;
-        let rows_needed = super::super::limits::MAX_BATCH_CELLS / width + 1;
+        let rows_needed = crate::config::Config::DEFAULT_MAX_BATCH_CELLS / width + 1;
         let mut slab = Vec::with_capacity(rows_needed * 9);
         for _ in 0..rows_needed {
             slab.extend_from_slice(b"{\"f0\":1}\n");

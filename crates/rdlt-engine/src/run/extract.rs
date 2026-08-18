@@ -34,7 +34,7 @@ const READER_ABORT_GRACE: std::time::Duration = std::time::Duration::from_millis
 /// prompt during this grace.
 const READER_FINISH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Single-owner shred/passthrough state for one stream. `run_blocking`-style
+/// Single-owner shred state for one stream, JSON and Arrow. `run_blocking`-style
 /// methods consume `self`, move it onto the blocking pool, and hand it back —
 /// so the CPU-bound work stays lock-free and single-owner WITHOUT the take/expect
 /// dance an `Option` would need (the owner is never absent by construction).
@@ -84,7 +84,7 @@ impl ShredOwner {
     /// path is cheap (schema map + one constant column), but a widened column
     /// casts real data — that work must not sit on the async executor.
     #[allow(clippy::too_many_arguments)]
-    async fn passthrough(
+    async fn arrow(
         mut self,
         batch: arrow::record_batch::RecordBatch,
         table: TableName,
@@ -95,6 +95,7 @@ impl ShredOwner {
         capabilities: Capabilities,
     ) -> Result<(Self, Result<Vec<LoadItem>, Error>), Error> {
         tokio::task::spawn_blocking(move || {
+            // The span keeps its published name (docs/telemetry.md).
             let span = tracing::info_span!("rdlt.passthrough");
             let _guard = span.enter();
             let ctx = ShredContext {
@@ -183,8 +184,8 @@ pub(super) async fn stream_task(
             PushPayload::RawJson(bytes) => {
                 let payload_bytes = bytes.len() as u64;
                 // CPU-bound shred on the blocking pool; the owner keeps the
-                // shredder single-owner without locks. The tape path parses the
-                // slab into an arena and drains it in one call — no per-row trees.
+                // shredder single-owner without locks. The JSON path parses the
+                // slab into an arena and resolves it in one call — no per-row trees.
                 //
                 // Errors BREAK, never `?`-return: an early return would skip
                 // the cleanup below — the channel would close by drop (which
@@ -281,7 +282,7 @@ pub(super) async fn stream_task(
                 // Same break-not-return rule as the shred arm: the cleanup
                 // below must run for every exit.
                 let (returned, items) = match owner
-                    .passthrough(
+                    .arrow(
                         batch,
                         arrow_table.clone(),
                         load_id.clone(),

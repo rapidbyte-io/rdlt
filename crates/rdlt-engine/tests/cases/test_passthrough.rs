@@ -127,7 +127,7 @@ async fn passthrough_preserves_data_and_stamps_load_id() {
     );
     assert!(
         !rows[0].contains_key(schema::system::ID),
-        "structured streams carry NO per-row identity (clause E7)"
+        "structured streams carry NO per-row identity"
     );
 }
 
@@ -184,7 +184,7 @@ async fn passthrough_freeze_rejects_before_publication() {
     );
 }
 
-/// Clause S7: pushing Arrow on a stream NOT declared structured is rejected.
+/// Pushing Arrow on a stream NOT declared structured is rejected.
 #[tokio::test]
 async fn undeclared_arrow_push_is_rejected() {
     let dest = memory::Destination::new();
@@ -199,7 +199,7 @@ async fn undeclared_arrow_push_is_rejected() {
     let msg = err.to_string();
     assert!(
         msg.contains("structured"),
-        "error explains the S7 violation: {msg}"
+        "error explains the violation: {msg}"
     );
 }
 
@@ -246,7 +246,7 @@ async fn structured_segments_replay_from_wal() {
     );
 }
 
-/// Clause B4: Merge on a structured stream is rejected at plan time — BEFORE the
+/// Keyless Merge on a structured stream is rejected at plan time — BEFORE the
 /// destination is even opened.
 #[tokio::test]
 async fn merge_on_structured_stream_rejected_before_any_io() {
@@ -262,7 +262,7 @@ async fn merge_on_structured_stream_rejected_before_any_io() {
     let err = Engine::new(config, source, dest.clone())
         .run()
         .await
-        .expect_err("B4 must reject");
+        .expect_err("keyless structured merge must reject");
     let msg = err.to_string();
     assert!(msg.contains("metrics"), "error names the stream: {msg}");
     assert!(msg.contains("Merge"), "error names the mode: {msg}");
@@ -323,7 +323,7 @@ async fn input_column_named_like_system_column_is_suffixed() {
 
 /// Mutation-report closure: cross-batch NARROWING (Utf8 batch then Int64 batch)
 /// must not narrow the registry schema — the column stays Utf8 and later
-/// batches cast losslessly upward (clause E7). Kills the registry
+/// batches cast losslessly upward. Kills the registry
 /// widening-guard mutants at the observable level.
 #[tokio::test]
 async fn cross_batch_narrowing_keeps_the_wide_type() {
@@ -369,7 +369,7 @@ async fn cross_batch_narrowing_keeps_the_wide_type() {
 // ---- Keyed structured merge ----
 
 /// Structured source that DECLARES a primary key, making it merge-eligible
-/// under the amended clause B4.
+/// under the keyed structured-merge rule.
 struct KeyedArrowSource {
     batches: Vec<RecordBatch>,
     key: Vec<String>,
@@ -407,7 +407,7 @@ fn merge_config(pipeline: &str, key: &[&str]) -> Config {
     config
 }
 
-/// Amended B4: structured + declared key + Merge{same key} is ACCEPTED, and
+/// Structured + declared key + Merge{same key} is ACCEPTED, and
 /// re-delivered keys converge to one row per key (last wins).
 #[tokio::test]
 async fn keyed_structured_merge_accepted_and_converges() {
@@ -440,7 +440,7 @@ async fn keyed_structured_merge_accepted_and_converges() {
     assert_eq!(row2["name"], json!("b2"), "merge took the updated value");
 }
 
-/// Review F10: the key is a SET — a reordered composite key is the same key
+/// The key is a SET — a reordered composite key is the same key
 /// (reflection returns attnum order, users write DDL order).
 #[tokio::test]
 async fn reordered_composite_merge_key_is_accepted() {
@@ -460,7 +460,7 @@ async fn reordered_composite_merge_key_is_accepted() {
     assert_eq!(dest.committed_rows("metrics").len(), 1);
 }
 
-/// Amended B4: the Merge key must EQUAL the declared primary_key.
+/// The Merge key must EQUAL the declared primary_key.
 #[tokio::test]
 async fn merge_key_mismatch_rejected_at_plan_time() {
     let dest = memory::Destination::new();

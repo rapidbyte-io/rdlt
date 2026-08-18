@@ -14,7 +14,7 @@
 //! points (pq.*, duck.*, pg.* …) are swept where their crates live now: each
 //! connector's own crash_sweep suite in the rdlt-connectors repository.
 //!
-//! Gate G2.2: `sweep_covers_entire_registry` pins the swept list against the
+//! `sweep_covers_entire_registry` pins the swept list against the
 //! engine's own sources — an instrumented-but-unswept boundary fails here.
 
 #![cfg(feature = "failpoints")]
@@ -34,7 +34,7 @@ use serde_json::json;
 
 const TOTAL_ROWS: u64 = 100;
 
-/// Engine-owned fail points (registry discipline, gate G2.2): every
+/// Engine-owned fail points (registry discipline): every
 /// `crash_point!` site in rdlt-engine MUST appear here — grep-auditable, and
 /// `sweep_covers_entire_registry` pins the union against the expected list.
 const ENGINE_POINTS: &[&str] = &[
@@ -222,7 +222,7 @@ fn count_reference_rows(out: &PathBuf) -> u64 {
     rows
 }
 
-/// Gate G2.2: the swept set IS the registry — no silently unswept boundary.
+/// The swept set IS the registry — no silently unswept boundary.
 /// The engine's own list lives in THIS file, so the check greps the engine
 /// sources for `crash_point!` call sites instead of comparing a const to
 /// itself (that would be circular): every site found in src/ must appear in

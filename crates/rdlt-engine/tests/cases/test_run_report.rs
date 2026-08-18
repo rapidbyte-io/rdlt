@@ -36,7 +36,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
     }
 
     // Causal order per table: SchemaEvolved before the first BatchLoaded at that
-    // version; a Committed after everything it covers (clause R3).
+    // version; a Committed after everything it covers.
     let first_evolve = seen
         .iter()
         .position(|e| matches!(e, PipelineEvent::SchemaEvolved { .. }))
@@ -140,7 +140,7 @@ async fn a_successful_run_closes_its_session_exactly_once() {
 
 /// A destination wrapping `memory::Destination` whose session `close`
 /// ALWAYS fails, classified TRANSIENT by the destination itself — the
-/// exact shape M4 exists to defeat: a destination has no way to know
+/// exact shape the rule exists to defeat: a destination has no way to know
 /// its own close failure can never be helped by re-running a load that
 /// already committed everything, so a naive
 /// `classify_dest_error`-style forward (which trusts that

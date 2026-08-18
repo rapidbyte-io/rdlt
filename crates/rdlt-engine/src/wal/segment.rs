@@ -72,59 +72,18 @@ pub(super) fn open_segment(
         })
 }
 
-/// Refuse a segment whose DECLARED layout exceeds its own file size, before
-/// arrow's reader is allowed to allocate from those declarations.
-///
-/// The threat: arrow-ipc 58.3's `read_block` seeks to the
-/// footer's declared block offset (a seek past EOF SUCCEEDS), converts the
-/// declared `bodyLength` with `to_usize().unwrap()`, and calls
-/// `MutableBuffer::from_len_zeroed(body + meta)` — whose allocation-failure
-/// path is `handle_alloc_error`, i.e. `std::process::abort()`. An abort is
-/// NOT a panic, so [`caught_decode`]'s `catch_unwind` belt — which correctly
-/// contains arrow's *panics* — is structurally irrelevant on this path: a
-/// sub-kilobyte crafted segment with a flatbuffer-valid footer declaring a
-/// body near `isize::MAX` aborts the whole process mid-recovery. The sibling
-/// `read_footer_length` allocates `vec![0; footer_len]` (up to 2 GiB) from a
-/// 4-byte field before its failing seek.
-///
-/// The information to refuse both is one fstat away: every extent the footer
-/// declares must fit INSIDE the file that declares it, because the file is
-/// all the reader will ever read. So the trailer's footer length is held
-/// against the file length, and each block's `offset + metaDataLength +
-/// bodyLength` must not exceed it either. A real segment always passes (the
-/// writer's own blocks point into the file it wrote); only a crafted one
-/// refuses, typed, degrading to re-extraction like every other damage arm.
-///
-/// The DENSITY rule closes the sparse-file lie those
-/// relative bounds cannot see: every gate above scales with the DECLARED
-/// file length, so a `truncate`d 64 GiB hole with a valid tail footer
-/// declaring one ~64 GiB block passes them all — and reading a hole
-/// SUCCEEDS (zeros; there is no EOF failure), so arrow's `read_exact`
-/// commits the full declared buffer resident: an OOM kill under default
-/// overcommit, an abort where the single request exceeds the heuristic.
-/// The same fstat carries the answer: `st_blocks × 512` is what the file
-/// has actually ALLOCATED, and the writer's segments are written densely
-/// and fsynced at commit — a segment named by a manifest line is not
-/// necessarily fsynced YET (the line is appended at record time; the
-/// fsync lands at `sync_for_commit`), so on delayed-allocation
-/// filesystems (ext4 in its default mode) an honest unsynced segment of
-/// a mid-run crash can under-report its allocation and refuse here —
-/// the safe direction, degrading to re-extraction, never acceptance
-/// (btrfs/tmpfs report full `st_blocks` pre-fsync, so the engine's own
-/// hosts replay as before). Declared read work is held against allocated
-/// bytes with a generous headroom factor that absorbs filesystem
-/// accounting slack (indirect-metadata blocks round up; a compressed
-/// btrfs/zfs file legitimately allocates less than it reads) — a sparse
-/// giant is off by orders of magnitude regardless of the factor. This
-/// preserves the design constraint that ABSOLUTE segment size is
-/// unbounded (a single over-budget batch passes the channel by design):
-/// density, not size, is the honest invariant.
-///
-/// Decompression note: arrow-ipc's `decompress_to_buffer` does an
-/// unbounded `Vec::with_capacity` from a body-declared length, but no
-/// `ipc_compression` feature is enabled anywhere in this workspace (no lz4 /
-/// zstd in the lockfile), so that door is shut. If compression is ever
-/// enabled, this pre-pass must ALSO bound the decompressed length.
+/// Refuse a segment whose DECLARED layout exceeds its own file, before arrow's
+/// reader is allowed to allocate from those declarations: arrow allocates the
+/// footer length and every block's body from footer-declared numbers, and an
+/// allocation it cannot satisfy ABORTS the process — no `catch_unwind` sees
+/// it — while reading a sparse hole succeeds and commits the whole declared
+/// buffer resident. Every declared extent must therefore fit inside the file
+/// (footer length against the file, each block's `offset + metaDataLength +
+/// bodyLength` against it, their sum against a density bound over the bytes
+/// actually ALLOCATED); an honest segment — dense, one block — always passes,
+/// and a refusal degrades to re-extraction like every other damage arm. No
+/// `ipc_compression` feature is enabled in this workspace; if it ever is,
+/// this pre-pass must also bound the decompressed length.
 fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     use std::os::unix::fs::MetadataExt as _;

@@ -63,24 +63,14 @@ impl ByteSized for LoadItem {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::time::Duration;
 
     use rdlt_connector::channel::{Permitted, bytes};
     use rdlt_core::id::StreamName;
 
     use super::*;
     use crate::run::once::STAGE_MSG_CAPACITY;
-
-    fn batch_of(rows: usize) -> RecordBatch {
-        use arrow::array::Int64Array;
-        use arrow::datatypes::{DataType, Field, Schema};
-        let array = Int64Array::from((0..rows as i64).collect::<Vec<_>>());
-        RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(array)],
-        )
-        .expect("batch")
-    }
+    use crate::testing::int_batch as batch_of;
 
     /// `LoadItem::byte_size` has exactly ONE consumer — the stage channel's
     /// permit request — so its only observable consequence is backpressure.

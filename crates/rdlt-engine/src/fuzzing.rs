@@ -46,7 +46,7 @@ pub fn shred_slab(bytes: &[u8]) {
             load_id: &load_id,
             mode: &mode,
             policy: &policy,
-            max_batch_cells: crate::shred::limits::MAX_BATCH_CELLS,
+            max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
         },
     );
     let Ok(items) = items else { return };
@@ -113,7 +113,7 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
-                max_batch_cells: crate::shred::limits::MAX_BATCH_CELLS,
+                max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
             },
         )
         .unwrap_or_else(|_| panic!("bench shred succeeds"));
@@ -142,7 +142,7 @@ pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
             load_id: &load_id,
             mode: &mode,
             policy: &policy,
-            max_batch_cells: crate::shred::limits::MAX_BATCH_CELLS,
+            max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
         },
         Capabilities::default(),
     )

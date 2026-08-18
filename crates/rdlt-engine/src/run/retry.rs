@@ -39,15 +39,9 @@ pub(super) fn new_load_id() -> LoadId {
     // The load id must be UNIQUE across every pipeline sharing a destination
     // store, not merely within one pipeline: destination receipt lookups key on
     // `(load_id, commit_seq)` alone (a snapshot-history scan, a receipt
-    // table), so a collision would make one
-    // pipeline's commit replay-mask another's. Not monotonic — the millis are a
-    // human-readable prefix; process-id + atomic sequence keep one host's
-    // store, not merely within one pipeline: destination receipt lookups key on
-    // `(load_id, commit_seq)` alone (a snapshot-history scan, a receipt table),
-    // so a collision would make one
-    // pipeline's commit replay-mask another's. Not monotonic — the millis are a
-    // human-readable prefix; process-id + atomic sequence keep one host's
-    // processes apart, and the per-process entropy suffix is the CROSS-HOST
+    // table), so a collision would make one pipeline's commit replay-mask
+    // another's. Not monotonic — the millis are a human-readable prefix;
+    // process-id + atomic sequence keep one host's processes apart, and the per-process entropy suffix is the CROSS-HOST
     // claim: two hosts sharing a store no longer rely on pid+clock
     // disjointness (a recycled pid in the same millisecond would otherwise
     // replay-mask a genuine publish). The id is opaque to every consumer —
