@@ -26,28 +26,20 @@ Configuration errors surface at `build()`, not halfway through a load.
 ## Connectors
 
 Connectors are separate binaries, spawned per run and supervised over a
-local socket — none are compiled into this crate. A pipeline document
-names one by its rich spelling (`postgres:`, `duckdb:`, `file:`,
-`rest:`, `oracle:`, `iceberg:`, `snowflake:`):
-
-```yaml
-source:
-  postgres:
-    conn: "host=127.0.0.1 dbname=shop"
-    tables: [{ name: orders }]
-```
-
-or explicitly, which is what the rich form desugars to:
+local socket — none are compiled into this crate, and this crate knows
+none by name. A pipeline document names one by its id:
 
 ```yaml
 source:
   connector:
     id: io.rapidbyte.postgres
-    config: { conn: "host=..." }
+    config:
+      conn: "host=127.0.0.1 dbname=shop"
+      tables: [{ name: orders }]
 ```
 
-Both forms resolve identically: the id's last segment names the binary
-(`rdlt-connector-postgres` on PATH, or `path:` overrides), the config
+The id's last segment names the binary (`rdlt-connector-postgres` on
+PATH, or `path:` overrides), the config
 document crosses the wire opaquely, and the connector's own gate
 validates it — refusals arrive in the connector's own wording. The
 first-party connector binaries are built and installed from the

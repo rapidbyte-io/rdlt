@@ -2,13 +2,12 @@
 //! publishes, printed for editors, linters and CI. Machine output, so
 //! it goes to STDOUT like the report.
 //!
-//! ONE tier: every spelling names an out-of-process connector, spawned
+//! ONE tier: every value names an out-of-process connector, spawned
 //! and asked over the config-free `Spec` RPC — source-first, or under
-//! exactly the half `--role` names (the dual-role door). The
-//! seven short names (`postgres`, `file`, …) map through the SAME
-//! desugar table the pipeline document's rich spellings resolve
-//! through; anything else is a reverse-DNS id discovered on PATH, or
-//! an explicit binary path.
+//! exactly the half `--role` names (the dual-role door). The value is
+//! a connector id discovered on PATH by its last segment
+//! (`io.rapidbyte.reference` and `reference` both find
+//! `rdlt-connector-reference`), or an explicit binary path.
 
 use rdlt::runtime::local::Local;
 use rdlt_connector_client::handshake::{Requirement, Role};
@@ -30,10 +29,9 @@ pub(crate) async fn print(connector: &str, role: Option<SchemaRole>) -> Result<(
     Ok(())
 }
 
-/// Resolve the spelling and ask the spawned connector for its schema.
-/// A short name maps through the desugar table to its reverse-DNS id; a
-/// value outside that table naming an existing file is an explicit
-/// binary path; anything else is used as an id verbatim. No handshake,
+/// Resolve the value and ask the spawned connector for its schema. A
+/// value naming an existing file is an explicit binary path; anything
+/// else is used as a connector id verbatim. No handshake,
 /// no config: the schema is the connector's static identity. Without
 /// `--role` the provider probes source-first; with it, exactly the
 /// named half is asked and a single-role binary refusing that half is
@@ -44,9 +42,7 @@ async fn spawned_schema(
 ) -> Result<serde_json::Value, exit::Error> {
     let provider = Local::new();
     let path = std::path::Path::new(value);
-    let requirement = if let Some(id) = rdlt::document::connector::id(value) {
-        Requirement::new(id)
-    } else if path.is_file() {
+    let requirement = if path.is_file() {
         Requirement::new(value).with_path(path)
     } else {
         Requirement::new(value)

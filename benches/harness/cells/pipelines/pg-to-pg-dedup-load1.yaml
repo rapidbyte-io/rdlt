@@ -15,17 +15,21 @@ write_mode:
   merge:
     key: [id]
 source:
-  postgres:
-    conn: "postgresql://postgres:postgres@127.0.0.1:5439/src"
-    # Deliver ONLY the declared query stream: an absent `tables` would add
-    # every table in the schema alongside it.
-    tables: []
-    queries:
-      - name: events_merged
-        sql: "SELECT * FROM events"
-        primary_key: [id]
+  connector:
+    id: io.rapidbyte.postgres
+    config:
+      conn: "postgresql://postgres:postgres@127.0.0.1:5439/src"
+      # Deliver ONLY the declared query stream: an absent `tables` would
+      # add every table in the schema alongside it.
+      tables: []
+      queries:
+        - name: events_merged
+          sql: "SELECT * FROM events"
+          primary_key: [id]
 destination:
-  postgres:
-    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
-    dataset: bench
-    merge_strategy: upsert
+  connector:
+    id: io.rapidbyte.postgres
+    config:
+      conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+      dataset: bench
+      merge_strategy: upsert

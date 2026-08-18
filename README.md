@@ -32,17 +32,15 @@ let report = Pipeline::builder("orders")
 ```
 
 Connectors are separate binaries, spawned per run and supervised over
-a local socket — none are compiled into the engine. A pipeline names
-one by its rich spelling (`postgres:`, `rest:`, `oracle:`, `duckdb:`,
-`file:`, `iceberg:`, `snowflake:`) or by its reverse-DNS id
-(`io.rapidbyte.postgres`); either way the id's last segment resolves
-to a `rdlt-connector-<segment>` binary on PATH, and `path:` names an
+a local socket — none are compiled into the engine, which knows none by
+name. A pipeline names one by its id (`connector: {id:
+io.rapidbyte.postgres, config: …}`); the id's last segment resolves to
+a `rdlt-connector-<segment>` binary on PATH, and `path:` names an
 out-of-tree binary explicitly. The first-party connectors live in the
 sibling [rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
 repository — its `make connector-bins` builds their release binaries;
-put them on PATH and every rich spelling above resolves. This repo
-ships the engine, the CLI, and the reference connector its own gates
-spawn.
+put them on PATH and every id above resolves. This repo ships the
+engine, the CLI, and the reference connector its own gates spawn.
 
 ## Use it from the CLI
 
@@ -52,9 +50,9 @@ capability beyond parsing it:
 ```sh
 rdlt run pipeline.yaml        # live progress on a terminal, plain lines in CI
 rdlt validate pipeline.yaml   # the run's gates, without the run
-rdlt schema postgres          # a connector's config JSON Schema — a short
-                              # name, a reverse-DNS id, or a binary path;
-                              # the connector is spawned and asked
+rdlt schema io.rapidbyte.postgres   # a connector's config JSON Schema — an
+                                    # id or a binary path; the connector
+                                    # is spawned and asked
 ```
 
 On a terminal, `run` draws a live display — per-stream rows read and
@@ -85,11 +83,13 @@ none:
 
 ```yaml
 destination:
-  file:
-    path: out/
-    format: parquet
-    parquet:
-      compression: uncompressed   # snappy (default) | gzip | zstd | brotli | lz4_raw | uncompressed
+  connector:
+    id: io.rapidbyte.file
+    config:
+      path: out/
+      format: parquet
+      parquet:
+        compression: uncompressed   # snappy (default) | gzip | zstd | brotli | lz4_raw | uncompressed
 ```
 
 The other settings are `compression_level` (only for codecs that have one —

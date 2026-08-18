@@ -1,13 +1,10 @@
-//! THE SPAWN ACCEPTANCE: a pipeline document written in the frozen
-//! `connector:` vocabulary — an id and an inline config, no `path:`
-//! override anywhere — resolves by DISCOVERY (the id's last segment
-//! over the provider search path), spawns the reference connector on
-//! both sides and RUNS end to end. The spawn subject is the reference
-//! connector: the first-party connectors live in their own repository,
-//! so their bins cannot anchor an engine gate — while the desugar TABLE
-//! keeps all seven rich spellings, pinned offline (`cases/test_document`
-//! holds the full table; one assertion here keeps a live sample beside
-//! the spawn path).
+//! THE SPAWN ACCEPTANCE: a pipeline document in the one `connector:`
+//! form — an id and an inline config, no `path:` override anywhere —
+//! resolves by DISCOVERY (the id's last segment over the provider search
+//! path), spawns the reference connector on both sides and RUNS end to
+//! end. The spawn subject is the reference connector: the first-party
+//! connectors live in their own repository, so their bins cannot anchor
+//! an engine gate.
 //!
 //! Gated exactly like rdlt-runtime's spawn suites: behind the
 //! `spawn-bins` feature, with `RDLT_BUILD_CONNECTOR_BINS` telling the
@@ -18,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use rdlt::document::{self, Config, Document};
+use rdlt::document::{self, Document};
 use rdlt::runtime::local::Local;
 
 /// The directory holding the reference bin this suite spawns, through
@@ -105,31 +102,5 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
         report.total_rows(),
         0,
         "the committed cursor crossed the wire back: nothing re-reads"
-    );
-}
-
-/// The sugar surface, sampled live beside the spawn path: one rich
-/// spelling still parses to exactly its table id with the config
-/// verbatim — stopping AT the desugar table, no spawn, so this pin
-/// outlives the connectors' move out of this repo. The full
-/// seven-spelling table is `cases/test_document`'s.
-#[test]
-fn a_rich_spelling_still_desugars_to_its_table_id_without_spawning() {
-    let doc: Document = serde_yaml_ng::from_str(
-        "pipeline: p\n\
-         source:\n\
-        \x20 file:\n\
-        \x20   marker: value\n\
-         destination:\n\
-        \x20 connector: {id: io.rapidbyte.reference, config: {path: out}}\n",
-    )
-    .expect("the rich-spelling document parses");
-    assert_eq!(doc.source.id, "io.rapidbyte.file", "the desugar table's id");
-    let Config::Inline(config) = &doc.source.config else {
-        panic!("an inline mapping parses as the inline config form");
-    };
-    assert_eq!(
-        config["marker"], "value",
-        "the config document rides through verbatim"
     );
 }

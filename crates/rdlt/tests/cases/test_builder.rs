@@ -142,16 +142,15 @@ commit_policy:
   every_bytes: 104857600
   every_seconds: 900
 source:
-  rest:
-    base_url: https://example.invalid
-    auth: none
-    streams:
-      - name: s
-        path: /s
+  connector:
+    id: io.example.src
+    config:
+      base_url: https://example.invalid
 destination:
-  file:
-    path: /tmp/rdlt-commit-policy-out
-    format: jsonl
+  connector:
+    id: io.example.dst
+    config:
+      path: /tmp/rdlt-commit-policy-out
 "#;
     let doc: document::Document = serde_yaml_ng::from_str(with_policy).expect("parses");
     let policy = doc.commit_policy.expect("present");

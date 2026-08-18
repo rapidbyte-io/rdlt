@@ -80,12 +80,11 @@ pub(crate) enum Command {
     },
     /// Print a connector's configuration JSON Schema to stdout.
     Schema {
-        /// Which connector's document to describe: a short name (rest,
-        /// oracle, file, postgres, duckdb, iceberg, snowflake — the
-        /// same table the pipeline document's rich spellings resolve
-        /// through), a reverse-DNS id (io.rapidbyte.reference, found
-        /// as rdlt-connector-reference on PATH), or an explicit binary
-        /// path. The named binary is spawned and asked for its schema.
+        /// Which connector's document to describe: a connector id
+        /// (io.rapidbyte.reference, found as rdlt-connector-reference
+        /// on PATH by its last segment; a dotless name is its own last
+        /// segment) or an explicit binary path. The named binary is
+        /// spawned and asked for its schema.
         #[arg(value_name = "connector")]
         connector: String,
 

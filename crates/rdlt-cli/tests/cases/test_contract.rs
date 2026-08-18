@@ -50,7 +50,8 @@ fn io_and_config_failures_keep_their_codes() {
     let bad = spec_file(
         dir.path(),
         "bad.yaml",
-        "pipeline: p\nsource:\n  file:\n    streams: []\n",
+        "pipeline: p\nsource:\n  connector: {id: io.example.src, config: {}}\n\
+         destination:\n  connector: {id: io.example.dst, config: {}}\n",
     );
     let out = rdlt()
         .env("PATH", dir.path())
@@ -60,17 +61,20 @@ fn io_and_config_failures_keep_their_codes() {
         .expect("spawn");
     assert_eq!(out.status.code(), Some(2), "{:?}", out);
     assert!(out.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no binary `rdlt-connector-src`"),
+        "the refusal is the resolve step's, after a clean parse: {out:?}"
+    );
 }
 
-/// A short name maps through the desugar table BEFORE discovery: with
-/// no binaries reachable, the refusal itself is the proof — the
-/// spelling arrived at discovery as its reverse-DNS id, not as a
-/// literal binary name. (PATH is emptied so a developer's installed
-/// connectors cannot turn this into a live probe; the probed rows are
-/// `oracle` and `rest` so the pin needs no binary that this repo
-/// builds — the full spelling table is desugar.rs's.)
+/// `schema` takes a connector ID, spelled as given: a dotless name is
+/// its own last segment, so `schema oracle` looks for
+/// `rdlt-connector-oracle` and, with no binaries reachable, refuses
+/// naming the id AS WRITTEN — the CLI carries no table of first-party
+/// names. (PATH is emptied so a developer's installed connectors cannot
+/// turn this into a live probe.)
 #[test]
-fn schema_maps_a_short_name_through_the_desugar_table() {
+fn schema_takes_an_id_as_written() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = rdlt()
         .env("PATH", dir.path())
@@ -81,26 +85,9 @@ fn schema_maps_a_short_name_through_the_desugar_table() {
     assert!(out.stdout.is_empty(), "no machine output on refusal");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("connector `io.rapidbyte.oracle`")
+        stderr.contains("connector `oracle`")
             && stderr.contains("no binary `rdlt-connector-oracle`"),
-        "the short name resolved to its table id before discovery: {stderr}"
-    );
-
-    std::fs::write(dir.path().join("rest"), "not a connector binary")
-        .expect("the shadowing file writes");
-    let out = rdlt()
-        .current_dir(dir.path())
-        .env("PATH", dir.path())
-        .args(["schema", "rest"])
-        .output()
-        .expect("spawn");
-    assert_eq!(out.status.code(), Some(2), "{out:?}");
-    assert!(out.stdout.is_empty(), "no machine output on refusal");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("connector `io.rapidbyte.rest`")
-            && stderr.contains("no binary `rdlt-connector-rest`"),
-        "the short name wins over a same-named working-directory file: {stderr}"
+        "the id is discovered by its last segment and named as given: {stderr}"
     );
 }
 

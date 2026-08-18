@@ -4,13 +4,11 @@
 //!
 //! ONE document describes a whole pipeline: pipeline-wide settings, the
 //! source, and the destination. EVERY arm names an OUT-OF-PROCESS
-//! connector, and carries no connector vocabulary in type: the rich
-//! spellings (`postgres:`, `file:`, `duckdb:`, …) are sugar for the
-//! explicit `connector:` form, each parsing to the same
-//! [`connector::Connector`] through the one role-aware table
-//! ([`connector::id`] reads its ids), and every requirement — rich or
-//! explicit — is resolved through a [`crate::runtime::provider::Provider`]
-//! at build time into a spawned connector binary.
+//! connector in the ONE form `connector: {id, version?, path?, config}`
+//! — a [`connector::Connector`] — and the facade knows no connector by
+//! name: every requirement is resolved through a
+//! [`crate::runtime::provider::Provider`] at build time into a spawned
+//! binary, discovered from the id or named by `path`.
 //!
 //! The config document inside any arm is OPAQUE here: it crosses the
 //! wire in the handshake and the CONNECTOR's own config gate validates

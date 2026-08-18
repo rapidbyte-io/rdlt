@@ -1,7 +1,5 @@
-//! The connector requirement every arm names: the `connector:` document,
-//! the ONE rich-spelling ↔ id table with the roles each spelling may
-//! fill, and the role-aware arm deserializer that turns either form into
-//! a [`Connector`] at parse.
+//! The connector requirement every arm names — the `connector:` document,
+//! the ONE arm form — and the arm deserializer that admits nothing else.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -12,166 +10,37 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 
 use super::model::Config;
 
-/// The side of a pipeline an arm fills.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Source,
-    Destination,
+/// Deserialize one arm of the document: a map with exactly the key
+/// `connector`, whose value is the [`Connector`] document. Anything else
+/// — another key, two keys, no key — refuses at parse naming the one
+/// accepted form.
+pub(super) fn arm<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Connector, D::Error> {
+    deserializer.deserialize_map(Arm)
 }
 
-impl Role {
-    fn name(self) -> &'static str {
-        match self {
-            Role::Source => "source",
-            Role::Destination => "destination",
-        }
-    }
+/// The one accepted arm form, spelled for every refusal.
+const FORM: &str = "an arm is `connector: {id, config, …}` (version and path optional)";
 
-    /// The rich spellings this role accepts, table order, spelled for a
-    /// refusal message.
-    fn accepted(self) -> String {
-        TABLE
-            .iter()
-            .filter(|row| row.roles.contains(&self))
-            .map(|row| format!("`{}`", row.spelling))
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-/// One row of the table: a rich spelling, the reverse-DNS id it desugars
-/// to, and the roles it may fill.
-struct Row {
-    spelling: &'static str,
-    id: &'static str,
-    roles: &'static [Role],
-}
-
-/// The ONE desugar table: rich spelling ↔ reverse-DNS connector id, with
-/// the roles each spelling fills. The document arms resolve through it,
-/// and `rdlt schema`'s short names map through [`id`] over the same rows
-/// — so the document language and the CLI cannot drift apart.
-const TABLE: &[Row] = &[
-    Row {
-        spelling: "rest",
-        id: "io.rapidbyte.rest",
-        roles: &[Role::Source],
-    },
-    Row {
-        spelling: "oracle",
-        id: "io.rapidbyte.oracle",
-        roles: &[Role::Source],
-    },
-    Row {
-        spelling: "file",
-        id: "io.rapidbyte.file",
-        roles: &[Role::Source, Role::Destination],
-    },
-    Row {
-        spelling: "postgres",
-        id: "io.rapidbyte.postgres",
-        roles: &[Role::Source, Role::Destination],
-    },
-    Row {
-        spelling: "duckdb",
-        id: "io.rapidbyte.duckdb",
-        roles: &[Role::Destination],
-    },
-    Row {
-        spelling: "iceberg",
-        id: "io.rapidbyte.iceberg",
-        roles: &[Role::Destination],
-    },
-    Row {
-        spelling: "snowflake",
-        id: "io.rapidbyte.snowflake",
-        roles: &[Role::Destination],
-    },
-];
-
-/// The reverse-DNS connector id a rich spelling resolves to, in either
-/// role — `None` for anything outside the table (such a value is
-/// already an id or a binary path, not a short name).
-pub fn id(spelling: &str) -> Option<&'static str> {
-    TABLE
-        .iter()
-        .find(|row| row.spelling == spelling)
-        .map(|row| row.id)
-}
-
-/// Deserialize a `source:` arm.
-pub(super) fn source_arm<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Connector, D::Error> {
-    deserializer.deserialize_map(Arm(Role::Source))
-}
-
-/// Deserialize a `destination:` arm.
-pub(super) fn destination_arm<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Connector, D::Error> {
-    deserializer.deserialize_map(Arm(Role::Destination))
-}
-
-/// One arm of the document: a single-key map. `connector:` is the
-/// explicit form, read as written; any other key is a rich spelling
-/// looked up in the table for this role — the table's id, no version
-/// pin, no path override, the value as the config. Anything else refuses
-/// at parse naming the spelling and the accepted set.
-struct Arm(Role);
+struct Arm;
 
 impl<'de> Visitor<'de> for Arm {
     type Value = Connector;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "a {} arm: a single-key map, `connector:` or one of {}",
-            self.0.name(),
-            self.0.accepted()
-        )
+        f.write_str("a map with the one key `connector`")
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Connector, A::Error> {
-        let role = self.0;
-        let Some(spelling) = map.next_key::<String>()? else {
-            return Err(de::Error::custom(format!(
-                "no connector: a {} arm is a single-key map, `connector:` or one of {}",
-                role.name(),
-                role.accepted()
-            )));
+        let Some(key) = map.next_key::<String>()? else {
+            return Err(de::Error::custom(format!("no connector: {FORM}")));
         };
-        let connector = if spelling == "connector" {
-            map.next_value::<Connector>()?
-        } else {
-            let Some(row) = TABLE.iter().find(|row| row.spelling == spelling) else {
-                return Err(de::Error::custom(format!(
-                    "unknown spelling `{spelling}`: a {} arm names `connector:` or one of {}",
-                    role.name(),
-                    role.accepted()
-                )));
-            };
-            if !row.roles.contains(&role) {
-                return Err(de::Error::custom(format!(
-                    "`{spelling}` is not a {}: a {} arm names `connector:` or one of {}",
-                    role.name(),
-                    role.name(),
-                    role.accepted()
-                )));
-            }
-            Connector {
-                id: row.id.to_owned(),
-                version: None,
-                path: None,
-                config: map.next_value::<Config>()?,
-            }
-        };
+        if key != "connector" {
+            return Err(de::Error::custom(format!("unknown key `{key}`: {FORM}")));
+        }
+        let connector = map.next_value::<Connector>()?;
         if let Some(extra) = map.next_key::<String>()? {
             return Err(de::Error::custom(format!(
-                "two connectors, `{spelling}` and `{extra}`: a {} arm is a single-key map, \
-                 `connector:` or one of {}",
-                role.name(),
-                role.accepted()
+                "two keys, `connector` and `{extra}`: {FORM}"
             )));
         }
         Ok(connector)
@@ -189,10 +58,11 @@ impl<'de> Visitor<'de> for Arm {
 ///     config: { ... }       # the connector's own document, opaque here
 /// ```
 ///
-/// `config` also takes the path form (`config: source.yaml`) — the
-/// same [`Config`] rule as every rich spelling's value. A rich spelling
-/// (`file: {…}`) parses to this same shape: the table's id, no version
-/// pin, no path override.
+/// `config` also takes the path form (`config: source.yaml`), read at
+/// build time relative to the document's directory. The facade knows no
+/// connector by name: `id` is whatever binary the runtime discovers by
+/// its last segment (or `path` names outright), and the handshake holds
+/// the spawned connector to it.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Connector {

@@ -5,8 +5,8 @@
 # the way every cross-store cell does it.
 #
 # The Oracle source document is a FILE, not inline: the facade's
-# `source: oracle: <path>` path form reads it at desugar time and hands it
-# to the spawned connector inline. The oracle fixture's
+# `config: <path>` path form reads it at build time and hands it to the
+# spawned connector inline. The oracle fixture's
 # generate_sh writes it to {{data}}/oracle.yaml, so the connection facts are
 # spelled once, beside the port and credentials that produce them — exactly
 # what the rustfs fixture does with files.yaml.
@@ -23,8 +23,12 @@ pipeline: bench-oracle-to-pg
 workdir: {{workdir}}/.rdlt
 write_mode: replace
 source:
-  oracle: {{data}}/oracle.yaml
+  connector:
+    id: io.rapidbyte.oracle
+    config: {{data}}/oracle.yaml
 destination:
-  postgres:
-    conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
-    dataset: bench
+  connector:
+    id: io.rapidbyte.postgres
+    config:
+      conn: "host=127.0.0.1 port=5439 user=postgres password=postgres dbname=dest_rdlt"
+      dataset: bench

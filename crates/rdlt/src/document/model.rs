@@ -28,9 +28,9 @@ pub struct Document {
     /// directory, the same rule path-form configs follow.
     #[serde(default)]
     pub workdir: Option<PathBuf>,
-    // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}` /
-    // `source: postgres: …` singleton-map form for externally-tagged
-    // enums (serde_yaml_ng otherwise wants `!tag` syntax).
+    // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}`
+    // singleton-map form for an externally-tagged enum (serde_yaml_ng
+    // otherwise wants `!tag` syntax).
     /// How rows land at the destination. Absent defaults to `Append`.
     #[serde(default, with = "serde_yaml_ng::with::singleton_map")]
     pub write_mode: Option<WriteMode>,
@@ -64,14 +64,12 @@ pub struct Document {
     /// because a crash can then cost at most one checkpoint of work.
     #[serde(default)]
     pub commit_policy: Option<CommitPolicy>,
-    /// Where rows come from: a single-key map — `connector:` (the
-    /// explicit form) or one rich source spelling, which desugars to
-    /// the same [`Connector`] at parse.
-    #[serde(deserialize_with = "connector::source_arm")]
+    /// Where rows come from: `connector: {id, version?, path?, config}`,
+    /// the one arm form.
+    #[serde(deserialize_with = "connector::arm")]
     pub source: Connector,
-    /// Where rows go: the destination twin of `source`, over the same
-    /// table and the same rules, with the destination spellings.
-    #[serde(deserialize_with = "connector::destination_arm")]
+    /// Where rows go: the same one form as `source`.
+    #[serde(deserialize_with = "connector::arm")]
     pub destination: Connector,
 }
 
@@ -101,7 +99,7 @@ pub enum WriteMode {
 #[derive(Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Config {
-    /// `postgres: path/to/document.yaml` — the document lives in its
+    /// `config: path/to/document.yaml` — the document lives in its
     /// own file, read at resolve time (YAML unless the extension says
     /// `.json`), relative paths joined onto the caller's base.
     Path(String),

@@ -1,13 +1,10 @@
-//! The pipeline document end to end: every rich spelling parses to
-//! exactly its connector requirement (the reverse-DNS id from the one
-//! table, the config verbatim, no version pin, no path override) in the
-//! role it fills; the config forms and their resolution rules; the
-//! write-mode forms; the arm and document-level refusals, each naming
-//! the spelling and the accepted set; the `connector:` vocabulary
-//! round-trip; construction failures as typed Resolve errors — including
-//! the provider's frozen NotFound spelling surfacing through `build`
-//! verbatim; and the `parquet:` spelling's death (neither alias nor
-//! shorthand survives).
+//! The pipeline document end to end: the ONE arm form (`connector:`)
+//! round-trips on both sides; every other arm shape — a first-party
+//! short name, a stray key, two keys, none — refuses at parse naming the
+//! one accepted form; the config forms and their resolution rules; the
+//! write-mode forms; the document-level refusals; construction failures
+//! as typed Resolve errors — including the provider's frozen NotFound
+//! spelling surfacing through `build` verbatim.
 
 use std::path::Path;
 
@@ -16,91 +13,14 @@ use rdlt::document::{Config, Document, Error, WriteMode, build};
 
 use super::support::document;
 
-// ---- the arms ---------------------------------------------------------
+/// The one accepted form, as every arm refusal spells it.
+const FORM: &str = "an arm is `connector: {id, config, …}` (version and path optional)";
 
-/// The four source spellings and the id each must parse to.
-const SOURCE_CASES: &[(&str, &str)] = &[
-    ("rest", "io.rapidbyte.rest"),
-    ("oracle", "io.rapidbyte.oracle"),
-    ("file", "io.rapidbyte.file"),
-    ("postgres", "io.rapidbyte.postgres"),
-];
+/// A minimal well-formed destination arm for cells whose subject is the
+/// source side.
+const DEST: &str = "destination:\n  connector: {id: io.example.dst, config: {}}\n";
 
-/// The five destination spellings and the id each must parse to.
-const DEST_CASES: &[(&str, &str)] = &[
-    ("duckdb", "io.rapidbyte.duckdb"),
-    ("postgres", "io.rapidbyte.postgres"),
-    ("file", "io.rapidbyte.file"),
-    ("iceberg", "io.rapidbyte.iceberg"),
-    ("snowflake", "io.rapidbyte.snowflake"),
-];
-
-/// Assert one desugared requirement: the table id, nothing invented, and
-/// the distinctive config key carried through verbatim.
-fn assert_desugared(reference: &Connector, id: &str, spelling: &str) {
-    assert_eq!(reference.id, id, "{spelling}: the desugar table's id");
-    assert_eq!(
-        reference.version, None,
-        "{spelling}: no version pin is invented"
-    );
-    assert_eq!(
-        reference.path, None,
-        "{spelling}: no path override is invented"
-    );
-    let Config::Inline(config) = &reference.config else {
-        panic!("{spelling}: an inline mapping parses as the inline config form");
-    };
-    assert_eq!(
-        config[format!("marker_{spelling}")],
-        format!("value-{spelling}"),
-        "{spelling}: the config document rides through verbatim"
-    );
-}
-
-/// Each rich source spelling parses to exactly its connector requirement,
-/// inline and by path — one pin per spelling, minimal on purpose (the
-/// config block is opaque here; its vocabulary belongs to the connector).
-#[test]
-fn every_rich_source_spelling_parses_to_its_connector() {
-    for (spelling, id) in SOURCE_CASES {
-        let inline = document(&format!(
-            "pipeline: p\n\
-             source:\n\
-            \x20 {spelling}:\n\
-            \x20   marker_{spelling}: value-{spelling}\n\
-             destination:\n\
-            \x20 connector: {{id: io.rapidbyte.duckdb, config: {{}}}}\n"
-        ));
-        assert_desugared(&inline.source, id, spelling);
-
-        // The path form parses as a PATH, not as a one-key document.
-        let by_path = document(&format!(
-            "pipeline: p\nsource:\n  {spelling}: cfg.yaml\ndestination:\n  duckdb: {{path: out.db}}\n"
-        ));
-        assert_eq!(by_path.source.id, *id, "{spelling}: path form");
-        assert!(
-            matches!(by_path.source.config, Config::Path(ref p) if p == "cfg.yaml"),
-            "{spelling}: a string value is a config path"
-        );
-    }
-}
-
-/// Each rich destination spelling parses to exactly its connector
-/// requirement — the destination twin of the source pin above.
-#[test]
-fn every_rich_destination_spelling_parses_to_its_connector() {
-    for (spelling, id) in DEST_CASES {
-        let parsed = document(&format!(
-            "pipeline: p\n\
-             source:\n\
-            \x20 connector: {{id: io.rapidbyte.file, config: {{}}}}\n\
-             destination:\n\
-            \x20 {spelling}:\n\
-            \x20   marker_{spelling}: value-{spelling}\n"
-        ));
-        assert_desugared(&parsed.destination, id, spelling);
-    }
-}
+// ---- parse shape ------------------------------------------------------
 
 /// Every pipeline-document form parses — write_mode's three shapes,
 /// workdir default vs custom, and the policies' presence.
@@ -113,8 +33,7 @@ fn pipeline_document_forms_parse() {
         ("", false), // absent = append default
     ] {
         let parsed = document(&format!(
-            "pipeline: p\n{mode}source:\n  postgres: s.yaml\n\
-             destination:\n  duckdb: {{path: out.db}}\n"
+            "pipeline: p\n{mode}source:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
         ));
         assert_eq!(
             matches!(parsed.write_mode, Some(WriteMode::Merge { .. })),
@@ -122,180 +41,145 @@ fn pipeline_document_forms_parse() {
             "{mode}"
         );
     }
-    let custom = document(
-        "pipeline: p\nworkdir: /tmp/x\nsource:\n  postgres: s.yaml\n\
-         destination:\n  file: {path: out}\n",
-    );
+    let custom = document(&format!(
+        "pipeline: p\nworkdir: /tmp/x\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ));
     assert_eq!(custom.workdir.as_deref(), Some(Path::new("/tmp/x")));
-    let bare = document(
-        "pipeline: p\nsource:\n  postgres: s.yaml\n\
-         destination:\n  duckdb: {path: out.db}\n",
-    );
+    let bare = document(&format!(
+        "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ));
     assert!(
         bare.workdir.is_none(),
         "workdir defaults downstream to .rdlt/<pipeline> beside the document"
     );
-    let with_policies = document(
-        "pipeline: p\nbatch_policy: {every_rows: 50000}\n\
-         commit_policy: {every_bytes: 104857600}\n\
-         source:\n  postgres: s.yaml\ndestination:\n  duckdb: {path: out.db}\n",
-    );
+    let with_policies = document(&format!(
+        "pipeline: p\nbatch_policy: {{every_rows: 50000}}\n\
+         commit_policy: {{every_bytes: 104857600}}\n\
+         source:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ));
     assert!(with_policies.batch_policy.is_some());
     assert!(with_policies.commit_policy.is_some());
 }
 
-/// A typoed top-level key and an unknown source kind each refuse at
-/// parse — deny_unknown_fields on the document, and the arm's own
-/// refusal naming the spelling and the accepted set.
+/// A typoed top-level key refuses at parse (deny_unknown_fields on the
+/// document), and so does a typo inside the merge block.
 #[test]
-fn unknown_spellings_are_refused_at_parse() {
-    let bad_kind: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\nsource:\n  mongodb: {conn: x}\ndestination:\n  duckdb: {path: out.db}\n",
-    );
-    let error = bad_kind
-        .expect_err("an unknown source kind must not parse")
-        .to_string();
-    assert!(
-        error.contains(
-            "unknown spelling `mongodb`: a source arm names `connector:` or one of \
-             `rest`, `oracle`, `file`, `postgres`"
-        ),
-        "the refusal names the spelling and the accepted set: {error}"
-    );
-
-    let bad_key: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\nworkdirr: /tmp/x\nsource:\n  postgres: s.yaml\n\
-         destination:\n  duckdb: {path: out.db}\n",
-    );
+fn unknown_document_keys_are_refused_at_parse() {
+    let bad_key: Result<Document, _> = serde_yaml_ng::from_str(&format!(
+        "pipeline: p\nworkdirr: /tmp/x\nsource:\n  connector: {{id: io.example.src, config: {{}}}}\n{DEST}"
+    ));
     assert!(bad_key.is_err(), "a typoed top-level key must not parse");
 
     // A typo INSIDE the merge block must refuse too: a silently
     // ignored `kye` would mean a merge with no key slipping toward the
     // plan-time refusal instead of failing at the typo.
-    let bad_merge_key: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\nwrite_mode: {merge: {kye: [id]}}\nsource:\n  postgres: s.yaml\n\
-         destination:\n  duckdb: {path: out.db}\n",
-    );
+    let bad_merge_key: Result<Document, _> = serde_yaml_ng::from_str(&format!(
+        "pipeline: p\nwrite_mode: {{merge: {{kye: [id]}}}}\n\
+         source:\n  connector: {{id: io.example.src, config: {{}}}}\n{DEST}"
+    ));
     assert!(
         bad_merge_key.is_err(),
         "a typoed merge-block key must not parse"
     );
 }
 
-/// A spelling from the table used in the role it does not fill refuses
-/// at parse, naming the spelling, the role, and that role's accepted
-/// set — `duckdb:` is not a source, `rest:` is not a destination.
+/// The facade knows no connector by name: a first-party short name
+/// (`postgres:`), a name it never had (`mongodb:`), and the long-dead
+/// `parquet:` all refuse at parse the same way — an unknown key, the
+/// refusal naming it and the one accepted form. Neither alias nor
+/// shorthand exists.
 #[test]
-fn a_spelling_in_the_wrong_role_is_refused_at_parse() {
-    let dest_as_source: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\nsource:\n  duckdb: {path: in.db}\ndestination:\n  duckdb: {path: out.db}\n",
-    );
-    let error = dest_as_source
-        .expect_err("a destination-only spelling must not fill the source arm")
-        .to_string();
-    assert!(
-        error.contains(
-            "`duckdb` is not a source: a source arm names `connector:` or one of \
-             `rest`, `oracle`, `file`, `postgres`"
-        ),
-        "{error}"
-    );
-
-    let source_as_dest: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\nsource:\n  postgres: s.yaml\ndestination:\n  rest: {base_url: x}\n",
-    );
-    let error = source_as_dest
-        .expect_err("a source-only spelling must not fill the destination arm")
-        .to_string();
-    assert!(
-        error.contains(
-            "`rest` is not a destination: a destination arm names `connector:` or one of \
-             `file`, `postgres`, `duckdb`, `iceberg`, `snowflake`"
-        ),
-        "{error}"
-    );
-}
-
-/// An arm is a single-key map: two spellings in one arm, or none,
-/// refuse at parse naming what was found and the accepted set.
-#[test]
-fn an_arm_naming_two_connectors_or_none_is_refused_at_parse() {
-    let two: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\nsource:\n  postgres: s.yaml\n  file: {path: in}\n\
+fn a_short_name_in_an_arm_is_refused_at_parse_naming_the_one_form() {
+    for (spelling, arm) in [
+        ("postgres", "source:\n  postgres: {conn: x}\n"),
+        ("mongodb", "source:\n  mongodb: {conn: x}\n"),
+        ("parquet", "source:\n  parquet: {path: out}\n"),
+    ] {
+        let parsed: Result<Document, _> =
+            serde_yaml_ng::from_str(&format!("pipeline: p\n{arm}{DEST}"));
+        let error = parsed
+            .expect_err("a short name is not an arm form and must not parse")
+            .to_string();
+        assert!(
+            error.contains(&format!("unknown key `{spelling}`: {FORM}")),
+            "{spelling}: the refusal names the key and the one form: {error}"
+        );
+    }
+    // The destination side refuses identically.
+    let parsed: Result<Document, _> = serde_yaml_ng::from_str(
+        "pipeline: p\nsource:\n  connector: {id: io.example.src, config: {}}\n\
          destination:\n  duckdb: {path: out.db}\n",
     );
-    let error = two
-        .expect_err("two connectors in one arm must not parse")
+    let error = parsed
+        .expect_err("a destination short name must not parse")
         .to_string();
     assert!(
-        error.contains(
-            "two connectors, `postgres` and `file`: a source arm is a single-key map, \
-             `connector:` or one of `rest`, `oracle`, `file`, `postgres`"
-        ),
-        "{error}"
-    );
-
-    let none: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\nsource: {}\ndestination:\n  duckdb: {path: out.db}\n",
-    );
-    let error = none.expect_err("an empty arm must not parse").to_string();
-    assert!(
-        error.contains(
-            "no connector: a source arm is a single-key map, `connector:` or one of \
-             `rest`, `oracle`, `file`, `postgres`"
-        ),
+        error.contains(&format!("unknown key `duckdb`: {FORM}")),
         "{error}"
     );
 }
 
-/// `parquet:` is gone — not an alias, not a shorthand. The spelling is
-/// an unknown field at parse, never quietly rerouted.
+/// An arm is exactly one `connector:` key: a second key beside it, or no
+/// key at all, refuses at parse naming what was found and the one form.
 #[test]
-fn the_parquet_spelling_is_refused_at_parse() {
-    let parsed: Result<Document, _> = serde_yaml_ng::from_str(
-        "pipeline: p\n\
-         source:\n\
-        \x20 connector: {id: io.rapidbyte.file, config: {}}\n\
-         destination:\n\
-        \x20 parquet: {path: out}\n",
-    );
-    let error = parsed.expect_err("the parquet spelling must not parse");
+fn an_arm_with_two_keys_or_none_is_refused_at_parse() {
+    let two: Result<Document, _> = serde_yaml_ng::from_str(&format!(
+        "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: {{}}}}\n  path: /x\n{DEST}"
+    ));
+    let error = two
+        .expect_err("two keys in one arm must not parse")
+        .to_string();
     assert!(
-        error.to_string().contains("parquet"),
-        "the refusal names the unknown spelling: {error}"
+        error.contains(&format!("two keys, `connector` and `path`: {FORM}")),
+        "{error}"
     );
+
+    let none: Result<Document, _> =
+        serde_yaml_ng::from_str(&format!("pipeline: p\nsource: {{}}\n{DEST}"));
+    let error = none.expect_err("an empty arm must not parse").to_string();
+    assert!(error.contains(&format!("no connector: {FORM}")), "{error}");
 }
 
 // ---- config resolution ------------------------------------------------
 
-/// The path form: a rich arm whose value is a string names a file that
+/// The path form: a `config:` whose value is a string names a file that
 /// resolves at build time, relative to the caller's base (the document's
-/// own directory for a file-loaded document).
+/// own directory for a file-loaded document); the inline form is the
+/// document itself, carried verbatim.
 #[test]
 fn a_string_config_resolves_as_a_path_relative_to_the_base() {
     let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-        dir.path().join("x.yaml"),
-        "marker_postgres: value-postgres\n",
-    )
-    .expect("config file writes");
-    let parsed = document(
+    std::fs::write(dir.path().join("x.yaml"), "marker: value\n").expect("config file writes");
+    let parsed = document(&format!(
         "pipeline: p\n\
          source:\n\
-        \x20 postgres: ./x.yaml\n\
-         destination:\n\
-        \x20 connector: {id: io.rapidbyte.duckdb, config: {}}\n",
+        \x20 connector:\n\
+        \x20   id: io.example.src\n\
+        \x20   config: ./x.yaml\n\
+         {DEST}"
+    ));
+    assert_eq!(parsed.source.id, "io.example.src");
+    assert!(
+        matches!(parsed.source.config, Config::Path(ref p) if p == "./x.yaml"),
+        "a string value is a config path"
     );
-    assert_eq!(parsed.source.id, "io.rapidbyte.postgres");
     let config = parsed
         .source
         .config
         .resolve(dir.path())
         .expect("the path form resolves against the base");
     assert_eq!(
-        config["marker_postgres"], "value-postgres",
+        config["marker"], "value",
         "the config document rides through verbatim"
     );
+
+    let inline = document(&format!(
+        "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: {{marker: value}}}}\n{DEST}"
+    ));
+    let Config::Inline(config) = &inline.source.config else {
+        panic!("an inline mapping parses as the inline config form");
+    };
+    assert_eq!(config["marker"], "value");
 }
 
 /// A missing config file refuses at resolve with a typed Resolve error
@@ -303,13 +187,9 @@ fn a_string_config_resolves_as_a_path_relative_to_the_base() {
 #[test]
 fn a_missing_config_path_is_a_resolve_error_naming_the_path() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let parsed = document(
-        "pipeline: p\n\
-         source:\n\
-        \x20 postgres: absent.yaml\n\
-         destination:\n\
-        \x20 connector: {id: io.rapidbyte.duckdb, config: {}}\n",
-    );
+    let parsed = document(&format!(
+        "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: absent.yaml}}\n{DEST}"
+    ));
     match parsed.source.config.resolve(dir.path()) {
         Err(Error::Resolve(message)) => {
             let looked_for = dir.path().join("absent.yaml");
@@ -321,33 +201,6 @@ fn a_missing_config_path_is_a_resolve_error_naming_the_path() {
         Err(other) => panic!("expected a Resolve error, got: {other}"),
         Ok(_) => panic!("a missing config file must not resolve"),
     }
-}
-
-/// The `connector:` arm's `config:` accepts the SAME path form as the
-/// rich spellings — one resolution rule for every arm.
-#[test]
-fn the_connector_arm_accepts_the_config_path_form_identically() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(dir.path().join("x.yaml"), "marker_file: value-file\n")
-        .expect("config file writes");
-    let parsed = document(
-        "pipeline: p\n\
-         source:\n\
-        \x20 connector:\n\
-        \x20   id: io.rapidbyte.file\n\
-        \x20   config: ./x.yaml\n\
-         destination:\n\
-        \x20 connector: {id: io.rapidbyte.duckdb, config: {}}\n",
-    );
-    assert_eq!(parsed.source.id, "io.rapidbyte.file");
-    assert_eq!(parsed.source.version, None);
-    assert_eq!(parsed.source.path, None);
-    let config = parsed
-        .source
-        .config
-        .resolve(dir.path())
-        .expect("the connector arm's path form resolves against the base");
-    assert_eq!(config["marker_file"], "value-file");
 }
 
 // ---- the `connector:` vocabulary --------------------------------------
@@ -469,9 +322,10 @@ fn a_debug_render_of_a_connector_requirement_elides_the_config() {
 /// problem, and must not panic or misclassify.
 #[tokio::test]
 async fn missing_config_file_is_a_resolve_error() {
-    let yaml = "pipeline: p\nsource:\n  rest: /no/such/file.yaml\n\
-                destination:\n  file:\n    path: ./out\n";
-    let doc: Document = serde_yaml_ng::from_str(yaml).expect("parses");
+    let yaml = format!(
+        "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: /no/such/file.yaml}}\n{DEST}"
+    );
+    let doc: Document = serde_yaml_ng::from_str(&yaml).expect("parses");
     match build(&doc, Path::new("")).await {
         Err(Error::Resolve(message)) => {
             assert!(message.contains("/no/such/file.yaml"), "{message}");

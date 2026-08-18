@@ -110,7 +110,7 @@ fn resolved_workdir(document: &Document, base: &Path) -> PathBuf {
 /// any pipeline runs.
 ///
 /// `base` anchors relative path-form configs — the include rule: a
-/// `postgres: ./creds.yaml` resolves beside the document that names it,
+/// `config: ./creds.yaml` resolves beside the document that names it,
 /// so the CLI passes the pipeline file's own directory and a document
 /// built from a string names whatever directory its author means. Data
 /// paths INSIDE a config document are a different story: the connector
@@ -178,7 +178,8 @@ mod workdir_tests {
         model::parse(yaml).expect("the fixture document parses")
     }
 
-    const BODY: &str = "source:\n  postgres: s.yaml\ndestination:\n  duckdb: {path: out.db}\n";
+    const BODY: &str = "source:\n  connector: {id: io.example.src, config: s.yaml}\n\
+                        destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n";
 
     /// The default workdir is PER PIPELINE and lives beside the document:
     /// two defaulted documents in one directory get two workdirs, so
@@ -256,7 +257,8 @@ mod budget_tests {
     fn the_dial_budget_ignores_batch_policy() {
         let document: Document = serde_yaml_ng::from_str(
             "pipeline: p\nbatch_policy: {every_bytes: 1048576}\n\
-             source:\n  postgres: s.yaml\ndestination:\n  duckdb: {path: out.db}\n",
+             source:\n  connector: {id: io.example.src, config: s.yaml}\n\
+             destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n",
         )
         .expect("the fixture document parses");
         assert_eq!(
