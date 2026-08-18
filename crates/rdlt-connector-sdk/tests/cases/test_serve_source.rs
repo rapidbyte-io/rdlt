@@ -1087,12 +1087,12 @@ async fn an_oversized_expected_role_refuses_bounded_without_echo() {
     }
 }
 
-/// The source-side admission ceiling: `MAX_CONCURRENT_READS` parked
-/// reads all proceed (each yields its first frame); the next `Read`
-/// refuses RESOURCE_EXHAUSTED naming the ceiling; releasing one read
-/// admits another.
+/// A legitimate host reads a source's streams concurrently, one `Read`
+/// per stream: sixteen parked reads over one connection are all
+/// admitted and each yields its first frame — the ceiling is far above
+/// any ordinary fan-out.
 #[tokio::test]
-async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed() {
+async fn sixteen_concurrent_reads_are_all_admitted() {
     let (_dir, path) = socket_path();
     let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     let channel = dial(&path).await;
@@ -1110,15 +1110,13 @@ async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed()
         })
         .await
         .expect("handshake");
-    let read = || ReadRequest {
-        stream_spec_json: numbers_stream_spec_json(),
-        since_cursor_json: None,
-    };
-
     let mut admitted = Vec::new();
-    for _ in 0..MAX_CONCURRENT_READS {
+    for _ in 0..16 {
         let mut frames = source
-            .read(read())
+            .read(ReadRequest {
+                stream_spec_json: numbers_stream_spec_json(),
+                since_cursor_json: None,
+            })
             .await
             .expect("an admitted read")
             .into_inner();
@@ -1129,7 +1127,61 @@ async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed()
             .expect("the admitted read yields its first frame");
         admitted.push(frames);
     }
+    assert_eq!(admitted.len(), 16);
+}
 
+/// The source-side admission ceiling: `MAX_CONCURRENT_READS` parked
+/// reads all proceed (each yields its first frame — spread over several
+/// connections, since the ceiling is per PROCESS, not per connection);
+/// the next `Read` refuses RESOURCE_EXHAUSTED naming the ceiling;
+/// releasing one read admits another.
+#[tokio::test]
+async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: serde_json::to_vec(&serde_json::json!({
+                "rows": 2,
+                "park_after_first": true
+            }))
+            .expect("config"),
+        })
+        .await
+        .expect("handshake");
+    let read = || ReadRequest {
+        stream_spec_json: numbers_stream_spec_json(),
+        since_cursor_json: None,
+    };
+
+    // 32 connections × 32 reads each: the per-connection h2 stream
+    // limit never bites, and the process-wide count reaches the ceiling.
+    const PER_CONNECTION: usize = 32;
+    assert_eq!(MAX_CONCURRENT_READS % PER_CONNECTION, 0);
+    let mut admitted = Vec::new();
+    for _ in 0..MAX_CONCURRENT_READS / PER_CONNECTION {
+        let mut source = SourceServiceClient::new(dial(&path).await);
+        for _ in 0..PER_CONNECTION {
+            let mut frames = source
+                .read(read())
+                .await
+                .expect("an admitted read")
+                .into_inner();
+            frames
+                .message()
+                .await
+                .expect("frame transport")
+                .expect("the admitted read yields its first frame");
+            admitted.push(frames);
+        }
+    }
+    assert_eq!(admitted.len(), MAX_CONCURRENT_READS);
+
+    let mut source = SourceServiceClient::new(dial(&path).await);
     let refused = source
         .read(read())
         .await
@@ -1150,7 +1202,7 @@ async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed()
     // Releasing one admitted read frees its permit — the next read is
     // admitted once the server observes the hang-up.
     drop(admitted.pop());
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             match source.read(read()).await {
                 Ok(_) => break,

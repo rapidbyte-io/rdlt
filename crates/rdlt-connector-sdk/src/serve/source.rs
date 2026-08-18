@@ -97,15 +97,17 @@ pub const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
 const FRAME_MESSAGE_CAPACITY: usize = 64;
 
 /// The most `Read` RPCs one served source process admits at once — the
-/// source-side analogue of the destination's one-session ceiling. Each
-/// read's memory is bounded per call ([`BYTE_FRAME_BUDGET`] +
-/// [`READ_CHANNEL_BUDGET`] + one push in hand — ~72 MiB steady), and
-/// this bounds the multiplier: the engine drives ONE read per stream
-/// and its streams sequentially per source, so eight is generous for
-/// any honest host and keeps the multiplied steady-state bound under
-/// a GiB. A read past it is refused `RESOURCE_EXHAUSTED` — the host
-/// retries once a read completes.
-pub const MAX_CONCURRENT_READS: usize = 8;
+/// source-side analogue of the destination's one-session ceiling. The
+/// host reads a source's streams CONCURRENTLY, one `Read` per stream,
+/// and admits at most 1024 streams per source (the engine's
+/// `DEFAULT_MAX_STREAMS_PER_SOURCE`, mirrored here rather than imported
+/// — the sdk does not depend on the engine); this ceiling matches it,
+/// so no legitimate host is refused while a runaway client cannot
+/// multiply reads without bound. Each read's memory is bounded per call
+/// ([`BYTE_FRAME_BUDGET`] + [`READ_CHANNEL_BUDGET`] + one push in hand),
+/// so the ceiling bounds the multiplier. A read past it is refused
+/// `RESOURCE_EXHAUSTED` — the host retries once a read completes.
+pub const MAX_CONCURRENT_READS: usize = 1024;
 
 /// The role a source's handshake must be asked for.
 const EXPECTED_ROLE: &str = "source";

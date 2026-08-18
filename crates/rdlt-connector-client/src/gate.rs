@@ -125,7 +125,7 @@ pub(crate) fn render_message(text: &str) -> String {
         push_escaped(&mut out, character);
         if out.len() >= MESSAGE_RENDER_CAP {
             use std::fmt::Write as _;
-            let _ = write!(out, "…[truncated from {} bytes]", text.len());
+            let _ = write!(out, "…[truncated; {} source bytes]", text.len());
             break;
         }
     }

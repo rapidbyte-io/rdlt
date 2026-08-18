@@ -384,7 +384,7 @@ mod tests {
                 rendered.len()
             );
             assert!(
-                rendered.contains(&format!("truncated from {} bytes", 4 << 20)),
+                rendered.contains(&format!("truncated; {} source bytes", 4 << 20)),
                 "the render names the true length: {rendered:?}"
             );
             assert!(
@@ -424,7 +424,7 @@ mod tests {
             rendered.len()
         );
         assert!(
-            rendered.contains(&format!("truncated from {} bytes", 1 << 20)),
+            rendered.contains(&format!("truncated; {} source bytes", 1 << 20)),
             "and names the true length: {}",
             &rendered[..200]
         );
