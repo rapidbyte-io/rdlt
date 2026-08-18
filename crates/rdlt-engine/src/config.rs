@@ -151,7 +151,7 @@ impl Config {
     /// discovery axis a source controls directly. A served
     /// (out-of-process) source admits at most 1024 concurrent reads;
     /// raising this past 1024 needs the connector's read ceiling raised
-    /// in step.
+    /// in step (not yet configurable — a fixed 1024 today).
     pub fn with_max_streams_per_source(mut self, streams: usize) -> Self {
         self.max_streams_per_source = streams.max(1);
         self

@@ -480,11 +480,6 @@ mod tests {
         );
     }
 
-    /// The residue voucher over a TORN tail: a Discard-class manifest
-    /// whose final line tore mid-write (no terminator) and whose clear
-    /// failed. The vouched Run header must not glue onto the torn
-    /// bytes — the next scan must read a fresh span (here: nothing to
-    /// replay, or the new span's records), never Damaged.
     /// An adopted directory with a default-rules sidecar — the residue
     /// shape recovery vouches for — plus the rules it was written with.
     fn vouched_fixture(dir: &Path) -> rdlt_core::schema::IdentRules {
@@ -498,6 +493,11 @@ mod tests {
         rules
     }
 
+    /// The residue voucher over a TORN tail: a Discard-class manifest
+    /// whose final line tore mid-write (no terminator) and whose clear
+    /// failed. The vouched Run header must not glue onto the torn
+    /// bytes — the next scan must read a fresh span (here: nothing to
+    /// replay, or the new span's records), never Damaged.
     #[test]
     fn open_with_the_residue_voucher_never_glues_onto_a_torn_tail() {
         use crate::wal::scan::{MAX_MANIFEST_TOTAL_BYTES, ScanOutcome, scan};
