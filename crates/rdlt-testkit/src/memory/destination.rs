@@ -51,6 +51,11 @@ struct Inner {
     schemas: BTreeMap<TableName, TableSchema>,
     modes: BTreeMap<TableName, WriteMode>,
     state: Option<StateDoc>,
+    /// A state document `read_state` answers to ANY pipeline — the shape
+    /// of a non-conforming backend, seeded through
+    /// [`Destination::with_foreign_state`] so a host can pin its own
+    /// identity check.
+    foreign_state: Option<StateDoc>,
     receipts: BTreeMap<(String, u64), CommitReceipt>,
     /// Tables already truncated by a `Replace` write in the current load —
     /// the first `Replace` batch per table wipes, later batches for it in
@@ -93,6 +98,15 @@ impl Destination {
     /// Replace the declared capabilities (lowering tests).
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// Make `read_state` answer `state` to ANY pipeline, whatever pipeline
+    /// asks — a deliberately NON-conforming backend (the SPI's read_state
+    /// scopes state to the asking pipeline), for pinning a host's own
+    /// state-identity check.
+    pub fn with_foreign_state(self, state: StateDoc) -> Self {
+        self.lock().foreign_state = Some(state);
         self
     }
 
@@ -319,6 +333,9 @@ impl LoadSession for Session {
         pipeline: &PipelineId,
     ) -> Result<Option<StateDoc>, DestinationError> {
         let inner = self.lock();
+        if let Some(foreign) = &inner.foreign_state {
+            return Ok(Some(foreign.clone()));
+        }
         Ok(inner.state.clone().filter(|s| &s.pipeline == pipeline))
     }
 

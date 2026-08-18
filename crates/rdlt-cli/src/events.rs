@@ -37,7 +37,8 @@ impl Target {
             Ok(Some(Target::Stdout))
         } else {
             Err(exit::Error::Usage(
-                "`--events -` writes NDJSON to stdout, where the report would go —              add `--report <path>` to give the report its own destination"
+                "`--events -` writes NDJSON to stdout, where the report would go — add \
+                 `--report <path>` to give the report its own destination"
                     .into(),
             ))
         }

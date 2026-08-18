@@ -58,8 +58,8 @@ impl Default for Local {
             // The wire's own per-message ceiling, which `dial` also
             // caps windows at — i.e. "let the wire cap pace" until an
             // embedder threads a real engine budget through
-            // `with_budget_bytes` (the facade does, from the spec's
-            // batch policy).
+            // `with_budget_bytes` (the facade does, with the engine's
+            // own byte budget).
             budget_bytes: MAX_FRAME_BYTES as u64,
             search_path: None,
         }

@@ -166,3 +166,39 @@ async fn the_workdir_and_wal_are_created_private() {
         );
     }
 }
+
+/// The DESTINATION-side twin of the WAL occupant refusal: a backend
+/// that answers another pipeline's state document to this run (the SPI
+/// scopes `read_state` to the asking pipeline; a non-conforming backend
+/// may not) is refused typed before any row moves — resuming a foreign
+/// pipeline's cursors would mis-attribute its committed rows. Pinned
+/// through the testkit's deliberately non-conforming seed; the memory
+/// destination itself conforms, so nothing exercised this arm before.
+#[tokio::test]
+async fn a_foreign_pipelines_state_document_refuses_the_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let foreign = rdlt_core::state::StateDoc::new(rdlt_core::id::PipelineId::new("orders"), "test");
+    let destination = memory::Destination::new().with_foreign_state(foreign);
+
+    let error = Engine::new(
+        config("customers", dir.path()),
+        source(),
+        destination.clone(),
+    )
+    .run()
+    .await
+    .expect_err("a foreign pipeline's state must refuse the run");
+    assert!(
+        matches!(error, Error::Config { .. }),
+        "configuration-class — the operator's fix, not a retry: {error:?}"
+    );
+    let text = error.to_string();
+    assert!(
+        text.contains("the destination returned state for pipeline `orders`, not `customers`"),
+        "the refusal names both pipelines: {text}"
+    );
+    assert!(
+        destination.committed_tables().is_empty(),
+        "nothing moved before the refusal"
+    );
+}

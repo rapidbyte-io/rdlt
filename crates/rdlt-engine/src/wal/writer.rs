@@ -17,7 +17,8 @@ use super::dir::{
     RULES_SIDECAR, create_private_dir, ensure_owned_dir, open_wal_read, private_file,
 };
 use super::format::{
-    MAX_MANIFEST_LINE_BYTES, WAL_FORMAT_VERSION, WalRecord, encode_line, segment_file_name,
+    MAX_MANIFEST_LINE_BYTES, ManifestLine, WAL_FORMAT_VERSION, WalRecord, decode_line, encode_line,
+    segment_file_name,
 };
 use super::segment::write_segment;
 use crate::load::LoadItem;
@@ -36,6 +37,39 @@ pub(crate) struct Wal {
 
 pub(super) fn wal_err(context: &str, e: impl std::fmt::Display) -> Error {
     Error::wal(format!("{context}: {e}"))
+}
+
+/// A vouched manifest's last line may lack its terminator: a complete
+/// record whose newline never landed, or a line torn mid-write (which is
+/// how a resolved span ends up unreplayable). Terminate the former and
+/// drop the latter before anything appends, because a Run header written
+/// straight after either glues into ONE line the next scan reads as
+/// corruption. Read through the already-open, symlink-refusing handle;
+/// the residue's size passed the scan's total budget to earn the voucher.
+fn reconcile_unterminated_tail(manifest: &mut File) -> Result<(), Error> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    manifest
+        .read_to_end(&mut bytes)
+        .map_err(|e| wal_err("reading vouched manifest", e))?;
+    if bytes.is_empty() || bytes.ends_with(b"\n") {
+        return Ok(());
+    }
+    let tail_start = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
+    let complete = std::str::from_utf8(&bytes[tail_start..])
+        .is_ok_and(|tail| matches!(decode_line(tail), ManifestLine::Record(_)));
+    if complete {
+        manifest
+            .write_all(b"\n")
+            .map_err(|e| wal_err("terminating vouched manifest tail", e))
+    } else {
+        manifest
+            .set_len(tail_start as u64)
+            .map_err(|e| wal_err("dropping torn vouched manifest tail", e))
+    }
 }
 
 impl Wal {
@@ -106,7 +140,7 @@ impl Wal {
         // alone keeps the plain create.
         let mut manifest_options = private_file();
         if tolerate_resolved_residue {
-            manifest_options.create(true);
+            manifest_options.create(true).read(true);
         } else {
             manifest_options.create_new(true);
         }
@@ -114,10 +148,13 @@ impl Wal {
         // provide its usual symlink protection there. O_NOFOLLOW closes both
         // paths atomically at the final component.
         manifest_options.custom_flags(libc::O_NOFOLLOW);
-        let manifest = manifest_options
+        let mut manifest = manifest_options
             .append(true)
             .open(dir.join("manifest.jsonl"))
             .map_err(|e| wal_err("opening manifest", e))?;
+        if tolerate_resolved_residue {
+            reconcile_unterminated_tail(&mut manifest)?;
+        }
         let mut wal = Self {
             dir,
             manifest,
@@ -349,7 +386,6 @@ mod tests {
     use super::*;
     use crate::testing::int_batch as batch_of;
     use crate::wal::dir::OWNERSHIP_MARKER;
-    use crate::wal::format::{ManifestLine, decode_line};
 
     fn manifest_records(dir: &Path) -> Vec<WalRecord> {
         let text = std::fs::read_to_string(dir.join("manifest.jsonl")).expect("read manifest");
@@ -428,6 +464,135 @@ mod tests {
             lines[0].contains("\"old\"") && lines[1].contains("\"l\""),
             "the new Run header appends AFTER the resolved span: {manifest}"
         );
+    }
+
+    /// The residue voucher over a TORN tail: a Discard-class manifest
+    /// whose final line tore mid-write (no terminator) and whose clear
+    /// failed. The vouched Run header must not glue onto the torn
+    /// bytes — the next scan must read a fresh span (here: nothing to
+    /// replay, or the new span's records), never Damaged.
+    #[test]
+    fn open_with_the_residue_voucher_never_glues_onto_a_torn_tail() {
+        use crate::wal::scan::{MAX_MANIFEST_TOTAL_BYTES, ScanOutcome, scan};
+        let dir = tempfile::tempdir().expect("tempdir");
+        ensure_owned_dir(dir.path()).expect("adopt fixture dir");
+        let rules = rdlt_core::schema::IdentRules::default();
+        std::fs::write(
+            dir.path().join(RULES_SIDECAR),
+            serde_json::to_vec(&rules).expect("rules"),
+        )
+        .expect("sidecar");
+        // A resolved current-version span, then a line torn twenty
+        // bytes short of its trailer: the Discard shape with a torn tail.
+        let mut stale = encode_line(&WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("old"),
+            pipeline: PipelineId::new("p"),
+        })
+        .expect("stale line");
+        stale.push(b'\n');
+        let torn = encode_line(&WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("older"),
+            pipeline: PipelineId::new("p"),
+        })
+        .expect("torn line");
+        stale.extend_from_slice(&torn[..torn.len() - 20]);
+        std::fs::write(dir.path().join("manifest.jsonl"), stale).expect("residue");
+        assert!(
+            matches!(
+                scan(
+                    dir.path(),
+                    rules,
+                    &PipelineId::new("p"),
+                    MAX_MANIFEST_TOTAL_BYTES
+                ),
+                ScanOutcome::Discard
+            ),
+            "the fixture is the Discard shape recovery vouches for"
+        );
+
+        // The vouched run opens (appending its Run header) and dies
+        // before its first checkpoint.
+        let wal = Wal::open(
+            dir.path().to_path_buf(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rules,
+            true,
+        )
+        .expect("the vouched open proceeds over resolved residue");
+        drop(wal);
+
+        // The next scan reads the new span, not corruption.
+        let outcome = scan(
+            dir.path(),
+            rules,
+            &PipelineId::new("p"),
+            MAX_MANIFEST_TOTAL_BYTES,
+        );
+        assert!(
+            !matches!(outcome, ScanOutcome::Damaged(_)),
+            "a vouched append after a torn tail must not read back as damage: {outcome:?}"
+        );
+        // The torn bytes are gone and the new header starts its own
+        // line: two verifying lines, the stale span's and the new one's.
+        let manifest =
+            std::fs::read_to_string(dir.path().join("manifest.jsonl")).expect("manifest");
+        let lines: Vec<&str> = manifest.lines().collect();
+        assert_eq!(lines.len(), 2, "{manifest:?}");
+        assert!(
+            lines[0].contains("\"old\"") && lines[1].contains("\"l\""),
+            "the stale span's header, then the vouched run's: {manifest:?}"
+        );
+    }
+
+    /// The other unterminated shape: a COMPLETE final record whose
+    /// newline never landed. It is a record the scan keeps, so the
+    /// vouched open terminates it rather than dropping it, and the new
+    /// header follows on its own line.
+    #[test]
+    fn open_with_the_residue_voucher_terminates_a_complete_unterminated_tail() {
+        use crate::wal::scan::{MAX_MANIFEST_TOTAL_BYTES, ScanOutcome, scan};
+        let dir = tempfile::tempdir().expect("tempdir");
+        ensure_owned_dir(dir.path()).expect("adopt fixture dir");
+        let rules = rdlt_core::schema::IdentRules::default();
+        std::fs::write(
+            dir.path().join(RULES_SIDECAR),
+            serde_json::to_vec(&rules).expect("rules"),
+        )
+        .expect("sidecar");
+        let stale = encode_line(&WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("old"),
+            pipeline: PipelineId::new("p"),
+        })
+        .expect("stale line");
+        std::fs::write(dir.path().join("manifest.jsonl"), stale).expect("residue");
+        Wal::open(
+            dir.path().to_path_buf(),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            rules,
+            true,
+        )
+        .expect("the vouched open proceeds");
+        let outcome = scan(
+            dir.path(),
+            rules,
+            &PipelineId::new("p"),
+            MAX_MANIFEST_TOTAL_BYTES,
+        );
+        assert!(!matches!(outcome, ScanOutcome::Damaged(_)), "{outcome:?}");
+        let manifest =
+            std::fs::read_to_string(dir.path().join("manifest.jsonl")).expect("manifest");
+        let lines: Vec<&str> = manifest.lines().collect();
+        assert_eq!(lines.len(), 2, "{manifest:?}");
+        assert!(
+            lines[0].contains("\"old\"") && lines[1].contains("\"l\""),
+            "{manifest:?}"
+        );
+        assert!(manifest.ends_with('\n'));
     }
 
     /// Recovery's residue voucher never licenses following a symlink at

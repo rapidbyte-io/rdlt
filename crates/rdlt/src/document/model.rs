@@ -150,7 +150,8 @@ pub fn parse(text: &str) -> Result<Document, String> {
 }
 
 /// Read a document file with the [`MAX_DOCUMENT_BYTES`] cap enforced
-/// BEFORE the read — the refusal names the size and the cap.
+/// BEFORE the read — the read stops one byte past the cap, so the
+/// refusal names that floor ("at least") and the cap.
 pub fn read(path: &Path) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     let mut text = String::new();
@@ -160,7 +161,7 @@ pub fn read(path: &Path) -> Result<String, String> {
     let len = text.len() as u64;
     if len > MAX_DOCUMENT_BYTES {
         return Err(format!(
-            "reading {}: the file is {len} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
+            "reading {}: the file is at least {len} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
              document cap — a pipeline or connector document is hand-written \
              configuration, so a file this size is almost certainly not the document \
              the path meant to name",
@@ -227,7 +228,7 @@ mod document_cap_tests {
         assert_eq!(
             refused.to_string(),
             format!(
-                "reading {}: the file is {} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
+                "reading {}: the file is at least {} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
                  document cap — a pipeline or connector document is hand-written \
                  configuration, so a file this size is almost certainly not the document \
                  the path meant to name",
