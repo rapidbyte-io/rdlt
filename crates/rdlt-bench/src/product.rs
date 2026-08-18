@@ -127,9 +127,9 @@ fn render_spec(
 
 /// The connector binaries a pipeline template names through literal
 /// `{{bins}}/<name>` paths, read straight from the unrendered text. A
-/// template that never mentions `{{bins}}` (a rich-spelling spec resolves
-/// its bins off PATH instead) yields an empty set, and so does a bare
-/// `{{bins}}` with no `/<name>` after it: there is no binary to name.
+/// template that never mentions `{{bins}}` (an id-only `connector:` arm
+/// resolves its bin off PATH instead) yields an empty set, and so does a
+/// bare `{{bins}}` with no `/<name>` after it: there is no binary to name.
 fn required_connector_bins(template: &str) -> BTreeSet<&str> {
     let mut names = BTreeSet::new();
     for tail in template.split("{{bins}}/").skip(1) {
@@ -146,8 +146,8 @@ fn required_connector_bins(template: &str) -> BTreeSet<&str> {
 }
 
 /// The conventional connector binaries named by the pipeline's source and
-/// destination declarations. Rich spellings use their key directly;
-/// `connector:` declarations use the last segment of their `id`.
+/// destination `connector:` arms — the last segment of each `id`, for the
+/// arms that carry no `path:` override.
 fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
     let mut rendered = template.to_owned();
     for key in SUBSTITUTION_KEYS {
@@ -164,35 +164,33 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
             continue;
         };
         let connector = serde_yaml_ng::Value::String("connector".to_owned());
-        let spelling = if let Some(explicit) = declaration
+        let Some(explicit) = declaration
             .get(&connector)
             .and_then(serde_yaml_ng::Value::as_mapping)
-        {
-            // A declaration carrying `path:` names its OWN binary — possibly
-            // one no conventional build produces — so demanding the
-            // conventional `{{bins}}` name would refuse a cell no
-            // provisioning step can satisfy; the spawn diagnoses that path
-            // itself. The override is any STRING, exactly as the Spec model
-            // reads it: a null `path:` parses as None there (PATH discovery
-            // — provision), while `path: ""` is a real override the runtime
-            // will try to exec.
-            let path = serde_yaml_ng::Value::String("path".to_owned());
-            if explicit
-                .get(&path)
-                .and_then(serde_yaml_ng::Value::as_str)
-                .is_some()
-            {
-                continue;
-            }
-            let id = serde_yaml_ng::Value::String("id".to_owned());
-            explicit
-                .get(&id)
-                .and_then(serde_yaml_ng::Value::as_str)
-                .and_then(|value| value.rsplit('.').next())
-        } else {
-            declaration.keys().find_map(serde_yaml_ng::Value::as_str)
+        else {
+            continue;
         };
-        if let Some(segment) = spelling.filter(|segment| !segment.is_empty()) {
+        // An arm carrying `path:` names its OWN binary — possibly one no
+        // conventional build produces — so demanding the conventional
+        // `{{bins}}` name would refuse a cell no provisioning step can
+        // satisfy; the spawn diagnoses that path itself. The override is
+        // any STRING, exactly as the document model reads it: a null
+        // `path:` parses as None there (PATH discovery — provision), while
+        // `path: ""` is a real override the runtime will try to exec.
+        let path = serde_yaml_ng::Value::String("path".to_owned());
+        if explicit
+            .get(&path)
+            .and_then(serde_yaml_ng::Value::as_str)
+            .is_some()
+        {
+            continue;
+        }
+        let id = serde_yaml_ng::Value::String("id".to_owned());
+        let segment = explicit
+            .get(&id)
+            .and_then(serde_yaml_ng::Value::as_str)
+            .and_then(|value| value.rsplit('.').next());
+        if let Some(segment) = segment.filter(|segment| !segment.is_empty()) {
             bins.insert(format!("rdlt-connector-{segment}"));
         }
     }
@@ -201,7 +199,7 @@ fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
 
 /// Everything a cell needs on disk before anything is built, seeded or
 /// measured: the release CLI and every connector binary its pipeline names
-/// through a literal path, a rich spelling, or a connector id. Depends only
+/// through a literal path or an id-only `connector:` arm. Depends only
 /// on the cell and paths, so the matrix calls it before any fixture comes
 /// up or competitor baseline runs; `run` calls it again because that entry
 /// point is also used directly, at the cost of a few metadata checks.
@@ -215,8 +213,8 @@ pub(crate) fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
         )));
     }
     // The literal token check preserves path-specific diagnostics; the
-    // declaration check covers rich spellings and connector ids before PATH
-    // resolution can reach a host-installed binary.
+    // declaration check covers id-only arms before PATH resolution can
+    // reach a host-installed binary.
     if let Some(template) = &cell.pipeline {
         let path = paths.benches.join(template);
         let raw = std::fs::read_to_string(&path).map_err(|e| {
@@ -267,9 +265,9 @@ pub(crate) fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
 }
 
 /// The PATH the measured CLI (and any prepare-run CLI) sees: the
-/// connector-binary directory prepended to the harness's own PATH. A
-/// rich-spelling pipeline carries no `path:` override — the CLI resolves its
-/// connector ids by a PATH walk for `rdlt-connector-<name>` — so the harness
+/// connector-binary directory prepended to the harness's own PATH. An
+/// id-only `connector:` arm carries no `path:` override — the CLI resolves
+/// its id by a PATH walk for `rdlt-connector-<segment>` — so the harness
 /// points that walk at the same `<target>/release` directory `{{bins}}`
 /// names, instead of at whatever connectors the operator has installed.
 fn path_with_bins(paths: &Paths) -> std::ffi::OsString {
@@ -630,17 +628,22 @@ mod tests {
         assert_eq!(required_connector_bins(twice).len(), 1);
         // An ordinary cell's template, and a bare `{{bins}}` with no
         // name after it, both demand nothing.
-        assert!(required_connector_bins("source:\n  postgres:\n    conn: {{conn}}\n").is_empty());
+        assert!(
+            required_connector_bins(
+                "source:\n  connector:\n    id: io.rapidbyte.postgres\n    config: {conn: {{conn}}}\n"
+            )
+            .is_empty()
+        );
         assert!(required_connector_bins("dir: {{bins}}\n").is_empty());
 
-        let rich = "source:\n  oracle: {{data}}/oracle.yaml\n\
-                    destination:\n  postgres:\n    conn: '{{conn}}'\n";
-        assert_eq!(
-            declared_connector_bins(rich).expect("the rich template parses"),
-            BTreeSet::from([
-                "rdlt-connector-oracle".to_owned(),
-                "rdlt-connector-postgres".to_owned(),
-            ])
+        // Only the `connector:` arm is read: an arm in any other shape
+        // declares nothing here (the CLI refuses it at parse anyway).
+        let other = "source:\n  oracle: {{data}}/oracle.yaml\n\
+                     destination:\n  postgres:\n    conn: '{{conn}}'\n";
+        assert!(
+            declared_connector_bins(other)
+                .expect("the template is well-formed YAML")
+                .is_empty()
         );
         let explicit = "source:\n  connector:\n    id: io.rapidbyte.file\n\
                         destination:\n  connector:\n    id: io.rapidbyte.postgres\n";
@@ -696,24 +699,26 @@ mod tests {
         }
     }
 
-    /// A rich-spelling pipeline refuses a missing release connector
-    /// before the CLI can resolve a host-installed binary from PATH.
+    /// An id-only `connector:` pipeline refuses a missing release
+    /// connector before the CLI can resolve a host-installed binary from
+    /// PATH.
     #[test]
-    fn rich_pipeline_refuses_a_missing_release_connector() {
+    fn id_only_pipeline_refuses_a_missing_release_connector() {
         let root = tempfile::tempdir().expect("tempdir");
         let paths = Paths::rooted(root.path().to_owned(), root.path().join("target"));
-        let pipeline = paths.benches.join("cells/pipelines/rich.yaml");
+        let pipeline = paths.benches.join("cells/pipelines/id-only.yaml");
         std::fs::create_dir_all(pipeline.parent().expect("pipeline parent"))
             .expect("the pipeline directory creates");
         std::fs::create_dir_all(&paths.bins).expect("the release directory creates");
         std::fs::write(
             &pipeline,
-            "source:\n  oracle: config.yaml\ndestination:\n  postgres: {}\n",
+            "source:\n  connector: {id: io.rapidbyte.oracle, config: config.yaml}\n\
+             destination:\n  connector: {id: io.rapidbyte.postgres, config: {}}\n",
         )
-        .expect("the rich pipeline writes");
+        .expect("the id-only pipeline writes");
         std::fs::write(&paths.cli, "").expect("the release CLI marker writes");
         let file: toml::Value = toml::from_str(
-            "[[cell]]\nid='rich'\nfixtures=['oracle']\npipeline='cells/pipelines/rich.yaml'\n\
+            "[[cell]]\nid='id-only'\nfixtures=['oracle']\npipeline='cells/pipelines/id-only.yaml'\n\
              [cell.verify]\nevents=1\n",
         )
         .expect("the cell TOML parses");
@@ -723,7 +728,7 @@ mod tests {
             .expect("the cell deserializes");
 
         let error = preconditions(&cell, &paths)
-            .expect_err("a missing rich connector must refuse")
+            .expect_err("a missing id-only connector must refuse")
             .to_string();
         assert!(
             error.contains(

@@ -31,7 +31,7 @@ pub struct Paths {
     /// Where the connector binaries land (`<target>/release`): the
     /// `{{bins}}` substitution the pipeline templates point their
     /// `connector: path:` overrides at, and the directory prepended to the
-    /// measured CLI's PATH so rich-spelling specs resolve the same bins.
+    /// measured CLI's PATH so id-only `connector:` arms resolve the same bins.
     /// Release unconditionally: an absent release bin fails loud at spawn,
     /// where a debug fallback would measure an unoptimized connector
     /// silently.
