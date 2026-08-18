@@ -19,11 +19,11 @@ id = "oracle-to-pg-200k"
 # its fixed port, as every cross-store cell does. The pg fixture's reset
 # recreates dest_rdlt/dest_dlt/dest_airbyte before every run.
 #
-# The pipeline keeps its rich `oracle:`/`postgres:` spellings; since the D1
-# swap (043) the CLI SPAWNS the named connector bins for those spellings, so
-# a run of this cell also covers two spawns + handshakes. The bins are
-# resolved from the harness's PATH arrangement (`{{bins}}` = <target>/release
-# prepended by the runner); `make connector-bins` builds them.
+# The pipeline names both sides as id-only `connector:` arms; the CLI spawns
+# the named bins off PATH, so a run of this cell also covers two spawns +
+# handshakes. The bins are resolved from the harness's PATH arrangement
+# (`{{bins}}` = <target>/release prepended by the runner);
+# `make connector-bins` builds them.
 fixtures = ["oracle", "pg"]
 pipeline = "harness/cells/pipelines/oracle-to-pg.yaml"
 note = "Oracle 23ai Free → Postgres, 200k×12 rows, full replace — the legacy-relational extract. rdlt reads through `oracle` (ODPI-C), streaming ONE cursor per stream into Arrow batches. The v1 SDU-bounded paging this note used to describe is gone with the pure-Rust driver it worked around (plan.md T005). dlt runs python-oracledb THIN mode: its connectorx backend needs Oracle Instant Client, which is not pip-installable, so it is deliberately not run — recorded, not hidden."

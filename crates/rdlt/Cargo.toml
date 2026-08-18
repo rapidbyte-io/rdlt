@@ -25,8 +25,7 @@ rdlt-engine = { workspace = true }
 # The out-of-process connector seam, the ONLY seam: every document arm
 # resolves through a runtime Provider into a spawned binary (the facade
 # holds the default local one), and the requirement type is the client
-# crate's. Both crates are unpublished pending their publish wave, so
-# rdlt itself cannot publish until they do.
+# crate's. Both crates are unpublished; rdlt cannot publish until they do.
 rdlt-connector-client = { workspace = true }
 rdlt-runtime = { workspace = true }
 # tokio-util only: `cancellation_token()` hands one out. tokio itself is

@@ -80,11 +80,13 @@ pub(crate) enum Command {
     },
     /// Print a connector's configuration JSON Schema to stdout.
     Schema {
-        /// Which connector's document to describe: a connector id
-        /// (io.rapidbyte.reference, found as rdlt-connector-reference
-        /// on PATH by its last segment; a dotless name is its own last
-        /// segment) or an explicit binary path. The named binary is
-        /// spawned and asked for its schema.
+        /// Which connector's document to describe: the FULL reverse-DNS
+        /// connector id (io.rapidbyte.reference, found as
+        /// rdlt-connector-reference on PATH by its last segment; a
+        /// shorthand discovers the binary and is then refused as an
+        /// identity mismatch — the same rule a document's `id` follows)
+        /// or an explicit binary path. The named binary is spawned and
+        /// asked for its schema.
         #[arg(value_name = "connector")]
         connector: String,
 

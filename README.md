@@ -19,17 +19,19 @@ catalogs of connectors — belongs to products built on top, not here.
 ## Use it as a library
 
 ```rust,ignore
-use rdlt::prelude::*;
+use std::path::Path;
+use rdlt::document;
 
-let report = Pipeline::builder("orders")
-    .source(source)          // any SPI Source — e.g. a spawned connector
-    .destination(dest)       // any SPI Destination
-    .write_mode(WriteMode::Append)
-    .workdir(".rdlt")        // enables the WAL + crash recovery
-    .build()?
-    .run()
-    .await?;
+let path = Path::new("pipeline.yaml");
+let doc = document::parse(&document::read(path)?)?;
+let base = path.parent().unwrap_or(Path::new(""));
+let report = document::build(&doc, base).await?.run().await?;
 ```
+
+`document::build` hands the engine's boundary — the `Pipeline` builder —
+a source value and a destination value; in production those are the
+runtime's process adapters over the spawned connectors, and hand-rolled
+`impl Source`/`impl Destination` values are test doubles.
 
 Connectors are separate binaries, spawned per run and supervised over
 a local socket — none are compiled into the engine, which knows none by

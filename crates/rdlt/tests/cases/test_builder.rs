@@ -6,7 +6,6 @@
 use rdlt::document;
 use rdlt::error::Error;
 use rdlt::prelude::*;
-use rdlt::sdk::spi::destination::Capabilities;
 use rdlt::sdk::spi::source::StreamSpec;
 use rdlt_testkit::memory;
 use serde_json::json;
@@ -54,6 +53,10 @@ fn merge_against_a_merge_less_destination_is_rejected_at_build() {
         .build()
         .expect_err("default merge must be rejected");
     assert!(
+        matches!(err, Error::Config { .. }),
+        "a typed config error, pre-I/O"
+    );
+    assert!(
         err.to_string().contains("default write mode"),
         "names the default request: {err}"
     );
@@ -75,22 +78,6 @@ fn merge_against_a_merge_less_destination_is_rejected_at_build() {
     );
 }
 
-#[test]
-fn build_rejects_merge_against_non_merge_destination() {
-    let dest =
-        memory::Destination::new().with_capabilities(Capabilities::default().with_merge(false));
-    let err = Pipeline::builder("bad")
-        .source(memory::Source::default())
-        .destination(dest)
-        .write_mode(WriteMode::Merge {
-            key: vec!["id".into()],
-        })
-        .build()
-        .expect_err("must fail fast at build time, pre-I/O");
-    assert!(matches!(err, Error::Config { .. }));
-    assert!(err.to_string().contains("Merge"));
-}
-
 /// Merge with an EMPTY key is rejected in both spellings.
 #[test]
 fn empty_merge_key_is_rejected_at_build() {
@@ -100,6 +87,10 @@ fn empty_merge_key_is_rejected_at_build() {
         .write_mode(WriteMode::Merge { key: vec![] })
         .build()
         .expect_err("empty default key");
+    assert!(
+        matches!(err, Error::Config { .. }),
+        "a typed config error, pre-I/O"
+    );
     assert!(err.to_string().contains("at least one key column"), "{err}");
 
     let err = Pipeline::builder("p")
@@ -112,17 +103,6 @@ fn empty_merge_key_is_rejected_at_build() {
         err.to_string().contains("`orders`"),
         "names the stream: {err}"
     );
-}
-
-#[test]
-fn build_rejects_empty_merge_key() {
-    let err = Pipeline::builder("bad")
-        .source(memory::Source::default())
-        .destination(memory::Destination::new())
-        .write_mode(WriteMode::Merge { key: vec![] })
-        .build()
-        .expect_err("empty key is a config error");
-    assert!(err.to_string().contains("key"));
 }
 
 /// `commit_policy` reaches the engine from the pipeline document, and

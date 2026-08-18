@@ -67,11 +67,14 @@ fn io_and_config_failures_keep_their_codes() {
     );
 }
 
-/// `schema` takes a connector ID, spelled as given: a dotless name is
-/// its own last segment, so `schema oracle` looks for
+/// `schema` takes the connector id AS WRITTEN — the CLI carries no
+/// table of first-party names. `schema oracle` therefore looks for
 /// `rdlt-connector-oracle` and, with no binaries reachable, refuses
-/// naming the id AS WRITTEN — the CLI carries no table of first-party
-/// names. (PATH is emptied so a developer's installed connectors cannot
+/// naming `oracle`, never a table's expansion of it. (Were the binary
+/// present, the shorthand would be refused next as an identity mismatch
+/// against the full reverse-DNS id it reports — the same rule a
+/// document's `id` follows; that arm needs a bin and lives in the gated
+/// tier. PATH is emptied so a developer's installed connectors cannot
 /// turn this into a live probe.)
 #[test]
 fn schema_takes_an_id_as_written() {

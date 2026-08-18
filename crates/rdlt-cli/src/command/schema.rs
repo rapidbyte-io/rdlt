@@ -5,9 +5,11 @@
 //! ONE tier: every value names an out-of-process connector, spawned
 //! and asked over the config-free `Spec` RPC — source-first, or under
 //! exactly the half `--role` names (the dual-role door). The value is
-//! a connector id discovered on PATH by its last segment
-//! (`io.rapidbyte.reference` and `reference` both find
-//! `rdlt-connector-reference`), or an explicit binary path.
+//! the FULL reverse-DNS connector id, discovered on PATH by its last
+//! segment (`io.rapidbyte.reference` → `rdlt-connector-reference`; a
+//! shorthand like `reference` discovers the same binary and is then
+//! refused as an identity mismatch, the same rule a document's `id`
+//! follows), or an explicit binary path.
 
 use rdlt::runtime::local::Local;
 use rdlt_connector_client::handshake::{Requirement, Role};
