@@ -16,33 +16,124 @@ crash-safety is proven by live fail-point sweeps, and performance claims
 are enforced by a benchmark gate. Breadth — orchestration, scheduling,
 catalogs of connectors — belongs to products built on top, not here.
 
-## Use it as a library
+## How it fits together
 
-```rust,ignore
-use std::path::Path;
-use rdlt::document;
+- **`rdlt`** — the crate you depend on. It names the vocabulary, owns the
+  pipeline *document* and its construction, and exposes the engine's
+  boundary (the `Pipeline` builder). It knows no connector by name.
+- **Connectors are separate processes.** A pipeline names one by id
+  (`connector: {id: io.rapidbyte.postgres, config: …}`); the id's last
+  segment resolves to a `rdlt-connector-<segment>` binary on `PATH`
+  (or `path:` names one explicitly). The runtime spawns it per run,
+  handshakes over a local socket, and the connector's own gate validates
+  its config — refusals arrive in the connector's wording. The
+  first-party connectors live in the sibling
+  [rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
+  repository (`make connector-bins` builds their release binaries). This
+  repository ships the engine, the CLI, and the reference connector its
+  own gates spawn.
+- **`rdlt-cli`** (`rdlt`) — a thin, scriptable face over the library; it
+  adds no engine capability.
 
-let path = Path::new("pipeline.yaml");
-let doc = document::parse(&document::read(path)?)?;
-let base = path.parent().unwrap_or(Path::new(""));
-let report = document::build(&doc, base).await?.run().await?;
+## Quickstart as a library
+
+Add the crate (the workspace is not on crates.io yet; depend on the git
+repository):
+
+```toml
+[dependencies]
+rdlt = { git = "https://github.com/rapidbyte-io/rdlt", version = "0.3" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`document::build` hands the engine's boundary — the `Pipeline` builder —
-a source value and a destination value; in production those are the
-runtime's process adapters over the spawned connectors, and hand-rolled
-`impl Source`/`impl Destination` values are test doubles.
+Write a pipeline document. This one needs only this repository's own
+reference connector — build it once and put it on `PATH`
+(`cargo build --release -p rdlt-connector-reference --features bin-serve`,
+then `export PATH="$PWD/target/release:$PATH"`):
 
-Connectors are separate binaries, spawned per run and supervised over
-a local socket — none are compiled into the engine, which knows none by
-name. A pipeline names one by its id (`connector: {id:
-io.rapidbyte.postgres, config: …}`); the id's last segment resolves to
-a `rdlt-connector-<segment>` binary on PATH, and `path:` names an
-out-of-tree binary explicitly. The first-party connectors live in the
-sibling [rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
-repository — its `make connector-bins` builds their release binaries;
-put them on PATH and every id above resolves. This repo ships the
-engine, the CLI, and the reference connector its own gates spawn.
+```yaml
+# pipeline.yaml — one JSONL file in, JSONL parts + commit receipts out
+pipeline: events-copy
+workdir: .rdlt/events-copy        # the write-ahead log; keep it between runs
+write_mode: append                # append | replace | merge: {key: [col, …]}
+source:
+  connector:
+    id: io.rapidbyte.reference
+    config: { path: ./events.jsonl }
+destination:
+  connector:
+    id: io.rapidbyte.reference
+    config: { path: ./out }        # or `config: ./dest.yaml` — a document by path
+```
+
+Read it, parse it, build it, run it — every configuration refusal dies at
+`build`, before a row moves:
+
+```rust
+use std::path::Path;
+
+use rdlt::document;
+use rdlt::error::Error;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("pipeline.yaml");
+    let text = document::read(path)?;
+    let doc = document::parse(&text)?;
+    let base = path.parent().unwrap_or(Path::new(""));   // path-form configs resolve here
+
+    let pipeline = document::build(&doc, base).await?;   // spawns + handshakes both connectors
+
+    // Optional: the typed event feed and cooperative cancellation.
+    let mut events = pipeline.events();                  // subscribe BEFORE run()
+    let cancel = pipeline.cancellation_token();          // cancel.cancel() == a crash: build again to resume
+    tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            eprintln!("{event:?}");                      // RunStarted, StreamStarted, BatchLoaded, Committed, …
+        }
+    });
+    let _ = cancel;
+
+    match pipeline.run().await {                         // consumes the pipeline; resumable across runs
+        Ok(report) => println!("{} rows in {} ms", report.total_rows(), report.elapsed_ms),
+        Err(Error::Cancelled) => println!("cancelled — build the same document again to resume"),
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+```
+
+What the pieces are:
+
+- `document::{read, parse, build, build_with}` — the document path. `build`
+  uses the runtime's default local provider (spawn from `PATH`);
+  `build_with(&doc, base, &your_provider)` lets an embedder decide how a
+  connector requirement becomes a process — a pool, a remote scheduler —
+  by implementing `rdlt::runtime::provider::Provider`.
+- `pipeline::Pipeline` / `pipeline::Builder` — the engine's boundary. The
+  builder takes a *source value* and a *destination value* and the
+  pipeline-wide policies (`write_mode`, `write_mode_for`, `schema_policy`,
+  `batch_policy`, `commit_policy`, `workdir`, byte and stream budgets). In
+  production those values are the runtime's process adapters that
+  `document::build` constructs for you; hand-rolled `impl Source` /
+  `impl Destination` values are test doubles.
+- The vocabulary lives behind its nouns: `rdlt::{commit, cursor, error,
+  event, id, metrics, policy, report}`. `use rdlt::prelude::*` glob-imports
+  what a pipeline author touches (never `Error` — spell
+  `rdlt::error::Error`, so the glob cannot shadow your own).
+- Outcome: `run()` returns `report::Run` — the exactly-once totals per
+  table (rows, bytes, discards), commits, retries, elapsed — the same
+  record the CLI prints as JSON. Live numbers come from `event` and the
+  `metrics::Metrics` fold; the `tracing` span contract is in
+  [docs/telemetry.md](docs/telemetry.md).
+- Errors: `rdlt::error::Error` is a closed taxonomy — `Config`, `Schema`,
+  `Source`, `Destination`, `Wal`, `Cancelled`, `Internal` — the CLI's exit
+  codes mirror it one-to-one. `document::Error` splits construction into
+  `Resolve` (the document) and `Build` (the engine).
+
+Authoring a connector is a separate concern: `rdlt::sdk` (the connector
+SDK) and `rdlt::sdk::spi` (the wire-side traits) — see
+[docs/connector-authoring.md](docs/connector-authoring.md).
 
 ## Use it from the CLI
 
@@ -50,38 +141,41 @@ One YAML document describes the whole pipeline; the CLI adds zero engine
 capability beyond parsing it:
 
 ```sh
-rdlt run pipeline.yaml        # live progress on a terminal, plain lines in CI
-rdlt validate pipeline.yaml   # the run's gates, without the run
-rdlt schema io.rapidbyte.postgres   # a connector's config JSON Schema — an
-                                    # id or a binary path; the connector
-                                    # is spawned and asked
+rdlt run pipeline.yaml                # live progress on a terminal, plain lines in CI
+rdlt run pipeline.yaml --report r.json --events events.ndjson
+rdlt validate pipeline.yaml           # the run's gates (spawn + handshake), without the run
+rdlt schema io.rapidbyte.postgres     # a connector's config JSON Schema — the FULL id,
+                                      # or a binary path; the connector is spawned and asked
 ```
 
 On a terminal, `run` draws a live display — per-stream rows read and
 written, bytes, rows/s, commit recency — and ends with a summary table
-of the exactly-once totals (the full JSON report goes to stdout when
-redirected, or to `--report`). Off a terminal it logs a line per event;
-`-q` silences, `-v` adds detail, `--events` captures the raw feed as
-NDJSON. Exit codes are stable and scriptable. The numbers come from
-the library's own telemetry seams — events, the `Metrics` fold, and
-`tracing` spans — documented in [docs/telemetry.md](docs/telemetry.md)
-for anyone embedding rdlt directly.
+of the exactly-once totals; the full JSON report goes to stdout when
+redirected, or to `--report`. Off a terminal it logs a line per event.
+`-q` silences the feed, `-v` adds detail, `--no-progress` forces the
+line-per-event form, `--output auto|plain|json` picks the mode
+explicitly (`json` = no feed, report JSON on stdout even on a terminal),
+`--events <path|->` captures the raw feed as NDJSON (`-` needs
+`--report`, so the two machine outputs never interleave), `--color`
+follows `NO_COLOR` under `auto`. Exit codes are stable and scriptable:
+0 success · 2 config · 3 schema · 4 source · 5 destination · 6 WAL/disk ·
+7 cancelled · 64 usage · 70 internal defect · 74 file I/O.
 
-Runnable pipelines covering every connector live in the
+Runnable pipelines covering every first-party connector live in the
 [rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
 repository's `examples/`, each executed as written before being
-committed. Every connector has one example showing its COMPLETE
-configuration (a property that repo's test suite enforces), and the
-containerised ones ship a seeded `compose.yaml` — `docker compose up`
-and run. Start with `pokemon-to-jsonl`, which reads a public API and
-needs no setup at all.
+committed; the containerised ones ship a seeded `compose.yaml`. Note the
+document format is now `connector: {id, config}` only — examples still
+written with the older per-connector short spellings (`postgres:`,
+`rest:` …) are being ported; rewrite such an arm as
+`connector: {id: io.rapidbyte.<name>, config: <the same document>}`.
 
 ### Parquet output is compressed
 
-Parquet destinations write **snappy-compressed** files by default — on a
-1M-row extract, roughly a quarter of the bytes of uncompressed output,
-and every parquet reader handles snappy. To choose another codec, or
-none:
+Parquet destinations (the file connector) write **snappy-compressed**
+files by default — on a 1M-row extract, roughly a quarter of the bytes
+of uncompressed output, and every parquet reader handles snappy. To
+choose another codec, or none:
 
 ```yaml
 destination:
@@ -97,13 +191,9 @@ destination:
 The other settings are `compression_level` (only for codecs that have one —
 gzip, zstd, brotli), `dictionary_enabled`, `dictionary_page_size_limit`,
 `data_page_size_limit` and `max_row_group_rows`. Anything omitted takes the
-default.
-
-The dictionary limit defaults well below parquet's own, which is what lets
-compression *save* encoder time on high-cardinality columns rather than cost
-it: without a lower cap, such a column interns nearly every distinct value
-before falling back to plain encoding, and then compresses that work too.
-Columns with few distinct values are unaffected either way.
+default. The dictionary limit defaults well below parquet's own, which is
+what lets compression *save* encoder time on high-cardinality columns
+rather than cost it.
 
 ## Throughput and how to scale it
 
@@ -131,6 +221,19 @@ table. Parallelising that single load would trade a correctness property for
 throughput, so rdlt does not. If you need more aggregate throughput, run more
 pipelines.
 
+## What it guarantees
+
+- **Exactly-once publication.** Writes stage invisibly and publish atomically
+  with pipeline state, idempotent per `(load_id, commit_seq)`; a crash at any
+  point resumes without duplicating or losing rows.
+- **Schema evolution under a policy you choose** — evolve, freeze, discard
+  row, discard value — per pipeline, table, or column; a frozen contract
+  refuses the change with a typed error naming the column and both types.
+- **Nothing silent.** Discards are counted, refusals are typed, retries are
+  bounded and reported; structured (Arrow) input is refused rather than
+  rounded, wrapped, or nulled. The trust model and the ceilings that back
+  it are in [SECURITY.md](SECURITY.md).
+
 ## Development
 
 ```sh
@@ -140,8 +243,7 @@ make check    # everything a PR must pass
 ```
 
 Architectural decisions are recorded in the code's own load-bearing
-comments and in `docs/`;
-benchmarks and their governance under `benches/`.
+comments and in `docs/`; benchmarks and their governance under `benches/`.
 
 ## License
 
