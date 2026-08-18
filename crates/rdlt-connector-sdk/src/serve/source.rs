@@ -96,6 +96,17 @@ pub const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
 /// limit while never touching the budget.
 const FRAME_MESSAGE_CAPACITY: usize = 64;
 
+/// The most `Read` RPCs one served source process admits at once — the
+/// source-side analogue of the destination's one-session ceiling. Each
+/// read's memory is bounded per call ([`BYTE_FRAME_BUDGET`] +
+/// [`READ_CHANNEL_BUDGET`] + one push in hand — ~72 MiB steady), and
+/// this bounds the multiplier: the engine drives ONE read per stream
+/// and its streams sequentially per source, so eight is generous for
+/// any honest host and keeps the multiplied steady-state bound under
+/// a GiB. A read past it is refused `RESOURCE_EXHAUSTED` — the host
+/// retries once a read completes.
+pub const MAX_CONCURRENT_READS: usize = 8;
+
 /// The role a source's handshake must be asked for.
 const EXPECTED_ROLE: &str = "source";
 
@@ -170,6 +181,11 @@ impl FrameSender {
 struct FrameStream {
     frames: ByteReceiver<Frame>,
     gone: watch::Sender<bool>,
+    /// The `Read`'s admission permit under [`MAX_CONCURRENT_READS`],
+    /// held for the response stream's lifetime — released when tonic
+    /// drops the stream, however the read ended. `None` for the
+    /// pre-admission error streams, which hold nothing.
+    _admission: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl Stream for FrameStream {
@@ -198,7 +214,11 @@ impl Drop for FrameStream {
     }
 }
 
-fn frame_channel(byte_budget: usize, message_capacity: usize) -> (FrameSender, FrameStream) {
+fn frame_channel(
+    byte_budget: usize,
+    message_capacity: usize,
+    admission: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> (FrameSender, FrameStream) {
     let (frames_tx, frames_rx) = channel::bytes(byte_budget, message_capacity);
     let (gone_tx, gone_rx) = watch::channel(false);
     (
@@ -209,6 +229,7 @@ fn frame_channel(byte_budget: usize, message_capacity: usize) -> (FrameSender, F
         FrameStream {
             frames: frames_rx,
             gone: gone_tx,
+            _admission: admission,
         },
     )
 }
@@ -218,12 +239,16 @@ fn frame_channel(byte_budget: usize, message_capacity: usize) -> (FrameSender, F
 /// spawned task that outlives the request.
 struct SourceServer<C: SourceConnector> {
     shell: OnceLock<Arc<Shell<C>>>,
+    /// The process-wide `Read` admission ceiling ([`MAX_CONCURRENT_READS`]
+    /// permits): every served connection shares it.
+    read_admission: Arc<tokio::sync::Semaphore>,
 }
 
 impl<C: SourceConnector> SourceServer<C> {
     fn new() -> Self {
         Self {
             shell: OnceLock::new(),
+            read_admission: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
         }
     }
 
@@ -358,6 +383,17 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         request: Request<proto::ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
         let shell = Arc::clone(self.shell()?);
+        // Admission BEFORE any per-read allocation: a read past the
+        // ceiling is a protocol-state refusal (a `Status`, like the
+        // destination's one-session ceiling), not a connector outcome.
+        let admission = Arc::clone(&self.read_admission)
+            .try_acquire_owned()
+            .map_err(|_| {
+                Status::resource_exhausted(format!(
+                    "{MAX_CONCURRENT_READS} concurrent reads per connector process — the \
+                     ceiling is reached; retry once a read completes"
+                ))
+            })?;
         let request = request.into_inner();
 
         // A request document that fails its gate answers INSIDE the
@@ -413,7 +449,8 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let read_task: JoinHandle<Result<(), SourceError>> =
             tokio::spawn(async move { shell.read(read_request).await });
 
-        let (frame_tx, frame_rx) = frame_channel(BYTE_FRAME_BUDGET, FRAME_MESSAGE_CAPACITY);
+        let (frame_tx, frame_rx) =
+            frame_channel(BYTE_FRAME_BUDGET, FRAME_MESSAGE_CAPACITY, Some(admission));
 
         tokio::spawn(forward_read_frames(
             records_in,
@@ -529,7 +566,7 @@ async fn forward_read_frames(
 /// budget: an `ErrorFrame` is priced at nothing, so the enqueue cannot
 /// park.
 async fn error_stream(message: String) -> Response<FrameStream> {
-    let (frame_tx, frame_rx) = frame_channel(0, 1);
+    let (frame_tx, frame_rx) = frame_channel(0, 1, None);
     let frame = proto::ReadFrame {
         frame: Some(read_frame::Frame::Error(wire::error_frame(
             Classification::Fatal,
@@ -711,7 +748,7 @@ mod tests {
         // The terminal ErrorFrame is the diagnosis a client is waiting
         // for; gating it on a budget the stalled client itself spent
         // would hide exactly the failures that matter most.
-        let (sender, mut stream) = frame_channel(100, ROOMY);
+        let (sender, mut stream) = frame_channel(100, ROOMY, None);
         sender
             .send(frame_of(100))
             .await
@@ -751,7 +788,7 @@ mod tests {
             .await
             .expect("the push is admitted");
 
-        let (frame_tx, mut stream) = frame_channel(1 << 20, ROOMY);
+        let (frame_tx, mut stream) = frame_channel(1 << 20, ROOMY, None);
         let loop_task = tokio::spawn(forward_read_frames(records_in, frame_tx, read_task, refuse));
 
         let first = tokio::time::timeout(BOUND, stream.next())
@@ -786,7 +823,7 @@ mod tests {
         // SEMAPHORE, not just one waiting for a message slot —
         // otherwise the forwarding loop never learns to cancel the
         // connector, and the read task hangs on forever.
-        let (sender, stream) = frame_channel(8, ROOMY);
+        let (sender, stream) = frame_channel(8, ROOMY, None);
         sender
             .send(frame_of(8))
             .await
@@ -808,7 +845,7 @@ mod tests {
     /// connector's NEXT push, not only one parked on a send.
     #[tokio::test]
     async fn dropping_the_stream_resolves_stream_gone() {
-        let (sender, stream) = frame_channel(8, ROOMY);
+        let (sender, stream) = frame_channel(8, ROOMY, None);
         let parked = tokio::spawn(async move { sender.stream_gone().await });
         tokio::time::sleep(PARKED).await;
         drop(stream);

@@ -232,6 +232,11 @@ pub struct EchoDestinationConfig {
     /// to fail on.
     #[serde(default)]
     pub invalid: bool,
+    /// Makes `write` PANIC — a connector defect, the shape the serve
+    /// layer's panic belt must contain: `close` still runs and the
+    /// client sees a typed error, never a silently dead stream.
+    #[serde(default)]
+    pub panic_on_write: bool,
 }
 
 impl Document for EchoDestinationConfig {
@@ -255,6 +260,7 @@ impl Document for EchoDestinationConfig {
 pub struct EchoDestination {
     fail_publish: bool,
     receipt_exists: bool,
+    panic_on_write: bool,
     /// `Some(true)` induces ONE transient `connect` failure, consumed
     /// (flipped to `Some(false)`) the first time `connect` runs — see
     /// [`EchoDestinationConfig::fail_connect`]. Interior mutability
@@ -275,6 +281,7 @@ impl DestinationConnector for EchoDestination {
         Ok(Self {
             fail_publish: config.fail_publish,
             receipt_exists: config.receipt_exists,
+            panic_on_write: config.panic_on_write,
             fail_connect_once: AtomicBool::new(config.fail_connect),
         })
     }
@@ -297,6 +304,7 @@ impl DestinationConnector for EchoDestination {
             log: call_log(),
             fail_publish: self.fail_publish,
             receipt_exists: self.receipt_exists,
+            panic_on_write: self.panic_on_write,
             part_events: context.part_events.clone(),
         })
     }
@@ -306,6 +314,7 @@ pub struct EchoBackend {
     log: Arc<Mutex<Vec<String>>>,
     fail_publish: bool,
     receipt_exists: bool,
+    panic_on_write: bool,
     part_events: Option<rdlt_connector::destination::PartEventFn>,
 }
 
@@ -335,6 +344,7 @@ impl Backend for EchoBackend {
         _batch: RecordBatch,
     ) -> Result<(), DestinationError> {
         self.log("write");
+        assert!(!self.panic_on_write, "echo: induced write panic");
         Ok(())
     }
 

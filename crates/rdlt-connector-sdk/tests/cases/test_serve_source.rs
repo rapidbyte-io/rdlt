@@ -16,7 +16,9 @@ use rdlt_connector_protocol::proto::{
     Classification, HandshakeRequest, ReadRequest, SpecRequest, StreamsRequest, handshake_reply,
     read_frame, streams_reply,
 };
-use rdlt_connector_sdk::serve::source::{BYTE_FRAME_BUDGET, READ_CHANNEL_BUDGET, run_on};
+use rdlt_connector_sdk::serve::source::{
+    BYTE_FRAME_BUDGET, MAX_CONCURRENT_READS, READ_CHANNEL_BUDGET, run_on,
+};
 use tonic::transport::{Channel, Endpoint};
 
 use super::support::echo::{self, EchoSource};
@@ -1041,4 +1043,124 @@ async fn a_debug_escaped_secret_is_redacted_too() {
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
+}
+
+/// `expected_role` is an inbound identifier like every other: one over
+/// the identifier ceiling refuses WITHOUT echoing it — the refusal
+/// stays bounded however large the frame was.
+#[tokio::test]
+async fn an_oversized_expected_role_refuses_bounded_without_echo() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let role = "R".repeat(1 << 20);
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: role,
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.len() < 1024,
+                "the refusal is bounded, not an echo: {} bytes",
+                error.message.len()
+            );
+            assert!(
+                !error.message.contains("RRRR"),
+                "no fragment of the role rides the refusal: {}",
+                error.message
+            );
+            assert!(
+                error.message.contains("1048576"),
+                "the refusal names the true length: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// The source-side admission ceiling: `MAX_CONCURRENT_READS` parked
+/// reads all proceed (each yields its first frame); the next `Read`
+/// refuses RESOURCE_EXHAUSTED naming the ceiling; releasing one read
+/// admits another.
+#[tokio::test]
+async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: serde_json::to_vec(&serde_json::json!({
+                "rows": 2,
+                "park_after_first": true
+            }))
+            .expect("config"),
+        })
+        .await
+        .expect("handshake");
+    let read = || ReadRequest {
+        stream_spec_json: numbers_stream_spec_json(),
+        since_cursor_json: None,
+    };
+
+    let mut admitted = Vec::new();
+    for _ in 0..MAX_CONCURRENT_READS {
+        let mut frames = source
+            .read(read())
+            .await
+            .expect("an admitted read")
+            .into_inner();
+        frames
+            .message()
+            .await
+            .expect("frame transport")
+            .expect("the admitted read yields its first frame");
+        admitted.push(frames);
+    }
+
+    let refused = source
+        .read(read())
+        .await
+        .expect_err("the read past the ceiling must refuse");
+    assert_eq!(
+        refused.code(),
+        tonic::Code::ResourceExhausted,
+        "{refused:?}"
+    );
+    assert!(
+        refused
+            .message()
+            .contains(&MAX_CONCURRENT_READS.to_string()),
+        "the refusal names the ceiling: {}",
+        refused.message()
+    );
+
+    // Releasing one admitted read frees its permit — the next read is
+    // admitted once the server observes the hang-up.
+    drop(admitted.pop());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match source.read(read()).await {
+                Ok(_) => break,
+                Err(status) if status.code() == tonic::Code::ResourceExhausted => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(status) => panic!("unexpected read failure: {status:?}"),
+            }
+        }
+    })
+    .await
+    .expect("a released permit admits the next read");
 }

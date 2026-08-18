@@ -1946,3 +1946,64 @@ async fn an_oversized_open_identifier_refuses_before_the_session() {
         other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
     }
 }
+
+/// A backend that PANICS mid-call is a connector defect, and the serve
+/// layer contains it: the client sees a typed internal error naming the
+/// panic (never a stream that just ends), and the session's best-effort
+/// `close` still runs so nothing the backend opened leaks until process
+/// death.
+#[tokio::test]
+async fn a_panicking_backend_call_still_closes_the_session_and_answers_typed() {
+    echo::clear_call_log();
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "destination".to_string(),
+            config_json: serde_json::to_vec(&serde_json::json!({"panic_on_write": true}))
+                .expect("config"),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    req_tx
+        .send(write_frame(ECHOED_TABLE, &[1]))
+        .await
+        .expect("send write");
+    let status = match next_reply(&mut replies).await {
+        Err(status) => status,
+        other => panic!("a panicking backend must answer a typed error, got {other:?}"),
+    };
+    assert_eq!(status.code(), tonic::Code::Internal, "{status:?}");
+    assert!(
+        status.message().contains("panicked") && status.message().contains("induced write panic"),
+        "the error names the panic: {}",
+        status.message()
+    );
+
+    let log = echo::call_log_snapshot();
+    assert!(
+        log.iter().any(|call| call == "close"),
+        "best-effort close ran after the panic: {log:?}"
+    );
+}

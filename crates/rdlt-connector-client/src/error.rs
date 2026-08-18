@@ -35,8 +35,8 @@ pub enum Error {
     /// The connector refused the handshake with a typed [`proto::ErrorFrame`]
     /// — bad role, out-of-range protocol version, undecodable or invalid
     /// config. The connector's own wording rides in `message`, rendered
-    /// inert (control characters spelled as escapes — the wire edge's
-    /// escape seat).
+    /// inert and bounded (control characters spelled as escapes, the
+    /// render capped — the wire edge's escape seat).
     #[error("the connector refused the handshake: {message}")]
     Handshake {
         /// The frame's classification, normalized safe-loud: an
@@ -79,8 +79,10 @@ pub enum Error {
     Protocol(String),
     /// The RPC layer itself failed: a raw `Status` (the served side's
     /// protocol-state refusals ride this shape too — see the sdk's
-    /// Status-vs-ErrorFrame rule) or a broken transport.
-    #[error("connector transport: {0}")]
+    /// Status-vs-ErrorFrame rule) or a broken transport. The status
+    /// text is connector-authored display text: rendered escaped and
+    /// bounded like a frame message.
+    #[error("connector transport: code: {:?}, message: {}", .0.code(), gate::render_message(.0.message()))]
     Transport(#[source] tonic::Status),
     /// The connector stayed silent past the RPC deadline: the wire is
     /// up but `operation` never arrived. The silent-but-alive twin of
@@ -104,13 +106,14 @@ impl Error {
     /// Build the [`Error::Handshake`] arm from a refusal frame — the
     /// one place the wire enum's raw `i32` is normalized for the
     /// handshake path. The message is rendered inert (control
-    /// characters spelled as escapes) rather than refused, because a
-    /// message is display text: the connector's real diagnostic should
-    /// survive its own bad bytes, not vanish behind a refusal.
+    /// characters spelled as escapes) and bounded rather than refused,
+    /// because a message is display text: the connector's real
+    /// diagnostic should survive its own bad bytes, not vanish behind
+    /// a refusal — and a frame-sized one must not become a firehose.
     pub(crate) fn handshake_refusal(frame: &proto::ErrorFrame) -> Self {
         Error::Handshake {
             classification: gate::classification(frame.classification),
-            message: gate::escape(&frame.message).into_owned(),
+            message: gate::render_message(&frame.message),
             retry_after_ms: gate::retry_after(frame).map(|d| d.as_millis() as u64),
         }
     }
@@ -129,7 +132,7 @@ pub(crate) trait FromWire: Sized {
     fn fatal_error(error: Error) -> Self;
 
     fn from_frame(frame: &proto::ErrorFrame) -> Self {
-        let message = gate::escape(&frame.message).into_owned();
+        let message = gate::render_message(&frame.message);
         match gate::classification(frame.classification) {
             Classification::Transient => Self::transient(message),
             Classification::RateLimited => Self::rate_limited(message, gate::retry_after(frame)),
@@ -345,6 +348,86 @@ mod tests {
                 "the message survives, spelled inert: {rendered:?}"
             );
         }
+    }
+
+    /// The escape seat is BOUNDED: a frame message as large as the wire
+    /// allows, made of one-byte control characters that escape to six,
+    /// renders to a capped prefix naming the true length — never a
+    /// string several times the frame's size. Every mapper.
+    #[test]
+    fn an_oversized_control_byte_message_renders_bounded_and_names_its_length() {
+        let hostile = "\u{7}".repeat(4 << 20);
+        let renderings = [
+            SourceError::from_frame(&proto::ErrorFrame {
+                classification: Classification::Fatal as i32,
+                message: hostile.clone(),
+                retry_after_ms: None,
+            })
+            .to_string(),
+            DestinationError::from_frame(&proto::ErrorFrame {
+                classification: Classification::Fatal as i32,
+                message: hostile.clone(),
+                retry_after_ms: None,
+            })
+            .to_string(),
+            Error::handshake_refusal(&proto::ErrorFrame {
+                classification: Classification::Fatal as i32,
+                message: hostile.clone(),
+                retry_after_ms: None,
+            })
+            .to_string(),
+        ];
+        for rendered in renderings {
+            assert!(
+                rendered.len() <= gate::MESSAGE_RENDER_CAP + 128,
+                "the render is bounded by the cap plus its envelope: {} bytes",
+                rendered.len()
+            );
+            assert!(
+                rendered.contains(&format!("truncated from {} bytes", 4 << 20)),
+                "the render names the true length: {rendered:?}"
+            );
+            assert!(
+                !rendered.contains('\u{7}') && rendered.contains("\\u{7}"),
+                "the kept prefix is still escaped: {rendered:?}"
+            );
+        }
+    }
+
+    /// The Transport arm renders a Status's text through the same
+    /// escape and bound: the Hangul fillers (blank glyphs Debug quoting
+    /// leaves raw) and control bytes are spelled out, and an oversized
+    /// status message renders bounded.
+    #[test]
+    fn a_transport_status_text_renders_escaped_and_bounded() {
+        let error =
+            SourceError::transport(tonic::Status::internal("\u{3164}filler\u{1b}[31mFORGED"));
+        let rendered = error.to_string();
+        assert!(
+            rendered.starts_with("fatal source error: connector transport: "),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains('\u{3164}') && !rendered.contains('\u{1b}'),
+            "no raw filler or control byte survives: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\\u{3164}filler\\u{1b}[31mFORGED"),
+            "the text survives, spelled inert: {rendered:?}"
+        );
+
+        let huge = DestinationError::transport(tonic::Status::internal("x".repeat(1 << 20)));
+        let rendered = huge.to_string();
+        assert!(
+            rendered.len() <= gate::MESSAGE_RENDER_CAP + 128,
+            "a huge status message renders bounded: {} bytes",
+            rendered.len()
+        );
+        assert!(
+            rendered.contains(&format!("truncated from {} bytes", 1 << 20)),
+            "and names the true length: {}",
+            &rendered[..200]
+        );
     }
 
     /// An ordinary message — non-ASCII included, which is data, not

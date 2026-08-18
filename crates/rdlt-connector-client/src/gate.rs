@@ -89,6 +89,15 @@ pub(crate) fn cursor(value: &serde_json::Value) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// The most bytes of a connector's DIAGNOSTIC text (an ErrorFrame's
+/// message, a Status's text) any render keeps: the escape spells one
+/// control byte as six, so an unbounded escape of a frame-sized message
+/// would materialize hundreds of MB inside one error — the cap keeps a
+/// refusal a refusal, not a firehose. Four KiB carries any honest
+/// diagnostic, nested causes included, and matches the panic-text cap
+/// its sibling belts render under.
+pub(crate) const MESSAGE_RENDER_CAP: usize = 4096;
+
 /// Render text inert for display: every control or invisible character
 /// — the full inventory, joiners included — becomes its spelled-out
 /// escape, while everything else (quotes, non-ASCII text, which are
@@ -100,23 +109,47 @@ pub(crate) fn escape(text: &str) -> Cow<'_, str> {
     }
     let mut escaped = String::with_capacity(text.len() + 8);
     for character in text.chars() {
-        if inventory::is_control_or_invisible(character) {
-            // `escape_debug` passes "printable" characters through, and
-            // the inventory's two Hangul fillers are category Lo —
-            // printable to it while rendering as blank glyphs — so
-            // anything it hands back unchanged is spelled out by hand.
-            let mut debug = character.escape_debug();
-            if debug.len() == 1 && debug.next() == Some(character) {
-                use std::fmt::Write as _;
-                let _ = write!(escaped, "\\u{{{:x}}}", character as u32);
-            } else {
-                escaped.extend(character.escape_debug());
-            }
-        } else {
-            escaped.push(character);
-        }
+        push_escaped(&mut escaped, character);
     }
     Cow::Owned(escaped)
+}
+
+/// Render a connector's DIAGNOSTIC text for display, escaped like
+/// [`escape`] and BOUNDED: the render stops at [`MESSAGE_RENDER_CAP`]
+/// bytes with a marker naming the true length, so a frame-sized
+/// message cannot become a multi-hundred-MB error string. Honest
+/// messages fit under the cap and render whole.
+pub(crate) fn render_message(text: &str) -> String {
+    let mut out = String::with_capacity(text.len().min(MESSAGE_RENDER_CAP + 32));
+    for character in text.chars() {
+        push_escaped(&mut out, character);
+        if out.len() >= MESSAGE_RENDER_CAP {
+            use std::fmt::Write as _;
+            let _ = write!(out, "…[truncated from {} bytes]", text.len());
+            break;
+        }
+    }
+    out
+}
+
+/// One character, spelled inert if the inventory names it, verbatim
+/// otherwise — the escape rule both renders share.
+fn push_escaped(out: &mut String, character: char) {
+    if inventory::is_control_or_invisible(character) {
+        // `escape_debug` passes "printable" characters through, and
+        // the inventory's two Hangul fillers are category Lo —
+        // printable to it while rendering as blank glyphs — so
+        // anything it hands back unchanged is spelled out by hand.
+        let mut debug = character.escape_debug();
+        if debug.len() == 1 && debug.next() == Some(character) {
+            use std::fmt::Write as _;
+            let _ = write!(out, "\\u{{{:x}}}", character as u32);
+        } else {
+            out.extend(character.escape_debug());
+        }
+    } else {
+        out.push(character);
+    }
 }
 
 /// Decode a frame's raw classification safe-loud: `Unspecified`

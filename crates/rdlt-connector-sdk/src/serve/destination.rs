@@ -688,20 +688,68 @@ async fn drive_session<C: DestinationConnector>(
                     // no peer left to reply to.
                     Ok(None) | Err(_) => break,
                 };
-                match handle_frame(&shell, &mut state, &part_tx, &mut part_rx, &reply_tx, frame).await {
-                    Step::Continue => {}
-                    Step::End => break,
+                // The panic belt: a `Backend` that panics mid-call is a
+                // connector defect, and an uncontained unwind would end
+                // this task with the client's stream simply gone and
+                // `close` never run. Contained, the panic becomes a typed
+                // internal error on the stream and the best-effort close
+                // below still runs.
+                let step = CatchUnwind(std::pin::pin!(handle_frame(
+                    &shell,
+                    &mut state,
+                    &part_tx,
+                    &mut part_rx,
+                    &reply_tx,
+                    frame,
+                )))
+                .await;
+                match step {
+                    Ok(Step::Continue) => {}
+                    Ok(Step::End) => break,
+                    Err(payload) => {
+                        let _ = reply_tx
+                            .send(Err(Status::internal(format!(
+                                "the connector's backend panicked while handling the request: {}",
+                                gate::panic_text(payload.as_ref())
+                            ))))
+                            .await;
+                        break;
+                    }
                 }
             }
         }
     }
 
     // Best-effort close on EVERY exit path above except the explicit
-    // `Close` frame (which already ran it and set `closed`).
+    // `Close` frame (which already ran it and set `closed`) — contained
+    // the same way, since a backend that panicked once may panic again.
     if !state.closed
         && let Some(backend) = state.backend.as_mut()
     {
-        let _ = backend.close().await;
+        let _ = CatchUnwind(std::pin::pin!(backend.close())).await;
+    }
+}
+
+/// A future whose panics are contained: polls the pinned inner future
+/// under `catch_unwind`, resolving to `Err(payload)` the moment a poll
+/// unwinds; a panicked future is never polled again. Over a `Pin<&mut
+/// F>` (`std::pin::pin!` at the call site) so the wrapper is `Unpin`
+/// and needs no projection.
+struct CatchUnwind<'a, F>(std::pin::Pin<&'a mut F>);
+
+impl<F: std::future::Future> std::future::Future for CatchUnwind<'_, F> {
+    type Output = Result<F::Output, Box<dyn std::any::Any + Send>>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let inner = self.0.as_mut();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner.poll(cx))) {
+            Ok(std::task::Poll::Ready(output)) => std::task::Poll::Ready(Ok(output)),
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Err(payload) => std::task::Poll::Ready(Err(payload)),
+        }
     }
 }
 

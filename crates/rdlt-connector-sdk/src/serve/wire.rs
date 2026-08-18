@@ -142,6 +142,17 @@ fn sweep_dead_serve_dirs(base: &Path) {
 /// (delete-on-drop would be useless: a served process dies by SIGKILL,
 /// never by unwinding).
 fn create_private_dir(base: &Path) -> Result<PathBuf, Error> {
+    create_private_dir_with(base, |path| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    })
+}
+
+/// [`create_private_dir`] over an injectable mode-normalizing step —
+/// the seam its failure path is proven through.
+fn create_private_dir_with(
+    base: &Path,
+    normalize_mode: impl Fn(&Path) -> io::Result<()>,
+) -> Result<PathBuf, Error> {
     use std::hash::{BuildHasher, Hasher};
     use std::os::unix::fs::DirBuilderExt;
 
@@ -167,12 +178,14 @@ fn create_private_dir(base: &Path) -> Result<PathBuf, Error> {
         builder.mode(0o700);
         match builder.create(&path) {
             Ok(()) => {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(
-                    |source| Error::SocketDir {
-                        path: path.clone(),
-                        source,
-                    },
-                )?;
+                // A directory whose mode could not be normalized is not
+                // handed out AND not left behind: removed best-effort
+                // (it is empty — nothing bound yet), the failure
+                // reported.
+                if let Err(source) = normalize_mode(&path) {
+                    let _ = std::fs::remove_dir(&path);
+                    return Err(Error::SocketDir { path, source });
+                }
                 return Ok(path);
             }
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
@@ -418,10 +431,21 @@ pub(crate) fn handshake<S: HandshakeShell>(
     }
 
     if request.expected_role != this_role {
+        // The role is an inbound identifier like every other: past the
+        // identifier ceiling it is refused by LENGTH, never echoed —
+        // and a recognizable-length unknown role renders bounded.
+        if request.expected_role.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
+            return refuse_handshake(format!(
+                "the handshake asked for a role of {} bytes — over the {}-byte wire \
+                 identifier ceiling; roles are `source` and `destination`",
+                request.expected_role.len(),
+                gate::MAX_WIRE_IDENTIFIER_BYTES
+            ));
+        }
         if !KNOWN_ROLES.contains(&request.expected_role.as_str()) {
             return refuse_handshake(format!(
                 "the handshake asked for role `{}`, which this connector does not recognize",
-                request.expected_role
+                gate::render_diagnostic(&request.expected_role, gate::MAX_WIRE_IDENTIFIER_BYTES)
             ));
         }
         let other_role = KNOWN_ROLES
@@ -552,6 +576,30 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o700, "the directory is private to its owner");
         }
+    }
+
+    /// A directory whose mode normalization fails is not left behind:
+    /// the failure is reported and the directory removed, so a refused
+    /// start leaves no `rdlt-serve-*` residue for the next sweep.
+    #[test]
+    fn a_failed_mode_normalization_leaves_no_directory_behind() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let error = create_private_dir_with(base.path(), |_| {
+            Err(io::Error::other("induced chmod failure"))
+        })
+        .expect_err("the induced failure refuses");
+        let Error::SocketDir { path, .. } = error else {
+            panic!("expected SocketDir, got {error:?}");
+        };
+        assert!(
+            !path.exists(),
+            "the directory is removed on the failure path"
+        );
+        assert_eq!(
+            std::fs::read_dir(base.path()).expect("read_dir").count(),
+            0,
+            "nothing is left under the base"
+        );
     }
 
     /// The startup sweep reclaims exactly the dead: an EMPTY
