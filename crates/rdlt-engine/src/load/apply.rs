@@ -3,7 +3,7 @@
 //!
 //! A schema delta and a batch each lower for the destination's capabilities
 //! exactly once, in one place: the live `Loader::process` and both legs of
-//! `wal::resume::replay` (the pre-loop table ensure and the per-record delta arm)
+//! `wal::replay` (the pre-loop table ensure and the per-record delta arm)
 //! route through here, so recovery reproduces the live path byte-for-byte.
 
 use rdlt_connector::arrow::RecordBatch;
@@ -15,7 +15,7 @@ use rdlt_core::id::TableName;
 use rdlt_core::schema::TableSchema;
 use rdlt_core::state::StateDoc;
 
-use super::lowering;
+use super::lower;
 
 /// Apply one schema delta to the session: lower the rich engine schema for the
 /// destination, ensure the (lowered) table exists, and record the ORIGINAL
@@ -29,7 +29,7 @@ pub(crate) async fn apply_delta(
     schema: &TableSchema,
     mode: &WriteMode,
 ) -> Result<(), Error> {
-    let lowered = lowering::lower_schema(schema, capabilities);
+    let lowered = lower::lower_schema(schema, capabilities);
     session
         .ensure_table(&lowered, mode)
         .await
@@ -50,7 +50,7 @@ pub(crate) async fn apply_batch(
     table: &TableName,
     batch: &RecordBatch,
 ) -> Result<(), Error> {
-    let lowered = lowering::lower_batch(batch, capabilities)?;
+    let lowered = lower::lower_batch(batch, capabilities)?;
     session
         .write(table, lowered)
         .await

@@ -5,7 +5,7 @@
 mod drain;
 mod extract;
 mod lock;
-mod recover;
+pub(crate) mod recover;
 pub(crate) mod run;
 mod validate;
 

@@ -1,234 +1,26 @@
-//! The write half of the WAL: segment files, the append-only manifest, and the
-//! three-step commit protocol.
-//!
-//! Segments carry no dictionary, no statistics and no compression. A columnar
-//! analytics container spends its encoding effort making data queryable, and
-//! nothing ever queries a segment: it is written, replayed at most once, and
-//! unlinked. The container is chosen for cheap round-tripping and for refusing
-//! a truncated file, not for what a reader could do with it.
+//! The live run's WAL: the append-only manifest, one segment per recorded
+//! batch, and the three-step commit protocol (fsync the span, destination
+//! commit, mark committed and reclaim).
 
 use std::{
     fs::{File, OpenOptions},
     io::Write,
     os::unix::fs::OpenOptionsExt as _,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
-use rdlt_connector::arrow::RecordBatch;
 use rdlt_core::crash_point;
 use rdlt_core::error::Error;
 use rdlt_core::id::{LoadId, PipelineId};
 
+use super::dir::{
+    RULES_SIDECAR, create_private_dir, ensure_owned_dir, open_wal_read, private_file,
+};
+use super::format::{
+    MAX_MANIFEST_LINE_BYTES, WAL_FORMAT_VERSION, WalRecord, encode_line, segment_file_name,
+};
+use super::segment::write_segment;
 use crate::load::LoadItem;
-
-use super::record::{WAL_FORMAT_VERSION, WalRecord};
-
-/// The WAL's directory inside a pipeline workdir — the one piece of the
-/// on-disk layout, alongside the manifest and segment names below, that the
-/// WAL owns rather than its callers.
-pub(crate) fn dir_in(workdir: &Path) -> PathBuf {
-    workdir.join("wal")
-}
-
-/// Create `dir` (and any missing parents) PRIVATE to the operating
-/// user (0o700 on every component this call creates): the WAL holds
-/// cleartext batch data and cursors, and a default-umask directory in
-/// a shared location would let any local user read in-flight rows. An
-/// already-existing directory keeps its mode — the operator's own
-/// arrangement is not overridden. Shared with the workdir lock, so the
-/// whole workdir tree is born private, not just the WAL under it.
-pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt as _;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-}
-
-/// Open a WAL-path file for reading, refusing anything that is not a plain
-/// regular file — the READ side of the WAL's file-type boundary, shared by
-/// every seat that opens a manifest, sidecar, segment or marker.
-///
-/// Two flags close two different plants at the same boundary, race-free
-/// because the verdict comes from the opened HANDLE, never a stat beside it:
-///
-/// - `O_NONBLOCK`: a plain read-open of a writerless FIFO blocks until a
-///   writer appears — which for a planted FIFO is never — so one `mkfifo`
-///   at a WAL path would hang recovery forever (nothing up that stack has a
-///   timeout). With the flag the open returns immediately and the handle
-///   check below refuses the FIFO. On a regular file the flag is a no-op:
-///   regular-file reads never report "would block", so the descriptor
-///   behaves exactly as an ordinary one and needs no flag-clearing (which
-///   would take an `fcntl` this workspace's unsafe ban rules out anyway).
-/// - `O_NOFOLLOW`: a symlink at a WAL path reads FOREIGN content into scan
-///   verdicts — the write side already refuses symlinks everywhere, and the
-///   read side must match or the weaker side decides. The resulting ELOOP
-///   is re-worded so refusal logs name the plant, not a loop.
-///
-/// The handle check catches what the flags do not (a planted socket or
-/// device node). Callers classify the error as damage/refusal, never crash.
-pub(crate) fn open_wal_read(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => file,
-        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "refusing WAL file `{}` because it is a symlink",
-                    path.display()
-                ),
-            ));
-        }
-        Err(error) => return Err(error),
-    };
-    if !file.metadata()?.file_type().is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "refusing WAL file `{}` because it is not a regular file",
-                path.display()
-            ),
-        ));
-    }
-    Ok(file)
-}
-
-/// [`OpenOptions`] for a WAL-owned file, born owner-only (0o600) —
-/// the file-level half of the directory hardening above: the mode
-/// applies only at creation, so a file that already exists keeps
-/// whatever the operator gave it. Every file the WAL creates —
-/// manifest, rules sidecar, segments — goes through this, so none can
-/// silently fall back to the umask default.
-fn private_file() -> OpenOptions {
-    let mut options = OpenOptions::new();
-    options.mode(0o600);
-    options
-}
-
-/// The rules sidecar beside the manifest: the writer's `IdentRules`,
-/// serialized verbatim. Recovery's stream↔segment join normalizes under
-/// the resuming run's rules, and that join is only sound when they are
-/// the WRITING run's rules — the sidecar is what proves it. A workdir
-/// file beside the manifest, not a record in the manifest stream;
-/// reclaimed with the directory by [`clear`].
-pub(crate) const RULES_SIDECAR: &str = "rules.json";
-
-/// Proof that the `wal` leaf was created or explicitly adopted by rdlt. The
-/// marker is intentionally inside the leaf that cleanup removes; an explicit
-/// workdir pointing at a non-empty foreign `wal` directory can no longer turn
-/// that spelling into authority for `remove_dir_all`.
-pub(crate) const OWNERSHIP_MARKER: &str = ".rdlt-wal";
-const OWNERSHIP_MARKER_BYTES: &[u8] = b"rdlt-wal-v1\n";
-
-fn ensure_owned_dir(dir: &Path) -> std::io::Result<()> {
-    let metadata = std::fs::symlink_metadata(dir)?;
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "refusing WAL path `{}` because it is not a real directory",
-                dir.display()
-            ),
-        ));
-    }
-
-    let marker = dir.join(OWNERSHIP_MARKER);
-    match std::fs::symlink_metadata(&marker) {
-        Ok(meta) if meta.file_type().is_file() && !meta.file_type().is_symlink() => {
-            // The read goes through the gated open, not `fs::read`: the stat
-            // above and the read are two syscalls, and a FIFO swapped into
-            // the gap would block a plain open forever. The handle-side
-            // re-check closes that window.
-            let bytes = read_via_gated_open(&marker)?;
-            if bytes == OWNERSHIP_MARKER_BYTES {
-                return Ok(());
-            }
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "WAL ownership marker `{}` has unrecognized contents",
-                    marker.display()
-                ),
-            ));
-        }
-        Ok(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "WAL ownership marker `{}` is not a regular file",
-                    marker.display()
-                ),
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    if std::fs::read_dir(dir)?.next().is_some() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "refusing to adopt non-empty directory `{}` as a WAL without `{OWNERSHIP_MARKER}`",
-                dir.display()
-            ),
-        ));
-    }
-    private_file()
-        .create_new(true)
-        .write(true)
-        .open(marker)?
-        .write_all(OWNERSHIP_MARKER_BYTES)
-}
-
-/// Read a small WAL file through [`open_wal_read`]'s gate — the marker
-/// reads' replacement for `fs::read`, which opens ungated. BOUNDED at one
-/// byte past the expected marker (4M1): the type gate refuses FIFOs and
-/// symlinks, but a sparse giant REGULAR file planted at the marker path
-/// passes it — only this bound keeps the read small, and anything longer
-/// than the marker fails the content comparison either way.
-fn read_via_gated_open(path: &Path) -> std::io::Result<Vec<u8>> {
-    use std::io::Read as _;
-    let mut bytes = Vec::new();
-    open_wal_read(path)?
-        .take((OWNERSHIP_MARKER_BYTES.len() + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-fn verify_owned_dir(dir: &Path) -> std::io::Result<()> {
-    let dir_meta = std::fs::symlink_metadata(dir)?;
-    if !dir_meta.file_type().is_dir() || dir_meta.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "refusing to clear non-directory WAL path `{}`",
-                dir.display()
-            ),
-        ));
-    }
-    let marker = dir.join(OWNERSHIP_MARKER);
-    let meta = std::fs::symlink_metadata(&marker)?;
-    // Gated open for the same stat-to-read race as `ensure_owned_dir`'s
-    // marker read: a FIFO swapped in after the stat must refuse, not block.
-    if !meta.file_type().is_file()
-        || meta.file_type().is_symlink()
-        || read_via_gated_open(&marker)? != OWNERSHIP_MARKER_BYTES
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "refusing to clear `{}` without a valid rdlt WAL ownership marker",
-                dir.display()
-            ),
-        ));
-    }
-    Ok(())
-}
 
 #[derive(Debug)]
 pub(crate) struct Wal {
@@ -242,17 +34,17 @@ pub(crate) struct Wal {
     pending_gc: Vec<PathBuf>,
 }
 
-fn wal_err(context: &str, e: impl std::fmt::Display) -> Error {
+pub(super) fn wal_err(context: &str, e: impl std::fmt::Display) -> Error {
     Error::wal(format!("{context}: {e}"))
 }
 
 impl Wal {
     /// Open (creating if needed) the WAL for a new run and append its
-    /// `Run` header. `tolerate_resolved_residue` is recovery's voucher
-    /// (round-13): true ONLY when the scan resolved the surviving
-    /// manifest as holding nothing replayable and its clear failed —
-    /// the new run's records then append after the resolved span, the
-    /// manifest format's own multi-Run shape.
+    /// `Run` header. `tolerate_resolved_residue` is recovery's voucher:
+    /// true ONLY when the scan resolved the surviving manifest as holding
+    /// nothing replayable and its clear failed — the new run's records then
+    /// append after the resolved span, the manifest format's own multi-Run
+    /// shape.
     pub(crate) fn open(
         dir: PathBuf,
         pipeline: &PipelineId,
@@ -262,8 +54,8 @@ impl Wal {
     ) -> Result<Self, Error> {
         create_private_dir(&dir).map_err(|e| wal_err("creating wal dir", e))?;
         ensure_owned_dir(&dir).map_err(|e| wal_err("proving wal directory ownership", e))?;
-        // A fresh open expects a CLEAN directory (round-12): recovery
-        // resolves and clears any prior span before this runs, so a
+        // A fresh open expects a CLEAN directory: recovery resolves and
+        // clears any prior span before this runs, so a
         // surviving manifest here is unresolved residue — writing a
         // new Run header (and a fresh sidecar) over it would mask the
         // very drift gates the sidecar exists for. Refuse, naming the
@@ -285,7 +77,7 @@ impl Wal {
         // [`RULES_SIDECAR`] for why the rules must be recorded at all.
         let sidecar =
             serde_json::to_vec(&rules).map_err(|e| wal_err("encoding rules sidecar", e))?;
-        // Unlink-then-create_new, NOT create+truncate (047 L4): a truncating
+        // Unlink-then-create_new, NOT create+truncate: a truncating
         // open FOLLOWS a pre-planted symlink and clobbers its target. The
         // unlink removes any residue (a symlink itself, never its target; a
         // real sidecar from the crash window between sidecar write and
@@ -381,9 +173,9 @@ impl Wal {
                     ))
                 );
                 // The ONE name format, shared with recovery's read-side gate
-                // (`record::verify_segment_file`) so writer and checker
+                // (`format::verify_segment_file`) so writer and checker
                 // cannot drift.
-                let file = super::record::segment_file_name(&self.load_id, self.segment_seq);
+                let file = segment_file_name(&self.load_id, self.segment_seq);
                 self.segment_seq += 1;
                 let path = self.dir.join(&file);
                 write_segment(&path, batch)?;
@@ -413,22 +205,13 @@ impl Wal {
     /// move the panic onto a pool thread. `wal.manifest.fsync` sits between the
     /// segment fsyncs and the manifest fsync, so it stays on this side and the
     /// two fsync groups go over separately.
-    /// Mutation note: replacing this body with `Ok(())` is UNKILLABLE by any
-    /// test this suite can run, and that is a property of fsync rather than a
-    /// gap in the pins.
     ///
     /// What this method buys is durability across POWER LOSS: without the
     /// fsyncs the data is still in the page cache, so every read — including a
     /// full crash-recovery replay after `kill -9` — returns exactly the same
-    /// bytes. The difference appears only when the kernel dies with the cache
-    /// unwritten, which no in-process test can produce. The crash sweep covers
-    /// process death, which is a strictly weaker fault.
-    ///
-    /// Recorded rather than papered over: a test asserting "commit succeeded"
-    /// here would pass with the fsyncs removed and would falsely claim the
-    /// durability barrier is covered. Verifying it needs a different KIND of
-    /// instrument (a fault-injecting filesystem, or hardware), not another
-    /// assertion.
+    /// bytes. No in-process test can observe the difference (the crash sweep
+    /// covers process death, a strictly weaker fault), so no pin claims to:
+    /// verifying it needs a fault-injecting filesystem or hardware.
     pub(crate) async fn sync_for_commit(&mut self) -> Result<(), Error> {
         crash_point!(
             "wal.segment.fsync",
@@ -532,22 +315,22 @@ impl Wal {
             ))
         );
         // Every line carries its blake3 trailer — see
-        // [`super::record::encode_line`] for why the digest exists.
-        let line = super::record::encode_line(record).map_err(|e| wal_err("encode record", e))?;
-        // The reader's line cap is an invariant the WRITER enforces too
-        // (4L6): a record larger than the cap — reachable with a
+        // [`super::format::encode_line`] for why the digest exists.
+        let line = encode_line(record).map_err(|e| wal_err("encode record", e))?;
+        // The reader's line cap is an invariant the WRITER enforces too:
+        // a record larger than the cap — reachable with a
         // wire-legal oversized cursor, or a destination declaring a huge
         // `IdentRules.max_len` — would be written here and then refused by
         // this engine's own recovery scan on every later run, degrading an
         // honest WAL to re-extraction forever. Refuse at write time, where
         // the error names the cause, instead of corrupting the WAL.
-        if line.len() > super::record::MAX_MANIFEST_LINE_BYTES {
+        if line.len() > MAX_MANIFEST_LINE_BYTES {
             return Err(Error::wal(format!(
                 "a {}-byte manifest record exceeds the {}-byte line cap recovery enforces \
                  — refusing to write a WAL line this engine could never scan back (the \
                  record carries an oversized cursor or schema)",
                 line.len(),
-                super::record::MAX_MANIFEST_LINE_BYTES
+                MAX_MANIFEST_LINE_BYTES
             )));
         }
         let mut line = line;
@@ -557,105 +340,22 @@ impl Wal {
             .map_err(|e| wal_err("append manifest", e))
     }
 }
-
-/// Write one segment in the Arrow IPC **file** format.
-///
-/// The file format is chosen over the streaming one for a durability property,
-/// not for speed: its footer is validated on open, so a segment truncated at a
-/// block boundary by a power loss is REFUSED. A truncated IPC *stream*, by
-/// contrast, decodes the messages it has and reports clean end-of-input — which
-/// would replay a short span and silently drop the rest.
-///
-/// No dictionary construction, no statistics, no compression: a segment lives
-/// only until its commit is acknowledged, so encoding effort spent making it
-/// queryable is pure loss.
-///
-/// Buffered, because the writer does NOT emit only a few large writes: each
-/// segment costs roughly sixteen `write_all` calls — continuation markers,
-/// flatbuffer metadata, padding and the footer alongside the body buffers —
-/// so several hundred per load, most of them tiny. Measured at 1.1% of wall on
-/// the 1M-row relational cell: small, but free.
-pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Error> {
-    // `create_new` (O_EXCL), not create+truncate (047 L4): a segment name is
-    // never legitimately reused — the sequence is monotonic within a run and
-    // the load id carries per-process OS entropy across runs — so an
-    // existing file here is either a pre-planted symlink (which a
-    // truncating open would FOLLOW, clobbering its target) or a writer
-    // defect, and both must fail loudly rather than overwrite.
-    let file = private_file()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .map_err(|e| wal_err("create segment", e))?;
-    let mut writer = arrow::ipc::writer::FileWriter::try_new_buffered(file, batch.schema_ref())
-        .map_err(|e| wal_err("open segment writer", e))?;
-    writer
-        .write(batch)
-        .map_err(|e| wal_err("write segment", e))?;
-    writer.finish().map_err(|e| wal_err("close segment", e))?;
-    Ok(())
-}
-
-/// Remove the whole WAL directory (clean finish, or fresh start after
-/// full recovery). An already-absent directory is a clean result; any
-/// other failure surfaces (round-12 — the remove was a silent
-/// best-effort, so recovery could "resolve" a span it never actually
-/// cleared and proceed over the residue): RECOVERY propagates it and
-/// refuses the run, while the clean-finish caller stays best-effort —
-/// failing a fully committed run over cleanup would trade a real
-/// success for an error, and the residue resolves as an ordinary
-/// committed-manifest Discard on the next run's scan.
-pub(crate) fn clear(dir: &Path) -> std::io::Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    verify_owned_dir(dir)?;
-    match std::fs::remove_dir_all(dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            // A partial removal may have taken the ownership marker
-            // while leaving residue it could not delete (a
-            // write-protected subdirectory, say). Ownership was
-            // verified at entry, so the surviving directory is still
-            // ours — re-stamp it, or the tolerated-residue arm
-            // (Discard's failed clear WARNS and the run proceeds)
-            // would be refused adoption of its own WAL directory by
-            // `ensure_owned_dir`'s non-empty-without-marker gate.
-            if dir.exists() {
-                let _ = private_file()
-                    .create_new(true)
-                    .write(true)
-                    .open(dir.join(OWNERSHIP_MARKER))
-                    .and_then(|mut f| {
-                        use std::io::Write as _;
-                        f.write_all(OWNERSHIP_MARKER_BYTES)
-                    });
-            }
-            Err(e)
-        }
-        _ => Ok(()),
-    }
-}
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rdlt_core::id::TableName;
-    use std::sync::Arc;
+    use std::path::Path;
 
-    fn batch_of(rows: i64) -> arrow::record_batch::RecordBatch {
-        use arrow::array::Int64Array;
-        use arrow::datatypes::{DataType, Field, Schema};
-        arrow::record_batch::RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
-        )
-        .expect("batch")
-    }
+    use rdlt_core::id::TableName;
+
+    use super::*;
+    use crate::testing::int_batch as batch_of;
+    use crate::wal::dir::OWNERSHIP_MARKER;
+    use crate::wal::format::{ManifestLine, decode_line};
 
     fn manifest_records(dir: &Path) -> Vec<WalRecord> {
         let text = std::fs::read_to_string(dir.join("manifest.jsonl")).expect("read manifest");
         text.lines()
-            .map(|line| match crate::wal::record::decode_line(line) {
-                crate::wal::record::ManifestLine::Record(record) => record,
+            .map(|line| match decode_line(line) {
+                ManifestLine::Record(record) => record,
                 _ => panic!("every written line must carry a verifying checksum: {line}"),
             })
             .collect()
@@ -669,11 +369,11 @@ mod tests {
             .sum::<usize>()
     }
 
-    /// Round-12: a fresh open expects a CLEAN directory — recovery
-    /// resolves and clears any prior span first, so a manifest still
-    /// present here is unresolved residue, and writing a new Run
-    /// header (and fresh sidecar) over it would mask the sidecar's
-    /// own drift gates. The refusal names the residue.
+    /// A fresh open expects a CLEAN directory — recovery resolves and
+    /// clears any prior span first, so a manifest still present here is
+    /// unresolved residue, and writing a new Run header (and fresh sidecar)
+    /// over it would mask the sidecar's own drift gates. The refusal names
+    /// the residue.
     #[test]
     fn open_refuses_a_directory_already_carrying_a_manifest() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -694,7 +394,7 @@ mod tests {
         );
     }
 
-    /// Recovery's voucher (round-13): with `tolerate_resolved_residue`
+    /// Recovery's voucher: with `tolerate_resolved_residue`
     /// the open proceeds over a surviving manifest — the Discard-class
     /// shape whose clear failed — and the new Run header APPENDS after
     /// the resolved span, the manifest format's own multi-Run shape.
@@ -704,7 +404,7 @@ mod tests {
         ensure_owned_dir(dir.path()).expect("adopt fixture dir");
         // A resolved current-version span whose clear failed — the only
         // shape recovery ever vouches for.
-        let mut stale = crate::wal::record::encode_line(&WalRecord::Run {
+        let mut stale = encode_line(&WalRecord::Run {
             format_version: WAL_FORMAT_VERSION,
             load_id: LoadId::new("old"),
             pipeline: PipelineId::new("p"),
@@ -730,7 +430,7 @@ mod tests {
         );
     }
 
-    /// 2M7: recovery's residue voucher never licenses following a symlink at
+    /// Recovery's residue voucher never licenses following a symlink at
     /// the manifest path.
     #[test]
     fn residue_voucher_refuses_a_manifest_symlink() {
@@ -754,7 +454,7 @@ mod tests {
         assert_eq!(std::fs::read(target).expect("victim survives"), b"precious");
     }
 
-    /// 047 L4: a pre-planted symlink where a segment will be written must
+    /// A pre-planted symlink where a segment will be written must
     /// fail LOUDLY, never be followed — a truncating open would clobber the
     /// symlink's target with segment bytes.
     #[tokio::test]
@@ -788,7 +488,7 @@ mod tests {
         );
     }
 
-    /// 047 L4's sidecar half: a pre-planted symlink at the rules sidecar
+    /// The sidecar half: a pre-planted symlink at the rules sidecar
     /// path is UNLINKED (the symlink itself, never its target) and the
     /// sidecar written fresh — the target stays untouched.
     #[test]
@@ -820,7 +520,7 @@ mod tests {
         );
     }
 
-    /// 2L16: naming an existing non-empty `wal` leaf is not ownership proof.
+    /// Naming an existing non-empty `wal` leaf is not ownership proof.
     /// Without the marker, neither opening nor later cleanup may adopt it.
     #[test]
     fn a_nonempty_foreign_wal_directory_is_not_adopted() {
@@ -846,7 +546,7 @@ mod tests {
         assert!(!wal_dir.join(OWNERSHIP_MARKER).exists());
     }
 
-    /// 047 L4's manifest half: a DANGLING symlink passes the residue
+    /// The manifest half: a DANGLING symlink passes the residue
     /// `exists()` check, and a plain create would follow it and mint the
     /// manifest at the link's target. `create_new` refuses it loudly.
     #[test]
@@ -876,7 +576,7 @@ mod tests {
         );
     }
 
-    /// 4L6: the reader's line cap is an invariant the writer enforces. A
+    /// The reader's line cap is an invariant the writer enforces. A
     /// record whose line exceeds the recovery scan's cap — here, a
     /// checkpoint carrying an oversized cursor — is refused AT WRITE TIME
     /// instead of producing a WAL this engine's own recovery can never
@@ -893,7 +593,7 @@ mod tests {
         )
         .expect("open wal");
         let oversized = rdlt_core::cursor::Cursor::new(serde_json::Value::String(
-            "x".repeat(crate::wal::record::MAX_MANIFEST_LINE_BYTES),
+            "x".repeat(MAX_MANIFEST_LINE_BYTES),
         ));
         let error = wal
             .append(&WalRecord::Checkpoint {

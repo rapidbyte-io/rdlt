@@ -23,7 +23,7 @@ pub(crate) enum LoadItem {
         /// The batch's footprint, computed ONCE at construction
         /// ([`LoadItem::batch`]) — the channel gate, the loader's
         /// counters, and the accumulate threshold all read this number
-        /// (round-5 fix: the walk used to re-run at every seam).
+        /// rather than re-running the walk at every seam.
         bytes: usize,
     },
     /// A source checkpoint: rows pushed before this are complete up to `cursor`.
@@ -137,7 +137,7 @@ mod tests {
     /// meter both seams share.
     #[test]
     fn byte_size_of_an_ipc_decoded_batch_is_near_the_body_it_decodes_from() {
-        let (stream_len, decoded, row_payload) = crate::load::ipc_fixture::ipc_round_trip();
+        let (stream_len, decoded, row_payload) = crate::testing::ipc_round_trip();
         let metered = LoadItem::batch(TableName::new("t"), decoded).byte_size();
         assert!(
             metered >= row_payload,
@@ -156,7 +156,7 @@ mod tests {
     /// between its raw row payload and double it.
     #[test]
     fn byte_size_of_a_builder_built_batch_stays_between_payload_and_double() {
-        let (batch, row_payload) = crate::load::ipc_fixture::wide_batch();
+        let (batch, row_payload) = crate::testing::wide_batch();
         let metered = LoadItem::batch(TableName::new("t"), batch).byte_size();
         assert!(
             metered >= row_payload && metered <= 2 * row_payload,

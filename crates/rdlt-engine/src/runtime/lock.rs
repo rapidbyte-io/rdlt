@@ -24,7 +24,7 @@ impl WorkdirLock {
         // so they classify as configuration, like the "already held" case below.
         // Created PRIVATE (see `create_private_dir`): the WAL and lock
         // under it carry in-flight data no other local user should read.
-        crate::wal::create_private_dir(workdir)
+        crate::wal::dir::create_private_dir(workdir)
             .map_err(|e| Error::config(format!("creating workdir {}: {e}", workdir.display())))?;
         let path = workdir.join(".lock");
         // The lock file legitimately persists between runs, so this open

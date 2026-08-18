@@ -1,5 +1,6 @@
-//! The manifest's on-disk vocabulary: one record shape per line, versioned by
-//! the `Run` header.
+//! The manifest's on-disk vocabulary — FROZEN: one record shape per line
+//! (`<json>|<blake3 hex>`), versioned by the `Run` header, and the segment
+//! name the writer mints and the reader gates.
 
 use rdlt_core::commit::WriteMode;
 use rdlt_core::cursor::Cursor;
@@ -78,7 +79,7 @@ const TRAILER_LEN: usize = 1 + 64;
 /// honest run can never write a line its own recovery would refuse.
 ///
 /// The constant lives HERE, beside the encoder, so the writer's refusal and
-/// the scan's cap cannot drift apart (047 wave 5, 4L6).
+/// the scan's cap cannot drift apart.
 pub(crate) const MAX_MANIFEST_LINE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Encode one manifest line: the record's JSON, then `|`, then the
@@ -254,7 +255,7 @@ mod tests {
         }
     }
 
-    /// THE CONTENT-DEPENDENT EXCEPTION (047 round 2, doc-truth pin): a
+    /// THE CONTENT-DEPENDENT EXCEPTION: a
     /// record whose JSON contains `|` + 64 hex — a real in-house cursor
     /// shape — has ONE tear position that leaves a trailer-shaped tail.
     /// The digest then mismatches, so the torn line classifies Corrupt

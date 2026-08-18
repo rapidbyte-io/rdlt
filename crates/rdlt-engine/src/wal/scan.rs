@@ -1,5 +1,6 @@
 //! Forward scan of the manifest: classify what is on disk into a
-//! [`ScanOutcome`] without touching a segment or a session.
+//! [`ScanOutcome`] without touching a segment or a session. Synchronous file
+//! I/O — the caller runs it off the async runtime.
 
 use std::{
     io::{BufRead, BufReader, Read as _},
@@ -8,32 +9,32 @@ use std::{
 
 use rdlt_core::id::{LoadId, PipelineId};
 
-use crate::wal::WalRecord;
+use super::dir::{RULES_SIDECAR, open_wal_read};
+use super::format::{
+    MAX_MANIFEST_LINE_BYTES, ManifestLine, WAL_FORMAT_VERSION, WalRecord, decode_line,
+    verify_segment_file,
+};
+use crate::lineage;
 
-use super::blocking::off_runtime;
-
-use crate::wal::record::MAX_MANIFEST_LINE_BYTES;
-
-/// The scan's whole-file budget (047 wave 5, 4M1; re-sized in wave 6, 5L2):
-/// the per-line cap bounds ONE line, but the fold accumulates every line
-/// into memory, so a hostile multi-gigabyte manifest of small legal lines
-/// is the same unbounded allocation one size up. The honest arithmetic,
-/// stated as a RATE so the ceiling stays honest at any policy (6.4): a
-/// manifest is cleared per successful run, so it holds ONE run's span
-/// plus vouched residue — and at the stream cap a busy run writes
+/// The scan's whole-file budget: the per-line cap bounds ONE line, but the
+/// fold accumulates every line into memory, so a hostile multi-gigabyte
+/// manifest of small legal lines is the same unbounded allocation one size
+/// up. The honest arithmetic, stated as a RATE so the ceiling stays honest
+/// at any policy: a manifest is cleared per successful run, so it holds ONE
+/// run's span plus vouched residue — and at the stream cap a busy run writes
 /// ~1024 checkpoint lines ≈ ~150 KB per checkpoint sweep, so the budget
-/// divides by the sweep rate: ~2 hours at one sweep per second, ~12
-/// minutes at ten. A longer run's crash recovery then degrades to
-/// cursor re-extraction — the safe direction, but a real availability
-/// cost for exactly the big runs; the budget exists so a corrupted WAL
-/// cannot make recovery materialize (and read) unboundedly, and 1 GiB
-/// is where "honest span" and "bounded recovery work" meet.
-const MAX_MANIFEST_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+/// divides by the sweep rate: ~2 hours at one sweep per second, ~12 minutes
+/// at ten. A longer run's crash recovery then degrades to cursor
+/// re-extraction — the safe direction, but a real availability cost for
+/// exactly the big runs; the budget exists so a corrupted WAL cannot make
+/// recovery materialize (and read) unboundedly, and 1 GiB is where "honest
+/// span" and "bounded recovery work" meet.
+pub(crate) const MAX_MANIFEST_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// The rules sidecar is the writer's `IdentRules` verbatim — a ~100-byte
-/// JSON document. It is read whole, so it gets a small cap of its own
-/// (4M1): a sparse giant regular file planted at the sidecar path passes
-/// the file-TYPE gate, and only this bound keeps recovery from reading it
+/// JSON document. It is read whole, so it gets a small cap of its own: a
+/// sparse giant regular file planted at the sidecar path passes the
+/// file-TYPE gate, and only this bound keeps recovery from reading it
 /// unbounded.
 const MAX_RULES_SIDECAR_BYTES: u64 = 8 * 1024;
 
@@ -41,7 +42,7 @@ const MAX_RULES_SIDECAR_BYTES: u64 = 8 * 1024;
 /// preceded the next line on disk (`1` for `\n`, `2` for `\r\n`, `0`
 /// for an unterminated final line). The budget counts both, so a
 /// CRLF-hostile manifest cannot double the bytes recovery reads past
-/// the bytes it accounts for (6L4).
+/// the bytes it accounts for.
 #[derive(Debug)]
 struct ReadLine {
     text: String,
@@ -57,10 +58,10 @@ fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<ReadLine>, Str
     if read == 0 {
         return Ok(None);
     }
-    // Strip the terminator BEFORE measuring (4L5): the writer appends
-    // exactly `\n` per line, and counting it against the cap made the
-    // effective bound MAX−1 while the pins measured MAX. A line of exactly
-    // MAX content bytes plus its newline is legal and must scan.
+    // Strip the terminator BEFORE measuring: the writer appends exactly
+    // `\n` per line, and counting it against the cap would make the
+    // effective bound MAX−1. A line of exactly MAX content bytes plus its
+    // newline is legal and must scan.
     let mut terminator = 0u64;
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
@@ -81,8 +82,8 @@ fn read_manifest_line(reader: &mut impl BufRead) -> Result<Option<ReadLine>, Str
 }
 
 /// The scan's accumulated per-table record: latest schema + write
-/// mode, keyed by table — one alias (round-12) for the map every scan
-/// consumer reads (the fold builds it; `ChainMemo`, `live_tables` and
+/// mode, keyed by table — one alias for the map every scan consumer
+/// reads (the fold builds it; the chain walk, `live_tables` and
 /// `filter_covered` walk it).
 type SchemaMap = std::collections::BTreeMap<
     rdlt_core::id::TableName,
@@ -139,47 +140,27 @@ pub(crate) enum ScanOutcome {
         supported: u32,
     },
 }
-
-/// Forward-scan the manifest. A torn FINAL line (crash mid-append) is truncated;
-/// damage anywhere else degrades to re-extraction.
-/// `rules` joins checkpoint streams to segment tables (see `filter_covered`)
-/// and must be the destination's — the same rules the writing run normalized
-/// its root tables with.
-/// Async wrapper: the scan reads the manifest line by line, which is blocking
-/// file I/O and belongs off an embedder's runtime for the same reason replay's
-/// decoding does.
-pub(crate) async fn scan_off_runtime(
-    dir: &Path,
-    rules: rdlt_core::schema::IdentRules,
-    pipeline: &PipelineId,
-) -> ScanOutcome {
-    let dir = dir.to_path_buf();
-    let pipeline = pipeline.clone();
-    off_runtime(move || scan(&dir, rules, &pipeline)).await
-}
-
-fn scan(dir: &Path, rules: rdlt_core::schema::IdentRules, pipeline: &PipelineId) -> ScanOutcome {
-    scan_with_budget(dir, rules, pipeline, MAX_MANIFEST_TOTAL_BYTES)
-}
-
-/// [`scan`] with the whole-file budget as a parameter — the seam that lets
-/// the budget's own pin run against a small fixture (the constant and the
-/// seam together are the defense; see the 047 L5 retention-ceiling
-/// precedent in the testkit).
-fn scan_with_budget(
+/// Forward-scan the manifest under `total_budget` bytes. A torn FINAL line
+/// (crash mid-append) is truncated; damage anywhere else degrades to
+/// re-extraction. `rules` joins checkpoint streams to segment tables (see
+/// `filter_covered`) and must be the destination's — the same rules the
+/// writing run normalized its root tables with. The budget is a parameter so
+/// its own pin can run against a small fixture; production passes
+/// [`MAX_MANIFEST_TOTAL_BYTES`].
+pub(crate) fn scan(
     dir: &Path,
     rules: rdlt_core::schema::IdentRules,
     pipeline: &PipelineId,
     total_budget: u64,
 ) -> ScanOutcome {
-    // 4L4: the read side matched the write side's per-FILE gates, but not
-    // its directory gate — `ensure_owned_dir` refuses a symlinked `wal`
-    // leaf while the scan here would happily follow one, reading a foreign
-    // target's manifest into every verdict below (verdict-steering) and its
-    // segments into replay. Match the write side: a symlinked WAL directory
-    // is damage, never followed. (Not `Nothing`: the directory EXISTS, it
-    // just isn't ours to read. `Damaged` degrades to re-extraction, and the
-    // caller's clear then refuses the same symlink loudly.)
+    // The read side matches the write side's directory gate:
+    // `ensure_owned_dir` refuses a symlinked `wal` leaf, and following one
+    // here would read a foreign target's manifest into every verdict below
+    // (verdict-steering) and its segments into replay. A symlinked WAL
+    // directory is damage, never followed. (Not `Nothing`: the directory
+    // EXISTS, it just isn't ours to read. `Damaged` degrades to
+    // re-extraction, and the caller's clear then refuses the same symlink
+    // loudly.)
     if let Ok(meta) = std::fs::symlink_metadata(dir)
         && meta.file_type().is_symlink()
     {
@@ -190,7 +171,7 @@ fn scan_with_budget(
         ));
     }
     let path = dir.join("manifest.jsonl");
-    // The gated open ([`crate::wal::open_wal_read`]) refuses FIFOs, symlinks
+    // The gated open ([`open_wal_read`]) refuses FIFOs, symlinks
     // and other non-regular plants at the manifest path — a plain open would
     // BLOCK forever on a writerless FIFO (nothing above this scan has a
     // timeout) or read a symlink's foreign target into the verdicts below.
@@ -198,7 +179,7 @@ fn scan_with_budget(
     // DIRECTORY exists — `Wal::open` refuses the occupied path loudly later,
     // after recovery has resolved, which is the pinned failure order); every
     // other failure is damage, named.
-    let file = match crate::wal::open_wal_read(&path) {
+    let file = match open_wal_read(&path) {
         Ok(f) => f,
         Err(e)
             if e.kind() == std::io::ErrorKind::NotFound
@@ -221,10 +202,10 @@ fn scan_with_budget(
                 break;
             }
         };
-        // The whole-file budget (4M1): the per-line cap bounds one line;
-        // this bounds their SUM, which is what the fold below accumulates.
-        // Content plus the real on-disk terminator (6L4): counting a
-        // flat +1 let a CRLF-hostile manifest read twice the bytes it
+        // The whole-file budget: the per-line cap bounds one line; this
+        // bounds their SUM, which is what the fold below accumulates.
+        // Content plus the real on-disk terminator: counting a flat +1
+        // would let a CRLF-hostile manifest read twice the bytes it
         // accounted for.
         total_bytes += line.text.len() as u64 + line.terminator;
         if total_bytes > total_budget {
@@ -237,20 +218,20 @@ fn scan_with_budget(
         if line.text.trim().is_empty() {
             continue;
         }
-        match crate::wal::record::decode_line(&line.text) {
-            crate::wal::record::ManifestLine::Record(record) => records.push(record),
+        match decode_line(&line.text) {
+            ManifestLine::Record(record) => records.push(record),
             // Almost always corruption; the one content-dependent tear
             // shape that lands here too (see the Corrupt arm's doc)
             // misclassifies only in the safe direction — degrade, never
             // acceptance — so Damaged wherever it sits, the final line
             // included.
-            crate::wal::record::ManifestLine::Corrupt(reason) => {
+            ManifestLine::Corrupt(reason) => {
                 damaged = Some(format!("manifest corruption: {reason}"));
                 break;
             }
-            crate::wal::record::ManifestLine::Untrailered(parsed) => {
+            ManifestLine::Untrailered(parsed) => {
                 if let Some(WalRecord::Run { format_version, .. }) = &parsed
-                    && *format_version != crate::wal::WAL_FORMAT_VERSION
+                    && *format_version != WAL_FORMAT_VERSION
                 {
                     // A bare Run header claiming ANOTHER format version — the
                     // shape a pre-checksum dev-window manifest leads with.
@@ -292,7 +273,7 @@ fn scan_with_budget(
     let mut max_committed_seq: u64 = 0;
     let mut span: Vec<WalRecord> = Vec::new();
     let mut schemas = SchemaMap::new();
-    // The segment names the CURRENT run's span already carries (8L5):
+    // The segment names the CURRENT run's span already carries:
     // the writer mints one monotonic sequence per run, so a REPEATED
     // name is crafted — the zero-row amplification shape (millions of
     // `rows:0` lines all naming one file under the total budget)
@@ -323,7 +304,7 @@ fn scan_with_budget(
                         occupant: run_pipeline,
                     };
                 }
-                if format_version != crate::wal::WAL_FORMAT_VERSION {
+                if format_version != WAL_FORMAT_VERSION {
                     // EXACT match, in both directions. A newer manifest was
                     // written by an engine whose records this build cannot be
                     // trusted to read; an older one names segments in a
@@ -331,7 +312,7 @@ fn scan_with_budget(
                     // guessable — degrade to cursor re-extraction.
                     return ScanOutcome::Unsupported {
                         found: format_version,
-                        supported: crate::wal::WAL_FORMAT_VERSION,
+                        supported: WAL_FORMAT_VERSION,
                     };
                 }
                 // A run only ever starts after the previous span was resolved
@@ -347,7 +328,7 @@ fn scan_with_budget(
                 span.clear();
             }
             other => {
-                // THE SEGMENT-NAME GATE (047 M3): replay joins this name
+                // THE SEGMENT-NAME GATE: replay joins this name
                 // onto the WAL directory, and `Path::join` hands an absolute
                 // or `..`-carrying component the whole filesystem — so a
                 // name the current run's writer could not have produced
@@ -357,7 +338,7 @@ fn scan_with_budget(
                 // and never joins either.
                 if let WalRecord::Segment { file, .. } = &other
                     && let Some(load) = &load_id
-                    && let Err(reason) = crate::wal::record::verify_segment_file(load, file)
+                    && let Err(reason) = verify_segment_file(load, file)
                 {
                     return ScanOutcome::Damaged(reason);
                 }
@@ -375,7 +356,7 @@ fn scan_with_budget(
         }
     }
 
-    // THE RULES SIDECAR GATE (round-9 fix) sits below the record fold so a
+    // THE RULES SIDECAR GATE sits below the record fold so a
     // different-version manifest still reports `Unsupported` by SHAPE, and
     // above everything that attributes segments to streams — the join is
     // not consulted until it is proven to run under the writer's rules.
@@ -389,18 +370,18 @@ fn scan_with_budget(
     // rows. Anything less specific double-applies: an earlier rule truncated
     // positionally at the span's LAST checkpoint, which is equivalent only
     // while one stream exists, and an interleaved co-stream segment with no
-    // checkpoint of its own was both replayed and then re-extracted (042
-    // T7E, proven live on the multi-table crash sweep). Uncovered segments
-    // are dropped — re-extraction re-delivers them — and a span with no
+    // checkpoint of its own was both replayed and then re-extracted (the
+    // multi-table crash sweep shows it live). Uncovered segments are
+    // dropped — re-extraction re-delivers them — and a span with no
     // checkpoint at all has nothing safely replayable.
-    let mut memo = ChainMemo::default();
-    match (load_id, filter_covered(span, &schemas, rules, &mut memo)) {
+    let mut chains = lineage::Chain::default();
+    match (load_id, filter_covered(span, &schemas, rules, &mut chains)) {
         (Some(load_id), Ok(Some(records))) => {
-            // 047 L1: no writer emits `u64::MAX` (the first commit is 1 and
-            // the sequence only ever increments by one), so a committed
-            // sequence with no successor is forgery or corruption — degrade
-            // rather than overflow (debug builds panicked inside recovery;
-            // release builds wrapped the recovery commit to sequence 0).
+            // No writer emits `u64::MAX` (the first commit is 1 and the
+            // sequence only ever increments by one), so a committed sequence
+            // with no successor is forgery or corruption — degrade rather
+            // than overflow (a debug build would panic inside recovery; a
+            // release build would wrap the recovery commit to sequence 0).
             let Some(next_commit_seq) = max_committed_seq.checked_add(1) else {
                 return ScanOutcome::Damaged(format!(
                     "committed sequence {max_committed_seq} leaves no next commit \
@@ -408,7 +389,7 @@ fn scan_with_budget(
                      by one"
                 ));
             };
-            // REPLAY ENSURES ONLY WHAT IT WRITES (round-3 fix): the
+            // REPLAY ENSURES ONLY WHAT IT WRITES: the
             // segment filter can drop every one of a table's segments
             // (uncovered co-stream rows re-extract instead), and an
             // ensure without rows is not harmless — a Replace stream's
@@ -422,7 +403,7 @@ fn scan_with_budget(
             // unaffected — `filter_covered` already ran against the
             // full pre-filter `schemas` map. Re-extraction re-ensures
             // everything else live, delta-before-batch as always.
-            let live = live_tables(&records, &schemas, &mut memo);
+            let live = live_tables(&records, &schemas, &mut chains);
             let records = records
                 .into_iter()
                 .filter(|record| match record {
@@ -448,33 +429,31 @@ fn scan_with_budget(
     }
 }
 
-/// The rules-drift REFUSAL (round-9 fix — this closed the residual the
-/// round-6 comment in `filter_covered` recorded): the stream↔segment
-/// join normalizes under `rules`, and it is sound only when they are
-/// THE WRITING RUN'S rules. Under changed rules a checkpointed stream's
-/// normalized root can stop matching its own recorded segments' root,
-/// so its COVERED segments read as a co-stream's benign orphans —
-/// dropped from replay while the checkpoint's cursor still commits:
-/// silent loss in the one-to-zero direction the round-7 many-to-one
-/// tripwire cannot see. The writer records its rules verbatim beside
-/// the manifest ([`crate::wal::Wal::open`], before the manifest is
-/// created, so no manifest this engine writes ever exists without
-/// them); a RECORDED mismatch, an unreadable or unparseable sidecar,
-/// or NO sidecar at all — a manifest without its rules sidecar is not
-/// a recognized workdir state (owner ruling, round 11: this engine is
-/// greenfield and carries no compat arm for writers that never
-/// existed) — refuses the whole span. `Some(reason)` means Damaged:
-/// the caller clears the WAL and re-extracts from last COMMITTED
-/// state, so no cursor from the refused span ever commits.
+/// The rules-drift REFUSAL: the stream↔segment join normalizes under
+/// `rules`, and it is sound only when they are THE WRITING RUN'S rules.
+/// Under changed rules a checkpointed stream's normalized root can stop
+/// matching its own recorded segments' root, so its COVERED segments read
+/// as a co-stream's benign orphans — dropped from replay while the
+/// checkpoint's cursor still commits: silent loss in the one-to-zero
+/// direction the many-to-one tripwire in `filter_covered` cannot see. The
+/// writer records its rules verbatim beside the manifest
+/// ([`crate::wal::writer::Wal::open`], before the manifest is created, so
+/// no manifest this engine writes ever exists without them); a RECORDED
+/// mismatch, an unreadable or unparseable sidecar, or NO sidecar at all —
+/// a manifest without its rules sidecar is not a recognized workdir state
+/// (this engine is greenfield and carries no compat arm for writers that
+/// never existed) — refuses the whole span. `Some(reason)` means Damaged:
+/// the caller clears the WAL and re-extracts from last COMMITTED state,
+/// so no cursor from the refused span ever commits.
 fn sidecar_drift(dir: &Path, rules: rdlt_core::schema::IdentRules) -> Option<String> {
-    let path = dir.join(crate::wal::RULES_SIDECAR);
+    let path = dir.join(RULES_SIDECAR);
     // Same gated open as the manifest's: the sidecar decides whether the
     // whole span is trusted, so a symlink here would let foreign content
     // vouch for the writer's rules, and a FIFO would hang the scan. The
-    // read is BOUNDED (4M1): the writer's own sidecar is ~100 bytes, so a
-    // sparse giant regular file planted here — which passes the type gate —
-    // must refuse rather than be read whole.
-    let text = match crate::wal::open_wal_read(&path).and_then(|file| {
+    // read is BOUNDED: the writer's own sidecar is ~100 bytes, so a sparse
+    // giant regular file planted here — which passes the type gate — must
+    // refuse rather than be read whole.
+    let text = match open_wal_read(&path).and_then(|file| {
         let mut bytes = Vec::new();
         file.take(MAX_RULES_SIDECAR_BYTES + 1)
             .read_to_end(&mut bytes)?;
@@ -492,19 +471,19 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::schema::IdentRules) -> Option<Str
                 "the manifest has no readable `{}` sidecar ({e}) — a WAL without its \
                  recorded identifier-normalization rules is not a recognized workdir \
                  state, so segment attribution cannot be proven",
-                crate::wal::RULES_SIDECAR
+                RULES_SIDECAR
             ));
         }
     };
     match serde_json::from_str::<rdlt_core::schema::IdentRules>(&text) {
-        // 5M6: a recorded rules value must be SANE as well as matching —
+        // A recorded rules value must be SANE as well as matching —
         // an out-of-range `max_len` in the sidecar is not a state this
         // engine's writer produces (its rules were validated at plan
         // time), so refuse the span rather than feed it to the namer.
         Ok(recorded) if recorded.validate().is_err() => Some(format!(
             "the `{}` sidecar carries out-of-range identifier-normalization rules — no \
              validated writer produces them, so segment attribution cannot be proven",
-            crate::wal::RULES_SIDECAR
+            RULES_SIDECAR
         )),
         Ok(recorded) if recorded == rules => None,
         Ok(recorded) => Some(format!(
@@ -515,69 +494,47 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::schema::IdentRules) -> Option<Str
         )),
         Err(e) => Some(format!(
             "the `{}` sidecar does not parse as identifier-normalization rules ({e})",
-            crate::wal::RULES_SIDECAR
+            RULES_SIDECAR
         )),
     }
 }
 
-/// The scan's half of the loader's round-6 memo (round-10 refactor —
-/// `filter_covered` re-walked parent chains per SEGMENT and
-/// `live_tables` then walked the same chains again): each table's
-/// recorded ancestor chain — the table itself first, its root last —
-/// is resolved through [`crate::lineage::walk_to_root`] ONCE per
-/// scan, and both consumers read it: the covered-filter takes the
-/// root, the live-set fold takes the whole chain. No invalidation for
-/// the loader's reason: the schemas map is complete before the first
-/// resolution. Attribution stays on the RECORDED parent links — name
-/// prefixes would NOT do: `child_table_name` re-normalizes, so a long
-/// child's name truncates to a hash suffix that need not contain its
-/// root.
-#[derive(Default)]
-struct ChainMemo {
-    chains: std::collections::BTreeMap<rdlt_core::id::TableName, Vec<rdlt_core::id::TableName>>,
+/// `table`'s recorded ancestor chain — the table itself first, its root
+/// last — resolved through the shared memoized walker ONCE per scan and
+/// read by both consumers: the covered-filter takes the root, the live-set
+/// fold takes the whole chain. The scan's refusals ride the walk's error
+/// channel: a table with no recorded schema breaks delta-before-first-batch,
+/// and an unterminated chain is a cycle no writer produces. Attribution
+/// stays on the RECORDED parent links — name prefixes would NOT do:
+/// `child_table_name` re-normalizes, so a long child's name truncates to a
+/// hash suffix that need not contain its root.
+fn chain_of<'c>(
+    chains: &'c mut lineage::Chain,
+    table: &rdlt_core::id::TableName,
+    schemas: &SchemaMap,
+) -> Result<&'c [rdlt_core::id::TableName], String> {
+    chains
+        .resolve(table, schemas.len(), |current| match schemas.get(current) {
+            None => Err(format!(
+                "segment table `{current}` has no schema delta anywhere in the manifest \
+                 (the writer records delta-before-first-batch), so its covering stream \
+                 is unknowable"
+            )),
+            Some((schema, _)) => Ok(schema.parent.as_ref().map(|link| link.parent.clone())),
+        })?
+        .ok_or_else(|| format!("table `{table}`'s recorded parent chain does not terminate"))
 }
 
-impl ChainMemo {
-    /// `table`'s recorded chain, memoized. The scan's refusals ride the
-    /// walk's error channel: a table with no recorded schema breaks
-    /// delta-before-first-batch, and an unterminated chain is a cycle
-    /// no writer produces.
-    fn chain(
-        &mut self,
-        table: &rdlt_core::id::TableName,
-        schemas: &SchemaMap,
-    ) -> Result<&[rdlt_core::id::TableName], String> {
-        if !self.chains.contains_key(table) {
-            let mut path: Vec<rdlt_core::id::TableName> = Vec::new();
-            crate::lineage::walk_to_root(table, schemas.len(), |current| {
-                path.push(current.clone());
-                match schemas.get(current) {
-                    None => Err(format!(
-                        "segment table `{current}` has no schema delta anywhere in the manifest \
-                         (the writer records delta-before-first-batch), so its covering stream \
-                         is unknowable"
-                    )),
-                    Some((schema, _)) => Ok(schema.parent.as_ref().map(|link| link.parent.clone())),
-                }
-            })?
-            .ok_or_else(|| format!("table `{table}`'s recorded parent chain does not terminate"))?;
-            self.chains.insert(table.clone(), path);
-        }
-        Ok(self.chains.get(table).expect("resolved above"))
-    }
-
-    /// The chain's last hop — the root the covered-filter joins on.
-    fn root_of(
-        &mut self,
-        table: &rdlt_core::id::TableName,
-        schemas: &SchemaMap,
-    ) -> Result<rdlt_core::id::TableName, String> {
-        Ok(self
-            .chain(table, schemas)?
-            .last()
-            .expect("a chain holds at least its own table")
-            .clone())
-    }
+/// The chain's last hop — the root the covered-filter joins on.
+fn root_of(
+    chains: &mut lineage::Chain,
+    table: &rdlt_core::id::TableName,
+    schemas: &SchemaMap,
+) -> Result<rdlt_core::id::TableName, String> {
+    Ok(chain_of(chains, table, schemas)?
+        .last()
+        .expect("a chain holds at least its own table")
+        .clone())
 }
 
 /// The tables replay will actually WRITE: every surviving segment's
@@ -589,12 +546,12 @@ impl ChainMemo {
 fn live_tables(
     records: &[WalRecord],
     schemas: &SchemaMap,
-    memo: &mut ChainMemo,
+    chains: &mut lineage::Chain,
 ) -> std::collections::BTreeSet<rdlt_core::id::TableName> {
     let mut live = std::collections::BTreeSet::new();
     for record in records {
         if let WalRecord::Segment { table, .. } = record
-            && let Ok(chain) = memo.chain(table, schemas)
+            && let Ok(chain) = chain_of(chains, table, schemas)
         {
             live.extend(chain.iter().cloned());
         }
@@ -609,20 +566,20 @@ fn live_tables(
 /// to cursor re-extraction, slower and never wrong.
 ///
 /// The stream↔table join uses the mapping the writer itself used: a stream's
-/// root table IS `normalize_ident(stream, rules)` (`runtime::validate`'s
-/// `root_table`, whose stream validation also proves the mapping injective
-/// across a run's streams), and every child table's recorded Delta carries its
-/// parent link — so a segment resolves to its root along recorded parents, and
-/// the root to its stream by normalization. `rules` must be the same rules the
+/// root table IS `normalize_ident(stream, rules)` ([`lineage::root_table`],
+/// whose stream validation also proves the mapping injective across a run's
+/// streams), and every child table's recorded Delta carries its parent link
+/// — so a segment resolves to its root along recorded parents, and the root
+/// to its stream by normalization. `rules` must be the same rules the
 /// writing run normalized with — ENFORCED upstream by the rules sidecar gate
-/// ([`sidecar_drift`], round-9): a manifest whose recorded rules differ never
-/// reaches this join; the residual shapes a matching-rules writer still cannot
+/// ([`sidecar_drift`]): a manifest whose recorded rules differ never reaches
+/// this join; the residual shapes a matching-rules writer still cannot
 /// produce are refused below rather than guessed at.
 fn filter_covered(
     span: Vec<WalRecord>,
     schemas: &SchemaMap,
     rules: rdlt_core::schema::IdentRules,
-    memo: &mut ChainMemo,
+    chains: &mut lineage::Chain,
 ) -> Result<Option<Vec<WalRecord>>, String> {
     use std::collections::BTreeMap;
 
@@ -641,7 +598,7 @@ fn filter_covered(
     let mut root_to_stream: BTreeMap<rdlt_core::id::TableName, rdlt_core::id::StreamName> =
         BTreeMap::new();
     for stream in last_checkpoint.keys() {
-        let root = crate::lineage::root_table(stream, rules);
+        let root = lineage::root_table(stream, rules);
         if root_to_stream
             .insert(root.clone(), stream.clone())
             .is_some()
@@ -656,7 +613,7 @@ fn filter_covered(
         }
     }
 
-    // THE RULES-DRIFT TRIPWIRE (round-7 fix): the join trusts that this
+    // THE RULES-DRIFT TRIPWIRE: the join trusts that this
     // run's normalization agrees with the writing run's, and the benign
     // orphan disposition above removed the last guard on the DROP
     // direction — but the wrong-KEEP direction is worse: under drifted
@@ -670,15 +627,13 @@ fn filter_covered(
     // keeps normalized roots injective, so at most the stream's own
     // table matches. Child tables never collide in (their names carry
     // the `__` separator and normalize to themselves).
-    // The parentless recorded tables normalize ONCE into a count map
-    // (round-11 hoist — the loop below re-normalized every schema
-    // table per checkpointed root and re-looked-up keys it was already
-    // iterating), then each checkpointed root reads its count.
+    // The parentless recorded tables normalize ONCE into a count map,
+    // then each checkpointed root reads its count.
     let mut normalized_roots: BTreeMap<rdlt_core::id::TableName, usize> = BTreeMap::new();
     for (table, (schema, _)) in schemas {
         if schema.parent.is_none() {
             let normalized =
-                crate::lineage::root_table(&rdlt_core::id::StreamName::new(table.as_str()), rules);
+                lineage::root_table(&rdlt_core::id::StreamName::new(table.as_str()), rules);
             *normalized_roots.entry(normalized).or_insert(0) += 1;
         }
     }
@@ -694,13 +649,12 @@ fn filter_covered(
     }
 
     // A segment's root table, along the parent links its Deltas
-    // recorded — [`ChainMemo`]'s walk, the same implementation the
-    // loader's commit gate resolves roots with, resolved once per
-    // table.
+    // recorded — the same memoized walk the loader's commit gate
+    // resolves roots with, resolved once per table.
     let mut keep = vec![true; span.len()];
     for (index, record) in span.iter().enumerate() {
         if let WalRecord::Segment { table, .. } = record {
-            let root = memo.root_of(table, schemas)?;
+            let root = root_of(chains, table, schemas)?;
             match root_to_stream.get(&root) {
                 Some(stream) => {
                     // Covered iff this stream's LAST checkpoint follows the
@@ -718,24 +672,21 @@ fn filter_covered(
         }
     }
 
-    // ORPHANS BESIDE SEGMENTLESS CHECKPOINTS ARE BENIGN (round-6 fix —
-    // the guard here shrank twice and its last residue misdiagnosed a
-    // ROUTINE shape as damage): a checkpointed stream whose root matches
-    // no segment AND no recorded schema simply wrote zero rows for the
-    // whole run — checkpoint-only, so no delta was ever recorded. Its
-    // checkpoint covers nothing and carries its cursor; the orphans are
-    // a never-checkpointing co-stream's and re-extraction re-delivers
-    // them; every OTHER productive stream's replay must survive. The
-    // shapes that still degrade are the attributional ones above: a
-    // segment whose table has no recorded schema anywhere (root_of's
-    // refusal — a segment that exists but cannot be attributed), and
-    // two checkpointed streams normalizing to one root. The residual
-    // this once accepted — a normalization-rules change between the
-    // writing run and this one making a stream's own segments look
-    // like a co-stream's orphans — is CLOSED (round-9): the rules
-    // sidecar gate upstream refuses any span whose recorded rules
-    // differ from this run's (or are missing entirely) before the
-    // join is consulted at all.
+    // ORPHANS BESIDE SEGMENTLESS CHECKPOINTS ARE BENIGN: a checkpointed
+    // stream whose root matches no segment AND no recorded schema simply
+    // wrote zero rows for the whole run — checkpoint-only, so no delta was
+    // ever recorded. Its checkpoint covers nothing and carries its cursor;
+    // the orphans are a never-checkpointing co-stream's and re-extraction
+    // re-delivers them; every OTHER productive stream's replay must
+    // survive. The shapes that still degrade are the attributional ones
+    // above: a segment whose table has no recorded schema anywhere
+    // (root_of's refusal — a segment that exists but cannot be
+    // attributed), and two checkpointed streams normalizing to one root.
+    // A normalization-rules change between the writing run and this one
+    // — which would make a stream's own segments look like a co-stream's
+    // orphans — never reaches this join: the rules sidecar gate upstream
+    // refuses any span whose recorded rules differ from this run's (or
+    // are missing entirely).
 
     Ok(Some(
         span.into_iter()
@@ -747,516 +698,48 @@ fn filter_covered(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rdlt_core::id::{LoadId, PipelineId};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn write_manifest(dir: &std::path::Path, records: &[WalRecord]) {
-        let mut out: Vec<u8> = Vec::new();
-        for record in records {
-            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("record json"));
-            out.push(b'\n');
-        }
-        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
-        // The sidecar every 042+ writer leaves beside its manifest —
-        // the fixtures here model a matching-rules writer.
-        std::fs::write(
-            dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
-        )
-        .expect("write sidecar");
-    }
-
-    /// The cursor half of the same face (5L3): a Checkpoint line carrying a
-    /// maximal-contract cursor (4 MiB, `rdlt_connector::gate::MAX_CURSOR_BYTES`)
-    /// plus its envelope and trailer must fit the cap — the cursor contract
-    /// is only honest if the WAL can actually record one.
-    #[test]
-    fn the_line_cap_admits_a_maximal_cursor_line() {
-        let cursor = rdlt_core::cursor::Cursor::new(serde_json::Value::String(
-            "x".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize),
-        ));
-        let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
-            stream: rdlt_core::id::StreamName::new("s"),
-            cursor,
-        })
-        .expect("encode");
-        assert!(
-            line.len() <= MAX_MANIFEST_LINE_BYTES,
-            "a maximal cursor line ({} bytes) must fit the {MAX_MANIFEST_LINE_BYTES}-byte cap",
-            line.len()
-        );
-    }
-
-    /// The line cap's other face: it must sit ABOVE anything this engine's
-    /// own writer can append, or a run's own WAL becomes unscannable. This
-    /// builds the largest Delta the shred-time bounds admit — 4,096 columns
-    /// (`MAX_SOURCE_COLUMNS_PER_TABLE`), identifiers at the default rules'
-    /// 63-byte bound, the schema serialized twice by a CreateTable change —
-    /// and holds the cap over it. Growing the shred bounds or shrinking the
-    /// cap fails HERE, before it fails as a `Damaged` scan in the field.
-    #[test]
-    fn the_line_cap_admits_the_writers_own_maximal_delta_line() {
-        use rdlt_core::commit::WriteMode;
-        use rdlt_core::schema::{self, Column, ColumnType, Provenance};
-        use rdlt_core::types::LogicalType;
-        let columns: Vec<Column> = (0..crate::shred::limits::MAX_SOURCE_COLUMNS_PER_TABLE)
-            .map(|i| Column {
-                name: format!("{:a>59}{i:04}", ""),
-                column_type: ColumnType::scalar(LogicalType::Json),
-                nullable: true,
-                provenance: Provenance::Inferred,
-            })
-            .collect();
-        let schema = rdlt_core::schema::TableSchema {
-            table: rdlt_core::id::TableName::new(format!("{:t>63}", "")),
-            parent: None,
-            columns,
-        };
-        let delta = rdlt_core::schema::Delta {
-            table: schema.table.clone(),
-            from: None,
-            to: schema.content_hash(),
-            changes: vec![schema::Change::CreateTable {
-                schema: schema.clone(),
-            }],
-        };
-        let record = WalRecord::Delta {
-            delta,
-            schema,
-            mode: WriteMode::Append,
-        };
-        let line = crate::wal::record::encode_line(&record).expect("encode");
-        assert!(
-            line.len() <= MAX_MANIFEST_LINE_BYTES,
-            "the writer's own maximal delta line ({} bytes) must scan under the \
-             {MAX_MANIFEST_LINE_BYTES}-byte cap — otherwise a legitimately huge \
-             table makes its own run's recovery degrade",
-            line.len()
-        );
-    }
-
-    #[test]
-    fn an_oversized_manifest_line_degrades_without_reading_it_unbounded() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("manifest.jsonl"),
-            vec![b'x'; MAX_MANIFEST_LINE_BYTES + 1],
-        )
-        .expect("fixture manifest");
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-        );
-        assert!(matches!(outcome, ScanOutcome::Damaged(reason) if reason.contains("metadata cap")));
-    }
-
-    /// 4L5's boundary, both sides: the writer appends exactly `\n` per
-    /// line, so a completed line of EXACTLY the cap in content bytes must
-    /// scan (the terminator is not content), and one content byte over
-    /// must refuse. The off-by-one this closes counted the newline against
-    /// the cap, making the real bound MAX−1 while the pins measured MAX.
-    #[test]
-    fn the_line_cap_counts_content_not_the_terminator() {
-        let mut at_cap = vec![b'x'; MAX_MANIFEST_LINE_BYTES];
-        at_cap.push(b'\n');
-        let mut reader = std::io::BufReader::new(std::io::Cursor::new(at_cap));
-        let line = read_manifest_line(&mut reader)
-            .expect("a line at exactly the cap scans")
-            .expect("a line, not EOF");
-        assert_eq!(line.text.len(), MAX_MANIFEST_LINE_BYTES);
-        assert_eq!(line.terminator, 1, "the writer's `\\n` terminator");
-        // 6L4: a CRLF terminator reports TWO on-disk bytes, so the
-        // whole-file budget counts what recovery actually reads.
-        let crlf = b"line\r\n".to_vec();
-        let mut reader = std::io::BufReader::new(std::io::Cursor::new(crlf));
-        let line = read_manifest_line(&mut reader)
-            .expect("a CRLF line scans")
-            .expect("a line, not EOF");
-        assert_eq!(line.text, "line");
-        assert_eq!(line.terminator, 2, "CRLF counts both bytes");
-
-        let mut over_cap = vec![b'x'; MAX_MANIFEST_LINE_BYTES + 1];
-        over_cap.push(b'\n');
-        let mut reader = std::io::BufReader::new(std::io::Cursor::new(over_cap));
-        let error = read_manifest_line(&mut reader).expect_err("one content byte over refuses");
-        assert!(error.contains("metadata cap"), "{error}");
-    }
-
-    /// 4M1's whole-file half: the per-line cap bounds ONE line; this pins
-    /// the SUM. Enough individually-legal lines to pass the budget must
-    /// degrade, not accumulate. Driven through the budget SEAM with a
-    /// small budget so the pin costs kilobytes rather than the production
-    /// gibibyte — whose value is asserted alongside (the seam and the
-    /// constant together are the whole defense).
-    #[test]
-    fn a_manifest_past_the_total_budget_degrades() {
-        assert_eq!(
-            MAX_MANIFEST_TOTAL_BYTES,
-            1024 * 1024 * 1024,
-            "the production whole-file budget (see its doc for the honest arithmetic)"
-        );
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cursor = rdlt_core::cursor::Cursor::new(serde_json::Value::String("x".repeat(1000)));
-        let line = crate::wal::record::encode_line(&WalRecord::Checkpoint {
-            stream: rdlt_core::id::StreamName::new("s"),
-            cursor,
-        })
-        .expect("encode");
-        let mut out = crate::wal::record::encode_line(&WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
-            load_id: LoadId::new("l"),
-            pipeline: PipelineId::new("p"),
-        })
-        .expect("encode header");
-        out.push(b'\n');
-        // 1 KiB lines against a 16 KiB seam budget.
-        let mut total = out.len() as u64;
-        while total <= 16 * 1024 {
-            out.extend_from_slice(&line);
-            out.push(b'\n');
-            total += line.len() as u64 + 1;
-        }
-        std::fs::write(dir.path().join("manifest.jsonl"), out).expect("write manifest");
-        std::fs::write(
-            dir.path().join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
-        )
-        .expect("write sidecar");
-        let outcome = scan_with_budget(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-            16 * 1024,
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("total budget")),
-            "the total budget refuses, naming itself: {outcome:?}"
-        );
-        // And under the seam budget a small manifest still scans — the
-        // budget, not the content, is what refused above.
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_manifest(dir.path(), &[]);
-        let outcome = scan_with_budget(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-            16 * 1024,
-        );
-        assert!(
-            !matches!(outcome, ScanOutcome::Damaged(_)),
-            "a small manifest under the seam budget scans: {outcome:?}"
-        );
-    }
-
-    /// 8L5: a span naming one segment file TWICE is damage — the writer
-    /// mints one monotonic sequence per run, so a repeat can only be a
-    /// crafted manifest (the zero-row amplification shape: millions of
-    /// `rows:0` lines all pointing at one cheap segment, minutes of
-    /// recovery from kilobytes of disk). Distinct names still scan.
-    #[test]
-    fn a_span_naming_one_segment_twice_is_damage() {
-        let load = LoadId::new("l");
-        let header = WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
-            load_id: load.clone(),
-            pipeline: PipelineId::new("p"),
-        };
-        let segment = |file: &str| WalRecord::Segment {
-            table: rdlt_core::id::TableName::new("t"),
-            file: file.to_owned(),
-            rows: 0,
-        };
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_manifest(
-            dir.path(),
-            &[
-                header.clone(),
-                segment("l-000000.arrow"),
-                segment("l-000000.arrow"),
-            ],
-        );
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("more than once")),
-            "a repeated segment name degrades the scan: {outcome:?}"
-        );
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_manifest(
-            dir.path(),
-            &[header, segment("l-000000.arrow"), segment("l-000001.arrow")],
-        );
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-        );
-        assert!(
-            !matches!(outcome, ScanOutcome::Damaged(_)),
-            "distinct segment names still scan: {outcome:?}"
-        );
-    }
-
-    /// 4M1's sidecar half: the writer's own sidecar is ~100 bytes, so a
-    /// sparse giant regular file at the sidecar path — which passes the
-    /// file-TYPE gate — refuses at the small content cap rather than being
-    /// read whole.
-    #[test]
-    fn an_oversized_sidecar_is_damage_not_an_unbounded_read() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_manifest(dir.path(), &[]);
-        std::fs::write(
-            dir.path().join(crate::wal::RULES_SIDECAR),
-            vec![b'x'; (MAX_RULES_SIDECAR_BYTES + 1) as usize],
-        )
-        .expect("plant oversized sidecar");
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("sidecar")),
-            "an oversized sidecar degrades the scan: {outcome:?}"
-        );
-    }
-
-    /// 5M6's sidecar seat: a recorded rules value that parses but is out
-    /// of range is damage, not a mismatch — no validated writer produces
-    /// it, so the span is refused rather than fed to the namer.
-    #[test]
-    fn a_sidecar_with_out_of_range_rules_is_damage() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_manifest(dir.path(), &[]);
-        std::fs::write(
-            dir.path().join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::schema::IdentRules { max_len: 2 }).expect("rules json"),
-        )
-        .expect("plant insane sidecar");
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("out-of-range")),
-            "an out-of-range sidecar degrades the scan: {outcome:?}"
-        );
-    }
-
-    /// 4L4: a symlinked `wal` directory itself is refused, not followed —
-    /// the write side's `ensure_owned_dir` gate's read-side twin.
-    #[test]
-    fn a_symlinked_wal_directory_is_damage_never_followed() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let foreign = tempfile::tempdir().expect("foreign dir");
-        write_manifest(foreign.path(), &[]);
-        let link = dir.path().join("wal");
-        std::os::unix::fs::symlink(foreign.path(), &link).expect("plant symlink");
-        let outcome = scan(
-            &link,
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("symlink")),
-            "a symlinked WAL directory refuses, never follows: {outcome:?}"
-        );
-    }
-
-    /// 4I6: a DIRECTORY planted at the manifest path opens fine on Unix
-    /// (directories are readable), so only the handle-side regular-file
-    /// check stands between the scan and decoding directory bytes. It
-    /// refuses as damage.
-    #[test]
-    fn a_directory_planted_at_the_manifest_path_is_damage() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(dir.path().join("manifest.jsonl")).expect("plant directory");
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("p"),
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::Damaged(_)),
-            "a directory at the manifest path is damage, not absence: {outcome:?}"
-        );
-    }
-
-    /// Mutation-report closure: the on-disk Run header must SERIALIZE the
-    /// current format version — a defaulted or zero version would break forward
-    /// detection.
-    #[test]
-    fn run_header_serializes_current_format_version() {
-        let record = WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
-            load_id: LoadId::new("l"),
-            pipeline: PipelineId::new("p"),
-        };
-        let json = serde_json::to_string(&record).expect("serialize");
-        assert!(
-            json.contains(&format!(
-                "\"format_version\":{}",
-                crate::wal::WAL_FORMAT_VERSION
-            )),
-            "header must carry the version: {json}"
-        );
-        assert_eq!(
-            crate::wal::WAL_FORMAT_VERSION,
-            1,
-            "the format version is 1 until the public release — in the unpublished \
-             window format changes land IN PLACE (a skewed or unreadable WAL \
-             degrades to re-extraction); version ceremony starts at the release"
-        );
-    }
-
-    /// The version gate is EXACT, in both directions. A newer manifest carries
-    /// records this build cannot be trusted to read; an older one names
-    /// segments in a container it no longer decodes. Both degrade to
-    /// re-extraction, and both report `Unsupported` rather than `Damaged` so
-    /// the two causes stay distinguishable by shape, not by message text.
-    #[test]
-    fn any_other_manifest_version_is_unsupported_current_scans_fine() {
-        let run = |version: u32| {
-            let dir = tempfile::tempdir().expect("tempdir");
-            write_manifest(
-                dir.path(),
-                &[WalRecord::Run {
-                    format_version: version,
-                    load_id: LoadId::new("l"),
-                    pipeline: PipelineId::new("p"),
-                }],
-            );
-            scan(
-                dir.path(),
-                rdlt_core::schema::IdentRules::default(),
-                &PipelineId::new("p"),
-            )
-        };
-        let current = crate::wal::WAL_FORMAT_VERSION;
-        assert!(
-            matches!(run(current + 1), ScanOutcome::Unsupported { found, supported }
-                     if found == current + 1 && supported == current),
-            "a newer manifest must be refused by version"
-        );
-        assert!(
-            matches!(run(current - 1), ScanOutcome::Unsupported { found, supported }
-                     if found == current - 1 && supported == current),
-            "an older manifest names segments in the previous container and must \
-             be refused by version, not discovered unreadable at open time"
-        );
-        // Current version, no checkpoint: nothing is replayable, but a manifest
-        // and its segments ARE on disk — `Discard` so the caller clears them.
-        // `Nothing` would leave residue to accumulate across repeated crashes
-        // before the first checkpoint.
-        assert!(matches!(run(current), ScanOutcome::Discard));
-    }
-
-    /// A manifest whose Run header carries NO version field is not a
-    /// recognized manifest at all (every writer stamps the field), so a
-    /// multi-line one lands on the corruption arm and degrades — never
-    /// decodes under a defaulted version, never replays.
-    #[test]
-    fn a_versionless_manifest_is_unrecognized_and_degrades() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            dir.path().join("manifest.jsonl"),
-            concat!(
-                "{\"rec\":\"run\",\"load_id\":\"l\",\"pipeline\":\"p\"}\n",
-                "{\"rec\":\"committed\",\"commit_seq\":1}\n",
-            ),
-        )
-        .expect("write manifest");
-        assert!(
-            matches!(
-                scan(
-                    dir.path(),
-                    rdlt_core::schema::IdentRules::default(),
-                    &PipelineId::new("p")
-                ),
-                ScanOutcome::Damaged(_)
-            ),
-            "an unversioned header is unrecognized — corruption arm, re-extraction"
-        );
-    }
-
-    /// A workdir whose Run header names ANOTHER pipeline refuses as
-    /// `ForeignPipeline`, carrying the occupant — never `Recover` (which
-    /// would replay the foreign span under the wrong pipeline) and never
-    /// `Damaged`/`Discard`/`Unsupported` (every one of which the caller
-    /// resolves by CLEARING the foreign pipeline's recovery material).
-    #[test]
-    fn a_manifest_written_by_another_pipeline_refuses_as_foreign() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_manifest(
-            dir.path(),
-            &[WalRecord::Run {
-                format_version: crate::wal::WAL_FORMAT_VERSION,
-                load_id: LoadId::new("l"),
-                pipeline: PipelineId::new("orders"),
-            }],
-        );
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("customers"),
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::ForeignPipeline { ref occupant }
-                if occupant.as_str() == "orders"),
-            "a foreign manifest must refuse naming the occupant: {outcome:?}"
-        );
-    }
-
-    /// The occupancy gate outranks the version gate: a foreign manifest
-    /// in a DIFFERENT format version must still refuse as foreign —
-    /// `Unsupported` is a resolved outcome the caller clears, and the
-    /// foreign span is not ours to clear.
-    #[test]
-    fn a_foreign_manifest_in_another_version_still_refuses_as_foreign() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_manifest(
-            dir.path(),
-            &[WalRecord::Run {
-                format_version: crate::wal::WAL_FORMAT_VERSION + 1,
-                load_id: LoadId::new("l"),
-                pipeline: PipelineId::new("orders"),
-            }],
-        );
-        let outcome = scan(
-            dir.path(),
-            rdlt_core::schema::IdentRules::default(),
-            &PipelineId::new("customers"),
-        );
-        assert!(
-            matches!(outcome, ScanOutcome::ForeignPipeline { .. }),
-            "foreign-ness outranks version skew: {outcome:?}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod per_stream_coverage_tests {
-    //! The replay span is a PER-STREAM decision, not a positional one (042
-    //! T7E). A checkpoint covers only the segments of ITS OWN stream that
-    //! precede it: replaying anything else commits rows whose cursor never
-    //! advanced, and the run's own extraction then delivers them AGAIN —
-    //! the double-apply proven live on the multi-table crash sweep (3 of 4
-    //! control runs on main @ 4e151e0e). These tests pin the scan directly
-    //! on constructed manifests, so the race in the live trigger never
-    //! decides whether the property holds.
-
-    use super::*;
     use rdlt_core::commit::WriteMode;
     use rdlt_core::cursor::Cursor;
     use rdlt_core::id::{LoadId, PipelineId, StreamName, TableName};
     use rdlt_core::schema::{self, IdentRules, ParentLink, TableSchema};
+
+    use super::*;
+    use crate::testing::run_header;
+    use crate::wal::format::encode_line;
+
+    /// `records` as the writer's own lines under the default rules.
+    fn write_manifest(dir: &std::path::Path, records: &[WalRecord]) {
+        crate::testing::write_manifest(dir, records, IdentRules::default());
+    }
+
+    /// A current-version Run header (load `l`, pipeline `p`) followed by
+    /// `records`, with `writer_rules` in the sidecar.
+    fn write_span(dir: &std::path::Path, records: Vec<WalRecord>, writer_rules: IdentRules) {
+        let mut all = vec![run_header("l")];
+        all.extend(records);
+        crate::testing::write_manifest(dir, &all, writer_rules);
+    }
+
+    /// The production scan of `dir` under the default rules for pipeline `p`.
+    fn scan_dir(dir: &std::path::Path) -> ScanOutcome {
+        scan(
+            dir,
+            IdentRules::default(),
+            &PipelineId::new("p"),
+            MAX_MANIFEST_TOTAL_BYTES,
+        )
+    }
+
+    /// Scan a manifest of `records` — writer and scanner under the SAME
+    /// (default) rules, the benign shape the coverage pins hold on.
+    fn scan_span(records: Vec<WalRecord>) -> ScanOutcome {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_span(dir.path(), records, IdentRules::default());
+        scan_dir(dir.path())
+    }
 
     fn delta(table: &str, parent: Option<&str>) -> WalRecord {
         let schema = TableSchema {
@@ -1328,36 +811,6 @@ mod per_stream_coverage_tests {
         }
     }
 
-    /// Write a manifest of `records` under a current-version Run
-    /// header, with the writer's rules sidecar beside it.
-    fn write_span(dir: &std::path::Path, records: Vec<WalRecord>, writer_rules: IdentRules) {
-        let mut all = vec![WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
-            load_id: LoadId::new("l"),
-            pipeline: PipelineId::new("p"),
-        }];
-        all.extend(records);
-        let mut out: Vec<u8> = Vec::new();
-        for record in &all {
-            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("record json"));
-            out.push(b'\n');
-        }
-        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
-        std::fs::write(
-            dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&writer_rules).expect("rules json"),
-        )
-        .expect("write sidecar");
-    }
-
-    /// Scan a manifest of `records` — writer and scanner under the SAME
-    /// (default) rules, the benign shape every pre-round-9 pin holds on.
-    fn scan_span(records: Vec<WalRecord>) -> ScanOutcome {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_span(dir.path(), records, IdentRules::default());
-        scan(dir.path(), IdentRules::default(), &PipelineId::new("p"))
-    }
-
     /// The segment files the outcome would replay, in span order.
     fn replayed_files(outcome: &ScanOutcome) -> Vec<String> {
         match outcome {
@@ -1373,7 +826,527 @@ mod per_stream_coverage_tests {
         }
     }
 
-    /// THE T7E defect, deterministically: `events`' segment precedes
+    /// A replayable one-stream span under a current-version header, written
+    /// through the writer's own line encoding — the healthy baseline the
+    /// tamper tests below corrupt.
+    fn healthy_manifest(dir: &std::path::Path) {
+        let schema = rdlt_core::schema::TableSchema {
+            table: TableName::new("orders"),
+            parent: None,
+            columns: vec![],
+        };
+        let records = vec![
+            run_header("l"),
+            WalRecord::Delta {
+                delta: rdlt_core::schema::Delta {
+                    table: schema.table.clone(),
+                    from: None,
+                    to: schema.content_hash(),
+                    changes: vec![],
+                },
+                schema,
+                mode: rdlt_core::commit::WriteMode::Append,
+            },
+            WalRecord::Segment {
+                table: TableName::new("orders"),
+                file: "l-000000.arrow".to_owned(),
+                rows: 2,
+            },
+            WalRecord::Checkpoint {
+                stream: StreamName::new("orders"),
+                cursor: Cursor::new(serde_json::json!(41)),
+            },
+        ];
+        write_manifest(dir, &records);
+    }
+
+    /// One worker thread: the harshest honest setting. With the blocking work
+    /// inline, that single worker is inside file I/O and the co-tenant task
+    /// cannot be polled at all.
+    fn single_worker_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime")
+    }
+
+    /// A manifest big enough that scanning it is real work rather than a
+    /// syscall — the co-tenant needs a window in which to be starved.
+    fn big_manifest(dir: &std::path::Path) {
+        let mut records = vec![run_header("starve")];
+        for seq in 0..20_000u64 {
+            records.push(WalRecord::Checkpoint {
+                stream: StreamName::from("s"),
+                cursor: Cursor::new(format!("c{seq}")),
+            });
+        }
+        write_manifest(dir, &records);
+    }
+
+    /// `mkfifo` via the coreutils binary: the workspace denies `unsafe`, so
+    /// `libc::mkfifo` is not callable, and no safe wrapper is in the tree.
+    /// Returns false when the binary is unavailable so the test can skip
+    /// rather than fail on an exotic host.
+    fn mkfifo(path: &std::path::Path) -> bool {
+        match std::process::Command::new("mkfifo").arg(path).status() {
+            Ok(status) => status.success(),
+            Err(_) => false,
+        }
+    }
+
+    /// Run `scan` on its own thread under a deadline. The RED state of these
+    /// pins is an eternal hang (a writerless FIFO blocks the open), and a
+    /// test that hangs forever fails no gate — the deadline turns a
+    /// regression into a loud failure. The scanning thread stays blocked
+    /// after a timeout; the per-test process boundary reclaims it.
+    fn scan_with_deadline(dir: std::path::PathBuf) -> ScanOutcome {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(scan_dir(&dir));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                panic!("recovery hung: the scan blocked on a hostile file instead of refusing it")
+            }
+        }
+    }
+
+    /// The cursor half of the same face: a Checkpoint line carrying a
+    /// maximal-contract cursor (4 MiB, `rdlt_connector::gate::MAX_CURSOR_BYTES`)
+    /// plus its envelope and trailer must fit the cap — the cursor contract
+    /// is only honest if the WAL can actually record one.
+    #[test]
+    fn the_line_cap_admits_a_maximal_cursor_line() {
+        let cursor = rdlt_core::cursor::Cursor::new(serde_json::Value::String(
+            "x".repeat(rdlt_connector::gate::MAX_CURSOR_BYTES as usize),
+        ));
+        let line = encode_line(&WalRecord::Checkpoint {
+            stream: rdlt_core::id::StreamName::new("s"),
+            cursor,
+        })
+        .expect("encode");
+        assert!(
+            line.len() <= MAX_MANIFEST_LINE_BYTES,
+            "a maximal cursor line ({} bytes) must fit the {MAX_MANIFEST_LINE_BYTES}-byte cap",
+            line.len()
+        );
+    }
+
+    /// The line cap's other face: it must sit ABOVE anything this engine's
+    /// own writer can append, or a run's own WAL becomes unscannable. This
+    /// builds the largest Delta the shred-time bounds admit — 4,096 columns
+    /// (`MAX_SOURCE_COLUMNS_PER_TABLE`), identifiers at the default rules'
+    /// 63-byte bound, the schema serialized twice by a CreateTable change —
+    /// and holds the cap over it. Growing the shred bounds or shrinking the
+    /// cap fails HERE, before it fails as a `Damaged` scan in the field.
+    #[test]
+    fn the_line_cap_admits_the_writers_own_maximal_delta_line() {
+        use rdlt_core::commit::WriteMode;
+        use rdlt_core::schema::{self, Column, ColumnType, Provenance};
+        use rdlt_core::types::LogicalType;
+        let columns: Vec<Column> = (0..crate::shred::limits::MAX_SOURCE_COLUMNS_PER_TABLE)
+            .map(|i| Column {
+                name: format!("{:a>59}{i:04}", ""),
+                column_type: ColumnType::scalar(LogicalType::Json),
+                nullable: true,
+                provenance: Provenance::Inferred,
+            })
+            .collect();
+        let schema = rdlt_core::schema::TableSchema {
+            table: rdlt_core::id::TableName::new(format!("{:t>63}", "")),
+            parent: None,
+            columns,
+        };
+        let delta = rdlt_core::schema::Delta {
+            table: schema.table.clone(),
+            from: None,
+            to: schema.content_hash(),
+            changes: vec![schema::Change::CreateTable {
+                schema: schema.clone(),
+            }],
+        };
+        let record = WalRecord::Delta {
+            delta,
+            schema,
+            mode: WriteMode::Append,
+        };
+        let line = encode_line(&record).expect("encode");
+        assert!(
+            line.len() <= MAX_MANIFEST_LINE_BYTES,
+            "the writer's own maximal delta line ({} bytes) must scan under the \
+             {MAX_MANIFEST_LINE_BYTES}-byte cap — otherwise a legitimately huge \
+             table makes its own run's recovery degrade",
+            line.len()
+        );
+    }
+
+    #[test]
+    fn an_oversized_manifest_line_degrades_without_reading_it_unbounded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("manifest.jsonl"),
+            vec![b'x'; MAX_MANIFEST_LINE_BYTES + 1],
+        )
+        .expect("fixture manifest");
+        let outcome = scan_dir(dir.path());
+        assert!(matches!(outcome, ScanOutcome::Damaged(reason) if reason.contains("metadata cap")));
+    }
+
+    /// The line cap's boundary, both sides: the writer appends exactly `\n`
+    /// per line, so a completed line of EXACTLY the cap in content bytes
+    /// must scan (the terminator is not content), and one content byte over
+    /// must refuse — counting the newline against the cap would make the
+    /// real bound MAX−1.
+    #[test]
+    fn the_line_cap_counts_content_not_the_terminator() {
+        let mut at_cap = vec![b'x'; MAX_MANIFEST_LINE_BYTES];
+        at_cap.push(b'\n');
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(at_cap));
+        let line = read_manifest_line(&mut reader)
+            .expect("a line at exactly the cap scans")
+            .expect("a line, not EOF");
+        assert_eq!(line.text.len(), MAX_MANIFEST_LINE_BYTES);
+        assert_eq!(line.terminator, 1, "the writer's `\\n` terminator");
+        // A CRLF terminator reports TWO on-disk bytes, so the
+        // whole-file budget counts what recovery actually reads.
+        let crlf = b"line\r\n".to_vec();
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(crlf));
+        let line = read_manifest_line(&mut reader)
+            .expect("a CRLF line scans")
+            .expect("a line, not EOF");
+        assert_eq!(line.text, "line");
+        assert_eq!(line.terminator, 2, "CRLF counts both bytes");
+
+        let mut over_cap = vec![b'x'; MAX_MANIFEST_LINE_BYTES + 1];
+        over_cap.push(b'\n');
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(over_cap));
+        let error = read_manifest_line(&mut reader).expect_err("one content byte over refuses");
+        assert!(error.contains("metadata cap"), "{error}");
+    }
+
+    /// The whole-file half: the per-line cap bounds ONE line; this pins
+    /// the SUM. Enough individually-legal lines to pass the budget must
+    /// degrade, not accumulate. Driven through the budget SEAM with a
+    /// small budget so the pin costs kilobytes rather than the production
+    /// gibibyte — whose value is asserted alongside (the seam and the
+    /// constant together are the whole defense).
+    #[test]
+    fn a_manifest_past_the_total_budget_degrades() {
+        assert_eq!(
+            MAX_MANIFEST_TOTAL_BYTES,
+            1024 * 1024 * 1024,
+            "the production whole-file budget (see its doc for the honest arithmetic)"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cursor = rdlt_core::cursor::Cursor::new(serde_json::Value::String("x".repeat(1000)));
+        let line = encode_line(&WalRecord::Checkpoint {
+            stream: rdlt_core::id::StreamName::new("s"),
+            cursor,
+        })
+        .expect("encode");
+        let mut out = encode_line(&WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("p"),
+        })
+        .expect("encode header");
+        out.push(b'\n');
+        // 1 KiB lines against a 16 KiB seam budget.
+        let mut total = out.len() as u64;
+        while total <= 16 * 1024 {
+            out.extend_from_slice(&line);
+            out.push(b'\n');
+            total += line.len() as u64 + 1;
+        }
+        std::fs::write(dir.path().join("manifest.jsonl"), out).expect("write manifest");
+        std::fs::write(
+            dir.path().join(RULES_SIDECAR),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
+        )
+        .expect("write sidecar");
+        let outcome = scan(
+            dir.path(),
+            IdentRules::default(),
+            &PipelineId::new("p"),
+            16 * 1024,
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("total budget")),
+            "the total budget refuses, naming itself: {outcome:?}"
+        );
+        // And under the seam budget a small manifest still scans — the
+        // budget, not the content, is what refused above.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(dir.path(), &[]);
+        let outcome = scan(
+            dir.path(),
+            IdentRules::default(),
+            &PipelineId::new("p"),
+            16 * 1024,
+        );
+        assert!(
+            !matches!(outcome, ScanOutcome::Damaged(_)),
+            "a small manifest under the seam budget scans: {outcome:?}"
+        );
+    }
+
+    /// A span naming one segment file TWICE is damage — the writer
+    /// mints one monotonic sequence per run, so a repeat can only be a
+    /// crafted manifest (the zero-row amplification shape: millions of
+    /// `rows:0` lines all pointing at one cheap segment, minutes of
+    /// recovery from kilobytes of disk). Distinct names still scan.
+    #[test]
+    fn a_span_naming_one_segment_twice_is_damage() {
+        let load = LoadId::new("l");
+        let header = WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: load.clone(),
+            pipeline: PipelineId::new("p"),
+        };
+        let segment = |file: &str| WalRecord::Segment {
+            table: rdlt_core::id::TableName::new("t"),
+            file: file.to_owned(),
+            rows: 0,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[
+                header.clone(),
+                segment("l-000000.arrow"),
+                segment("l-000000.arrow"),
+            ],
+        );
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("more than once")),
+            "a repeated segment name degrades the scan: {outcome:?}"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[header, segment("l-000000.arrow"), segment("l-000001.arrow")],
+        );
+        let outcome = scan_dir(dir.path());
+        assert!(
+            !matches!(outcome, ScanOutcome::Damaged(_)),
+            "distinct segment names still scan: {outcome:?}"
+        );
+    }
+
+    /// The sidecar half: the writer's own sidecar is ~100 bytes, so a
+    /// sparse giant regular file at the sidecar path — which passes the
+    /// file-TYPE gate — refuses at the small content cap rather than being
+    /// read whole.
+    #[test]
+    fn an_oversized_sidecar_is_damage_not_an_unbounded_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(dir.path(), &[]);
+        std::fs::write(
+            dir.path().join(RULES_SIDECAR),
+            vec![b'x'; (MAX_RULES_SIDECAR_BYTES + 1) as usize],
+        )
+        .expect("plant oversized sidecar");
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("sidecar")),
+            "an oversized sidecar degrades the scan: {outcome:?}"
+        );
+    }
+
+    /// A recorded rules value that parses but is out
+    /// of range is damage, not a mismatch — no validated writer produces
+    /// it, so the span is refused rather than fed to the namer.
+    #[test]
+    fn a_sidecar_with_out_of_range_rules_is_damage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(dir.path(), &[]);
+        std::fs::write(
+            dir.path().join(RULES_SIDECAR),
+            serde_json::to_vec(&rdlt_core::schema::IdentRules { max_len: 2 }).expect("rules json"),
+        )
+        .expect("plant insane sidecar");
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("out-of-range")),
+            "an out-of-range sidecar degrades the scan: {outcome:?}"
+        );
+    }
+
+    /// A symlinked `wal` directory itself is refused, not followed —
+    /// the write side's `ensure_owned_dir` gate's read-side twin.
+    #[test]
+    fn a_symlinked_wal_directory_is_damage_never_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let foreign = tempfile::tempdir().expect("foreign dir");
+        write_manifest(foreign.path(), &[]);
+        let link = dir.path().join("wal");
+        std::os::unix::fs::symlink(foreign.path(), &link).expect("plant symlink");
+        let outcome = scan_dir(&link);
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("symlink")),
+            "a symlinked WAL directory refuses, never follows: {outcome:?}"
+        );
+    }
+
+    /// A DIRECTORY planted at the manifest path opens fine on Unix
+    /// (directories are readable), so only the handle-side regular-file
+    /// check stands between the scan and decoding directory bytes. It
+    /// refuses as damage.
+    #[test]
+    fn a_directory_planted_at_the_manifest_path_is_damage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("manifest.jsonl")).expect("plant directory");
+        let outcome = scan_dir(dir.path());
+        assert!(
+            matches!(outcome, ScanOutcome::Damaged(_)),
+            "a directory at the manifest path is damage, not absence: {outcome:?}"
+        );
+    }
+
+    /// Mutation-report closure: the on-disk Run header must SERIALIZE the
+    /// current format version — a defaulted or zero version would break forward
+    /// detection.
+    #[test]
+    fn run_header_serializes_current_format_version() {
+        let record = WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("p"),
+        };
+        let json = serde_json::to_string(&record).expect("serialize");
+        assert!(
+            json.contains(&format!("\"format_version\":{}", WAL_FORMAT_VERSION)),
+            "header must carry the version: {json}"
+        );
+        assert_eq!(
+            WAL_FORMAT_VERSION, 1,
+            "the format version is 1 until the public release — in the unpublished \
+             window format changes land IN PLACE (a skewed or unreadable WAL \
+             degrades to re-extraction); version ceremony starts at the release"
+        );
+    }
+
+    /// The version gate is EXACT, in both directions. A newer manifest carries
+    /// records this build cannot be trusted to read; an older one names
+    /// segments in a container it no longer decodes. Both degrade to
+    /// re-extraction, and both report `Unsupported` rather than `Damaged` so
+    /// the two causes stay distinguishable by shape, not by message text.
+    #[test]
+    fn any_other_manifest_version_is_unsupported_current_scans_fine() {
+        let run = |version: u32| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_manifest(
+                dir.path(),
+                &[WalRecord::Run {
+                    format_version: version,
+                    load_id: LoadId::new("l"),
+                    pipeline: PipelineId::new("p"),
+                }],
+            );
+            scan_dir(dir.path())
+        };
+        let current = WAL_FORMAT_VERSION;
+        assert!(
+            matches!(run(current + 1), ScanOutcome::Unsupported { found, supported }
+                     if found == current + 1 && supported == current),
+            "a newer manifest must be refused by version"
+        );
+        assert!(
+            matches!(run(current - 1), ScanOutcome::Unsupported { found, supported }
+                     if found == current - 1 && supported == current),
+            "an older manifest names segments in the previous container and must \
+             be refused by version, not discovered unreadable at open time"
+        );
+        // Current version, no checkpoint: nothing is replayable, but a manifest
+        // and its segments ARE on disk — `Discard` so the caller clears them.
+        // `Nothing` would leave residue to accumulate across repeated crashes
+        // before the first checkpoint.
+        assert!(matches!(run(current), ScanOutcome::Discard));
+    }
+
+    /// A manifest whose Run header carries NO version field is not a
+    /// recognized manifest at all (every writer stamps the field), so a
+    /// multi-line one lands on the corruption arm and degrades — never
+    /// decodes under a defaulted version, never replays.
+    #[test]
+    fn a_versionless_manifest_is_unrecognized_and_degrades() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("manifest.jsonl"),
+            concat!(
+                "{\"rec\":\"run\",\"load_id\":\"l\",\"pipeline\":\"p\"}\n",
+                "{\"rec\":\"committed\",\"commit_seq\":1}\n",
+            ),
+        )
+        .expect("write manifest");
+        assert!(
+            matches!(scan_dir(dir.path()), ScanOutcome::Damaged(_)),
+            "an unversioned header is unrecognized — corruption arm, re-extraction"
+        );
+    }
+
+    /// A workdir whose Run header names ANOTHER pipeline refuses as
+    /// `ForeignPipeline`, carrying the occupant — never `Recover` (which
+    /// would replay the foreign span under the wrong pipeline) and never
+    /// `Damaged`/`Discard`/`Unsupported` (every one of which the caller
+    /// resolves by CLEARING the foreign pipeline's recovery material).
+    #[test]
+    fn a_manifest_written_by_another_pipeline_refuses_as_foreign() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[WalRecord::Run {
+                format_version: WAL_FORMAT_VERSION,
+                load_id: LoadId::new("l"),
+                pipeline: PipelineId::new("orders"),
+            }],
+        );
+        let outcome = scan(
+            dir.path(),
+            IdentRules::default(),
+            &PipelineId::new("customers"),
+            MAX_MANIFEST_TOTAL_BYTES,
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::ForeignPipeline { ref occupant }
+                if occupant.as_str() == "orders"),
+            "a foreign manifest must refuse naming the occupant: {outcome:?}"
+        );
+    }
+
+    /// The occupancy gate outranks the version gate: a foreign manifest
+    /// in a DIFFERENT format version must still refuse as foreign —
+    /// `Unsupported` is a resolved outcome the caller clears, and the
+    /// foreign span is not ours to clear.
+    #[test]
+    fn a_foreign_manifest_in_another_version_still_refuses_as_foreign() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            dir.path(),
+            &[WalRecord::Run {
+                format_version: WAL_FORMAT_VERSION + 1,
+                load_id: LoadId::new("l"),
+                pipeline: PipelineId::new("orders"),
+            }],
+        );
+        let outcome = scan(
+            dir.path(),
+            IdentRules::default(),
+            &PipelineId::new("customers"),
+            MAX_MANIFEST_TOTAL_BYTES,
+        );
+        assert!(
+            matches!(outcome, ScanOutcome::ForeignPipeline { .. }),
+            "foreign-ness outranks version skew: {outcome:?}"
+        );
+    }
+
+    /// The per-stream rule, deterministically: `events`' segment precedes
     /// `orders`' checkpoint POSITIONALLY, but no `events` checkpoint exists —
     /// so no cursor covers it and the run's own extraction will re-deliver
     /// its rows. Replaying it too is the double-apply. It must be dropped;
@@ -1404,7 +1377,7 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// 5.4 (GLM round 7): a manifest carrying TWO Run headers — the
+    /// A manifest carrying TWO Run headers — the
     /// shape a hand-crafted (or pre-isolation-residue) directory can
     /// present even though the writer's invariant is one Run per
     /// resolved span. The fold must consider only the LAST run's span:
@@ -1414,7 +1387,7 @@ mod per_stream_coverage_tests {
     fn a_two_run_manifest_replays_only_the_last_runs_span() {
         let dir = tempfile::tempdir().expect("tempdir");
         let run = |load: &str| WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
+            format_version: WAL_FORMAT_VERSION,
             load_id: LoadId::new(load),
             pipeline: PipelineId::new("p"),
         };
@@ -1432,7 +1405,7 @@ mod per_stream_coverage_tests {
         ];
         write_span(dir.path(), records, IdentRules::default());
 
-        let outcome = scan(dir.path(), IdentRules::default(), &PipelineId::new("p"));
+        let outcome = scan_dir(dir.path());
         let ScanOutcome::Recover(span) = outcome else {
             unreachable!("a two-run manifest with a covered tail span recovers")
         };
@@ -1537,8 +1510,8 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// THE ROUTINE POST-COMMIT SHAPE the loader's deferral makes (round-2
-    /// fix wave): after a commit, an idle cursored stream checkpoints with
+    /// THE ROUTINE POST-COMMIT SHAPE the loader's deferral makes: after a
+    /// commit, an idle cursored stream checkpoints with
     /// zero new segments while a snapshot co-stream (which never
     /// checkpoints) keeps writing. The snapshot segments are orphans —
     /// dropped, re-extraction re-delivers them — and the idle checkpoint
@@ -1576,7 +1549,7 @@ mod per_stream_coverage_tests {
         assert_eq!(span.next_commit_seq, 2, "after the committed prefix");
     }
 
-    /// THE REPLACE HAZARD (round-3 fix): a table whose every span
+    /// THE REPLACE HAZARD: a table whose every span
     /// segment was dropped as uncovered must NOT be ensured by replay.
     /// Ensuring is not free — a Replace stream's once-per-load
     /// truncation fires at the replay commit, and a replay
@@ -1658,8 +1631,7 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// The whole-run-idle stream is BENIGN (round-6 fix — the guard's
-    /// last residue misdiagnosed it as damage): a stream that wrote
+    /// The whole-run-idle stream is BENIGN, not damage: a stream that wrote
     /// zero rows all run is checkpoint-only, so no delta was ever
     /// recorded, and its root matches no segment and no schema. Its
     /// checkpoint covers nothing and replays its cursor; the snapshot
@@ -1687,11 +1659,9 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// THE ROUTINE THREE-STREAM SHAPE (round-6 red pin): A productive
-    /// and covered, B idle all run (checkpoint-only, no delta
-    /// anywhere), C a snapshot stream with orphaned segments. A's span
-    /// must SURVIVE — the old guard threw the whole replay away over
-    /// B's idleness.
+    /// THE ROUTINE THREE-STREAM SHAPE: A productive and covered, B idle
+    /// all run (checkpoint-only, no delta anywhere), C a snapshot stream
+    /// with orphaned segments. A's span must SURVIVE B's idleness.
     #[test]
     fn a_productive_streams_span_survives_an_idle_co_stream_and_snapshot_orphans() {
         let outcome = scan_span(vec![
@@ -1714,7 +1684,7 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// THE RULES-DRIFT TRIPWIRE (round-7 red pin): recorded tables
+    /// THE RULES-DRIFT TRIPWIRE: recorded tables
     /// `EVENTS` and `events` both exist (a shape only a writer with
     /// DIFFERENT normalization rules produces — ours lowercases), and
     /// the checkpointed stream's normalized root lands on `events`.
@@ -1736,8 +1706,8 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// THE RULES-CHANGE REFUSAL (round-9 red pin — the loss this
-    /// closes ran SILENT): a crashed span whose writer recorded
+    /// THE RULES-CHANGE REFUSAL (the loss it closes would run SILENT): a
+    /// crashed span whose writer recorded
     /// different ident rules must refuse as Damaged NAMING the rules
     /// change, before any attribution. Without the gate, this exact
     /// shape (`events` covered by its own checkpoint, rules changed
@@ -1761,6 +1731,7 @@ mod per_stream_coverage_tests {
             dir.path(),
             IdentRules { max_len: 30 },
             &PipelineId::new("p"),
+            MAX_MANIFEST_TOTAL_BYTES,
         );
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason)
@@ -1770,10 +1741,10 @@ mod per_stream_coverage_tests {
         );
     }
 
-    /// A manifest with NO rules sidecar refuses the same way (owner
-    /// ruling, round 11 — this engine is greenfield, no writer without
-    /// the sidecar ever existed, so absence is not a compat case but
-    /// an unrecognized workdir state): every manifest this engine
+    /// A manifest with NO rules sidecar refuses the same way (this engine
+    /// is greenfield, no writer without the sidecar ever existed, so
+    /// absence is not a compat case but an unrecognized workdir state):
+    /// every manifest this engine
     /// writes gets its sidecar before the manifest is created, and
     /// attribution cannot be proven without the recorded rules.
     #[test]
@@ -1788,8 +1759,8 @@ mod per_stream_coverage_tests {
             ],
             IdentRules::default(),
         );
-        std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
-        let outcome = scan(dir.path(), IdentRules::default(), &PipelineId::new("p"));
+        std::fs::remove_file(dir.path().join(RULES_SIDECAR)).expect("drop sidecar");
+        let outcome = scan_dir(dir.path());
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason)
                 if reason.contains("no readable `rules.json` sidecar")
@@ -1814,12 +1785,9 @@ mod per_stream_coverage_tests {
             ],
             IdentRules::default(),
         );
-        std::fs::write(
-            dir.path().join(crate::wal::RULES_SIDECAR),
-            b"not json at all",
-        )
-        .expect("corrupt sidecar");
-        let outcome = scan(dir.path(), IdentRules::default(), &PipelineId::new("p"));
+        std::fs::write(dir.path().join(RULES_SIDECAR), b"not json at all")
+            .expect("corrupt sidecar");
+        let outcome = scan_dir(dir.path());
         assert!(
             matches!(outcome, ScanOutcome::Damaged(ref reason)
                 if reason.contains("does not parse")),
@@ -1843,72 +1811,8 @@ mod per_stream_coverage_tests {
             "an ambiguous stream→root join must not guess: {outcome:?}"
         );
     }
-}
 
-#[cfg(test)]
-mod integrity_tests {
-    //! Per-line manifest integrity (047 M4/M3/L1): the scan must refuse
-    //! content-level corruption and forgery, not just unparseable bytes.
-    //! Every damage arm degrades to re-extraction — slower, never wrong.
-
-    use super::*;
-    use rdlt_core::cursor::Cursor;
-    use rdlt_core::id::{LoadId, PipelineId, StreamName, TableName};
-    use rdlt_core::schema::IdentRules;
-
-    /// A replayable one-stream span under a current-version header, written
-    /// through the writer's own line encoding — the healthy baseline the
-    /// tamper tests below corrupt.
-    fn healthy_manifest(dir: &std::path::Path) {
-        let schema = rdlt_core::schema::TableSchema {
-            table: TableName::new("orders"),
-            parent: None,
-            columns: vec![],
-        };
-        let records = vec![
-            WalRecord::Run {
-                format_version: crate::wal::WAL_FORMAT_VERSION,
-                load_id: LoadId::new("l"),
-                pipeline: PipelineId::new("p"),
-            },
-            WalRecord::Delta {
-                delta: rdlt_core::schema::Delta {
-                    table: schema.table.clone(),
-                    from: None,
-                    to: schema.content_hash(),
-                    changes: vec![],
-                },
-                schema,
-                mode: rdlt_core::commit::WriteMode::Append,
-            },
-            WalRecord::Segment {
-                table: TableName::new("orders"),
-                file: "l-000000.arrow".to_owned(),
-                rows: 2,
-            },
-            WalRecord::Checkpoint {
-                stream: StreamName::new("orders"),
-                cursor: Cursor::new(serde_json::json!(41)),
-            },
-        ];
-        let mut out: Vec<u8> = Vec::new();
-        for record in &records {
-            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("encode line"));
-            out.push(b'\n');
-        }
-        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
-        std::fs::write(
-            dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&IdentRules::default()).expect("rules json"),
-        )
-        .expect("write sidecar");
-    }
-
-    fn scan_dir(dir: &std::path::Path) -> ScanOutcome {
-        scan(dir, IdentRules::default(), &PipelineId::new("p"))
-    }
-
-    /// THE GLM M4 SCENARIO: corruption that yields DIFFERENT VALID JSON.
+    /// Corruption that yields DIFFERENT VALID JSON.
     /// A flipped digit in a Checkpoint's cursor would commit a resume
     /// position the source never issued — the next extraction silently
     /// skips rows, permanently. The per-line checksum makes it loud.
@@ -1997,7 +1901,7 @@ mod integrity_tests {
         )
         .expect("write bare manifest");
         std::fs::write(
-            dir.path().join(crate::wal::RULES_SIDECAR),
+            dir.path().join(RULES_SIDECAR),
             serde_json::to_vec(&IdentRules::default()).expect("rules json"),
         )
         .expect("write sidecar");
@@ -2039,7 +1943,7 @@ mod integrity_tests {
         );
     }
 
-    /// M3: a manifest naming a path-shaped segment refuses as Damaged —
+    /// A manifest naming a path-shaped segment refuses as Damaged —
     /// the name never reaches `dir.join`, so nothing outside the WAL
     /// directory is ever opened.
     #[test]
@@ -2060,7 +1964,7 @@ mod integrity_tests {
                 .lines()
                 .map(|line| {
                     if line.contains("l-000000.arrow") {
-                        crate::wal::record::encode_line(&WalRecord::Segment {
+                        encode_line(&WalRecord::Segment {
                             table: TableName::new("orders"),
                             file: evil.to_owned(),
                             rows: 2,
@@ -2085,7 +1989,7 @@ mod integrity_tests {
         }
     }
 
-    /// M3's shape half: even without path punctuation, a name the writer
+    /// The shape half: even without path punctuation, a name the writer
     /// could not have produced (wrong load prefix, short sequence) refuses.
     /// The writer names segments `{load_id}-{seq:06}.arrow` (writer.rs
     /// `record`), so anything else did not come from a writer.
@@ -2100,7 +2004,7 @@ mod integrity_tests {
                 .lines()
                 .map(|line| {
                     if line.contains("l-000000.arrow") {
-                        crate::wal::record::encode_line(&WalRecord::Segment {
+                        encode_line(&WalRecord::Segment {
                             table: TableName::new("orders"),
                             file: forged.to_owned(),
                             rows: 2,
@@ -2125,10 +2029,10 @@ mod integrity_tests {
         }
     }
 
-    /// L1: a forged `Committed {{ u64::MAX }}` leaves no next commit
+    /// A forged `Committed {{ u64::MAX }}` leaves no next commit
     /// sequence. No writer emits it (the first commit is 1), so the scan
-    /// degrades instead of overflowing — debug builds used to panic here,
-    /// release builds wrapped the recovery commit to sequence 0.
+    /// degrades instead of overflowing — a debug build would panic here, a
+    /// release build wrap the recovery commit to sequence 0.
     #[test]
     fn a_forged_max_committed_seq_degrades_instead_of_overflowing() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2137,7 +2041,7 @@ mod integrity_tests {
         let mut text = std::fs::read_to_string(&path).expect("read manifest");
         // Splice a forged Committed line (checksummed — the forgery under
         // test is the VALUE) between the header and the replay span.
-        let forged = crate::wal::record::encode_line(&WalRecord::Committed {
+        let forged = encode_line(&WalRecord::Committed {
             commit_seq: u64::MAX,
         })
         .expect("encode line");
@@ -2152,58 +2056,6 @@ mod integrity_tests {
             matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("sequence")),
             "a committed sequence with no successor must degrade, never wrap: {outcome:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod starvation_tests {
-    //! Recovery must not monopolise the runtime it is polled on.
-    //!
-    //! These assert PROGRESS OF OTHER WORK, never a duration. rdlt is embedded
-    //! in someone else's runtime, so the property that matters is "the host
-    //! keeps running", and that is what is checked — a timing assertion here
-    //! would be a throughput claim this change does not make, and would go
-    //! flaky on a loaded machine besides.
-    use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// One worker thread: the harshest honest setting. With the blocking work
-    /// inline, that single worker is inside file I/O and the co-tenant task
-    /// cannot be polled at all.
-    fn single_worker_runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("runtime")
-    }
-
-    /// A manifest big enough that scanning it is real work rather than a
-    /// syscall — the co-tenant needs a window in which to be starved.
-    fn big_manifest(dir: &std::path::Path) {
-        let mut records = vec![WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
-            load_id: LoadId::from("starve"),
-            pipeline: rdlt_core::id::PipelineId::from("p"),
-        }];
-        for seq in 0..20_000u64 {
-            records.push(WalRecord::Checkpoint {
-                stream: rdlt_core::id::StreamName::from("s"),
-                cursor: rdlt_core::cursor::Cursor::new(format!("c{seq}")),
-            });
-        }
-        let mut out: Vec<u8> = Vec::new();
-        for record in &records {
-            out.extend_from_slice(&crate::wal::record::encode_line(record).expect("record json"));
-            out.push(b'\n');
-        }
-        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
-        std::fs::write(
-            dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
-        )
-        .expect("write sidecar");
     }
 
     #[test]
@@ -2237,12 +2089,7 @@ mod starvation_tests {
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let scanner = tokio::spawn(async move {
                 let _ = started_tx.send(());
-                scan_off_runtime(
-                    &path,
-                    rdlt_core::schema::IdentRules::default(),
-                    &rdlt_core::id::PipelineId::new("p"),
-                )
-                .await
+                crate::runtime::recover::off_runtime(move || scan_dir(&path)).await
             });
             started_rx.await.expect("scan started");
             let before = ticks.load(Ordering::Relaxed);
@@ -2263,71 +2110,6 @@ mod starvation_tests {
             "the co-tenant was starved for the whole manifest scan: 0 polls"
         );
     }
-}
-
-#[cfg(test)]
-mod hostile_file_types {
-    //! The scan's opens are the read side of the WAL's file-type boundary:
-    //! a FIFO planted at a WAL path makes a plain `File::open` block until
-    //! a writer appears — which is never — so recovery would hang FOREVER,
-    //! and nothing up the stack carries a timeout. A symlink planted there
-    //! steers scan verdicts by whatever foreign content it points at. Both
-    //! must degrade as `Damaged`, promptly.
-
-    use super::*;
-    use rdlt_core::id::PipelineId;
-
-    /// `mkfifo` via the coreutils binary: the workspace denies `unsafe`, so
-    /// `libc::mkfifo` is not callable, and no safe wrapper is in the tree.
-    /// Returns false when the binary is unavailable so the test can skip
-    /// rather than fail on an exotic host.
-    fn mkfifo(path: &std::path::Path) -> bool {
-        match std::process::Command::new("mkfifo").arg(path).status() {
-            Ok(status) => status.success(),
-            Err(_) => false,
-        }
-    }
-
-    /// Run `scan` on its own thread under a deadline. The RED state of these
-    /// pins is an eternal hang (a writerless FIFO blocks the open), and a
-    /// test that hangs forever fails no gate — the deadline turns a
-    /// regression into a loud failure. The scanning thread stays blocked
-    /// after a timeout; the per-test process boundary reclaims it.
-    fn scan_with_deadline(dir: std::path::PathBuf) -> ScanOutcome {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(scan(
-                &dir,
-                rdlt_core::schema::IdentRules::default(),
-                &PipelineId::new("p"),
-            ));
-        });
-        match rx.recv_timeout(std::time::Duration::from_secs(20)) {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                panic!("recovery hung: the scan blocked on a hostile file instead of refusing it")
-            }
-        }
-    }
-
-    /// A current-version manifest with one benign record, plus the rules
-    /// sidecar — the fixture whose sidecar the FIFO/symlink tests then
-    /// replace.
-    fn benign_manifest(dir: &std::path::Path) {
-        let record = WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
-            load_id: LoadId::new("l"),
-            pipeline: PipelineId::new("p"),
-        };
-        let mut out = crate::wal::record::encode_line(&record).expect("record json");
-        out.push(b'\n');
-        std::fs::write(dir.join("manifest.jsonl"), out).expect("write manifest");
-        std::fs::write(
-            dir.join(crate::wal::RULES_SIDECAR),
-            serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
-        )
-        .expect("write sidecar");
-    }
 
     #[test]
     fn a_fifo_planted_as_the_manifest_degrades_promptly_instead_of_hanging() {
@@ -2347,9 +2129,9 @@ mod hostile_file_types {
     #[test]
     fn a_fifo_planted_as_the_rules_sidecar_degrades_promptly_instead_of_hanging() {
         let dir = tempfile::tempdir().expect("tempdir");
-        benign_manifest(dir.path());
-        std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
-        if !mkfifo(&dir.path().join(crate::wal::RULES_SIDECAR)) {
+        write_manifest(dir.path(), &[run_header("l")]);
+        std::fs::remove_file(dir.path().join(RULES_SIDECAR)).expect("drop sidecar");
+        if !mkfifo(&dir.path().join(RULES_SIDECAR)) {
             eprintln!("skipping: no mkfifo binary on this host");
             return;
         }
@@ -2372,11 +2154,11 @@ mod hostile_file_types {
         let foreign = dir.path().join("foreign");
         std::fs::create_dir(&foreign).expect("foreign dir");
         let record = WalRecord::Run {
-            format_version: crate::wal::WAL_FORMAT_VERSION,
+            format_version: WAL_FORMAT_VERSION,
             load_id: LoadId::new("l"),
             pipeline: PipelineId::new("someone-elses-pipeline"),
         };
-        let mut out = crate::wal::record::encode_line(&record).expect("record json");
+        let mut out = encode_line(&record).expect("record json");
         out.push(b'\n');
         std::fs::write(foreign.join("manifest.jsonl"), out).expect("foreign manifest");
         std::os::unix::fs::symlink(
@@ -2397,15 +2179,15 @@ mod hostile_file_types {
     #[test]
     fn a_symlink_planted_as_the_sidecar_refuses_instead_of_being_read_through() {
         let dir = tempfile::tempdir().expect("tempdir");
-        benign_manifest(dir.path());
-        std::fs::remove_file(dir.path().join(crate::wal::RULES_SIDECAR)).expect("drop sidecar");
+        write_manifest(dir.path(), &[run_header("l")]);
+        std::fs::remove_file(dir.path().join(RULES_SIDECAR)).expect("drop sidecar");
         let outside = dir.path().join("outside-rules.json");
         std::fs::write(
             &outside,
             serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
         )
         .expect("outside rules");
-        std::os::unix::fs::symlink(&outside, dir.path().join(crate::wal::RULES_SIDECAR))
+        std::os::unix::fs::symlink(&outside, dir.path().join(RULES_SIDECAR))
             .expect("plant symlink");
         let outcome = scan_with_deadline(dir.path().to_path_buf());
         assert!(

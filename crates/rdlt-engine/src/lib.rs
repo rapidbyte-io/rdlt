@@ -50,6 +50,8 @@ pub mod policy;
 mod runtime;
 mod schema;
 mod shred;
+#[cfg(test)]
+pub(crate) mod testing;
 mod wal;
 
 pub use config::{

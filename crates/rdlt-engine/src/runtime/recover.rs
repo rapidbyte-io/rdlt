@@ -10,8 +10,46 @@ use rdlt_core::report::ResumedFrom;
 use rdlt_core::state::StateDoc;
 
 use crate::EngineConfig;
-
 use crate::classify::classify_dest_error;
+use crate::wal::scan::{self, ScanOutcome};
+use crate::wal::{dir, replay};
+
+/// Run one piece of blocking file work off the async runtime.
+///
+/// Recovery is entirely file I/O — reading the manifest, opening segments,
+/// decoding Arrow IPC — and rdlt is an EMBEDDABLE engine, so this future may
+/// be polled on a host's runtime alongside the host's own work. Doing that
+/// I/O inline occupies a worker thread for the whole of recovery; on a
+/// single-threaded runtime it stalls the host completely. Neither is ours to
+/// spend.
+///
+/// Panic policy, both halves: a panic that reaches THIS seam is re-raised on
+/// the calling thread — but the DECODE seats never let one reach it. Replay
+/// wraps every Arrow IPC decode in `catch_unwind` INSIDE the closure it hands
+/// over (`segment::caught_decode` and the per-batch step), because arrow's
+/// decoder has panic arms reachable from malformed but FlatBuffer-valid
+/// segment bytes, and WAL bytes are external recovery input — such an unwind
+/// IS damaged data and belongs on the same degrade-to-re-extraction path as
+/// an ordinary decode error. For everything else that crosses here (manifest
+/// line reads, fsyncs, filesystem walks) a panic is a bug in our own logic,
+/// not corrupt data, and folding it into "degrade to re-extraction" would
+/// hide the defect behind a slower correct path — so the default posture
+/// stays re-raise, and a decode seat opts out at its closure, never here.
+pub(crate) async fn off_runtime<T, F>(work: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(joined) => match joined.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            // spawn_blocking tasks are never cancelled by this code, so a
+            // non-panic join failure means the runtime itself is shutting down.
+            Err(_) => panic!("WAL recovery task cancelled: runtime is shutting down"),
+        },
+    }
+}
 
 /// Open the destination session, recover persisted pipeline state, and replay
 /// the uncommitted WAL span of a crashed run — or degrade to cursor
@@ -38,8 +76,8 @@ pub(super) async fn recover_wal(
     let mut residue = WalResidue::None;
     if let Some(wal_dir) = wal_dir {
         // Every resolved arm CLEARS. The clear's failure REFUSES the
-        // run where the residue is a HAZARD (round-12; narrowed in
-        // round 13): after a Recover, surviving residue re-replays the
+        // run where the residue is a HAZARD: after a Recover, surviving
+        // residue re-replays the
         // span next run (idempotence absorbs it, but the run proceeds
         // believing the workdir clean); after Damaged/Unsupported the
         // residue re-degrades every following run. The DISCARD arm is
@@ -50,7 +88,7 @@ pub(super) async fn recover_wal(
         // one caller threads the tolerance to `Wal::open`, whose
         // residue refusal stands for every OTHER path.
         let cleared = |dir: &Path| -> Result<(), Error> {
-            crate::wal::clear(dir).map_err(|e| {
+            dir::clear(dir).map_err(|e| {
                 Error::wal(format!(
                     "clearing the WAL directory `{}` failed: {e} — refusing to run over \
                      unresolved residue",
@@ -58,20 +96,25 @@ pub(super) async fn recover_wal(
                 ))
             })
         };
-        match crate::wal::resume::scan_off_runtime(
-            wal_dir,
-            capabilities.ident_rules,
-            &config.pipeline,
-        )
-        .await
-        {
-            crate::wal::resume::ScanOutcome::Nothing => {}
+        // The scan reads the manifest line by line — blocking file I/O,
+        // off an embedder's runtime for the same reason replay's decoding is.
+        let scanned = {
+            let (dir, rules, pipeline) = (
+                wal_dir.to_path_buf(),
+                capabilities.ident_rules,
+                config.pipeline.clone(),
+            );
+            off_runtime(move || scan::scan(&dir, rules, &pipeline, scan::MAX_MANIFEST_TOTAL_BYTES))
+                .await
+        };
+        match scanned {
+            ScanOutcome::Nothing => {}
             // Nothing to replay, but something to clean: a crash before the
             // first checkpoint leaves a manifest and its segments behind, and a
             // pipeline that keeps failing there would grow both without bound.
             // Not a warning — dying before the first checkpoint is ordinary.
-            crate::wal::resume::ScanOutcome::Discard => {
-                if let Err(e) = crate::wal::clear(wal_dir) {
+            ScanOutcome::Discard => {
+                if let Err(e) = dir::clear(wal_dir) {
                     tracing::warn!(
                         "clearing the resolved WAL directory `{}` failed: {e} — proceeding \
                          (its manifest holds nothing replayable; the new run's records \
@@ -81,7 +124,7 @@ pub(super) async fn recover_wal(
                     residue = WalResidue::Resolved;
                 }
             }
-            crate::wal::resume::ScanOutcome::Recover(span) => {
+            ScanOutcome::Recover(span) => {
                 resumed_from =
                     replay_span(destination, config, wal_dir, span, capabilities).await?;
                 cleared(wal_dir)?;
@@ -93,7 +136,7 @@ pub(super) async fn recover_wal(
             // the run, leaving the directory exactly as found —
             // configuration-class, because the fix is the operator's
             // (each pipeline gets its own workdir).
-            crate::wal::resume::ScanOutcome::ForeignPipeline { occupant } => {
+            ScanOutcome::ForeignPipeline { occupant } => {
                 return Err(Error::config(format!(
                     "the WAL at `{}` belongs to pipeline `{occupant}` — this run is pipeline \
                      `{}`; replaying another pipeline's crash residue would commit its rows \
@@ -104,11 +147,11 @@ pub(super) async fn recover_wal(
                     config.pipeline
                 )));
             }
-            crate::wal::resume::ScanOutcome::Damaged(reason) => {
+            ScanOutcome::Damaged(reason) => {
                 tracing::warn!(%reason, "WAL manifest damaged; re-extracting from cursors");
                 cleared(wal_dir)?;
             }
-            crate::wal::resume::ScanOutcome::Unsupported { found, supported } => {
+            ScanOutcome::Unsupported { found, supported } => {
                 tracing::warn!(
                     found,
                     supported,
@@ -141,9 +184,9 @@ pub(super) async fn recover_wal(
     Ok((session, base_state, resumed_from, residue))
 }
 
-/// What recovery left in the WAL directory — [`crate::wal::Wal::open`]
+/// What recovery left in the WAL directory — [`crate::wal::writer::Wal::open`]
 /// refuses a surviving manifest EXCEPT when recovery itself vouched
-/// for it (round-13): a Discard-class manifest that could not be
+/// for it: a Discard-class manifest that could not be
 /// cleared holds nothing replayable, so tolerating it is main's old
 /// best-effort posture, warned; every other surviving manifest stays
 /// the sequencing defect the refusal exists for.
@@ -171,7 +214,7 @@ async fn read_state_checked(
         state
             .check_readable()
             .map_err(|e| Error::config(e.to_string()))?;
-        // 5.7: cross-pipeline isolation is the destination's SPI
+        // Cross-pipeline isolation is the destination's SPI
         // obligation and the reference connector enforces it, but a
         // non-conforming third-party backend's answer was adopted
         // unchecked — one identity comparison here closes the
@@ -194,7 +237,7 @@ async fn replay_span(
     destination: &dyn Destination,
     config: &EngineConfig,
     wal_dir: &Path,
-    span: crate::wal::resume::RecoverySpan,
+    span: scan::RecoverySpan,
     capabilities: Capabilities,
 ) -> Result<Option<ResumedFrom>, Error> {
     // The replay session gets NO part-event listener: its parts belong
@@ -211,8 +254,8 @@ async fn replay_span(
         ))
         .await
         .map_err(|e| classify_dest_error(&e))?;
-    // 037 US2 fix round 2, I1: from here on, `session` exists and every
-    // failure path below is an ABANDONMENT of it (this attempt's replay
+    // From here on, `session` exists and every failure path below is an
+    // ABANDONMENT of it (this attempt's replay
     // fails and falls back to cursor re-extraction) — best-effort close
     // before propagating, same reasoning as `drain_loader`'s abandonment
     // paths: the lease protects concurrent sessions, not a dead attempt.
@@ -226,9 +269,7 @@ async fn replay_span(
     };
 
     let replayed =
-        match crate::wal::resume::replay(wal_dir, span, &mut *session, &mut state, capabilities)
-            .await
-        {
+        match replay::replay(wal_dir, span, &mut *session, &mut state, capabilities).await {
             Ok(replayed) => replayed,
             Err(e) => {
                 session.close().await.ok();
@@ -240,9 +281,9 @@ async fn replay_span(
             tracing::info!(replayed_batches, "recovered WAL span into destination");
             // The replay's own commit just landed — this session's last
             // (and only) commit succeeded, so its orderly STRICT close
-            // belongs here (037 US2 T7 fix round 1), symmetric with the
-            // run's own session in `drain_loader`. Non-retryable and
-            // prefixed like `Loader::close` (fix round 2, M4): the
+            // belongs here, symmetric with the run's own session in
+            // `drain_loader`. Non-retryable and prefixed like
+            // `Loader::close`: the
             // commit is already durable, so a close failure here can
             // never mean lost data, and retrying the whole run would
             // re-execute a commit that already landed. The run's own
@@ -264,8 +305,8 @@ async fn replay_span(
             // during pass 2) — nothing for `close` to make durable, and
             // the SPI contract reserves the STRICT close for a session
             // whose last commit succeeded. Best-effort closed instead,
-            // exactly like the two error arms above (037 US2 fix round
-            // 2, I1) — this is still an abandonment, not a success; only
+            // exactly like the two error arms above — this is still an
+            // abandonment, not a success; only
             // its own log line is `warn` rather than an error return.
             session.close().await.ok();
             tracing::warn!("WAL segments unreadable; falling back to cursor re-extraction");

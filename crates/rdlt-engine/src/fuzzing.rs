@@ -76,8 +76,8 @@ pub fn map_arrow_type(dt: &arrow::datatypes::DataType) {
 /// under a fixed load id, since a manifest's `Segment { file }` is the
 /// same untrusted text.
 pub fn wal_manifest_line(text: &str) {
-    let _ = crate::wal::record::decode_line(text);
-    let _ = crate::wal::record::verify_segment_file(&LoadId::new("fuzz-load"), text);
+    let _ = crate::wal::format::decode_line(text);
+    let _ = crate::wal::format::verify_segment_file(&LoadId::new("fuzz-load"), text);
 }
 
 /// WAL segment decode over arbitrary bytes — the Arrow IPC
@@ -85,7 +85,7 @@ pub fn wal_manifest_line(text: &str) {
 /// the way replay contains them (caught and folded into the damage
 /// channel): a typed error or a caught unwind, never an escape.
 pub fn wal_segment_decode(bytes: &[u8]) {
-    crate::wal::resume::decode_segment_bytes(bytes);
+    crate::wal::segment::decode_segment_bytes(bytes);
 }
 
 // ---- bench entry points (iai_hotpath / perf gate) ----

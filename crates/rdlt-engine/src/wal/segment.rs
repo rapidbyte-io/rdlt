@@ -1,23 +1,52 @@
-//! Replay of one uncommitted span into an open session, committing under the
-//! ORIGINAL run's identity — with every damage arm degrading to re-extraction.
+//! The segment container: one Arrow IPC **file** per recorded batch, and the
+//! gated reader recovery decodes it through. The file format is chosen over
+//! the streaming one for a durability property, not for speed: its footer is
+//! validated on open, so a segment truncated at a block boundary by a power
+//! loss is REFUSED, where a truncated IPC *stream* would decode the messages
+//! it has and report a clean end — replaying a short span and silently
+//! dropping the rest. Segments carry no dictionary, no statistics and no
+//! compression: nothing ever queries one — it is written, replayed at most
+//! once, and unlinked.
 
 use std::{fs::File, io::BufReader, path::Path};
 
-use rdlt_connector::destination::LoadSession;
-use rdlt_core::commit::CommitMeta;
+use rdlt_connector::arrow::RecordBatch;
 use rdlt_core::error::Error;
-use rdlt_core::state::StateDoc;
 
-use crate::wal::WalRecord;
+use super::dir::{open_wal_read, private_file};
+use super::writer::wal_err;
 
-use super::{blocking::off_runtime, scan::RecoverySpan};
+/// Write one segment. Buffered, because the writer does NOT emit only a few
+/// large writes: each segment costs roughly sixteen `write_all` calls —
+/// continuation markers, flatbuffer metadata, padding and the footer alongside
+/// the body buffers — so several hundred per load, most of them tiny.
+pub(crate) fn write_segment(path: &Path, batch: &RecordBatch) -> Result<(), Error> {
+    // `create_new` (O_EXCL), not create+truncate: a segment name is never
+    // legitimately reused — the sequence is monotonic within a run and the
+    // load id carries per-process OS entropy across runs — so an existing
+    // file here is either a pre-planted symlink (which a truncating open
+    // would FOLLOW, clobbering its target) or a writer defect, and both must
+    // fail loudly rather than overwrite.
+    let file = private_file()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| wal_err("create segment", e))?;
+    let mut writer = arrow::ipc::writer::FileWriter::try_new_buffered(file, batch.schema_ref())
+        .map_err(|e| wal_err("open segment writer", e))?;
+    writer
+        .write(batch)
+        .map_err(|e| wal_err("write segment", e))?;
+    writer.finish().map_err(|e| wal_err("close segment", e))?;
+    Ok(())
+}
 
 /// The most a WAL segment's footer may weigh. An honest footer is the
 /// schema's flatbuffer plus ONE block descriptor — the writer emits a single
-/// batch per segment ([`crate::wal::write_segment`]) — and even a maximal
-/// 4,096-column schema serializes well under a mebibyte. Sixteen mebibytes
-/// is generous headroom, and refusal degrades to re-extraction, so the cap
-/// can never lose data — it only ever costs a slower recovery.
+/// batch per segment ([`write_segment`]) — and even a maximal 4,096-column
+/// schema serializes well under a mebibyte. Sixteen mebibytes is generous
+/// headroom, and refusal degrades to re-extraction, so the cap can never lose
+/// data — it only ever costs a slower recovery.
 const MAX_SEGMENT_FOOTER_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Open one WAL segment for streaming decode; the error text names the
@@ -27,16 +56,15 @@ const MAX_SEGMENT_FOOTER_BYTES: u64 = 16 * 1024 * 1024;
 /// a segment truncated by a power loss fails HERE rather than decoding a
 /// prefix and reporting a clean end — which is the property the file format
 /// was chosen for.
-fn open_segment(
+pub(super) fn open_segment(
     dir: &Path,
     file: &str,
 ) -> Result<arrow::ipc::reader::FileReader<BufReader<File>>, String> {
     let path = dir.join(file);
-    // The shared gated open ([`crate::wal::open_wal_read`]): O_NOFOLLOW as
-    // before, plus O_NONBLOCK and a regular-file check on the handle — a
-    // FIFO planted at a segment name would otherwise block this open until
-    // a writer appears, hanging replay forever.
-    crate::wal::open_wal_read(&path)
+    // The shared gated open: O_NOFOLLOW plus O_NONBLOCK and a regular-file
+    // check on the handle — a FIFO planted at a segment name would otherwise
+    // block this open until a writer appears, hanging replay forever.
+    open_wal_read(&path)
         .map_err(|e| e.to_string())
         .and_then(|mut f| {
             refuse_overdeclared_segment_layout(&mut f)?;
@@ -47,7 +75,7 @@ fn open_segment(
 /// Refuse a segment whose DECLARED layout exceeds its own file size, before
 /// arrow's reader is allowed to allocate from those declarations.
 ///
-/// The threat (GLM round-4, 4H1): arrow-ipc 58.3's `read_block` seeks to the
+/// The threat: arrow-ipc 58.3's `read_block` seeks to the
 /// footer's declared block offset (a seek past EOF SUCCEEDS), converts the
 /// declared `bodyLength` with `to_usize().unwrap()`, and calls
 /// `MutableBuffer::from_len_zeroed(body + meta)` — whose allocation-failure
@@ -67,7 +95,7 @@ fn open_segment(
 /// writer's own blocks point into the file it wrote); only a crafted one
 /// refuses, typed, degrading to re-extraction like every other damage arm.
 ///
-/// The DENSITY rule (GLM round 6, 6H1) closes the sparse-file lie those
+/// The DENSITY rule closes the sparse-file lie those
 /// relative bounds cannot see: every gate above scales with the DECLARED
 /// file length, so a `truncate`d 64 GiB hole with a valid tail footer
 /// declaring one ~64 GiB block passes them all — and reading a hole
@@ -92,7 +120,7 @@ fn open_segment(
 /// unbounded (a single over-budget batch passes the channel by design):
 /// density, not size, is the honest invariant.
 ///
-/// Decompression note (4I3): arrow-ipc's `decompress_to_buffer` does an
+/// Decompression note: arrow-ipc's `decompress_to_buffer` does an
 /// unbounded `Vec::with_capacity` from a body-declared length, but no
 /// `ipc_compression` feature is enabled anywhere in this workspace (no lz4 /
 /// zstd in the lockfile), so that door is shut. If compression is ever
@@ -101,13 +129,13 @@ fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> 
     use std::io::{Read as _, Seek as _, SeekFrom};
     use std::os::unix::fs::MetadataExt as _;
 
-    // 5L1: the pre-pass reads trailer+footer, then the FileReader re-reads
-    // the same regions — a same-user writer rewriting the footer BETWEEN
-    // the two would re-open the very abort class the pre-pass closes.
+    // The pre-pass reads trailer+footer, then the FileReader re-reads the
+    // same regions — a same-user writer rewriting the footer BETWEEN the
+    // two would re-open the very abort class the pre-pass closes.
     // fstat-compare around the pre-pass, on fields a same-user writer
     // cannot forge wholesale: size, and the timestamps at FULL kernel
-    // resolution. mtime alone was defeatable twice over — whole-second
-    // granularity let sub-second rewrites through, and `utimensat` lets
+    // resolution. mtime alone is defeatable twice over — whole-second
+    // granularity lets sub-second rewrites through, and `utimensat` lets
     // the writer restore it outright — so the compare also carries ctime,
     // which the kernel bumps on EVERY write and on the very `utimensat`
     // that restores mtime, and which no unprivileged writer can set.
@@ -189,15 +217,15 @@ fn refuse_overdeclared_segment_layout(segment: &mut File) -> Result<(), String> 
     Ok(())
 }
 
-/// The block-extent rules, one function so the pins drive them directly
-/// (5M2, 6H1): every block's `offset + metaDataLength + bodyLength` must
-/// fit INSIDE the file that declares it (4H1's per-extent bound), their
-/// SUM may not exceed twice the file length (5M2's time bound: a `Block`
+/// The block-extent rules, one function so the pins drive them directly:
+/// every block's `offset + metaDataLength + bodyLength` must fit INSIDE
+/// the file that declares it (the per-extent bound), their SUM may not
+/// exceed twice the file length (the time bound: a `Block`
 /// is a 24-byte struct, so a max-size footer can declare ~700 K blocks
 /// each pointing at the whole file, turning one crafted ~100 MiB segment
 /// into ~70 TB of `read_exact`/memcpy during recovery), and the SUM may
 /// not exceed a generous multiple of what the file has actually
-/// ALLOCATED (6H1's density bound — every relative gate scales with the
+/// ALLOCATED (the density bound — every relative gate scales with the
 /// declared length, so only the allocated-block count refuses the
 /// `truncate`d-hole lie). An honest segment declares exactly ONE block
 /// (the writer emits one batch per segment) whose extent sits inside a
@@ -262,7 +290,7 @@ fn extents_within_file(
 /// path as an ordinary decode error. `AssertUnwindSafe` is confined to decoder
 /// state that is immediately discarded after a panic.
 ///
-/// CAVEAT (GLM round-4, 4H1): `catch_unwind` contains PANICS only. An
+/// CAVEAT: `catch_unwind` contains PANICS only. An
 /// allocation arrow cannot satisfy runs the alloc-error hook —
 /// `std::process::abort()` — which no `catch_unwind` intercepts. That class
 /// is closed UPSTREAM of the decoder by
@@ -270,13 +298,13 @@ fn extents_within_file(
 /// extent against the segment's own file size before arrow can allocate from
 /// it; this belt remains for arrow's panic arms, which no size check can
 /// pre-empt.
-fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+pub(super) fn caught_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
         Ok(result) => result,
         Err(payload) => Err(format!(
             "the Arrow IPC decoder panicked on the WAL segment: {}",
-            // The shared bounded rendering (6L9) — every Arrow-decode
-            // belt renders its payload through the ONE implementation.
+            // The shared bounded rendering — every Arrow-decode belt
+            // renders its payload through the ONE implementation.
             rdlt_connector::gate::panic_text(payload.as_ref())
         )),
     }
@@ -309,212 +337,8 @@ pub(crate) fn decode_segment_bytes(bytes: &[u8]) {
     });
 }
 
-/// Replay one span into an open session and commit it under the ORIGINAL run's
-/// identity. Returns the number of replayed batches; `Err(Damaged…)`-style failures
-/// come back as `Ok(None)` so the caller can degrade to re-extraction.
-pub(crate) async fn replay(
-    dir: &Path,
-    span: RecoverySpan,
-    session: &mut dyn LoadSession,
-    state: &mut StateDoc,
-    capabilities: rdlt_connector::destination::Capabilities,
-) -> Result<Option<u64>, Error> {
-    // Pass 1 — validate: every segment must fully decode BEFORE any write
-    // reaches the session. Batches are decoded one at a time and dropped,
-    // so recovery memory stays bounded by one batch regardless of span
-    // size (a time-based commit policy makes spans unbounded — buffering
-    // a whole span can dwarf the configured byte budget exactly when the
-    // system is already degraded). Damage degrades to re-extraction, with
-    // the reason logged, never swallowed.
-    for record in &span.records {
-        if let WalRecord::Segment { file, rows, .. } = record {
-            // The scan already refused any name the writer could not have
-            // produced; re-checking here (047 M3) keeps `dir.join` safe even
-            // for a span that reached replay some other way — the name gate
-            // and the join must never separate.
-            if let Err(reason) = crate::wal::record::verify_segment_file(&span.load_id, file) {
-                tracing::warn!(%reason, "WAL manifest names a segment the writer could not have written — degrading to re-extraction");
-                return Ok(None);
-            }
-            // No batch escapes pass 1, so the whole validation crosses in one
-            // piece — which also means its memory stays bounded by one batch
-            // without any coordination.
-            let (dir_owned, file_owned) = (dir.to_path_buf(), file.clone());
-            let decoded = match off_runtime(move || {
-                caught_decode(|| {
-                    let reader = open_segment(&dir_owned, &file_owned)?;
-                    let mut decoded: u64 = 0;
-                    for batch in reader {
-                        decoded += batch.map_err(|e| e.to_string())?.num_rows() as u64;
-                    }
-                    Ok::<u64, String>(decoded)
-                })
-            })
-            .await
-            {
-                Ok(decoded) => decoded,
-                Err(reason) => {
-                    tracing::warn!(segment = %file, %reason, "WAL segment unreadable — degrading to re-extraction");
-                    return Ok(None);
-                }
-            };
-            // The manifest line records how many rows the segment SHOULD hold.
-            // Pass 1 already decodes every batch to prove the segment is
-            // readable, so counting them costs nothing and turns that recorded
-            // number from decoration into a check.
-            //
-            // A mismatch means the manifest and the segment disagree about what
-            // was written — a truncated tail that still decodes, or a line
-            // describing a different file. Both are silent corruption: replay
-            // would apply a DIFFERENT set of rows than the manifest promises,
-            // and exactly-once rests on those two agreeing. Degrading to
-            // re-extraction is slower and always correct, which is the same
-            // trade every other damage arm here makes.
-            if decoded != *rows {
-                tracing::warn!(
-                    segment = %file,
-                    recorded = rows,
-                    decoded,
-                    "WAL segment row count disagrees with its manifest line — degrading to re-extraction"
-                );
-                return Ok(None);
-            }
-        }
-    }
-
-    // Every known table is ensured on THIS session before any write: destinations
-    // register publishable tables per session, and a span's delta may have committed
-    // in an earlier span (spans would be silently lost otherwise).
-    for (schema, mode) in &span.schemas {
-        crate::load::apply::apply_delta(&mut *session, state, &capabilities, schema, mode).await?;
-    }
-
-    // Pass 2 — stream, in WAL order (delta-before-batch survives crashes):
-    // segments re-open and flow through the session one
-    // batch at a time. A read failure here is unexpected (pass 1 decoded
-    // everything) but still degrades: staged-but-uncommitted writes are
-    // invisible and torn down by the destination.
-    let mut batches: u64 = 0;
-    for record in span.records {
-        match record {
-            WalRecord::Delta { schema, mode, .. } => {
-                // Same lowering seam as the live loader.
-                crate::load::apply::apply_delta(
-                    &mut *session,
-                    state,
-                    &capabilities,
-                    &schema,
-                    &mode,
-                )
-                .await?;
-            }
-            WalRecord::Checkpoint { stream, cursor } => {
-                state.cursors.insert(stream, cursor);
-            }
-            WalRecord::Segment {
-                table, file, rows, ..
-            } => {
-                let dir_owned = dir.to_path_buf();
-                let opened = {
-                    let file = file.clone();
-                    off_runtime(move || caught_decode(|| open_segment(&dir_owned, &file))).await
-                };
-                let mut reader = match opened {
-                    Ok(reader) => reader,
-                    Err(reason) => {
-                        tracing::warn!(segment = %file, %reason, "WAL segment vanished mid-replay — degrading to re-extraction");
-                        return Ok(None);
-                    }
-                };
-                // The reader travels ONTO the blocking thread for each decode and
-                // back again, one batch at a time. A channel would be tidier but
-                // would hold a decoded batch while another is applied, doubling a
-                // memory bound this path documents and depends on — recovery runs
-                // when the system is already degraded, which is the worst moment
-                // to start using twice the memory. Per-batch handoff costs a task
-                // switch on a path that only runs after a crash.
-                let mut rows_applied: u64 = 0;
-                loop {
-                    let stepped = off_runtime(move || {
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            reader.next()
-                        })) {
-                            Ok(item) => Ok((reader, item)),
-                            Err(payload) => Err(format!(
-                                "the Arrow IPC decoder panicked on the WAL segment: {}",
-                                rdlt_connector::gate::panic_text(payload.as_ref())
-                            )),
-                        }
-                    })
-                    .await;
-                    let (returned, item) = match stepped {
-                        Ok(step) => step,
-                        Err(reason) => {
-                            tracing::warn!(segment = %file, %reason, "WAL segment panicked during replay — degrading to re-extraction");
-                            return Ok(None);
-                        }
-                    };
-                    reader = returned;
-                    let Some(batch) = item else { break };
-                    let Ok(batch) = batch else {
-                        tracing::warn!(segment = %file, "WAL segment failed re-read mid-replay — degrading to re-extraction");
-                        return Ok(None);
-                    };
-                    rows_applied += batch.num_rows() as u64;
-                    batches += 1;
-                    crate::load::apply::apply_batch(&mut *session, &capabilities, &table, &batch)
-                        .await?;
-                }
-                // Pass-2's half of the manifest cross-check (7L1): pass 1
-                // verified this segment's rows against its manifest line,
-                // but the two passes re-open independently — a segment
-                // swapped between them (seconds apart on a big span, not
-                // the within-open microsecond window the fstat-compare
-                // guards) would apply rows the cross-check never saw.
-                // Staged-but-uncommitted writes are torn down by the
-                // caller's close, exactly like every other mid-replay
-                // degrade.
-                //
-                // Residual, recorded (8L4): the recount compares COUNTS
-                // only — a same-rows/different-contents swap between the
-                // passes still passes both checks. That is the
-                // at-rest writer's existing power over segment bytes
-                // (the manifest checksums lines, not segments; directory
-                // ownership is the boundary), and closing it needs a
-                // per-segment content digest in the manifest line —
-                // recorded as the door, not chased here.
-                if rows_applied != rows {
-                    tracing::warn!(
-                        segment = %file,
-                        recorded = rows,
-                        applied = rows_applied,
-                        "WAL segment row count moved between replay passes — degrading to re-extraction"
-                    );
-                    return Ok(None);
-                }
-            }
-            WalRecord::Run { .. } | WalRecord::Committed { .. } => {}
-        }
-    }
-
-    state.last_commit = Some(rdlt_core::state::LastCommit {
-        load_id: span.load_id.clone(),
-        commit_seq: span.next_commit_seq,
-    });
-    session
-        .commit(CommitMeta {
-            load_id: span.load_id,
-            commit_seq: span.next_commit_seq,
-            state: state.clone(),
-            counters: Default::default(),
-        })
-        .await
-        .map_err(|e| crate::classify::classify_dest_error(&e))?;
-    Ok(Some(batches))
-}
-
 #[cfg(test)]
-mod segment_format {
+mod tests {
     //! What the segment container is required to guarantee, pinned directly
     //! against `write_segment`/`open_segment` rather than through a pipeline —
     //! these are properties of the format choice, and a file-mutation test can
@@ -526,8 +350,7 @@ mod segment_format {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
 
-    use super::open_segment;
-    use crate::wal::write_segment;
+    use super::{open_segment, write_segment};
 
     #[test]
     fn a_decoder_panic_is_classified_as_segment_damage() {
@@ -731,7 +554,7 @@ mod segment_format {
         );
     }
 
-    /// 4H1's headline case: a footer declaring a block whose extent exceeds
+    /// The headline case: a footer declaring a block whose extent exceeds
     /// the segment's own file size must refuse TYPED — before arrow's
     /// `read_block` can allocate the declared length, whose failure path is
     /// `handle_alloc_error` → `abort()`, which no `catch_unwind` contains.
@@ -781,7 +604,7 @@ mod segment_format {
         );
     }
 
-    /// The trailer half of 4H1: a footer LENGTH that overruns the file (the
+    /// The trailer half: a footer LENGTH that overruns the file (the
     /// `vec![0; footer_len]` allocation in arrow's own reader, up to 2 GiB
     /// from a 4-byte field) refuses typed before any allocation.
     #[test]
@@ -803,7 +626,7 @@ mod segment_format {
         );
     }
 
-    /// 5M2 + 6H1: per-extent bounds without a sum bound let one crafted
+    /// Per-extent bounds without a sum bound let one crafted
     /// footer multiply recovery's read work without limit (overlapping
     /// extents each re-read the file), and sum bounds measured only
     /// against the file LENGTH let a sparse file lie about that length.
@@ -844,7 +667,7 @@ mod segment_format {
             .expect_err("a negative body refuses");
     }
 
-    /// 6H1's headline case, end to end: a segment whose FILE is a sparse
+    /// The density rule end to end: a segment whose FILE is a sparse
     /// giant — `set_len`-holed to half a GiB with the honest trailer+
     /// footer relocated to the new tail and the one block's `bodyLength`
     /// patched to cover the declared size — passes the footer cap, the
@@ -940,7 +763,7 @@ mod segment_format {
         );
     }
 
-    /// 6M4: the fstat-compare carries ctime at nanosecond resolution —
+    /// The fstat-compare carries ctime at nanosecond resolution —
     /// a same-size, same-mtime rewrite still flips ctime, which no
     /// unprivileged writer can restore. Fixtured at the pure-rule level
     /// (the compare itself reads kernel timestamps); the observable
@@ -954,7 +777,7 @@ mod segment_format {
         assert_ne!(stat, (1, 2, 9, 4), "a ctime move is a change");
     }
 
-    /// 6.1: the honest side of the 16 MiB footer cap. A maximal segment —
+    /// The honest side of the 16 MiB footer cap. A maximal segment —
     /// 4,096 columns, one batch — writes a footer measured HERE, so a
     /// growth of the column cap or an arrow encoding change that would
     /// flip honest segments into refusals fails this pin first.
@@ -990,7 +813,7 @@ mod segment_format {
         assert_eq!(decoded[0].num_columns(), 4096);
     }
 
-    /// 4I6: a DIRECTORY planted at a segment path passes the name gate and
+    /// A DIRECTORY planted at a segment path passes the name gate and
     /// every path check, and plain-open succeeds on directories — the
     /// handle-side regular-file check is the only thing between replay and
     /// decoding a directory's bytes. It must refuse, naming the shape.
@@ -1002,237 +825,5 @@ mod segment_format {
             .map(|_| ())
             .expect_err("a directory at a segment path must refuse");
         assert!(error.contains("not a regular file"), "{error}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rdlt_core::id::{LoadId, PipelineId};
-
-    /// 8L1: the pass-2 recount. The existing mismatch pin drives the
-    /// PASS-1 check; this one rewrites the segment BETWEEN the passes
-    /// (the spy's `ensure_table` runs after pass 1 via the span-delta
-    /// apply, before pass 2 streams) and pins that the second count
-    /// catches what the first validated — the seconds-wide window the
-    /// 7L1 recount exists to close.
-    #[tokio::test]
-    async fn a_segment_swapped_between_replay_passes_degrades_to_re_extraction() {
-        use arrow::array::Int64Array;
-        use arrow::datatypes::{DataType, Field, Schema};
-        use arrow::record_batch::RecordBatch;
-        use std::sync::Arc;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let schema_of = || Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let seg = |rows: usize| {
-            RecordBatch::try_new(
-                schema_of(),
-                vec![Arc::new(Int64Array::from(
-                    (1..=rows as i64).collect::<Vec<_>>(),
-                ))],
-            )
-            .expect("batch")
-        };
-        crate::wal::write_segment(&dir.path().join("l-000000.arrow"), &seg(3))
-            .expect("write segment");
-
-        /// A session that rewrites the segment file when the span's
-        /// schema delta is applied — the between-passes seam.
-        struct SwappingSession {
-            dir: std::path::PathBuf,
-            swapped: bool,
-        }
-        #[async_trait::async_trait]
-        impl rdlt_connector::destination::LoadSession for SwappingSession {
-            async fn ensure_table(
-                &mut self,
-                _schema: &rdlt_core::schema::TableSchema,
-                _mode: &rdlt_core::commit::WriteMode,
-            ) -> Result<(), rdlt_connector::error::DestinationError> {
-                if !self.swapped {
-                    self.swapped = true;
-                    // Four rows where the manifest (and pass 1) saw
-                    // three — a same-layout, different-count swap.
-                    let swapped = RecordBatch::try_new(
-                        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-                        vec![Arc::new(Int64Array::from(vec![1i64, 2, 3, 4]))],
-                    )
-                    .expect("swap batch");
-                    // The writer's create_new refuses to overwrite;
-                    // the swap is an attacker's move, not a writer's.
-                    std::fs::remove_file(self.dir.join("l-000000.arrow"))
-                        .expect("clear the original for the swap");
-                    crate::wal::write_segment(&self.dir.join("l-000000.arrow"), &swapped)
-                        .expect("swap the segment");
-                }
-                Ok(())
-            }
-            async fn write(
-                &mut self,
-                _table: &rdlt_core::id::TableName,
-                _batch: RecordBatch,
-            ) -> Result<(), rdlt_connector::error::DestinationError> {
-                Ok(())
-            }
-            async fn commit(
-                &mut self,
-                _meta: rdlt_core::commit::CommitMeta,
-            ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
-            {
-                panic!("a degraded replay never reaches commit")
-            }
-            async fn read_state(
-                &mut self,
-                _pipeline: &rdlt_core::id::PipelineId,
-            ) -> Result<Option<rdlt_core::state::StateDoc>, rdlt_connector::error::DestinationError>
-            {
-                Ok(None)
-            }
-            async fn close(&mut self) -> Result<(), rdlt_connector::error::DestinationError> {
-                Ok(())
-            }
-        }
-
-        let span = RecoverySpan {
-            load_id: LoadId::new("l"),
-            next_commit_seq: 1,
-            records: vec![
-                WalRecord::Segment {
-                    table: rdlt_core::id::TableName::new("t"),
-                    file: "l-000000.arrow".to_owned(),
-                    rows: 3,
-                },
-                WalRecord::Checkpoint {
-                    stream: rdlt_core::id::StreamName::new("s"),
-                    cursor: rdlt_core::cursor::Cursor::new(serde_json::json!(1)),
-                },
-            ],
-            schemas: vec![(
-                rdlt_core::schema::TableSchema {
-                    table: rdlt_core::id::TableName::new("t"),
-                    parent: None,
-                    columns: vec![],
-                },
-                rdlt_core::commit::WriteMode::Append,
-            )],
-        };
-
-        let mut session = Box::new(SwappingSession {
-            dir: dir.path().to_path_buf(),
-            swapped: false,
-        });
-        let mut state = StateDoc::new(PipelineId::new("p"), "test");
-        let replayed = replay(
-            dir.path(),
-            span,
-            &mut *session,
-            &mut state,
-            rdlt_connector::destination::Capabilities::default(),
-        )
-        .await
-        .expect("replay returns Ok so the caller can degrade");
-        assert_eq!(
-            replayed, None,
-            "pass 1 validated three rows; pass 2 streamed four — the between-passes \
-             swap degrades to re-extraction, never applies the swapped rows"
-        );
-    }
-
-    /// A manifest line that disagrees with its segment degrades to
-    /// re-extraction instead of replaying.
-    ///
-    /// The recorded row count used to be written and never read. It is the only
-    /// independent statement of what a segment SHOULD contain, so checking it
-    /// turns a decoration into the one cross-check recovery has: if the line and
-    /// the file disagree, replay would apply a different set of rows than the
-    /// manifest promises, and exactly-once rests on those two agreeing.
-    ///
-    /// Degrading is slower and always correct — the same trade every other
-    /// damage arm in this module makes.
-    #[tokio::test]
-    async fn a_row_count_mismatch_degrades_to_re_extraction() {
-        use rdlt_core::commit::WriteMode;
-        use rdlt_core::id::TableName;
-
-        use arrow::array::Int64Array;
-        use arrow::datatypes::{DataType, Field, Schema};
-        use arrow::record_batch::RecordBatch;
-        use rdlt_connector::destination::Destination;
-        use std::sync::Arc;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        // A real, fully decodable segment holding THREE rows.
-        let seg = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-            vec![Arc::new(Int64Array::from(vec![1i64, 2, 3]))],
-        )
-        .expect("batch");
-        crate::wal::write_segment(&dir.path().join("l-000000.arrow"), &seg).expect("write segment");
-
-        let schema = rdlt_core::schema::TableSchema {
-            table: TableName::new("t"),
-            parent: None,
-            columns: vec![],
-        };
-        let span = |rows: u64| RecoverySpan {
-            load_id: LoadId::new("l"),
-            next_commit_seq: 1,
-            records: vec![
-                WalRecord::Segment {
-                    table: TableName::new("t"),
-                    file: "l-000000.arrow".to_owned(),
-                    rows,
-                },
-                WalRecord::Checkpoint {
-                    stream: rdlt_core::id::StreamName::new("s"),
-                    cursor: rdlt_core::cursor::Cursor::new(serde_json::json!(1)),
-                },
-            ],
-            schemas: vec![(schema.clone(), WriteMode::Append)],
-        };
-
-        // Truthful line: replay proceeds.
-        let mut session = rdlt_testkit::memory::Destination::new()
-            .open(rdlt_connector::destination::OpenContext::new(
-                PipelineId::new("p"),
-                LoadId::new("l"),
-            ))
-            .await
-            .expect("session");
-        let mut state = StateDoc::new(PipelineId::new("p"), "test");
-        let replayed = replay(
-            dir.path(),
-            span(3),
-            &mut *session,
-            &mut state,
-            rdlt_connector::destination::Capabilities::default(),
-        )
-        .await
-        .expect("replay");
-        assert_eq!(replayed, Some(1), "a truthful manifest line replays");
-
-        // Lying line: the segment really holds 3, the manifest claims 7.
-        let mut session = rdlt_testkit::memory::Destination::new()
-            .open(rdlt_connector::destination::OpenContext::new(
-                PipelineId::new("p"),
-                LoadId::new("l"),
-            ))
-            .await
-            .expect("session");
-        let mut state = StateDoc::new(PipelineId::new("p"), "test");
-        let replayed = replay(
-            dir.path(),
-            span(7),
-            &mut *session,
-            &mut state,
-            rdlt_connector::destination::Capabilities::default(),
-        )
-        .await
-        .expect("replay returns Ok so the caller can degrade");
-        assert_eq!(
-            replayed, None,
-            "a manifest disagreeing with its segment must NOT replay"
-        );
     }
 }

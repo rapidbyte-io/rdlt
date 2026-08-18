@@ -2,8 +2,9 @@
 //! engine assembles (`arrow_column_type`, `arrow_schema`), arrow → logical
 //! for every structured batch a source pushes (`column_type_from_arrow`),
 //! and the cross-batch join over the shared widening lattice
-//! (`join_column_types`). Nothing else in the crate names an arrow
-//! `DataType` for a logical type.
+//! (`join_column_types`). The engine's own batches take their arrow types
+//! from here; only the destination-seam lowering renders past it (a decimal
+//! to text for a destination without decimals).
 
 use std::sync::Arc;
 

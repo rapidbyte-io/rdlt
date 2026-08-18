@@ -5,8 +5,8 @@
 //! for trailing work): a boundary where every stream with rows in the unit has
 //! a checkpoint of its own. Committing anything less would publish rows the
 //! committed cursors don't cover, and a crash would then re-extract them as
-//! duplicates — a checkpoint of ANOTHER stream covers nothing (042 T7E), so a
-//! trigger that fires there defers to a later, covered one.
+//! duplicates — a checkpoint of ANOTHER stream covers nothing, so a trigger
+//! that fires there defers to a later, covered one.
 
 use std::time::Instant;
 
@@ -20,9 +20,8 @@ use rdlt_core::id::{LoadId, TableName};
 use rdlt_core::report;
 use rdlt_core::state::StateDoc;
 
-use crate::wal::Wal;
-
 use super::{apply, item::LoadItem};
+use crate::wal::writer::Wal;
 
 /// The destination and how to lower for it — the two are always used together at
 /// the write seam (`apply_delta`/`apply_batch` take exactly this pair), so they
@@ -42,7 +41,7 @@ pub(crate) struct Loader {
     /// How much to accumulate before each destination write. The
     /// default writes straight through.
     batch_policy: rdlt_core::commit::BatchPolicy,
-    /// The per-write cell ceiling the accumulator flushes at (7L4).
+    /// The per-write cell ceiling the accumulator flushes at.
     max_batch_cells: usize,
     /// Rows waiting to be written, per table.
     ///
@@ -75,7 +74,7 @@ pub(crate) struct Loader {
     /// rows NO cursor covers: after a crash the recovered state cannot
     /// advance those streams, re-extraction re-delivers the rows, and an
     /// append destination has nothing to dedup on. Mid-run commits wait for
-    /// this to drain (042 T7E — the loader half of per-stream coverage).
+    /// this to drain — the loader half of per-stream coverage.
     uncovered_roots: std::collections::BTreeSet<TableName>,
     /// Whether the deferral advisory has fired — set exactly at the
     /// warn site, so a blocked commit trigger is worth ONE operator
@@ -93,8 +92,8 @@ pub(crate) struct Policies {
     pub(crate) commit: CommitPolicy,
     /// How much accumulates before each destination write.
     pub(crate) batch: rdlt_core::commit::BatchPolicy,
-    /// The same per-batch cell ceiling the assembly seats enforce
-    /// (7L4): the coalescer's `concat_batches` is downstream of every
+    /// The same per-batch cell ceiling the assembly seats enforce:
+    /// the coalescer's `concat_batches` is downstream of every
     /// per-batch gate, so without this the accumulator could fuse
     /// individually-legal batches into one destination write far past
     /// the budget an operator set. The accumulator FLUSHES at the
@@ -146,12 +145,12 @@ impl Loader {
 
     /// A written table's ROOT, along the parent links its Deltas recorded; a
     /// table with no recorded parent is its own root. The shared memoized
-    /// walk ([`crate::lineage::Chain`] — the recovery scan's replay filter
-    /// walks the SAME implementation, which is what keeps the coverage
-    /// rule's two halves one rule); a cycle is unreachable from any shred,
-    /// so the walk's refusal degrades to the table itself. Memoized per
-    /// table because the walk would otherwise run per BATCH with per-hop
-    /// clones; the memo's own doc says why no invalidation is needed.
+    /// walk ([`crate::lineage::Chain`], which the recovery scan's covered
+    /// filter also resolves roots through — the coverage rule's two halves
+    /// stay one rule); a cycle is unreachable from any shred, so the walk's
+    /// refusal degrades to the table itself. Memoized per table because the
+    /// walk would otherwise run per BATCH with per-hop clones; the memo's
+    /// own doc says why no invalidation is needed.
     fn root_of(&mut self, table: &TableName) -> TableName {
         let parents = &self.parents;
         self.root_cache
@@ -263,8 +262,8 @@ impl Loader {
                 }
                 let rows = batch.num_rows() as u64;
                 // The footprint travels ON the item, computed once at
-                // construction (round-5 fix) — the same number the
-                // stage channel already charged.
+                // construction — the same number the stage channel
+                // already charged.
                 let bytes = bytes as u64;
                 if self.batch_policy.accumulates() {
                     self.accumulate(&table, batch, bytes).await?;
@@ -323,8 +322,8 @@ impl Loader {
                 //    append destination has nothing to dedup on, and for a
                 //    snapshot stream (no cursor exists at all) no future
                 //    checkpoint can ever repair it. Double-application is
-                //    permanent — T7E measured it live at the multi-table
-                //    crash sweep's `ice.receipt.visible` cell.
+                //    permanent (the multi-table crash sweep's
+                //    `ice.receipt.visible` cell shows it live).
                 //
                 // 2. Committing a SUBSET (only the covered streams' rows)
                 //    is not available either: a commit publishes the whole
@@ -404,7 +403,7 @@ impl Loader {
             .get(table)
             .and_then(|pending| pending.batches.first())
             .is_some_and(|held| held.schema() != batch.schema());
-        // 7L4: flush BEFORE the accumulation would cross the cell
+        // Flush BEFORE the accumulation would cross the cell
         // ceiling — each incoming batch is already under it (the
         // assembly seats refuse over-ceiling batches), so every flushed
         // write stays under it too. The budget counts THIS batch's
@@ -495,8 +494,7 @@ impl Loader {
         Ok(())
     }
 
-    /// The session's orderly end on the SUCCESS path (037 US2 T7 fix
-    /// round 1; semantics corrected in fix round 2, M4) — called by
+    /// The session's orderly end on the SUCCESS path — called by
     /// `drain_loader` exactly once, after [`Loader::finish`]'s last
     /// commit has already succeeded. Every commit is ALREADY durable by
     /// the time this runs, so a close failure here can never mean lost
@@ -521,8 +519,8 @@ impl Loader {
         })
     }
 
-    /// Best-effort close on an ABANDONMENT path (037 US2 fix round 2,
-    /// I1) — a failed or cancelled run whose session would otherwise
+    /// Best-effort close on an ABANDONMENT path — a failed or cancelled
+    /// run whose session would otherwise
     /// simply be dropped. The lease (or whatever a destination's close
     /// releases) protects CONCURRENT sessions, not dead ones: once this
     /// run will write no more, holding it protects nothing, and the
@@ -602,140 +600,56 @@ impl Loader {
 mod tests {
     use std::time::Duration;
 
-    use rdlt_connector::arrow::RecordBatch;
     use rdlt_core::commit::WriteMode;
     use rdlt_core::id::PipelineId;
     use rdlt_core::schema::TableSchema;
 
     use super::*;
+    use crate::testing::{FakeSession, int_batch, ipc_round_trip};
 
-    /// `policy_triggers` is a pure function of the loader's counters and clock;
-    /// no destination call is reachable from it, and this session asserts that by
-    /// refusing every call.
-    struct UnusedSession;
-
-    #[async_trait::async_trait]
-    impl LoadSession for UnusedSession {
-        async fn ensure_table(
-            &mut self,
-            _: &TableSchema,
-            _: &WriteMode,
-        ) -> Result<(), rdlt_connector::error::DestinationError> {
-            unreachable!("policy_triggers never touches the destination")
-        }
-        async fn write(
-            &mut self,
-            _: &TableName,
-            _: RecordBatch,
-        ) -> Result<(), rdlt_connector::error::DestinationError> {
-            unreachable!("policy_triggers never touches the destination")
-        }
-        async fn commit(
-            &mut self,
-            _: CommitMeta,
-        ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
-        {
-            unreachable!("policy_triggers never touches the destination")
-        }
-        async fn read_state(
-            &mut self,
-            _: &PipelineId,
-        ) -> Result<Option<StateDoc>, rdlt_connector::error::DestinationError> {
-            unreachable!("policy_triggers never touches the destination")
-        }
-    }
-
-    fn loader_with(policy: CommitPolicy) -> Loader {
+    /// A loader over `session` under `policies`, with a throwaway pipeline
+    /// identity and no WAL.
+    fn loader_over(session: FakeSession, policies: Policies) -> Loader {
         let (events, _rx) = tokio::sync::broadcast::channel(16);
         let pipeline = PipelineId::new("p");
         let load_id = LoadId::new("l");
         Loader::new(
             Sink {
-                session: Box::new(UnusedSession),
+                session: Box::new(session),
                 capabilities: Capabilities::default(),
             },
             report::Run::new(pipeline.clone(), load_id.clone()),
             StateDoc::new(pipeline, "test"),
             load_id,
-            Policies {
-                commit: policy,
-                batch: rdlt_core::commit::BatchPolicy::default(),
-                max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
-            },
+            policies,
             None,
             events,
         )
     }
 
-    /// Records every commit; accepts everything else. The per-stream coverage
-    /// pins below only need to observe WHEN a commit was issued and with what
-    /// state.
-    struct RecordingSession {
-        commits: std::sync::Arc<std::sync::Mutex<Vec<CommitMeta>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl LoadSession for RecordingSession {
-        async fn ensure_table(
-            &mut self,
-            _: &TableSchema,
-            _: &WriteMode,
-        ) -> Result<(), rdlt_connector::error::DestinationError> {
-            Ok(())
-        }
-        async fn write(
-            &mut self,
-            _: &TableName,
-            _: RecordBatch,
-        ) -> Result<(), rdlt_connector::error::DestinationError> {
-            Ok(())
-        }
-        async fn commit(
-            &mut self,
-            meta: CommitMeta,
-        ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
-        {
-            let receipt = rdlt_core::commit::CommitReceipt {
-                load_id: meta.load_id.clone(),
-                commit_seq: meta.commit_seq,
-            };
-            self.commits.lock().expect("lock").push(meta);
-            Ok(receipt)
-        }
-        async fn read_state(
-            &mut self,
-            _: &PipelineId,
-        ) -> Result<Option<StateDoc>, rdlt_connector::error::DestinationError> {
-            Ok(None)
+    fn policies(commit: CommitPolicy) -> Policies {
+        Policies {
+            commit,
+            batch: rdlt_core::commit::BatchPolicy::default(),
+            max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
         }
     }
 
+    /// `policy_triggers` is a pure function of the loader's counters and clock;
+    /// no destination call is reachable from it, and the session asserts that
+    /// by refusing every call.
+    fn loader_with(policy: CommitPolicy) -> Loader {
+        loader_over(FakeSession::unreachable(), policies(policy))
+    }
+
+    /// A loader whose session records every commit; the per-stream coverage
+    /// pins only need to observe WHEN a commit was issued and with what state.
     fn recording_loader(
         policy: CommitPolicy,
     ) -> (Loader, std::sync::Arc<std::sync::Mutex<Vec<CommitMeta>>>) {
-        let commits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (events, _rx) = tokio::sync::broadcast::channel(16);
-        let pipeline = PipelineId::new("p");
-        let load_id = LoadId::new("l");
-        let loader = Loader::new(
-            Sink {
-                session: Box::new(RecordingSession {
-                    commits: std::sync::Arc::clone(&commits),
-                }),
-                capabilities: Capabilities::default(),
-            },
-            report::Run::new(pipeline.clone(), load_id.clone()),
-            StateDoc::new(pipeline, "test"),
-            load_id,
-            Policies {
-                commit: policy,
-                batch: rdlt_core::commit::BatchPolicy::default(),
-                max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
-            },
-            None,
-            events,
-        );
-        (loader, commits)
+        let session = FakeSession::default();
+        let commits = std::sync::Arc::clone(&session.commits);
+        (loader_over(session, policies(policy)), commits)
     }
 
     fn delta_item(table: &str, parent: Option<&str>) -> LoadItem {
@@ -760,17 +674,7 @@ mod tests {
     }
 
     fn batch_item(table: &str) -> LoadItem {
-        use arrow::array::Int64Array;
-        use arrow::datatypes::{DataType, Field, Schema};
-        use std::sync::Arc;
-        LoadItem::batch(
-            TableName::new(table),
-            RecordBatch::try_new(
-                Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
-                vec![Arc::new(Int64Array::from(vec![1i64, 2]))],
-            )
-            .expect("batch"),
-        )
+        LoadItem::batch(TableName::new(table), int_batch(2))
     }
 
     fn checkpoint_item(stream: &str) -> LoadItem {
@@ -780,15 +684,15 @@ mod tests {
         }
     }
 
-    /// THE T7E loader half: this module's own header promises commits happen
-    /// only at boundaries whose cursors cover the published rows — but a
-    /// commit issued at `events`' checkpoint while `orders` has rows and no
-    /// checkpoint publishes rows NO cursor covers. Once such a commit lands
-    /// and the run dies, recovery cannot help: the recovered state has no
-    /// `orders` cursor, re-extraction re-delivers the rows, and an append
-    /// destination has nothing to dedup on (proven live — the multi-table
-    /// crash sweep's `ice.receipt.visible` cell). The commit must WAIT for
-    /// coverage.
+    /// THE loader half of per-stream coverage: this module's own header
+    /// promises commits happen only at boundaries whose cursors cover the
+    /// published rows — but a commit issued at `events`' checkpoint while
+    /// `orders` has rows and no checkpoint publishes rows NO cursor covers.
+    /// Once such a commit lands and the run dies, recovery cannot help: the
+    /// recovered state has no `orders` cursor, re-extraction re-delivers the
+    /// rows, and an append destination has nothing to dedup on (the
+    /// multi-table crash sweep's `ice.receipt.visible` cell shows it live).
+    /// The commit must WAIT for coverage.
     #[tokio::test]
     async fn a_commit_waits_for_every_written_streams_own_checkpoint() {
         let (mut loader, commits) = recording_loader(CommitPolicy::every_checkpoints(1));
@@ -833,7 +737,7 @@ mod tests {
     /// firing byte-based commit policies that many times early.
     #[tokio::test]
     async fn loader_byte_counters_meter_an_ipc_decoded_batch_by_footprint() {
-        let (stream_len, decoded, _row_payload) = crate::load::ipc_fixture::ipc_round_trip();
+        let (stream_len, decoded, _row_payload) = ipc_round_trip();
 
         let (mut loader, _commits) = recording_loader(CommitPolicy::every_checkpoints(10));
         for item in [
@@ -859,7 +763,7 @@ mod tests {
         );
     }
 
-    /// The deferral is correct but must not be SILENT (042 fix wave): the
+    /// The deferral is correct but must not be SILENT: the
     /// first policy trigger blocked by an uncovered co-stream sets the
     /// one-time advisory — and only the first, so an operator gets one
     /// warning per run, not one per checkpoint. Driven twice past the
@@ -1011,71 +915,21 @@ mod tests {
         assert!(loader.policy_triggers(), "at the threshold");
     }
 
-    /// 7L4: the coalescer flushes at the cell ceiling — the same knob
-    /// the assembly seats enforce. With a batch policy that would
-    /// otherwise fuse the whole run (`every_rows` far above it) and a
-    /// two-cell budget, three one-cell pushes must arrive as THREE
-    /// writes, never one fused write past the ceiling.
+    /// The coalescer flushes at the cell ceiling — the same knob the
+    /// assembly seats enforce. With a batch policy that would otherwise fuse
+    /// the whole run (`every_rows` far above it) and a two-cell budget, three
+    /// one-cell pushes must arrive as THREE writes, never one fused write
+    /// past the ceiling.
     #[tokio::test]
     async fn the_accumulator_flushes_at_the_cell_ceiling() {
         use arrow::array::Int64Array;
         use arrow::datatypes::{DataType, Field, Schema};
         use std::sync::Arc;
 
-        /// Records writes; accepts everything (the loader's own pins
-        /// need to observe WHEN a write was issued, not what it held).
-        struct CountingSession(Arc<std::sync::Mutex<usize>>);
-        #[async_trait::async_trait]
-        impl LoadSession for CountingSession {
-            async fn ensure_table(
-                &mut self,
-                _: &TableSchema,
-                _: &WriteMode,
-            ) -> Result<(), rdlt_connector::error::DestinationError> {
-                Ok(())
-            }
-            async fn write(
-                &mut self,
-                _: &TableName,
-                _: RecordBatch,
-            ) -> Result<(), rdlt_connector::error::DestinationError> {
-                *self.0.lock().expect("count lock") += 1;
-                Ok(())
-            }
-            async fn commit(
-                &mut self,
-                meta: CommitMeta,
-            ) -> Result<rdlt_core::commit::CommitReceipt, rdlt_connector::error::DestinationError>
-            {
-                Ok(rdlt_core::commit::CommitReceipt {
-                    load_id: meta.load_id,
-                    commit_seq: meta.commit_seq,
-                })
-            }
-            async fn read_state(
-                &mut self,
-                _: &rdlt_core::id::PipelineId,
-            ) -> Result<Option<rdlt_core::state::StateDoc>, rdlt_connector::error::DestinationError>
-            {
-                Ok(None)
-            }
-            async fn close(&mut self) -> Result<(), rdlt_connector::error::DestinationError> {
-                Ok(())
-            }
-        }
-
-        let writes = Arc::new(std::sync::Mutex::new(0usize));
-        let (events, _rx) = tokio::sync::broadcast::channel(16);
-        let pipeline = PipelineId::new("p");
-        let load_id = LoadId::new("l");
-        let mut loader = Loader::new(
-            crate::load::Sink {
-                session: Box::new(CountingSession(Arc::clone(&writes))),
-                capabilities: Capabilities::default(),
-            },
-            report::Run::new(pipeline.clone(), load_id.clone()),
-            StateDoc::new(pipeline, "test"),
-            load_id,
+        let session = FakeSession::default();
+        let writes = Arc::clone(&session.writes);
+        let mut loader = loader_over(
+            session,
             Policies {
                 commit: CommitPolicy::default(),
                 // Would fuse the whole run into one write…
@@ -1083,8 +937,6 @@ mod tests {
                 // …except the cell ceiling flushes every second cell.
                 max_batch_cells: 2,
             },
-            None,
-            events,
         );
 
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)]));

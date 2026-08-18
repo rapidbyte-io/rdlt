@@ -213,7 +213,7 @@ async fn run_once(
         .as_deref()
         .map(super::lock::WorkdirLock::acquire)
         .transpose()?;
-    let wal_dir = config.workdir.as_deref().map(crate::wal::dir_in);
+    let wal_dir = config.workdir.as_deref().map(crate::wal::dir::dir_in);
 
     // ---- Session open + state recovery + WAL replay ----
     // Output bytes per table, accumulated in the part-event forwarder
@@ -235,7 +235,7 @@ async fn run_once(
     let wal = match wal_dir
         .as_ref()
         .map(|dir| {
-            crate::wal::Wal::open(
+            crate::wal::writer::Wal::open(
                 dir.clone(),
                 &config.pipeline,
                 &load_id,
@@ -401,7 +401,7 @@ async fn run_once(
     // would trade a real success for an error — a surviving committed
     // manifest resolves as an ordinary Discard on the next run's scan.
     if let Some(dir) = &wal_dir {
-        let _ = crate::wal::clear(dir);
+        let _ = crate::wal::dir::clear(dir);
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;

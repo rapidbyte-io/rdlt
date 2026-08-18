@@ -121,7 +121,7 @@ fn flatten_array(
     full_path.push(field.name());
     // Batch nesting is connector-controlled (IPC-decoded child data skips
     // arrow's validator), and a stack overflow is an ABORT no containment
-    // absorbs — refuse past the shared cap (047 M1).
+    // absorbs — refuse past the shared cap.
     if full_path.len() > MAX_ARROW_DEPTH {
         return Err(Error::internal(format!(
             "batch nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
@@ -196,8 +196,7 @@ fn flatten_array(
 /// A child whose length disagrees with the parent's validity buffer is
 /// impossible from the engine's own builders but reachable from an
 /// IPC-decoded batch (which skips arrow's validator) — `NullBuffer::union`
-/// panics on it, so the mismatch is refused with a typed error instead
-/// (047 L3).
+/// panics on it, so the mismatch is refused with a typed error instead.
 fn with_merged_nulls(child: &ArrayRef, parent: Option<&NullBuffer>) -> Result<ArrayRef, Error> {
     let Some(parent) = parent else {
         return Ok(Arc::clone(child));
@@ -237,8 +236,8 @@ fn render_decimal(raw: i128, scale: u8) -> String {
 
 #[cfg(test)]
 mod tests {
-    // Mutation-report closure: the whole lowering seam ran
-    // assertion-free — the suite only ever used full-capability destinations.
+    // Direct pins on the seam: the integration suites use full-capability
+    // destinations, which never lower.
     use super::*;
     use arrow::array::Int64Array;
     use arrow::datatypes::{DataType, Field, Schema};
@@ -510,7 +509,7 @@ mod tests {
         );
     }
 
-    /// 047 M1: batch nesting is connector-controlled (IPC-decoded child
+    /// Batch nesting is connector-controlled (IPC-decoded child
     /// data skips arrow's validator), and an uncapped flatten walk turns a
     /// deep declaration into a stack overflow — an ABORT, not a panic.
     /// Past the shared cap the walk refuses with a typed error.
@@ -540,7 +539,7 @@ mod tests {
         lower_batch(&deep(10), &capabilities(false, true)).expect("ordinary nesting still lowers");
     }
 
-    /// 047 L3: a struct child whose length disagrees with its parent's
+    /// A struct child whose length disagrees with its parent's
     /// validity buffer is impossible from the engine's own builders but
     /// reachable from an IPC-decoded batch — `NullBuffer::union` panicked
     /// on it; the merge now refuses with a typed error instead.
