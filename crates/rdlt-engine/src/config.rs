@@ -148,7 +148,10 @@ impl Config {
     /// Sets the most streams one source may declare for a run (see
     /// [`Self::DEFAULT_MAX_STREAMS_PER_SOURCE`]). Raise it for genuinely huge
     /// discoveries; the bound exists because the stream list is the one
-    /// discovery axis a source controls directly.
+    /// discovery axis a source controls directly. A served
+    /// (out-of-process) source admits at most 1024 concurrent reads;
+    /// raising this past 1024 needs the connector's read ceiling raised
+    /// in step.
     pub fn with_max_streams_per_source(mut self, streams: usize) -> Self {
         self.max_streams_per_source = streams.max(1);
         self

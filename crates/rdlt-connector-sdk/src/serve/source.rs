@@ -96,17 +96,16 @@ pub const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
 /// limit while never touching the budget.
 const FRAME_MESSAGE_CAPACITY: usize = 64;
 
-/// The most `Read` RPCs one served source process admits at once — the
-/// source-side analogue of the destination's one-session ceiling. The
-/// host reads a source's streams CONCURRENTLY, one `Read` per stream,
-/// and admits at most 1024 streams per source (the engine's
-/// `DEFAULT_MAX_STREAMS_PER_SOURCE`, mirrored here rather than imported
-/// — the sdk does not depend on the engine); this ceiling matches it,
-/// so no legitimate host is refused while a runaway client cannot
-/// multiply reads without bound. Each read's memory is bounded per call
-/// ([`BYTE_FRAME_BUDGET`] + [`READ_CHANNEL_BUDGET`] + one push in hand),
-/// so the ceiling bounds the multiplier. A read past it is refused
-/// `RESOURCE_EXHAUSTED` — the host retries once a read completes.
+/// A served source admits at most this many concurrent `Read` RPCs —
+/// the engine's default stream cap (`DEFAULT_MAX_STREAMS_PER_SOURCE`,
+/// mirrored here rather than imported: the sdk does not depend on the
+/// engine), since the host reads a source's streams concurrently, one
+/// `Read` per stream. A host that raises its per-source stream cap past
+/// 1024 over a served source will have its extra concurrent reads
+/// refused `RESOURCE_EXHAUSTED`. The ceiling is a bound on a runaway
+/// client, not on the host's honest budget: per-read budgets
+/// ([`BYTE_FRAME_BUDGET`] + [`READ_CHANNEL_BUDGET`] + one push in hand)
+/// keep any single read bounded, and this bounds their count.
 pub const MAX_CONCURRENT_READS: usize = 1024;
 
 /// The role a source's handshake must be asked for.
@@ -393,7 +392,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
             .map_err(|_| {
                 Status::resource_exhausted(format!(
                     "{MAX_CONCURRENT_READS} concurrent reads per connector process — the \
-                     ceiling is reached; retry once a read completes"
+                     ceiling is reached"
                 ))
             })?;
         let request = request.into_inner();

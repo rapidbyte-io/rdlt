@@ -91,23 +91,8 @@ pub(super) fn refuse_inexact_cast(
             | DataType::LargeList(target_item)
             | DataType::FixedSizeList(target_item, _),
         ) => {
-            let values = source
-                .as_any()
-                .downcast_ref::<arrow::array::GenericListArray<i32>>()
-                .map(|list| list.values())
-                .or_else(|| {
-                    source
-                        .as_any()
-                        .downcast_ref::<arrow::array::GenericListArray<i64>>()
-                        .map(|list| list.values())
-                })
-                .or_else(|| {
-                    source
-                        .as_any()
-                        .downcast_ref::<arrow::array::FixedSizeListArray>()
-                        .map(|list| list.values())
-                })
-                .expect("the match arm admits exactly these three list arrays");
+            let values =
+                list_values(source).expect("the match arm admits exactly these three list arrays");
             refuse_inexact_cast(
                 values.as_ref(),
                 target_item.data_type(),
@@ -242,6 +227,22 @@ pub(super) fn refuse_inexact_cast(
         }
         _ => Ok(()),
     }
+}
+
+/// The flat values array of any list array arrow's cast walks into —
+/// `List`, `LargeList`, or `FixedSizeList`; `None` for anything else.
+pub(super) fn list_values(array: &dyn arrow::array::Array) -> Option<&arrow::array::ArrayRef> {
+    let any = array.as_any();
+    any.downcast_ref::<arrow::array::GenericListArray<i32>>()
+        .map(|list| list.values())
+        .or_else(|| {
+            any.downcast_ref::<arrow::array::GenericListArray<i64>>()
+                .map(|list| list.values())
+        })
+        .or_else(|| {
+            any.downcast_ref::<arrow::array::FixedSizeListArray>()
+                .map(|list| list.values())
+        })
 }
 
 /// Ticks per second of a timestamp unit — the ratio of two units is the

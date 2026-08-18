@@ -34,7 +34,11 @@ in place; legacy formats and compatibility shims are not supported.
   every decode seat). In-flight read bytes are capped by one budget shared
   across a run's streams. Every Arrow decode seat runs the shared IPC
   framing pre-pass (declared lengths must fit the bytes that carry them)
-  plus a panic belt.
+  plus a panic belt. Connector diagnostic text (ErrorFrame messages,
+  Status text) is rendered escaped and bounded (4 KiB); a served source
+  admits at most 1024 concurrent reads (refused past it).
+- Structured (Arrow) input REFUSES typed any cast arrow would round, wrap,
+  or null; it never discards.
 - Connector configuration can contain credentials. It is sent only over the
   private local connector socket and must never be echoed in protocol errors.
 - Each pipeline work directory is private to the rdlt process. The WAL uses an

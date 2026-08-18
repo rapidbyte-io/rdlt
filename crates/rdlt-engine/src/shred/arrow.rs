@@ -260,27 +260,40 @@ fn cast_exact(
             source.data_type()
         ))
     })?;
-    if let Some((path, grown)) = grown_nulls(source.as_ref(), cast.as_ref(), column) {
+    if let Some(grown) = grown_nulls(source.as_ref(), cast.as_ref(), column) {
         return Err(Error::config(format!(
-            "table `{table}` column `{path}`: casting {} to {target_type} would null {grown} \
-             value(s) arrow cannot carry — refused rather than lost; declare the column as \
-             text, or deliver values the type can represent",
-            source.data_type()
+            "table `{table}` column `{}`: casting {} to {} would null {} value(s) arrow \
+             cannot carry — refused rather than lost; declare the column as text, or \
+             deliver values the type can represent",
+            grown.path, grown.source_type, grown.target_type, grown.count
         )));
     }
     Ok(cast)
 }
 
-/// Where the null count grew across a cast: `(path, count)` for the first
-/// position — the array itself, or a struct field / list element under it
-/// (arrow's cast recurses, so a nested safe-mode null never surfaces in
-/// the parent's own count). Counts are LOGICAL nulls, so an encoding that
-/// reads a value as null without a validity bit compares like one that has
-/// it.
-fn grown_nulls(source: &dyn Array, cast: &dyn Array, path: &str) -> Option<(String, usize)> {
+/// Where a cast grew the null count: the nested position and the LEAF
+/// source/target types there.
+struct GrownNulls {
+    path: String,
+    source_type: DataType,
+    target_type: DataType,
+    count: usize,
+}
+
+/// Where the null count grew across a cast: the first position — the
+/// array itself, or a struct field / list element under it (arrow's cast
+/// recurses, so a nested safe-mode null never surfaces in the parent's
+/// own count). Counts are LOGICAL nulls, so an encoding that reads a
+/// value as null without a validity bit compares like one that has it.
+fn grown_nulls(source: &dyn Array, cast: &dyn Array, path: &str) -> Option<GrownNulls> {
     let (before, after) = (source.logical_null_count(), cast.logical_null_count());
     if after > before {
-        return Some((path.to_owned(), after - before));
+        return Some(GrownNulls {
+            path: path.to_owned(),
+            source_type: source.data_type().clone(),
+            target_type: cast.data_type().clone(),
+            count: after - before,
+        });
     }
     let (source_struct, cast_struct) = (
         source.as_any().downcast_ref::<StructArray>(),
@@ -301,27 +314,12 @@ fn grown_nulls(source: &dyn Array, cast: &dyn Array, path: &str) -> Option<(Stri
             )
         });
     }
-    match (list_values(source), list_values(cast)) {
+    match (exact::list_values(source), exact::list_values(cast)) {
         (Some(before), Some(after)) => {
             grown_nulls(before.as_ref(), after.as_ref(), &format!("{path}[]"))
         }
         _ => None,
     }
-}
-
-/// The flat values array of any list array arrow's cast walks into.
-fn list_values(array: &dyn Array) -> Option<&ArrayRef> {
-    let any = array.as_any();
-    any.downcast_ref::<arrow::array::ListArray>()
-        .map(|list| list.values())
-        .or_else(|| {
-            any.downcast_ref::<arrow::array::LargeListArray>()
-                .map(|list| list.values())
-        })
-        .or_else(|| {
-            any.downcast_ref::<arrow::array::FixedSizeListArray>()
-                .map(|list| list.values())
-        })
 }
 
 /// A struct source re-assembled against the target's field set: children

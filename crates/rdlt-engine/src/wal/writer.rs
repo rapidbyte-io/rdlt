@@ -44,15 +44,29 @@ pub(super) fn wal_err(context: &str, e: impl std::fmt::Display) -> Error {
 /// how a resolved span ends up unreplayable). Terminate the former and
 /// drop the latter before anything appends, because a Run header written
 /// straight after either glues into ONE line the next scan reads as
-/// corruption. Read through the already-open, symlink-refusing handle;
-/// the residue's size passed the scan's total budget to earn the voucher.
+/// corruption. Reads only the last line-cap-plus-terminator bytes through
+/// the already-open, symlink-refusing handle: a tail longer than the line
+/// cap could not have scanned as Discard, so it was never vouched — a
+/// window with no newline is treated as one torn tail.
 fn reconcile_unterminated_tail(manifest: &mut File) -> Result<(), Error> {
-    use std::io::Read as _;
-    let mut bytes = Vec::new();
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let len = manifest
+        .metadata()
+        .map_err(|e| wal_err("reading vouched manifest", e))?
+        .len();
+    if len == 0 {
+        return Ok(());
+    }
+    let window = (MAX_MANIFEST_LINE_BYTES as u64 + 2).min(len);
+    let window_start = len - window;
+    manifest
+        .seek(SeekFrom::Start(window_start))
+        .map_err(|e| wal_err("reading vouched manifest", e))?;
+    let mut bytes = Vec::with_capacity(window as usize);
     manifest
         .read_to_end(&mut bytes)
         .map_err(|e| wal_err("reading vouched manifest", e))?;
-    if bytes.is_empty() || bytes.ends_with(b"\n") {
+    if bytes.ends_with(b"\n") {
         return Ok(());
     }
     let tail_start = bytes
@@ -67,7 +81,7 @@ fn reconcile_unterminated_tail(manifest: &mut File) -> Result<(), Error> {
             .map_err(|e| wal_err("terminating vouched manifest tail", e))
     } else {
         manifest
-            .set_len(tail_start as u64)
+            .set_len(window_start + tail_start as u64)
             .map_err(|e| wal_err("dropping torn vouched manifest tail", e))
     }
 }
@@ -471,17 +485,24 @@ mod tests {
     /// failed. The vouched Run header must not glue onto the torn
     /// bytes — the next scan must read a fresh span (here: nothing to
     /// replay, or the new span's records), never Damaged.
+    /// An adopted directory with a default-rules sidecar — the residue
+    /// shape recovery vouches for — plus the rules it was written with.
+    fn vouched_fixture(dir: &Path) -> rdlt_core::schema::IdentRules {
+        ensure_owned_dir(dir).expect("adopt fixture dir");
+        let rules = rdlt_core::schema::IdentRules::default();
+        std::fs::write(
+            dir.join(RULES_SIDECAR),
+            serde_json::to_vec(&rules).expect("rules"),
+        )
+        .expect("sidecar");
+        rules
+    }
+
     #[test]
     fn open_with_the_residue_voucher_never_glues_onto_a_torn_tail() {
         use crate::wal::scan::{MAX_MANIFEST_TOTAL_BYTES, ScanOutcome, scan};
         let dir = tempfile::tempdir().expect("tempdir");
-        ensure_owned_dir(dir.path()).expect("adopt fixture dir");
-        let rules = rdlt_core::schema::IdentRules::default();
-        std::fs::write(
-            dir.path().join(RULES_SIDECAR),
-            serde_json::to_vec(&rules).expect("rules"),
-        )
-        .expect("sidecar");
+        let rules = vouched_fixture(dir.path());
         // A resolved current-version span, then a line torn twenty
         // bytes short of its trailer: the Discard shape with a torn tail.
         let mut stale = encode_line(&WalRecord::Run {
@@ -555,13 +576,7 @@ mod tests {
     fn open_with_the_residue_voucher_terminates_a_complete_unterminated_tail() {
         use crate::wal::scan::{MAX_MANIFEST_TOTAL_BYTES, ScanOutcome, scan};
         let dir = tempfile::tempdir().expect("tempdir");
-        ensure_owned_dir(dir.path()).expect("adopt fixture dir");
-        let rules = rdlt_core::schema::IdentRules::default();
-        std::fs::write(
-            dir.path().join(RULES_SIDECAR),
-            serde_json::to_vec(&rules).expect("rules"),
-        )
-        .expect("sidecar");
+        let rules = vouched_fixture(dir.path());
         let stale = encode_line(&WalRecord::Run {
             format_version: WAL_FORMAT_VERSION,
             load_id: LoadId::new("old"),
