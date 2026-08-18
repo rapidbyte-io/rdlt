@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, load_toml};
 
 /// How a variant's arms execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Kind {
+pub(crate) enum Kind {
     /// A pinned container image whose entrypoint self-times and prints the
     /// summary line (the dlt shape). Spelled `self_timed_container` in the
     /// registry.
@@ -29,22 +29,22 @@ pub enum Kind {
 /// `[defaults]` table (all dlt variants share one pinned image), a
 /// per-variant value overriding it.
 #[derive(Debug, Clone)]
-pub struct Variant {
-    pub id: String,
+pub(crate) struct Variant {
+    pub(crate) id: String,
     /// e.g. "dlt 1.29.0" — recorded in every artifact fingerprint.
-    pub pin: String,
-    pub kind: Kind,
+    pub(crate) pin: String,
+    pub(crate) kind: Kind,
     /// Container image (container kind only).
-    pub image: Option<String>,
+    pub(crate) image: Option<String>,
     /// Driver script path, resolved relative to the module directory
     /// (driver kind only).
-    pub driver: Option<PathBuf>,
+    pub(crate) driver: Option<PathBuf>,
     /// Machine-prerequisite probe, run with `sh -c` in the module directory
     /// before any driver run; non-zero exit ⇒ the arm records
     /// `Missing{reason}` (loud skip, never an error).
-    pub prerequisite_sh: Option<String>,
+    pub(crate) prerequisite_sh: Option<String>,
     /// Per-variant run-count override (a cell's competitor entry still wins).
-    pub runs: Option<u32>,
+    pub(crate) runs: Option<u32>,
     /// The `benches/competitors/<module>/` directory the variant came from —
     /// drivers execute with this as their working directory.
     pub(crate) module_dir: PathBuf,
@@ -99,7 +99,7 @@ fn load(path: &Path) -> Result<Vec<Variant>> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| ".".into());
-    let file: File = crate::error::load_toml(path)?;
+    let file: File = load_toml(path)?;
     file.variants
         .into_iter()
         .map(|raw| {

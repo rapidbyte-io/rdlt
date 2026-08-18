@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, load_toml};
 use crate::template;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -92,7 +92,7 @@ pub fn load(path: &Path) -> Result<Vec<Def>> {
         defaults,
         snippets,
         mut fixtures,
-    } = crate::error::load_toml(path)?;
+    } = load_toml(path)?;
     for def in &mut fixtures {
         // Resolve a `reset_sql = "@name"` reference against [snippets].
         if let Some(stripped) = def.reset_sql.as_deref().and_then(|s| s.strip_prefix('@')) {

@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::artifact::{self, Artifact, CompetitorSide};
 use crate::cell::Cell;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, load_toml};
 use crate::paths::Paths;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,7 +57,7 @@ struct BarsFile {
 }
 
 pub fn load(path: &Path) -> Result<Vec<Bar>> {
-    let file: BarsFile = crate::error::load_toml(path)?;
+    let file: BarsFile = load_toml(path)?;
     Ok(file.bars)
 }
 

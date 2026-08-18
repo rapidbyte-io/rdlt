@@ -156,7 +156,7 @@ pub(crate) fn run_cell(
         }
     }
     let cell_fixtures: Vec<&fixture::Live> = cell.fixtures.iter().map(|id| &started[id]).collect();
-    let subs = product::substitutions(paths, cell_fixtures[0]);
+    let subs = product::substitutions(paths, &started[cell.primary_fixture()]);
 
     // Quiet guard BEFORE anything is measured — the baselines feed the
     // recorded ratios, so they need the quiet machine as much as the product.

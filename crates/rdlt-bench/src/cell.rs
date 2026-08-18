@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::artifact;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, load_toml};
 
 /// Where a run's measured statistic comes from: the harness wall clock
 /// around the release-CLI child. Competitor arms self-time instead (their
@@ -168,7 +168,7 @@ pub fn load(cells_dir: &Path) -> Result<Vec<Cell>> {
     let mut cells: Vec<Cell> = Vec::new();
     let mut seen: BTreeMap<String, PathBuf> = BTreeMap::new();
     for path in entries {
-        let file: CellFile = crate::error::load_toml(&path)?;
+        let file: CellFile = load_toml(&path)?;
         for cell in file.cells {
             cell.check(&path)?;
             if let Some(first) = seen.get(&cell.id) {
