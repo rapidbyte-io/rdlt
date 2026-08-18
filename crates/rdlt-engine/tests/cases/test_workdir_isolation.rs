@@ -7,7 +7,8 @@
 
 use rdlt_core::commit::CommitPolicy;
 use rdlt_core::error::Error;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -29,8 +30,8 @@ fn source() -> memory::Source {
     )])
 }
 
-fn config(pipeline: &str, workdir: &std::path::Path) -> EngineConfig {
-    EngineConfig::new(pipeline)
+fn config(pipeline: &str, workdir: &std::path::Path) -> Config {
+    Config::new(pipeline)
         .with_commit_policy(CommitPolicy::every_checkpoints(1))
         .with_workdir(workdir.to_path_buf())
 }

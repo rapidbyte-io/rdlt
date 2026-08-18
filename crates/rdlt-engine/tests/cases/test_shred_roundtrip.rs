@@ -1,4 +1,4 @@
-//! T026: shredder round-trip properties (SC-006).
+//! Shredder round-trip properties.
 //!
 //! 1. **Determinism**: shredding the same input twice produces byte-identical
 //!    destination content (modulo `_rdlt_load_id`, which names the run).
@@ -6,7 +6,8 @@
 //! 3. **Scalar fidelity**: homogeneous scalar columns survive untouched.
 
 use proptest::prelude::*;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::{Value, json};
 
@@ -47,7 +48,7 @@ fn rows_strategy() -> impl Strategy<Value = Vec<Value>> {
 async fn run_once(rows: Vec<Value>) -> memory::Destination {
     let source = memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("t"), rows);
     let dest = memory::Destination::new();
-    Engine::new(EngineConfig::new("roundtrip"), source, dest.clone())
+    Engine::new(Config::new("roundtrip"), source, dest.clone())
         .run()
         .await
         .expect("shredding arbitrary JSON objects must never fail");

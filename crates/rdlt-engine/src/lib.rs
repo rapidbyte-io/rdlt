@@ -1,11 +1,14 @@
 //! # rdlt-engine
 //!
-//! The rdlt ingestion engine: shredding, schema registry, write-ahead log, and load
-//! orchestration over byte-bounded channels.
+//! The rdlt ingestion engine: it turns a source's pushes into typed,
+//! lineage-stamped batches under a schema policy, journals intent in a
+//! write-ahead log, and drives one load session to exactly-once commits —
+//! resumable, cancel-safe, byte-bounded.
 //!
 //! ```rust,no_run
 //! # use rdlt_connector::source::StreamSpec;
-//! # use rdlt_engine::{Engine, EngineConfig};
+//! # use rdlt_engine::config::Config;
+//! # use rdlt_engine::engine::Engine;
 //! # use rdlt_testkit::memory;
 //! # use serde_json::json;
 //! # async fn run() -> Result<(), rdlt_core::error::Error> {
@@ -15,8 +18,7 @@
 //! );
 //! let destination = memory::Destination::new();
 //!
-//! let config = EngineConfig::new("quickstart");
-//! let engine = Engine::new(config, source, destination.clone());
+//! let engine = Engine::new(Config::new("quickstart"), source, destination.clone());
 //!
 //! // Subscribe before running; multiple subscribers each see every event.
 //! let mut events = engine.events();
@@ -30,34 +32,30 @@
 //! # }
 //! ```
 //!
-//! The public surface is [`Engine`] and [`EngineConfig`], the vocabulary
-//! from `rdlt_core` (canonical paths, not re-exported here), and the three
-//! engine-owned semantics modules an embedder configures or a host names:
+//! The public surface is the engine handle ([`engine::Engine`], its
+//! [`engine::EventStream`]) and its [`config::Config`], the vocabulary from
+//! `rdlt_core` (canonical paths, not re-exported here), and the three
+//! engine-owned semantics an embedder configures or a host names:
 //! [`policy`] (what happens when data would change a schema), [`naming`]
 //! (destination identifiers) and [`identity`] (deterministic row ids).
-//! Everything else below `lib.rs` is `pub(crate)`: unit-tested privately, free
-//! to change without semver cost — the one exception is the doc-hidden
-//! [`fuzzing`] module, the bench/fuzz seam, which carries no semver guarantee.
+//! Everything else is `pub(crate)`: unit-tested privately, free to change
+//! without semver cost — the one exception is the doc-hidden [`fuzzing`]
+//! module, the bench/fuzz seam, which carries no semver guarantee.
 
+mod blocking;
 mod classify;
-mod config;
-mod engine;
+pub mod config;
+pub mod engine;
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod identity;
 mod lineage;
 mod load;
 pub mod naming;
 pub mod policy;
-mod runtime;
+mod run;
 mod schema;
 mod shred;
 #[cfg(test)]
-pub(crate) mod testing;
+mod testing;
 mod wal;
-
-pub use config::{
-    DEFAULT_BYTE_BUDGET, DEFAULT_MAX_BATCH_CELLS, DEFAULT_MAX_STREAMS_PER_SOURCE, EngineConfig,
-};
-pub use engine::{Engine, EventStream};
-
-#[doc(hidden)]
-pub mod fuzzing;

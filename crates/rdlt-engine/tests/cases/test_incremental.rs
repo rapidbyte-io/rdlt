@@ -1,11 +1,12 @@
-//! US2 — Incremental sync (spec acceptance scenarios).
+//! Incremental sync.
 //!
 //! Second runs move only new data; merge replaces a record's whole subtree.
 
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::commit::{CommitPolicy, WriteMode};
 use rdlt_core::cursor::Cursor;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -26,7 +27,7 @@ async fn second_run_resumes_from_committed_cursor() {
     // Run 1: fresh — reads everything, commits per checkpoint.
     let source1 = stream_with_batches(rdlt_connector::source::StreamSpec::new("events"), batches());
     let log1 = source1.since_log();
-    let mut config = EngineConfig::new("incr");
+    let mut config = Config::new("incr");
     config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
     let report1 = Engine::new(config.clone(), source1, dest.clone())
         .run()
@@ -73,7 +74,7 @@ async fn second_run_resumes_from_committed_cursor() {
 async fn merge_replaces_whole_subtree() {
     let spec = || rdlt_connector::source::StreamSpec::new("users").with_primary_key(["id"]);
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("merge");
+    let mut config = Config::new("merge");
     config = config.with_write_mode(WriteMode::Merge {
         key: vec!["id".into()],
     });
@@ -125,7 +126,7 @@ async fn merge_replaces_whole_subtree() {
 #[tokio::test]
 async fn keyless_merge_dedups_identical_rows() {
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("dedup");
+    let mut config = Config::new("dedup");
     config = config.with_write_mode(WriteMode::Merge { key: vec![] }); // keyless: content-hash id
     // NOTE: empty key is engine-legal for content dedup; the facade requires an
     // explicit key and that stays — this exercises the engine layer directly.
@@ -157,7 +158,7 @@ async fn keyless_merge_dedups_identical_rows() {
 #[tokio::test]
 async fn replace_mode_replaces_per_run_not_per_commit() {
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("replace");
+    let mut config = Config::new("replace");
     config = config.with_write_mode(WriteMode::Replace);
     config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
 
@@ -198,7 +199,7 @@ async fn fresh_run_reads_with_no_cursor() {
     let dest = memory::Destination::new();
     let source = three_batch_source();
     let since_log = source.since_log();
-    Engine::new(EngineConfig::new("fresh"), source, dest)
+    Engine::new(Config::new("fresh"), source, dest)
         .run()
         .await
         .expect("run");
@@ -223,7 +224,7 @@ async fn empty_cursor_state_reports_fresh_resume() {
         vec![memory::Batch::new(vec![json!({"id": 1})])],
     );
     let report = Engine::new(
-        EngineConfig::new("nocursor"),
+        Config::new("nocursor"),
         memory::Source::new(vec![stream]),
         dest.clone(),
     )
@@ -238,7 +239,7 @@ async fn empty_cursor_state_reports_fresh_resume() {
         vec![memory::Batch::new(vec![json!({"id": 2})])],
     );
     let report = Engine::new(
-        EngineConfig::new("nocursor"),
+        Config::new("nocursor"),
         memory::Source::new(vec![stream]),
         dest,
     )

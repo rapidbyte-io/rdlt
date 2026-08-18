@@ -70,7 +70,7 @@ impl From<error::Error> for Error {
 /// knob would thread here AND through the builder's `byte_budget`,
 /// keeping the two sides one number.
 fn engine_budget_bytes(_document: &Document) -> u64 {
-    rdlt_engine::DEFAULT_BYTE_BUDGET as u64
+    rdlt_engine::config::Config::DEFAULT_BYTE_BUDGET as u64
 }
 
 /// The workdir a document runs under: the spelled path — relative
@@ -263,7 +263,7 @@ mod budget_tests {
         .expect("the fixture document parses");
         assert_eq!(
             engine_budget_bytes(&document),
-            rdlt_engine::DEFAULT_BYTE_BUDGET as u64,
+            rdlt_engine::config::Config::DEFAULT_BYTE_BUDGET as u64,
             "a 1 MiB dest-write threshold must leave the wire budget at the engine default"
         );
     }

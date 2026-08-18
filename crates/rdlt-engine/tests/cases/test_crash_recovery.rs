@@ -1,6 +1,6 @@
-//! US3 — Crash-safe, resumable runs (SC-002).
+//! Crash-safe, resumable runs.
 //!
-//! Every crash-matrix row (design doc §6): kill the run at a precise stage, restart,
+//! Every crash-matrix row: kill the run at a precise stage, restart,
 //! and assert the destination converges to EXACTLY the uninterrupted result — no
 //! duplicated, lost, or partially visible rows, no cursor skips.
 
@@ -11,7 +11,8 @@ use rdlt_core::cursor::Cursor;
 use rdlt_core::error::Error;
 use rdlt_core::id::TableName;
 use rdlt_core::report::ResumedFrom;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -31,8 +32,8 @@ fn source() -> scripted::Source {
     stream_with_batches(rdlt_connector::source::StreamSpec::new("events"), batches())
 }
 
-fn config(workdir: &std::path::Path) -> EngineConfig {
-    let mut config = EngineConfig::new("crash");
+fn config(workdir: &std::path::Path) -> Config {
+    let mut config = Config::new("crash");
     config = config.with_commit_policy(CommitPolicy::every_checkpoints(1));
     config = config.with_workdir(workdir.to_path_buf());
     config
@@ -336,7 +337,7 @@ async fn loader_failure_with_saturated_channel_errors_instead_of_hanging() {
             .map(|_| memory::Batch::new(big_rows.clone()))
             .collect(),
     )]);
-    let mut config = EngineConfig::new("deadlock");
+    let mut config = Config::new("deadlock");
     config = config.with_byte_budget(4096);
 
     let outcome = tokio::time::timeout(
@@ -363,7 +364,7 @@ async fn cancellation_surfaces_the_cancelled_error() {
         )
         .batch_delay(std::time::Duration::from_millis(200)),
     ]);
-    let engine = Engine::new(EngineConfig::new("cancel"), source, dest);
+    let engine = Engine::new(Config::new("cancel"), source, dest);
     let token = engine.cancellation_token();
     let run = tokio::spawn(engine.run());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -373,7 +374,7 @@ async fn cancellation_surfaces_the_cancelled_error() {
 }
 
 /// A source PARKED between frames observes no channel closure, so
-/// cancellation must not wait on it (045 external findings, GROK 3):
+/// cancellation must not wait on it:
 /// the read task is aborted after a bounded grace, and the advertised
 /// `cancellation_token().cancel()` returns promptly instead of hanging
 /// an embedder forever on a wire source idle between frames.
@@ -404,11 +405,7 @@ async fn cancelling_a_parked_source_returns_promptly() {
         }
     }
 
-    let engine = Engine::new(
-        EngineConfig::new("parked"),
-        Parked,
-        memory::Destination::new(),
-    );
+    let engine = Engine::new(Config::new("parked"), Parked, memory::Destination::new());
     let token = engine.cancellation_token();
     let run = tokio::spawn(engine.run());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -451,7 +448,7 @@ async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
 
     let closed = std::sync::Arc::new(tokio::sync::Notify::new());
     let engine = Engine::new(
-        EngineConfig::new("close-then-park"),
+        Config::new("close-then-park"),
         CloseThenPark(std::sync::Arc::clone(&closed)),
         memory::Destination::new(),
     );
@@ -466,16 +463,15 @@ async fn cancelling_a_source_that_closed_then_parked_returns_promptly() {
     assert!(matches!(outcome, Err(Error::Cancelled)), "{outcome:?}");
 }
 
-/// Review round 2's regression pin for the RunStarted-first guarantee
-/// on the WAL-REPLAY path — the one the fresh-run pins cannot see.
+/// The RunStarted-first guarantee on the WAL-REPLAY path — the one the
+/// fresh-run pins cannot see.
 ///
 /// The wrapper destination reports a part on every commit through the
 /// SPI listener, exactly like a file-writing connector. Run 1 crashes
 /// mid-commit, leaving a pending WAL span; run 2 recovers by REPLAY.
 /// The guarantee under test: the replay session is opened with NO
 /// listener, so nothing reaches the feed before RunStarted — rewiring
-/// the replay session's forwarder (the round-1 defect) turns this pin
-/// red.
+/// the replay session's forwarder turns this pin red.
 mod run_started_first_on_replay {
     use super::*;
     use rdlt_connector::arrow::RecordBatch;

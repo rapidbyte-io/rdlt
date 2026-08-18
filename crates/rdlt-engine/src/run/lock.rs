@@ -1,4 +1,4 @@
-//! Workdir lock: one process per pipeline workdir (embedder-api.md R5).
+//! Workdir lock: one process per pipeline workdir.
 //!
 //! OS advisory locks release automatically on process death — a crashed run never
 //! blocks its own recovery (a lock *file* existence check would).

@@ -1,3 +1,6 @@
+//! The engine handle: one pipeline execution, its event stream and its
+//! cancellation token.
+
 use std::sync::Arc;
 
 use rdlt_connector::destination::Destination;
@@ -8,11 +11,12 @@ use rdlt_core::event::PipelineEvent;
 use rdlt_core::report;
 use tokio_util::sync::CancellationToken;
 
-use crate::{EngineConfig, runtime};
+use crate::config::Config;
+use crate::run::retry;
 
 /// One pipeline execution: consumes itself on [`Engine::run`].
 pub struct Engine {
-    config: EngineConfig,
+    config: Config,
     source: Arc<dyn Source>,
     destination: Arc<dyn Destination>,
     cancel: CancellationToken,
@@ -24,8 +28,8 @@ pub struct Engine {
 /// oldest events (by design — observability never backpressures data movement).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
-/// Typed observability stream (embedder-api.md O1): every [`PipelineEvent`] in causal
-/// order. Slow consumers lose oldest events rather than backpressuring the pipeline —
+/// Typed observability stream: every [`PipelineEvent`] in causal order. Slow
+/// consumers lose oldest events rather than backpressuring the pipeline —
 /// observability must never slow data movement.
 #[derive(Debug)]
 pub struct EventStream {
@@ -62,7 +66,7 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
-    pub fn new(config: EngineConfig, source: impl Source, destination: impl Destination) -> Self {
+    pub fn new(config: Config, source: impl Source, destination: impl Destination) -> Self {
         Self {
             config,
             source: Arc::new(source),
@@ -89,7 +93,7 @@ impl Engine {
     /// Run to completion (resumable, cancel-safe). Consumes the engine — a run is not
     /// restartable in place; construct a new one to run again.
     pub async fn run(self) -> Result<report::Run, Error> {
-        runtime::run::run(
+        retry::run(
             self.config,
             self.source,
             self.destination,

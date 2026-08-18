@@ -1,4 +1,4 @@
-//! End-to-end shredder property test (feature 003 US1, research R23).
+//! End-to-end shredder property test.
 //!
 //! Arbitrary nested documents through the FULL engine path, asserting the
 //! invariants no example test can pin down exhaustively:
@@ -19,7 +19,8 @@ use std::collections::BTreeSet;
 use proptest::prelude::*;
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::schema;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::{Map, Value, json};
 
@@ -160,7 +161,7 @@ fn run_engine(batches: Vec<Vec<Value>>) -> memory::Destination {
             .collect(),
     );
     let engine = Engine::new(
-        EngineConfig::new("prop"),
+        Config::new("prop"),
         memory::Source::new(vec![stream]),
         dest.clone(),
     );

@@ -3,8 +3,8 @@
 //! it; [`parse`] lands a pushed slab into it through serde's own parser under
 //! the row, value and depth budgets.
 
-pub(crate) mod parse;
-pub(crate) mod slab;
+mod parse;
+mod slab;
 
 pub(crate) use parse::ParseRowsError;
 pub(crate) use slab::{Arena, Node, NodeId};

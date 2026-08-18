@@ -69,7 +69,7 @@ mod tests {
     use rdlt_core::id::StreamName;
 
     use super::*;
-    use crate::runtime::STAGE_MSG_CAPACITY;
+    use crate::run::once::STAGE_MSG_CAPACITY;
 
     fn batch_of(rows: usize) -> RecordBatch {
         use arrow::array::Int64Array;

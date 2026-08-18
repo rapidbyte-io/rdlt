@@ -4,10 +4,12 @@ The deep module: shred → schema → WAL → load, orchestrated over
 byte-bounded channels.
 
 Everything below `lib.rs` is `pub(crate)` — unit-tested privately and free to
-churn without semver cost. The public surface is `Engine` / `EngineConfig`
-plus the vocabulary re-exported from
-[`rdlt-core`](https://docs.rs/rdlt-core). Most users want the
-[`rdlt`](https://docs.rs/rdlt) facade instead of depending on this directly.
+churn without semver cost. The public surface is `engine::Engine` /
+`config::Config` (plus the `policy`, `naming` and `identity` semantics an
+embedder names); the vocabulary — ids, schemas, cursors, reports, errors —
+is [`rdlt-core`](https://docs.rs/rdlt-core)'s, reached by its own paths, not
+re-exported here. Most users want the [`rdlt`](https://docs.rs/rdlt) facade
+instead of depending on this directly.
 
 ## The stages
 

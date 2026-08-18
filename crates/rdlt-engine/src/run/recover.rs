@@ -9,47 +9,11 @@ use rdlt_core::id::LoadId;
 use rdlt_core::report::ResumedFrom;
 use rdlt_core::state::StateDoc;
 
-use crate::EngineConfig;
+use crate::blocking::off_runtime;
 use crate::classify::classify_dest_error;
+use crate::config::Config;
 use crate::wal::scan::{self, ScanOutcome};
 use crate::wal::{dir, replay};
-
-/// Run one piece of blocking file work off the async runtime.
-///
-/// Recovery is entirely file I/O — reading the manifest, opening segments,
-/// decoding Arrow IPC — and rdlt is an EMBEDDABLE engine, so this future may
-/// be polled on a host's runtime alongside the host's own work. Doing that
-/// I/O inline occupies a worker thread for the whole of recovery; on a
-/// single-threaded runtime it stalls the host completely. Neither is ours to
-/// spend.
-///
-/// Panic policy, both halves: a panic that reaches THIS seam is re-raised on
-/// the calling thread — but the DECODE seats never let one reach it. Replay
-/// wraps every Arrow IPC decode in `catch_unwind` INSIDE the closure it hands
-/// over (`segment::caught_decode` and the per-batch step), because arrow's
-/// decoder has panic arms reachable from malformed but FlatBuffer-valid
-/// segment bytes, and WAL bytes are external recovery input — such an unwind
-/// IS damaged data and belongs on the same degrade-to-re-extraction path as
-/// an ordinary decode error. For everything else that crosses here (manifest
-/// line reads, fsyncs, filesystem walks) a panic is a bug in our own logic,
-/// not corrupt data, and folding it into "degrade to re-extraction" would
-/// hide the defect behind a slower correct path — so the default posture
-/// stays re-raise, and a decode seat opts out at its closure, never here.
-pub(crate) async fn off_runtime<T, F>(work: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::task::spawn_blocking(work).await {
-        Ok(value) => value,
-        Err(joined) => match joined.try_into_panic() {
-            Ok(panic) => std::panic::resume_unwind(panic),
-            // spawn_blocking tasks are never cancelled by this code, so a
-            // non-panic join failure means the runtime itself is shutting down.
-            Err(_) => panic!("WAL recovery task cancelled: runtime is shutting down"),
-        },
-    }
-}
 
 /// Open the destination session, recover persisted pipeline state, and replay
 /// the uncommitted WAL span of a crashed run — or degrade to cursor
@@ -57,7 +21,7 @@ where
 /// state to resume from, and how far recovery got.
 pub(super) async fn recover_wal(
     destination: &dyn Destination,
-    config: &EngineConfig,
+    config: &Config,
     load_id: &LoadId,
     wal_dir: Option<&Path>,
     capabilities: Capabilities,
@@ -204,7 +168,7 @@ pub(super) enum WalResidue {
 /// anything is resumed from it.
 async fn read_state_checked(
     session: &mut dyn LoadSession,
-    config: &EngineConfig,
+    config: &Config,
 ) -> Result<Option<StateDoc>, Error> {
     let recovered = session
         .read_state(&config.pipeline)
@@ -235,7 +199,7 @@ async fn read_state_checked(
 /// should fall back to cursor re-extraction (slower, never wrong).
 async fn replay_span(
     destination: &dyn Destination,
-    config: &EngineConfig,
+    config: &Config,
     wal_dir: &Path,
     span: scan::RecoverySpan,
     capabilities: Capabilities,
@@ -257,7 +221,7 @@ async fn replay_span(
     // From here on, `session` exists and every failure path below is an
     // ABANDONMENT of it (this attempt's replay
     // fails and falls back to cursor re-extraction) — best-effort close
-    // before propagating, same reasoning as `drain_loader`'s abandonment
+    // before propagating, same reasoning as the loader drive's abandonment
     // paths: the lease protects concurrent sessions, not a dead attempt.
     let mut state = match read_state_checked(&mut *session, config).await {
         Ok(recovered) => recovered
@@ -282,7 +246,7 @@ async fn replay_span(
             // The replay's own commit just landed — this session's last
             // (and only) commit succeeded, so its orderly STRICT close
             // belongs here, symmetric with the run's own session in
-            // `drain_loader`. Non-retryable and prefixed like
+            // the loader drive. Non-retryable and prefixed like
             // `Loader::close`: the
             // commit is already durable, so a close failure here can
             // never mean lost data, and retrying the whole run would

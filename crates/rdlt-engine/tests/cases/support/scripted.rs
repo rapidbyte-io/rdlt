@@ -1,8 +1,8 @@
-//! A scripted source with the two things the shipped memory source
-//! deliberately lacks: injected failures (transient at the start of a
-//! read, transient or fatal mid-stream, pacing delays) that the retry,
-//! crash and cancellation suites drive, and a log of the `since` cursor
-//! every `read` received, which the resume suites assert against.
+//! A scripted source: the testkit's memory stream (with its `fatal_after`
+//! and `batch_delay` knobs) plus the two failures only the engine's retry
+//! suites drive — a transient error at the start of a read, or transiently
+//! mid-stream on the first attempt — and a log of the `since` cursor every
+//! `read` received, which the resume suites assert against.
 
 use std::sync::{Arc, Mutex};
 
@@ -12,18 +12,13 @@ use rdlt_connector::source::{ReadRequest, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;
 use rdlt_core::cursor::Cursor;
 use rdlt_core::id::StreamName;
-use rdlt_testkit::memory::Batch;
+use rdlt_testkit::memory::{self, Batch};
 
-/// One declared stream, its batches, and the failures scripted into it.
+/// One declared stream — the testkit's, with the engine-only failures
+/// scripted on top.
 #[derive(Debug, Clone)]
 pub(crate) struct Stream {
-    spec: StreamSpec,
-    batches: Vec<Batch>,
-    /// Return a FATAL error after this many batches were pushed (the run
-    /// aborts and does not retry).
-    fatal_after: Option<usize>,
-    /// Sleep before each batch — pacing for cancellation tests.
-    batch_delay: Option<std::time::Duration>,
+    inner: memory::Stream,
     /// Fail with a Transient error at the start of the first N `read`
     /// attempts (the engine must retry; the source never does).
     transient_start_failures: u32,
@@ -37,10 +32,7 @@ impl Stream {
     /// A stream pushing `batches` with no injected failures.
     pub(crate) fn new(spec: StreamSpec, batches: Vec<Batch>) -> Self {
         Self {
-            spec,
-            batches,
-            fatal_after: None,
-            batch_delay: None,
+            inner: memory::Stream::new(spec, batches),
             transient_start_failures: 0,
             transient_fail_after_once: None,
         }
@@ -60,13 +52,13 @@ impl Stream {
 
     /// Fail fatally after `count` batches (the run aborts, no retry).
     pub(crate) fn fatal_after(mut self, count: usize) -> Self {
-        self.fatal_after = Some(count);
+        self.inner = self.inner.fatal_after(count);
         self
     }
 
     /// Sleep `delay` before each batch (cancellation pacing).
     pub(crate) fn batch_delay(mut self, delay: std::time::Duration) -> Self {
-        self.batch_delay = Some(delay);
+        self.inner = self.inner.batch_delay(delay);
         self
     }
 }
@@ -103,7 +95,7 @@ impl rdlt_connector::source::Source for Source {
     }
 
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
-        Ok(self.streams.iter().map(|s| s.spec.clone()).collect())
+        Ok(self.streams.iter().map(|s| s.inner.spec.clone()).collect())
     }
 
     async fn read(&self, mut req: ReadRequest) -> Result<(), SourceError> {
@@ -120,7 +112,7 @@ impl rdlt_connector::source::Source for Source {
         let stream = self
             .streams
             .iter()
-            .find(|s| s.spec.name == req.stream.name)
+            .find(|s| s.inner.spec.name == req.stream.name)
             .ok_or_else(|| SourceError::fatal(format!("unknown stream {}", req.stream.name)))?;
 
         if attempt <= stream.transient_start_failures {
@@ -136,6 +128,7 @@ impl rdlt_connector::source::Source for Source {
             None => 0,
             Some(since) => {
                 match stream
+                    .inner
                     .batches
                     .iter()
                     .position(|b| b.checkpoint.as_ref() == Some(since))
@@ -151,8 +144,8 @@ impl rdlt_connector::source::Source for Source {
         };
 
         let mut pushed = 0usize;
-        for batch in &stream.batches[start..] {
-            if let Some(delay) = stream.batch_delay {
+        for batch in &stream.inner.batches[start..] {
+            if let Some(delay) = stream.inner.batch_delay {
                 tokio::time::sleep(delay).await;
             }
             // A closed channel is cancellation, not an error.
@@ -165,7 +158,7 @@ impl rdlt_connector::source::Source for Source {
                 return Ok(());
             }
             pushed += 1;
-            if stream.fatal_after == Some(pushed) {
+            if stream.inner.fatal_after == Some(pushed) {
                 return Err(SourceError::fatal("injected source crash"));
             }
             if attempt == 1 && stream.transient_fail_after_once == Some(pushed) {

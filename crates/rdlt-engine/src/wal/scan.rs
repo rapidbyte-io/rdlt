@@ -2089,7 +2089,7 @@ mod tests {
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let scanner = tokio::spawn(async move {
                 let _ = started_tx.send(());
-                crate::runtime::recover::off_runtime(move || scan_dir(&path)).await
+                crate::blocking::off_runtime(move || scan_dir(&path)).await
             });
             started_rx.await.expect("scan started");
             let before = ticks.load(Ordering::Relaxed);

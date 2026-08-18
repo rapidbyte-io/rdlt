@@ -298,7 +298,7 @@ impl Loader {
             LoadItem::Checkpoint { stream, cursor } => {
                 self.state.cursors.insert(stream.clone(), cursor.clone());
                 // The stream's root table via the crate's ONE attribution
-                // mapping — the same call `runtime::validate` proves
+                // mapping — the same call `run::validate` proves
                 // injective and the recovery scan joins checkpoints on.
                 self.uncovered_roots.remove(&crate::lineage::root_table(
                     &stream,
@@ -340,7 +340,7 @@ impl Loader {
                 // mid-run commits need it gone first — only `finish`'s
                 // trailing commit breaks the cycle). That must not be
                 // SILENT: the first deferred trigger warns once, naming the
-                // blocking roots, and `runtime::validate` warns at plan time
+                // blocking roots, and `run::validate` warns at plan time
                 // when the stream set mixes snapshot and cursored streams.
                 if self.policy_triggers() {
                     if self.uncovered_roots.is_empty() {
@@ -495,7 +495,7 @@ impl Loader {
     }
 
     /// The session's orderly end on the SUCCESS path — called by
-    /// `drain_loader` exactly once, after [`Loader::finish`]'s last
+    /// the run's loader drive exactly once, after [`Loader::finish`]'s last
     /// commit has already succeeded. Every commit is ALREADY durable by
     /// the time this runs, so a close failure here can never mean lost
     /// data — it means some OTHER resource (a lock, a lease document,
@@ -631,7 +631,7 @@ mod tests {
         Policies {
             commit,
             batch: rdlt_core::commit::BatchPolicy::default(),
-            max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
+            max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
         }
     }
 

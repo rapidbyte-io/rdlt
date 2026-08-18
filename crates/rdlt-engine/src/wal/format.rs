@@ -169,7 +169,7 @@ pub(crate) fn segment_file_name(load_id: &LoadId, seq: u64) -> String {
 /// absolute component, and `../` escapes it, so a forged manifest could
 /// otherwise point replay at any readable file. The check is derived from
 /// what the writer actually produces — [`segment_file_name`] under the
-/// run's own load id (minted hex-and-dash in `runtime::run::new_load_id`;
+/// run's own load id (minted hex-and-dash in `run::retry::new_load_id`;
 /// the manifest's `Run` header carries it) — so path punctuation of any
 /// kind, a foreign load prefix, or a malformed sequence all mean the line
 /// did not come from a writer. `{seq:06}` is a MINIMUM width: six or more

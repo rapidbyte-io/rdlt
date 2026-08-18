@@ -6,7 +6,8 @@
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::error::Error;
 use rdlt_core::event::PipelineEvent;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -22,7 +23,7 @@ async fn transient_failures_retry_exactly_and_are_counted() {
         scripted::Stream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(2),
     ]);
     let since_log = source.since_log();
-    let report = Engine::new(EngineConfig::new("retry"), source, dest.clone())
+    let report = Engine::new(Config::new("retry"), source, dest.clone())
         .run()
         .await
         .expect("succeeds on attempt 3");
@@ -39,7 +40,7 @@ async fn transient_failures_retry_exactly_and_are_counted() {
         scripted::Stream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(99),
     ]);
     let since_log = source.since_log();
-    let err = Engine::new(EngineConfig::new("retry-out"), source, dest)
+    let err = Engine::new(Config::new("retry-out"), source, dest)
         .run()
         .await
         .expect_err("budget exhausted");
@@ -57,7 +58,7 @@ async fn transient_failures_retry_exactly_and_are_counted() {
     );
 }
 
-/// FR-014: the engine retries transient failures with backoff; connectors never
+/// The engine retries transient failures with backoff; connectors never
 /// retry. Retries surface in the report AND as events — never silent.
 #[tokio::test]
 async fn transient_source_failures_are_retried_and_counted() {
@@ -70,7 +71,7 @@ async fn transient_source_failures_are_retried_and_counted() {
         .transient_start_failures(2),
     ]);
 
-    let engine = Engine::new(EngineConfig::new("retry"), source, dest.clone());
+    let engine = Engine::new(Config::new("retry"), source, dest.clone());
     let mut events = engine.events();
     let report = engine.run().await.expect("run succeeds after retries");
 
@@ -97,18 +98,16 @@ async fn retry_budget_exhaustion_is_a_classified_error() {
         )
         .transient_start_failures(100),
     ]);
-    let err = Engine::new(EngineConfig::new("retry-exhaust"), source, dest)
+    let err = Engine::new(Config::new("retry-exhaust"), source, dest)
         .run()
         .await
         .expect_err("must eventually fail");
     assert!(matches!(err, rdlt_core::error::Error::Source { .. }));
 }
 
-/// 037 US2 fix round 2 (I1's decision + M5's vacuity guard),
-/// superseding fix round 1's `a_failed_run_never_closes_its_session`:
-/// the lease (or whatever a destination's close releases) protects
-/// CONCURRENT sessions, not dead ones, so a failed run now DOES close
-/// its session — best-effort, from `drain_loader`'s abandonment path —
+/// The lease (or whatever a destination's close releases) protects
+/// CONCURRENT sessions, not dead ones, so a failed run DOES close its
+/// session — best-effort, from the loader drive's abandonment path —
 /// rather than leaving it for a foreign process's TTL wait.
 ///
 /// NOT `closes() == 1`: `transient_start_failures(100)` fails the
@@ -129,7 +128,7 @@ async fn a_failed_run_closes_best_effort() {
             .transient_start_failures(100),
     ]);
     let err = Engine::new(
-        EngineConfig::new("retry-exhaust-closes-best-effort"),
+        Config::new("retry-exhaust-closes-best-effort"),
         source,
         dest.clone(),
     )
@@ -178,7 +177,7 @@ async fn mid_stream_transient_retry_does_not_duplicate_staged_rows() {
         )
         .transient_fail_after_once(2), // …then the source dies transiently
     ]);
-    let mut config = EngineConfig::new("retry-nodup");
+    let mut config = Config::new("retry-nodup");
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let report = Engine::new(config, source, dest.clone())
@@ -286,7 +285,7 @@ async fn transient_destination_failures_retry_and_are_bounded() {
         remaining: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(2)),
     };
     let source = three_batch_source();
-    let report = Engine::new(EngineConfig::new("dest-retry"), source, dest)
+    let report = Engine::new(Config::new("dest-retry"), source, dest)
         .run()
         .await
         .expect("succeeds once the transient window passes");
@@ -298,7 +297,7 @@ async fn transient_destination_failures_retry_and_are_bounded() {
         remaining: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
     };
     let source = three_batch_source();
-    let err = Engine::new(EngineConfig::new("dest-retry-out"), source, dest)
+    let err = Engine::new(Config::new("dest-retry-out"), source, dest)
         .run()
         .await
         .expect_err("budget exhausted");
@@ -353,7 +352,7 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
     let source = three_batch_source();
     let err = tokio::time::timeout(
         BOUND,
-        Engine::new(EngineConfig::new("dest-bounded"), source, dest).run(),
+        Engine::new(Config::new("dest-bounded"), source, dest).run(),
     )
     .await
     .expect("the retry budget must TERMINATE — an unbounded guard hangs here")
@@ -385,7 +384,7 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
     let err = tokio::time::timeout(
         BOUND,
         Engine::new(
-            EngineConfig::new("source-bounded"),
+            Config::new("source-bounded"),
             source,
             memory::Destination::new(),
         )

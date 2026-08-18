@@ -121,12 +121,12 @@ pub(super) struct StreamPlan {
     pub(super) mode: WriteMode,
     pub(super) root_table: TableName,
     /// The RUN's one in-flight read budget, shared by every stream's
-    /// records channel (4H2/4H3): per-stream budgets multiplied the peak
-    /// memory cap by the stream count — the one axis discovery declares.
+    /// records channel: per-stream budgets would multiply the peak memory
+    /// cap by the stream count — the one axis discovery declares.
     pub(super) records_budget: SharedBudget,
     pub(super) load_id: LoadId,
     pub(super) policy: SchemaPolicy,
-    /// The batch-assembly cell budget (`EngineConfig::with_max_batch_cells`).
+    /// The batch-assembly cell budget (`config::Config::with_max_batch_cells`).
     pub(super) max_batch_cells: usize,
 }
 
@@ -241,8 +241,8 @@ pub(super) async fn stream_task(
                 }
                 // A send failure means the loader is gone — exit the push
                 // loop, like the Checkpoint arm does. Breaking only the
-                // item loop kept this task SHREDDING every remaining push
-                // of a run whose outcome was already decided (4I8).
+                // item loop would keep this task SHREDDING every remaining
+                // push of a run whose outcome was already decided.
                 let mut loader_gone = false;
                 for item in items {
                     if tx.send(item).await.is_err() {
@@ -264,8 +264,7 @@ pub(super) async fn stream_task(
                          `structured`",
                     ));
                 }
-                // The number the channel already metered at push (the
-                // wave-5 carry pattern, read side — round-7 fix): no
+                // The number the channel already metered at push: no
                 // re-walk, and BatchRead / the report totals charge the
                 // identical figure the budget did.
                 let (rows_read, payload_bytes) = (batch.num_rows() as u64, push_bytes as u64);
@@ -301,7 +300,7 @@ pub(super) async fn stream_task(
                     Ok(items) => items,
                     Err(e) => break Err(e),
                 };
-                // Same loader-gone exit as the RawJson arm (4I8): stop
+                // Same loader-gone exit as the RawJson arm: stop
                 // shredding pushes whose items can never be loaded.
                 let mut loader_gone = false;
                 for item in items {

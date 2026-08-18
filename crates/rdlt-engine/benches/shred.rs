@@ -1,4 +1,4 @@
-//! Shredder/engine throughput microbench (T063): nested-JSON rows through the full
+//! Shredder/engine throughput microbench: nested-JSON rows through the full
 //! engine (shred → channels → memory destination), reported as rows/s.
 //!
 //! Run: `cargo bench -p rdlt-engine`
@@ -6,7 +6,8 @@
 //! baseline first, same data, same hardware — research.md R12).
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -45,7 +46,7 @@ fn bench_shred(c: &mut Criterion) {
             );
             let dest = memory::Destination::new();
             let report = runtime
-                .block_on(Engine::new(EngineConfig::new("bench"), source, dest).run())
+                .block_on(Engine::new(Config::new("bench"), source, dest).run())
                 .expect("run");
             assert!(report.total_rows() >= ROWS as u64);
         })

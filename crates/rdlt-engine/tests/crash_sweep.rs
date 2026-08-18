@@ -1,4 +1,4 @@
-//! Deterministic crash-point sweep (feature 003 US1, research R20, gate G2).
+//! Deterministic crash-point sweep.
 //!
 //! For EVERY registered fail point: arm it (error-return AND panic), run a
 //! multi-commit pipeline until it dies, run again still-armed (a crash DURING
@@ -6,7 +6,7 @@
 //! 100 source rows every single time, in every write disposition the substrate
 //! serves.
 //!
-//! The substrates are in-repo since the connectors moved out (044): the
+//! The substrates are in-repo: the
 //! testkit's in-memory destination carries all three dispositions (and the
 //! keyed structured-merge arm), and the reference connector's jsonl
 //! destination carries the durable-storage arm — real part files, a real
@@ -27,7 +27,8 @@ use rdlt_connector::destination::Destination;
 use rdlt_connector::source::{Source, StreamSpec};
 use rdlt_core::commit::WriteMode;
 use rdlt_core::failpoint::fail;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -62,8 +63,8 @@ fn source() -> memory::Source {
     memory::Source::new(vec![memory::Stream::new(StreamSpec::new("s"), batches)])
 }
 
-fn config(workdir: &Path, mode: &WriteMode) -> EngineConfig {
-    let mut config = EngineConfig::new("sweep");
+fn config(workdir: &Path, mode: &WriteMode) -> Config {
+    let mut config = Config::new("sweep");
     config = config.with_workdir(workdir.to_path_buf());
     config = config.with_write_mode(mode.clone());
     config
@@ -227,7 +228,7 @@ fn count_reference_rows(out: &PathBuf) -> u64 {
 /// itself (that would be circular): every site found in src/ must appear in
 /// ENGINE_POINTS, count-exact. Connector registries (pq.*, duck.*, pg.* …)
 /// are pinned in their own crates' crash_sweep suites, which moved with the
-/// crates to the rdlt-connectors repository (044).
+/// crates to the rdlt-connectors repository.
 #[test]
 fn sweep_covers_entire_registry() {
     // Read the sources, not the const. The scanner is shared with every
@@ -238,7 +239,7 @@ fn sweep_covers_entire_registry() {
     rdlt_testkit::scanner::assert_registry_matches_sources(&src, &[ENGINE_POINTS]);
 }
 
-// ---- Review F11 (re-derived at 044): the KEYED structured-merge arm under
+// ---- The KEYED structured-merge arm under
 // the engine's fail points — the shredded sweeps above exercise only the
 // identity-merge branch (contract merge-structured.md conformance). The
 // merge-capable substrate is the in-memory destination now; the SQL

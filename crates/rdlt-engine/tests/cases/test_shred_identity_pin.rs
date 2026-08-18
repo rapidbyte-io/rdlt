@@ -1,4 +1,4 @@
-//! Byte-exact golden pin for every emitted `_rdlt_id` (feature 019 US6, PI4).
+//! Byte-exact golden pin for every emitted `_rdlt_id`.
 //!
 //! `_rdlt_id` is PERSISTED. A destination that merges by identity matches
 //! yesterday's rows against today's ids, so a shift does not corrupt loudly —
@@ -57,7 +57,8 @@ use rdlt_connector::destination::Capabilities;
 
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::schema;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::{Value, json};
 
@@ -289,7 +290,7 @@ async fn run(case: &Case) -> memory::Destination {
             .with_json_type(true)
             .with_decimal(true),
     );
-    Engine::new(EngineConfig::new("identity-pin"), source, dest.clone())
+    Engine::new(Config::new("identity-pin"), source, dest.clone())
         .run()
         .await
         .unwrap_or_else(|e| panic!("case `{}` must shred: {e}", case.name));

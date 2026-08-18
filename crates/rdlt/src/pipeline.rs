@@ -16,7 +16,8 @@ use crate::policy::SchemaPolicy;
 use crate::report;
 use crate::sdk::spi::destination::Destination;
 use crate::sdk::spi::source::Source;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 
 /// Typestate marker: no source/destination provided yet.
 #[derive(Debug)]
@@ -33,7 +34,7 @@ pub struct Missing;
 /// ```
 #[derive(Debug)]
 pub struct Builder<S, D> {
-    config: EngineConfig,
+    config: Config,
     source: S,
     destination: D,
 }
@@ -41,7 +42,7 @@ pub struct Builder<S, D> {
 impl Builder<Missing, Missing> {
     pub(crate) fn new(pipeline: impl Into<PipelineId>) -> Self {
         Self {
-            config: EngineConfig::new(pipeline),
+            config: Config::new(pipeline),
             source: Missing,
             destination: Missing,
         }

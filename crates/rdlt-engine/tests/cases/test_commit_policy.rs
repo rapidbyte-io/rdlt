@@ -3,7 +3,8 @@
 //! class it kills.
 
 use rdlt_core::commit::{BatchPolicy, CommitPolicy};
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 
 use super::common::three_batch_source;
@@ -14,7 +15,7 @@ use super::common::three_batch_source;
 #[tokio::test]
 async fn commit_policy_boundaries_are_exact() {
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("policy");
+    let mut config = Config::new("policy");
     config = config.with_commit_policy(CommitPolicy::every_checkpoints(2));
     let report = Engine::new(config, three_batch_source(), dest.clone())
         .run()
@@ -31,7 +32,7 @@ async fn commit_policy_boundaries_are_exact() {
     // `LoadItem::byte_size` (see the note on
     // `report_counters_are_exact_and_clean_runs_emit_no_discards`).
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("policy-bytes");
+    let mut config = Config::new("policy-bytes");
     config = config.with_commit_policy(CommitPolicy::every_bytes(1));
     let report = Engine::new(config, three_batch_source(), dest.clone())
         .run()
@@ -55,7 +56,7 @@ async fn commit_policy_boundaries_are_exact() {
 async fn batch_policy_coalesces_writes_and_loses_nothing() {
     // Baseline: no policy, one write per source batch.
     let dest = memory::Destination::new();
-    let config = EngineConfig::new("batch-none");
+    let config = Config::new("batch-none");
     let report = Engine::new(config, three_batch_source(), dest.clone())
         .run()
         .await
@@ -78,7 +79,7 @@ async fn batch_policy_coalesces_writes_and_loses_nothing() {
     // correct behaviour and a real trap: a large `batch_policy` buys
     // nothing against a tight `commit_policy`.
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("batch-coalesced");
+    let mut config = Config::new("batch-coalesced");
     config = config
         .with_batch_policy(BatchPolicy::every_rows(1_000_000))
         .with_commit_policy(CommitPolicy::every_checkpoints(1_000_000));
@@ -113,7 +114,7 @@ async fn batch_policy_coalesces_writes_and_loses_nothing() {
 #[tokio::test]
 async fn accumulated_rows_are_written_before_each_commit() {
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("batch-vs-commit");
+    let mut config = Config::new("batch-vs-commit");
     // A threshold far above the whole run, so nothing would ever
     // flush on its own — only the commit boundary can force it.
     config = config
@@ -140,7 +141,7 @@ async fn accumulated_rows_are_written_before_each_commit() {
 }
 
 /// A schema Delta forces the ACCUMULATED buffer out BEFORE the wider
-/// table is ensured (045 external findings, GROK 4): the loader's own
+/// table is ensured: the loader's own
 /// invariant — "a schema change forces the buffer out first" — must
 /// hold at the Delta, not one batch later. A destination that widens
 /// eagerly (DDL, file formats with per-part schemas) would otherwise
@@ -244,7 +245,7 @@ mod delta_flushes_pending_first {
             ops: Arc::new(Mutex::new(Vec::new())),
         };
         let ops_handle = Arc::clone(&dest.ops);
-        let mut config = EngineConfig::new("delta-flush");
+        let mut config = Config::new("delta-flush");
         // Accumulate everything: only a schema change (or the end of
         // the run) may force a write out.
         config = config

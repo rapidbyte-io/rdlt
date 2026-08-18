@@ -10,7 +10,7 @@ use rdlt_core::error::Error;
 use rdlt_core::id::{StreamName, TableName};
 use rdlt_core::types::LogicalType;
 
-use crate::EngineConfig;
+use crate::config::Config;
 
 /// Rule 1: `a`'s table plus a trailing `_` equals `b`'s table — a
 /// `_`-leading source field mints the same child table under either root.
@@ -40,13 +40,13 @@ fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str)
 pub(super) use crate::lineage::root_table;
 
 /// The mixed cursor-less/cursored advisory — CONDITIONAL truth, by
-/// design (round-4 fix): a stream declaring no `cursor_field` MAY be a
+/// design: a stream declaring no `cursor_field` MAY be a
 /// snapshot stream that never checkpoints, but it may equally
 /// checkpoint through another mechanism (postgres CDC streams declare
 /// no cursor field yet checkpoint via LSN), and the declaration alone
 /// cannot tell them apart at plan time. So the advisory says what is
 /// conditionally true — IF such a stream never checkpoints, mid-run
-/// commits defer for the whole run (the loader's T7E coverage gate) —
+/// commits defer for the whole run (the loader's coverage gate) —
 /// and defers the verdict to the loader's own run-time warning, which
 /// fires on what actually checkpoints and is the authoritative signal.
 /// `Some(advisory)` exactly when the stream set mixes both kinds; pure
@@ -58,17 +58,15 @@ fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
         .filter(|s| s.cursor_field.is_none())
         .map(|s| s.name.as_str())
         .collect();
-    // Fires for ANY multi-stream pipeline with a cursor-less member
-    // (round-7 fix: the all-cursorless arm was suppressed, silencing
-    // the CDC-beside-snapshot shape whose commits defer all run); a
-    // single-stream pipeline stays silent — there is no co-stream to
-    // defer against.
+    // Fires for ANY multi-stream pipeline with a cursor-less member —
+    // the all-cursorless CDC-beside-snapshot shape defers its commits
+    // all run too; a single-stream pipeline stays silent — there is no
+    // co-stream to defer against.
     if cursorless.is_empty() || streams.len() < 2 {
         return None;
     }
-    // Each arm's opening sentence tells its own truth (round-8 fix:
-    // the all-cursorless arm borrowed the mixed arm's "beside cursored
-    // streams" — false when zero cursored streams exist); the deferral
+    // Each arm's opening sentence tells its own truth ("beside cursored
+    // streams" is false when zero cursored streams exist); the deferral
     // consequence after it is one shape for both.
     let opening = if cursorless.len() == streams.len() {
         format!(
@@ -105,7 +103,7 @@ fn mixed_snapshot_advisory(streams: &[StreamSpec]) -> Option<String> {
 /// snapshot/cursored ADVISORY (a warning, never a refusal — the shape
 /// is legal and the deferral is correct).
 pub(super) fn validate_streams(
-    config: &EngineConfig,
+    config: &Config,
     streams: &[StreamSpec],
     capabilities: Capabilities,
     destination: &dyn Destination,
@@ -121,7 +119,7 @@ pub(super) fn validate_streams(
         )));
     }
 
-    // 5M6: `ident_rules.max_len` drives the naming probe loop — an
+    // `ident_rules.max_len` drives the naming probe loop — an
     // exhaustible bound makes its assert a data-reachable host panic.
     // The client validates wire-declared capabilities at the handshake;
     // this seat covers IN-PROCESS destinations, so every path into the
@@ -133,7 +131,7 @@ pub(super) fn validate_streams(
         )));
     }
 
-    // The stream-count cap (4H2) sits BEFORE everything per-stream: nothing
+    // The stream-count cap sits BEFORE everything per-stream: nothing
     // below may scale unboundedly with a source-declared list length.
     if streams.len() > config.max_streams_per_source {
         return Err(Error::config(format!(
@@ -141,7 +139,7 @@ pub(super) fn validate_streams(
              costs plan-time validation and its own share of the run's in-flight budget, \
              so the one discovery axis a source controls directly is bounded like every \
              other; an honestly larger discovery can raise the cap with \
-             `EngineConfig::with_max_streams_per_source` (the facade's \
+             `config::Config::with_max_streams_per_source` (the facade's \
              `pipeline::Builder::max_streams_per_source` plumbs the same knob)",
             streams.len(),
             config.max_streams_per_source
@@ -249,10 +247,10 @@ pub(super) fn validate_streams(
     // 2, `__` is A's separator plus that leading `_`); any other `s`
     // mismatches at the boundary character right after A and cannot
     // collide. Both rules are PREFIX-SHAPED, so membership questions
-    // against the root set answer them without a pairwise scan (4H2 —
-    // the O(S²) loop with four `format!`s per pair turned one large
-    // `streams()` reply into hours of synchronous CPU before any budget
-    // or deadline could engage):
+    // against the root set answer them without a pairwise scan (an O(S²)
+    // loop with four `format!`s per pair would turn one large `streams()`
+    // reply into hours of synchronous CPU before any budget or deadline
+    // could engage):
     //
     // - rule 1 fires iff some root ends in `_` and that root minus the
     //   trailing `_` is also a root;
@@ -309,7 +307,7 @@ mod hint_validation_tests {
             .with_type_hint("amount", LogicalType::Decimal { precision, scale });
         let dest = memory::Destination::new();
         validate_streams(
-            &EngineConfig::new("hints"),
+            &Config::new("hints"),
             std::slice::from_ref(&spec),
             dest.capabilities(),
             &dest,
@@ -336,12 +334,7 @@ mod hint_validation_tests {
     fn check_streams(names: &[&str]) -> Result<(), Error> {
         let specs: Vec<_> = names.iter().map(|&name| StreamSpec::new(name)).collect();
         let dest = memory::Destination::new();
-        validate_streams(
-            &EngineConfig::new("streams"),
-            &specs,
-            dest.capabilities(),
-            &dest,
-        )
+        validate_streams(&Config::new("streams"), &specs, dest.capabilities(), &dest)
     }
 
     #[test]
@@ -421,50 +414,40 @@ mod hint_validation_tests {
         assert!(check_streams(&["?"]).is_ok());
     }
 
-    /// 4H2: the declared stream list is the one discovery axis a source
+    /// The declared stream list is the one discovery axis a source
     /// controls directly, so it is capped like every other axis — a typed
     /// plan-time refusal, before any per-stream work.
     #[test]
     fn a_source_declaring_more_streams_than_the_cap_is_refused() {
-        let specs: Vec<_> = (0..crate::DEFAULT_MAX_STREAMS_PER_SOURCE + 1)
+        let specs: Vec<_> = (0..Config::DEFAULT_MAX_STREAMS_PER_SOURCE + 1)
             .map(|index| StreamSpec::new(format!("s{index}")))
             .collect();
         let dest = memory::Destination::new();
-        let error = validate_streams(
-            &EngineConfig::new("streams"),
-            &specs,
-            dest.capabilities(),
-            &dest,
-        )
-        .expect_err("a stream list past the cap must refuse");
+        let error = validate_streams(&Config::new("streams"), &specs, dest.capabilities(), &dest)
+            .expect_err("a stream list past the cap must refuse");
         let text = error.to_string();
         assert!(
             text.contains("stream cap"),
             "the refusal names the cap: {text}"
         );
         assert!(
-            text.contains(&(crate::DEFAULT_MAX_STREAMS_PER_SOURCE + 1).to_string()),
+            text.contains(&(Config::DEFAULT_MAX_STREAMS_PER_SOURCE + 1).to_string()),
             "the refusal reports the declared count: {text}"
         );
         assert!(
             text.contains("with_max_streams_per_source"),
-            "the refusal names the operator override (5L9): {text}"
+            "the refusal names the operator override: {text}"
         );
 
-        let at_cap: Vec<_> = (0..crate::DEFAULT_MAX_STREAMS_PER_SOURCE)
+        let at_cap: Vec<_> = (0..Config::DEFAULT_MAX_STREAMS_PER_SOURCE)
             .map(|index| StreamSpec::new(format!("s{index}")))
             .collect();
-        validate_streams(
-            &EngineConfig::new("streams"),
-            &at_cap,
-            dest.capabilities(),
-            &dest,
-        )
-        .expect("exactly the cap validates");
+        validate_streams(&Config::new("streams"), &at_cap, dest.capabilities(), &dest)
+            .expect("exactly the cap validates");
 
-        // 5L9: the cap is a knob — an honestly larger discovery raises it.
-        let raised = EngineConfig::new("streams").with_max_streams_per_source(2048);
-        let over_default: Vec<_> = (0..crate::DEFAULT_MAX_STREAMS_PER_SOURCE + 1)
+        // The cap is a knob — an honestly larger discovery raises it.
+        let raised = Config::new("streams").with_max_streams_per_source(2048);
+        let over_default: Vec<_> = (0..Config::DEFAULT_MAX_STREAMS_PER_SOURCE + 1)
             .map(|index| StreamSpec::new(format!("s{index}")))
             .collect();
         validate_streams(&raised, &over_default, dest.capabilities(), &dest)
@@ -506,12 +489,12 @@ mod hint_validation_tests {
         assert!(check_streams(&["x__y__z"]).is_ok());
     }
 
-    fn no_workdir_config() -> EngineConfig {
-        EngineConfig::new("test")
+    fn no_workdir_config() -> Config {
+        Config::new("test")
     }
 
-    fn workdir_config() -> EngineConfig {
-        EngineConfig::new("test").with_workdir("/tmp/rdlt-test")
+    fn workdir_config() -> Config {
+        Config::new("test").with_workdir("/tmp/rdlt-test")
     }
 
     fn durable_identity_dest() -> memory::Destination {
@@ -519,7 +502,7 @@ mod hint_validation_tests {
             .with_capabilities(Capabilities::default().with_requires_durable_identity(true))
     }
 
-    fn check_with(config: EngineConfig, destination: memory::Destination) -> Result<(), Error> {
+    fn check_with(config: Config, destination: memory::Destination) -> Result<(), Error> {
         let spec = StreamSpec::new("s");
         validate_streams(
             &config,
@@ -566,11 +549,11 @@ mod hint_validation_tests {
         );
         let advisory = mixed_snapshot_advisory(&[cursorless("a"), cursorless("b")]).expect(
             "an all-cursor-less multi-stream pipeline warns too — a CDC stream beside a \
-             snapshot stream is exactly the shape whose commits defer all run (round-7 fix)",
+             snapshot stream is exactly the shape whose commits defer all run",
         );
         assert!(
             advisory.contains("no stream in this pipeline declares a cursor_field ([a, b])"),
-            "the all-cursor-less arm tells its own truth (round-8 fix): {advisory}"
+            "the all-cursor-less arm tells its own truth: {advisory}"
         );
         assert!(
             !advisory.contains("beside cursored streams"),
@@ -587,7 +570,7 @@ mod hint_validation_tests {
         assert!(mixed_snapshot_advisory(&[]).is_none());
     }
 
-    /// 5M6's engine seat: an IN-PROCESS destination declaring an
+    /// The engine seat: an IN-PROCESS destination declaring an
     /// exhaustible `max_len` refuses at plan time — the wire seat
     /// validates at the handshake, this one covers destinations that
     /// never cross a wire.
@@ -643,7 +626,7 @@ mod hint_validation_tests {
         let spec = StreamSpec::new("n".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1));
         let dest = memory::Destination::new();
         let error = validate_streams(
-            &EngineConfig::new("names"),
+            &Config::new("names"),
             std::slice::from_ref(&spec),
             dest.capabilities(),
             &dest,

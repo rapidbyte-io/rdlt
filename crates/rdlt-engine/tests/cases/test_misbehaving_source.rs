@@ -9,7 +9,8 @@ use rdlt_connector::error::SourceError;
 use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use rdlt_connector::spec::ConnectorSpec;
 use rdlt_core::error::Error;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::fixtures::batch_of;
 use rdlt_testkit::memory;
 
@@ -89,7 +90,7 @@ async fn a_typed_refusal_still_reaps_the_reader_task() {
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         Engine::new(
-            EngineConfig::new("refusal-cleanup"),
+            Config::new("refusal-cleanup"),
             RefusalThenParked { _alive: alive },
             memory::Destination::new(),
         )
@@ -114,7 +115,7 @@ async fn arrow_on_unstructured_stream_fails_typed_and_terminates() {
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         Engine::new(
-            EngineConfig::new("contract"),
+            Config::new("contract"),
             ArrowOnUnstructured,
             memory::Destination::new(),
         )

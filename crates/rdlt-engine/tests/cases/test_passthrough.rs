@@ -1,4 +1,4 @@
-//! US2 — Arrow passthrough (spec acceptance scenarios + contract clauses S7/E7).
+//! Arrow passthrough.
 //!
 //! Structured batches bypass the shredder: schema mapping + policy enforcement +
 //! `_rdlt_load_id` stamping only.
@@ -18,8 +18,9 @@ use rdlt_connector::spec::ConnectorSpec;
 use rdlt_core::error::Error;
 use rdlt_core::id::TableName;
 use rdlt_core::schema;
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
-use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -106,7 +107,7 @@ async fn passthrough_preserves_data_and_stamps_load_id() {
         batches: vec![batch_ab(&[1, 2], &["a", "b"])],
         declare_structured: true,
     };
-    let report = Engine::new(EngineConfig::new("pt"), source, dest.clone())
+    let report = Engine::new(Config::new("pt"), source, dest.clone())
         .run()
         .await
         .expect("run");
@@ -138,7 +139,7 @@ async fn passthrough_schema_evolves_under_default_policy() {
         batches: vec![batch_ab(&[1], &["a"]), batch_abc(&[2], &["b"], &["late"])],
         declare_structured: true,
     };
-    Engine::new(EngineConfig::new("pt-evolve"), source, dest.clone())
+    Engine::new(Config::new("pt-evolve"), source, dest.clone())
         .run()
         .await
         .expect("run");
@@ -160,7 +161,7 @@ async fn passthrough_freeze_rejects_before_publication() {
         batches: vec![batch_ab(&[1], &["a"]), batch_abc(&[2], &["b"], &["late"])],
         declare_structured: true,
     };
-    let mut config = EngineConfig::new("pt-freeze");
+    let mut config = Config::new("pt-freeze");
     config =
         config.with_schema_policy(SchemaPolicy::evolve().table("metrics", PolicyAction::Freeze));
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
@@ -191,7 +192,7 @@ async fn undeclared_arrow_push_is_rejected() {
         batches: vec![batch_ab(&[1], &["a"])],
         declare_structured: false,
     };
-    let err = Engine::new(EngineConfig::new("pt-undeclared"), source, dest)
+    let err = Engine::new(Config::new("pt-undeclared"), source, dest)
         .run()
         .await
         .expect_err("must reject");
@@ -208,7 +209,7 @@ async fn structured_segments_replay_from_wal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let inner = memory::Destination::new();
     let flaky = CrashDestination::new(inner.clone(), FaultPoint::BeforeCommit(2));
-    let mut config = EngineConfig::new("pt-crash");
+    let mut config = Config::new("pt-crash");
     config = config.with_workdir(dir.path().to_path_buf());
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
@@ -254,7 +255,7 @@ async fn merge_on_structured_stream_rejected_before_any_io() {
         batches: vec![batch_ab(&[1], &["a"])],
         declare_structured: true,
     };
-    let mut config = EngineConfig::new("pt-merge");
+    let mut config = Config::new("pt-merge");
     config = config.with_write_mode(rdlt_core::commit::WriteMode::Merge {
         key: vec!["id".into()],
     });
@@ -272,7 +273,7 @@ async fn merge_on_structured_stream_rejected_before_any_io() {
         batches: vec![batch_ab(&[1], &["a"])],
         declare_structured: true,
     };
-    Engine::new(EngineConfig::new("pt-append"), source, dest)
+    Engine::new(Config::new("pt-append"), source, dest)
         .run()
         .await
         .expect("append works");
@@ -299,7 +300,7 @@ async fn input_column_named_like_system_column_is_suffixed() {
         batches: vec![batch],
         declare_structured: true,
     };
-    Engine::new(EngineConfig::new("pt-sysname"), source, dest.clone())
+    Engine::new(Config::new("pt-sysname"), source, dest.clone())
         .run()
         .await
         .expect("run");
@@ -342,7 +343,7 @@ async fn cross_batch_narrowing_keeps_the_wide_type() {
         batches: vec![batch1, batch2],
         declare_structured: true,
     };
-    Engine::new(EngineConfig::new("pt-narrow"), source, dest.clone())
+    Engine::new(Config::new("pt-narrow"), source, dest.clone())
         .run()
         .await
         .expect("run");
@@ -398,8 +399,8 @@ impl Source for KeyedArrowSource {
     }
 }
 
-fn merge_config(pipeline: &str, key: &[&str]) -> EngineConfig {
-    let mut config = EngineConfig::new(pipeline);
+fn merge_config(pipeline: &str, key: &[&str]) -> Config {
+    let mut config = Config::new(pipeline);
     config = config.with_write_mode(rdlt_core::commit::WriteMode::Merge {
         key: key.iter().map(|k| (*k).to_string()).collect(),
     });
@@ -523,7 +524,7 @@ async fn null_in_merge_key_is_a_typed_write_time_error() {
 #[tokio::test]
 async fn a_refused_column_is_projected_away_and_counted_per_value() {
     let dest = memory::Destination::new();
-    let mut config = EngineConfig::new("passthrough-discard");
+    let mut config = Config::new("passthrough-discard");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardValue));
 
     // Batch 1 establishes {id, name}. Batch 2 adds TWO refused columns across

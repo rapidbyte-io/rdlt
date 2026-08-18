@@ -4,7 +4,7 @@ categories = [
     "asynchronous",
     "database",
 ]
-description = "rdlt engine: shredder, schema registry, WAL, state, runtime, loader (deep module)"
+description = "rdlt engine: shred, schema policy, write-ahead log and exactly-once load — one deep module"
 documentation = "https://docs.rs/rdlt-engine"
 keywords = [
     "arrow",

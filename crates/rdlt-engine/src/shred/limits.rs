@@ -27,7 +27,7 @@ pub(crate) const MAX_TABLES_PER_STREAM: usize = 64 * 1024;
 /// 2²⁸ cells bounds the null-fill transient at ≈1 GiB; a ~260-column table at
 /// the 1M-row cap sits just under it, and wider honest shapes raise the budget
 /// through the engine config, whose default this aliases.
-pub(crate) const MAX_BATCH_CELLS: usize = crate::DEFAULT_MAX_BATCH_CELLS;
+pub(crate) const MAX_BATCH_CELLS: usize = crate::config::Config::DEFAULT_MAX_BATCH_CELLS;
 
 /// The typed refusal both assembly seats (the Arrow path and the resolve
 /// pipeline's build call) share, so the cap speaks with one voice.
@@ -45,7 +45,7 @@ pub(crate) fn refuse_over_cell_budget(
              and stamps lineage per cell, so the product is bounded independently of the \
              input's encoded size (what this refuses: ~16 GiB of null-fill assembled from \
              ~175 KB of wire). Push smaller batches, or raise the budget with \
-             `EngineConfig::with_max_batch_cells` (the facade's \
+             `config::Config::with_max_batch_cells` (the facade's \
              `pipeline::Builder::max_batch_cells` plumbs the same knob)"
         )));
     }

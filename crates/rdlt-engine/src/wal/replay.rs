@@ -11,8 +11,8 @@ use rdlt_core::state::StateDoc;
 use super::format::{WalRecord, verify_segment_file};
 use super::scan::RecoverySpan;
 use super::segment::{caught_decode, open_segment};
+use crate::blocking::off_runtime;
 use crate::load::apply;
-use crate::runtime::recover::off_runtime;
 
 /// Replay one span into an open session and commit it under the ORIGINAL run's
 /// identity. Returns the number of replayed batches; `Err(Damaged…)`-style failures

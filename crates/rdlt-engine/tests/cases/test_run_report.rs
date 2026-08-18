@@ -8,8 +8,9 @@
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::event::PipelineEvent;
 use rdlt_core::id::TableName;
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_engine::policy::{PolicyAction, SchemaPolicy};
-use rdlt_engine::{Engine, EngineConfig};
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -22,7 +23,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
         rdlt_connector::source::StreamSpec::new("s"),
         evolving_batches(),
     );
-    let mut config = EngineConfig::new("obs");
+    let mut config = Config::new("obs");
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let engine = Engine::new(config, source, dest.clone());
@@ -45,7 +46,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
         .position(|e| matches!(e, PipelineEvent::BatchLoaded { .. }))
         .expect("batch event");
     assert!(first_evolve < first_batch, "delta before batch");
-    // 036: RunStarted identifies the run before anything else; the
+    // RunStarted identifies the run before anything else; the
     // first STREAM event follows it.
     assert!(
         matches!(seen.first(), Some(PipelineEvent::RunStarted { .. })),
@@ -72,7 +73,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
         .count();
     assert!(evolves >= 2, "create + add-column, got {evolves}");
 
-    // Accounting invariant (SC-008): report totals == destination-visible reality.
+    // Accounting invariant: report totals == destination-visible reality.
     let table = TableName::new("s");
     assert_eq!(
         report.tables[&table].rows as usize,
@@ -100,11 +101,7 @@ async fn events_are_causally_ordered_and_report_matches_reality() {
 #[tokio::test]
 async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
     let dest = memory::Destination::new();
-    let engine = Engine::new(
-        EngineConfig::new("exact"),
-        three_batch_source(),
-        dest.clone(),
-    );
+    let engine = Engine::new(Config::new("exact"), three_batch_source(), dest.clone());
     let mut events = engine.events();
     let report = engine.run().await.expect("run");
 
@@ -122,7 +119,7 @@ async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
     }
 }
 
-/// 037 US2 T7 fix round 1: the engine calls `LoadSession::close`
+/// The engine calls `LoadSession::close`
 /// exactly once, on the SUCCESS path — after the run's last commit,
 /// never per-open and never on failure (`memory::Destination`'s default
 /// close is a no-op, but the counter proves the CALL happened, not
@@ -131,11 +128,7 @@ async fn report_counters_are_exact_and_clean_runs_emit_no_discards() {
 #[tokio::test]
 async fn a_successful_run_closes_its_session_exactly_once() {
     let dest = memory::Destination::new();
-    let engine = Engine::new(
-        EngineConfig::new("closes"),
-        three_batch_source(),
-        dest.clone(),
-    );
+    let engine = Engine::new(Config::new("closes"), three_batch_source(), dest.clone());
     engine.run().await.expect("run");
     assert_eq!(dest.opens(), 1, "one session opened");
     assert_eq!(
@@ -220,7 +213,7 @@ impl rdlt_connector::destination::LoadSession for CloseFailsSession {
     }
 }
 
-/// 037 US2 fix round 2, M4: a close failure on the SUCCESS path is
+/// A close failure on the SUCCESS path is
 /// ALWAYS non-retryable, regardless of how the destination itself
 /// classified it (here, TRANSIENT — the shape most likely to fool a
 /// naive forward), and its message tells the operator the data is
@@ -230,7 +223,7 @@ async fn a_close_failure_after_success_is_never_retried_and_says_data_is_durable
     let dest = CloseFailsDest {
         inner: memory::Destination::new(),
     };
-    let err = Engine::new(EngineConfig::new("close-fails"), three_batch_source(), dest)
+    let err = Engine::new(Config::new("close-fails"), three_batch_source(), dest)
         .run()
         .await
         .expect_err("the close failure must surface as the run's error");
@@ -339,7 +332,7 @@ async fn commit_counters_describe_the_unit_they_publish() {
         seen: std::sync::Arc::clone(&seen),
     };
     // One commit per checkpoint: three units, two rows each.
-    let report = Engine::new(EngineConfig::new("counters"), three_batch_source(), dest)
+    let report = Engine::new(Config::new("counters"), three_batch_source(), dest)
         .run()
         .await
         .expect("run");
@@ -370,7 +363,7 @@ async fn discard_counters_reach_the_commit_unit() {
     };
     // Freeze the shape after the first batch, then send a row with a NEW column
     // under DiscardRow: the extra row is dropped and must be COUNTED.
-    let mut config = EngineConfig::new("discard-counters");
+    let mut config = Config::new("discard-counters");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
         memory::Batch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
@@ -416,7 +409,7 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
     };
     // DiscardValue keeps the row and NULLs the non-conforming value, so the
     // value counter moves while the row counter does not.
-    let mut config = EngineConfig::new("discard-values");
+    let mut config = Config::new("discard-values");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardValue));
     let batches = vec![
         memory::Batch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),
@@ -461,7 +454,7 @@ async fn discarded_value_counter_reaches_the_commit_unit() {
 /// so the child table sees a non-empty discarded set and still cascades nothing.
 #[tokio::test]
 async fn only_the_table_that_discarded_reports_a_discard() {
-    let mut config = EngineConfig::new("discard-scoped");
+    let mut config = Config::new("discard-scoped");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
         // Establishes the root shape AND the child table.
@@ -540,7 +533,7 @@ async fn only_the_table_that_discarded_reports_a_discard() {
 #[tokio::test]
 async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
     for action in [PolicyAction::DiscardRow, PolicyAction::DiscardValue] {
-        let mut config = EngineConfig::new("discard-clean");
+        let mut config = Config::new("discard-clean");
         config = config.with_schema_policy(SchemaPolicy::with_default(action));
         let batches = vec![
             memory::Batch::new(vec![json!({"id": 1, "items": [{"a": 1}]})])
@@ -586,7 +579,7 @@ async fn a_conforming_run_under_a_discard_policy_emits_no_discards() {
     }
 }
 
-/// The 036 telemetry additions hold their causal contract: every
+/// The telemetry events hold their causal contract: every
 /// `BatchLoaded` row was announced by a `BatchRead` first (read
 /// precedes write for the same rows), every `Committed` was preceded
 /// by its `CommitStarted`, and the liveness heartbeat ticks even on a
@@ -598,7 +591,7 @@ async fn read_commit_and_heartbeat_events_hold_their_order() {
         rdlt_connector::source::StreamSpec::new("s"),
         evolving_batches(),
     );
-    let mut config = EngineConfig::new("obs-036");
+    let mut config = Config::new("obs-order");
     config = config.with_commit_policy(rdlt_core::commit::CommitPolicy::every_checkpoints(1));
 
     let engine = Engine::new(config, source, dest.clone());
@@ -666,7 +659,7 @@ async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
         rdlt_connector::source::StreamSpec::new("s"),
         evolving_batches(),
     );
-    let engine = Engine::new(EngineConfig::new("obs-fold"), source, dest.clone());
+    let engine = Engine::new(Config::new("obs-fold"), source, dest.clone());
     let mut events = engine.events();
     let report = engine.run().await.expect("run");
 
@@ -685,13 +678,13 @@ async fn the_metrics_fold_agrees_with_the_report_for_a_clean_run() {
     );
 }
 
-/// Review round 1's counting fix, pinned: `rows_read` counts what the
+/// `rows_read` counts what the
 /// payload DECODED to — including whole rows a Discard policy then
 /// dropped — so read-vs-loaded divergence exposes discards instead of
 /// silently pre-subtracting them.
 #[tokio::test]
 async fn rows_read_includes_discarded_rows() {
-    let mut config = EngineConfig::new("discard-read");
+    let mut config = Config::new("discard-read");
     config = config.with_schema_policy(SchemaPolicy::with_default(PolicyAction::DiscardRow));
     let batches = vec![
         memory::Batch::new(vec![json!({"id": 1})]).with_checkpoint(json!({"b": 0})),

@@ -9,7 +9,8 @@
 
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::types::LogicalType;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -38,7 +39,7 @@ async fn unsigned_integers_beyond_i64_survive_as_text() {
             json!({ "id": 2, "big": 9_223_372_036_854_775_807i64 }),
         ],
     );
-    let report = Engine::new(EngineConfig::new("uint"), source, dest.clone())
+    let report = Engine::new(Config::new("uint"), source, dest.clone())
         .run()
         .await
         .expect("run succeeds");
@@ -69,7 +70,7 @@ async fn unsigned_widening_is_order_independent() {
             json!({ "id": 2, "big": 18_446_744_073_709_551_615u64 }),
         ],
     );
-    Engine::new(EngineConfig::new("uint-order"), source, dest.clone())
+    Engine::new(Config::new("uint-order"), source, dest.clone())
         .run()
         .await
         .expect("run succeeds");
@@ -93,7 +94,7 @@ async fn a_type_hint_is_not_dropped_by_an_object_value() {
             json!({ "id": 2, "payload": { "nested": 1 } }),
         ],
     );
-    let report = Engine::new(EngineConfig::new("hint"), source, dest.clone())
+    let report = Engine::new(Config::new("hint"), source, dest.clone())
         .run()
         .await
         .expect("run succeeds");
@@ -142,7 +143,7 @@ async fn a_decimal_beyond_its_declared_precision_is_refused() {
             json!({ "id": 2, "amount": "1234567.89" }),
         ],
     );
-    let report = Engine::new(EngineConfig::new("decimal"), source, dest.clone())
+    let report = Engine::new(Config::new("decimal"), source, dest.clone())
         .run()
         .await
         .expect("run succeeds");
@@ -177,7 +178,7 @@ async fn an_unrepresentable_type_hint_is_a_typed_config_error() {
         ),
         vec![json!({ "id": 1, "amount": "1" })],
     );
-    let error = Engine::new(EngineConfig::new("bad-hint"), source, dest)
+    let error = Engine::new(Config::new("bad-hint"), source, dest)
         .run()
         .await
         .expect_err("an unrepresentable hint must not be accepted");

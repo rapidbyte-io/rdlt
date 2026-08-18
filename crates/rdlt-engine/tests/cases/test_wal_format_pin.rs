@@ -1,5 +1,5 @@
 //! Pins of the WAL v1 on-disk format, every input synthesized AT TEST TIME
-//! (owner rule, 047 round 1: no committed fixtures, no fixture-dir helpers,
+//! (no committed fixtures, no fixture-dir helpers,
 //! no RDLT_REPIN machinery — a canonical-bytes pin builds its input from the
 //! writer's own API in the test).
 //!
@@ -23,7 +23,8 @@ use std::{
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::commit::CommitPolicy;
 use rdlt_core::schema;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -65,8 +66,8 @@ fn corpus_source() -> scripted::Source {
     stream_with_batches(StreamSpec::new("items"), batches)
 }
 
-fn config(workdir: &Path) -> EngineConfig {
-    EngineConfig::new("wal-format-pin")
+fn config(workdir: &Path) -> Config {
+    Config::new("wal-format-pin")
         .with_workdir(workdir.to_path_buf())
         // Both checkpoints accumulate into one span, so the pins cover a
         // multi-batch, multi-checkpoint replay rather than the smallest one.

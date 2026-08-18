@@ -115,7 +115,6 @@ pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String
 }
 
 fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, String> {
-    use LogicalType::*;
     if depth > MAX_ARROW_DEPTH {
         return Err(format!(
             "schema nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
@@ -124,28 +123,28 @@ fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, 
     }
     let scalar = |t| Ok(ColumnType::scalar(t));
     match dt {
-        DataType::Boolean => scalar(Bool),
+        DataType::Boolean => scalar(LogicalType::Bool),
         DataType::Int8
         | DataType::Int16
         | DataType::Int32
         | DataType::Int64
         | DataType::UInt8
         | DataType::UInt16
-        | DataType::UInt32 => scalar(Int64),
+        | DataType::UInt32 => scalar(LogicalType::Int64),
         DataType::UInt64 => Err("UInt64 can exceed Int64; re-encode upstream".into()),
-        DataType::Float16 | DataType::Float32 | DataType::Float64 => scalar(Float64),
-        DataType::Utf8 | DataType::LargeUtf8 => scalar(Utf8),
-        DataType::Binary | DataType::LargeBinary => scalar(Binary),
-        DataType::Timestamp(_, Some(_)) => scalar(TimestampTz),
-        DataType::Timestamp(_, None) => scalar(TimestampNaive),
-        DataType::Date32 | DataType::Date64 => scalar(Date),
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => scalar(LogicalType::Float64),
+        DataType::Utf8 | DataType::LargeUtf8 => scalar(LogicalType::Utf8),
+        DataType::Binary | DataType::LargeBinary => scalar(LogicalType::Binary),
+        DataType::Timestamp(_, Some(_)) => scalar(LogicalType::TimestampTz),
+        DataType::Timestamp(_, None) => scalar(LogicalType::TimestampNaive),
+        DataType::Date32 | DataType::Date64 => scalar(LogicalType::Date),
         DataType::Time32(_) | DataType::Time64(TimeUnit::Microsecond | TimeUnit::Nanosecond) => {
-            scalar(Time)
+            scalar(LogicalType::Time)
         }
         DataType::Decimal128(precision, scale)
             if (1..=38).contains(precision) && *scale >= 0 && *scale <= *precision as i8 =>
         {
-            Ok(ColumnType::scalar(Decimal {
+            Ok(ColumnType::scalar(LogicalType::Decimal {
                 precision: *precision,
                 scale: *scale as u8,
             }))

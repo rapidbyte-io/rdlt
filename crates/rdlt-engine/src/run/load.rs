@@ -1,4 +1,4 @@
-//! Drain the loader over the load channel and settle the run's outcome.
+//! Drive the loader over the load channel and settle the run's outcome.
 
 use rdlt_connector::channel::{ByteReceiver, Permitted};
 use rdlt_core::error::Error;
@@ -8,11 +8,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::load::{LoadItem, Loader};
 
-/// Drain the loader over the load channel, join the stream tasks, and commit the
+/// Drive the loader over the load channel, join the stream tasks, and commit the
 /// trailing work. Precedence on error: a concrete stream error > a concrete
 /// loader error > `Cancelled` (a loader failure cancels the streams, whose
 /// induced `Cancelled` must not mask the original destination error).
-pub(super) async fn drain_loader(
+pub(super) async fn drive(
     mut loader: Loader,
     mut load_rx: ByteReceiver<LoadItem>,
     mut stream_tasks: JoinSet<Result<(), Error>>,
@@ -65,7 +65,7 @@ pub(super) async fn drain_loader(
         }
     }
 
-    // ---- Abandonment paths (037 US2 fix round 2, I1): a stream error, a
+    // ---- Abandonment paths: a stream error, a
     // loader error, or an induced cancellation all mean this session writes
     // no more — best-effort close it (releases whatever `close` releases,
     // e.g. the file destination's lease) rather than leaving that held for
@@ -105,68 +105,34 @@ pub(super) async fn drain_loader(
 }
 
 #[cfg(test)]
-mod drain_loader_tests {
-    //! `drain_loader`'s outcome precedence, tested directly.
+mod drive_tests {
+    //! `drive`'s outcome precedence, tested directly.
     //!
     //! The `saw_cancelled` guard survived mutation because the only tests that
     //! reached it drove a real source whose cancellation was decided by a sleep
     //! — so the interesting interleaving was never reliably produced. Calling
-    //! `drain_loader` with a hand-built JoinSet removes the timing entirely.
-    use super::*;
-    use crate::load::Sink;
-    use crate::runtime::STAGE_MSG_CAPACITY;
+    //! `drive` with a hand-built JoinSet removes the timing entirely.
     use rdlt_connector::channel::bytes;
-    use rdlt_connector::destination::{Capabilities, LoadSession};
-    use rdlt_core::commit::{CommitMeta, CommitPolicy, CommitReceipt, WriteMode};
-    use rdlt_core::id::{LoadId, PipelineId, TableName};
-    use rdlt_core::schema::TableSchema;
+    use rdlt_connector::destination::Capabilities;
+    use rdlt_core::commit::CommitPolicy;
+    use rdlt_core::id::{LoadId, PipelineId};
     use rdlt_core::state::StateDoc;
     use tokio::sync::broadcast;
 
-    /// The success path ends in `loader.finish()`, which commits once even for a
-    /// no-op run, so this session must accept a commit.
-    struct AcceptingSession;
-
-    #[async_trait::async_trait]
-    impl LoadSession for AcceptingSession {
-        async fn ensure_table(
-            &mut self,
-            _: &TableSchema,
-            _: &WriteMode,
-        ) -> Result<(), rdlt_connector::error::DestinationError> {
-            Ok(())
-        }
-        async fn write(
-            &mut self,
-            _: &TableName,
-            _: rdlt_connector::arrow::RecordBatch,
-        ) -> Result<(), rdlt_connector::error::DestinationError> {
-            Ok(())
-        }
-        async fn commit(
-            &mut self,
-            meta: CommitMeta,
-        ) -> Result<CommitReceipt, rdlt_connector::error::DestinationError> {
-            Ok(CommitReceipt {
-                load_id: meta.load_id,
-                commit_seq: meta.commit_seq,
-            })
-        }
-        async fn read_state(
-            &mut self,
-            _: &PipelineId,
-        ) -> Result<Option<StateDoc>, rdlt_connector::error::DestinationError> {
-            Ok(None)
-        }
-    }
+    use super::*;
+    use crate::load::Sink;
+    use crate::run::once::STAGE_MSG_CAPACITY;
+    use crate::testing::FakeSession;
 
     fn loader() -> Loader {
         let (events, _rx) = broadcast::channel(16);
         let pipeline = PipelineId::new("p");
         let load_id = LoadId::new("l");
         Loader::new(
+            // The success path ends in `loader.finish()`, which commits once
+            // even for a no-op run, so the session must accept a commit.
             Sink {
-                session: Box::new(AcceptingSession),
+                session: Box::new(FakeSession::default()),
                 capabilities: Capabilities::default(),
             },
             report::Run::new(pipeline.clone(), load_id.clone()),
@@ -175,7 +141,7 @@ mod drain_loader_tests {
             crate::load::Policies {
                 commit: CommitPolicy::default(),
                 batch: rdlt_core::commit::BatchPolicy::default(),
-                max_batch_cells: crate::DEFAULT_MAX_BATCH_CELLS,
+                max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
             },
             None,
             events,
@@ -200,7 +166,7 @@ mod drain_loader_tests {
         tasks.spawn(async { Err(Error::Cancelled) });
 
         let cancel = CancellationToken::new();
-        let result = drain_loader(loader(), closed_input(), tasks, &cancel).await;
+        let result = drive(loader(), closed_input(), tasks, &cancel).await;
         assert!(
             matches!(result, Err(Error::Cancelled)),
             "a cancelled stream must surface as Cancelled, not as success: {result:?}"
@@ -209,11 +175,11 @@ mod drain_loader_tests {
 
     /// The companion case: with no cancelled task the same shape succeeds, which
     /// is what makes the assertion above about the guard rather than about
-    /// `drain_loader` always failing.
+    /// `drive` always failing.
     #[tokio::test]
     async fn a_clean_run_with_no_stream_tasks_reports_success() {
         let cancel = CancellationToken::new();
-        let report = drain_loader(loader(), closed_input(), JoinSet::new(), &cancel)
+        let report = drive(loader(), closed_input(), JoinSet::new(), &cancel)
             .await
             .expect("nothing failed, so the run succeeds");
         assert_eq!(
@@ -232,7 +198,7 @@ mod drain_loader_tests {
         tasks.spawn(async { Err(Error::internal("the real cause")) });
 
         let cancel = CancellationToken::new();
-        let error = drain_loader(loader(), closed_input(), tasks, &cancel)
+        let error = drive(loader(), closed_input(), tasks, &cancel)
             .await
             .expect_err("a failing stream fails the run");
         assert!(

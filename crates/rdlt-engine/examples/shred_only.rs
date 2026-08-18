@@ -1,4 +1,4 @@
-//! Shred-stage-only measurement (feature 003 T015, design §8 ≥20× cell).
+//! Shred-stage-only measurement.
 //!
 //! Reads a JSONL file, shreds it slab-by-slab through the full shred path
 //! (parse → shape observation → schema resolution → Arrow build) with NO

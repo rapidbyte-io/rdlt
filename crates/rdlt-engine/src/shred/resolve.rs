@@ -24,7 +24,7 @@ use crate::schema::registry::SchemaRegistry;
 
 /// The per-batch shred context: the mutable schema registry plus the run-scoped
 /// load id, write mode, schema policy, and the batch-assembly cell budget
-/// (`EngineConfig::with_max_batch_cells`). One bundle, one field order —
+/// (`config::Config::with_max_batch_cells`). One bundle, one field order —
 /// shared by the JSON path (`json::Shredder::push_and_resolve`) and the Arrow
 /// path (`arrow::items`).
 pub(crate) struct ShredContext<'a> {

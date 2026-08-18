@@ -10,7 +10,8 @@
 
 use std::path::Path;
 
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 
 use super::common::three_batch_source;
@@ -21,8 +22,8 @@ fn source() -> scripted::Source {
     three_batch_source()
 }
 
-fn config(workdir: &Path) -> EngineConfig {
-    let mut config = EngineConfig::new("wal-lifecycle");
+fn config(workdir: &Path) -> Config {
+    let mut config = Config::new("wal-lifecycle");
     config = config.with_workdir(workdir.to_path_buf());
     config
 }
@@ -81,7 +82,7 @@ async fn a_failed_run_keeps_its_wal_for_replay() {
     );
 }
 
-/// 037 final-review wave, item 1: a `Wal::open` failure strictly AFTER
+/// A `Wal::open` failure strictly AFTER
 /// `recover_wal` has already opened a destination session must not
 /// abandon that session without closing it — the recorded sibling gap
 /// this test pins closes. Forced cheaply: `Wal::open` calls
@@ -142,8 +143,8 @@ fn plant_unclearable_wal(wal_dir: &Path, manifest: String) -> impl FnOnce() {
     }
 }
 
-/// Round-12, narrowed in round 13 to the arms where residue is a
-/// HAZARD: a Damaged-class WAL (here: an unparseable rules sidecar)
+/// The arms where residue is a HAZARD: a Damaged-class WAL (here: an
+/// unparseable rules sidecar)
 /// that cannot be cleared refuses the run naming the directory —
 /// proceeding would re-degrade every following run over the same
 /// residue.

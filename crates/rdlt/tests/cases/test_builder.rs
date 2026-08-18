@@ -167,7 +167,7 @@ destination:
 /// cell budget tightened through the builder refuses a batch the
 /// default would pass, with the refusal naming the knob the builder
 /// just set (the honest remedy for wide-and-large tables is raising it
-/// HERE, not dropping to raw `EngineConfig`).
+/// HERE, not dropping to the raw engine `Config`).
 #[tokio::test]
 async fn the_builder_plumbs_the_engine_knobs() {
     let source = memory::Source::single_stream(

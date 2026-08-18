@@ -1,11 +1,12 @@
-//! US1 — First full sync (spec acceptance scenarios 1–3).
+//! First full sync.
 //!
 //! Nested, heterogeneous records flow memory→memory into typed tables with inferred
 //! schemas, child-table splitting, and `_rdlt_*` lineage. No schema declared, Append.
 
 use rdlt_core::schema::{self, ColumnType};
 use rdlt_core::types::LogicalType;
-use rdlt_engine::{Engine, EngineConfig};
+use rdlt_engine::config::Config;
+use rdlt_engine::engine::Engine;
 use rdlt_testkit::memory;
 use serde_json::json;
 
@@ -52,7 +53,7 @@ async fn full_sync_infers_types_splits_children_and_stamps_lineage() {
     )]);
     let dest = memory::Destination::new();
 
-    let report = Engine::new(EngineConfig::new("us1"), source, dest.clone())
+    let report = Engine::new(Config::new("us1"), source, dest.clone())
         .run()
         .await
         .expect("run succeeds");
@@ -192,7 +193,7 @@ async fn scalar_lists_follow_destination_capabilities() {
     let dest = memory::Destination::new();
     let source =
         memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows.clone());
-    Engine::new(EngineConfig::new("lists-native"), source, dest.clone())
+    Engine::new(Config::new("lists-native"), source, dest.clone())
         .run()
         .await
         .expect("run");
@@ -212,7 +213,7 @@ async fn scalar_lists_follow_destination_capabilities() {
             .with_decimal(true),
     );
     let source = memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
-    Engine::new(EngineConfig::new("lists-child"), source, dest.clone())
+    Engine::new(Config::new("lists-child"), source, dest.clone())
         .run()
         .await
         .expect("run");
@@ -224,7 +225,7 @@ async fn scalar_lists_follow_destination_capabilities() {
 }
 
 /// A destination without native structs receives collision-safe FLATTENED columns
-/// (lowering at the destination seam, design doc §5.3).
+/// (lowering at the destination seam).
 #[tokio::test]
 async fn structless_destination_gets_flattened_columns() {
     let rows = vec![json!({"id": 1, "profile": {"city": "NYC", "geo": {"lat": 1.5}}})];
@@ -235,7 +236,7 @@ async fn structless_destination_gets_flattened_columns() {
             .with_decimal(true),
     );
     let source = memory::Source::single_stream(rdlt_connector::source::StreamSpec::new("s"), rows);
-    Engine::new(EngineConfig::new("flatten"), source, dest.clone())
+    Engine::new(Config::new("flatten"), source, dest.clone())
         .run()
         .await
         .expect("run");
@@ -257,7 +258,7 @@ async fn json_field_named_like_system_column_is_suffixed() {
         rdlt_connector::source::StreamSpec::new("s"),
         vec![json!({"id": 1, "_rdlt_id": "upstream"})],
     );
-    Engine::new(EngineConfig::new("sysname"), source, dest.clone())
+    Engine::new(Config::new("sysname"), source, dest.clone())
         .run()
         .await
         .expect("run");
