@@ -216,7 +216,7 @@ async fn the_builder_plumbs_the_engine_knobs() {
 }
 
 /// The builder refuses a threshold-less commit policy — the same
-/// refusal the YAML parse makes. Such a policy would hold the whole run
+/// refusal the document build makes. Such a policy would hold the whole run
 /// in one crash window, the exact shape the type's `check` exists to
 /// refuse.
 #[test]

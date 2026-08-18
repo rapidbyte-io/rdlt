@@ -193,7 +193,7 @@ impl<S: Source, D: Destination> Builder<S, D> {
             return Err(Error::config("Merge requires at least one key column"));
         }
         // The document path refuses a threshold-less commit policy at
-        // parse; the builder path makes the same refusal — such a policy
+        // build; the builder path makes the same refusal — such a policy
         // would hold the whole run in one crash window, the exact shape
         // the type refuses everywhere else.
         if let Err(reason) = self.config.commit_policy().check() {

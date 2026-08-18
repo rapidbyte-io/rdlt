@@ -1,5 +1,5 @@
 //! The facade's load-bearing e2e — the binary is NAMED `e2e` so the
-//! Makefile's `TARGET=e2e` filter (`-E 'binary(/e2e/)'`) selects it by
+//! Makefile's `TARGET=e2e` filter (`-E 'binary(e2e)'`) selects it by
 //! name: seed a jsonl file, run reference → reference through
 //! `document::build` — the embedder's exact door, default provider —
 //! and prove rows landed; then a SECOND build + run of the same

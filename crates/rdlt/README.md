@@ -3,51 +3,75 @@
 A library-first ELT engine: extract → shred (normalize) → load, with schema
 inference and evolution, incremental cursors, and crash-safe resumable runs.
 
-This is the facade — the crate to depend on. It re-exports the engine and
-the vocabulary; connectors run out of process, spawned per run.
+This is the facade — the one crate to depend on. It names the vocabulary,
+owns the pipeline document, and constructs pipelines over connectors that
+run out of process, spawned per run. It knows no connector by name.
 
-```rust,no_run
-use rdlt::prelude::*;
-use rdlt::report;
+## The document path
 
-# async fn demo() -> Result<(), Error> {
-let pipeline = Pipeline::builder("demo")
-    .source(my_source)
-    .destination(my_destination)
-    .write_mode(WriteMode::Append)
-    .build()?; // configuration errors die here, before any I/O
-let report: report::Run = pipeline.run().await?;
-# Ok(())
-# }
-```
-
-Configuration errors surface at `build()`, not halfway through a load.
-
-## Connectors
-
-Connectors are separate binaries, spawned per run and supervised over a
-local socket — none are compiled into this crate, and this crate knows
-none by name. A pipeline document names one by its id:
+A pipeline is ONE YAML document: pipeline-wide settings, a source arm and
+a destination arm, each arm naming a connector by id:
 
 ```yaml
+pipeline: shop-orders
+write_mode: replace
 source:
   connector:
     id: io.rapidbyte.postgres
     config:
       conn: "host=127.0.0.1 dbname=shop"
       tables: [{ name: orders }]
+destination:
+  connector:
+    id: io.rapidbyte.duckdb
+    config: { path: out/shop.db }
+```
+
+Read it, parse it, build it, run it — construction spawns and handshakes
+both connectors, and every configuration refusal dies there, before a row
+moves:
+
+```rust,no_run
+use std::path::Path;
+
+use rdlt::document;
+use rdlt::error::Error;
+
+# async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+let path = Path::new("pipeline.yaml");
+let text = document::read(path)?;
+let doc = document::parse(&text)?;
+let base = path.parent().unwrap_or(Path::new(""));
+let pipeline = document::build(&doc, base).await?;
+match pipeline.run().await {
+    Ok(report) => println!("{} rows", report.total_rows()),
+    Err(Error::Cancelled) => println!("cancelled — build again to resume"),
+    Err(error) => return Err(error.into()),
+}
+# Ok(())
+# }
 ```
 
 The id's last segment names the binary (`rdlt-connector-postgres` on
-PATH, or `path:` overrides), the config
-document crosses the wire opaquely, and the connector's own gate
-validates it — refusals arrive in the connector's own wording. The
-first-party connector binaries are built and installed from the
-sibling [rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
-repository. The
-config is given inline (as above) or as a path string
-(`config: ./creds.yaml`) pointing at a YAML/JSON document of the same
-shape — never both at once.
+PATH; `path:` overrides), the config document crosses the wire opaquely,
+and the connector's own gate validates it — refusals arrive in the
+connector's own wording. `config` is given inline (as above) or as a path
+string (`config: ./creds.yaml`) to a YAML/JSON document of the same
+shape, resolved beside the pipeline document. The first-party connector
+binaries are built and installed from the sibling
+[rdlt-connectors](https://github.com/rapidbyte-io/rdlt-connectors)
+repository.
+
+## The builder is the boundary
+
+`document::build` hands the engine's boundary — the `Pipeline` builder —
+a source value and a destination value. In production those values are
+the runtime's process adapters over the spawned connectors; an embedder
+with its own provider (a pool, a remote scheduler) supplies it through
+`document::build_with`. Hand-rolled `impl Source` / `impl Destination`
+values are test doubles. Missing halves are a compile error; every
+configuration refusal is a typed error at `build()`, not halfway through
+a load.
 
 ## What it guarantees
 
