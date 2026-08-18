@@ -15,7 +15,7 @@ destination. One file, one format, end to end.
 **Everything the CLI does, the library does.** It adds zero engine
 capability — it parses the document, renders the event feed, and emits the
 report. The document model and its construction into a pipeline are shared
-library code (`rdlt::pipeline_spec`), so a platform embedding rdlt builds the
+library code (`rdlt::document`), so a platform embedding rdlt builds the
 same pipelines without shelling out.
 
 Events stream to stderr in human-readable form — a live display on a
@@ -31,7 +31,7 @@ Schema.
 
 ## Exit codes
 
-Stable and scriptable, mirroring the `rdlt::Error` taxonomy:
+Stable and scriptable, mirroring the `rdlt::error::Error` taxonomy:
 
 | Code | Meaning |
 |---|---|

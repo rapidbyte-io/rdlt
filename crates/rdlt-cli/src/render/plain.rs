@@ -3,7 +3,7 @@
 //! `--output plain`, and at `-v` (detail lines want scrollback, not a
 //! redrawing display).
 
-use rdlt::prelude::PipelineEvent;
+use rdlt::event::PipelineEvent;
 
 use crate::args::Verbosity;
 
@@ -60,7 +60,7 @@ pub(crate) fn line(event: &PipelineEvent, verbosity: Verbosity) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdlt::prelude::TableName;
+    use rdlt::id::TableName;
 
     /// The NORMAL spellings hold byte for byte — the compatibility
     /// contract's stderr half.
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn verbosity_gates_hold() {
         let read = PipelineEvent::BatchRead {
-            stream: rdlt::prelude::StreamName::new("s"),
+            stream: rdlt::id::StreamName::new("s"),
             rows: 10,
             bytes: 100,
         };

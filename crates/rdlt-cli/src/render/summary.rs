@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn a_report_renders_all_sections() {
         let mut report = report::Run::new(
-            rdlt::prelude::StreamName::new("p").as_str().into(),
+            rdlt::id::StreamName::new("p").as_str().into(),
             rdlt::sdk::spi::core::id::LoadId::new("load-1"),
         );
         report.commits = 2;

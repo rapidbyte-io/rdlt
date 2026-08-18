@@ -44,7 +44,7 @@ async fn spawned_schema(
 ) -> Result<serde_json::Value, exit::Error> {
     let provider = Local::new();
     let path = std::path::Path::new(value);
-    let requirement = if let Some(id) = rdlt::pipeline_spec::connector_id(value) {
+    let requirement = if let Some(id) = rdlt::document::connector::id(value) {
         Requirement::new(id)
     } else if path.is_file() {
         Requirement::new(value).with_path(path)

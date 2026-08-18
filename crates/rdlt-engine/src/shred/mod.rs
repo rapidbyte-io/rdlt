@@ -67,7 +67,7 @@ pub(crate) fn refuse_over_cell_budget(
              input's encoded size (what this refuses: ~16 GiB of null-fill assembled from \
              ~175 KB of wire). Push smaller batches, or raise the budget with \
              `EngineConfig::with_max_batch_cells` (the facade's \
-             `PipelineBuilder::max_batch_cells` plumbs the same knob)"
+             `pipeline::Builder::max_batch_cells` plumbs the same knob)"
         )));
     }
     Ok(())

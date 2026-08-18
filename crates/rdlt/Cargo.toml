@@ -23,7 +23,6 @@ spawn-bins = []
 [dependencies]
 rdlt-connector-sdk = { workspace = true }
 rdlt-core = { workspace = true }
-rdlt-connector = { workspace = true }
 rdlt-engine = { workspace = true }
 # The out-of-process connector seam, the ONLY seam: every
 # pipeline-document arm resolves through a runtime Provider into a
@@ -38,7 +37,7 @@ rdlt-runtime = { workspace = true }
 # DEV dependency — the facade's own source never names it, and a library that
 # pulls in a runtime it does not use forces that cost on every consumer.
 tokio-util = { workspace = true }
-# The shared pipeline_spec model: serde derive + serde_yaml_ng's singleton_map
+# The pipeline document model: serde derive + serde_yaml_ng's singleton_map
 # with-module, and serde_json for the opaque connector config documents.
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }

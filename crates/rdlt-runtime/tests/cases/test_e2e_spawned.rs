@@ -1,6 +1,6 @@
 //! THE HEADLINE: a full engine run with the spawned
 //! `rdlt-connector-reference` binary on BOTH sides of the wire — the
-//! YAML `connector:` vocabulary through the facade's `build_pipeline`,
+//! YAML `connector:` vocabulary through the facade's `document::build`,
 //! the commit choreography (receipts, state, part events) crossing two
 //! Unix sockets, rows landing exactly-once, and the spawned processes
 //! dying with their guards. The reference connector is the spawn
@@ -22,8 +22,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt::pipeline_spec::{Spec, build_pipeline, build_pipeline_with};
-use rdlt::{Error, PipelineEvent};
+use rdlt::document::{self, Document};
+use rdlt::error::Error;
+use rdlt::event::PipelineEvent;
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_client::{destination, source};
 use rdlt_runtime::local::Local;
@@ -164,7 +165,7 @@ fn spec_yaml(
     )
 }
 
-fn parse_spec(text: &str) -> Spec {
+fn parse_document(text: &str) -> Document {
     serde_yaml_ng::from_str(text).expect("the connector pipeline document parses")
 }
 
@@ -257,7 +258,7 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
     std::fs::create_dir_all(&out_dir).expect("output dir");
     let fixture = write_fixture(&src_dir, ROWS);
 
-    let spec = parse_spec(&spec_yaml(
+    let spec = parse_document(&spec_yaml(
         "t8-headline",
         &workdir,
         &bin,
@@ -267,7 +268,7 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
     ));
 
     let provider = RecordingProvider::new();
-    let pipeline = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
+    let pipeline = document::build_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both connector requirements spawn and handshake");
     let report = pipeline
@@ -305,10 +306,10 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
 
     // The cursor round-tripped: a SECOND run of the same document —
     // through the DEFAULT provider this time, the exact path
-    // `build_pipeline` gives embedders — succeeds and reads nothing
+    // `document::build` gives embedders — succeeds and reads nothing
     // new (the reference source's byte cursor persisted through the
     // destination's state document).
-    let report2 = build_pipeline(&spec, std::path::Path::new(""))
+    let report2 = document::build(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the second run")
         .run()
@@ -356,7 +357,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
 
     // Small write batches so the run is MANY destination RPCs long —
     // the kill after RPC 1 of ~20 lands far from the finish line.
-    let spec = parse_spec(&spec_yaml(
+    let spec = parse_document(&spec_yaml(
         "t8-crash",
         &workdir,
         &bin,
@@ -366,7 +367,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     ));
 
     let provider = RecordingProvider::new();
-    let pipeline = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
+    let pipeline = document::build_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both connector requirements spawn and handshake");
     let (dest_pid, dest_socket) = provider.recorded("destination")[0].clone();
@@ -454,7 +455,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     // A fresh session (new pid, new spawns) converges over the crashed
     // session's remains: the receipts answer replay across the wire,
     // the persisted state feeds the source's resume cursor.
-    let report = build_pipeline(&spec, std::path::Path::new(""))
+    let report = document::build(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the recovery run")
         .run()

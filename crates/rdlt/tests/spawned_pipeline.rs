@@ -1,14 +1,13 @@
 //! THE SPAWN ACCEPTANCE: a pipeline document written in the frozen
 //! `connector:` vocabulary — an id and an inline config, no `path:`
-//! override anywhere — resolves by DISCOVERY (D-039-1's last-segment
-//! convention over the provider search path), spawns the reference
-//! connector on both sides and RUNS end to end. Since 044 the spawn
-//! subject is the reference connector: the seven first-party
-//! connectors move to their own repository, and their bins can no
-//! longer anchor an engine gate — while the desugar TABLE keeps all
-//! seven rich spellings, pinned offline (`tests/desugar.rs` holds the
-//! full table; one assertion here keeps a live sample beside the
-//! spawn path).
+//! override anywhere — resolves by DISCOVERY (the id's last segment
+//! over the provider search path), spawns the reference connector on
+//! both sides and RUNS end to end. The spawn subject is the reference
+//! connector: the first-party connectors live in their own repository,
+//! so their bins cannot anchor an engine gate — while the desugar TABLE
+//! keeps all seven rich spellings, pinned offline (`cases/test_document`
+//! holds the full table; one assertion here keeps a live sample beside
+//! the spawn path).
 //!
 //! Gated exactly like rdlt-runtime's spawn suites: behind the
 //! `spawn-bins` feature, with `RDLT_BUILD_CONNECTOR_BINS` telling the
@@ -19,15 +18,15 @@
 
 use std::path::PathBuf;
 
-use rdlt::pipeline_spec::{ConfigSource, Spec, build_pipeline_with};
+use rdlt::document::{self, Config, Document};
 use rdlt::runtime::local::Local;
 
 /// The directory holding the reference bin this suite spawns, through
 /// the testkit's ONE spawn scaffold — building it under
 /// `RDLT_BUILD_CONNECTOR_BINS`, refusing a relative `CARGO_TARGET_DIR`,
 /// failing loudly on a missing bin — rather than a local copy of those
-/// mechanics (the 042 lesson: copies diverge, and a diverged copy
-/// certifies a stale binary).
+/// mechanics (copies diverge, and a diverged copy certifies a stale
+/// binary).
 fn bins_dir() -> PathBuf {
     rdlt_testkit::spawn::built_connector_bin(env!("CARGO_MANIFEST_DIR"), "rdlt-connector-reference")
         .parent()
@@ -68,13 +67,13 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
         fixture = src_dir.join("events.jsonl").display(),
         out = dir.path().join("out").display(),
     );
-    let spec: Spec = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
+    let doc: Document = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
 
     // No `path:` overrides anywhere in the document, so this exercises
     // the full id → discovery route: the provider's search path stands
     // in for PATH, pointing at the built bin.
     let provider = Local::new().with_search_path(bins);
-    let report = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
+    let report = document::build_with(&doc, std::path::Path::new(""), &provider)
         .await
         .expect("both connector arms resolve to spawned connectors")
         .run()
@@ -96,7 +95,7 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
 
     // The cursor round-tripped over the wire: a second build (fresh
     // spawns) reads nothing new — exactly-once across sessions.
-    let report = build_pipeline_with(&spec, std::path::Path::new(""), &provider)
+    let report = document::build_with(&doc, std::path::Path::new(""), &provider)
         .await
         .expect("fresh spawns for the second run")
         .run()
@@ -110,13 +109,13 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
 }
 
 /// The sugar surface, sampled live beside the spawn path: one rich
-/// spelling still desugars to exactly its table id with the config
+/// spelling still parses to exactly its table id with the config
 /// verbatim — stopping AT the desugar table, no spawn, so this pin
 /// outlives the connectors' move out of this repo. The full
-/// seven-spelling table is tests/desugar.rs's.
+/// seven-spelling table is `cases/test_document`'s.
 #[test]
 fn a_rich_spelling_still_desugars_to_its_table_id_without_spawning() {
-    let spec: Spec = serde_yaml_ng::from_str(
+    let doc: Document = serde_yaml_ng::from_str(
         "pipeline: p\n\
          source:\n\
         \x20 file:\n\
@@ -125,13 +124,9 @@ fn a_rich_spelling_still_desugars_to_its_table_id_without_spawning() {
         \x20 connector: {id: io.rapidbyte.reference, config: {path: out}}\n",
     )
     .expect("the rich-spelling document parses");
-    let reference = spec
-        .source
-        .desugar(std::path::Path::new(""))
-        .expect("the rich source arm desugars");
-    assert_eq!(reference.id, "io.rapidbyte.file", "the desugar table's id");
-    let ConfigSource::Inline(config) = &reference.config else {
-        panic!("a desugared reference carries its config inline");
+    assert_eq!(doc.source.id, "io.rapidbyte.file", "the desugar table's id");
+    let Config::Inline(config) = &doc.source.config else {
+        panic!("an inline mapping parses as the inline config form");
     };
     assert_eq!(
         config["marker"], "value",

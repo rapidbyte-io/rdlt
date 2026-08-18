@@ -2,7 +2,7 @@
 //! spell, shared by the live display and the summary so the two can
 //! never disagree about what "1.2M" or "resumed from WAL" means.
 
-use rdlt::prelude::ResumedFrom;
+use rdlt::report::ResumedFrom;
 
 /// Plain digits up to 9,999; `10.0k`, `1.23M`, `4.56B` beyond.
 pub(crate) fn count(n: u64) -> String {

@@ -3,7 +3,7 @@
 //! `rdlt run <pipeline.yaml> [--report <path>] [--events <path|->]`,
 //! `rdlt validate <pipeline.yaml>`, `rdlt schema <connector> [--role ..]`.
 //! ONE YAML document describes the whole pipeline; its model and its
-//! construction into a pipeline are the shared [`rdlt::pipeline_spec`],
+//! construction into a pipeline are the shared [`rdlt::document`],
 //! so this binary adds zero engine capability — it parses arguments,
 //! renders the event feed on stderr, and emits the run report's JSON on
 //! stdout (or to `--report`). Every number it shows the library computed.

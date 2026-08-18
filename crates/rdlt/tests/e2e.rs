@@ -1,7 +1,7 @@
 //! The facade's load-bearing e2e — the binary is NAMED `e2e` so the
 //! Makefile's `TARGET=e2e` filter (`-E 'binary(/e2e/)'`) selects it by
 //! name: seed a jsonl file, run reference → reference through
-//! `build_pipeline` — the embedder's exact door, default provider —
+//! `document::build` — the embedder's exact door, default provider —
 //! and prove rows landed; then a SECOND build + run of the same
 //! document reads ZERO rows, the persisted-cursor-across-sessions
 //! claim that makes this cell load-bearing rather than a smoke.
@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use rdlt::pipeline_spec::{Spec, build_pipeline};
+use rdlt::document::{self, Document};
 
 /// Count the rows in every published `events-…jsonl` part — the
 /// reference destination's visibility contract (underscore-prefixed
@@ -74,9 +74,9 @@ async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() 
         fixture = fixture.display(),
         out = out_dir.display(),
     );
-    let spec: Spec = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
+    let doc: Document = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
 
-    let report = build_pipeline(&spec, Path::new(""))
+    let report = document::build(&doc, Path::new(""))
         .await
         .expect("both connector arms spawn and handshake")
         .run()
@@ -93,7 +93,7 @@ async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() 
     // source's byte cursor persisted through the destination's state
     // document, so the unchanged file reads ZERO rows — and the
     // published data is untouched.
-    let report = build_pipeline(&spec, Path::new(""))
+    let report = document::build(&doc, Path::new(""))
         .await
         .expect("fresh spawns for the second session")
         .run()

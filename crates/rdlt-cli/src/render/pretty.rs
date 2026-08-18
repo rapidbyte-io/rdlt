@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use rdlt::prelude::{Metrics, PipelineEvent, StreamName};
+use rdlt::event::PipelineEvent;
+use rdlt::id::StreamName;
+use rdlt::metrics::Metrics;
 
 use crate::render::{format, stderr};
 
@@ -175,7 +177,8 @@ impl Pretty {
 #[cfg(test)]
 mod tests {
     use indicatif::InMemoryTerm;
-    use rdlt::prelude::{ResumedFrom, StreamName, TableName};
+    use rdlt::id::{StreamName, TableName};
+    use rdlt::report::ResumedFrom;
     use rdlt::sdk::spi::core::id::LoadId;
 
     use super::*;

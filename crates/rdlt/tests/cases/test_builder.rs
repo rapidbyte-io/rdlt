@@ -1,13 +1,22 @@
-//! T027: the US1 flow through the public facade, plus build-time validation (B1–B3).
+//! The engine's boundary through the public facade: a full sync over
+//! in-memory doubles, and every `build()` rejection arm producing a
+//! typed config error naming the offender — none may slip through to
+//! run time.
 
+use rdlt::document;
+use rdlt::error::Error;
 use rdlt::prelude::*;
+use rdlt::sdk::spi::destination::Capabilities;
+use rdlt::sdk::spi::source::StreamSpec;
 use rdlt_testkit::memory;
 use serde_json::json;
+
+use super::support::{empty_source, merge_less_destination};
 
 #[tokio::test]
 async fn full_sync_through_the_facade() {
     let source = memory::Source::single_stream(
-        rdlt_connector::source::StreamSpec::new("users"),
+        StreamSpec::new("users"),
         vec![
             json!({"id": 1, "name": "ada", "emails": [{"addr": "a@x"}]}),
             json!({"id": 2, "name": "grace", "emails": []}),
@@ -31,10 +40,45 @@ async fn full_sync_through_the_facade() {
     assert_eq!(dest.committed_rows("users__emails").len(), 1);
 }
 
+/// A destination without merge capability rejects Merge at build — both as
+/// the default write mode and per-stream, each naming what requested it.
+#[test]
+fn merge_against_a_merge_less_destination_is_rejected_at_build() {
+    let dest = merge_less_destination();
+    let err = Pipeline::builder("p")
+        .source(empty_source())
+        .destination(dest.clone())
+        .write_mode(WriteMode::Merge {
+            key: vec!["id".into()],
+        })
+        .build()
+        .expect_err("default merge must be rejected");
+    assert!(
+        err.to_string().contains("default write mode"),
+        "names the default request: {err}"
+    );
+
+    let err = Pipeline::builder("p")
+        .source(empty_source())
+        .destination(dest)
+        .write_mode_for(
+            "orders",
+            WriteMode::Merge {
+                key: vec!["id".into()],
+            },
+        )
+        .build()
+        .expect_err("per-stream merge must be rejected");
+    assert!(
+        err.to_string().contains("orders"),
+        "names the stream: {err}"
+    );
+}
+
 #[test]
 fn build_rejects_merge_against_non_merge_destination() {
-    let dest = memory::Destination::new()
-        .with_capabilities(rdlt_connector::destination::Capabilities::default().with_merge(false));
+    let dest =
+        memory::Destination::new().with_capabilities(Capabilities::default().with_merge(false));
     let err = Pipeline::builder("bad")
         .source(memory::Source::default())
         .destination(dest)
@@ -45,6 +89,29 @@ fn build_rejects_merge_against_non_merge_destination() {
         .expect_err("must fail fast at build time, pre-I/O");
     assert!(matches!(err, Error::Config { .. }));
     assert!(err.to_string().contains("Merge"));
+}
+
+/// Merge with an EMPTY key is rejected in both spellings.
+#[test]
+fn empty_merge_key_is_rejected_at_build() {
+    let err = Pipeline::builder("p")
+        .source(empty_source())
+        .destination(memory::Destination::new())
+        .write_mode(WriteMode::Merge { key: vec![] })
+        .build()
+        .expect_err("empty default key");
+    assert!(err.to_string().contains("at least one key column"), "{err}");
+
+    let err = Pipeline::builder("p")
+        .source(empty_source())
+        .destination(memory::Destination::new())
+        .write_mode_for("orders", WriteMode::Merge { key: vec![] })
+        .build()
+        .expect_err("empty per-stream key");
+    assert!(
+        err.to_string().contains("`orders`"),
+        "names the stream: {err}"
+    );
 }
 
 #[test]
@@ -68,8 +135,6 @@ fn build_rejects_empty_merge_key() {
 /// are not the same one.
 #[tokio::test]
 async fn commit_policy_is_read_from_the_document_and_checked() {
-    use rdlt::pipeline_spec::Spec;
-
     let with_policy = r#"
 pipeline: p
 workdir: /tmp/rdlt-commit-policy
@@ -88,8 +153,8 @@ destination:
     path: /tmp/rdlt-commit-policy-out
     format: jsonl
 "#;
-    let spec: Spec = serde_yaml_ng::from_str(with_policy).expect("parses");
-    let policy = spec.commit_policy.expect("present");
+    let doc: document::Document = serde_yaml_ng::from_str(with_policy).expect("parses");
+    let policy = doc.commit_policy.expect("present");
     assert_eq!(policy.every_bytes, Some(104_857_600));
     assert_eq!(policy.every_seconds, Some(900));
     // 100 MB OR 15 minutes — whichever first.
@@ -103,8 +168,8 @@ destination:
         "commit_policy:\n  every_bytes: 104857600\n  every_seconds: 900",
         "commit_policy: {}",
     );
-    let spec: Spec = serde_yaml_ng::from_str(&empty).expect("parses");
-    let err = rdlt::pipeline_spec::build_pipeline(&spec, std::path::Path::new(""))
+    let doc: document::Document = serde_yaml_ng::from_str(&empty).expect("parses");
+    let err = document::build(&doc, std::path::Path::new(""))
         .await
         .expect_err("a policy with no threshold must not build")
         .to_string();
@@ -115,19 +180,19 @@ destination:
         "commit_policy:\n  every_bytes: 104857600\n  every_seconds: 900\n",
         "",
     );
-    let spec: Spec = serde_yaml_ng::from_str(&none).expect("parses");
-    assert!(spec.commit_policy.is_none());
+    let doc: document::Document = serde_yaml_ng::from_str(&none).expect("parses");
+    assert!(doc.commit_policy.is_none());
 }
 
-/// 6L6: the engine's escape-hatch knobs are reachable from the facade —
-/// a cell budget tightened through the builder refuses a batch the
+/// The engine's escape-hatch knobs are reachable from the facade — a
+/// cell budget tightened through the builder refuses a batch the
 /// default would pass, with the refusal naming the knob the builder
 /// just set (the honest remedy for wide-and-large tables is raising it
 /// HERE, not dropping to raw `EngineConfig`).
 #[tokio::test]
 async fn the_builder_plumbs_the_engine_knobs() {
     let source = memory::Source::single_stream(
-        rdlt_connector::source::StreamSpec::new("users"),
+        StreamSpec::new("users"),
         vec![
             json!({"id": 1, "name": "ada"}),
             json!({"id": 2, "name": "grace"}),
@@ -151,13 +216,13 @@ async fn the_builder_plumbs_the_engine_knobs() {
     );
 }
 
-/// 7L10: the builder refuses a threshold-less commit policy — the
-/// same refusal the YAML parse makes. Such a policy would hold the
-/// whole run in one crash window, the exact shape the type's `check`
-/// exists to refuse.
+/// The builder refuses a threshold-less commit policy — the same
+/// refusal the YAML parse makes. Such a policy would hold the whole run
+/// in one crash window, the exact shape the type's `check` exists to
+/// refuse.
 #[test]
 fn build_rejects_a_threshold_less_commit_policy() {
-    let threshold_less = rdlt_core::commit::CommitPolicy {
+    let threshold_less = CommitPolicy {
         every_checkpoints: None,
         every_bytes: None,
         every_seconds: None,

@@ -5,7 +5,8 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use rdlt::pipeline_spec::{self, Spec};
+use rdlt::document::{self, Document};
+use rdlt::pipeline::Pipeline;
 
 use crate::args::{Output, Verbosity};
 use crate::render::mode::Mode;
@@ -83,12 +84,12 @@ pub(crate) async fn run(
 /// path-form configs resolve against the document's own directory — a
 /// bare `pipeline.yaml` has an EMPTY parent, which joins as the working
 /// directory, the same place the file itself was found.
-pub(crate) async fn build(spec_path: &Path) -> Result<(rdlt::Pipeline, String), exit::Error> {
-    let raw = pipeline_spec::read_document(spec_path).map_err(exit::Error::Io)?;
-    let spec: Spec = pipeline_spec::parse_spec(&raw)
-        .map_err(|e| exit::Error::Usage(format!("parsing spec: {e}")))?;
+pub(crate) async fn build(spec_path: &Path) -> Result<(Pipeline, String), exit::Error> {
+    let raw = document::read(spec_path).map_err(exit::Error::Io)?;
+    let spec: Document =
+        document::parse(&raw).map_err(|e| exit::Error::Usage(format!("parsing spec: {e}")))?;
     let base = spec_path.parent().unwrap_or(Path::new(""));
-    let pipeline = pipeline_spec::build_pipeline(&spec, base).await?;
+    let pipeline = document::build(&spec, base).await?;
     Ok((pipeline, spec.pipeline))
 }
 
@@ -97,7 +98,7 @@ pub(crate) async fn build(spec_path: &Path) -> Result<(rdlt::Pipeline, String), 
 /// channel, clearing the live display first so the summary or the
 /// error is the next thing on stderr.
 fn feed(
-    pipeline: &rdlt::Pipeline,
+    pipeline: &Pipeline,
     pipeline_name: String,
     mode: Mode,
     mut sink: Option<events::Sink>,

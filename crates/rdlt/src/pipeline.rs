@@ -1,21 +1,21 @@
-//! The typestate pipeline builder.
+//! The engine's boundary: a typestate builder that takes a source VALUE
+//! and a destination VALUE and hands back a runnable [`Pipeline`].
 //!
-//! Missing source or destination is a **compile** error; configuration errors die in
-//! [`PipelineBuilder::build`], before any I/O.
+//! Missing source or destination is a **compile** error; configuration
+//! errors die in [`Builder::build`], before any I/O. In production the
+//! values are the runtime's process adapters (what [`crate::document::build`]
+//! supplies); hand-rolled SPI implementations are test doubles.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rdlt_connector::core::commit::WriteMode;
-
-use rdlt_connector::destination::Destination;
-
-use rdlt_connector::source::Source;
-use rdlt_core::commit::CommitPolicy;
-use rdlt_core::error::Error;
-use rdlt_core::id::StreamName;
-use rdlt_core::report;
-use rdlt_engine::policy::SchemaPolicy;
+use crate::commit::{BatchPolicy, CommitPolicy, WriteMode};
+use crate::error::Error;
+use crate::event::EventStream;
+use crate::id::{PipelineId, StreamName};
+use crate::policy::SchemaPolicy;
+use crate::report;
+use crate::sdk::spi::destination::Destination;
+use crate::sdk::spi::source::Source;
 use rdlt_engine::{Engine, EngineConfig};
 
 /// Typestate marker: no source/destination provided yet.
@@ -26,20 +26,20 @@ pub struct Missing;
 /// source and a destination are set.
 ///
 /// ```compile_fail
-/// // B1: this must NOT compile — no destination was provided.
-/// let _ = rdlt::Pipeline::builder("p")
+/// // This must NOT compile — no destination was provided.
+/// let _ = rdlt::pipeline::Pipeline::builder("p")
 ///     .source(rdlt_testkit::memory::Source::default())
 ///     .build();
 /// ```
 #[derive(Debug)]
-pub struct PipelineBuilder<S, D> {
+pub struct Builder<S, D> {
     config: EngineConfig,
     source: S,
     destination: D,
 }
 
-impl PipelineBuilder<Missing, Missing> {
-    pub(crate) fn new(pipeline: impl Into<rdlt_core::id::PipelineId>) -> Self {
+impl Builder<Missing, Missing> {
+    pub(crate) fn new(pipeline: impl Into<PipelineId>) -> Self {
         Self {
             config: EngineConfig::new(pipeline),
             source: Missing,
@@ -48,11 +48,11 @@ impl PipelineBuilder<Missing, Missing> {
     }
 }
 
-impl<S, D> PipelineBuilder<S, D> {
+impl<S, D> Builder<S, D> {
     /// Set the source. Changes the builder's type, which is how a pipeline
     /// missing a source fails to compile rather than failing at run time.
-    pub fn source<NS: Source>(self, source: NS) -> PipelineBuilder<NS, D> {
-        PipelineBuilder {
+    pub fn source<NS: Source>(self, source: NS) -> Builder<NS, D> {
+        Builder {
             config: self.config,
             source,
             destination: self.destination,
@@ -61,8 +61,8 @@ impl<S, D> PipelineBuilder<S, D> {
 
     /// Set the destination. Changes the builder's type, so `build()` is only
     /// callable once both halves are present.
-    pub fn destination<ND: Destination>(self, destination: ND) -> PipelineBuilder<S, ND> {
-        PipelineBuilder {
+    pub fn destination<ND: Destination>(self, destination: ND) -> Builder<S, ND> {
+        Builder {
             config: self.config,
             source: self.source,
             destination,
@@ -89,7 +89,7 @@ impl<S, D> PipelineBuilder<S, D> {
 
     /// How much to accumulate before each destination WRITE
     /// (default: write each source batch straight through).
-    pub fn batch_policy(mut self, policy: rdlt_core::commit::BatchPolicy) -> Self {
+    pub fn batch_policy(mut self, policy: BatchPolicy) -> Self {
         self.config = self.config.with_batch_policy(policy);
         self
     }
@@ -103,10 +103,10 @@ impl<S, D> PipelineBuilder<S, D> {
     /// Local work directory (holds the WAL). Unset means NO WAL:
     /// recovery still works, degrading to re-extraction from the last
     /// committed cursor — slower, never wrong. The pipeline-document
-    /// path ([`crate::pipeline_spec`]) defaults it to
-    /// `.rdlt/<pipeline>` beside the document; embedders building here
-    /// choose their own. One workdir belongs to ONE pipeline — the
-    /// engine refuses a directory whose WAL another pipeline wrote.
+    /// path ([`crate::document`]) defaults it to `.rdlt/<pipeline>`
+    /// beside the document; embedders building here choose their own.
+    /// One workdir belongs to ONE pipeline — the engine refuses a
+    /// directory whose WAL another pipeline wrote.
     pub fn workdir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.config = self.config.with_workdir(dir.into());
         self
@@ -118,44 +118,51 @@ impl<S, D> PipelineBuilder<S, D> {
         self
     }
 
-    /// Cap on `columns × rows` in one assembled output batch (6L6): the
-    /// memory bound for the assembly step, which materializes every
-    /// null-filled absent column. Wide-and-large honest tables that
-    /// cross the default raise it here — the same knob the assembly
-    /// seat's refusal names.
+    /// Cap on `columns × rows` in one assembled output batch: the memory
+    /// bound for the assembly step, which materializes every null-filled
+    /// absent column. Wide-and-large honest tables that cross the default
+    /// raise it here — the same knob the assembly seat's refusal names.
     pub fn max_batch_cells(mut self, cells: usize) -> Self {
         self.config = self.config.with_max_batch_cells(cells);
         self
     }
 
-    /// Cap on streams one source may declare (6L6): every declared
-    /// stream costs plan-time validation and its own share of the run's
-    /// in-flight budget. An honestly larger discovery raises it here —
-    /// the same knob the plan-time refusal names.
+    /// Cap on streams one source may declare: every declared stream costs
+    /// plan-time validation and its own share of the run's in-flight
+    /// budget. An honestly larger discovery raises it here — the same
+    /// knob the plan-time refusal names.
     pub fn max_streams_per_source(mut self, streams: usize) -> Self {
         self.config = self.config.with_max_streams_per_source(streams);
         self
     }
 }
 
-impl<S: Source, D: Destination> PipelineBuilder<S, D> {
+impl<S: Source, D: Destination> Builder<S, D> {
     /// Validate configuration against destination capabilities and construct the
     /// pipeline. No network or destination I/O happens here; the checks are purely
     /// against the declared destination capabilities.
     pub fn build(self) -> Result<Pipeline, Error> {
         let caps = self.destination.capabilities();
-        let merge = merge_streams(self.config.write_mode(), self.config.write_modes());
-        if !caps.merge && merge.any() {
+        // Which streams request Merge: the default write mode, and any
+        // named per-stream overrides.
+        let merge_default = matches!(self.config.write_mode(), WriteMode::Merge { .. });
+        let merge_overrides: Vec<&StreamName> = self
+            .config
+            .write_modes()
+            .iter()
+            .filter(|(_, mode)| matches!(mode, WriteMode::Merge { .. }))
+            .map(|(stream, _)| stream)
+            .collect();
+        if !caps.merge && (merge_default || !merge_overrides.is_empty()) {
             return Err(Error::config(format!(
                 "destination `{}` does not support Merge (requested {})",
                 self.destination.spec().name,
-                if merge.default {
+                if merge_default {
                     "as the default write mode".to_owned()
                 } else {
                     format!(
                         "for streams: {}",
-                        merge
-                            .streams
+                        merge_overrides
                             .iter()
                             .map(|s| s.as_str())
                             .collect::<Vec<_>>()
@@ -185,10 +192,10 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
         {
             return Err(Error::config("Merge requires at least one key column"));
         }
-        // 7L10: the YAML facade refuses a threshold-less commit policy
-        // at parse; the builder path deserves the same refusal — such a
-        // policy would hold the whole run in one crash window, the
-        // exact shape the type refuses everywhere else.
+        // The document path refuses a threshold-less commit policy at
+        // parse; the builder path makes the same refusal — such a policy
+        // would hold the whole run in one crash window, the exact shape
+        // the type refuses everywhere else.
         if let Err(reason) = self.config.commit_policy().check() {
             return Err(Error::config(reason.to_string()));
         }
@@ -196,36 +203,6 @@ impl<S: Source, D: Destination> PipelineBuilder<S, D> {
         Ok(Pipeline {
             engine: Engine::new(self.config, self.source, self.destination),
         })
-    }
-}
-
-/// Which streams request Merge: the default write mode (`default`) and any
-/// named per-stream overrides (`streams`). Replaces an earlier
-/// `Vec<Option<StreamName>>` whose `None` element was an easy-to-miss sentinel
-/// for "the default mode".
-struct MergeRequests {
-    default: bool,
-    streams: Vec<StreamName>,
-}
-
-impl MergeRequests {
-    /// Any Merge requested at all — default mode or a named stream.
-    fn any(&self) -> bool {
-        self.default || !self.streams.is_empty()
-    }
-}
-
-fn merge_streams(
-    default: &WriteMode,
-    overrides: &BTreeMap<StreamName, WriteMode>,
-) -> MergeRequests {
-    MergeRequests {
-        default: matches!(default, WriteMode::Merge { .. }),
-        streams: overrides
-            .iter()
-            .filter(|(_, mode)| matches!(mode, WriteMode::Merge { .. }))
-            .map(|(stream, _)| stream.clone())
-            .collect(),
     }
 }
 
@@ -240,10 +217,8 @@ impl Pipeline {
     ///
     /// The returned builder is missing both connectors, and its type says so:
     /// `build()` does not exist until a source and a destination are set.
-    pub fn builder(
-        name: impl Into<rdlt_core::id::PipelineId>,
-    ) -> PipelineBuilder<Missing, Missing> {
-        PipelineBuilder::new(name)
+    pub fn builder(name: impl Into<PipelineId>) -> Builder<Missing, Missing> {
+        Builder::new(name)
     }
 
     /// Token for cancelling a running pipeline; safe at any instant (cancellation is
@@ -254,7 +229,7 @@ impl Pipeline {
 
     /// Typed event stream (StreamStarted, BatchLoaded, SchemaEvolved, Committed, etc.).
     /// Subscribe before calling [`Pipeline::run`], which consumes the pipeline.
-    pub fn events(&self) -> rdlt_engine::EventStream {
+    pub fn events(&self) -> EventStream {
         self.engine.events()
     }
 
@@ -265,7 +240,7 @@ impl Pipeline {
     ///
     /// ```compile_fail
     /// # async fn demo() {
-    /// use rdlt::Pipeline;
+    /// use rdlt::pipeline::Pipeline;
     /// use rdlt_testkit::memory;
     /// let pipeline = Pipeline::builder("p")
     ///     .source(memory::Source::default())

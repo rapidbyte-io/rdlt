@@ -142,7 +142,7 @@ pub(super) fn validate_streams(
              so the one discovery axis a source controls directly is bounded like every \
              other; an honestly larger discovery can raise the cap with \
              `EngineConfig::with_max_streams_per_source` (the facade's \
-             `PipelineBuilder::max_streams_per_source` plumbs the same knob)",
+             `pipeline::Builder::max_streams_per_source` plumbs the same knob)",
             streams.len(),
             config.max_streams_per_source
         )));

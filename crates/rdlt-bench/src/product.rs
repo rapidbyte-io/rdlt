@@ -662,12 +662,12 @@ mod tests {
             declared_connector_bins(overridden).expect("the overridden template parses"),
             BTreeSet::from(["rdlt-connector-postgres".to_owned()])
         );
-        // A NULL `path:` is not an override: the Spec model reads it
+        // A NULL `path:` is not an override: the document model reads it
         // as None and falls back to PATH discovery, so preflight must
         // still provision the conventional bin — while `path: ""` IS
         // an override there (a string the runtime will try to exec),
         // so preflight must not demand a bin the run would never use.
-        // Both templates are parsed through the REAL Spec model below,
+        // Both templates are parsed through the REAL document model below,
         // pinning the agreement itself rather than one reader's half.
         let null_path = "source:\n  connector:\n    id: io.rapidbyte.postgres\n    path:\n    \
                          config: {}\n\
@@ -685,17 +685,13 @@ mod tests {
             BTreeSet::from(["rdlt-connector-file".to_owned()])
         );
         for (template, expected_path) in [(null_path, None), (empty_path.as_str(), Some(""))] {
-            let spec: rdlt::pipeline_spec::Spec =
+            let spec: rdlt::document::Document =
                 serde_yaml_ng::from_str(&format!("pipeline: p\n{template}"))
-                    .expect("the template parses through the real Spec model");
-            let reference = spec
-                .source
-                .desugar(std::path::Path::new(""))
-                .expect("the connector arm desugars");
+                    .expect("the template parses through the real document model");
             assert_eq!(
-                reference.path.as_deref(),
+                spec.source.path.as_deref(),
                 expected_path.map(std::path::Path::new),
-                "the Spec model's reading this rule mirrors"
+                "the document model's reading this rule mirrors"
             );
         }
     }

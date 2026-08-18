@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
 
-use rdlt::prelude::PipelineEvent;
+use rdlt::event::PipelineEvent;
 
 use crate::{exit, render};
 

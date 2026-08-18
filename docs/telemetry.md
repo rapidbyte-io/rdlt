@@ -51,7 +51,7 @@ matching `committed` — the next attempt runs under a new load id.
 
 ### 2. `Metrics` — the canonical fold
 
-`rdlt::Metrics` folds the event stream into live numbers ONCE, so
+`rdlt::metrics::Metrics` folds the event stream into live numbers ONCE, so
 every consumer shows the same rows/s:
 
 ```rust,ignore

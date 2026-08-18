@@ -2,17 +2,17 @@
 //! that fail only in the recorded session. Each one is rendered exactly as
 //! a run renders it (the same `substitute` over the same keys the product
 //! side provides), then pushed through the REAL gates a run would hit: the
-//! facade's `pipeline_spec::Spec` parse (deny_unknown_fields — a typoed
-//! top-level or `connector:` key dies here), and both sides must be the
-//! `connector:` arm with the expected reverse-DNS id and a
-//! `{{bins}}`-resolved path override. The opaque `config:` blocks are
+//! facade's `document::Document` parse (deny_unknown_fields — a typoed
+//! top-level or `connector:` key dies here), and both sides must name the
+//! expected reverse-DNS id with a `{{bins}}`-resolved path override (only
+//! the `connector:` arm can carry one). The opaque `config:` blocks are
 //! validated by the spawned connector's own gate at the handshake, in the
 //! connectors repository. The cell registry side (ids, verify, competitor
 //! arms) is load-checked by the selftest case's whole-registry load.
 
 use std::collections::BTreeMap;
 
-use rdlt::pipeline_spec::{DestSpec, SourceSpec, Spec};
+use rdlt::document::Document;
 use rdlt_bench::product::SUBSTITUTION_KEYS;
 use rdlt_bench::template::substitute;
 
@@ -95,40 +95,34 @@ fn the_five_pipelines_render_parse_and_name_their_connectors() {
              a key the product side does not provide:\n{rendered}"
         );
 
-        let spec: Spec = serde_yaml_ng::from_str(&rendered).unwrap_or_else(|e| {
-            panic!("{file}: the rendered document is not a pipeline spec: {e}")
+        let spec: Document = serde_yaml_ng::from_str(&rendered).unwrap_or_else(|e| {
+            panic!("{file}: the rendered document is not a pipeline document: {e}")
         });
 
-        match &spec.source {
-            SourceSpec::Connector(reference) => {
-                assert_eq!(&reference.id, source_id, "{file}: source connector id");
-                let bin = reference.path.as_ref().unwrap_or_else(|| {
-                    panic!("{file}: the source side carries no `path:` override")
-                });
-                assert!(
-                    bin.starts_with("/repo/target/release"),
-                    "{file}: the source path override must come from {{{{bins}}}}: {}",
-                    bin.display()
-                );
-            }
-            other => panic!("{file}: the source is not the `connector:` arm: {other:?}"),
-        }
-        match &spec.destination {
-            DestSpec::Connector(reference) => {
-                assert_eq!(
-                    &reference.id, destination_id,
-                    "{file}: destination connector id"
-                );
-                let bin = reference.path.as_ref().unwrap_or_else(|| {
-                    panic!("{file}: the destination side carries no `path:` override")
-                });
-                assert!(
-                    bin.starts_with("/repo/target/release"),
-                    "{file}: the destination path override must come from {{{{bins}}}}: {}",
-                    bin.display()
-                );
-            }
-            other => panic!("{file}: the destination is not the `connector:` arm: {other:?}"),
-        }
+        let reference = &spec.source;
+        assert_eq!(&reference.id, source_id, "{file}: source connector id");
+        let bin = reference
+            .path
+            .as_ref()
+            .unwrap_or_else(|| panic!("{file}: the source side carries no `path:` override"));
+        assert!(
+            bin.starts_with("/repo/target/release"),
+            "{file}: the source path override must come from {{{{bins}}}}: {}",
+            bin.display()
+        );
+        let reference = &spec.destination;
+        assert_eq!(
+            &reference.id, destination_id,
+            "{file}: destination connector id"
+        );
+        let bin = reference
+            .path
+            .as_ref()
+            .unwrap_or_else(|| panic!("{file}: the destination side carries no `path:` override"));
+        assert!(
+            bin.starts_with("/repo/target/release"),
+            "{file}: the destination path override must come from {{{{bins}}}}: {}",
+            bin.display()
+        );
     }
 }
