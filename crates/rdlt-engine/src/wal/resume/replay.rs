@@ -509,7 +509,7 @@ pub(crate) async fn replay(
             counters: Default::default(),
         })
         .await
-        .map_err(|e| crate::runtime::classify_dest_error(&e))?;
+        .map_err(|e| crate::classify::classify_dest_error(&e))?;
     Ok(Some(batches))
 }
 
@@ -962,7 +962,7 @@ mod segment_format {
     fn an_honest_maximal_segments_footer_sits_far_under_the_cap() {
         use arrow::datatypes::{DataType, Field, Schema};
         let schema = Arc::new(Schema::new(
-            (0..crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE)
+            (0..crate::shred::limits::MAX_SOURCE_COLUMNS_PER_TABLE)
                 .map(|index| Field::new(format!("c{index}"), DataType::Int64, true))
                 .collect::<Vec<_>>(),
         ));

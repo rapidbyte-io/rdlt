@@ -39,10 +39,11 @@
 //! to change without semver cost — the one exception is the doc-hidden
 //! [`fuzzing`] module, the bench/fuzz seam, which carries no semver guarantee.
 
+mod classify;
 mod config;
-mod coverage;
 mod engine;
 pub mod identity;
+mod lineage;
 mod load;
 pub mod naming;
 pub mod policy;

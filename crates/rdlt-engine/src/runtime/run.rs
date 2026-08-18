@@ -34,13 +34,13 @@ use rdlt_core::report;
 use tokio::{sync::broadcast, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
+use crate::classify::classify_source_error;
 use crate::{
     EngineConfig,
     load::{LoadItem, Loader},
 };
 
 use super::{
-    classify::classify_source_error,
     drain::drain_loader,
     extract::{StreamPlan, stream_task},
     recover::recover_wal,

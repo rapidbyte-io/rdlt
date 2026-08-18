@@ -1,5 +1,6 @@
-//! Map connector-classified errors onto the embedder taxonomy, preserving
-//! retryability for the run-level retry driver.
+//! Connector-classified errors → the embedder taxonomy, preserving
+//! retryability for the run-level retry driver: the one mapping the load,
+//! wal and run seats all share.
 
 use rdlt_connector::error::SourceError;
 use rdlt_core::error::Error;

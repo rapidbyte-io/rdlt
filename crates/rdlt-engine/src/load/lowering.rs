@@ -600,7 +600,7 @@ mod parity_tests {
     //! Zero-row batches on purpose: the question is entirely about shape, and no
     //! row is needed to ask it.
     use super::*;
-    use crate::shred::build::arrow_schema;
+    use crate::shred::types::arrow_schema;
     use proptest::prelude::*;
     use rdlt_core::id::TableName;
     use rdlt_core::schema::Provenance;

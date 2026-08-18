@@ -34,10 +34,10 @@ fn child_namespace_collision(a: &StreamName, ta: &str, b: &StreamName, tb: &str)
 }
 
 /// The destination table a stream owns — the crate's one attribution
-/// mapping ([`crate::coverage::root_table`]), re-exported here because
+/// mapping ([`crate::lineage::root_table`]), re-exported here because
 /// validation is where the mapping is PROVEN injective before the run
 /// wiring, the loader, and the recovery scan all build on it.
-pub(super) use crate::coverage::root_table;
+pub(super) use crate::lineage::root_table;
 
 /// The mixed cursor-less/cursored advisory — CONDITIONAL truth, by
 /// design (round-4 fix): a stream declaring no `cursor_field` MAY be a

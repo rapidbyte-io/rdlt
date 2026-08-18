@@ -1,8 +1,8 @@
-//! Arrow columnar building: drained rows → `RecordBatch` per the resolved
+//! Arrow columnar building: resolved rows → `RecordBatch` per the resolved
 //! schema. Values land directly in typed arrays; the `Json` column type stores the
 //! verbatim serialized subtree (never dropped, never exploded).
 //!
-//! Generic over [`JsonView`]: the tape path and the `&serde_json::Value` test
+//! Generic over [`JsonView`]: the arena and the `&serde_json::Value` test
 //! view build through the SAME code — identical arrays, bit for bit.
 //!
 //! One concept despite its length: the closed type lattice needs one builder
@@ -18,65 +18,25 @@ use arrow::{
         TimestampMicrosecondBuilder,
     },
     buffer::{NullBuffer, OffsetBuffer},
-    datatypes::{DataType, Field, Fields, Schema, TimeUnit},
+    datatypes::Field,
     error::ArrowError,
     record_batch::RecordBatch,
 };
 use rdlt_core::id::LoadId;
-use rdlt_core::schema::{self, Column, ColumnType, TableSchema};
+use rdlt_core::schema::{self, ColumnType, TableSchema};
 use rdlt_core::types::LogicalType;
 
-use super::{
-    DrainRow,
-    canon::parse_timestamp_tz,
-    view::{JsonView, ValueKind},
-};
+use super::canonical::parse_timestamp_tz;
+use super::infer::int64_fits_in_f64;
+use super::resolve::Row;
+use super::types::{arrow_fields, arrow_scalar_type, arrow_schema};
+use super::view::{JsonView, ValueKind};
 use crate::identity::RowId;
-use crate::shred::int64_fits_in_f64;
-
-/// Arrow physical type for a logical type.
-fn arrow_scalar_type(ty: LogicalType) -> DataType {
-    match ty {
-        LogicalType::Bool => DataType::Boolean,
-        LogicalType::Int64 => DataType::Int64,
-        LogicalType::Float64 => DataType::Float64,
-        LogicalType::Decimal { precision, scale } => DataType::Decimal128(precision, scale as i8),
-        LogicalType::Utf8 | LogicalType::Uuid | LogicalType::Json => DataType::Utf8,
-        LogicalType::Binary => DataType::Binary,
-        LogicalType::TimestampTz => {
-            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
-        }
-        LogicalType::TimestampNaive => DataType::Timestamp(TimeUnit::Microsecond, None),
-        LogicalType::Date => DataType::Date32,
-        LogicalType::Time => DataType::Time64(TimeUnit::Microsecond),
-    }
-}
-
-pub(crate) fn arrow_column_type(ty: &ColumnType) -> DataType {
-    match ty {
-        ColumnType::Scalar { scalar } => arrow_scalar_type(*scalar),
-        ColumnType::Struct { fields } => DataType::Struct(arrow_fields(fields)),
-        ColumnType::ScalarList { item } => {
-            DataType::List(Arc::new(Field::new("item", arrow_scalar_type(*item), true)))
-        }
-    }
-}
-
-fn arrow_fields(columns: &[Column]) -> Fields {
-    columns
-        .iter()
-        .map(|c| Field::new(&c.name, arrow_column_type(&c.column_type), c.nullable))
-        .collect()
-}
-
-pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
-    Schema::new(arrow_fields(&schema.columns))
-}
 
 /// Build one table's batch. `normalized_to_source` maps normalized column
-/// names back to source keys (the schema speaks normalized; the drained rows
-/// speak source) — the table buffer's map, so each column's lookup is O(1)
-/// rather than a linear scan of the pairing list (4M3).
+/// names back to source keys (the schema speaks normalized; the rows speak
+/// source) — the table buffer's map, so each column's lookup is O(1) rather
+/// than a linear scan of the pairing list.
 ///
 /// Returns the batch and the number of MISFITS: cells where a present, non-null
 /// input produced a NULL output because the value could not be represented under
@@ -91,7 +51,7 @@ pub(crate) fn arrow_schema(schema: &TableSchema) -> Schema {
 pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     schema: &TableSchema,
     normalized_to_source: &std::collections::HashMap<String, String>,
-    rows: &[DrainRow<V>],
+    rows: &[Row<V>],
     load_id: &LoadId,
 ) -> Result<(RecordBatch, u64), ArrowError> {
     let mut misfits: u64 = 0;
@@ -283,11 +243,11 @@ fn scalar_float64<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
     for v in values {
         // Mirrors `Value::as_f64` where lossless, and refuses where not:
         // an Int beyond ±2^53 has no exact f64, and the column's own
-        // contract is losslessness at runtime, never assumed (7M5 — the
+        // contract is losslessness at runtime, never assumed — the
         // inference path escalates the same value to Utf8; a HINT-pinned
         // column never observes, so the check lives at the build arm,
         // rendering the value a counted misfit instead of a silent
-        // 1-ulp alteration). No `ValueKind::UInt` arm: a u64 observation
+        // 1-ulp alteration. No `ValueKind::UInt` arm: a u64 observation
         // resolves the column to text, so a UInt can never reach a
         // Float64 column.
         b.append_option(match view_kind(v) {
@@ -348,11 +308,11 @@ fn scalar_json<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
 }
 
 /// True when a temporal literal's fractional-second digits fit the
-/// engine's microsecond canonical unit (8L11): chrono's `%.f` accepts
-/// arbitrary precision and the builders convert through nanoseconds,
-/// so 7-9 fraction digits would silently truncate — the same
-/// inexactness class `parse_decimal` refuses as a counted misfit, and
-/// temporal parsing now counts it the same way.
+/// engine's microsecond canonical unit: chrono's `%.f` accepts arbitrary
+/// precision and the builders convert through nanoseconds, so 7-9 fraction
+/// digits would silently truncate — the same inexactness class
+/// `parse_decimal` refuses as a counted misfit, and temporal parsing counts
+/// it the same way.
 fn fraction_within_micros(literal: &str) -> bool {
     let Some(dot) = literal.find(['.', ',']) else {
         return true;
@@ -459,7 +419,7 @@ fn scalar_binary<'v, V: JsonView<'v>>(values: &[Option<V>]) -> ArrayRef {
 /// `serde_json::to_string(&Value)` (preserve_order semantics, serde escaping,
 /// itoa/ryu numbers). Used for the `Json` column type's verbatim subtrees.
 ///
-/// DELIBERATELY NOT unified with [`super::canon::canonical_json_bytes`]: the two
+/// DELIBERATELY NOT unified with [`super::canonical::canonical_json_bytes`]: the two
 /// share every rule (escaping, number rendering, array recursion) EXCEPT key
 /// order — this one preserves native insertion order for the stored value, while
 /// `canonical_json_bytes` sorts object keys because `_rdlt_id` hashes must be
@@ -782,8 +742,8 @@ mod tests {
         assert_eq!(fits_precision(i128::MIN, 38), None, "no wrap on abs()");
     }
 
-    /// 8L11: a temporal literal carrying sub-microsecond fraction
-    /// digits is a COUNTED MISFIT, never a silently truncated value —
+    /// A temporal literal carrying sub-microsecond fraction digits is a
+    /// COUNTED MISFIT, never a silently truncated value —
     /// the same discipline `parse_decimal` applies to over-scale
     /// fractions. Six digits (microseconds exactly) parse.
     #[test]
@@ -807,7 +767,7 @@ mod tests {
         assert_eq!(t.value(2), 3_723_000_000, "no fraction parses");
     }
 
-    /// 7M5: a HINT-pinned Float64 column builds a beyond-±2^53 integer
+    /// A HINT-pinned Float64 column builds a beyond-±2^53 integer
     /// as a COUNTED MISFIT (null output, non-null input — the same
     /// discipline a wrong-typed value gets), never a silent 1-ulp
     /// rounding. The inference path escalates the same value to Utf8;

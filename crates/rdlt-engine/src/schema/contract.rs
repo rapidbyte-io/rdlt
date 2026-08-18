@@ -1,23 +1,18 @@
-//! Contract enforcement helpers.
-//!
-//! `Freeze` turns a would-be delta into a typed error before any row of the violating
-//! batch is written; `Discard*` filters data down to the frozen shape — counted, never
-//! silent.
+//! Contract enforcement: what a policy does with a would-be change. `Freeze`
+//! turns it into a typed error before any row of the violating batch is
+//! written; `Discard*` filters data down to the frozen shape — counted, never
+//! silent; and a table without an entry of its own answers to its ancestry.
 
 use rdlt_core::error::ContractViolation;
 use rdlt_core::id::TableName;
 use rdlt_core::schema::{self, ColumnType, TableSchema};
 use rdlt_core::types::LogicalType;
 
+use super::registry::SchemaRegistry;
 use crate::policy::{PolicyAction, SchemaPolicy};
-use crate::shred::int64_fits_in_f64;
-use crate::{
-    schema::registry::SchemaRegistry,
-    shred::{
-        canon::parse_timestamp_tz,
-        view::{JsonView, ValueKind},
-    },
-};
+use crate::shred::canonical::parse_timestamp_tz;
+use crate::shred::infer::int64_fits_in_f64;
+use crate::shred::view::{JsonView, ValueKind};
 
 /// Does `value` conform to `ty` without requiring any schema change?
 /// (`true` = storable as-is; `false` = this value is what forced the widening.)
@@ -175,8 +170,8 @@ fn explicit_action(
 
 #[cfg(test)]
 mod tests {
-    // Mutation-report closure: value_fits arms were only reachable through
-    // Discard policies, which few tests exercise. Direct table.
+    // The `value_fits` arms are otherwise reachable only through Discard
+    // policies, which few tests exercise: a direct table.
     use rdlt_core::schema::{Column, Provenance};
     use serde_json::json;
 
@@ -255,12 +250,11 @@ mod tests {
         assert!(!value_fits(&json!([1, "x"]), &list_ty));
     }
 
-    /// `violation_for` had no test at all: the module's tests covered only
-    /// `value_fits`, so `scalar_of` could return `None` for everything and
-    /// nothing noticed. The `from`/`to` fields are asserted BY VALUE here, not
-    /// through the rendered message — a violation is consumed programmatically
-    /// (an operator tool reads which type widened to which), and Principle V
-    /// forbids pinning behaviour to rendered text.
+    /// The `from`/`to` fields are asserted BY VALUE, not through the rendered
+    /// message — a violation is consumed programmatically (an operator tool
+    /// reads which type widened to which), so behaviour is never pinned to
+    /// rendered text; without this pin `scalar_of` could answer `None` for
+    /// everything unnoticed.
     #[test]
     fn violation_for_carries_typed_from_and_to() {
         let table = TableName::new("t");

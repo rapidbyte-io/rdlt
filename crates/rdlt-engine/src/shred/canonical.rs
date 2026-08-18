@@ -2,7 +2,7 @@
 //! represent this value" — used for `Utf8` widening output AND for `_rdlt_id` hashing,
 //! so identity stays stable across type widenings of other columns.
 //!
-//! Generic over [`JsonView`]: the tape path and the `&serde_json::Value` test
+//! Generic over [`JsonView`]: the arena and the `&serde_json::Value` test
 //! view render through the SAME functions — identical bytes, identical hashes.
 //!
 //! Two float renderings coexist ON PURPOSE, exactly as they always have:
@@ -59,16 +59,11 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
     match value.kind() {
         ValueKind::Object => {
             out.push(b'{');
-            // One Vec per object, to sort the keys. This looks like an obvious
-            // allocation to hoist into a reusable scratch buffer, and it has
-            // been measured rather than argued: in the nested-shred instruction
-            // bench, ALL allocation is 6.19% and this whole function —
-            // recursion, sort, serde writes and allocation together — is 5.30%.
-            // The per-object Vec is a fraction of that fraction, so threading a
-            // scratch stack through the recursion buys a rounding error and
-            // costs the reader a lifetime puzzle. Two allocation removals in
-            // this project have already measured WORSE than the allocation they
-            // removed; treat a counting argument here as guilty until measured.
+            // One Vec per object, to sort the keys. Hoisting it into a
+            // reusable scratch stack measures as a rounding error (all
+            // allocation is ~6% of the nested-shred instruction count and this
+            // whole function ~5%) and costs the reader a lifetime puzzle, so
+            // the allocation stays.
             let mut entries: Vec<(&str, V)> = value.obj_entries().collect();
             entries.sort_unstable_by_key(|(key, _)| *key);
             for (i, (key, item)) in entries.into_iter().enumerate() {
@@ -117,16 +112,10 @@ pub(crate) fn canonical_json_bytes<'a, V: JsonView<'a>>(value: V, out: &mut Vec<
 /// rejects nothing chrono would accept — it just makes the overwhelmingly
 /// common "ordinary string" case cost a few instructions instead of a full
 /// chrono parse attempt (this runs on EVERY observed string and would
-/// otherwise dominate the shred profile).
-/// Mutation note: the LENGTH gate is load-bearing and the digit checks are not.
-/// Everything after `b.len() < 20` indexes the slice, so that condition must
-/// both come first and stop evaluation — rewiring it panics on a one-character
-/// numeric string (pinned by `timestamp_prefilter_is_bounds_safe_on_short_input`).
-/// The four digit comparisons, by contrast, can only cause the filter to admit
-/// MORE candidates, and chrono then rejects them anyway; mutating those `||`s
-/// is measurably equivalent — verified, all four survive a pin that kills the
-/// length gate. They are an optimisation, not a validator, exactly as the doc
-/// above says.
+/// otherwise dominate the shred profile). The LENGTH gate is load-bearing
+/// and must come first: everything after it indexes the slice. The digit
+/// comparisons are an optimisation, not a validator — they can only admit
+/// MORE candidates, which chrono then rejects.
 pub(crate) fn parse_timestamp_tz(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     let b = s.as_bytes();
     if b.len() < 20

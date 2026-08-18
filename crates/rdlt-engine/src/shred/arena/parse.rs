@@ -1,63 +1,20 @@
-//! Slab arena: the tape shred path's JSON representation.
+//! Parsing a pushed slab into the arena through serde_json's OWN parser via
+//! a `DeserializeSeed` — every lexical edge case (escapes, surrogates, number
+//! grammar) behaves exactly as a `serde_json::Value` parse — under three
+//! budgets spent AS the slab parses: rows, values, and nesting depth.
 //!
-//! One arena per pushed slab. Parsing goes through serde_json's OWN parser via a
-//! `DeserializeSeed` — every lexical edge case (escapes, surrogates, number
-//! grammar) behaves exactly as a `serde_json::Value` parse — but lands in
-//! three flat vectors instead of per-row allocated trees: nodes, object
-//! entries, array items. Strings and keys borrow from the slab whenever they
-//! contain no escapes.
-//!
-//! One deliberate DIVERGENCE from serde's defaults (047 round 2, owner
-//! ruling): nesting is capped at [`rdlt_connector::channel::MAX_ARROW_DEPTH`]
-//! rather than serde's 128, so the JSONL front door and every capped walk
-//! behind it (shred inference, canonicalization, lowering) agree on ONE
-//! bound — data deeper than the cap refuses AT INGEST with a typed parse
-//! error, and no deeper structure is ever built.
-//!
-//! Object entries are stored deduplicated with IndexMap insert semantics
-//! (first-occurrence position, last-occurrence value) at parse time, so
-//! [`Node`]'s `JsonView` satisfies the view contract with plain slices.
+//! One deliberate divergence from serde's defaults: nesting is capped at
+//! [`rdlt_connector::channel::MAX_ARROW_DEPTH`] rather than serde's 128, so
+//! the JSONL front door and every capped walk behind it (inference,
+//! canonicalization, lowering) agree on ONE bound — data deeper than the cap
+//! refuses AT INGEST with a typed parse error, and no deeper structure is
+//! ever built.
 
 use std::{borrow::Cow, fmt, marker::PhantomData};
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 
-use super::view::{JsonView, ValueKind};
-
-/// Index of a node within its arena.
-pub(crate) type NodeId = u32;
-
-/// Arena indices are u32 by design (half the footprint of usize on the hot
-/// vectors). A single document dense enough to overflow them (~4.29e9 nodes,
-/// which is ~100 GB of arena before the cast even matters) panics with a clear
-/// message instead of silently wrapping into aliased ranges; the engine
-/// surfaces test/prod panics from the shred stage as typed task errors.
-#[inline]
-fn checked_idx(len: usize) -> u32 {
-    u32::try_from(len).expect("arena index overflow: a single JSON document exceeds 4.29e9 nodes")
-}
-
-#[derive(Debug)]
-pub(crate) enum ArenaNode<'s> {
-    Null,
-    Bool(bool),
-    Int(i64),
-    /// Beyond `i64::MAX` only (serde_json visits u64 for those).
-    UInt(u64),
-    Float(f64),
-    Str(Cow<'s, str>),
-    /// Range into `Arena::obj_entries`.
-    Obj(u32, u32),
-    /// Range into `Arena::arr_items`.
-    Arr(u32, u32),
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Arena<'s> {
-    nodes: Vec<ArenaNode<'s>>,
-    obj_entries: Vec<(Cow<'s, str>, NodeId)>,
-    arr_items: Vec<NodeId>,
-}
+use super::slab::{Arena, ArenaNode, NodeId, checked_idx};
 
 /// Why a slab refused to parse into rows.
 #[derive(Debug)]
@@ -69,8 +26,8 @@ pub(crate) enum ParseRowsError {
     /// of a parse error.
     RowCap,
     /// More values (object entries + nested array elements) than the
-    /// caller's parse budget (5M5): the arena's memory tracks values, not
-    /// rows, so value count carries its own progressive bound.
+    /// caller's parse budget: the arena's memory tracks values, not rows,
+    /// so value count carries its own progressive bound.
     ValueCap,
 }
 
@@ -95,7 +52,7 @@ impl ParseBudget {
     }
 }
 
-/// The two allowances one `parse_rows` call spends (5M4/5M5): ROWS (roots —
+/// The two allowances one `parse_rows` call spends: ROWS (roots —
 /// documents, or elements of a top-level array) bound lineage and per-row
 /// output; VALUES (object entries and nested array elements, at any depth)
 /// bound the arena itself — each costs its node at parse, whether or not it
@@ -109,32 +66,6 @@ struct ParseBudgets {
 }
 
 impl<'s> Arena<'s> {
-    /// Pre-size for a slab of `bytes` bytes.
-    ///
-    /// Growing three vectors from empty means repeated reallocate-and-copy as
-    /// a slab parses, so a starting capacity is worth having. Picking it is
-    /// the delicate part, and the first version of this got the direction
-    /// wrong: it divided by the SMALLEST bytes-per-node (4, for `1,` in an
-    /// array), which is an UPPER bound on node count, and then claimed to
-    /// under-estimate. It over-estimated on everything.
-    ///
-    /// Typical JSON runs far sparser than its densest possible encoding — an
-    /// object entry is `"key":value,` — so this divides by a realistic figure
-    /// instead of a floor, and caps hard. Under-shooting costs a doubling or
-    /// two; over-shooting costs resident memory on every push, and peak RSS is
-    /// one of this feature's recorded metrics. Capacity only, never a
-    /// pre-filled length.
-    pub(crate) fn sized_for(bytes: usize) -> Self {
-        const BYTES_PER_NODE: usize = 32;
-        const MAX_PRESIZE: usize = 64 * 1024;
-        let nodes = (bytes / BYTES_PER_NODE).min(MAX_PRESIZE);
-        Self {
-            nodes: Vec::with_capacity(nodes),
-            obj_entries: Vec::with_capacity(nodes),
-            arr_items: Vec::with_capacity(nodes / 4),
-        }
-    }
-
     /// Parse a slab into row nodes, refusing PROGRESSIVELY past `max_rows`
     /// and `max_values`.
     ///
@@ -147,8 +78,7 @@ impl<'s> Arena<'s> {
     /// element, ~56 for an object entry — its node plus its `(key, id)`
     /// tuple on the pinned layout — with the per-object parse transients
     /// doubling the peak) would otherwise materialize a ~12-16× arena
-    /// before any post-parse check could refuse (4H3 arrays; 5M5
-    /// objects).
+    /// before any post-parse check could refuse.
     pub(crate) fn parse_rows(
         &mut self,
         bytes: &'s [u8],
@@ -213,130 +143,6 @@ impl<'s> Arena<'s> {
             }
         }
         Ok(rows)
-    }
-
-    /// `{"value": <node>}` — for bare-scalar/array rows and scalar child items.
-    pub(crate) fn wrap_in_value_obj(&mut self, node: NodeId) -> NodeId {
-        let start = checked_idx(self.obj_entries.len());
-        self.obj_entries.push((Cow::Borrowed("value"), node));
-        self.push_node(ArenaNode::Obj(start, start + 1))
-    }
-
-    pub(crate) fn node(&self, id: NodeId) -> Node<'_, 's> {
-        Node { arena: self, id }
-    }
-
-    fn push_node(&mut self, node: ArenaNode<'s>) -> NodeId {
-        let id = checked_idx(self.nodes.len());
-        self.nodes.push(node);
-        id
-    }
-}
-
-/// A borrowed view of one arena node — the tape path's `JsonView`.
-#[derive(Clone, Copy)]
-pub(crate) struct Node<'a, 's> {
-    arena: &'a Arena<'s>,
-    id: NodeId,
-}
-
-impl<'a, 's> Node<'a, 's> {
-    pub(crate) fn id(&self) -> NodeId {
-        self.id
-    }
-}
-
-impl fmt::Debug for Node<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Node({})", self.id)
-    }
-}
-
-impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
-    type ObjectIter = ObjectIter<'a, 's>;
-    type ArrayIter = ArrayIter<'a, 's>;
-
-    fn kind(self) -> ValueKind<'a> {
-        match &self.arena.nodes[self.id as usize] {
-            ArenaNode::Null => ValueKind::Null,
-            ArenaNode::Bool(b) => ValueKind::Bool(*b),
-            ArenaNode::Int(i) => ValueKind::Int(*i),
-            ArenaNode::UInt(u) => ValueKind::UInt(*u),
-            ArenaNode::Float(f) => ValueKind::Float(*f),
-            ArenaNode::Str(s) => ValueKind::Str(s.as_ref()),
-            ArenaNode::Obj(..) => ValueKind::Object,
-            ArenaNode::Arr(..) => ValueKind::Array,
-        }
-    }
-
-    fn obj_entries(self) -> Self::ObjectIter {
-        let (start, end) = match self.arena.nodes[self.id as usize] {
-            ArenaNode::Obj(start, end) => (start, end),
-            _ => (0, 0),
-        };
-        ObjectIter {
-            arena: self.arena,
-            next: start,
-            end,
-        }
-    }
-
-    fn arr_items(self) -> Self::ArrayIter {
-        let (start, end) = match self.arena.nodes[self.id as usize] {
-            ArenaNode::Arr(start, end) => (start, end),
-            _ => (0, 0),
-        };
-        ArrayIter {
-            arena: self.arena,
-            next: start,
-            end,
-        }
-    }
-
-    fn obj_get(self, key: &str) -> Option<Self> {
-        let ArenaNode::Obj(start, end) = self.arena.nodes[self.id as usize] else {
-            return None;
-        };
-        self.arena.obj_entries[start as usize..end as usize]
-            .iter()
-            .find(|(k, _)| k.as_ref() == key)
-            .map(|(_, id)| self.arena.node(*id))
-    }
-}
-
-pub(crate) struct ObjectIter<'a, 's> {
-    arena: &'a Arena<'s>,
-    next: u32,
-    end: u32,
-}
-
-impl<'a, 's: 'a> Iterator for ObjectIter<'a, 's> {
-    type Item = (&'a str, Node<'a, 's>);
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.next >= self.end {
-            return None;
-        }
-        let (key, id) = &self.arena.obj_entries[self.next as usize];
-        self.next += 1;
-        Some((key.as_ref(), self.arena.node(*id)))
-    }
-}
-
-pub(crate) struct ArrayIter<'a, 's> {
-    arena: &'a Arena<'s>,
-    next: u32,
-    end: u32,
-}
-
-impl<'a, 's: 'a> Iterator for ArrayIter<'a, 's> {
-    type Item = Node<'a, 's>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.next >= self.end {
-            return None;
-        }
-        let id = self.arena.arr_items[self.next as usize];
-        self.next += 1;
-        Some(self.arena.node(id))
     }
 }
 
@@ -435,7 +241,7 @@ where
             budgets: self.budgets,
         })? {
             // Which allowance an element spends depends on WHERE the array
-            // sits (5M4): at depth 0 each element becomes a ROW (the
+            // sits: at depth 0 each element becomes a ROW (the
             // top-level-array form), so it spends the row allowance;
             // nested elements become child-table rows or list cells —
             // both materialize their arena node at parse, so they spend
@@ -470,7 +276,7 @@ where
         // IndexMap insert semantics AT PARSE TIME: first position, last value.
         //
         // The duplicate scan is O(1) amortized past a 16-entry linear
-        // prelude (5H2): a flat mega-object's `Vec::find` per entry was
+        // prelude: a flat mega-object's `Vec::find` per entry would be
         // N²/2 string comparisons of pure CPU inside `spawn_blocking` —
         // uninterruptible for the duration, and hours of it from one
         // 64 MiB frame. Small objects stay linear (cheaper than hashing);
@@ -479,7 +285,7 @@ where
         let mut entries: Vec<(Cow<'s, str>, NodeId)> = Vec::new();
         let mut index: Option<std::collections::HashMap<Cow<'s, str>, usize>> = None;
         while let Some(key) = map.next_key_seed(KeySeed(PhantomData))? {
-            // Every entry spends from the value budget AS IT PARSES (5M5):
+            // Every entry spends from the value budget AS IT PARSES:
             // object entries are arena nodes the row budget never saw.
             if self.budgets.values.take_one().is_err() {
                 return Err(serde::de::Error::custom(
@@ -563,12 +369,10 @@ where
             /// buffer and hands it over transiently, so this must copy.
             ///
             /// There is deliberately no `visit_string` override here or on the
-            /// value visitor. `from_str`/`from_slice` never produce an owned
-            /// `String` — they borrow or use scratch — so an override is
-            /// unreachable code, and serde's default already forwards
-            /// `visit_string` to this method for any deserializer that does own
-            /// its strings. Verified by probe: a `panic!` in the override never
-            /// fired across the whole engine suite.
+            /// value visitor: `from_str`/`from_slice` never produce an owned
+            /// `String` — they borrow or use scratch — and serde's default
+            /// already forwards `visit_string` here for any deserializer that
+            /// does own its strings.
             fn visit_str<E>(self, s: &str) -> Result<Self::Value, E> {
                 Ok(Cow::Owned(s.to_owned()))
             }
@@ -580,8 +384,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shred::canon::canonical_json_bytes;
-    use crate::shred::view::JsonView;
+    use crate::shred::canonical::canonical_json_bytes;
+    use crate::shred::view::{JsonView, ValueKind};
     use rdlt_connector::channel::{MAX_JSON_VALUES_PER_PUSH, MAX_RECORD_BATCH_ROWS};
     use serde_json::Value;
 
@@ -597,77 +401,6 @@ mod tests {
             }
         }
         Ok(rows)
-    }
-
-    /// `sized_for` is a CAPACITY decision, and capacity is the point: the doc
-    /// above records that an earlier version divided by the densest possible
-    /// encoding and over-estimated on everything, and that over-shooting costs
-    /// resident memory on every push — with peak RSS a recorded metric of this
-    /// workspace. Nothing about correctness changes if the arithmetic drifts,
-    /// which is exactly why no test noticed; the deliberate memory trade is
-    /// what needs pinning.
-    #[test]
-    fn sized_for_presizes_by_the_recorded_formula() {
-        // One node per 32 bytes, and arr_items at a quarter of that.
-        let arena = Arena::sized_for(32 * 1000);
-        assert_eq!(arena.nodes.capacity(), 1000);
-        assert_eq!(arena.obj_entries.capacity(), 1000);
-        assert_eq!(arena.arr_items.capacity(), 250);
-
-        // The cap is a HARD ceiling: a huge slab must not presize proportionally,
-        // or a single large input reserves memory the run never gets back.
-        let huge = Arena::sized_for(32 * 1024 * 1024);
-        assert_eq!(huge.nodes.capacity(), 64 * 1024, "capped at MAX_PRESIZE");
-        assert_eq!(huge.arr_items.capacity(), (64 * 1024) / 4);
-
-        // Small inputs presize small rather than paying the ceiling.
-        let small = Arena::sized_for(320);
-        assert_eq!(small.nodes.capacity(), 10);
-        assert!(
-            small.nodes.capacity() < 64 * 1024,
-            "a 320-byte slab must not reserve the cap"
-        );
-    }
-
-    /// The array iterator must ADVANCE. `self.next += 1` is the only thing
-    /// moving it, and holding it still yields the first element forever — a
-    /// hang rather than a wrong answer, which is why it needs an iterator that
-    /// is actually driven to completion.
-    #[test]
-    fn array_iteration_advances_and_terminates() {
-        // Inside an object: `parse_rows` unwraps a TOP-LEVEL array into one row
-        // per element and wraps any non-object row in `{"value": …}`, so a bare
-        // `[[…]]` would not leave an array node at the row.
-        let input = br#"{"xs":[10,20,30]}"#;
-        let mut arena = Arena::default();
-        let rows = arena
-            .parse_rows(input, MAX_RECORD_BATCH_ROWS, MAX_JSON_VALUES_PER_PUSH)
-            .expect("parse");
-        let (_, xs) = arena
-            .node(rows[0])
-            .obj_entries()
-            .find(|(k, _)| *k == "xs")
-            .expect("xs entry");
-        // BOUNDED on purpose. The defect this pins is "the cursor never
-        // advances", which makes the iterator INFINITE rather than wrong — and
-        // an unbounded `collect()` on an infinite iterator exhausts memory and
-        // takes the machine down instead of failing the test. (Learned the hard
-        // way: the first version of this pin OOM-killed the host.) `take` past
-        // the expected length still proves termination, because a correct
-        // iterator stops on its own well inside the bound.
-        let items: Vec<i64> = xs
-            .arr_items()
-            .take(16)
-            .map(|v| match v.kind() {
-                ValueKind::Int(i) => i,
-                other => panic!("expected Int, got {other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            items,
-            vec![10, 20, 30],
-            "each element exactly once, in order"
-        );
     }
 
     /// serde hands an OWNED `String` — reaching `visit_string`/`visit_str`
@@ -738,13 +471,12 @@ mod tests {
         assert_eq!(arena_entries, value_entries, "views agree on dup-key order");
     }
 
-    /// 047 round 2 (owner ruling on the 65–128 band): the front door agrees
-    /// with the back half — JSON nested deeper than the shared
-    /// `MAX_ARROW_DEPTH` refuses AT INGEST with a typed parse error (the
-    /// extract seam classifies it per stream as source data, never
-    /// internal), so no deeper structure is ever built and every
-    /// downstream walk inherits the bound. serde's own 128 limit no
-    /// longer decides.
+    /// The front door agrees with the back half — JSON nested deeper than
+    /// the shared `MAX_ARROW_DEPTH` refuses AT INGEST with a typed parse
+    /// error (the extract seam classifies it per stream as source data,
+    /// never internal), so no deeper structure is ever built and every
+    /// downstream walk inherits the bound. serde's own 128 limit does not
+    /// decide.
     #[test]
     fn nesting_deeper_than_the_shared_cap_refuses_at_ingest() {
         let nested = |levels: usize| -> Vec<u8> {
@@ -781,8 +513,8 @@ mod tests {
         }
     }
 
-    /// 4H3's array half, under the wave-6 split (5M4): NESTED array
-    /// elements spend the VALUE budget at parse time — never the rows' —
+    /// NESTED array elements spend the VALUE budget at parse time — never
+    /// the rows' —
     /// so a dense nested list refuses with the arena still small, while
     /// the row cap is not charged for values that may become list cells
     /// rather than rows.
@@ -822,9 +554,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
     }
 
-    /// 5M5: object entries spend the value budget too — the object-only
-    /// slab was the hole: a flat mega-object parsed its whole arena with
-    /// the row budget seeing a single document.
+    /// Object entries spend the value budget too — otherwise a flat
+    /// mega-object parses its whole arena with the row budget seeing a
+    /// single document.
     #[test]
     fn object_entries_count_against_the_value_budget_at_parse_time() {
         let mut slab = Vec::new();
@@ -851,7 +583,7 @@ mod tests {
         );
     }
 
-    /// 5H2's CPU half: the duplicate-key scan is O(N) past a 16-entry
+    /// The duplicate-key scan is O(N) past a 16-entry
     /// linear prelude. A 200K-entry object parses AND dedups correctly —
     /// without the index this test is ~2×10¹⁰ string comparisons.
     #[test]
@@ -885,7 +617,7 @@ mod tests {
     /// The row bound is PROGRESSIVE at both row-observation sites: per
     /// document for a stream of documents, per element inside a top-level
     /// array. A small cap makes both directions cheap to prove; production
-    /// passes the real `MAX_RECORD_BATCH_ROWS`, and the tape suite trips
+    /// passes the real `MAX_RECORD_BATCH_ROWS`, and the JSON path's suite trips
     /// that constant with full-size slabs.
     #[test]
     fn parse_refuses_progressively_past_the_row_cap() {

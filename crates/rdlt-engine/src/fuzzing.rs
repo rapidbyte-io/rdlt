@@ -22,11 +22,11 @@ pub fn parse_slab(bytes: &[u8]) {
     );
 }
 
-/// The FULL (tape) shred path over arbitrary bytes: parse, observe, resolve,
+/// The FULL JSON shred path over arbitrary bytes: parse, observe, resolve,
 /// build. Asserts the cheap invariants inline (unique destination names).
 pub fn shred_slab(bytes: &[u8]) {
     let capabilities = Capabilities::default();
-    let Ok(mut shredder) = crate::shred::TapeShredder::new(
+    let Ok(mut shredder) = crate::shred::json::Shredder::new(
         StreamSpec::new("fuzz"),
         capabilities,
         TableName::new("fuzz"),
@@ -39,14 +39,14 @@ pub fn shred_slab(bytes: &[u8]) {
         WriteMode::Append,
         SchemaPolicy::evolve(),
     );
-    let items = shredder.push_and_drain(
+    let items = shredder.push_and_resolve(
         bytes,
-        crate::shred::ShredContext {
+        crate::shred::resolve::ShredContext {
             registry: &mut registry,
             load_id: &load_id,
             mode: &mode,
             policy: &policy,
-            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+            max_batch_cells: crate::shred::limits::MAX_BATCH_CELLS,
         },
     );
     let Ok(items) = items else { return };
@@ -67,7 +67,7 @@ pub fn shred_slab(bytes: &[u8]) {
 /// Arrow type mapping: every `DataType` either maps or returns a
 /// typed error — never panics, never silently coerces.
 pub fn map_arrow_type(dt: &arrow::datatypes::DataType) {
-    let _ = crate::shred::passthrough::column_type_from_arrow(dt);
+    let _ = crate::shred::types::column_type_from_arrow(dt);
 }
 
 /// WAL manifest line classification over arbitrary text — the reader's
@@ -90,10 +90,10 @@ pub fn wal_segment_decode(bytes: &[u8]) {
 
 // ---- bench entry points (iai_hotpath / perf gate) ----
 
-/// Production (tape) shred path over one raw slab; returns emitted row count.
+/// The production JSON shred path over one raw slab; returns emitted row count.
 pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
     let capabilities = Capabilities::default();
-    let mut shredder = crate::shred::TapeShredder::new(
+    let mut shredder = crate::shred::json::Shredder::new(
         StreamSpec::new("bench"),
         capabilities,
         TableName::new("bench"),
@@ -106,14 +106,14 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
         SchemaPolicy::evolve(),
     );
     let items = shredder
-        .push_and_drain(
+        .push_and_resolve(
             bytes,
-            crate::shred::ShredContext {
+            crate::shred::resolve::ShredContext {
                 registry: &mut registry,
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
-                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+                max_batch_cells: crate::shred::limits::MAX_BATCH_CELLS,
             },
         )
         .unwrap_or_else(|_| panic!("bench shred succeeds"));
@@ -126,7 +126,7 @@ pub fn bench_shred_bytes(bytes: &[u8]) -> u64 {
         .sum()
 }
 
-/// Passthrough over one structured batch; returns emitted row count.
+/// The Arrow path over one structured batch; returns emitted row count.
 pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
     let mut registry = crate::schema::registry::SchemaRegistry::default();
     let (load_id, mode, policy) = (
@@ -134,15 +134,15 @@ pub fn bench_passthrough(batch: &arrow::record_batch::RecordBatch) -> u64 {
         WriteMode::Append,
         SchemaPolicy::evolve(),
     );
-    let items = crate::shred::passthrough::passthrough_items(
+    let items = crate::shred::arrow::items(
         batch,
         &TableName::new("bench"),
-        crate::shred::ShredContext {
+        crate::shred::resolve::ShredContext {
             registry: &mut registry,
             load_id: &load_id,
             mode: &mode,
             policy: &policy,
-            max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+            max_batch_cells: crate::shred::limits::MAX_BATCH_CELLS,
         },
         Capabilities::default(),
     )

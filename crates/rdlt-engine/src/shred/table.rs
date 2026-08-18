@@ -1,16 +1,14 @@
 //! Shared shredding state: per-table naming, shape observation, lineage
-//! identity, and schema resolution — everything the tape traversal (`tape.rs`)
-//! and the drain (`drain.rs`) build on.
+//! identity, and schema resolution — everything the JSON traversal and the
+//! resolve pipeline build on.
 
 use rdlt_core::id::TableName;
 use rdlt_core::schema::{self, Column, IdentRules, ParentLink, Provenance, TableSchema};
 
-use super::{
-    MAX_SOURCE_COLUMNS_PER_TABLE,
-    canon::{canonical_json_bytes, render_scalar},
-    infer::ColumnState,
-    view::JsonView,
-};
+use super::canonical::{canonical_json_bytes, render_scalar};
+use super::infer::ColumnState;
+use super::limits::MAX_SOURCE_COLUMNS_PER_TABLE;
+use super::view::JsonView;
 use crate::identity::{FieldValue, RowId, RowIdBuilder};
 use crate::naming::UniqueNamer;
 
@@ -24,11 +22,11 @@ pub(crate) struct TableBuffer {
     pub(crate) columns: Vec<(String, ColumnState)>,
     /// Source key → normalized column/child name mapping (collision-safe).
     namer: UniqueNamer,
-    /// The memoized name pairings, BOTH directions (GLM round-4, 4M3): the
-    /// drain's resolve maps source → normalized per column, and the batch
-    /// builder maps normalized → source per column, so a `Vec::find` in
-    /// either direction made every resolve O(columns²) of string compares —
-    /// per push, on every table, row-less or not.
+    /// The memoized name pairings, BOTH directions: schema resolution maps
+    /// source → normalized per column and the batch builder maps normalized →
+    /// source per column, so a linear find in either direction would make
+    /// every resolve O(columns²) of string compares — per push, on every
+    /// table, row-less or not.
     to_normalized: std::collections::HashMap<String, String>,
     normalized_to_source: std::collections::HashMap<String, String>,
     /// Source key → index of the child table it resolves to, memoized.
@@ -51,16 +49,16 @@ pub(crate) struct TableBuffer {
     /// (and the registry re-clones whatever is retained, every batch).
     nested_fields: usize,
     /// Whether any column state changed since this table's resolved schema
-    /// last reached the registry (4M3): the drain skips resolve+diff for a
-    /// row-less, un-dirty table — a maximal stream's per-push bookkeeping
+    /// last reached the registry: the resolve pipeline skips resolve+diff for
+    /// a row-less, un-dirty table — a maximal stream's per-push bookkeeping
     /// otherwise costs O(total table state) of pure CPU even for an empty
     /// push. Born dirty (a new table must establish its schema).
     dirty: bool,
     /// The pre-push column states, captured LAZILY on this push's first
-    /// mutation (4M3 — the eager whole-stream snapshot cloned every table's
+    /// mutation (an eager whole-stream snapshot would clone every table's
     /// every column state per push). `None` means "not mutated this push"
     /// — including "did not exist before this push", which is exactly the
-    /// no-rollback case the drain distinguishes.
+    /// no-rollback case the resolve pipeline distinguishes.
     pre_push_snapshot: Option<Vec<(String, ColumnState)>>,
 }
 
@@ -92,8 +90,8 @@ impl TableBuffer {
         }
     }
 
-    /// The drain's dirty flag: set by every column mutation, cleared once
-    /// the table's resolved schema has reached the registry.
+    /// The dirty flag: set by every column mutation, cleared once the
+    /// table's resolved schema has reached the registry.
     pub(crate) fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -117,9 +115,9 @@ impl TableBuffer {
         }
     }
 
-    /// Hand the drain this push's snapshot (taken, not borrowed — the drain
-    /// mutates the columns the snapshot describes). `None` for a table not
-    /// mutated this push.
+    /// Hand the resolve pipeline this push's snapshot (taken, not borrowed —
+    /// it mutates the columns the snapshot describes). `None` for a table
+    /// not mutated this push.
     pub(crate) fn take_rollback_snapshot(&mut self) -> Option<Vec<(String, ColumnState)>> {
         self.pre_push_snapshot.take()
     }
@@ -181,7 +179,7 @@ impl TableBuffer {
         rollback_snapshot: Option<&[(String, ColumnState)]>,
     ) {
         // A rollback IS a mutation: the resolved state no longer matches the
-        // registry until the drain's re-resolve lands.
+        // registry until the re-resolve lands.
         self.dirty = true;
         let prior = rollback_snapshot.and_then(|columns| {
             columns
@@ -381,11 +379,11 @@ mod cardinality_tests {
         assert!(error.to_string().contains("source-column cap"));
     }
 
-    /// 4M3's mechanism, pinned directly because a regression here is
-    /// invisible to every behavioral test (the failure mode is pure CPU):
-    /// a table is born dirty, a successful drain cleans it, and the
-    /// rollback snapshot arms ONLY on a push's first mutation — never for
-    /// a table the push left alone.
+    /// Pinned directly because a regression here is invisible to every
+    /// behavioral test (the failure mode is pure CPU): a table is born
+    /// dirty, a successful resolve cleans it, and the rollback snapshot arms
+    /// ONLY on a push's first mutation — never for a table the push left
+    /// alone.
     #[test]
     fn the_dirty_flag_and_lazy_snapshot_arm_and_disarm_per_push() {
         let mut table = TableBuffer::new(
@@ -398,7 +396,7 @@ mod cardinality_tests {
             "born dirty: a new table must establish its schema"
         );
 
-        // The drain's handshake: applied to the registry → clean.
+        // The resolve handshake: applied to the registry → clean.
         table.mark_clean();
         assert!(!table.is_dirty());
 
@@ -423,7 +421,7 @@ mod cardinality_tests {
         );
         assert!(
             table.take_rollback_snapshot().is_none(),
-            "the drain consumes the snapshot exactly once"
+            "the resolve consumes the snapshot exactly once"
         );
 
         // A mutation-free push after that leaves both mechanisms idle.

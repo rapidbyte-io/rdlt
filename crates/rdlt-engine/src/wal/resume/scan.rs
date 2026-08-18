@@ -524,7 +524,7 @@ fn sidecar_drift(dir: &Path, rules: rdlt_core::schema::IdentRules) -> Option<Str
 /// `filter_covered` re-walked parent chains per SEGMENT and
 /// `live_tables` then walked the same chains again): each table's
 /// recorded ancestor chain — the table itself first, its root last —
-/// is resolved through [`crate::coverage::walk_to_root`] ONCE per
+/// is resolved through [`crate::lineage::walk_to_root`] ONCE per
 /// scan, and both consumers read it: the covered-filter takes the
 /// root, the live-set fold takes the whole chain. No invalidation for
 /// the loader's reason: the schemas map is complete before the first
@@ -549,7 +549,7 @@ impl ChainMemo {
     ) -> Result<&[rdlt_core::id::TableName], String> {
         if !self.chains.contains_key(table) {
             let mut path: Vec<rdlt_core::id::TableName> = Vec::new();
-            crate::coverage::walk_to_root(table, schemas.len(), |current| {
+            crate::lineage::walk_to_root(table, schemas.len(), |current| {
                 path.push(current.clone());
                 match schemas.get(current) {
                     None => Err(format!(
@@ -641,7 +641,7 @@ fn filter_covered(
     let mut root_to_stream: BTreeMap<rdlt_core::id::TableName, rdlt_core::id::StreamName> =
         BTreeMap::new();
     for stream in last_checkpoint.keys() {
-        let root = crate::coverage::root_table(stream, rules);
+        let root = crate::lineage::root_table(stream, rules);
         if root_to_stream
             .insert(root.clone(), stream.clone())
             .is_some()
@@ -678,7 +678,7 @@ fn filter_covered(
     for (table, (schema, _)) in schemas {
         if schema.parent.is_none() {
             let normalized =
-                crate::coverage::root_table(&rdlt_core::id::StreamName::new(table.as_str()), rules);
+                crate::lineage::root_table(&rdlt_core::id::StreamName::new(table.as_str()), rules);
             *normalized_roots.entry(normalized).or_insert(0) += 1;
         }
     }
@@ -799,7 +799,7 @@ mod tests {
         use rdlt_core::commit::WriteMode;
         use rdlt_core::schema::{self, Column, ColumnType, Provenance};
         use rdlt_core::types::LogicalType;
-        let columns: Vec<Column> = (0..crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE)
+        let columns: Vec<Column> = (0..crate::shred::limits::MAX_SOURCE_COLUMNS_PER_TABLE)
             .map(|i| Column {
                 name: format!("{:a>59}{i:04}", ""),
                 column_type: ColumnType::scalar(LogicalType::Json),

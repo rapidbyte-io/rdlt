@@ -4,16 +4,16 @@
 //! know about: an `Int64` beyond ±2^53 meeting `Float64` escalates the column to
 //! `Utf8` — losslessness is enforced at runtime, never assumed.
 //!
-//! Generic over [`JsonView`]: the tape path and the `&serde_json::Value` test
+//! Generic over [`JsonView`]: the arena and the `&serde_json::Value` test
 //! view observe through the SAME logic — one lattice, one escalation rule.
+//! [`is_widening_of`] is the crate's ONE widening predicate and
+//! [`nested_field_count`] its ONE breadth count; every other seat calls here.
 
 use rdlt_core::schema::{Column, ColumnType, Provenance};
 use rdlt_core::types::{LogicalType, widen};
 
-use super::{
-    canon::parse_timestamp_tz,
-    view::{JsonView, ValueKind},
-};
+use super::canonical::parse_timestamp_tz;
+use super::view::{JsonView, ValueKind};
 
 /// `true` iff `v` converts to `f64` exactly. Values outside ±2^53 do not; the
 /// shredder must escalate the column instead of silently rounding.
@@ -25,6 +25,16 @@ pub(crate) fn int64_fits_in_f64(v: i64) -> bool {
 /// `a ⊑ b` in the widening order (i.e. `b` can hold everything `a` can).
 pub(crate) fn is_widening_of(a: LogicalType, b: LogicalType) -> bool {
     widen(a, b) == b
+}
+
+/// Struct breadth under one run of fields: the fields themselves plus
+/// whatever `nested_in` counts beneath each, saturating — the one count
+/// every breadth cap (observed states, mapped column types, declared arrow
+/// types) spends against.
+pub(crate) fn nested_field_count<F>(fields: &[F], nested_in: impl Fn(&F) -> usize) -> usize {
+    fields.iter().fold(fields.len(), |total, field| {
+        total.saturating_add(nested_in(field))
+    })
 }
 
 /// Observation state for a scalar position (column, struct field, or list item).
@@ -148,15 +158,9 @@ impl ColumnState {
             // column was declared by the user, and a value that does not fit the
             // declaration must not silently rewrite it. The pinned column keeps
             // its type here and the offending value is nulled and counted at
-            // build time.
-            //
-            // Mutation note: this guard is REDUNDANT with `observe`, and
-            // measurably so — forcing it either way is an equivalent mutant.
-            // `ScalarState::observe` already returns early when pinned AND maps
-            // `Object | Array` to `Json`, so both arms reach the same resolved
-            // type by different routes. Kept because it states the rule where
-            // the rule matters, rather than leaving a reader to find it inside
-            // the scalar observer.
+            // build time. (`ScalarState::observe` reaches the same resolved
+            // type on its own — early return when pinned, `Object | Array` to
+            // `Json` otherwise; the guard states the rule where it matters.)
             ColumnState::Scalar(state) => match value.kind() {
                 ValueKind::Object | ValueKind::Array if !state.is_pinned() => {
                     *self = ColumnState::Json
@@ -214,13 +218,10 @@ impl ColumnState {
         Ok(())
     }
 
-    /// Decide an initial state from the FIRST non-null value.
-    ///
-    /// Null is deliberately absent from this match: `observe` — the only caller
-    /// — returns early on a null, so a null cannot reach here. An arm for it
-    /// would be unreachable code, and its mutant unkillable for that reason
-    /// rather than for lack of a test. A null leaves the column `Unknown` by
-    /// never calling this at all, which is the same outcome by a shorter route.
+    /// Decide an initial state from the FIRST non-null value. Null is
+    /// deliberately absent from this match: `observe` — the only caller —
+    /// returns early on a null, so a null leaves the column `Unknown` by never
+    /// calling this at all.
     fn fresh<'a, V: JsonView<'a>>(
         value: V,
         lists_as_columns: bool,
@@ -301,9 +302,9 @@ impl ColumnState {
     /// column, so its running field count stays honest.
     pub(crate) fn nested_field_count(&self) -> usize {
         match self {
-            ColumnState::Struct(fields) => fields.iter().fold(fields.len(), |total, (_, state)| {
-                total.saturating_add(state.nested_field_count())
-            }),
+            ColumnState::Struct(fields) => {
+                nested_field_count(fields, |(_, state)| state.nested_field_count())
+            }
             _ => 0,
         }
     }
@@ -359,7 +360,7 @@ mod tests {
 
     fn observe_all(values: &[Value]) -> ColumnState {
         let mut state = ColumnState::Unknown;
-        let mut budget = crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE;
+        let mut budget = crate::shred::limits::MAX_SOURCE_COLUMNS_PER_TABLE;
         for v in values {
             state
                 .observe(v, true, &mut budget)
@@ -447,7 +448,7 @@ mod tests {
         // is the half that a `!state.is_pinned()` guard forced false would
         // destroy — the object would rewrite a type the user declared.
         let mut pinned = ColumnState::Scalar(ScalarState::pinned(LogicalType::Int64));
-        let mut budget = crate::shred::MAX_SOURCE_COLUMNS_PER_TABLE;
+        let mut budget = crate::shred::limits::MAX_SOURCE_COLUMNS_PER_TABLE;
         pinned
             .observe(&json!({"a": 1}), true, &mut budget)
             .expect("under the cap");

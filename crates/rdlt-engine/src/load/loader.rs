@@ -83,7 +83,7 @@ pub(crate) struct Loader {
     warned_deferred_commit: bool,
     /// Memoized table→root resolutions (`root_of`'s cache; see its doc
     /// for why no invalidation exists).
-    root_cache: std::collections::BTreeMap<TableName, TableName>,
+    root_cache: crate::lineage::Chain,
 }
 
 /// The two cadences the loader obeys, passed together because they
@@ -140,34 +140,27 @@ impl Loader {
             parents: std::collections::BTreeMap::new(),
             uncovered_roots: std::collections::BTreeSet::new(),
             warned_deferred_commit: false,
-            root_cache: std::collections::BTreeMap::new(),
+            root_cache: crate::lineage::Chain::default(),
         }
     }
 
     /// A written table's ROOT, along the parent links its Deltas recorded; a
-    /// table with no recorded parent is its own root. The shared bounded
-    /// walk ([`crate::coverage::walk_to_root`] — the recovery scan's replay
-    /// filter walks the SAME implementation, which is what keeps the
-    /// coverage rule's two halves one rule); a cycle is unreachable from
-    /// any shred, so the walk's refusal degrades to the table itself.
-    ///
-    /// MEMOIZED per table (round-6): the walk ran per BATCH with per-hop
-    /// clones. No invalidation is needed — parent links are append-only
-    /// within a run and a table's own delta (link included) precedes its
-    /// first batch, so by the time a table is first resolved its chain
-    /// is complete, and no later delta ever re-parents a table that
-    /// already wrote.
+    /// table with no recorded parent is its own root. The shared memoized
+    /// walk ([`crate::lineage::Chain`] — the recovery scan's replay filter
+    /// walks the SAME implementation, which is what keeps the coverage
+    /// rule's two halves one rule); a cycle is unreachable from any shred,
+    /// so the walk's refusal degrades to the table itself. Memoized per
+    /// table because the walk would otherwise run per BATCH with per-hop
+    /// clones; the memo's own doc says why no invalidation is needed.
     fn root_of(&mut self, table: &TableName) -> TableName {
-        if let Some(root) = self.root_cache.get(table) {
-            return root.clone();
-        }
-        let root = crate::coverage::walk_to_root(table, self.parents.len(), |current| {
-            Ok::<_, std::convert::Infallible>(self.parents.get(current).cloned())
-        })
-        .unwrap_or_else(|infallible| match infallible {})
-        .unwrap_or_else(|| table.clone());
-        self.root_cache.insert(table.clone(), root.clone());
-        root
+        let parents = &self.parents;
+        self.root_cache
+            .resolve(table, parents.len(), |current| {
+                Ok::<_, std::convert::Infallible>(parents.get(current).cloned())
+            })
+            .unwrap_or_else(|infallible| match infallible {})
+            .and_then(|chain| chain.last().cloned())
+            .unwrap_or_else(|| table.clone())
     }
 
     fn emit(&self, event: rdlt_core::event::PipelineEvent) {
@@ -308,7 +301,7 @@ impl Loader {
                 // The stream's root table via the crate's ONE attribution
                 // mapping — the same call `runtime::validate` proves
                 // injective and the recovery scan joins checkpoints on.
-                self.uncovered_roots.remove(&crate::coverage::root_table(
+                self.uncovered_roots.remove(&crate::lineage::root_table(
                     &stream,
                     self.sink.capabilities.ident_rules,
                 ));
@@ -571,7 +564,7 @@ impl Loader {
             .session
             .commit(meta)
             .await
-            .map_err(|e| crate::runtime::classify_dest_error(&e))?;
+            .map_err(|e| crate::classify::classify_dest_error(&e))?;
         // The canonical redelivery window: destination acknowledged, WAL not yet
         // marked — a crash here MUST replay idempotently (D3).
         crash_point!(

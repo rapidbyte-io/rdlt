@@ -1,32 +1,32 @@
-//! The drain: cascade filtering, schema resolution, policy enforcement,
-//! registry diff/apply, Arrow building — the shared back half of both shred
-//! paths.
+//! The shared back half of both shred inputs: cascade filtering, schema
+//! resolution, policy enforcement, registry diff/apply, Arrow building. The
+//! JSON path lowers its buffered rows into [`Row`]s and runs
+//! [`resolve_tables`]; the Arrow path shares [`resolve_policy`], the ONE
+//! policy loop, parameterized by [`Input`] where the two inputs genuinely
+//! differ.
 
 use std::collections::BTreeSet;
 
 use rdlt_core::commit::WriteMode;
 use rdlt_core::error::Error;
 use rdlt_core::id::LoadId;
-use rdlt_core::schema;
+use rdlt_core::schema::{self, TableSchema};
 
+use super::infer::ColumnState;
+use super::table::TableBuffer;
+use super::view::JsonView;
+use super::{build, limits, table};
 use crate::identity::RowId;
+use crate::load::LoadItem;
 use crate::policy::{PolicyAction, SchemaPolicy};
-use crate::{
-    load::LoadItem,
-    schema::{
-        contracts::{change_column, inherited_action, value_fits, violation_for},
-        registry::SchemaRegistry,
-    },
-};
-
-use super::{build, infer::ColumnState, table, table::TableBuffer, view::JsonView};
+use crate::schema::contract::{change_column, inherited_action, value_fits, violation_for};
+use crate::schema::registry::SchemaRegistry;
 
 /// The per-batch shred context: the mutable schema registry plus the run-scoped
 /// load id, write mode, schema policy, and the batch-assembly cell budget
-/// (`EngineConfig::with_max_batch_cells`, 5M3). One bundle, one field order —
-/// shared by the tape shred path (`TapeShredder::push_and_drain`) and the
-/// structured passthrough path (`passthrough::passthrough_items`), which
-/// previously threaded these same four values in two different argument orders.
+/// (`EngineConfig::with_max_batch_cells`). One bundle, one field order —
+/// shared by the JSON path (`json::Shredder::push_and_resolve`) and the Arrow
+/// path (`arrow::items`).
 pub(crate) struct ShredContext<'a> {
     pub(crate) registry: &'a mut SchemaRegistry,
     pub(crate) load_id: &'a LoadId,
@@ -35,9 +35,9 @@ pub(crate) struct ShredContext<'a> {
     pub(crate) max_batch_cells: usize,
 }
 
-/// One row inside the drain: a view value + lineage + the DiscardValue overlay.
-/// Both paths lower their buffered rows into this before draining.
-pub(crate) struct DrainRow<V> {
+/// One row inside the resolve: a view value + lineage + the DiscardValue
+/// overlay. The JSON path lowers its buffered rows into this before resolving.
+pub(crate) struct Row<V> {
     pub(crate) value: V,
     pub(crate) id: RowId,
     pub(crate) parent_id: Option<RowId>,
@@ -48,7 +48,7 @@ pub(crate) struct DrainRow<V> {
     pub(crate) nulled: Vec<String>,
 }
 
-impl<V: Copy> DrainRow<V> {
+impl<V: Copy> Row<V> {
     /// Top-level field extraction honoring the DiscardValue overlay.
     pub(crate) fn top_level<'a>(&self, key: &str) -> Option<V>
     where
@@ -61,26 +61,79 @@ impl<V: Copy> DrainRow<V> {
     }
 }
 
-/// One table's slice of a drain: its buffer, its buffered rows, and its
+/// Which producer is resolving — the one axis on which the policy loop
+/// differs. The JSON path establishes a stream's whole initial shape in one
+/// bootstrap resolve, however many tables that takes, and polices any table
+/// created LATER through its ancestry; the Arrow path maps one batch onto
+/// one table, so a creation there is always that table's first version, never
+/// evolution.
+#[derive(Clone, Copy)]
+pub(crate) enum Input {
+    Json { bootstrapping: bool },
+    Arrow,
+}
+
+/// THE policy loop both inputs run: resolve the action for every change in
+/// order — Evolve keeps it, Freeze fails the whole batch typed before any row
+/// of it is written, and a Discard* action is handed to `on_discard`, the one
+/// step each input answers in its own way. Returns the kept changes.
+pub(crate) fn resolve_policy(
+    input: Input,
+    policy: &SchemaPolicy,
+    registry: &SchemaRegistry,
+    observed: &TableSchema,
+    changes: Vec<schema::Change>,
+    mut on_discard: impl FnMut(schema::Change, PolicyAction) -> Result<(), Error>,
+) -> Result<Vec<schema::Change>, Error> {
+    let mut kept: Vec<schema::Change> = Vec::new();
+    for change in changes {
+        let action = match (&change, input) {
+            (
+                schema::Change::CreateTable { .. },
+                Input::Arrow
+                | Input::Json {
+                    bootstrapping: true,
+                },
+            ) => PolicyAction::Evolve,
+            (
+                schema::Change::CreateTable { .. },
+                Input::Json {
+                    bootstrapping: false,
+                },
+            ) => inherited_action(policy, registry, observed, None),
+            _ => inherited_action(policy, registry, observed, change_column(&change)),
+        };
+        match action {
+            PolicyAction::Evolve => kept.push(change),
+            PolicyAction::Freeze => {
+                return Err(Error::Schema(violation_for(&observed.table, &change)));
+            }
+            PolicyAction::DiscardRow | PolicyAction::DiscardValue => on_discard(change, action)?,
+        }
+    }
+    Ok(kept)
+}
+
+/// One table's slice of a resolve: its buffer, its buffered rows, and its
 /// pre-batch column snapshot — bound together so an index can never pair the
 /// wrong snapshot (or row vector) with a buffer. Built once by zipping the
-/// previously-parallel slices; the drain loop then only ever touches one bundle.
-struct TableDrain<'a, V> {
+/// previously-parallel slices; the loop then only ever touches one bundle.
+struct TableSlice<'a, V> {
     buffer: &'a mut TableBuffer,
-    rows: &'a mut Vec<DrainRow<V>>,
+    rows: &'a mut Vec<Row<V>>,
     /// Column snapshot to roll back to on Discard* — taken OUT of the buffer
-    /// (the drain mutates the columns the snapshot describes, so it cannot
+    /// (the resolve mutates the columns the snapshot describes, so it cannot
     /// borrow it back). `None` for a table not mutated this push — which is
     /// exactly a table that did not exist before this batch or went
     /// unobserved in it (nothing to revert to).
     rollback_snapshot: Option<Vec<(String, ColumnState)>>,
 }
 
-/// The shared drain: cascade filtering, schema resolution, policy enforcement,
-/// registry diff/apply, Arrow building — identical for both shred paths.
-pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
+/// The shared resolve: cascade filtering, schema resolution, policy
+/// enforcement, registry diff/apply, Arrow building.
+pub(crate) fn resolve_tables<'v, V: JsonView<'v>>(
     tables: &mut [TableBuffer],
-    rows: &mut [Vec<DrainRow<V>>],
+    rows: &mut [Vec<Row<V>>],
     ctx: ShredContext,
 ) -> Result<Vec<LoadItem>, Error> {
     let ShredContext {
@@ -96,12 +149,12 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
 
     // Pair the index-aligned inputs once, taking each table's pre-push
     // snapshot out of its buffer (see the field's doc for why owned).
-    let mut drains: Vec<TableDrain<V>> = tables
+    let mut slices: Vec<TableSlice<V>> = tables
         .iter_mut()
         .zip(rows.iter_mut())
         .map(|(buffer, rows)| {
             let rollback_snapshot = buffer.take_rollback_snapshot();
-            TableDrain {
+            TableSlice {
                 buffer,
                 rows,
                 rollback_snapshot,
@@ -109,13 +162,13 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         })
         .collect();
 
-    // Captured BEFORE any table is applied: everything this drain establishes for
-    // a stream that has none yet is its initial shape, however many tables that
-    // needs. A table appearing after that is a change TO the shape, not the shape
-    // itself.
+    // Captured BEFORE any table is applied: everything this resolve establishes
+    // for a stream that has none yet is its initial shape, however many tables
+    // that needs. A table appearing after that is a change TO the shape, not
+    // the shape itself.
     let bootstrapping = registry.is_empty();
 
-    for d in &mut drains {
+    for d in &mut slices {
         // Cascade: drop rows whose parent or root was discarded upstream. A
         // cascade-dropped row's OWN id joins the set, so its descendants at any
         // depth cascade too (parent-first table order makes one pass complete);
@@ -150,12 +203,12 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         }
 
         let has_rows = !d.rows.is_empty();
-        // 4M3: a row-less table whose observation state is UNCHANGED since
-        // its schema last reached the registry has nothing to resolve, diff,
-        // or emit — skipping before `resolve_schema` is what keeps an idle
-        // push from paying O(total table state) of pure CPU on a maximal
-        // stream. (A dirty table with no rows still resolves: its delta must
-        // reach the registry even when this push carries none of its rows.)
+        // A row-less table whose observation state is UNCHANGED since its
+        // schema last reached the registry has nothing to resolve, diff, or
+        // emit — skipping before `resolve_schema` is what keeps an idle push
+        // from paying O(total table state) of pure CPU on a maximal stream.
+        // (A dirty table with no rows still resolves: its delta must reach the
+        // registry even when this push carries none of its rows.)
         if !has_rows && !d.buffer.is_dirty() {
             continue;
         }
@@ -173,63 +226,44 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
 
         // ---- Policy resolution per change ----
         let mut discard: Vec<(schema::Change, PolicyAction)> = Vec::new();
-        let mut kept: Vec<schema::Change> = Vec::new();
-        for change in changes {
-            let action = if matches!(change, schema::Change::CreateTable { .. }) {
-                // Establishing the stream's initial shape is not evolution,
-                // however many tables that shape needs. But a table that appears
-                // LATER is drift — a new nested collection creates one, and
-                // treating it as a bootstrap would make a frozen contract depend
-                // on which shape the first batch happened to have.
-                if bootstrapping {
-                    PolicyAction::Evolve
-                } else {
-                    inherited_action(policy, registry, &observed, None)
-                }
-            } else {
-                inherited_action(policy, registry, &observed, change_column(&change))
-            };
-            match action {
-                PolicyAction::Evolve => kept.push(change),
-                PolicyAction::Freeze => {
-                    // Nothing of this batch has been emitted: fail before any row
-                    // of the violating batch is written.
-                    return Err(Error::Schema(violation_for(&table, &change)));
-                }
-                PolicyAction::DiscardRow | PolicyAction::DiscardValue => {
-                    if matches!(change, schema::Change::CreateTable { .. }) {
-                        // A table that does not exist yet has no column to null
-                        // and no prior shape to roll back to, so `enforce_discards`
-                        // has nothing to act on and would skip it — silently
-                        // creating the very table the policy refused. Discarding
-                        // a table creation means discarding its rows, counted;
-                        // their ids cascade so descendants go with them.
-                        let dropped = d.rows.len() as u64;
-                        for row in d.rows.iter() {
-                            discarded_ids.insert(row.id);
-                        }
-                        d.rows.clear();
-                        // Mutation note: `dropped == 0` is unreachable here, so
-                        // `> 0` versus `>= 0` is an equivalent mutant. The
-                        // CreateTable change EXISTS because this drain observed
-                        // rows for a table that did not exist; if the cascade
-                        // above had emptied them there would be no observation
-                        // and no change to refuse. Kept as a defensive guard —
-                        // it costs nothing and states that a discard report is
-                        // only ever emitted for a real discard.
-                        if dropped > 0 {
-                            items.push(LoadItem::Discarded {
-                                table: table.clone(),
-                                rows: dropped,
-                                values: 0,
-                            });
-                        }
-                        continue;
+        let kept = resolve_policy(
+            Input::Json { bootstrapping },
+            policy,
+            registry,
+            &observed,
+            changes,
+            |change, action| {
+                if matches!(change, schema::Change::CreateTable { .. }) {
+                    // A table that does not exist yet has no column to null
+                    // and no prior shape to roll back to, so `enforce_discards`
+                    // has nothing to act on and would skip it — silently
+                    // creating the very table the policy refused. Discarding
+                    // a table creation means discarding its rows, counted;
+                    // their ids cascade so descendants go with them.
+                    let dropped = d.rows.len() as u64;
+                    for row in d.rows.iter() {
+                        discarded_ids.insert(row.id);
                     }
-                    discard.push((change, action));
+                    d.rows.clear();
+                    // `dropped == 0` is unreachable here: the CreateTable
+                    // change EXISTS because this resolve observed rows for a
+                    // table that did not exist; had the cascade above emptied
+                    // them there would be no observation and no change to
+                    // refuse. Kept as a defensive guard — a discard report is
+                    // only ever emitted for a real discard.
+                    if dropped > 0 {
+                        items.push(LoadItem::Discarded {
+                            table: table.clone(),
+                            rows: dropped,
+                            values: 0,
+                        });
+                    }
+                    return Ok(());
                 }
-            }
-        }
+                discard.push((change, action));
+                Ok(())
+            },
+        )?;
 
         let (observed, kept) = if discard.is_empty() {
             (observed, kept)
@@ -248,16 +282,16 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
             (observed, changes)
         };
 
-        // The cell budget (4H3) fires BEFORE the registry apply (5L10): a
-        // refused push must not leave its schema mutation behind — the
-        // registry would desync from the destination's DDL the moment an
-        // error path ever learned to continue past it. The builder
-        // materializes every schema column for every row — nulls where a
-        // row lacks the field — so the columns × rows product is refused
-        // before any array is built, not metered after the gigabytes are
-        // resident. `observed`'s width IS the post-apply registry width.
+        // The cell budget fires BEFORE the registry apply: a refused push must
+        // not leave its schema mutation behind — the registry would desync
+        // from the destination's DDL the moment an error path ever learned to
+        // continue past it. The builder materializes every schema column for
+        // every row — nulls where a row lacks the field — so the columns ×
+        // rows product is refused before any array is built, not metered
+        // after the gigabytes are resident. `observed`'s width IS the
+        // post-apply registry width.
         if !d.rows.is_empty() {
-            crate::shred::refuse_over_cell_budget(
+            limits::refuse_over_cell_budget(
                 &d.buffer.table,
                 observed.columns.len(),
                 d.rows.len(),
@@ -302,7 +336,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
         // The table's resolved state has reached the registry (or there was
         // nothing to change): clean until the next observation. Error exits
         // above deliberately skip this — an un-applied mutation must be
-        // re-resolved by the next drain.
+        // re-resolved by the next push.
         d.buffer.mark_clean();
     }
     Ok(items)
@@ -314,7 +348,7 @@ pub(crate) fn drain_tables<'v, V: JsonView<'v>>(
 /// (never silent).
 fn enforce_discards<'v, V: JsonView<'v>>(
     buffer: &mut TableBuffer,
-    rows: &mut Vec<DrainRow<V>>,
+    rows: &mut Vec<Row<V>>,
     rollback_snapshot: Option<&[(String, ColumnState)]>,
     discard: &[(schema::Change, PolicyAction)],
     discarded_ids: &mut BTreeSet<RowId>,
@@ -382,13 +416,11 @@ fn enforce_discards<'v, V: JsonView<'v>>(
         keep
     });
 
-    // Mutation note: both comparisons here are equivalent mutants, for the same
-    // structural reason as the creation guard above. `enforce_discards` is only
-    // CALLED when the discard set is non-empty — that is, when a real violation
-    // was found — and acting on a real violation drops at least one row or nulls
-    // at least one value. Reaching this line with both counters at zero is not
-    // constructible. Kept defensive: emitting a zero-valued `Discarded` would
-    // make the event useless to a consumer watching it to detect data loss.
+    // Both comparisons are structurally redundant: `enforce_discards` is only
+    // CALLED when the discard set is non-empty — a real violation was found —
+    // and acting on one drops at least one row or nulls at least one value.
+    // Kept defensive: a zero-valued `Discarded` would make the event useless
+    // to a consumer watching it to detect data loss.
     if dropped_rows > 0 || nulled_values > 0 {
         items.push(LoadItem::Discarded {
             table: table_name,

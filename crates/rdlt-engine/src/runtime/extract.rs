@@ -15,14 +15,12 @@ use rdlt_core::id::{LoadId, StreamName, TableName};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+use crate::classify::classify_source_error;
+use crate::load::LoadItem;
 use crate::policy::SchemaPolicy;
-use crate::{
-    load::LoadItem,
-    schema::registry::SchemaRegistry,
-    shred::{TapeShredder, tape::PushError},
-};
-
-use super::classify::classify_source_error;
+use crate::schema::registry::SchemaRegistry;
+use crate::shred::json::{PushError, Shredder};
+use crate::shred::resolve::ShredContext;
 
 /// How long an error exit waits for the reader to notice its closed
 /// channel before aborting it. Long enough for a well-behaved source
@@ -41,7 +39,7 @@ const READER_FINISH_GRACE: std::time::Duration = std::time::Duration::from_secs(
 /// so the CPU-bound work stays lock-free and single-owner WITHOUT the take/expect
 /// dance an `Option` would need (the owner is never absent by construction).
 struct ShredOwner {
-    shredder: TapeShredder,
+    shredder: Shredder,
     registry: SchemaRegistry,
 }
 
@@ -60,7 +58,7 @@ impl ShredOwner {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.shred");
             let _guard = span.enter();
-            let ctx = crate::shred::ShredContext {
+            let ctx = ShredContext {
                 registry: &mut self.registry,
                 load_id: &load_id,
                 mode: &mode,
@@ -69,7 +67,7 @@ impl ShredOwner {
             };
             let items = self
                 .shredder
-                .push_and_drain(&bytes, ctx)
+                .push_and_resolve(&bytes, ctx)
                 .map_err(|e| match e {
                     PushError::Json(e) => {
                         Error::source(stream, format!("invalid JSON from source: {e}"))
@@ -99,15 +97,14 @@ impl ShredOwner {
         tokio::task::spawn_blocking(move || {
             let span = tracing::info_span!("rdlt.passthrough");
             let _guard = span.enter();
-            let ctx = crate::shred::ShredContext {
+            let ctx = ShredContext {
                 registry: &mut self.registry,
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
                 max_batch_cells,
             };
-            let items =
-                crate::shred::passthrough::passthrough_items(&batch, &table, ctx, capabilities);
+            let items = crate::shred::arrow::items(&batch, &table, ctx, capabilities);
             (self, items)
         })
         .await
@@ -161,7 +158,7 @@ pub(super) async fn stream_task(
     // Single-owner by construction: each blocking method consumes the owner and
     // returns it, so it is moved out and reassigned in place — never absent.
     let mut owner = ShredOwner {
-        shredder: TapeShredder::new(spec.clone(), capabilities, root_table)?,
+        shredder: Shredder::new(spec.clone(), capabilities, root_table)?,
         registry: SchemaRegistry::default(),
     };
 

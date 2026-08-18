@@ -1,35 +1,28 @@
-//! The TAPE shred path — the production default:
-//! slab → arena → drained Arrow batches, with NO per-row owned tree.
-//!
-//! Breadth-first traversal: observe every field,
-//! extract child tables at any depth, assign lineage identities — rows are
-//! arena node ids borrowing the slab. Everything downstream (observation,
-//! canonicalization, identity, policy, build) is the generic `JsonView` core;
-//! the behavioral invariants are pinned by the `shred_property` test BINARY (whose
-//! one test is `shred_invariants_hold` — a distinction that mattered: the gate
-//! selected it by test name for a while, matched nothing, and reported success)
-//! and the
-//! hazard cases in `arena.rs`/`tests/cases/test_passthrough.rs`.
+//! The JSON path: slab → arena → resolved Arrow batches, with NO per-row
+//! owned tree. A breadth-first traversal observes every field, extracts
+//! child tables at any depth and assigns lineage identities — rows are arena
+//! node ids borrowing the slab — and everything downstream (observation,
+//! canonicalization, identity, policy, build) is the generic `JsonView` core
+//! shared with the `&serde_json::Value` test view. The behavioral invariants
+//! are pinned by the `shred_property` test binary (its one test is
+//! `shred_invariants_hold`) and the hazard cases beside the arena parser and
+//! among the crate's integration cases.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
-
 use rdlt_connector::destination::Capabilities;
-
 use rdlt_connector::source::StreamSpec;
 use rdlt_core::error::Error;
 use rdlt_core::id::TableName;
 use rdlt_core::schema::ParentLink;
 
-use super::{
-    DrainRow, MAX_CHILD_TABLES_PER_PARENT, MAX_TABLES_PER_STREAM, ShredContext,
-    arena::{Arena, NodeId, ParseRowsError},
-    drain_tables,
-    infer::{ColumnState, ScalarState},
-    table::{TableBuffer, content_hash_with, row_identity},
-    view::JsonView,
-};
+use super::arena::{Arena, NodeId, ParseRowsError};
+use super::infer::{ColumnState, ScalarState};
+use super::limits::{MAX_CHILD_TABLES_PER_PARENT, MAX_TABLES_PER_STREAM};
+use super::resolve::{self, ShredContext};
+use super::table::{TableBuffer, content_hash_with, row_identity};
+use super::view::JsonView;
 use crate::identity::{RowId, child_row_id};
 use crate::load::LoadItem;
 use crate::naming::child_table_name;
@@ -53,10 +46,10 @@ fn row_cap_refusal() -> Error {
     ))
 }
 
-/// The value-budget refusal (5M5): object entries and nested array
-/// elements each cost an arena node at parse, so their count is bounded
-/// separately from rows — a dense slab refuses typed instead of
-/// materializing a ~22× arena before any traversal check could run.
+/// The value-budget refusal: object entries and nested array elements each
+/// cost an arena node at parse, so their count is bounded separately from
+/// rows — a dense slab refuses typed instead of materializing a ~22× arena
+/// before any traversal check could run.
 fn value_cap_refusal() -> Error {
     Error::config(format!(
         "JSON push exceeds the {}-value parse budget across object fields and array \
@@ -75,8 +68,8 @@ fn take_row(remaining: &mut usize) -> Result<(), Error> {
     Ok(())
 }
 
-/// One buffered row awaiting the drain (tape path: arena node id).
-struct TapeRow {
+/// One buffered row awaiting the resolve: an arena node id plus its lineage.
+struct Row {
     node: NodeId,
     id: RowId,
     parent_id: Option<RowId>,
@@ -96,17 +89,17 @@ struct Queued {
     pos: Option<u64>,
 }
 
-/// Shreds a stream off the *tape*: the flat slab arena the parse lays every JSON
-/// node into — one append-only buffer walked breadth-first, never a per-row owned
-/// tree. Observation and drain read straight off that slab, so no intermediate
-/// tree is ever materialized.
-pub(crate) struct TapeShredder {
+/// Shreds a stream off the flat slab arena the parse lays every JSON node
+/// into — one append-only buffer walked breadth-first, never a per-row owned
+/// tree. Observation and resolve read straight off that slab, so no
+/// intermediate tree is ever materialized.
+pub(crate) struct Shredder {
     spec: StreamSpec,
     capabilities: Capabilities,
     /// Root first, children after, in first-seen order.
     tables: Vec<TableBuffer>,
     /// Normalized table name → index into `tables`, maintained beside the
-    /// vector (which stays the drain-order truth — the map is lookup only).
+    /// vector (which stays the resolve-order truth — the map is lookup only).
     /// This is what resolves a per-parent memo MISS: distinct source keys can
     /// normalize to ONE table, so the miss path must go through the
     /// normalized name — but a linear scan of every table there turned a
@@ -114,7 +107,7 @@ pub(crate) struct TapeShredder {
     index_by_name: BTreeMap<TableName, usize>,
 }
 
-impl TapeShredder {
+impl Shredder {
     pub(crate) fn new(
         spec: StreamSpec,
         capabilities: Capabilities,
@@ -134,17 +127,17 @@ impl TapeShredder {
     }
 
     /// Shred one raw push END-TO-END: parse into a slab arena, traverse and
-    /// observe, then run the shared drain (the arena cannot outlive the call).
-    pub(crate) fn push_and_drain(
+    /// observe, then run the shared resolve (the arena cannot outlive the call).
+    pub(crate) fn push_and_resolve(
         &mut self,
         bytes: &[u8],
         ctx: ShredContext,
     ) -> Result<Vec<LoadItem>, PushError> {
-        // Rollback snapshots arm LAZILY (4M3): each table captures its
-        // pre-push column states on this push's FIRST mutation of it, so a
-        // push that touches few tables pays no whole-stream clone — the
-        // eager snapshot here used to clone every table's every column
-        // state per push, an O(total-state) tax no byte budget sees.
+        // Rollback snapshots arm LAZILY: each table captures its pre-push
+        // column states on this push's FIRST mutation of it, so a push that
+        // touches few tables pays no whole-stream clone — an eager snapshot
+        // would clone every table's every column state per push, an
+        // O(total-state) tax no byte budget sees.
         for table in &mut self.tables {
             table.begin_push();
         }
@@ -167,7 +160,7 @@ impl TapeShredder {
             })?;
 
         // Buffered rows per table, index-aligned with `self.tables`.
-        let mut rows: Vec<Vec<TapeRow>> = self.tables.iter().map(|_| Vec::new()).collect();
+        let mut rows: Vec<Vec<Row>> = self.tables.iter().map(|_| Vec::new()).collect();
 
         let lists_as_columns = self.capabilities.scalar_lists;
         let mut hash_scratch = Vec::new();
@@ -189,13 +182,13 @@ impl TapeShredder {
             .map_err(PushError::Engine)?;
         }
 
-        // Lower into the shared drain representation and run the ONE pipeline.
-        let mut drain_rows: Vec<Vec<DrainRow<super::arena::Node<'_, '_>>>> = rows
+        // Lower into the shared resolve representation and run the ONE pipeline.
+        let mut resolve_rows: Vec<Vec<resolve::Row<super::arena::Node<'_, '_>>>> = rows
             .iter()
             .map(|table_rows| {
                 table_rows
                     .iter()
-                    .map(|row| DrainRow {
+                    .map(|row| resolve::Row {
                         value: arena.node(row.node),
                         id: row.id,
                         parent_id: row.parent_id,
@@ -206,18 +199,18 @@ impl TapeShredder {
                     .collect()
             })
             .collect();
-        drain_tables(&mut self.tables, &mut drain_rows, ctx).map_err(PushError::Engine)
+        resolve::resolve_tables(&mut self.tables, &mut resolve_rows, ctx).map_err(PushError::Engine)
     }
 
     /// Breadth-first traversal of one root document: observe every field at every
     /// depth into the table buffers, discover child tables, and buffer one
-    /// `TapeRow` per node with its lineage identity.
+    /// `Row` per node with its lineage identity.
     fn shred_root(
         &mut self,
         arena: &mut Arena,
         root: NodeId,
         lists_as_columns: bool,
-        rows: &mut Vec<Vec<TapeRow>>,
+        rows: &mut Vec<Vec<Row>>,
         hash_scratch: &mut Vec<u8>,
         row_budget: &mut usize,
     ) -> Result<(), Error> {
@@ -261,7 +254,7 @@ impl TapeShredder {
                 row_budget,
             )?;
 
-            rows[entry.table_idx].push(TapeRow {
+            rows[entry.table_idx].push(Row {
                 node: entry.node,
                 id: entry.id,
                 parent_id: entry.parent_id,
@@ -281,7 +274,7 @@ impl TapeShredder {
         child_lists: Vec<(String, Vec<NodeId>)>,
         entry: &Queued,
         arena: &mut Arena,
-        rows: &mut Vec<Vec<TapeRow>>,
+        rows: &mut Vec<Vec<Row>>,
         queue: &mut VecDeque<Queued>,
         hash_scratch: &mut Vec<u8>,
         row_budget: &mut usize,
@@ -321,7 +314,7 @@ impl TapeShredder {
         &mut self,
         parent_idx: usize,
         source_key: &str,
-        rows: &mut Vec<Vec<TapeRow>>,
+        rows: &mut Vec<Vec<Row>>,
     ) -> Result<usize, Error> {
         // Memo hit: this parent has resolved this exact source key before.
         // Every document in a push repeats its keys, so after the first one
@@ -401,27 +394,27 @@ mod cardinality_tests {
     use rdlt_core::id::LoadId;
 
     /// Drive one slab through the full push path with a throwaway context.
-    fn push(shredder: &mut TapeShredder, bytes: &[u8]) -> Result<Vec<LoadItem>, PushError> {
+    fn push(shredder: &mut Shredder, bytes: &[u8]) -> Result<Vec<LoadItem>, PushError> {
         let mut registry = SchemaRegistry::default();
         let (load_id, mode, policy) = (
             LoadId::new("test-load"),
             WriteMode::Append,
             SchemaPolicy::evolve(),
         );
-        shredder.push_and_drain(
+        shredder.push_and_resolve(
             bytes,
             ShredContext {
                 registry: &mut registry,
                 load_id: &load_id,
                 mode: &mode,
                 policy: &policy,
-                max_batch_cells: crate::shred::MAX_BATCH_CELLS,
+                max_batch_cells: super::super::limits::MAX_BATCH_CELLS,
             },
         )
     }
 
-    fn shredder() -> TapeShredder {
-        TapeShredder::new(
+    fn shredder() -> Shredder {
+        Shredder::new(
             StreamSpec::new("events"),
             Capabilities::default(),
             TableName::new("events"),
@@ -442,7 +435,7 @@ mod cardinality_tests {
         }
     }
 
-    /// 4M3's drain-skip contract: a push that leaves a table entirely
+    /// The idle-table skip contract: a push that leaves a table entirely
     /// untouched emits NOTHING for it — no re-resolve, no phantom delta.
     /// (The skip itself is a CPU optimization, but its observable contract
     /// is "an idle table is inert", which this pins against regressions
@@ -516,7 +509,7 @@ mod cardinality_tests {
     fn nested_struct_fields_count_toward_the_source_column_cap() {
         let mut slab = Vec::new();
         slab.extend_from_slice(b"{\"s\":{");
-        for index in 0..super::super::MAX_SOURCE_COLUMNS_PER_TABLE {
+        for index in 0..super::super::limits::MAX_SOURCE_COLUMNS_PER_TABLE {
             if index > 0 {
                 slab.push(b',');
             }
@@ -533,15 +526,15 @@ mod cardinality_tests {
         }
     }
 
-    /// 5L11: the cell budget pinned through the DRAIN seat (the mod-level
-    /// pin proves the arithmetic; this one proves the seat consults it):
-    /// a maximal-width table times enough rows refuses before assembly.
+    /// The cell budget pinned through the resolve seat (`limits`' own pin
+    /// proves the arithmetic; this one proves the seat consults it): a
+    /// maximal-width table times enough rows refuses before assembly.
     #[test]
     fn a_wide_table_times_many_rows_refuses_at_the_cell_budget() {
         let mut shredder = shredder();
         // Establish a 4,096-column root table with one wide document.
         let mut wide = String::from("{");
-        for index in 0..super::super::MAX_SOURCE_COLUMNS_PER_TABLE {
+        for index in 0..super::super::limits::MAX_SOURCE_COLUMNS_PER_TABLE {
             if index > 0 {
                 wide.push(',');
             }
@@ -553,8 +546,8 @@ mod cardinality_tests {
 
         // Rows needed to trip the product at 4,098 columns (4,096 source +
         // 2 root system): floor(budget / width) + 1 is the first refusal.
-        let width = super::super::MAX_SOURCE_COLUMNS_PER_TABLE + 2;
-        let rows_needed = crate::shred::MAX_BATCH_CELLS / width + 1;
+        let width = super::super::limits::MAX_SOURCE_COLUMNS_PER_TABLE + 2;
+        let rows_needed = super::super::limits::MAX_BATCH_CELLS / width + 1;
         let mut slab = Vec::with_capacity(rows_needed * 9);
         for _ in 0..rows_needed {
             slab.extend_from_slice(b"{\"f0\":1}\n");
@@ -583,7 +576,7 @@ mod cardinality_tests {
                 Capabilities::default().ident_rules,
             ));
         }
-        let mut rows: Vec<Vec<TapeRow>> = shredder.tables.iter().map(|_| Vec::new()).collect();
+        let mut rows: Vec<Vec<Row>> = shredder.tables.iter().map(|_| Vec::new()).collect();
         let error = shredder
             .child_table_idx(0, "one-too-many", &mut rows)
             .expect_err("the total-table cap must refuse");
@@ -621,12 +614,7 @@ mod cardinality_tests {
 
     #[test]
     fn a_parent_refuses_a_new_child_key_at_the_child_table_cap() {
-        let mut shredder = TapeShredder::new(
-            StreamSpec::new("events"),
-            Capabilities::default(),
-            TableName::new("events"),
-        )
-        .expect("shredder");
+        let mut shredder = shredder();
         shredder.tables[0].child_tables = (0..MAX_CHILD_TABLES_PER_PARENT)
             .map(|index| (format!("child-{index}"), 0))
             .collect();

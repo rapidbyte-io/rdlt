@@ -11,7 +11,7 @@ use rdlt_core::state::StateDoc;
 
 use crate::EngineConfig;
 
-use super::classify::classify_dest_error;
+use crate::classify::classify_dest_error;
 
 /// Open the destination session, recover persisted pipeline state, and replay
 /// the uncommitted WAL span of a crashed run — or degrade to cursor
