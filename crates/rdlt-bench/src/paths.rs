@@ -20,8 +20,8 @@ pub struct Paths {
     /// against them and `report` renders the matrix from them. Against a
     /// casual `run` overwriting a recording, git is the guard — the
     /// artifacts are tracked files, so an unrecorded run shows as a dirty
-    /// tree and committing is the act of recording (selftest output never
-    /// lands here; `run` routes it to `raw/`).
+    /// tree and committing is the act of recording. Selftest output lands
+    /// under `raw/` beneath it, which the recorded-artifact check ignores.
     pub results: PathBuf,
     /// The append-only history feed the Trends table renders.
     pub history: PathBuf,

@@ -18,11 +18,11 @@ use crate::{fixture, history, product, report};
 
 /// Everything loaded once before the per-cell loop.
 #[derive(Debug)]
-pub struct Context {
-    pub cells: Vec<Cell>,
-    pub bars: Vec<Bar>,
-    pub fixtures: Vec<fixture::Def>,
-    pub variants: Vec<Variant>,
+pub(crate) struct Context {
+    pub(crate) cells: Vec<Cell>,
+    pub(crate) bars: Vec<Bar>,
+    pub(crate) fixtures: Vec<fixture::Def>,
+    pub(crate) variants: Vec<Variant>,
 }
 
 /// The cells and their bars, cross-validated — what every command needs.
