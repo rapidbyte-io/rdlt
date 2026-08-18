@@ -104,13 +104,30 @@ pub(crate) async fn spawn(
         .stdin(Stdio::null())
         // Connector configuration is explicit; the host process's
         // ambient credentials are not an implicit second config
-        // channel. Retain only locale/temp/process-discovery data.
+        // channel. Retain only locale/temp/process-discovery data and
+        // the dynamic-linker search path below.
         .env_clear()
         // Belt beside the guard's group kill.
         .process_group(0)
         .kill_on_drop(true);
     for key in [
-        "PATH", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+        "PATH",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        // Connectors that load a native client library at runtime (the
+        // documented mechanism for e.g. Oracle Instant Client) resolve
+        // it through the host's dynamic-linker search path, so the
+        // linker variables pass through; the clean-room stays for
+        // everything else. The DYLD names are macOS's spellings —
+        // absent keys, forwarded as nothing, on other platforms.
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);

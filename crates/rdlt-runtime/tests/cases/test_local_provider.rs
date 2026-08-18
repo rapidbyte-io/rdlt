@@ -202,6 +202,67 @@ async fn spawned_connectors_do_not_inherit_the_hosts_home_or_secret_environment(
     assert_eq!(dial_path(error), socket);
 }
 
+/// The one deliberate hole in the environment clean-room: a connector
+/// that loads a native client library at runtime (Oracle's Instant
+/// Client is the documented case) resolves it through the host's
+/// dynamic-linker search path, so `LD_LIBRARY_PATH` reaches the child
+/// verbatim. The test harness always sets the variable for this parent
+/// process (the dylib search path cargo and nextest install), and the
+/// precondition assert makes that explicit — the pin can never pass
+/// vacuously against an empty parent. The fake records its own view to
+/// a file before printing its line, so reaching the dial proves the
+/// record exists; `HOME` is re-asserted absent in the SAME spawn,
+/// pinning that the linker-path hole did not widen the clean-room.
+#[tokio::test]
+async fn spawned_connectors_receive_the_hosts_dynamic_linker_path() {
+    let parent_value = std::env::var("LD_LIBRARY_PATH")
+        .expect("cargo/nextest set LD_LIBRARY_PATH for every test process");
+    assert!(
+        !parent_value.is_empty(),
+        "the harness-installed LD_LIBRARY_PATH is never empty"
+    );
+    assert!(
+        std::env::var_os("HOME").is_some(),
+        "the clean-room half needs HOME present in the parent to mean anything"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("never-bound.sock");
+    let linker_path_seen = dir.path().join("child-linker-path");
+    let home_seen = dir.path().join("child-home-presence");
+    let body = format!(
+        "#!/bin/sh\nprintf '%s' \"${{LD_LIBRARY_PATH-}}\" > '{}'\n\
+         printf '%s' \"${{HOME+set}}\" > '{}'\n\
+         echo 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
+        linker_path_seen.display(),
+        home_seen.display(),
+        socket.display()
+    );
+    write_script(dir.path(), "rdlt-connector-fake", &body);
+
+    let provider = Local::new().with_search_path(dir.path());
+    let error = provider
+        .source(
+            &Requirement::new("io.rapidbyte.fake"),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("the fake reaches its deliberately unbound socket");
+    assert_eq!(dial_path(error), socket);
+
+    let child_value =
+        std::fs::read_to_string(&linker_path_seen).expect("the fake recorded its linker path");
+    assert_eq!(
+        child_value, parent_value,
+        "the child receives the parent's LD_LIBRARY_PATH verbatim"
+    );
+    let child_home = std::fs::read_to_string(&home_seen).expect("the fake recorded HOME presence");
+    assert_eq!(
+        child_home, "",
+        "HOME stays cleared — the linker-path hole does not widen the clean-room"
+    );
+}
+
 #[tokio::test]
 async fn a_handshake_failure_kills_forked_connector_descendants() {
     let dir = tempfile::tempdir().expect("tempdir");
