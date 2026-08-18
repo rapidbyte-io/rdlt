@@ -225,8 +225,6 @@ fn provenance(artifacts: &[&Artifact], source: &str) -> String {
     )
 }
 
-/// The run-summary rendering: the same rows as the RESULTS.md matrix, aligned
-/// for a terminal instead of markdown.
 /// Trends: the latest two recorded medians per cell×variant, and the delta
 /// between them — the "is it drifting?" view. Selftest lines are filtered by
 /// the same rule the matrix uses: harness machinery is never a product row.
@@ -271,6 +269,8 @@ pub(crate) fn trends(history: &[Line]) -> String {
     out
 }
 
+/// The run-summary rendering: the same rows as the RESULTS.md matrix, aligned
+/// for a terminal instead of markdown.
 pub(crate) fn summary_table(artifacts: &[&Artifact], bars: &[Bar]) -> String {
     let footer = provenance(artifacts, "Measured by this invocation");
     format!(
