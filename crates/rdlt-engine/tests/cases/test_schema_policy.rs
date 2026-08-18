@@ -168,7 +168,7 @@ async fn per_column_policy_overrides_table_policy() {
     assert!(dest.schema("t").expect("schema").column("extra").is_some());
 }
 
-/// Review finding #6 regression: DiscardRow on a MIDDLE table must cascade to
+/// DiscardRow on a MIDDLE table must cascade to
 /// grandchildren (and deeper) — no orphaned rows with dangling lineage, and the
 /// cascade is counted.
 #[tokio::test]

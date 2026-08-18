@@ -1,8 +1,9 @@
-//! T130 — the WAL directory's lifecycle across a run boundary.
+//! The WAL directory's lifecycle across a run boundary.
 //!
-//! `wal::clear` removing the directory is the only thing that stops a long-lived
-//! pipeline's workdir from growing without bound, and it is called from exactly
-//! one place: after `drain_loader` returns Ok. Replacing it with a no-op leaves
+//! `wal::dir::clear` removing the directory is the only thing that stops a
+//! long-lived pipeline's workdir from growing without bound, and it is called
+//! from exactly one place: after the loader drive returns Ok. Replacing it with
+//! a no-op leaves
 //! every run's manifest and segments behind forever while every test still
 //! passes, because no test looked at the directory afterwards. The companion
 //! assertion matters just as much: a FAILED run must keep its residue, or there

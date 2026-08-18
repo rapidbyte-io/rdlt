@@ -1,4 +1,4 @@
-//! Instruction-count benches for the perf-regression gate (feature 003, G1).
+//! Instruction-count benches for the perf-regression gate.
 //!
 //! iai-callgrind measures deterministic instruction counts — stable on shared CI
 //! runners where wall time flaps. Recorded baselines live in

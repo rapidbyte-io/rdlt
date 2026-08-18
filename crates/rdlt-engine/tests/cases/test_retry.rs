@@ -159,7 +159,7 @@ async fn a_failed_run_closes_best_effort() {
     );
 }
 
-/// Review finding #5 regression: a transient failure AFTER rows were staged past the
+/// A transient failure AFTER rows were staged past the
 /// last checkpoint must not publish those rows twice. Run-level retry restarts
 /// through the crash path (session re-open tears down staging), so re-extraction is
 /// the ONLY delivery.

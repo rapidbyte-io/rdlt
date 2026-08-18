@@ -88,7 +88,7 @@ where
 /// The sweep core: (point × action) → crash, crash-during-recovery, recover,
 /// count. `expected_fired` pins which points MUST actually fail an armed
 /// attempt under this (destination, mode) — the anti-vacuousness instrument
-/// (005 review: a sweep that tolerates dead crash points proves nothing).
+/// (a sweep that tolerates dead crash points proves nothing).
 /// Points outside the pin are mode/destination-unreachable by design.
 async fn sweep<S, MS, D, F, C>(
     points: &[&str],
@@ -241,7 +241,7 @@ fn sweep_covers_entire_registry() {
 
 // ---- The KEYED structured-merge arm under
 // the engine's fail points — the shredded sweeps above exercise only the
-// identity-merge branch (contract merge-structured.md conformance). The
+// identity-merge branch. The
 // merge-capable substrate is the in-memory destination now; the SQL
 // destinations' own merge machinery is swept in their crates' suites in
 // rdlt-connectors. ----

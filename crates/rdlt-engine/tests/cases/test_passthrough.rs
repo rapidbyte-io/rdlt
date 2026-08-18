@@ -203,7 +203,7 @@ async fn undeclared_arrow_push_is_rejected() {
     );
 }
 
-/// Structured segments participate in WAL crash recovery like any data (FR-009).
+/// Structured segments participate in WAL crash recovery like any data.
 #[tokio::test]
 async fn structured_segments_replay_from_wal() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -366,7 +366,7 @@ async fn cross_batch_narrowing_keeps_the_wide_type() {
     );
 }
 
-// ---- Feature 006: keyed structured merge (contract merge-structured.md) ----
+// ---- Keyed structured merge ----
 
 /// Structured source that DECLARES a primary key, making it merge-eligible
 /// under the amended clause B4.

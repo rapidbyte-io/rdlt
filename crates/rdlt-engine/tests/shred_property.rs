@@ -10,8 +10,9 @@
 //!      prefix of the schema after batches 1+2.
 //!   4. Naming safety — no duplicate destination column names in any table.
 //!
-//! The key pool deliberately includes `_rdlt_*` system names (the feature-002
-//! review bug), keys that collide after normalization, and 2^53-boundary ints.
+//! The key pool deliberately includes `_rdlt_*` system names (a source field
+//! literally named like a lineage column), keys that collide after
+//! normalization, and 2^53-boundary ints.
 //! Default 256 cases; scheduled CI runs PROPTEST_CASES=4096 (`TARGET=prop make test`).
 
 use std::collections::BTreeSet;
@@ -35,7 +36,7 @@ use serde_json::{Map, Value, json};
 // is exact.
 
 /// Scalar-position keys: every naming hazard we know, including `_rdlt_*`
-/// system names (the feature-002 review bug) and normalization collisions.
+/// system names and normalization collisions.
 fn arb_scalar_key() -> impl Strategy<Value = String> {
     prop_oneof![
         Just("id".to_owned()),

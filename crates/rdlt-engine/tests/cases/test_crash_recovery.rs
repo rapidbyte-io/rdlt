@@ -319,7 +319,7 @@ async fn dropped_run_recovers_like_a_crash() {
     assert_eq!(without_load_id(&dest), uninterrupted().await);
 }
 
-/// Review finding #2 regression: a destination failure while the byte-budget channel
+/// A destination failure while the byte-budget channel
 /// is saturated must surface as an error, not deadlock the run (stream tasks parked
 /// in `send` unblock when the loader drops the receiver).
 #[tokio::test]
