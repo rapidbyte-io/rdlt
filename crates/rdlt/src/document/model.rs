@@ -8,9 +8,9 @@ use std::{
 
 use serde::Deserialize;
 
-use super::build::Error;
 use super::connector::{self, Connector};
 use crate::commit::{BatchPolicy, CommitPolicy};
+use crate::error::Error;
 
 /// One pipeline, end to end.
 #[derive(Debug, Deserialize)]
@@ -178,18 +178,18 @@ impl Config {
     /// and parses it as YAML, or as JSON when the extension says so;
     /// absence, a malformed document, and a file over
     /// [`MAX_DOCUMENT_BYTES`] each refuse with a typed
-    /// [`Error::Resolve`] naming the path. The inline form clones.
+    /// [`Error::Config`] naming the path. The inline form clones.
     pub fn resolve(&self, base: &Path) -> Result<serde_json::Value, Error> {
         match self {
             Config::Path(spelled) => {
                 let path = base.join(spelled);
-                let text = read(&path).map_err(Error::resolve)?;
+                let text = read(&path).map_err(Error::config)?;
                 if is_json(&path) {
                     serde_json::from_str(&text)
-                        .map_err(|e| Error::resolve(format!("parsing {}: {e}", path.display())))
+                        .map_err(|e| Error::config(format!("parsing {}: {e}", path.display())))
                 } else {
                     parse_yaml(&text)
-                        .map_err(|e| Error::resolve(format!("parsing {}: {e}", path.display())))
+                        .map_err(|e| Error::config(format!("parsing {}: {e}", path.display())))
                 }
             }
             Config::Inline(value) => Ok(value.clone()),
@@ -225,8 +225,11 @@ mod document_cap_tests {
         let refused = Config::Path("big.yaml".into())
             .resolve(dir.path())
             .expect_err("an oversized document must refuse");
+        let Error::Config { message } = refused else {
+            panic!("an oversized document is a Config refusal, got: {refused}");
+        };
         assert_eq!(
-            refused.to_string(),
+            message,
             format!(
                 "reading {}: the file is at least {} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
                  document cap — a pipeline or connector document is hand-written \

@@ -8,7 +8,6 @@
 
 use std::process::ExitCode;
 
-use rdlt::document;
 use rdlt::error;
 
 use crate::render;
@@ -56,18 +55,6 @@ pub(crate) fn code_for(error: &error::Error) -> u8 {
 impl From<error::Error> for Error {
     fn from(e: error::Error) -> Self {
         Error::Run(e)
-    }
-}
-
-impl From<document::Error> for Error {
-    fn from(e: document::Error) -> Self {
-        match e {
-            // A document-resolution problem is a config error (exit 2),
-            // the same taxonomy the loud parse/IO paths use.
-            document::Error::Resolve(message) => Error::Usage(message),
-            // The builder's own typed error keeps its exit-code mapping.
-            document::Error::Build(error) => Error::Run(error),
-        }
     }
 }
 

@@ -15,7 +15,8 @@
 
 use std::path::PathBuf;
 
-use rdlt::document::{self, Document};
+use rdlt::document::Document;
+use rdlt::pipeline::Pipeline;
 use rdlt::runtime::local::Local;
 
 /// The directory holding the reference bin this suite spawns, through
@@ -70,7 +71,7 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
     // the full id → discovery route: the provider's search path stands
     // in for PATH, pointing at the built bin.
     let provider = Local::new().with_search_path(bins);
-    let report = document::build_with(&doc, std::path::Path::new(""), &provider)
+    let report = Pipeline::from_document_with(&doc, std::path::Path::new(""), &provider)
         .await
         .expect("both connector arms resolve to spawned connectors")
         .run()
@@ -92,7 +93,7 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
 
     // The cursor round-tripped over the wire: a second build (fresh
     // spawns) reads nothing new — exactly-once across sessions.
-    let report = document::build_with(&doc, std::path::Path::new(""), &provider)
+    let report = Pipeline::from_document_with(&doc, std::path::Path::new(""), &provider)
         .await
         .expect("fresh spawns for the second run")
         .run()

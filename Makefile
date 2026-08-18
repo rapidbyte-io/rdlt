@@ -185,7 +185,7 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-b
 # The D1 swap's live halves, on the reference bin: the facade's
 # `connector:` documents resolve to SPAWNED binaries, so its acceptance
 # arm (spawned_pipeline: discovery over the search path, no path:
-# override), its load-bearing e2e (the `e2e` binary: document::build +
+# override), its load-bearing e2e (the `e2e` binary: Pipeline::from_file +
 # persisted cursor across sessions), and the CLI's run/validate/events
 # contract pins all need the real bin.
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(spawned_pipeline)'
@@ -249,7 +249,7 @@ else ifeq ($(TARGET),unit)
 else ifeq ($(TARGET),e2e)
 	# ONE e2e binary answers this name: the rdlt facade's, spawn-gated
 	# behind `spawn-bins` (the load-bearing `binary(e2e)` name —
-	# document::build over the spawned reference connector, persisted
+	# Pipeline::from_file over the spawned reference connector, persisted
 	# cursor across sessions). The feature + env var are what keep the
 	# selection NON-EMPTY: without them nextest compiles the binary
 	# empty, selects zero tests and fails — the 024 empty-selection

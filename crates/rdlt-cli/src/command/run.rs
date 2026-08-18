@@ -83,13 +83,22 @@ pub(crate) async fn run(
 /// a wrong path, refused typed rather than slurped whole. Relative
 /// path-form configs resolve against the document's own directory — a
 /// bare `pipeline.yaml` has an EMPTY parent, which joins as the working
-/// directory, the same place the file itself was found.
+/// directory, the same place the file itself was found. A construction
+/// refusal of the config class renders its message bare (`error: <the
+/// provider's or connector's own wording>`), the same exit-2 line the
+/// parse and IO refusals print; every other engine error keeps its own
+/// rendering and code.
 pub(crate) async fn build(spec_path: &Path) -> Result<(Pipeline, String), exit::Error> {
     let raw = document::read(spec_path).map_err(exit::Error::Io)?;
     let spec: Document =
         document::parse(&raw).map_err(|e| exit::Error::Usage(format!("parsing spec: {e}")))?;
     let base = spec_path.parent().unwrap_or(Path::new(""));
-    let pipeline = document::build(&spec, base).await?;
+    let pipeline = Pipeline::from_document(&spec, base)
+        .await
+        .map_err(|e| match e {
+            rdlt::error::Error::Config { message } => exit::Error::Usage(message),
+            other => exit::Error::Run(other),
+        })?;
     Ok((pipeline, spec.pipeline))
 }
 

@@ -27,22 +27,16 @@ destination:
     config: { path: out/shop.db }
 ```
 
-Read it, parse it, build it, run it — construction spawns and handshakes
+Construct it from the file, run it — construction spawns and handshakes
 both connectors, and every configuration refusal dies there, before a row
 moves:
 
 ```rust,no_run
-use std::path::Path;
-
-use rdlt::document;
 use rdlt::error::Error;
+use rdlt::pipeline::Pipeline;
 
 # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-let path = Path::new("pipeline.yaml");
-let text = document::read(path)?;
-let doc = document::parse(&text)?;
-let base = path.parent().unwrap_or(Path::new(""));
-let pipeline = document::build(&doc, base).await?;
+let pipeline = Pipeline::from_file("pipeline.yaml").await?;
 match pipeline.run().await {
     Ok(report) => println!("{} rows", report.total_rows()),
     Err(Error::Cancelled) => println!("cancelled — build again to resume"),
@@ -64,14 +58,16 @@ repository.
 
 ## The builder is the boundary
 
-`document::build` hands the engine's boundary — the `Pipeline` builder —
-a source value and a destination value. In production those values are
-the runtime's process adapters over the spawned connectors; an embedder
-with its own provider (a pool, a remote scheduler) supplies it through
-`document::build_with`. Hand-rolled `impl Source` / `impl Destination`
-values are test doubles. Missing halves are a compile error; every
-configuration refusal is a typed error at `build()`, not halfway through
-a load.
+`Pipeline::from_file` — and its siblings `from_text` (YAML or JSON text)
+and `from_document` (a parsed or constructed `document::Document`) —
+hand the engine's boundary — the `Pipeline` builder — a source value and
+a destination value. In production those values are the runtime's
+process adapters over the spawned connectors; an embedder with its own
+provider (a pool, a remote scheduler) supplies it through
+`Pipeline::from_document_with`. Hand-rolled `impl Source` /
+`impl Destination` values are test doubles. Missing halves are a compile
+error; every configuration refusal is a typed error at construction, not
+halfway through a load.
 
 ## What it guarantees
 

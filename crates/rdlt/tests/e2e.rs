@@ -1,10 +1,13 @@
 //! The facade's load-bearing e2e — the binary is NAMED `e2e` so the
 //! Makefile's `TARGET=e2e` filter (`-E 'binary(e2e)'`) selects it by
 //! name: seed a jsonl file, run reference → reference through
-//! `document::build` — the embedder's exact door, default provider —
-//! and prove rows landed; then a SECOND build + run of the same
+//! `Pipeline::from_file` — the embedder's exact door, default provider,
+//! base inferred from the file — and prove rows landed; then a SECOND
+//! construction (`from_document`, the parsed form) + run of the same
 //! document reads ZERO rows, the persisted-cursor-across-sessions
-//! claim that makes this cell load-bearing rather than a smoke.
+//! claim that makes this cell load-bearing rather than a smoke. A
+//! second cell runs the same pipeline from a JSON text through
+//! `from_text`.
 //!
 //! The `connector:` arms carry explicit `path:` overrides to the
 //! testkit-built reference bin (the bins live in target/, not on
@@ -17,7 +20,8 @@
 
 use std::path::Path;
 
-use rdlt::document::{self, Document};
+use rdlt::document;
+use rdlt::pipeline::Pipeline;
 
 /// Count the rows in every published `events-…jsonl` part — the
 /// reference destination's visibility contract (underscore-prefixed
@@ -38,6 +42,18 @@ fn published_rows(out_dir: &Path) -> u64 {
     rows
 }
 
+/// Seed `ROWS` jsonl rows under `dir` and hand back the fixture path
+/// and the output directory the destination will publish into.
+fn seed(dir: &Path, rows: u64) -> (std::path::PathBuf, std::path::PathBuf) {
+    let fixture = dir.join("events.jsonl");
+    let mut text = String::new();
+    for id in 0..rows {
+        text.push_str(&format!("{{\"id\":{id},\"name\":\"row-{id}\"}}\n"));
+    }
+    std::fs::write(&fixture, text).expect("the fixture file writes");
+    (fixture, dir.join("out"))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() {
     const ROWS: u64 = 300;
@@ -46,14 +62,16 @@ async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() 
         "rdlt-connector-reference",
     );
     let dir = tempfile::tempdir().expect("tempdir");
-    let fixture = dir.path().join("events.jsonl");
-    let mut text = String::new();
-    for id in 0..ROWS {
-        text.push_str(&format!("{{\"id\":{id},\"name\":\"row-{id}\"}}\n"));
-    }
-    std::fs::write(&fixture, text).expect("the fixture file writes");
-    let out_dir = dir.path().join("out");
+    let (fixture, out_dir) = seed(dir.path(), ROWS);
 
+    // The destination arm's config is the PATH form, spelled relative:
+    // it lives beside the pipeline document, and `from_file` infers that
+    // directory as the base — the same include rule the CLI follows.
+    std::fs::write(
+        dir.path().join("dest.yaml"),
+        format!("path: \"{}\"\n", out_dir.display()),
+    )
+    .expect("the destination config writes");
     let yaml = format!(
         "pipeline: e2e-reference\n\
          workdir: {work}\n\
@@ -67,16 +85,15 @@ async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() 
         \x20 connector:\n\
         \x20   id: io.rapidbyte.reference\n\
         \x20   path: {bin}\n\
-        \x20   config:\n\
-        \x20     path: \"{out}\"\n",
+        \x20   config: dest.yaml\n",
         work = dir.path().join("work").display(),
         bin = bin.display(),
         fixture = fixture.display(),
-        out = out_dir.display(),
     );
-    let doc: Document = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
+    let document_path = dir.path().join("pipeline.yaml");
+    std::fs::write(&document_path, &yaml).expect("the pipeline document writes");
 
-    let report = document::build(&doc, Path::new(""))
+    let report = Pipeline::from_file(&document_path)
         .await
         .expect("both connector arms spawn and handshake")
         .run()
@@ -89,11 +106,13 @@ async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() 
         "every committed row is reader-visible at the destination"
     );
 
-    // The second session: fresh spawns over the same document. The
+    // The second session: fresh spawns over the same document, this
+    // time from its parsed form with the base passed explicitly. The
     // source's byte cursor persisted through the destination's state
     // document, so the unchanged file reads ZERO rows — and the
     // published data is untouched.
-    let report = document::build(&doc, Path::new(""))
+    let doc = document::parse(&yaml).expect("the connector document parses");
+    let report = Pipeline::from_document(&doc, dir.path())
         .await
         .expect("fresh spawns for the second session")
         .run()
@@ -108,5 +127,41 @@ async fn a_reference_pipeline_lands_rows_once_and_a_second_session_reads_zero() 
         published_rows(&out_dir),
         ROWS,
         "the second session added nothing — still exactly-once"
+    );
+}
+
+/// The same pipeline as a JSON text through `from_text`: JSON is valid
+/// YAML, so the one parse takes it, and the built pipeline runs end to
+/// end over the spawned reference connectors.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_json_document_builds_through_from_text_and_runs() {
+    const ROWS: u64 = 50;
+    let bin = rdlt_testkit::spawn::built_connector_bin(
+        env!("CARGO_MANIFEST_DIR"),
+        "rdlt-connector-reference",
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (fixture, out_dir) = seed(dir.path(), ROWS);
+    let json = serde_json::json!({
+        "pipeline": "e2e-reference-json",
+        "workdir": dir.path().join("work"),
+        "source": {"connector": {"id": "io.rapidbyte.reference", "path": bin,
+                                 "config": {"path": fixture}}},
+        "destination": {"connector": {"id": "io.rapidbyte.reference", "path": bin,
+                                      "config": {"path": out_dir}}},
+    })
+    .to_string();
+
+    let report = Pipeline::from_text(&json, dir.path())
+        .await
+        .expect("a JSON document parses and both arms spawn")
+        .run()
+        .await
+        .expect("the run over two spawned reference connectors succeeds");
+    assert_eq!(report.total_rows(), ROWS, "every fixture row committed");
+    assert_eq!(
+        published_rows(&out_dir),
+        ROWS,
+        "every committed row is visible"
     );
 }

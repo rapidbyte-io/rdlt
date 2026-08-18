@@ -34,7 +34,7 @@ connector its own gates spawn.
   runtime spawns it per run, handshakes over a local socket, and the
   connector's own gate validates its config — refusals arrive in the
   connector's wording. The engine knows no connector by name.
-- **`document::build` hands the engine's boundary — the `Pipeline`
+- **`Pipeline::from_*` hand the engine's boundary — the `Pipeline`
   builder — a source value and a destination value.** In production those
   are the runtime's process adapters; hand-rolled `impl Source` /
   `impl Destination` values are test doubles.
@@ -87,23 +87,20 @@ rdlt = { git = "https://github.com/rapidbyte-io/rdlt", version = "0.3" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-Read, parse, build, run. Every configuration refusal dies at `build`,
-before a row moves; `run` consumes the pipeline (a run is single-shot —
-build the same document again to resume after a crash or cancellation).
+Construct from the file, run. Every configuration refusal dies at
+construction, before a row moves; `run` consumes the pipeline (a run is
+single-shot — construct the same document again to resume after a crash
+or cancellation).
 
 ```rust
-use std::path::Path;
-
-use rdlt::document;
 use rdlt::error::Error;
+use rdlt::pipeline::Pipeline;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new("pipeline.yaml");
-    let doc = document::parse(&document::read(path)?)?;
-    let base = path.parent().unwrap_or(Path::new(""));   // path-form configs resolve here
-
-    let pipeline = document::build(&doc, base).await?;   // spawns + handshakes both connectors
+    // Reads the file, parses it, spawns + handshakes both connectors.
+    // Relative `config:` paths and the default workdir resolve beside the file.
+    let pipeline = Pipeline::from_file("pipeline.yaml").await?;
 
     let mut events = pipeline.events();                  // subscribe BEFORE run()
     tokio::spawn(async move {
@@ -123,19 +120,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**The document can come from anywhere.** `document::parse` takes YAML or
-JSON text (JSON is valid YAML). If your host already holds the pipeline
-as a value, deserialize it directly; if it composes pipelines in code,
-build the `Document` itself — no text involved:
+**The document can come from anywhere.** `Pipeline::from_text` takes
+YAML or JSON text (JSON is valid YAML) plus the `base` directory relative
+`config:` paths and the default `workdir` resolve against. If your host
+already holds the pipeline as a value, deserialize it directly; if it
+composes pipelines in code, build the `Document` itself — no text
+involved — and hand either to `Pipeline::from_document`:
 
 ```rust
 use rdlt::document::{Config, Document, WriteMode, connector::Connector};
+use rdlt::pipeline::Pipeline;
 
 // (a) JSON text
-let doc = rdlt::document::parse(r#"{"pipeline":"p","source":{"connector":{"id":"io.rapidbyte.reference","config":{"path":"a.jsonl"}}},"destination":{"connector":{"id":"io.rapidbyte.reference","config":"./dest.yaml"}}}"#)?;
+let pipeline = Pipeline::from_text(r#"{"pipeline":"p","source":{"connector":{"id":"io.rapidbyte.reference","config":{"path":"a.jsonl"}}},"destination":{"connector":{"id":"io.rapidbyte.reference","config":"./dest.yaml"}}}"#, ".").await?;
 
 // (b) a serde_json::Value you already have
 let doc: Document = serde_json::from_value(value)?;
+let pipeline = Pipeline::from_document(&doc, ".").await?;
 
 // (c) constructed
 let doc = Document {
@@ -149,18 +150,19 @@ let doc = Document {
     destination: Connector { id: "io.rapidbyte.reference".into(), version: None, path: None,
                              config: Config::Path("./dest.yaml".into()) },
 };
+let pipeline = Pipeline::from_document(&doc, ".").await?;
 ```
 
 The pieces, and where to look:
 
 | You want to… | Use |
 |---|---|
-| decide how a connector id becomes a process (a pool, a remote scheduler, per-tenant sandboxing) | `document::build_with(&doc, base, &provider)` with your `impl rdlt::runtime::provider::Provider`; `build` uses the runtime's default local provider (spawn from `PATH`) |
-| set policies in code instead of the document | `pipeline::Pipeline::builder(name)` — `write_mode`, `write_mode_for`, `schema_policy`, `batch_policy`, `commit_policy`, `workdir`, byte/stream budgets — fed with the source/destination values `build_with` would construct |
+| decide how a connector id becomes a process (a pool, a remote scheduler, per-tenant sandboxing) | `Pipeline::from_document_with(&doc, base, &provider)` with your `impl rdlt::runtime::provider::Provider`; the other `from_*` use the runtime's default local provider (spawn from `PATH`) |
+| set policies in code instead of the document | `pipeline::Pipeline::builder(name)` — `write_mode`, `write_mode_for`, `schema_policy`, `batch_policy`, `commit_policy`, `workdir`, byte/stream budgets — fed with the source/destination values `from_document_with` would construct |
 | name the vocabulary | `rdlt::{commit, cursor, error, event, id, metrics, policy, report}`; `use rdlt::prelude::*` glob-imports what a pipeline author touches (never `Error` — spell `rdlt::error::Error`) |
 | read the outcome | `run()` → `report::Run`: per-table rows/bytes/discards, commits, retries, elapsed — the same record the CLI prints as JSON |
 | watch it live | `pipeline.events()` (typed `event::PipelineEvent`, lossy under a slow consumer — the report is the complete record) and the `metrics::Metrics` fold; the `tracing` span contract is in [docs/telemetry.md](docs/telemetry.md) |
-| handle failure | `rdlt::error::Error` is a closed taxonomy — `Config`, `Schema`, `Source`, `Destination`, `Wal`, `Cancelled`, `Internal` — the CLI's exit codes mirror it; `document::Error` splits construction into `Resolve` (the document) and `Build` (the engine) |
+| handle failure | `rdlt::error::Error` is a closed taxonomy — `Config`, `Schema`, `Source`, `Destination`, `Wal`, `Cancelled`, `Internal` — the CLI's exit codes mirror it; every document problem at construction (an unreadable file, a malformed document, a missing binary, a config the connector refuses) is `Config` |
 | write a connector | `rdlt::sdk` (the connector SDK) and `rdlt::sdk::spi` (the wire-side traits) — [docs/connector-authoring.md](docs/connector-authoring.md) |
 
 ## The pipeline document

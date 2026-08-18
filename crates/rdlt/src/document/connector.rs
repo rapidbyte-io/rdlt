@@ -106,7 +106,7 @@ impl fmt::Debug for Connector {
 impl Connector {
     /// The provider-facing half of the document — everything except the
     /// config, which travels beside it.
-    pub(super) fn requirement(&self) -> Requirement {
+    pub(crate) fn requirement(&self) -> Requirement {
         let mut requirement = Requirement::new(&self.id);
         if let Some(version) = &self.version {
             requirement = requirement.with_version(version);

@@ -1,6 +1,6 @@
 //! THE HEADLINE: a full engine run with the spawned
 //! `rdlt-connector-reference` binary on BOTH sides of the wire — the
-//! YAML `connector:` vocabulary through the facade's `document::build`,
+//! YAML `connector:` vocabulary through the facade's `Pipeline::from_document`,
 //! the commit choreography (receipts, state, part events) crossing two
 //! Unix sockets, rows landing exactly-once, and the spawned processes
 //! dying with their guards. The reference connector is the spawn
@@ -22,9 +22,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rdlt::document::{self, Document};
+use rdlt::document::Document;
 use rdlt::error::Error;
 use rdlt::event::PipelineEvent;
+use rdlt::pipeline::Pipeline;
 use rdlt_connector_client::handshake::Requirement;
 use rdlt_connector_client::{destination, source};
 use rdlt_runtime::local::Local;
@@ -268,7 +269,7 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
     ));
 
     let provider = RecordingProvider::new();
-    let pipeline = document::build_with(&spec, std::path::Path::new(""), &provider)
+    let pipeline = Pipeline::from_document_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both connector requirements spawn and handshake");
     let report = pipeline
@@ -306,10 +307,10 @@ async fn the_headline_a_full_run_over_spawned_connectors_lands_exactly_once() {
 
     // The cursor round-tripped: a SECOND run of the same document —
     // through the DEFAULT provider this time, the exact path
-    // `document::build` gives embedders — succeeds and reads nothing
+    // `Pipeline::from_document` gives embedders — succeeds and reads nothing
     // new (the reference source's byte cursor persisted through the
     // destination's state document).
-    let report2 = document::build(&spec, std::path::Path::new(""))
+    let report2 = Pipeline::from_document(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the second run")
         .run()
@@ -367,7 +368,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     ));
 
     let provider = RecordingProvider::new();
-    let pipeline = document::build_with(&spec, std::path::Path::new(""), &provider)
+    let pipeline = Pipeline::from_document_with(&spec, std::path::Path::new(""), &provider)
         .await
         .expect("both connector requirements spawn and handshake");
     let (dest_pid, dest_socket) = provider.recorded("destination")[0].clone();
@@ -455,7 +456,7 @@ async fn sigkilling_the_destination_mid_run_fails_typed_and_a_fresh_run_converge
     // A fresh session (new pid, new spawns) converges over the crashed
     // session's remains: the receipts answer replay across the wire,
     // the persisted state feeds the source's resume cursor.
-    let report = document::build(&spec, std::path::Path::new(""))
+    let report = Pipeline::from_document(&spec, std::path::Path::new(""))
         .await
         .expect("fresh spawns for the recovery run")
         .run()

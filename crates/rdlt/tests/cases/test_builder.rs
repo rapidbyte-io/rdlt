@@ -148,7 +148,7 @@ destination:
         "commit_policy: {}",
     );
     let doc: document::Document = serde_yaml_ng::from_str(&empty).expect("parses");
-    let err = document::build(&doc, std::path::Path::new(""))
+    let err = Pipeline::from_document(&doc, std::path::Path::new(""))
         .await
         .expect_err("a policy with no threshold must not build")
         .to_string();
@@ -196,9 +196,9 @@ async fn the_builder_plumbs_the_engine_knobs() {
 }
 
 /// The builder refuses a threshold-less commit policy — the same
-/// refusal the document build makes. Such a policy would hold the whole run
-/// in one crash window, the exact shape the type's `check` exists to
-/// refuse.
+/// refusal the document constructors make. Such a policy would hold the
+/// whole run in one crash window, the exact shape the type's `check`
+/// exists to refuse.
 #[test]
 fn build_rejects_a_threshold_less_commit_policy() {
     let threshold_less = CommitPolicy {

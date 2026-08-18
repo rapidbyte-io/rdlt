@@ -1,6 +1,8 @@
 //! The pipeline document: the ONE YAML document every consumer of the
 //! engine — the `rdlt` CLI, the bench harness, library embedders —
-//! parses, and its construction into a runnable [`Pipeline`].
+//! parses; its construction into a runnable [`Pipeline`] lives on the
+//! noun ([`Pipeline::from_file`], [`Pipeline::from_text`],
+//! [`Pipeline::from_document`], [`Pipeline::from_document_with`]).
 //!
 //! ONE document describes a whole pipeline: pipeline-wide settings, the
 //! source, and the destination. EVERY arm names an OUT-OF-PROCESS
@@ -17,16 +19,17 @@
 //! paraphrase.
 //!
 //! Here: the document's typed nodes and its parse ([`Document`],
-//! [`WriteMode`], [`Config`], [`parse`], [`read`]); the requirement every
-//! arm names ([`connector`]); the construction into a [`Pipeline`]
-//! ([`build`], [`build_with`]) and the typed refusal it can end in
-//! ([`Error`]).
+//! [`WriteMode`], [`Config`], [`parse`], [`read`]) and the requirement
+//! every arm names ([`connector`]). Every document problem construction
+//! can end in is an [`Error::Config`](crate::error::Error::Config).
 //!
 //! [`Pipeline`]: crate::pipeline::Pipeline
+//! [`Pipeline::from_file`]: crate::pipeline::Pipeline::from_file
+//! [`Pipeline::from_text`]: crate::pipeline::Pipeline::from_text
+//! [`Pipeline::from_document`]: crate::pipeline::Pipeline::from_document
+//! [`Pipeline::from_document_with`]: crate::pipeline::Pipeline::from_document_with
 
-mod build;
 pub mod connector;
 mod model;
 
-pub use build::{Error, build, build_with};
 pub use model::{Config, Document, MAX_DOCUMENT_BYTES, WriteMode, parse, read};
