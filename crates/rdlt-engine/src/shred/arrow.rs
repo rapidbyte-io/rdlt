@@ -14,9 +14,9 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{Array as _, ArrayRef, StringArray, new_null_array},
+    array::{Array, ArrayRef, StringArray, StructArray, new_null_array},
     compute::cast,
-    datatypes::DataType,
+    datatypes::{DataType, Field, Fields},
     record_batch::RecordBatch,
 };
 use rdlt_connector::channel::{MAX_ARROW_DEPTH, MAX_RECORD_BATCH_ROWS};
@@ -215,23 +215,7 @@ pub(crate) fn items(
                 if source.data_type() == &target_type {
                     Arc::clone(source) // the common zero-copy path
                 } else {
-                    // Cross-batch widening or representation difference
-                    // (e.g. Int64 batch under a Float64 column, ns under
-                    // the µs canonical unit). The pre-cast exactness walk
-                    // refuses any cast that would silently ALTER a value —
-                    // at every nesting depth, not just the top level: the
-                    // losslessness contract belongs to the column, and
-                    // arrow's cast recurses through struct fields and list
-                    // elements exactly like this walk does.
-                    exact::refuse_inexact_cast(source.as_ref(), &target_type, &column.name)
-                        .map_err(|reason| Error::config(format!("table `{table}`: {reason}")))?;
-                    cast(source.as_ref(), &target_type).map_err(|e| {
-                        Error::config(format!(
-                            "table `{table}` column `{}`: cannot cast {} to {target_type}: {e}",
-                            column.name,
-                            source.data_type()
-                        ))
-                    })?
+                    cast_exact(source, &target_type, table, &column.name)?
                 }
             }
             // Historical column absent from this batch: null-filled.
@@ -243,6 +227,132 @@ pub(crate) fn items(
         .map_err(|e| Error::internal(format!("arrow batch assembly: {e}")))?;
     items.push(LoadItem::batch(table.clone(), out));
     Ok(items)
+}
+
+/// THE ONE cast seat: a source column under a different current type
+/// (cross-batch widening or a representation difference — an Int64 batch
+/// under a Float64 column, ns under the µs canonical unit). The pre-cast
+/// exactness walk refuses any cast that would silently ALTER a value — at
+/// every nesting depth, not just the top level: the losslessness contract
+/// belongs to the column, and arrow's cast recurses through struct fields
+/// and list elements exactly like the walk does.
+///
+/// The walk is followed by a BELT: arrow's default (safe) cast answers a
+/// value it cannot carry with a NULL, so a null count that GREW across
+/// the cast is a loss the walk did not model — refused typed rather than
+/// shipped. The walk makes a refusal precise; the belt makes it complete.
+fn cast_exact(
+    source: &ArrayRef,
+    target_type: &DataType,
+    table: &TableName,
+    column: &str,
+) -> Result<ArrayRef, Error> {
+    // A struct field the batch omits null-fills — the same rule as an
+    // omitted top-level column — before the walk and the cast see the
+    // array: arrow's struct cast pairs children positionally and fails
+    // on a missing one.
+    let source = null_fill_omitted_fields(source, target_type);
+    exact::refuse_inexact_cast(source.as_ref(), target_type, column)
+        .map_err(|reason| Error::config(format!("table `{table}`: {reason}")))?;
+    let cast = cast(source.as_ref(), target_type).map_err(|e| {
+        Error::config(format!(
+            "table `{table}` column `{column}`: cannot cast {} to {target_type}: {e}",
+            source.data_type()
+        ))
+    })?;
+    if let Some((path, grown)) = grown_nulls(source.as_ref(), cast.as_ref(), column) {
+        return Err(Error::config(format!(
+            "table `{table}` column `{path}`: casting {} to {target_type} would null {grown} \
+             value(s) arrow cannot carry — refused rather than lost; declare the column as \
+             text, or deliver values the type can represent",
+            source.data_type()
+        )));
+    }
+    Ok(cast)
+}
+
+/// Where the null count grew across a cast: `(path, count)` for the first
+/// position — the array itself, or a struct field / list element under it
+/// (arrow's cast recurses, so a nested safe-mode null never surfaces in
+/// the parent's own count). Counts are LOGICAL nulls, so an encoding that
+/// reads a value as null without a validity bit compares like one that has
+/// it.
+fn grown_nulls(source: &dyn Array, cast: &dyn Array, path: &str) -> Option<(String, usize)> {
+    let (before, after) = (source.logical_null_count(), cast.logical_null_count());
+    if after > before {
+        return Some((path.to_owned(), after - before));
+    }
+    let (source_struct, cast_struct) = (
+        source.as_any().downcast_ref::<StructArray>(),
+        cast.as_any().downcast_ref::<StructArray>(),
+    );
+    if let (Some(source_struct), Some(cast_struct)) = (source_struct, cast_struct) {
+        return cast_struct.fields().iter().find_map(|field| {
+            let (Some(before), Some(after)) = (
+                source_struct.column_by_name(field.name()),
+                cast_struct.column_by_name(field.name()),
+            ) else {
+                return None;
+            };
+            grown_nulls(
+                before.as_ref(),
+                after.as_ref(),
+                &format!("{path}.{}", field.name()),
+            )
+        });
+    }
+    match (list_values(source), list_values(cast)) {
+        (Some(before), Some(after)) => {
+            grown_nulls(before.as_ref(), after.as_ref(), &format!("{path}[]"))
+        }
+        _ => None,
+    }
+}
+
+/// The flat values array of any list array arrow's cast walks into.
+fn list_values(array: &dyn Array) -> Option<&ArrayRef> {
+    let any = array.as_any();
+    any.downcast_ref::<arrow::array::ListArray>()
+        .map(|list| list.values())
+        .or_else(|| {
+            any.downcast_ref::<arrow::array::LargeListArray>()
+                .map(|list| list.values())
+        })
+        .or_else(|| {
+            any.downcast_ref::<arrow::array::FixedSizeListArray>()
+                .map(|list| list.values())
+        })
+}
+
+/// A struct source re-assembled against the target's field set: children
+/// projected BY NAME in the target's order, an absent one null-filled at
+/// the struct's length, recursively for nested structs; the struct's own
+/// validity is kept and each child keeps its type (the cast that follows
+/// converts it). Anything but a struct under a struct returns as is — the
+/// walk and the cast own every other shape.
+fn null_fill_omitted_fields(source: &ArrayRef, target_type: &DataType) -> ArrayRef {
+    let (Some(source_struct), DataType::Struct(target_fields)) =
+        (source.as_any().downcast_ref::<StructArray>(), target_type)
+    else {
+        return Arc::clone(source);
+    };
+    let children: Vec<ArrayRef> = target_fields
+        .iter()
+        .map(|field| match source_struct.column_by_name(field.name()) {
+            Some(child) => null_fill_omitted_fields(child, field.data_type()),
+            None => new_null_array(field.data_type(), source_struct.len()),
+        })
+        .collect();
+    let fields: Fields = target_fields
+        .iter()
+        .zip(&children)
+        .map(|(field, child)| Arc::new(Field::new(field.name(), child.data_type().clone(), true)))
+        .collect();
+    Arc::new(StructArray::new(
+        fields,
+        children,
+        source_struct.nulls().cloned(),
+    ))
 }
 
 /// Logical schema for a structured batch: `_rdlt_load_id` + the batch's fields
@@ -905,5 +1015,330 @@ mod tests {
             pass(&mut registry, &table, &benign)
                 .expect("a whole-day or post-epoch intra-day Date64 casts");
         }
+    }
+
+    /// A Date64 whose day count lies outside i32 must refuse under
+    /// Date32 — arrow's cast truncates the day count to i32, a silently
+    /// WRONG date rather than a null or an error. The in-range
+    /// neighbour casts.
+    #[test]
+    fn an_out_of_range_date64_refuses_typed() {
+        use arrow::array::{Date32Array, Date64Array};
+
+        let (mut registry, table) = (
+            crate::schema::registry::SchemaRegistry::default(),
+            TableName::new("events"),
+        );
+        let day32_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("d", DataType::Date32, true),
+        ]));
+        let first = RecordBatch::try_new(
+            Arc::clone(&day32_schema),
+            vec![Arc::new(Date32Array::from(vec![0i32])) as ArrayRef],
+        )
+        .expect("date32 batch");
+        pass(&mut registry, &table, &first).expect("the Date column registers");
+
+        let day64_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("d", DataType::Date64, true),
+        ]));
+        const MS_PER_DAY: i64 = 86_400_000;
+        // Day 2^31 — one past i32::MAX; arrow's `as i32` makes it day
+        // i32::MIN, a date ~11,760 years wrong.
+        let wrapped = RecordBatch::try_new(
+            Arc::clone(&day64_schema),
+            vec![Arc::new(Date64Array::from(vec![
+                (i64::from(i32::MAX) + 1) * MS_PER_DAY,
+            ])) as ArrayRef],
+        )
+        .expect("date64 batch");
+        let error = pass(&mut registry, &table, &wrapped)
+            .expect_err("a Date64 beyond the 32-bit day range must refuse");
+        assert!(
+            error.to_string().contains("32-bit day range"),
+            "the refusal names the range: {error}"
+        );
+
+        // Day i32::MAX itself and its negative twin cast exactly.
+        for day in [i64::from(i32::MAX), i64::from(i32::MIN)] {
+            let edge = RecordBatch::try_new(
+                Arc::clone(&day64_schema),
+                vec![Arc::new(Date64Array::from(vec![day * MS_PER_DAY])) as ArrayRef],
+            )
+            .expect("date64 batch");
+            pass(&mut registry, &table, &edge).expect("an in-range whole-day Date64 casts");
+        }
+    }
+
+    /// A coarse-unit timestamp whose value overflows i64 when scaled to
+    /// the µs canonical unit must refuse — arrow's safe-mode upscale
+    /// turns the overflowing product into NULL, silently and uncounted.
+    /// The largest representable second value casts.
+    #[test]
+    fn a_timestamp_unit_upscale_that_overflows_refuses_typed() {
+        use arrow::array::{TimestampMicrosecondArray, TimestampSecondArray};
+
+        let (mut registry, table) = (
+            crate::schema::registry::SchemaRegistry::default(),
+            TableName::new("events"),
+        );
+        let us_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new(
+                "t",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+        ]));
+        let first = RecordBatch::try_new(
+            Arc::clone(&us_schema),
+            vec![Arc::new(TimestampMicrosecondArray::from(vec![1i64])) as ArrayRef],
+        )
+        .expect("µs batch");
+        pass(&mut registry, &table, &first).expect("the µs column registers");
+
+        let s_schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("t", DataType::Timestamp(TimeUnit::Second, None), true),
+        ]));
+        // 9.3e12 seconds × 1e6 > i64::MAX (~9.22e18).
+        let overflowing = RecordBatch::try_new(
+            Arc::clone(&s_schema),
+            vec![Arc::new(TimestampSecondArray::from(vec![9_300_000_000_000i64])) as ArrayRef],
+        )
+        .expect("second batch");
+        let error = pass(&mut registry, &table, &overflowing)
+            .expect_err("a second value that overflows the µs unit must refuse");
+        assert!(
+            error.to_string().contains("overflow"),
+            "the refusal names the overflow: {error}"
+        );
+
+        // i64::MAX / 1e6 seconds is the last value that fits: casts.
+        let edge = RecordBatch::try_new(
+            Arc::clone(&s_schema),
+            vec![Arc::new(TimestampSecondArray::from(vec![
+                i64::MAX / 1_000_000,
+                i64::MIN / 1_000_000,
+            ])) as ArrayRef],
+        )
+        .expect("second batch");
+        pass(&mut registry, &table, &edge).expect("an in-range second value upscales exactly");
+    }
+
+    /// A decimal value whose magnitude exceeds the joined target's
+    /// precision must refuse — arrow's cast neither validates a decoded
+    /// value against its declared precision nor refuses the rescaled
+    /// product (it nulls or carries an out-of-precision value). The
+    /// fitting neighbour casts.
+    #[test]
+    fn a_decimal_beyond_the_target_precision_refuses_typed() {
+        use arrow::array::Decimal128Array;
+
+        let (mut registry, table) = (
+            crate::schema::registry::SchemaRegistry::default(),
+            TableName::new("events"),
+        );
+        let scale3 = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("amount", DataType::Decimal128(5, 3), true),
+        ]));
+        let first = RecordBatch::try_new(
+            Arc::clone(&scale3),
+            vec![Arc::new(
+                Decimal128Array::from(vec![12_345i128])
+                    .with_precision_and_scale(5, 3)
+                    .expect("decimal"),
+            ) as ArrayRef],
+        )
+        .expect("decimal batch");
+        pass(&mut registry, &table, &first).expect("the Decimal(5,3) column registers");
+
+        // A Decimal128(5,2) batch: the join is Decimal(6,3), the cast
+        // rescales ×10. 12345678 (= 123456.78) carries 8 digits under a
+        // declared 5 — arrow neither refuses nor nulls it here.
+        let scale2 = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("amount", DataType::Decimal128(5, 2), true),
+        ]));
+        let over = RecordBatch::try_new(
+            Arc::clone(&scale2),
+            vec![Arc::new(
+                Decimal128Array::from(vec![12_345_678i128])
+                    .with_precision_and_scale(5, 2)
+                    .expect("decimal"),
+            ) as ArrayRef],
+        )
+        .expect("decimal batch");
+        let error = pass(&mut registry, &table, &over)
+            .expect_err("a decimal beyond the target precision must refuse");
+        assert!(
+            error.to_string().contains("precision"),
+            "the refusal names the precision: {error}"
+        );
+
+        // 99999 (= 999.99) rescales to 999990 — exactly the six digits
+        // Decimal(6,3) admits: casts.
+        let fits = RecordBatch::try_new(
+            Arc::clone(&scale2),
+            vec![Arc::new(
+                Decimal128Array::from(vec![99_999i128, -99_999i128])
+                    .with_precision_and_scale(5, 2)
+                    .expect("decimal"),
+            ) as ArrayRef],
+        )
+        .expect("decimal batch");
+        pass(&mut registry, &table, &fits).expect("a decimal within the target precision casts");
+    }
+
+    /// The BELT behind the walk: a cast that arrow's safe mode answers
+    /// with new NULLs is refused at the seat even when no walk leaf
+    /// models the shape. Utf8→Int64 is unreachable through the lattice
+    /// (text absorbs integers), so the walk has no leaf for it — arrow
+    /// nulls the unparsable string, and the belt refuses.
+    #[test]
+    fn a_cast_that_grows_the_null_count_refuses_at_the_seat() {
+        let source: ArrayRef = Arc::new(StringArray::from(vec![Some("12"), Some("x"), None]));
+        let error = cast_exact(&source, &DataType::Int64, &TableName::new("events"), "v")
+            .expect_err("a cast that nulls a value must refuse");
+        assert!(
+            error.to_string().contains("would null 1 value"),
+            "the refusal counts the loss: {error}"
+        );
+        // A clean cast passes the belt untouched.
+        let clean: ArrayRef = Arc::new(StringArray::from(vec![Some("12"), None]));
+        let cast = cast_exact(&clean, &DataType::Int64, &TableName::new("events"), "v")
+            .expect("a null-preserving cast passes");
+        assert_eq!(cast.null_count(), 1);
+    }
+
+    /// A batch omitting a NESTED struct field null-fills it — the same
+    /// rule as an omitted top-level column — at every nesting depth,
+    /// instead of failing the push on arrow's positional struct cast.
+    #[test]
+    fn an_omitting_batch_null_fills_nested_struct_fields() {
+        use arrow::array::{Int64Array, StructArray};
+        use arrow::datatypes::{Field, Fields};
+
+        let (mut registry, table) = (
+            crate::schema::registry::SchemaRegistry::default(),
+            TableName::new("events"),
+        );
+        let inner_full: Fields = vec![
+            Field::new("x", DataType::Int64, true),
+            Field::new("y", DataType::Int64, true),
+        ]
+        .into();
+        let outer_full: Fields = vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("inner", DataType::Struct(inner_full.clone()), true),
+            Field::new("b", DataType::Int64, true),
+        ]
+        .into();
+        let full = StructArray::new(
+            outer_full.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(StructArray::new(
+                    inner_full,
+                    vec![
+                        Arc::new(Int64Array::from(vec![10])),
+                        Arc::new(Int64Array::from(vec![20])),
+                    ],
+                    None,
+                )),
+                Arc::new(Int64Array::from(vec![2])),
+            ],
+            None,
+        );
+        let first = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "s",
+                DataType::Struct(outer_full),
+                true,
+            )])),
+            vec![Arc::new(full) as ArrayRef],
+        )
+        .expect("struct batch");
+        pass(&mut registry, &table, &first).expect("the struct column registers");
+
+        // The second batch omits `b` and the nested `inner.y`.
+        let inner_part: Fields = vec![Field::new("x", DataType::Int64, true)].into();
+        let outer_part: Fields = vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("inner", DataType::Struct(inner_part.clone()), true),
+        ]
+        .into();
+        let part = StructArray::new(
+            outer_part.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![3, 4])),
+                Arc::new(StructArray::new(
+                    inner_part,
+                    vec![Arc::new(Int64Array::from(vec![30, 40]))],
+                    None,
+                )),
+            ],
+            None,
+        );
+        let second = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "s",
+                DataType::Struct(outer_part),
+                true,
+            )])),
+            vec![Arc::new(part) as ArrayRef],
+        )
+        .expect("struct batch");
+        let items = pass(&mut registry, &table, &second)
+            .expect("an omitted nested field null-fills instead of refusing the push");
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, LoadItem::Delta { .. })),
+            "omission is not a schema change"
+        );
+        let out = items
+            .iter()
+            .find_map(|item| match item {
+                LoadItem::Batch { batch, .. } => Some(batch),
+                _ => None,
+            })
+            .expect("a batch is emitted");
+        let s = out
+            .column(out.schema().index_of("s").expect("column s"))
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct")
+            .clone();
+        let ints = |array: &ArrayRef| {
+            array
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("int64")
+                .iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ints(s.column_by_name("a").expect("a")),
+            vec![Some(3), Some(4)]
+        );
+        assert_eq!(
+            ints(s.column_by_name("b").expect("b")),
+            vec![None, None],
+            "the omitted top field null-fills"
+        );
+        let inner = s
+            .column_by_name("inner")
+            .expect("inner")
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct")
+            .clone();
+        assert_eq!(
+            ints(inner.column_by_name("x").expect("x")),
+            vec![Some(30), Some(40)]
+        );
+        assert_eq!(
+            ints(inner.column_by_name("y").expect("y")),
+            vec![None, None],
+            "the omitted nested field null-fills"
+        );
     }
 }

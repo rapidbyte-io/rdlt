@@ -40,9 +40,11 @@ use crate::identity::RowId;
 ///
 /// Returns the batch and the number of MISFITS: cells where a present, non-null
 /// input produced a NULL output because the value could not be represented under
-/// the column's type. Counting them is what keeps the crate's "counted, never
-/// silent" rule true for declared (pinned) columns, whose values are never
-/// observed and so can never reach the policy layer.
+/// the column's type — at every nesting depth (a struct field, a list element),
+/// since a nested builder nulls a misfit exactly like a top-level one. Counting
+/// them is what keeps the crate's "counted, never silent" rule true for declared
+/// (pinned) columns, whose values are never observed and so can never reach the
+/// policy layer.
 ///
 /// The count is POSITIONAL — it compares each input against the cell it
 /// produced. A difference of totals would be wrong: an explicitly-null value in
@@ -112,17 +114,7 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                     .unwrap_or(column.name.as_str());
                 let values: Vec<Option<V>> =
                     rows.iter().map(|row| row.top_level(source_key)).collect();
-                let array = build_column(&column.column_type, &values);
-                let nulls = array.nulls();
-                misfits += values
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, v)| {
-                        v.as_ref().is_some_and(|v| !v.is_null())
-                            && nulls.is_some_and(|n| n.is_null(*i))
-                    })
-                    .count() as u64;
-                array
+                build_column(&column.column_type, &values, &mut misfits)
             }
         };
         arrays.push(array);
@@ -138,8 +130,14 @@ fn append_hex_id(b: &mut StringBuilder, id: &RowId, hex: &mut [u8; 64]) {
     b.append_value(std::str::from_utf8(hex).expect("hex is ASCII"));
 }
 
-fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> ArrayRef {
-    match ty {
+/// Build one column of any type; `misfits` accumulates the positional
+/// misfit count of this column and every nested one under it.
+fn build_column<'v, V: JsonView<'v>>(
+    ty: &ColumnType,
+    values: &[Option<V>],
+    misfits: &mut u64,
+) -> ArrayRef {
+    let array = match ty {
         ColumnType::Scalar { scalar } => build_scalar(*scalar, values),
         ColumnType::Struct { fields } => {
             let validity: Vec<bool> = values
@@ -156,7 +154,7 @@ fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> A
                             _ => None,
                         })
                         .collect();
-                    build_column(&field.column_type, &projected)
+                    build_column(&field.column_type, &projected, misfits)
                 })
                 .collect();
             Arc::new(StructArray::new(
@@ -181,6 +179,7 @@ fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> A
                 offsets.push(flat.len() as i32);
             }
             let item_array = build_scalar(*item, &flat);
+            *misfits += count_misfits(&flat, item_array.as_ref());
             Arc::new(ListArray::new(
                 Arc::new(Field::new("item", arrow_scalar_type(*item), true)),
                 OffsetBuffer::new(offsets.into()),
@@ -188,7 +187,25 @@ fn build_column<'v, V: JsonView<'v>>(ty: &ColumnType, values: &[Option<V>]) -> A
                 Some(NullBuffer::from(validity)),
             ))
         }
-    }
+    };
+    *misfits += count_misfits(values, array.as_ref());
+    array
+}
+
+/// Positional misfits of one built array: cells where a present, non-null
+/// input became a NULL output.
+fn count_misfits<'v, V: JsonView<'v>>(
+    values: &[Option<V>],
+    array: &dyn arrow::array::Array,
+) -> u64 {
+    let Some(nulls) = array.nulls() else {
+        return 0;
+    };
+    values
+        .iter()
+        .enumerate()
+        .filter(|(i, v)| v.as_ref().is_some_and(|v| !v.is_null()) && nulls.is_null(*i))
+        .count() as u64
 }
 
 /// The observed [`ValueKind`] of an optional view cell — `None` for an absent cell.

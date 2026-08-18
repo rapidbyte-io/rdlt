@@ -188,3 +188,36 @@ async fn an_unrepresentable_type_hint_is_a_typed_config_error() {
         "an unhonourable hint is a configuration error, not a panic or an internal error: {error:?}"
     );
 }
+
+/// A temporal literal with sub-microsecond digits inside a STRUCT field is
+/// nulled by the builder exactly like a top-level one — and it must be
+/// COUNTED exactly like one. Before this was pinned the misfit count compared
+/// only top-level cells, so the nested loss was silent: a successful run, a
+/// null in the row, and no `Discarded` anywhere.
+#[tokio::test]
+async fn a_nested_sub_microsecond_temporal_value_is_a_counted_misfit() {
+    let dest = memory::Destination::new();
+    let source = one_batch(
+        StreamSpec::new("t"),
+        vec![
+            json!({ "id": 1, "event": { "at": "2024-01-01T00:00:00.123456Z" } }),
+            json!({ "id": 2, "event": { "at": "2024-01-01T00:00:00.1234567Z" } }),
+        ],
+    );
+    let report = Engine::new(Config::new("nested-misfit"), source, dest.clone())
+        .run()
+        .await
+        .expect("run succeeds");
+
+    let rows = dest.committed_rows("t");
+    assert_eq!(
+        rows[1]["event"]["at"],
+        json!(null),
+        "a seven-digit fraction is a misfit under the microsecond unit"
+    );
+    assert_eq!(
+        discarded_values(&report),
+        1,
+        "the nested misfit is counted exactly once — never silent"
+    );
+}
