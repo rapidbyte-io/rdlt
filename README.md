@@ -132,11 +132,11 @@ use rdlt::document::{Config, Document, WriteMode, connector::Connector};
 use rdlt::pipeline::Pipeline;
 
 // (a) JSON text
-let pipeline = Pipeline::from_text(r#"{"pipeline":"p","source":{"connector":{"id":"io.rapidbyte.reference","config":{"path":"a.jsonl"}}},"destination":{"connector":{"id":"io.rapidbyte.reference","config":"./dest.yaml"}}}"#, ".").await?;
+let pipeline = Pipeline::from_text(r#"{"pipeline":"p","source":{"connector":{"id":"io.rapidbyte.reference","config":{"path":"a.jsonl"}}},"destination":{"connector":{"id":"io.rapidbyte.reference","config":"./dest.yaml"}}}"#, "").await?;
 
 // (b) a serde_json::Value you already have
 let doc: Document = serde_json::from_value(value)?;
-let pipeline = Pipeline::from_document(&doc, ".").await?;
+let pipeline = Pipeline::from_document(&doc, "").await?;
 
 // (c) constructed
 let doc = Document {
@@ -150,7 +150,7 @@ let doc = Document {
     destination: Connector { id: "io.rapidbyte.reference".into(), version: None, path: None,
                              config: Config::Path("./dest.yaml".into()) },
 };
-let pipeline = Pipeline::from_document(&doc, ".").await?;
+let pipeline = Pipeline::from_document(&doc, "").await?;
 ```
 
 The pieces, and where to look:
