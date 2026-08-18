@@ -146,6 +146,28 @@ impl Backend for Session {
     }
 
     async fn publish(&mut self, meta: CommitMeta) -> Result<CommitReceipt, DestinationError> {
+        // One session serves ONE load: part names key on the session's
+        // load and the receipt on the meta's, so a publish keyed on
+        // another load would leave a receipt vouching for files it
+        // never wrote. Fatal — no retry makes the two loads agree.
+        if meta.load_id != self.load_id {
+            return Err(DestinationError::fatal(format!(
+                "reference destination: publish for load `{}` on a session opened for \
+                 load `{}` — one session serves one load; open a session for the load \
+                 being committed",
+                meta.load_id, self.load_id
+            )));
+        }
+        // A receipted commit is FINAL. A client that publishes the same
+        // `(load, seq)` again — over the wire nothing forces it to ask
+        // for the existing receipt first — gets the prior receipt back
+        // and its restaged rows are dropped: the rows were published
+        // under that receipt already, and re-persisting the restaged
+        // ones would silently replace them under the same part names.
+        if let Some(prior) = store::find_receipt(&self.dir, &meta.load_id, meta.commit_seq)? {
+            self.clear_staging();
+            return Ok(prior);
+        }
         // The barrier: every part, then the state document, then the
         // receipt — and staging is read by reference and cleared only
         // after the receipt, so a retry of a transiently failed publish

@@ -809,9 +809,14 @@ async fn probe_order_book(socket: &Path, entropy: &str) -> Result<(), String> {
     // the one the backend's own durable guard must answer. Refused is
     // one legal answer; the PRIOR receipt (byte-equal to the durable
     // one pass 2 read) is the other; a fresh mint is the exactly-once
-    // violation. (Silent row re-application with an identical receipt
-    // is the table-probe's read-back to catch — the D-clauses' probe
-    // gate — not a wire-only judgment's.)
+    // violation. Two seats enforce this: the sdk `Session` wrapper
+    // guards every engine-ridden path (it asks for the existing receipt
+    // and replays before it ever publishes), and the backend's own
+    // durable receipt guard inside `publish` is the wire-side seat this
+    // raw sequence reaches — the only one standing for a client that
+    // never asks. Silent row re-application under an identical receipt
+    // is invisible to a wire-only judgment; it is the backend guard's
+    // job to drop the restaged rows, and a table read-back to catch.
     let mut session = settle_open_wire(socket, P10_PIPELINE, &p10_load)
         .await
         .map_err(|why| format!("could not open the no-ask republish session: {why}"))?;

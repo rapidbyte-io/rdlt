@@ -640,3 +640,146 @@ async fn interior_invalid_utf8_in_the_receipt_log_is_fatal() {
         "the refusal is fatal and names the corruption: {rendered}"
     );
 }
+
+/// The raw backend over `dir` — the seat a foreign wire client reaches
+/// WITHOUT the sdk `Session` wrapper's choreography guard, so the
+/// backend's own receipt guard is all that stands.
+async fn raw_backend(
+    dir: &std::path::Path,
+    pipeline: &PipelineId,
+    load: &LoadId,
+) -> rdlt_connector_reference::destination::session::Session {
+    use rdlt_connector_sdk::destination::DestinationConnector;
+    let connector = Reference::assemble(Config::from_value(json!({"path": dir})).expect("config"))
+        .expect("assemble");
+    connector
+        .connect(&OpenContext::new(pipeline.clone(), load.clone()))
+        .await
+        .expect("connect")
+}
+
+/// A commit whose receipt is durable is FINAL: a client that publishes
+/// the same `(load, seq)` again — restaged rows and all, never having
+/// asked for the existing receipt — gets the prior receipt back, its
+/// restaged rows are dropped, the published part's bytes stay as they
+/// were, and the receipt log grows by nothing. Before this was pinned
+/// the raw publish rewrote the part under its deterministic name and
+/// appended a second receipt line — the committed rows silently
+/// replaced while both receipts vouched.
+#[tokio::test]
+async fn a_republished_receipted_commit_replays_instead_of_rewriting_the_part() {
+    use rdlt_connector_sdk::destination::Backend;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("ref-republish");
+    let load = LoadId::new("ref-load-republish");
+    let table = TableName::new("events");
+    let mut backend = raw_backend(dir.path(), &pipeline, &load).await;
+
+    backend
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("write");
+    let first = backend
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("first publish");
+    let part_of = || {
+        std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .map(|entry| entry.expect("entry").path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("events-") && name.ends_with(".jsonl"))
+            })
+            .expect("the published part exists")
+    };
+    let part = part_of();
+    let bytes_after_first = std::fs::read(&part).expect("part bytes");
+    let receipts_after_first =
+        std::fs::read_to_string(dir.path().join("_reference_receipts.json")).expect("receipts");
+    assert_eq!(receipts_after_first.lines().count(), 1);
+
+    // The choreography-violating client: DIFFERENT rows restaged, the
+    // SAME commit published again, no `existing_receipt` asked.
+    backend
+        .write(&table, batch_of(&[7, 8, 9]))
+        .await
+        .expect("restaged write");
+    let again = backend
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("a republish of a receipted commit answers, it does not fail");
+    assert_eq!(again, first, "the republish returns the PRIOR receipt");
+    assert_eq!(
+        std::fs::read(part_of()).expect("part bytes"),
+        bytes_after_first,
+        "the committed part's bytes are untouched by the republish"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("_reference_receipts.json"))
+            .expect("receipts")
+            .lines()
+            .count(),
+        1,
+        "the receipt log holds exactly one line for the commit"
+    );
+
+    // The restaged rows were DROPPED, not deferred: the next commit
+    // publishes nothing of them.
+    backend
+        .publish(commit_meta_for(&pipeline, &load, 2))
+        .await
+        .expect("next publish");
+    assert_eq!(
+        DirProbe(dir.path().to_path_buf())
+            .count(&table)
+            .await
+            .expect("count"),
+        2,
+        "only the first commit's rows are visible"
+    );
+}
+
+/// One session serves ONE load: a publish whose meta names another
+/// load is refused fatal, naming both — its part names would key on the
+/// session's load while its receipt keyed on the meta's, a receipt
+/// vouching for another load's files.
+#[tokio::test]
+async fn a_publish_for_another_load_refuses_fatal() {
+    use rdlt_connector_sdk::destination::Backend;
+    use rdlt_connector_sdk::spi::error::DestinationError;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("ref-cross-keyed");
+    let opened_for = LoadId::new("ref-load-opened");
+    let other = LoadId::new("ref-load-other");
+    let table = TableName::new("events");
+    let mut backend = raw_backend(dir.path(), &pipeline, &opened_for).await;
+
+    backend.write(&table, batch_of(&[1])).await.expect("write");
+    let refused = backend
+        .publish(commit_meta_for(&pipeline, &other, 1))
+        .await
+        .expect_err("a publish keyed on another load must refuse");
+    assert!(
+        matches!(refused, DestinationError::Fatal(_)),
+        "fatal, not transient — a retry can never make the loads agree: {refused}"
+    );
+    let rendered = refused.to_string();
+    assert!(
+        rendered.contains("ref-load-other") && rendered.contains("ref-load-opened"),
+        "the refusal names both loads: {rendered}"
+    );
+    assert!(
+        !dir.path().join("_reference_receipts.json").exists(),
+        "a refused publish leaves no receipt behind"
+    );
+    assert_eq!(
+        DirProbe(dir.path().to_path_buf())
+            .count(&table)
+            .await
+            .expect("count"),
+        0,
+        "and publishes no part"
+    );
+}
