@@ -14,6 +14,19 @@ use super::segment::{caught_decode, open_segment};
 use crate::blocking::off_runtime;
 use crate::load::apply;
 
+/// One batch's rows folded into a running replay sum, refusing overflow
+/// typed: no writer records 2⁶⁴ rows, so a wrapping sum means the
+/// segment's decoded shape is forged or corrupt — and the wrap itself
+/// would panic a debug build mid-recovery where every damage arm
+/// degrades instead.
+fn checked_rows_sum(sum: u64, rows: u64) -> Result<u64, String> {
+    sum.checked_add(rows).ok_or_else(|| {
+        format!(
+            "the replayed row count overflows at {sum} + {rows} rows — no writer records that many"
+        )
+    })
+}
+
 /// Replay one span into an open session and commit it under the ORIGINAL run's
 /// identity. Returns the number of replayed batches; `Err(Damaged…)`-style failures
 /// come back as `Ok(None)` so the caller can degrade to re-extraction.
@@ -50,7 +63,8 @@ pub(crate) async fn replay(
                     let reader = open_segment(&dir_owned, &file_owned)?;
                     let mut decoded: u64 = 0;
                     for batch in reader {
-                        decoded += batch.map_err(|e| e.to_string())?.num_rows() as u64;
+                        let rows = batch.map_err(|e| e.to_string())?.num_rows() as u64;
+                        decoded = checked_rows_sum(decoded, rows)?;
                     }
                     Ok::<u64, String>(decoded)
                 })
@@ -158,8 +172,22 @@ pub(crate) async fn replay(
                         tracing::warn!(segment = %file, "WAL segment failed re-read mid-replay — degrading to re-extraction");
                         return Ok(None);
                     };
-                    rows_applied += batch.num_rows() as u64;
-                    batches += 1;
+                    // The checked sum makes an overflow a typed degrade
+                    // rather than the debug-build panic `+=` would be —
+                    // which also settles where the sum sits relative to
+                    // the catch_unwind above: with no panic left to
+                    // catch, outside is fine. The batches counter
+                    // saturates instead: it advances by one per decoded
+                    // batch, a rate that cannot reach the wrap, and it
+                    // reports progress rather than gating a cross-check.
+                    match checked_rows_sum(rows_applied, batch.num_rows() as u64) {
+                        Ok(sum) => rows_applied = sum,
+                        Err(reason) => {
+                            tracing::warn!(segment = %file, %reason, "WAL segment row sum overflows — degrading to re-extraction");
+                            return Ok(None);
+                        }
+                    }
+                    batches = batches.saturating_add(1);
                     apply::apply_batch(&mut *session, &capabilities, &table, &batch).await?;
                 }
                 // Pass-2's half of the manifest cross-check: pass 1
@@ -340,6 +368,23 @@ mod tests {
         assert_eq!(
             replayed, None,
             "a manifest disagreeing with its segment must NOT replay"
+        );
+    }
+
+    /// The checked accumulator both passes fold rows through: honest
+    /// sums pass, and a sum past `u64::MAX` — unreachable by any real
+    /// segment, so pinned at this seam rather than a fantasy fixture —
+    /// refuses typed with the counts named, feeding the passes'
+    /// degrade-to-re-extraction arms instead of a debug-build wrap
+    /// panic.
+    #[test]
+    fn the_row_sum_refuses_overflow_typed() {
+        assert_eq!(checked_rows_sum(2, 3), Ok(5));
+        assert_eq!(checked_rows_sum(u64::MAX, 0), Ok(u64::MAX));
+        let reason = checked_rows_sum(u64::MAX, 1).expect_err("a wrapping sum refuses");
+        assert!(
+            reason.contains("overflows") && reason.contains("no writer records that many"),
+            "the refusal names the shape: {reason}"
         );
     }
 }

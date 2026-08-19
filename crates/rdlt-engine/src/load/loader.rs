@@ -158,7 +158,7 @@ impl Loader {
                 Ok::<_, std::convert::Infallible>(parents.get(current).cloned())
             })
             .unwrap_or_else(|infallible| match infallible {})
-            .and_then(|chain| chain.last().cloned())
+            .map(|chain| chain.root().clone())
             .unwrap_or_else(|| table.clone())
     }
 

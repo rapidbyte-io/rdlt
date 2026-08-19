@@ -119,7 +119,12 @@ pub(crate) async fn run(
     cancel: CancellationToken,
     events: broadcast::Sender<PipelineEvent>,
 ) -> Result<report::Run, Error> {
-    let mut attempt: u32 = 0;
+    // u64 so the `attempt + 1` guards below cannot overflow even in
+    // principle (a u32 counter wraps after 2³² attempts — practically
+    // unreachable, but a guard should not carry an unreachable wrap).
+    // The guard also caps `attempt` under `max_attempts` (a u32), so
+    // the narrowing casts at the event and delay seats are lossless.
+    let mut attempt: u64 = 0;
     loop {
         let attempt_cancel = cancel.child_token();
         // The ROOT of the documented span contract (docs/telemetry.md):
@@ -142,7 +147,7 @@ pub(crate) async fn run(
                 Arc::clone(&destination),
                 attempt_cancel,
                 events.clone(),
-                u64::from(attempt),
+                attempt,
             ),
             span,
         )
@@ -156,14 +161,18 @@ pub(crate) async fn run(
                 message,
                 retryable: true,
                 retry_after_ms,
-            }) if attempt + 1 < config.retry.max_attempts.get() && !cancel.is_cancelled() => {
+            }) if attempt + 1 < u64::from(config.retry.max_attempts.get())
+                && !cancel.is_cancelled() =>
+            {
                 (Some(stream), message, retry_after_ms)
             }
             Err(Error::Destination {
                 message,
                 retryable: true,
                 retry_after_ms,
-            }) if attempt + 1 < config.retry.max_attempts.get() && !cancel.is_cancelled() => {
+            }) if attempt + 1 < u64::from(config.retry.max_attempts.get())
+                && !cancel.is_cancelled() =>
+            {
                 (None, message, retry_after_ms)
             }
             other => return other,
@@ -171,12 +180,15 @@ pub(crate) async fn run(
         // `attempt` becomes the 1-based retry number: the first retry
         // sleeps ~base_delay (the numbering `backoff_bound` pins).
         attempt += 1;
-        let delay = retry_delay(&config.retry, attempt, retry_after_ms);
+        let delay = retry_delay(&config.retry, attempt as u32, retry_after_ms);
         tracing::warn!(
             stream = ?stream, attempt, %message,
             "transient failure; restarting run from committed state"
         );
-        let _ = events.send(rdlt_core::event::PipelineEvent::Retried { stream, attempt });
+        let _ = events.send(rdlt_core::event::PipelineEvent::Retried {
+            stream,
+            attempt: attempt as u32,
+        });
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             _ = cancel.cancelled() => return Err(Error::Cancelled),

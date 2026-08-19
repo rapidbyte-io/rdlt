@@ -29,9 +29,11 @@ pub struct RetryPolicy {
     /// policy, it is refusing to run.
     pub max_attempts: NonZeroU32,
     /// The first retry's backoff bound; each further retry doubles it.
+    /// [`Config::with_retry_policy`] floors it at one millisecond.
     pub base_delay: Duration,
     /// The ceiling on any retry delay — computed backoff and
-    /// `Retry-After` hints alike.
+    /// `Retry-After` hints alike. [`Config::with_retry_policy`] raises
+    /// it to at least `base_delay`.
     pub max_delay: Duration,
     /// How the computed bound becomes a sleep.
     pub jitter: Jitter,
@@ -236,7 +238,16 @@ impl Config {
     }
 
     /// Sets how transient failures are retried (see [`RetryPolicy`]).
-    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+    ///
+    /// Clamped silently like the sibling knobs: `base_delay` floors at
+    /// one millisecond (a zero base would make every computed backoff
+    /// zero — hot-loop retries against a recovering destination), and
+    /// `max_delay` rises to at least `base_delay` (a ceiling below the
+    /// base would silently shrink every bound instead of capping the
+    /// ladder).
+    pub fn with_retry_policy(mut self, mut policy: RetryPolicy) -> Self {
+        policy.base_delay = policy.base_delay.max(Duration::from_millis(1));
+        policy.max_delay = policy.max_delay.max(policy.base_delay);
         self.retry = policy;
         self
     }
@@ -303,5 +314,41 @@ mod tests {
             Config::new("p").with_retry_policy(policy.clone()).retry,
             policy
         );
+    }
+
+    /// The delay floors, clamped silently like the sibling knobs: a
+    /// zero `base_delay` would make every computed backoff zero — a
+    /// hot-loop retry against a recovering destination — so it floors
+    /// at one millisecond; a `max_delay` below `base_delay` would
+    /// silently degrade every bound to the smaller value, so it raises
+    /// to meet the base. In-policy values pass untouched (the roundtrip
+    /// pin above).
+    #[test]
+    fn retry_delays_clamp_at_their_floors() {
+        let floored = Config::new("p")
+            .with_retry_policy(RetryPolicy {
+                base_delay: Duration::ZERO,
+                ..Default::default()
+            })
+            .retry;
+        assert_eq!(
+            floored.base_delay,
+            Duration::from_millis(1),
+            "a zero base delay floors at 1ms"
+        );
+
+        let raised = Config::new("p")
+            .with_retry_policy(RetryPolicy {
+                base_delay: Duration::from_secs(60),
+                max_delay: Duration::from_secs(1),
+                ..Default::default()
+            })
+            .retry;
+        assert_eq!(
+            raised.max_delay,
+            Duration::from_secs(60),
+            "a ceiling below the base raises to meet it"
+        );
+        assert_eq!(raised.base_delay, Duration::from_secs(60));
     }
 }

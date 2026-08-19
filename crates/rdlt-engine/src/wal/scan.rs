@@ -512,7 +512,7 @@ fn chain_of<'c>(
     chains: &'c mut lineage::Chain,
     table: &rdlt_core::id::TableName,
     schemas: &SchemaMap,
-) -> Result<&'c [rdlt_core::id::TableName], String> {
+) -> Result<&'c lineage::Link, String> {
     chains
         .resolve(table, schemas.len(), |current| match schemas.get(current) {
             None => Err(format!(
@@ -531,10 +531,7 @@ fn root_of(
     table: &rdlt_core::id::TableName,
     schemas: &SchemaMap,
 ) -> Result<rdlt_core::id::TableName, String> {
-    Ok(chain_of(chains, table, schemas)?
-        .last()
-        .expect("a chain holds at least its own table")
-        .clone())
+    Ok(chain_of(chains, table, schemas)?.root().clone())
 }
 
 /// The tables replay will actually WRITE: every surviving segment's
@@ -553,7 +550,17 @@ fn live_tables(
         if let WalRecord::Segment { table, .. } = record
             && let Ok(chain) = chain_of(chains, table, schemas)
         {
-            live.extend(chain.iter().cloned());
+            // Stop at the first ancestor already folded in: any table in
+            // `live` arrived with its whole tail (chains are
+            // suffix-consistent), so the rest of this chain is already
+            // there — the early stop is what keeps this fold linear over
+            // a manifest of deep chains instead of re-walking each
+            // segment's full ancestry.
+            for table in chain.iter() {
+                if !live.insert(table.clone()) {
+                    break;
+                }
+            }
         }
     }
     live
@@ -809,6 +816,80 @@ mod tests {
             stream: StreamName::new(stream),
             cursor: Cursor::new(serde_json::json!(2)),
         }
+    }
+
+    /// THE SCAN-SCALE COMPLEXITY PIN, on the folds the scan actually
+    /// runs: resolving every table of a 100,000-deep linear chain
+    /// (shallowest-first, the punishing order) and then folding the
+    /// live set over one segment per table stays LINEAR — the hop
+    /// meter, not a flaky wall clock, is the bound. Single-table
+    /// memoization priced this same fixture at ~5×10⁹ hops (the
+    /// measured 1,000-table quadratic extrapolated), hours of
+    /// single-threaded recovery on a manifest the byte budget happily
+    /// admits; it now completes in well under a second of CI time.
+    #[test]
+    fn deep_chain_resolution_stays_linear_across_the_scan_folds() {
+        const K: usize = 100_000;
+        let mut schemas = SchemaMap::new();
+        for i in 0..=K {
+            let table = TableName::new(format!("t{i}"));
+            let parent = (i > 0).then(|| ParentLink {
+                parent: TableName::new(format!("t{}", i - 1)),
+                depth: 1,
+            });
+            schemas.insert(
+                table.clone(),
+                (
+                    TableSchema {
+                        table,
+                        parent,
+                        columns: vec![],
+                    },
+                    WriteMode::Append,
+                ),
+            );
+        }
+        let mut chains = lineage::Chain::default();
+        for i in 0..=K {
+            let root = root_of(&mut chains, &TableName::new(format!("t{i}")), &schemas)
+                .expect("a recorded chain resolves");
+            assert_eq!(root, TableName::new("t0"));
+        }
+        let records: Vec<WalRecord> = (0..=K)
+            .map(|i| segment(&format!("t{i}"), &format!("l-{i:06}.arrow")))
+            .collect();
+        let live = live_tables(&records, &schemas, &mut chains);
+        assert_eq!(live.len(), K + 1, "every chained table is live");
+        assert!(
+            chains.hops() <= 2 * (K as u64 + 1),
+            "resolution across the whole manifest stays linear: {} hops for {K} tables",
+            chains.hops()
+        );
+    }
+
+    /// The same shape end to end through the PRODUCTION scan: a
+    /// manifest of thousands of chained deltas and segments under one
+    /// covering checkpoint recovers with every segment covered, in CI
+    /// time.
+    #[test]
+    fn a_deep_chained_manifest_recovers_with_full_coverage() {
+        const K: usize = 2_000;
+        let mut records = Vec::new();
+        for i in 0..=K {
+            let parent = (i > 0).then(|| format!("t{}", i - 1));
+            records.push(delta(&format!("t{i}"), parent.as_deref()));
+            records.push(segment(&format!("t{i}"), &format!("l-{i:06}.arrow")));
+        }
+        records.push(checkpoint("t0"));
+        let outcome = scan_span(records);
+        let ScanOutcome::Recover(span) = outcome else {
+            panic!("a checkpointed chained span recovers: {outcome:?}");
+        };
+        assert_eq!(
+            replayed_files(&ScanOutcome::Recover(span)).len(),
+            K + 1,
+            "every chained segment is covered by the root stream's checkpoint"
+        );
     }
 
     /// The segment files the outcome would replay, in span order.
