@@ -1,4 +1,4 @@
-//! # rdlt-connector-protocol — the out-of-process connector wire protocol (v0)
+//! # rdlt-connector-protocol — the out-of-process connector wire protocol (v1)
 //!
 //! FROZEN as of 2026-08-07. Frozen means the rules of change bind:
 //! field numbers are never renumbered, repurposed, or recycled — a
@@ -23,7 +23,7 @@
 //! the client's identifier and display seats all refuse and escape by.
 //!
 //! Trust model: config documents — which may carry credentials — cross
-//! the Unix domain socket in the clear; v0's boundary is the owner-only
+//! the Unix domain socket in the clear; the wire's boundary is the owner-only
 //! (`0600`) socket file plus the operator trust any locally spawned
 //! child process inherits, the same boundary a CLI plugin crosses.
 //! Never log `config_json`, `table_schema_json`, or any other `*_json`
@@ -44,15 +44,15 @@
 pub mod handshake;
 pub mod inventory;
 
-/// Generated protobuf/gRPC types for `rdlt.connector.v0`, compiled at
-/// build time from `proto/rdlt_connector_v0.proto` (build.rs vendors its
+/// Generated protobuf/gRPC types for `rdlt.connector.v1`, compiled at
+/// build time from `proto/rdlt_connector_v1.proto` (build.rs vendors its
 /// own protoc, so no system install is needed). The include splices the
 /// generated source in as this module's body — the file name follows the
 /// proto `package`. The `*_json` document ceilings and the cursor
 /// contract are spelled out in the crate's `README.md`, beside the SPI
 /// constants that define them.
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/rdlt.connector.v0.rs"));
+    include!(concat!(env!("OUT_DIR"), "/rdlt.connector.v1.rs"));
 }
 
 /// The per-message receive ceiling BOTH sides of the wire install in
@@ -67,4 +67,10 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// [`proto::HandshakeRequest::protocol_version`]. Distinct from the
 /// handshake line's own format version, which is pinned separately at
 /// `1` (see [`handshake::Line`]).
-pub const PROTOCOL_VERSION: u32 = 0;
+///
+/// Version 1 retired two decode-amplifying field shapes for ceilinged
+/// documents (the streams reply's repeated bytes → one newline-joined
+/// blob; the handshake's state-format map → one JSON object) — the
+/// bump makes a skewed old binary refuse LOUDLY at the handshake's
+/// version check instead of mis-reading the reshaped fields.
+pub const PROTOCOL_VERSION: u32 = 1;

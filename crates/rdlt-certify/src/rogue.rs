@@ -195,10 +195,17 @@ impl Connector for RogueSource {
                 spec_json: serde_json::to_vec(&ConnectorSpec::new(*spec_name, *spec_version))
                     .expect("a ConnectorSpec serializes to JSON infallibly"),
                 capabilities_json: Vec::new(),
-                state_format_versions: state_format_versions
-                    .iter()
-                    .map(|(kind, version)| ((*kind).to_string(), *version))
-                    .collect(),
+                state_format_versions_json: if state_format_versions.is_empty() {
+                    Vec::new()
+                } else {
+                    serde_json::to_vec(
+                        &state_format_versions
+                            .iter()
+                            .map(|(kind, version)| ((*kind).to_string(), *version))
+                            .collect::<std::collections::BTreeMap<String, u32>>(),
+                    )
+                    .expect("a version map serializes to JSON infallibly")
+                },
             }),
             HandshakeScript::Refuse { message } => {
                 handshake_reply::Outcome::Error(error_frame(Classification::Fatal, message))
@@ -238,16 +245,19 @@ impl SourceService for RogueSource {
         &self,
         _request: Request<proto::StreamsRequest>,
     ) -> Result<Response<proto::StreamsReply>, Status> {
-        let stream_spec_json = self
+        // The framing rule the real serve side follows: one JSON
+        // document per line, no trailing newline.
+        let stream_specs_jsonl = self
             .streams
             .iter()
             .map(|stream| {
                 serde_json::to_vec(stream).expect("a StreamSpec serializes to JSON infallibly")
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .join(&b'\n');
         Ok(Response::new(proto::StreamsReply {
             outcome: Some(streams_reply::Outcome::Ok(proto::StreamList {
-                stream_spec_json,
+                stream_specs_jsonl,
             })),
         }))
     }

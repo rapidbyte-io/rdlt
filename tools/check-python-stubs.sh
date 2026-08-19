@@ -15,8 +15,8 @@ set -euo pipefail
 repo="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 pkg="$repo/connectors/python/rdlt-connector-pyjsonl"
 proto_dir="$repo/crates/rdlt-connector-protocol/proto"
-pb2="$pkg/rdlt_connector_v0_pb2.py"
-pb2_grpc="$pkg/rdlt_connector_v0_pb2_grpc.py"
+pb2="$pkg/rdlt_connector_v1_pb2.py"
+pb2_grpc="$pkg/rdlt_connector_v1_pb2_grpc.py"
 
 command -v python3 >/dev/null 2>&1 || {
     echo "check-python-stubs: python3 is required" >&2
@@ -49,10 +49,10 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/rdlt-stubcheck.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 "$venv/bin/python" -m grpc_tools.protoc -I "$proto_dir" \
-    --python_out="$tmp" --grpc_python_out="$tmp" rdlt_connector_v0.proto
+    --python_out="$tmp" --grpc_python_out="$tmp" rdlt_connector_v1.proto
 
 drift=0
-for name in rdlt_connector_v0_pb2.py rdlt_connector_v0_pb2_grpc.py; do
+for name in rdlt_connector_v1_pb2.py rdlt_connector_v1_pb2_grpc.py; do
     { printf '%s\n' "$header"; cat "$tmp/$name"; } >"$tmp/$name.headed"
     if ! diff -q "$tmp/$name.headed" "$pkg/$name" >/dev/null; then
         echo "check-python-stubs: $name drifts from the proto" >&2
@@ -63,7 +63,7 @@ done
 if [ "$drift" -ne 0 ]; then
     cat >&2 <<EOF
 check-python-stubs: the vendored stubs no longer match
-crates/rdlt-connector-protocol/proto/rdlt_connector_v0.proto.
+crates/rdlt-connector-protocol/proto/rdlt_connector_v1.proto.
 Regenerate them (from the repo root) with:
 
   python3 -m venv target/py-stubgen-venv
@@ -72,7 +72,7 @@ Regenerate them (from the repo root) with:
       -I crates/rdlt-connector-protocol/proto \\
       --python_out=connectors/python/rdlt-connector-pyjsonl \\
       --grpc_python_out=connectors/python/rdlt-connector-pyjsonl \\
-      rdlt_connector_v0.proto
+      rdlt_connector_v1.proto
 
 then re-prepend this exact header line to BOTH generated files
 (and update its pin if the generator moved):
@@ -81,4 +81,4 @@ then re-prepend this exact header line to BOTH generated files
 EOF
     exit 1
 fi
-echo "check-python-stubs: vendored stubs match rdlt_connector_v0.proto ($pin)"
+echo "check-python-stubs: vendored stubs match rdlt_connector_v1.proto ($pin)"

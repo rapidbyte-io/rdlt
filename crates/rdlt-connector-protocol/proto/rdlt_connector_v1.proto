@@ -1,19 +1,25 @@
-// rdlt connector protocol v0 — FROZEN 2026-08-07, closing an
-// experimental period on evidence: a standalone certifier driving any
-// connector binary in any language against 29 fail-proven clauses plus
-// a SIGKILL matrix, a non-Rust connector certified by that same
-// certifier, and every throughput bar holding with the connectors out
-// of process. The version NUMBER stays 0 — it is the handshake's
-// negotiated identifier and moving it would break every shipped
-// connector for a freeze that changes no byte; "v1" names the frozen
-// CONTRACT. Binding from here: field numbers are never renumbered,
-// repurposed, or recycled (a retired number is reserved); evolution is
-// ADDITIVE ONLY — new fields take fresh numbers, new
+// rdlt connector protocol v1 — the wire contract both in-tree sides
+// regenerate from. v0 was FROZEN 2026-08-07 after an experimental
+// period closed on evidence (a standalone certifier, a non-Rust
+// connector certified by it, every throughput bar holding out of
+// process); on 2026-08-19 the owner LIFTED that freeze for one
+// pre-release revision — both wire halves live in this workspace and
+// downstream is a rebuild — and v1 retired the two field shapes whose
+// DECODE materialized collections before any receiver gate could run:
+// the streams reply's repeated bytes and the handshake's version map,
+// both now single ceilinged documents (their old tags reserved below,
+// never recycled). The package name moved with the version, so a
+// skewed v0 binary fails at TWO nets: the gRPC service path no longer
+// exists for it, and the negotiated handshake version refuses loudly.
+//
+// Binding from here, as under the freeze: field numbers are never
+// renumbered, repurposed, or recycled (a retired number is reserved);
+// evolution is ADDITIVE ONLY — new fields take fresh numbers, new
 // messages/RPCs/oneof arms/enum values may be added, nothing is
 // removed, narrowed or given a second meaning; a receiver tolerates
 // what a newer peer sends (an unrecognized Classification normalizes
 // safe-loud to FATAL). The crate's README.md carries the rules in full
-// and names the clauses the freeze makes load-bearing.
+// and names the clauses that make them load-bearing.
 //
 // A renumber has to be caught by a net that looks at bytes or at this
 // text: it is silent at the Rust type level, and it is invisible
@@ -37,17 +43,17 @@
 // format_version gates are the source of truth); arrow_ipc fields
 // carry Arrow IPC stream bytes.
 //
-// credits: recorded fallback, not in v0 — a 2026-08-05 measurement
-// bounded peak in-flight bytes to the h2 window plus <=2 chunks, so
-// `Read` stays server-streaming with no client credit arm and no
-// byte-budget/window field anywhere in this file: backpressure rides
-// h2 flow control by design, with the engine's own byte-budget channel
-// remaining the authority. A `ReadCredit` message is the documented
-// escape hatch if a future measurement finds that bound insufficient —
-// an ADDITIVE addition the freeze permits, not a message this file
-// declares today.
+// credits: recorded fallback, still not declared — a 2026-08-05
+// measurement bounded peak in-flight bytes to the h2 window plus <=2
+// chunks, so `Read` stays server-streaming with no client credit arm
+// and no byte-budget/window field anywhere in this file: backpressure
+// rides h2 flow control by design, with the engine's own byte-budget
+// channel remaining the authority. A `ReadCredit` message is the
+// documented escape hatch if a future measurement finds that bound
+// insufficient — an ADDITIVE addition the rules permit, not a message
+// this file declares today.
 syntax = "proto3";
-package rdlt.connector.v0;
+package rdlt.connector.v1;
 
 enum Classification {
   CLASSIFICATION_UNSPECIFIED = 0;
@@ -73,14 +79,23 @@ message HandshakeReply {
   }
 }
 message HandshakeOk {
+  // Tag 5 carried `map<string, uint32> state_format_versions` — the
+  // protocol's one non-document collection, whose decode materialized
+  // a hash table before any ceiling could run. Retired for the
+  // document form below; reserved so no future field can collide with
+  // an old peer's map encoding.
+  reserved 5;
   string connector_id = 1;       // provider compares vs its resolution
   string connector_version = 2;
   bytes spec_json = 3;           // ConnectorSpec (name, version, config_schema)
   bytes capabilities_json = 4;   // DestinationCapabilities; empty for sources
-  // e.g. "cursor" -> 2. v0 servers send an empty map; the dialing
-  // client threads it through unread — negotiation belongs to the
-  // feature that adds a second format version; see the README.
-  map<string, uint32> state_format_versions = 5;
+  // One JSON object, e.g. {"cursor": 2} — per-state-kind format
+  // versions as a CEILINGED DOCUMENT like every other payload here
+  // (the receiver gates raw bytes before parsing). Empty means the
+  // empty map, like capabilities_json's empty-means-absent. Servers at
+  // this protocol version send {} or a populated object; negotiation
+  // belongs to the feature that adds a second format version.
+  bytes state_format_versions_json = 6;
 }
 service Connector {
   rpc Handshake(HandshakeRequest) returns (HandshakeReply);
@@ -105,7 +120,22 @@ message StreamsRequest {}
 message StreamsReply {
   oneof outcome { StreamList ok = 1; ErrorFrame error = 2; }
 }
-message StreamList { repeated bytes stream_spec_json = 1; }
+message StreamList {
+  // Tag 1 carried `repeated bytes stream_spec_json` — one entry per
+  // spec, whose decode materialized a Vec per entry before any count
+  // gate could run. Retired for the newline-delimited blob below;
+  // reserved so no future field can collide with an old peer's
+  // repeated encoding.
+  reserved 1;
+  // THE FRAMING RULE: every declared stream's spec document, as JSON,
+  // joined by single `\n` bytes — one line per spec, no trailing
+  // newline, empty means zero streams. JSON cannot carry a raw newline
+  // inside a string, so the delimiter is unambiguous; the serving side
+  // emits the join, the client splits and gates each LINE (count and
+  // length) as a raw byte scan before anything parses. The blob
+  // decodes as ONE allocation bounded by the frame.
+  bytes stream_specs_jsonl = 2;
+}
 message ReadRequest {
   bytes stream_spec_json = 1;
   optional bytes since_cursor_json = 2;
@@ -181,7 +211,7 @@ message ReadState { string pipeline = 1; }
 //   INSTEAD of `closed` — but the reply stream still ends either way. A
 //   client cannot distinguish "the backend closed cleanly" from "the
 //   backend's close failed, and the session is now unrecoverably over"
-//   from the RPC outcome alone. This is a deliberate v0 simplification:
+//   from the RPC outcome alone. This is a deliberate simplification:
 //   a Close error is terminal for the session either way, and it is the
 //   destination's OWN durability guards (the same ones ExistingReceipt's
 //   comment above cites for the commit choreography) that make a fresh

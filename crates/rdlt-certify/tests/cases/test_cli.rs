@@ -115,9 +115,10 @@ fn a_second_stdout_line_rogue_fails_p1_with_exit_1() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\necho 'rdlt-connector|1|0|0|{}/rogue.sock'\n\
+            "#!/bin/sh\necho 'rdlt-connector|1|{v}|{v}|{}/rogue.sock'\n\
              echo 'chatter after the handshake line'\nexec sleep 30\n",
-            dir.path().display()
+            dir.path().display(),
+            v = rdlt_connector_protocol::PROTOCOL_VERSION
         ),
     )
     .expect("the rogue script writes");

@@ -19,6 +19,7 @@ use std::time::Duration;
 use rdlt_connector::core::commit::{CommitReceipt, WriteMode};
 use rdlt_connector::core::id::{LoadId, PipelineId};
 use rdlt_connector::destination::Capabilities;
+use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto::connector_client::ConnectorClient;
 use rdlt_connector_protocol::proto::destination_service_client::DestinationServiceClient;
 use rdlt_connector_protocol::proto::{
@@ -316,7 +317,7 @@ async fn handshake(
 ) {
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination".to_string(),
             config_json: echo_destination_config(fail_publish, receipt_exists),
         })
@@ -343,7 +344,7 @@ async fn the_full_choreography_pins_part_closed_before_published() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination".to_string(),
             config_json: echo_destination_config(false, false),
         })
@@ -1095,7 +1096,7 @@ async fn a_failed_open_does_not_poison_the_stream_for_a_retry() {
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination".to_string(),
             config_json: echo_destination_config_fail_connect(),
         })
@@ -1567,7 +1568,7 @@ async fn handshake_refusal_matrix_pins_every_remaining_arm() {
         Row {
             label: "role mismatch: destination asked for source",
             prime: false,
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source",
             config_json: echo_destination_config(false, false),
             expect: Expect::Exact(
@@ -1577,7 +1578,7 @@ async fn handshake_refusal_matrix_pins_every_remaining_arm() {
         Row {
             label: "unrecognized role",
             prime: false,
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "orchestrator",
             config_json: echo_destination_config(false, false),
             expect: Expect::Exact(
@@ -1590,14 +1591,15 @@ async fn handshake_refusal_matrix_pins_every_remaining_arm() {
             protocol_version: 99,
             expected_role: "destination",
             config_json: echo_destination_config(false, false),
-            expect: Expect::Exact(
-                "protocol version 99 is outside this connector's supported range [0, 0]",
-            ),
+            // The full range spelling (with the current version) is
+            // pinned exactly in the source twin's out-of-range test;
+            // this row's table is 'static, so it pins the stable half.
+            expect: Expect::Contains("is outside this connector's supported range"),
         },
         Row {
             label: "config is not decodable JSON",
             prime: false,
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination",
             config_json: b"{ this is not json".to_vec(),
             expect: Expect::Contains("invalid config_json: "),
@@ -1605,7 +1607,7 @@ async fn handshake_refusal_matrix_pins_every_remaining_arm() {
         Row {
             label: "config fails validate",
             prime: false,
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination",
             config_json: echo_destination_config_invalid(),
             expect: Expect::Contains("destination config marked invalid"),
@@ -1613,7 +1615,7 @@ async fn handshake_refusal_matrix_pins_every_remaining_arm() {
         Row {
             label: "second handshake",
             prime: true,
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination",
             config_json: echo_destination_config(false, false),
             expect: Expect::Exact("handshake already completed"),
@@ -2271,7 +2273,7 @@ async fn a_panicking_backend_call_still_closes_the_session_and_answers_typed() {
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination".to_string(),
             config_json: serde_json::to_vec(&serde_json::json!({"panic_on_write": true}))
                 .expect("config"),

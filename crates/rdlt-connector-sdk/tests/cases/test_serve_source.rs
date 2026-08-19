@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto::connector_client::ConnectorClient;
 use rdlt_connector_protocol::proto::source_service_client::SourceServiceClient;
 use rdlt_connector_protocol::proto::{
@@ -81,11 +82,14 @@ async fn handshake_streams_and_read_round_trip() {
     let (_dir, path) = socket_path();
     let (line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
     assert_eq!(line.socket_path, path);
-    assert_eq!(line.protocol_min, 0);
-    assert_eq!(line.protocol_max, 0);
+    assert_eq!(line.protocol_min, PROTOCOL_VERSION);
+    assert_eq!(line.protocol_max, PROTOCOL_VERSION);
     assert_eq!(
         line.render(),
-        format!("rdlt-connector|1|0|0|{}", path.to_string_lossy()),
+        format!(
+            "rdlt-connector|1|{PROTOCOL_VERSION}|{PROTOCOL_VERSION}|{}",
+            path.to_string_lossy()
+        ),
         "the rendered line carries the frozen five-field spelling"
     );
 
@@ -95,7 +99,7 @@ async fn handshake_streams_and_read_round_trip() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(3, false),
         })
@@ -116,12 +120,14 @@ async fn handshake_streams_and_read_round_trip() {
         .expect("streams rpc")
         .into_inner();
     let names: Vec<String> = match streams.outcome {
+        // The framing rule at the reading seat: one JSON document per
+        // line, no trailing newline.
         Some(streams_reply::Outcome::Ok(list)) => list
-            .stream_spec_json
-            .iter()
-            .map(|bytes| {
+            .stream_specs_jsonl
+            .split(|byte| *byte == b'\n')
+            .map(|line| {
                 let spec: rdlt_connector::source::StreamSpec =
-                    serde_json::from_slice(bytes).expect("stream spec json");
+                    serde_json::from_slice(line).expect("stream spec json");
                 spec.name.as_str().to_string()
             })
             .collect(),
@@ -178,7 +184,7 @@ async fn wrong_role_handshake_refuses_with_the_frozen_spelling() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "destination".to_string(),
             config_json: echo_config(3, false),
         })
@@ -210,7 +216,7 @@ async fn unrecognized_role_handshake_refuses_with_its_own_spelling() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "orchestrator".to_string(),
             config_json: echo_config(3, false),
         })
@@ -239,7 +245,7 @@ async fn an_invalid_config_refuses_fatal_with_scalar_values_redacted() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(0, false),
         })
@@ -274,7 +280,7 @@ async fn an_undecodable_config_json_refuses_fatal_with_the_frozen_prefix() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: b"{ this is not json".to_vec(),
         })
@@ -323,7 +329,7 @@ async fn an_oversized_config_json_refuses_fatal_by_size_before_any_parse() {
     let len = config_json.len();
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json,
         })
@@ -346,11 +352,49 @@ async fn an_oversized_config_json_refuses_fatal_by_size_before_any_parse() {
     }
 }
 
+/// A peer still speaking the RETIRED protocol version refuses loudly at
+/// the handshake — the version bump is what keeps a skewed old binary
+/// from silently mis-decoding the fields the new version reshaped (the
+/// streams blob, the state-format document). The doc-comment on
+/// "below min": with the bump, a legal below-min input now EXISTS, and
+/// this is it.
+#[tokio::test]
+async fn a_retired_protocol_version_peer_refuses_loudly() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let mut connector = ConnectorClient::new(dial(&path).await);
+
+    let reply = connector
+        .handshake(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION - 1,
+            expected_role: "source".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc")
+        .into_inner();
+    match reply.outcome {
+        Some(handshake_reply::Outcome::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert_eq!(
+                error.message,
+                format!(
+                    "protocol version {} is outside this connector's supported range \
+                     [{PROTOCOL_VERSION}, {PROTOCOL_VERSION}]",
+                    PROTOCOL_VERSION - 1
+                )
+            );
+        }
+        other => panic!("expected the version refusal, got {other:?}"),
+    }
+}
+
 /// A protocol version outside `[protocol_min, protocol_max]` refuses FATAL —
 /// the message pinned byte-exact, like its three siblings above. (No
 /// "below min" sibling exists — see
 /// `test_serve_destination::handshake_refusal_matrix_pins_every_remaining_arm`'s
-/// own doc comment for why v0 has no legal input to construct one.)
+/// own doc comment for why the ORIGINAL wire had no legal input to
+/// construct one — the version bump minted one, pinned above.)
 #[tokio::test]
 async fn an_out_of_range_protocol_version_refuses_fatal() {
     let (_dir, path) = socket_path();
@@ -371,7 +415,10 @@ async fn an_out_of_range_protocol_version_refuses_fatal() {
             assert_eq!(error.classification, Classification::Fatal as i32);
             assert_eq!(
                 error.message,
-                "protocol version 99 is outside this connector's supported range [0, 0]"
+                format!(
+                    "protocol version 99 is outside this connector's supported range \
+                     [{PROTOCOL_VERSION}, {PROTOCOL_VERSION}]"
+                )
             );
         }
         other => panic!("expected a refusal, got {other:?}"),
@@ -388,7 +435,7 @@ async fn a_second_handshake_refuses() {
 
     let first = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(3, false),
         })
@@ -402,7 +449,7 @@ async fn a_second_handshake_refuses() {
 
     let second = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(3, false),
         })
@@ -502,7 +549,7 @@ async fn an_undecodable_stream_spec_answers_a_terminal_error_frame_not_a_status(
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(3, false),
         })
@@ -556,7 +603,7 @@ async fn an_oversized_stream_spec_name_answers_a_terminal_error_frame() {
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(3, false),
         })
@@ -613,7 +660,7 @@ async fn an_undecodable_since_cursor_answers_a_terminal_error_frame_not_a_status
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(3, false),
         })
@@ -667,7 +714,7 @@ async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(3, false),
         })
@@ -734,7 +781,7 @@ async fn a_failed_read_forwards_one_terminal_error_frame() {
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(5, true),
         })
@@ -810,7 +857,7 @@ async fn a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count() {
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: sized_echo_config(ROWS, FRAME_BYTES),
         })
@@ -875,7 +922,7 @@ async fn a_dropped_response_stream_drops_the_connector_task_within_a_timeout() {
 
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(10_000_000, false),
         })
@@ -923,7 +970,7 @@ async fn a_dropped_response_stream_aborts_a_connector_parked_between_pushes() {
     let mut source = SourceServiceClient::new(channel);
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: serde_json::to_vec(&serde_json::json!({
                 "rows": 2,
@@ -971,7 +1018,7 @@ async fn a_truncated_config_refusal_never_echoes_the_document() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: br#"{"password": "hunter2-secret""#.to_vec(),
         })
@@ -1008,7 +1055,7 @@ async fn a_wrong_typed_config_refusal_redacts_the_secret_value() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: serde_json::to_vec(&serde_json::json!({
                 "rows": "hunter2-secret-value"
@@ -1044,7 +1091,7 @@ async fn a_validate_refusal_redacts_a_repeated_scalar_value() {
 
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: echo_config(0, false),
         })
@@ -1076,7 +1123,7 @@ async fn a_debug_escaped_secret_is_redacted_too() {
     let secret = "pa\"ss\\word";
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: serde_json::to_vec(&serde_json::json!({ "rows": secret }))
                 .expect("config serializes"),
@@ -1117,7 +1164,7 @@ async fn an_oversized_expected_role_refuses_bounded_without_echo() {
     let role = "R".repeat(1 << 20);
     let reply = connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: role,
             config_json: echo_config(3, false),
         })
@@ -1160,7 +1207,7 @@ async fn sixteen_concurrent_reads_are_all_admitted() {
     let mut source = SourceServiceClient::new(channel);
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: serde_json::to_vec(&serde_json::json!({
                 "rows": 2,
@@ -1203,7 +1250,7 @@ async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed()
     let mut connector = ConnectorClient::new(channel.clone());
     connector
         .handshake(HandshakeRequest {
-            protocol_version: 0,
+            protocol_version: PROTOCOL_VERSION,
             expected_role: "source".to_string(),
             config_json: serde_json::to_vec(&serde_json::json!({
                 "rows": 2,

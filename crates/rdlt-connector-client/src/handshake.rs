@@ -121,7 +121,7 @@ pub struct Outcome {
     /// The destination's declared capabilities — `None` for a source
     /// (the proto pins `capabilities_json` empty for sources).
     pub capabilities: Option<Capabilities>,
-    /// Per-state-kind format versions (e.g. `"cursor" -> 2`). v0
+    /// Per-state-kind format versions (e.g. `"cursor" -> 2`). Today's
     /// servers send an empty map, carried through to embedders unread;
     /// negotiation is owned by the feature that adds a second format
     /// version.
@@ -237,18 +237,43 @@ pub async fn run(
     // judgment — and ride the same rule as the wire-reported pair.
     gate::identifier("spec name", &spec.name).map_err(error::Error::Protocol)?;
     gate::identifier("spec version", &spec.version).map_err(error::Error::Protocol)?;
-    // A count cap beside the content gates — a state-format map of
-    // millions of keys passes every content gate within the frame cap
-    // otherwise. v0 servers send an empty map; 64 kinds is far past any
-    // honest negotiation.
+    // The state-format versions arrive as ONE document, ceilinged on
+    // its RAW BYTES before anything parses — the wire retired the map
+    // field whose decode materialized a hash table ahead of any gate.
+    // The ceiling's arithmetic: a legal document is ≤64 kinds of
+    // ≤1024-byte keys plus a u32 and JSON punctuation each — ≈66 KiB —
+    // so 128 KiB refuses nothing legal with ~2× headroom. Empty means
+    // the empty map, the proto field's own convention.
+    const MAX_STATE_FORMAT_VERSIONS_BYTES: usize = 128 * 1024;
+    if ok.state_format_versions_json.len() > MAX_STATE_FORMAT_VERSIONS_BYTES {
+        return Err(error::Error::Protocol(format!(
+            "an inbound state_format_versions_json of {} bytes exceeds the \
+             {MAX_STATE_FORMAT_VERSIONS_BYTES}-byte ceiling — a legal document \
+             (64 kinds of 1024-byte keys) measures under half of it",
+            ok.state_format_versions_json.len()
+        )));
+    }
+    let state_format_versions: BTreeMap<String, u32> = if ok.state_format_versions_json.is_empty() {
+        BTreeMap::new()
+    } else {
+        serde_json::from_slice(&ok.state_format_versions_json).map_err(|error| {
+            error::Error::Protocol(format!(
+                "undecodable state_format_versions_json in the handshake reply: {}",
+                rdlt_connector::gate::describe_parse_error(&error)
+            ))
+        })?
+    };
+    // The count and content gates on the PARSED map — its
+    // materialization now bounded by the byte ceiling above. 64 kinds
+    // is far past any honest negotiation.
     const MAX_STATE_FORMAT_KINDS: usize = 64;
     gate::count(
         "state-format kinds",
-        ok.state_format_versions.len(),
+        state_format_versions.len(),
         MAX_STATE_FORMAT_KINDS,
     )
     .map_err(error::Error::Protocol)?;
-    for state_format_name in ok.state_format_versions.keys() {
+    for state_format_name in state_format_versions.keys() {
         gate::identifier("state format name", state_format_name).map_err(error::Error::Protocol)?;
     }
     // Empty means "a source" per the proto field's own doc — only a
@@ -283,9 +308,7 @@ pub async fn run(
         connector_version: ok.connector_version,
         spec,
         capabilities,
-        // prost generates a HashMap; the outcome holds a BTreeMap so an
-        // embedder iterating it (logs, reports) sees a stable order.
-        state_format_versions: ok.state_format_versions.into_iter().collect(),
+        state_format_versions,
         protocol_version: PROTOCOL_VERSION,
     })
 }

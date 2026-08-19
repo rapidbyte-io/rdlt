@@ -542,3 +542,15 @@ table and every rich spelling are gone, `connector: {id, config, …}`
 is the one user-facing arm, and the facade names no connector — the
 CLI schema command takes the full reverse-DNS id or a binary path.
 The rest of this document stands as written.
+
+Second amendment, same date: the "What v1 means, precisely" paragraph
+above records the wire's version NUMBER staying `0` and the file
+staying `rdlt_connector_v0.proto` — true for the freeze it describes,
+which moved no byte. An owner ruling of 2026-08-19 lifted that freeze
+for one pre-release revision that DID move bytes (two decode-amplifying
+field shapes retired for ceilinged documents, old tags reserved), so
+the identifier moved with them: the negotiated version is `1`, the file
+is `rdlt_connector_v1.proto`, the package is `rdlt.connector.v1`, and a
+skewed v0 binary refuses at both the service path and the handshake's
+version check. The compatibility rules themselves stand binding as
+written.

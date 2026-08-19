@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """io.rapidbyte.pyjsonl — the Python proof connector: a deliberately
-small jsonl SOURCE speaking the rdlt connector protocol v0 over a Unix
+small jsonl SOURCE speaking the rdlt connector protocol v1 over a Unix
 domain socket, with zero Rust anywhere in it.
 
 The proof claim this file exists for: the SAME standalone certifier
@@ -37,8 +37,8 @@ from concurrent import futures
 
 import grpc
 
-import rdlt_connector_v0_pb2 as pb
-import rdlt_connector_v0_pb2_grpc as pb_grpc
+import rdlt_connector_v1_pb2 as pb
+import rdlt_connector_v1_pb2_grpc as pb_grpc
 
 CONNECTOR_ID = "io.rapidbyte.pyjsonl"
 CONNECTOR_VERSION = "0.1.0"
@@ -46,11 +46,11 @@ CONNECTOR_VERSION = "0.1.0"
 # The RPC protocol version this connector implements — the handshake
 # line advertises it as both ends of the accepted range, and the
 # Handshake RPC refuses anything else.
-PROTOCOL_VERSION = 0
+PROTOCOL_VERSION = 1
 
 # The handshake LINE format's own version — independent of the RPC
 # protocol version above (the line format could reach 2 while the RPC
-# protocol stays at 0).
+# protocol stays at its own number).
 LINE_FORMAT_VERSION = 1
 
 # The persisted cursor document's format gate. A resume carrying any
@@ -115,7 +115,7 @@ class Session:
     """The one per-process session: unpopulated until a handshake
     succeeds, then it carries the validated stream directory.
 
-    v0 is one-handshake-per-process: a second Handshake on a populated
+    The wire is one-handshake-per-process: a second Handshake on a populated
     session is refused, and every non-exempt RPC before the first one
     aborts with the frozen precondition status.
     """
@@ -226,9 +226,10 @@ class Connector(pb_grpc.ConnectorServicer):
                 # Empty for sources — DestinationCapabilities is the
                 # destination role's document.
                 capabilities_json=b"",
-                # The v0 posture: one cursor format exists, so there is
-                # nothing to negotiate and the map ships empty.
-                state_format_versions={},
+                # One cursor format exists, so there is nothing to
+                # negotiate and the versions document ships empty (the
+                # proto field's empty-means-empty-map convention).
+                state_format_versions_json=b"",
             )
         )
 
@@ -263,7 +264,10 @@ class SourceService(pb_grpc.SourceServiceServicer):
             ).encode()
             for name in stream_names(directory)
         ]
-        return pb.StreamsReply(ok=pb.StreamList(stream_spec_json=specs))
+        # The framing rule (the proto field's contract): one JSON
+        # document per line, joined by single newlines, no trailing
+        # newline, empty = zero streams.
+        return pb.StreamsReply(ok=pb.StreamList(stream_specs_jsonl=b"\n".join(specs)))
 
     def Read(self, request, context):
         directory = self._session.require(context)
@@ -463,7 +467,7 @@ def main():
     os.close(devnull)
 
     # Serve until the parent kills the process — the provider owns this
-    # child's lifetime; there is no orderly-shutdown RPC in v0.
+    # child's lifetime; the wire has no orderly-shutdown RPC.
     server.wait_for_termination()
 
 

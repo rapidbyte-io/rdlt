@@ -11,6 +11,6 @@ fn main() {
     );
 
     tonic_prost_build::configure()
-        .compile_with_config(config, &["proto/rdlt_connector_v0.proto"], &["proto"])
-        .expect("compile rdlt_connector_v0.proto");
+        .compile_with_config(config, &["proto/rdlt_connector_v1.proto"], &["proto"])
+        .expect("compile rdlt_connector_v1.proto");
 }

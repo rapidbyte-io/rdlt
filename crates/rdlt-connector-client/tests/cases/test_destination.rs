@@ -420,7 +420,7 @@ async fn a_second_session_maps_the_status_refusal_fatal() {
         .open_backend(&context())
         .await
         .map(|_| ())
-        .expect_err("v0's one-session ceiling refuses the second");
+        .expect_err("the wire's one-session ceiling refuses the second");
     assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
     let rendered = error.to_string();
     assert!(

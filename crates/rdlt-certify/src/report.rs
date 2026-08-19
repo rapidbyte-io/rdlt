@@ -165,17 +165,16 @@ pub const CLAUSES: &[Clause] = &[
     Clause {
         id: "P7",
         title: "tolerated state-format version map",
-        definition: "The handshake's state_format_versions field must decode as a map from \
-                     state kind to format version — which protocol decoding itself enforces, so \
-                     an undecodable map fails the whole handshake. An empty map is the v0 \
-                     posture; a populated one is tolerated and threaded onward, never \
-                     negotiated.",
+        definition: "The handshake's state_format_versions_json document must decode as one \
+                     JSON object mapping state kind to format version; an undecodable document \
+                     fails the whole handshake. Empty is the nothing-to-negotiate posture; a \
+                     populated one is tolerated and threaded onward, never negotiated.",
     },
     Clause {
         id: "P8",
         title: "one-session-per-process ceiling",
         definition: "While one session is held, a second concurrent OpenSession on the live \
-                     socket must be refused with the FailedPrecondition status — v0 allows \
+                     socket must be refused with the FailedPrecondition status — the wire allows \
                      exactly one session per connector process.",
     },
     Clause {

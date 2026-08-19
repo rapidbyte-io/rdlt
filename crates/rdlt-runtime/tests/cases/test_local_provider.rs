@@ -15,6 +15,7 @@ use std::time::Duration;
 use rdlt_connector::spec::ConnectorSpec;
 use rdlt_connector_client::error::Error as ClientError;
 use rdlt_connector_client::handshake::Requirement;
+use rdlt_connector_protocol::PROTOCOL_VERSION;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::{self, SpecReply};
 use rdlt_runtime::local::Local;
@@ -41,8 +42,9 @@ fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
 /// shell as an orphan and nextest would flag the run leaky.
 fn line_fake_body(role: &str, socket: &Path) -> String {
     format!(
-        "#!/bin/sh\n[ \"$1\" = \"--role={role}\" ] || exit 3\necho 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
-        socket.display()
+        "#!/bin/sh\n[ \"$1\" = \"--role={role}\" ] || exit 3\necho 'rdlt-connector|1|{v}|{v}|{}'\nexec sleep 30\n",
+        socket.display(),
+        v = PROTOCOL_VERSION
     )
 }
 
@@ -105,8 +107,9 @@ fn serve_spec(socket: &Path) -> tokio::task::JoinHandle<()> {
 /// destination and runs `source_action` for the source probe.
 fn spec_probe_body(socket: &Path, source_action: &str) -> String {
     format!(
-        "#!/bin/sh\ncase \"$1\" in\n  --role=source) {source_action} ;;\n  --role=destination) echo 'rdlt-connector|1|0|0|{}'; exec sleep 30 ;;\n  *) exit 3 ;;\nesac\n",
-        socket.display()
+        "#!/bin/sh\ncase \"$1\" in\n  --role=source) {source_action} ;;\n  --role=destination) echo 'rdlt-connector|1|{v}|{v}|{}'; exec sleep 30 ;;\n  *) exit 3 ;;\nesac\n",
+        socket.display(),
+        v = PROTOCOL_VERSION
     )
 }
 
@@ -186,8 +189,9 @@ async fn spawned_connectors_do_not_inherit_the_hosts_home_or_secret_environment(
     let body = format!(
         "#!/bin/sh\n[ \"$1\" = \"--role=source\" ] || exit 3\n\
          [ -z \"${{HOME+x}}\" ] || exit 9\n\
-         echo 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
-        socket.display()
+         echo 'rdlt-connector|1|{v}|{v}|{}'\nexec sleep 30\n",
+        socket.display(),
+        v = PROTOCOL_VERSION
     );
     write_script(dir.path(), "rdlt-connector-fake", &body);
 
@@ -233,10 +237,11 @@ async fn spawned_connectors_receive_the_hosts_dynamic_linker_path() {
     let body = format!(
         "#!/bin/sh\nprintf '%s' \"${{LD_LIBRARY_PATH-}}\" > '{}'\n\
          printf '%s' \"${{HOME+set}}\" > '{}'\n\
-         echo 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
+         echo 'rdlt-connector|1|{v}|{v}|{}'\nexec sleep 30\n",
         linker_path_seen.display(),
         home_seen.display(),
-        socket.display()
+        socket.display(),
+        v = PROTOCOL_VERSION
     );
     write_script(dir.path(), "rdlt-connector-fake", &body);
 
@@ -548,8 +553,10 @@ async fn a_protocol_range_outside_ours_refuses_before_dialing() {
         .expect_err("an out-of-range protocol advertisement must refuse");
     assert_eq!(
         error.to_string(),
-        "connector `rdlt-connector-fake` accepts protocol versions 7..=9, but this host \
-         speaks protocol 0 — upgrade whichever side is behind"
+        format!(
+            "connector `rdlt-connector-fake` accepts protocol versions 7..=9, but this host \
+             speaks protocol {PROTOCOL_VERSION} — upgrade whichever side is behind"
+        )
     );
 }
 

@@ -1,7 +1,7 @@
 # rdlt-connector-pyjsonl
 
 The Python proof connector: a deliberately small jsonl SOURCE speaking
-the rdlt connector protocol v0, certified by the SAME `rdlt-certify`
+the rdlt connector protocol v1, certified by the SAME `rdlt-certify`
 binary — the same clause vocabulary — that certifies the first-party
 Rust connectors. Zero Rust anywhere in it: the protocol is the
 contract, not any sdk.
@@ -21,7 +21,7 @@ contract, not any sdk.
 |---|---|
 | `rdlt_connector_pyjsonl.py` | the whole implementation (stdlib + grpcio) |
 | `rdlt-connector-pyjsonl` | launcher, so PATH discovery (`rdlt-connector-` + the id's last `.`-segment) resolves to something spawnable |
-| `rdlt_connector_v0_pb2*.py` | vendored generated stubs, pinned-generator header on line 1; `tools/check-python-stubs.sh` regenerates and diffs |
+| `rdlt_connector_v1_pb2*.py` | vendored generated stubs, pinned-generator header on line 1; `tools/check-python-stubs.sh` regenerates and diffs |
 | `requirements.txt` | exact runtime pins (`grpcio`, `protobuf`); the `grpcio-tools` regen pin rides as a comment |
 | `fixtures/` | the committed certification fixture: `config.json` + two small jsonl streams |
 

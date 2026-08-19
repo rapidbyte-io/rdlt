@@ -445,10 +445,12 @@ impl WireProbe {
         }
     }
 
-    /// The `Streams` RPC, raw: each declared stream's `stream_spec_json`
-    /// bytes, undecoded — [`Self::read_frames`] feeds them back verbatim
-    /// so P5 reads exactly the streams the connector itself declared,
-    /// and the kill matrix picks its boundary stream from the same list.
+    /// The `Streams` RPC, raw: each declared stream's spec-document
+    /// bytes, undecoded, split off the reply's newline-joined blob (one
+    /// JSON document per line, no trailing newline, empty = none) —
+    /// [`Self::read_frames`] feeds them back verbatim so P5 reads
+    /// exactly the streams the connector itself declared, and the kill
+    /// matrix picks its boundary stream from the same list.
     pub(crate) async fn streams_raw(&mut self) -> Result<Vec<Vec<u8>>, String> {
         let mut client = source_client(self.channel.clone());
         let reply = client
@@ -457,7 +459,14 @@ impl WireProbe {
             .map_err(|status| format!("the Streams RPC failed: {status}"))?
             .into_inner();
         match reply.outcome {
-            Some(streams_reply::Outcome::Ok(list)) => Ok(list.stream_spec_json),
+            Some(streams_reply::Outcome::Ok(list)) if list.stream_specs_jsonl.is_empty() => {
+                Ok(Vec::new())
+            }
+            Some(streams_reply::Outcome::Ok(list)) => Ok(list
+                .stream_specs_jsonl
+                .split(|byte| *byte == b'\n')
+                .map(<[u8]>::to_vec)
+                .collect()),
             Some(streams_reply::Outcome::Error(frame)) => {
                 Err(format!("the Streams RPC was refused: {}", frame.message))
             }
@@ -1121,8 +1130,9 @@ mod parked_tests {
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\necho 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
-                socket.display()
+                "#!/bin/sh\necho 'rdlt-connector|1|{v}|{v}|{}'\nexec sleep 30\n",
+                socket.display(),
+                v = PROTOCOL_VERSION
             ),
         )
         .expect("the fake script writes");

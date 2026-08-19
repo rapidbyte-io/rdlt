@@ -85,7 +85,7 @@ const FROZEN_FIELD_NUMBERS: &[(&str, &str, u32)] = &[
     ("HandshakeOk", "connector_version", 2),
     ("HandshakeOk", "spec_json", 3),
     ("HandshakeOk", "capabilities_json", 4),
-    ("HandshakeOk", "state_format_versions", 5),
+    ("HandshakeOk", "state_format_versions_json", 6),
     ("HandshakeReply", "ok", 1),
     ("HandshakeReply", "error", 2),
     ("HandshakeRequest", "protocol_version", 1),
@@ -128,7 +128,7 @@ const FROZEN_FIELD_NUMBERS: &[(&str, &str, u32)] = &[
     ("SessionRequest", "close", 8),
     ("SpecReply", "spec_json", 1),
     ("StateReply", "state_doc_json", 1),
-    ("StreamList", "stream_spec_json", 1),
+    ("StreamList", "stream_specs_jsonl", 2),
     ("StreamsReply", "ok", 1),
     ("StreamsReply", "error", 2),
     ("Write", "table", 1),
@@ -178,7 +178,7 @@ const FROZEN_CONTAINERS: &[&str] = &[
 /// The contract file itself, read at compile time — the pin's subject
 /// is the `.proto`, not the generated Rust, because the proto is what a
 /// third party codegens from.
-const PROTO: &str = include_str!("../../proto/rdlt_connector_v0.proto");
+const PROTO: &str = include_str!("../../proto/rdlt_connector_v1.proto");
 
 #[test]
 fn every_field_number_in_the_proto_is_frozen() {

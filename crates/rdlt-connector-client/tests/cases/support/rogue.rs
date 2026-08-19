@@ -88,7 +88,7 @@ impl Connector for Rogue {
                 spec_json: serde_json::to_vec(&spec)
                     .expect("a ConnectorSpec serializes to JSON infallibly"),
                 capabilities_json: Vec::new(),
-                state_format_versions: Default::default(),
+                state_format_versions_json: Vec::new(),
             })),
         }))
     }
@@ -257,7 +257,7 @@ impl Connector for RogueDestination {
                     .expect("a ConnectorSpec serializes to JSON infallibly"),
                 capabilities_json: serde_json::to_vec(&self.capabilities.unwrap_or_default())
                     .expect("a capabilities sheet serializes to JSON infallibly"),
-                state_format_versions: Default::default(),
+                state_format_versions_json: Vec::new(),
             })),
         }))
     }
@@ -375,7 +375,7 @@ impl Connector for Mute {
                 spec_json: serde_json::to_vec(&spec)
                     .expect("a ConnectorSpec serializes to JSON infallibly"),
                 capabilities_json: Vec::new(),
-                state_format_versions: Default::default(),
+                state_format_versions_json: Vec::new(),
             })),
         }))
     }
@@ -419,7 +419,7 @@ impl Connector for Identity {
                 spec_json: serde_json::to_vec(&spec)
                     .expect("a ConnectorSpec serializes to JSON infallibly"),
                 capabilities_json: Vec::new(),
-                state_format_versions: Default::default(),
+                state_format_versions_json: Vec::new(),
             })),
         }))
     }

@@ -126,28 +126,39 @@ fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
 const MAX_DECLARED_STREAM_SPECS: usize = 1024;
 
 /// Decode the streams reply's declared specs, gated BEFORE anything
-/// materializes: the count cap first (one 64 MiB frame of minimal
-/// specs would otherwise yield millions of `StreamSpec`s and a
-/// multi-second synchronous parse loop), then each spec's raw bytes
-/// against the shared document ceiling before `from_slice` builds its
-/// maps (a maximal honest spec — 4096 type hints of 1024-byte keys plus
-/// the key fields — serializes to ~4.3 MiB, so the 8 MiB document
-/// ceiling admits every honest spec with headroom; a gate-legal spec of
-/// quote-heavy keys can double under JSON escaping to ~8.4 MiB and is
-/// refused loudly), then the per-value identifier and count gates on
-/// the parsed spec.
-fn decode_stream_specs(stream_spec_json: &[Vec<u8>]) -> Result<Vec<StreamSpec>, SourceError> {
-    gate::count(
-        "declared stream specs",
-        stream_spec_json.len(),
-        MAX_DECLARED_STREAM_SPECS,
-    )
-    .map_err(SourceError::fatal)?;
-    stream_spec_json
+/// materializes — literally: the reply is ONE newline-delimited bytes
+/// blob (the proto field's framing rule — one JSON document per line,
+/// no trailing newline, empty = zero streams; JSON cannot carry a raw
+/// newline inside a string, so the split is unambiguous), decoded by
+/// prost as a single allocation bounded by the frame. The gates then
+/// run as a RAW BYTE SCAN over that blob: the line-count cap first
+/// (one 64 MiB frame of minimal lines would otherwise yield millions
+/// of `StreamSpec`s and a multi-second synchronous parse loop), then
+/// each LINE's length against the shared document ceiling — and only
+/// then does any line parse (a maximal honest spec — 4096 type hints
+/// of 1024-byte keys plus the key fields — serializes to ~4.3 MiB, so
+/// the 8 MiB ceiling admits every honest spec with headroom; a
+/// gate-legal spec of quote-heavy keys can double under JSON escaping
+/// to ~8.4 MiB and is refused loudly), then the per-value identifier
+/// and count gates on the parsed spec.
+fn decode_stream_specs(stream_specs_jsonl: &[u8]) -> Result<Vec<StreamSpec>, SourceError> {
+    if stream_specs_jsonl.is_empty() {
+        return Ok(Vec::new());
+    }
+    let declared = stream_specs_jsonl
         .iter()
-        .map(|bytes| {
-            gate::document("stream_spec_json", bytes).map_err(SourceError::protocol)?;
-            let spec = serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
+        .filter(|byte| **byte == b'\n')
+        .count()
+        .saturating_add(1);
+    gate::count("declared stream specs", declared, MAX_DECLARED_STREAM_SPECS)
+        .map_err(SourceError::fatal)?;
+    for line in stream_specs_jsonl.split(|byte| *byte == b'\n') {
+        gate::document("stream_spec_json", line).map_err(SourceError::protocol)?;
+    }
+    stream_specs_jsonl
+        .split(|byte| *byte == b'\n')
+        .map(|line| {
+            let spec = serde_json::from_slice::<StreamSpec>(line).map_err(|error| {
                 SourceError::protocol(format!(
                     "undecodable stream_spec_json in the streams reply: {}",
                     rdlt_connector::gate::describe_parse_error(&error)
@@ -325,7 +336,7 @@ impl rdlt_connector::source::Source for Remote {
         .map_err(SourceError::transport)?
         .into_inner();
         match reply.outcome {
-            Some(streams_reply::Outcome::Ok(list)) => decode_stream_specs(&list.stream_spec_json),
+            Some(streams_reply::Outcome::Ok(list)) => decode_stream_specs(&list.stream_specs_jsonl),
             Some(streams_reply::Outcome::Error(frame)) => Err(SourceError::from_frame(&frame)),
             None => Err(SourceError::protocol(
                 "the streams reply carried no outcome".to_string(),
@@ -551,10 +562,14 @@ mod stream_spec_gate_tests {
     fn an_over_cap_spec_count_refuses_before_any_spec_decodes() {
         let minimal =
             || serde_json::to_vec(&StreamSpec::new("a")).expect("a minimal spec serializes");
-        let over: Vec<Vec<u8>> = (0..MAX_DECLARED_STREAM_SPECS + 1)
-            .map(|_| minimal())
-            .collect();
-        let error = decode_stream_specs(&over).expect_err("1025 declared specs refuse");
+        let blob_of = |count: usize| {
+            (0..count)
+                .map(|_| minimal())
+                .collect::<Vec<_>>()
+                .join(&b'\n')
+        };
+        let error = decode_stream_specs(&blob_of(MAX_DECLARED_STREAM_SPECS + 1))
+            .expect_err("1025 declared specs refuse");
         assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
         let rendered = error.to_string();
         assert!(
@@ -562,8 +577,8 @@ mod stream_spec_gate_tests {
                 && rendered.contains("over the 1024 ceiling"),
             "the refusal names the count and the ceiling: {rendered}"
         );
-        let at_cap: Vec<Vec<u8>> = (0..MAX_DECLARED_STREAM_SPECS).map(|_| minimal()).collect();
-        let decoded = decode_stream_specs(&at_cap).expect("a reply at the cap is legal");
+        let decoded = decode_stream_specs(&blob_of(MAX_DECLARED_STREAM_SPECS))
+            .expect("a reply at the cap is legal");
         assert_eq!(decoded.len(), MAX_DECLARED_STREAM_SPECS);
     }
 
@@ -576,7 +591,7 @@ mod stream_spec_gate_tests {
     fn an_oversized_spec_refuses_by_bytes_before_it_parses() {
         let oversized = vec![b'x'; rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1];
         let error =
-            decode_stream_specs(&[oversized]).expect_err("a spec over the byte ceiling refuses");
+            decode_stream_specs(&oversized).expect_err("a spec over the byte ceiling refuses");
         assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
         let rendered = error.to_string();
         assert!(

@@ -32,7 +32,13 @@ in place; legacy formats and compatibility shims are not supported.
   identifier lengths and key counts (names 1 KiB at the wire, 8–4096 for
   destination identifier rules), and rows per decoded Arrow batch (1 M at
   every decode seat). In-flight read bytes are capped by one budget shared
-  across a run's streams. Every Arrow decode seat runs the shared IPC
+  across a run's streams. An admitted (gate-legal) frame can still expand
+  in memory when it becomes typed values — a maximally dense legal streams
+  reply retains ~5–5.5× its wire bytes as parsed specs — and that typed
+  floor is the accepted residual: the ceilings bound what a frame may
+  DECLARE, and declaration-layer amplification beyond it (collections
+  materialized before any gate could run) has been removed from the wire
+  shapes themselves. Every Arrow decode seat runs the shared IPC
   framing pre-pass (declared lengths must fit the bytes that carry them)
   plus a panic belt. Connector diagnostic text (ErrorFrame messages,
   Status text) is rendered escaped and bounded (4 KiB); a served source

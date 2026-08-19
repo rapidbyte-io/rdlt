@@ -527,10 +527,11 @@ pub(crate) fn handshake<S: HandshakeShell>(
         connector_version: shell.connector_version().to_string(),
         spec_json: shell.spec_json(),
         capabilities_json: shell.capabilities_json(),
-        // Empty by design: with one format version per state kind there
-        // is nothing to negotiate; the feature that adds a second format
-        // version owns the negotiation semantics.
-        state_format_versions: Default::default(),
+        // The empty document (= the empty map, the proto field's own
+        // convention) by design: with one format version per state kind
+        // there is nothing to negotiate; the feature that adds a second
+        // format version owns the negotiation semantics.
+        state_format_versions_json: Vec::new(),
     };
 
     if slot.set(Arc::new(shell)).is_err() {

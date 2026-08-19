@@ -663,10 +663,11 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\nln -sf '{}' '{}'\necho 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
+                "#!/bin/sh\nln -sf '{}' '{}'\necho 'rdlt-connector|1|{v}|{v}|{}'\nexec sleep 30\n",
                 real.display(),
                 link.display(),
-                link.display()
+                link.display(),
+                v = rdlt_connector_protocol::PROTOCOL_VERSION
             ),
         )
         .expect("the fake script writes");

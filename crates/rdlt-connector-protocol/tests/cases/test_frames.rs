@@ -24,8 +24,34 @@ use rdlt_connector_protocol::proto::{
 };
 
 #[test]
-fn protocol_version_is_pinned_at_zero() {
-    assert_eq!(PROTOCOL_VERSION, 0);
+fn protocol_version_is_pinned_at_one() {
+    // Version 1 = the round that retired the streams reply's repeated
+    // bytes and the handshake's version map for ceilinged documents;
+    // a bump is a deliberate act this pin makes loud.
+    assert_eq!(PROTOCOL_VERSION, 1);
+}
+
+/// The OTHER skew net beside the version check: the proto PACKAGE
+/// moved with the version, so every gRPC service path is
+/// `rdlt.connector.v1.*` — a binary generated from the v0 contract
+/// dials paths this server does not serve and fails at the transport
+/// layer before any handshake logic runs. Pinned on the generated
+/// service names so a silent package revert cannot pass.
+#[test]
+fn the_service_paths_carry_the_wire_version() {
+    use rdlt_connector_protocol::proto;
+    assert_eq!(
+        proto::connector_server::SERVICE_NAME,
+        "rdlt.connector.v1.Connector"
+    );
+    assert_eq!(
+        proto::source_service_server::SERVICE_NAME,
+        "rdlt.connector.v1.SourceService"
+    );
+    assert_eq!(
+        proto::destination_service_server::SERVICE_NAME,
+        "rdlt.connector.v1.DestinationService"
+    );
 }
 
 #[test]

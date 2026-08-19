@@ -390,14 +390,20 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let shell = self.shell()?;
         let outcome = match shell.streams().await {
             Ok(streams) => {
-                let stream_spec_json = streams
+                // THE FRAMING RULE (the proto field's contract): one
+                // JSON document per line, joined by single `\n` bytes,
+                // no trailing newline, empty = zero streams. JSON
+                // cannot carry a raw newline inside a string, so the
+                // join is unambiguous for the client's line-wise gates.
+                let stream_specs_jsonl = streams
                     .iter()
                     .map(|stream| {
                         serde_json::to_vec(stream)
                             .expect("a StreamSpec serializes to JSON infallibly")
                     })
-                    .collect();
-                streams_reply::Outcome::Ok(StreamList { stream_spec_json })
+                    .collect::<Vec<_>>()
+                    .join(&b'\n');
+                streams_reply::Outcome::Ok(StreamList { stream_specs_jsonl })
             }
             Err(error) => streams_reply::Outcome::Error(source_error_frame(&error)),
         };

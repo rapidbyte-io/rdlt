@@ -32,7 +32,7 @@ fn source_config(rows: u64) -> serde_json::Value {
 
 /// The happy path, source role: every `handshake::Outcome` field lands —
 /// the spec parsed from `spec_json`, NO capabilities (the proto pins
-/// `capabilities_json` empty for sources), the v0-empty state-format
+/// `capabilities_json` empty for sources), the empty state-format
 /// map, and the protocol version both sides settled on.
 #[tokio::test]
 async fn a_source_handshake_populates_the_outcome() {
@@ -69,9 +69,12 @@ async fn a_source_handshake_populates_the_outcome() {
     );
     assert!(
         outcome.state_format_versions.is_empty(),
-        "v0 servers send an empty state-format map"
+        "servers with nothing to negotiate send the empty document"
     );
-    assert_eq!(outcome.protocol_version, 0);
+    assert_eq!(
+        outcome.protocol_version,
+        rdlt_connector_protocol::PROTOCOL_VERSION
+    );
 }
 
 /// The happy path, destination role: `capabilities` is `Some` and
@@ -380,7 +383,7 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
         connector_version: "0.0.0".to_string(),
         spec_json: serde_json::to_vec(&spec).expect("a spec serializes"),
         capabilities_json: Vec::new(),
-        state_format_versions: Default::default(),
+        state_format_versions_json: Vec::new(),
     };
     ok.spec_json = vec![b'x'; rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1];
     let _serving = rogue::serve_handshake_ok(&path, ok);
@@ -405,6 +408,83 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
     );
 }
 
+/// The state-format versions arrive as ONE ceilinged document: a blob
+/// over the 128 KiB ceiling (a legal document — 64 kinds of 1 KiB keys
+/// — measures under half of it) refuses typed on its RAW BYTES, before
+/// anything parses.
+#[tokio::test]
+async fn an_oversized_state_format_versions_document_refuses_before_parse() {
+    let (_dir, path) = socket_path();
+    let spec = rdlt_connector::spec::ConnectorSpec::new("rogue", "0.0.0");
+    let ok = rdlt_connector_protocol::proto::HandshakeOk {
+        connector_id: "rogue".to_string(),
+        connector_version: "0.0.0".to_string(),
+        spec_json: serde_json::to_vec(&spec).expect("a spec serializes"),
+        capabilities_json: Vec::new(),
+        // NOT valid JSON: the ceiling spelling in the refusal is the
+        // structural proof the parse never ran.
+        state_format_versions_json: vec![b'x'; 128 * 1024 + 1],
+    };
+    let _serving = rogue::serve_handshake_ok(&path, ok);
+
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+        .await
+        .expect("dial");
+    let error = handshake::run(
+        &channel,
+        Role::Source,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect_err("an over-ceiling versions document must refuse");
+
+    assert!(matches!(error, Error::Protocol(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("state_format_versions_json") && rendered.contains("131072-byte ceiling"),
+        "the refusal names the field and the ceiling: {rendered}"
+    );
+    assert!(
+        !rendered.contains("undecodable"),
+        "the parse never ran: {rendered}"
+    );
+}
+
+/// A populated versions document round-trips into the outcome's map —
+/// the document form carries exactly what the retired map field did.
+#[tokio::test]
+async fn a_populated_state_format_versions_document_round_trips() {
+    let (_dir, path) = socket_path();
+    let spec = rdlt_connector::spec::ConnectorSpec::new("rogue", "0.0.0");
+    let ok = rdlt_connector_protocol::proto::HandshakeOk {
+        connector_id: "rogue".to_string(),
+        connector_version: "0.0.0".to_string(),
+        spec_json: serde_json::to_vec(&spec).expect("a spec serializes"),
+        capabilities_json: Vec::new(),
+        state_format_versions_json: serde_json::to_vec(&serde_json::json!({"cursor": 2}))
+            .expect("a versions map serializes"),
+    };
+    let _serving = rogue::serve_handshake_ok(&path, ok);
+
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+        .await
+        .expect("dial");
+    let outcome = handshake::run(
+        &channel,
+        Role::Source,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect("a populated versions document passes");
+    assert_eq!(
+        outcome.state_format_versions.get("cursor"),
+        Some(&2),
+        "the document form carries what the retired map field did"
+    );
+}
+
 /// The handshake reply's DECODE layer is capped at the reply's legal
 /// maximum: a reply over the connector-service cap (18 MiB, computed
 /// at `wire::connector_client` — a legal reply cannot exceed ~16.1
@@ -421,7 +501,7 @@ async fn a_reply_over_the_decode_cap_refuses_before_materialization() {
         connector_version: "0.0.0".to_string(),
         spec_json: Vec::new(),
         capabilities_json: Vec::new(),
-        state_format_versions: Default::default(),
+        state_format_versions_json: Vec::new(),
     };
     // Over the 18 MiB connector-reply decode cap, well under the
     // 64 MiB frame the wire itself admits.

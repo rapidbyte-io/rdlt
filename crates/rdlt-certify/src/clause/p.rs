@@ -480,15 +480,16 @@ async fn p6_verdict(probe: &mut WireProbe) -> Result<(), String> {
 
 // ——— P7: tolerated state-format version map.
 
-/// P7 — the v0 state-format map: `state_format_versions` must decode
+/// P7 — the state-format versions document: it must decode
 /// as a `map<string, u32>`, which protobuf decoding already enforced
 /// by the time a `HandshakeOk` exists (an undecodable field fails the
-/// whole handshake and cascades). Empty passes — the v0 posture — and
+/// whole handshake and cascades). Empty passes — the
+/// nothing-to-negotiate posture — and
 /// a populated map ALSO passes: tolerated, threaded, never negotiated.
 /// `Pass` carries no payload, so the tolerance evidence is pinned by
 /// the populated-map rogue rather than rendered here.
 fn report_p7(report: &mut Report, ok: &proto::HandshakeOk) {
-    let _ = &ok.state_format_versions;
+    let _ = &ok.state_format_versions_json;
     report.pass("P7");
 }
 
@@ -594,7 +595,7 @@ async fn probe_one_session_ceiling(socket: &Path, entropy: &str) -> Result<(), S
     let verdict = match second {
         Err(why) => Err(why),
         Ok(Ok(_accepted)) => Err(
-            "a second concurrent session was ACCEPTED — v0 allows exactly one session per \
+            "a second concurrent session was ACCEPTED — the wire allows exactly one session per \
              connector process; the second OpenSession must be refused with FailedPrecondition"
                 .to_string(),
         ),
@@ -1342,8 +1343,9 @@ mod generic_tests {
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\necho 'rdlt-connector|1|0|0|{}'\nexec sleep 30\n",
-                socket.display()
+                "#!/bin/sh\necho 'rdlt-connector|1|{v}|{v}|{}'\nexec sleep 30\n",
+                socket.display(),
+                v = rdlt_connector_protocol::PROTOCOL_VERSION
             ),
         )
         .expect("the fake script writes");
@@ -1568,10 +1570,11 @@ mod generic_tests {
             "single-role",
             &format!(
                 "case \"$1\" in\n\
-                 --role=source) echo 'rdlt-connector|1|0|0|{socket}'; exec sleep 30;;\n\
+                 --role=source) echo 'rdlt-connector|1|{v}|{v}|{socket}'; exec sleep 30;;\n\
                  *) exit 2;;\n\
                  esac",
-                socket = dir.path().join("served.sock").display()
+                socket = dir.path().join("served.sock").display(),
+                v = rdlt_connector_protocol::PROTOCOL_VERSION
             ),
         );
         let target = Target::resolve_path(script, serde_json::json!({}));
@@ -1682,9 +1685,10 @@ mod generic_tests {
             dir.path(),
             "dual-role",
             &format!(
-                "echo $$ > {pid}\necho 'rdlt-connector|1|0|0|{socket}'\nexec sleep 30",
+                "echo $$ > {pid}\necho 'rdlt-connector|1|{v}|{v}|{socket}'\nexec sleep 30",
                 pid = pidfile.display(),
-                socket = dir.path().join("served.sock").display()
+                socket = dir.path().join("served.sock").display(),
+                v = rdlt_connector_protocol::PROTOCOL_VERSION
             ),
         );
         let target = Target::resolve_path(script, serde_json::json!({}));
@@ -1715,8 +1719,9 @@ mod generic_tests {
             dir.path(),
             "dual-role",
             &format!(
-                "echo 'rdlt-connector|1|0|0|{socket}'\nexec sleep 30",
-                socket = dir.path().join("served.sock").display()
+                "echo 'rdlt-connector|1|{v}|{v}|{socket}'\nexec sleep 30",
+                socket = dir.path().join("served.sock").display(),
+                v = rdlt_connector_protocol::PROTOCOL_VERSION
             ),
         );
         let target = Target::resolve_path(script, serde_json::json!({}));
@@ -2209,7 +2214,7 @@ mod session_tests {
             .expect_err("a second session was accepted — P8 must fail");
         assert_eq!(
             why,
-            "a second concurrent session was ACCEPTED — v0 allows exactly one session per \
+            "a second concurrent session was ACCEPTED — the wire allows exactly one session per \
              connector process; the second OpenSession must be refused with FailedPrecondition"
         );
     }

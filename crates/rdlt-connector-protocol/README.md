@@ -28,14 +28,17 @@ against those same clauses; and a recorded benchmark session in which
 every throughput bar the project holds itself to still passed with the
 connectors OUT OF PROCESS, wire and all.
 
-**"v1" names the contract, not a number on the wire.** The negotiated
-`PROTOCOL_VERSION` stays `0`, and the file stays
-`rdlt_connector_v0.proto`. That number is the identifier both sides
-compare during the handshake; bumping it for a freeze that moves no
-byte would break every shipped handshake and buy nothing. A `1` on this
-wire is reserved for a genuinely incompatible protocol, if one is ever
-needed. What froze is the CONTRACT — the rules below — not the
-identifier.
+**v1 is both the contract AND the number on the wire.** Under the
+original freeze the negotiated `PROTOCOL_VERSION` stayed `0` ("v1"
+named only the frozen contract), because bumping it for a freeze that
+moved no byte would have broken every shipped handshake for nothing.
+The 2026-08-19 revision DID move bytes — two field shapes were retired
+for ceilinged documents (their tags reserved) — so the identifier
+moved with them: `PROTOCOL_VERSION` is `1`, the file is
+`rdlt_connector_v1.proto`, and the package is `rdlt.connector.v1`. A
+skewed v0 binary fails at two nets: the gRPC service path no longer
+resolves for it, and the handshake's version check refuses loudly,
+naming both versions. The rules below stay binding exactly as frozen.
 
 ### The compatibility rules, binding from here
 
@@ -61,7 +64,7 @@ covering different things:
   session request, a `part_closed` session reply, an `arrow_ipc` read
   frame and a `SpecReply` with fixed field values and compares the
   result against hardcoded hex, alongside a pin that
-  `PROTOCOL_VERSION` is `0`. This proves the whole prost/tonic path
+  `PROTOCOL_VERSION` is `1`. This proves the whole prost/tonic path
   actually puts those numbers on the wire — a sample, deliberately,
   since its subject is the generated encoder rather than the contract
   text.
@@ -128,7 +131,7 @@ and none of it is less frozen for going unlisted here.
   gRPC `Status`, a connector outcome answers an `ErrorFrame` inside a
   normally-completing RPC (see "`Status` vs `ErrorFrame`" below). Three
   clauses cover this between them: the `Status` half by clause P8,
-  which drives the one protocol-state violation v0 defines — a second
+  which drives the one protocol-state violation the wire defines — a second
   concurrent `OpenSession`, refused `FailedPrecondition` (`OpenSession`
   is the destination service's RPC; the source service runs no session
   state machine, so there is no source-side counterpart to certify);
@@ -187,8 +190,8 @@ all three are additive:
   credit, or window field at all, so if a future measurement finds
   that bound insufficient, a `ReadCredit` message is an addition the
   frozen rules permit;
-- **state-format negotiation.** `state_format_versions` on
-  `HandshakeOk` ships EMPTY in v0 and is threaded through unread (see
+- **state-format negotiation.** `state_format_versions_json` on
+  `HandshakeOk` ships EMPTY and is threaded through unread (see
   the note at the end of this README) — with one format version per
   state kind there is nothing to negotiate yet. The field exists,
   frozen at its number; the negotiation SEMANTICS belong to the
@@ -207,7 +210,7 @@ status rather than being the one place it is recorded.
 
 Config documents — which may carry credentials — cross the Unix domain
 socket **in the clear**. There is no protocol-level encryption or
-authentication in v0:
+authentication on this wire:
 
 - the socket is created owner-only (mode `0600`, enforced by the sdk's
   `serve::wire::bind` — not by anything in this crate, since
@@ -222,7 +225,7 @@ authentication in v0:
 `Secret` *references* (a config field naming WHERE a credential lives —
 an environment variable, a secret-manager path — rather than carrying
 the credential's value) are the recorded direction for a future network
-transport, not built in v0. Network transports (TCP+mTLS for
+transport, not built today. Network transports (TCP+mTLS for
 provider-managed remote fleets) are a future binding of
 this SAME proto; a different trust model belongs to that binding when
 it's built, not retrofitted onto UDS today.
@@ -252,8 +255,8 @@ the RPC protocol is — see below):
 Parsing splits on the FIRST FOUR pipes only (`splitn(5, '|')`) — the
 socket path is the one field never re-split, so a path containing `|`
 survives (`handshake::Line::parse`'s own test pins this). [`PROTOCOL_VERSION`]
-is the value this crate's generated code actually implements (`0` for
-v0); it is distinct from the line format's `1`.
+is the value this crate's generated code actually implements (`1`
+today); it is distinct from the line format's own `1`.
 
 ## The three services
 
@@ -286,12 +289,13 @@ connector's static identity: `SpecReply.spec_json` is `ConnectorSpec`
 JSON (name, version, config_schema), served from the connector's
 statics alone, so a provider can ask a spawned connector what it IS
 before deciding what config to hand it. `state_format_versions` on
-`HandshakeOk` is a **v0 HOLE, not an oversight**: v0 servers send an
-empty map, and the dialing client (`rdlt-connector-client`, surfaced
-through `rdlt-runtime`) threads it through to embedders UNREAD (the
-handshake `Outcome`'s `state_format_versions`, reachable through the
-runtime's `Managed::outcome`) — with one format version per state kind
-there is nothing to negotiate yet.
+`HandshakeOk` is a **deliberate HOLE, not an oversight**: servers send
+the empty document (= the empty map), and the dialing client
+(`rdlt-connector-client`, surfaced through `rdlt-runtime`) threads the
+parsed map through to embedders UNREAD (the handshake `Outcome`'s
+`state_format_versions`, reachable through the runtime's
+`Managed::outcome`) — with one format version per state kind there is
+nothing to negotiate yet.
 Negotiation semantics are owned by the feature that adds a second
 format version; the map ships empty until then.
 
@@ -515,8 +519,8 @@ belongs to the dialing client, not this crate or the sdk's `serve`
 listener (the accept side of the same connection has no `Endpoint` to
 configure).
 
-**`state_format_versions` is empty in v0, on purpose — see above.** A
-provider reading `HandshakeOk` today gets an empty map, not an omission
-bug; the dialing client threads it through to embedders unread, and the
+**`state_format_versions_json` is empty on purpose — see above.** A
+provider reading `HandshakeOk` today gets the empty document (= the
+empty map), not an omission bug; the dialing client threads it through to embedders unread, and the
 resume-format negotiation this field exists for is owned by the feature
 that adds a second format version.
