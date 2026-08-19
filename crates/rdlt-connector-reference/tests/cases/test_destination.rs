@@ -493,6 +493,18 @@ async fn an_oversized_state_document_refuses_before_reading() {
 /// forever never happens. (No pre-fix RED run exists for this pin —
 /// the pre-fix behavior IS the hang, in both the test and any mutation
 /// of it — which is exactly why the gate exists.)
+///
+/// THE HARNESS SHAPE IS LOAD-BEARING: if the regular-file check is
+/// ever mutated away, the commit lands in a synchronous
+/// `std::fs::read` on a reader-less FIFO — a wedge no default nextest
+/// profile terminates. A `tokio::time::timeout` around the call cannot
+/// save it (a blocking read inside the future never yields, so the
+/// timer never fires), and a wedged TOKIO worker also blocks the
+/// runtime's own shutdown, so even a spawned-task timeout would fail
+/// the test and then hang the binary's exit. Hence a DETACHED
+/// `std::thread` (its own tiny runtime) and a channel `recv_timeout`:
+/// a regression FAILS loudly in two seconds, and the wedged thread
+/// dies with the process instead of blocking anything.
 #[tokio::test]
 async fn a_fifo_at_the_receipt_log_refuses_instead_of_hanging() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -515,9 +527,19 @@ async fn a_fifo_at_the_receipt_log_refuses_instead_of_hanging() {
         .write(&TableName::new("events"), batch_of(&[1]))
         .await
         .expect("write");
-    let refused = session
-        .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
-        .await
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime builds")
+            .block_on(session.commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1)));
+        let _ = tx.send(outcome);
+    });
+    let refused = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("the refusal must be immediate — a timeout here is the pre-gate hang")
         .expect_err("a FIFO occupant refuses typed");
     assert!(
         refused.to_string().contains("not a regular file"),
