@@ -29,7 +29,7 @@ pub(crate) async fn apply_delta(
     schema: &TableSchema,
     mode: &WriteMode,
 ) -> Result<(), Error> {
-    let lowered = lower::lower_schema(schema, capabilities);
+    let lowered = lower::lower_schema(schema, capabilities)?;
     session
         .ensure_table(&lowered, mode)
         .await

@@ -34,6 +34,9 @@ pub(crate) fn root_table(stream: &StreamName, rules: IdentRules) -> TableName {
 /// has already WALKED as anyone's ancestor — the suffix sharing below leans
 /// on that wider form, since a walked node's memoized tail is read by every
 /// LATER chain that descends through it, not just the query that walked it.
+/// ENFORCED, not merely relied on: the loader refuses a re-parenting delta
+/// typed at its recording seat, and the scan resolves against a map frozen
+/// before any resolve runs.
 ///
 /// EVERY node a walk visits is memoized, its tail SHARED with its parent's
 /// link ([`Link`] is a persistent list), and a walk stops at the first

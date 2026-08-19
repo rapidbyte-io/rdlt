@@ -147,11 +147,15 @@ impl Loader {
     /// table with no recorded parent is its own root. The shared memoized
     /// walk ([`crate::lineage::Chain`], which the recovery scan's covered
     /// filter also resolves roots through — the coverage rule's two halves
-    /// stay one rule); a cycle is unreachable from any shred, so the walk's
-    /// refusal degrades to the table itself. Memoized per table because the
-    /// walk would otherwise run per BATCH with per-hop clones; the memo's
-    /// own doc says why no invalidation is needed.
-    fn root_of(&mut self, table: &TableName) -> TableName {
+    /// stay one rule). A cycle is unreachable from any shred — its
+    /// appearance means a rogue's declared lineage or an engine defect —
+    /// and an unterminated chain is never memoized, so the old degrade
+    /// (attribute the table to itself) both misattributed coverage AND
+    /// re-ran the full walk on every batch; refusing typed is honest and
+    /// O(1) after the first refusal ends the run. Memoized per table
+    /// because the walk would otherwise run per BATCH with per-hop clones;
+    /// the memo's own doc says why no invalidation is needed.
+    fn root_of(&mut self, table: &TableName) -> Result<TableName, Error> {
         let parents = &self.parents;
         self.root_cache
             .resolve(table, parents.len(), |current| {
@@ -159,7 +163,12 @@ impl Loader {
             })
             .unwrap_or_else(|infallible| match infallible {})
             .map(|chain| chain.root().clone())
-            .unwrap_or_else(|| table.clone())
+            .ok_or_else(|| {
+                Error::internal(format!(
+                    "table `{table}`'s recorded parent chain does not terminate — a cyclic \
+                     lineage is a defect, refused rather than misattributed to the table itself"
+                ))
+            })
     }
 
     fn emit(&self, event: rdlt_core::event::PipelineEvent) {
@@ -220,6 +229,22 @@ impl Loader {
                         .insert(schema.table.clone(), key.clone());
                 }
                 if let Some(link) = &schema.parent {
+                    // A delta that RE-PARENTS an already-linked table is
+                    // refused: parent links are append-only, and a chain
+                    // resolved through the OLD link may already be
+                    // memoized with its tail shared by later chains —
+                    // accepting the rewrite would silently split lineage
+                    // between what was walked and what is recorded. The
+                    // same link re-recorded (schema evolution re-emits
+                    // deltas) is idempotent and passes.
+                    if let Some(existing) = self.parents.get(&schema.table)
+                        && existing != &link.parent
+                    {
+                        return Err(Error::internal(format!(
+                            "table `{}`'s delta re-parents it from `{existing}` to `{}` —                              parent links are append-only; a re-parenting delta is a defect,                              refused rather than splitting recorded lineage",
+                            schema.table, link.parent
+                        )));
+                    }
                     self.parents
                         .insert(schema.table.clone(), link.parent.clone());
                 }
@@ -291,7 +316,7 @@ impl Loader {
                 self.counters.rows += rows;
                 self.counters.bytes += bytes;
                 self.bytes_since_commit += bytes;
-                let root = self.root_of(&table);
+                let root = self.root_of(&table)?;
                 self.uncovered_roots.insert(root);
                 self.dirty = true;
             }
@@ -649,6 +674,68 @@ mod tests {
             schema,
             mode: WriteMode::Append,
         }
+    }
+
+    /// A cyclic parent chain refuses TYPED at the first batch that
+    /// resolves through it — never the old degrade, which silently
+    /// attributed the table to itself AND, because an unterminated
+    /// chain is never memoized, re-ran the full walk on every batch
+    /// (measured pre-fix on this exact fixture: 4 hops per call, every
+    /// call — O(M·N)). The hops meter pins the refusal's cost as one
+    /// walk, not one per batch: repeated resolutions of a refused
+    /// chain stay bounded because the RUN ends at the first refusal.
+    #[tokio::test]
+    async fn a_cyclic_parent_chain_refuses_typed_at_first_resolution() {
+        let (mut loader, _commits) = recording_loader(CommitPolicy::default());
+        for (t, p) in [("t1", "t2"), ("t2", "t3"), ("t3", "t1")] {
+            loader.process(delta_item(t, Some(p))).await.expect("delta");
+        }
+        let links = loader.parents.len();
+
+        let refused = loader
+            .process(batch_item("t1"))
+            .await
+            .expect_err("a batch resolving through a cycle refuses");
+        let rendered = refused.to_string();
+        assert!(
+            rendered.contains("recorded parent chain does not terminate")
+                && rendered.contains("refused rather than misattributed"),
+            "the refusal names the cycle and the disposition: {rendered}"
+        );
+        assert!(
+            loader.root_cache.hops() <= (links as u64) + 1,
+            "the refusal costs ONE bounded walk, not one per batch: {} hops",
+            loader.root_cache.hops()
+        );
+    }
+
+    /// A delta that RE-PARENTS an already-linked table refuses typed —
+    /// parent links are append-only, and a chain resolved through the
+    /// old link may already be memoized with its tail shared. The SAME
+    /// link re-recorded (schema evolution re-emits deltas) is
+    /// idempotent and passes.
+    #[tokio::test]
+    async fn a_reparenting_delta_refuses_and_an_idempotent_one_passes() {
+        let (mut loader, _commits) = recording_loader(CommitPolicy::default());
+        loader
+            .process(delta_item("child", Some("first_parent")))
+            .await
+            .expect("the first link records");
+        loader
+            .process(delta_item("child", Some("first_parent")))
+            .await
+            .expect("the same link re-recorded is idempotent");
+
+        let refused = loader
+            .process(delta_item("child", Some("second_parent")))
+            .await
+            .expect_err("a re-parenting delta refuses");
+        let rendered = refused.to_string();
+        assert!(
+            rendered.contains("re-parents it from `first_parent` to `second_parent`")
+                && rendered.contains("parent links are append-only"),
+            "the refusal names both links and the rule: {rendered}"
+        );
     }
 
     fn batch_item(table: &str) -> LoadItem {

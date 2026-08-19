@@ -31,20 +31,23 @@ fn needs_lowering(capabilities: &Capabilities) -> bool {
 }
 
 /// Lower a schema for the destination's capabilities.
-pub(crate) fn lower_schema(schema: &TableSchema, capabilities: &Capabilities) -> TableSchema {
+pub(crate) fn lower_schema(
+    schema: &TableSchema,
+    capabilities: &Capabilities,
+) -> Result<TableSchema, Error> {
     if !needs_lowering(capabilities) {
-        return schema.clone();
+        return Ok(schema.clone());
     }
     let mut namer = UniqueNamer::new(capabilities.ident_rules);
     let mut columns: Vec<Column> = Vec::new();
     for column in &schema.columns {
-        lower_column(column, &[], capabilities, &mut namer, &mut columns);
+        lower_column(column, &[], capabilities, &mut namer, &mut columns)?;
     }
-    TableSchema {
+    Ok(TableSchema {
         table: schema.table.clone(),
         parent: schema.parent.clone(),
         columns,
-    }
+    })
 }
 
 fn lower_column(
@@ -53,13 +56,26 @@ fn lower_column(
     capabilities: &Capabilities,
     namer: &mut UniqueNamer,
     out: &mut Vec<Column>,
-) {
+) -> Result<(), Error> {
     let mut full_path: Vec<&str> = path.to_vec();
     full_path.push(&column.name);
+    // The batch half's depth cap, mirrored: unreachable through the
+    // pipeline today — every schema reaching this seat was depth-capped
+    // at the shred's arrow gates, and `LogicalType` cannot declare
+    // structs, so only `ColumnType::Struct` nests and every producing
+    // path bounds it — but the belt holds for a direct embedder call
+    // and for any future seam, and a stack overflow is an ABORT no
+    // containment absorbs.
+    if full_path.len() > MAX_ARROW_DEPTH {
+        return Err(Error::internal(format!(
+            "schema nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
+             the lowering walk can overflow the stack"
+        )));
+    }
     match &column.column_type {
         ColumnType::Struct { fields } if !capabilities.structs => {
             for field in fields {
-                lower_column(field, &full_path, capabilities, namer, out);
+                lower_column(field, &full_path, capabilities, namer, out)?;
             }
         }
         ty => {
@@ -77,6 +93,7 @@ fn lower_column(
             });
         }
     }
+    Ok(())
 }
 
 /// Lower a batch. Driven by the batch's OWN arrow schema (which mirrors the engine
@@ -259,6 +276,48 @@ mod tests {
         }
     }
 
+    /// The schema half's depth belt, direct-call: unreachable via the
+    /// pipeline (every producing path is depth-capped upstream and
+    /// `LogicalType` cannot declare structs), but a direct embedder
+    /// call can build the nest — and the walk must refuse it typed
+    /// before recursion can overflow the stack, exactly like its
+    /// batch-half twin.
+    #[test]
+    fn an_over_deep_schema_refuses_before_the_lowering_walk_overflows() {
+        use rdlt_connector::channel::MAX_ARROW_DEPTH;
+        let mut ty = ColumnType::scalar(LogicalType::Int64);
+        for _ in 0..(MAX_ARROW_DEPTH + 2) {
+            ty = ColumnType::Struct {
+                fields: vec![col("nested", ty)],
+            };
+        }
+        let schema = TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![col("root", ty)],
+        };
+        let refused = lower_schema(&schema, &capabilities(false, true))
+            .expect_err("an over-deep schema refuses");
+        assert!(
+            refused.to_string().contains("-level cap"),
+            "the refusal names the cap: {refused}"
+        );
+        // At a legal depth the walk completes — the belt bounds, it
+        // does not narrow.
+        let mut ty = ColumnType::scalar(LogicalType::Int64);
+        for _ in 0..(MAX_ARROW_DEPTH - 2) {
+            ty = ColumnType::Struct {
+                fields: vec![col("nested", ty)],
+            };
+        }
+        let legal = TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![col("root", ty)],
+        };
+        lower_schema(&legal, &capabilities(false, true)).expect("a legal depth lowers");
+    }
+
     fn schema_with_struct_and_decimal() -> TableSchema {
         TableSchema {
             table: TableName::new("t"),
@@ -303,7 +362,10 @@ mod tests {
     #[test]
     fn full_capabilities_lower_to_identity() {
         let schema = schema_with_struct_and_decimal();
-        assert_eq!(lower_schema(&schema, &capabilities(true, true)), schema);
+        assert_eq!(
+            lower_schema(&schema, &capabilities(true, true)).expect("lowering succeeds"),
+            schema
+        );
     }
 
     #[test]
@@ -311,7 +373,8 @@ mod tests {
         let lowered = lower_schema(
             &schema_with_struct_and_decimal(),
             &capabilities(false, true),
-        );
+        )
+        .expect("lowering succeeds");
         let names: Vec<&str> = lowered.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
@@ -335,7 +398,8 @@ mod tests {
         let lowered = lower_schema(
             &schema_with_struct_and_decimal(),
             &capabilities(true, false),
-        );
+        )
+        .expect("lowering succeeds");
         assert_eq!(
             lowered.columns[2].column_type,
             ColumnType::scalar(LogicalType::Utf8)
@@ -673,7 +737,8 @@ mod parity_tests {
         fn lowered_schema_and_lowered_batch_agree(schema in schema()) {
             for (structs, decimal) in [(true, true), (true, false), (false, true), (false, false)] {
                 let c = capabilities(structs, decimal);
-                let expected = arrow_schema(&lower_schema(&schema, &c));
+                let expected =
+                    arrow_schema(&lower_schema(&schema, &c).expect("lowering succeeds"));
                 let actual = lower_batch(&empty_batch(&schema), &c)
                     .expect("lowering an empty batch cannot fail")
                     .schema();
