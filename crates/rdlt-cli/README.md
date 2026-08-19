@@ -28,8 +28,11 @@ every event as NDJSON (`-` needs `--report`, so the two machine outputs
 never share stdout). `check` performs connectivity, discovery and plan
 checks, without running: the build gates run for real (spawn + handshake),
 then both connectors' reachability probes, stream discovery, and the run's
-plan validation — no load session, nothing created or written anywhere.
-`schema` prints a spawned connector's configuration JSON Schema.
+plan validation. The engine creates nothing — no workdir, no WAL, no load
+session; what a connector's own config gate does during the handshake is
+that connector's behavior (the duckdb destination creates its empty
+database file at construction, exactly as a run would). `schema` prints a
+spawned connector's configuration JSON Schema.
 
 ## Exit codes
 

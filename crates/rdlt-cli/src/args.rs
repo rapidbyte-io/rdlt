@@ -72,8 +72,12 @@ pub(crate) enum Command {
     /// refusal a run would hit at build time surfaces here: document
     /// typos, contradictory options, a config the connector's own gate
     /// refuses), then both connectors' reachability probes, stream
-    /// discovery, and the run's plan validation. No load session opens
-    /// and nothing is created or written anywhere.
+    /// discovery, and the run's plan validation. The engine creates
+    /// nothing — no workdir, no WAL, no load session. One caveat: what
+    /// a connector's config gate does during the handshake is that
+    /// connector's behavior — a destination that materializes its
+    /// target at construction (the duckdb destination creates its
+    /// empty database file) does so here exactly as a run would.
     Check {
         /// The pipeline document.
         #[arg(value_name = "pipeline.yaml")]

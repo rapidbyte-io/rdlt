@@ -181,7 +181,7 @@ fn check_gates_without_running() {
     assert!(out.stdout.is_empty(), "check writes no machine output");
     assert!(
         String::from_utf8_lossy(&out.stderr).contains(
-            "ok: pipeline contract — connectors reachable, 1 streams discovered, plan valid"
+            "ok: pipeline contract — connectors reachable, 1 stream discovered, plan valid"
         ),
         "{:?}",
         String::from_utf8_lossy(&out.stderr)
