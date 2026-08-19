@@ -30,8 +30,10 @@ pub(crate) fn root_table(stream: &StreamName, rules: IdentRules) -> TableName {
 /// every consumer after. No invalidation exists because none is needed:
 /// parent links are append-only, and a table's own delta (link included)
 /// precedes its first batch, so by the time a table is first resolved its
-/// chain is complete and no later delta ever re-parents a table that already
-/// wrote.
+/// chain is complete and no later delta ever re-parents a table any resolve
+/// has already WALKED as anyone's ancestor — the suffix sharing below leans
+/// on that wider form, since a walked node's memoized tail is read by every
+/// LATER chain that descends through it, not just the query that walked it.
 ///
 /// EVERY node a walk visits is memoized, its tail SHARED with its parent's
 /// link ([`Link`] is a persistent list), and a walk stops at the first
