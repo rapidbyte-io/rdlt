@@ -710,6 +710,101 @@ async fn a_replay_of_a_receipt_the_store_never_issued_refuses_and_keeps_staging(
     );
 }
 
+/// The replay refusal renders its load id BOUNDED: a receipt's fields
+/// are wire-authored at the raw seat, and a refusal quoting them must
+/// stay a refusal — control bytes spelled out, the render capped —
+/// never a multi-KiB echo or terminal-injection material.
+#[tokio::test]
+async fn a_replay_refusal_renders_a_hostile_load_id_bounded() {
+    use rdlt_connector_sdk::destination::Backend;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pipeline = PipelineId::new("ref-hostile-replay");
+    // OSC-52 shaped and multi-KiB: both the injection and the size
+    // threat in one id. It never reaches a filename (the guards refuse
+    // before any publish), only the refusal's render.
+    let hostile = format!("\u{1b}]52;c;{}\u{7}", "A".repeat(8 * 1024));
+    let load = LoadId::new(hostile.clone());
+    let table = TableName::new("events");
+    let mut backend = raw_backend(dir.path(), &pipeline, &load).await;
+
+    backend.write(&table, batch_of(&[1])).await.expect("write");
+    let fabricated = CommitReceipt {
+        load_id: load.clone(),
+        commit_seq: 1,
+    };
+    let meta = commit_meta_for(&pipeline, &load, 1);
+    let error = backend
+        .replay(&meta, &fabricated)
+        .await
+        .expect_err("a receipt the log never held must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.len() < 700,
+        "the wire-authored id renders capped, not echoed whole: {} bytes",
+        rendered.len()
+    );
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "control bytes render spelled out, never raw: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("truncated from"),
+        "the render names the true length: {rendered}"
+    );
+}
+
+/// A replay's receipt must name THIS replay's commit: a receipt the
+/// log holds for a DIFFERENT (load, seq) proves only its own commit —
+/// clearing staging against it would discard rows the store never
+/// published under this commit. Refused with staging intact.
+#[tokio::test]
+async fn a_replay_with_a_held_receipt_for_another_commit_refuses_and_keeps_staging() {
+    use rdlt_connector_sdk::destination::Backend;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let probe = DirProbe(dir.path().to_path_buf());
+    let pipeline = PipelineId::new("ref-wrong-seq-replay");
+    let load = LoadId::new("ref-load-wrong-seq");
+    let table = TableName::new("events");
+    let mut backend = raw_backend(dir.path(), &pipeline, &load).await;
+
+    backend
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("write");
+    let held = backend
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publish");
+
+    // Commit 2's rows staged, then a replay handing commit 1's HELD
+    // receipt — issued, but naming another commit.
+    backend
+        .write(&table, batch_of(&[3, 4, 5]))
+        .await
+        .expect("restaged write");
+    let meta = commit_meta_for(&pipeline, &load, 2);
+    let error = backend
+        .replay(&meta, &held)
+        .await
+        .expect_err("a held receipt naming another commit must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("a receipt proves only its own commit")
+            && rendered.contains("(ref-load-wrong-seq, 2)")
+            && rendered.contains("(ref-load-wrong-seq, 1)"),
+        "the refusal names both pairs: {rendered}"
+    );
+
+    // The staged rows survived: commit 2's genuine publish persists
+    // all three on top of commit 1's two.
+    backend.publish(meta).await.expect("publish");
+    assert_eq!(
+        probe.count(&table).await.expect("count"),
+        5,
+        "a refused replay must leave staging intact"
+    );
+}
+
 /// The held-receipt half: a replay naming a receipt the log DOES hold
 /// behaves exactly as before — Ok, staging cleared, so a later commit
 /// publishes nothing redelivered.

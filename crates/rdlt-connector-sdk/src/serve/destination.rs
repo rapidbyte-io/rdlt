@@ -228,9 +228,12 @@ fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_re
 /// own nesting limit.
 fn gate_column(column: &Column) -> Result<(), session_reply::Reply> {
     refuse_oversized_identifier("column name", &column.name)?;
+    // Exhaustive on purpose: a future ColumnType arm that carries named
+    // fields must fail compilation here rather than silently riding the
+    // non-recursive arms.
     match &column.column_type {
         ColumnType::Struct { fields } => fields.iter().try_for_each(gate_column),
-        _ => Ok(()),
+        ColumnType::Scalar { .. } | ColumnType::ScalarList { .. } => Ok(()),
     }
 }
 
@@ -583,10 +586,21 @@ async fn handle_frame<C: DestinationConnector>(
             let meta = decode_document::<CommitMeta>("commit_meta_json", &replay.commit_meta_json);
             let receipt = decode_document::<CommitReceipt>("receipt_json", &replay.receipt_json);
             match (meta, receipt) {
-                (Ok(meta), Ok(receipt)) => match backend.replay(&meta, &receipt).await {
-                    Ok(()) => session_reply::Reply::Replayed(proto::Empty {}),
-                    Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
-                },
+                // The decoded receipt's load id is wire-authored
+                // identity a backend's refusals quote — gated exactly
+                // like ExistingReceipt's, so the two receipt seats
+                // cannot drift.
+                (Ok(meta), Ok(receipt)) => {
+                    match refuse_oversized_identifier("load id", receipt.load_id.as_str()) {
+                        Err(reply) => reply,
+                        Ok(()) => match backend.replay(&meta, &receipt).await {
+                            Ok(()) => session_reply::Reply::Replayed(proto::Empty {}),
+                            Err(error) => {
+                                session_reply::Reply::Error(destination_error_frame(&error))
+                            }
+                        },
+                    }
+                }
                 (Err(reply), _) | (_, Err(reply)) => reply,
             }
         }

@@ -1909,6 +1909,64 @@ async fn an_oversized_ensure_document_refuses_before_the_backend() {
     }
 }
 
+/// The Replay arm gates its decoded receipt's load id exactly like
+/// ExistingReceipt gates its raw one — the two receipt seats must not
+/// drift: a receipt's fields are wire-authored identity that backend
+/// refusals quote, and an oversized one refuses at the session
+/// boundary, before the backend sees it.
+#[tokio::test]
+async fn an_oversized_replay_receipt_load_id_refuses_before_the_backend() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let oversized = CommitReceipt {
+        load_id: LoadId::new("l".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1)),
+        commit_seq: 1,
+    };
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Replay(proto::Replay {
+                commit_meta_json: serde_json::to_vec(&commit_meta_for(
+                    &PipelineId::new("p"),
+                    &LoadId::new("l"),
+                    1,
+                ))
+                .expect("meta json"),
+                receipt_json: serde_json::to_vec(&oversized).expect("receipt json"),
+            })),
+        })
+        .await
+        .expect("send the oversized replay");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("identifier ceiling"),
+                "the refusal names the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
+    }
+}
+
 /// The identifier walk descends into nested struct fields: a
 /// `ColumnType::Struct` column nests `Column`s recursively, and an
 /// inner field name is retained by the session and reaches backend

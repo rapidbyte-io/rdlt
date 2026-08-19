@@ -135,22 +135,39 @@ impl Backend for Session {
 
     async fn replay(
         &mut self,
-        _meta: &CommitMeta,
+        meta: &CommitMeta,
         receipt: &CommitReceipt,
     ) -> Result<(), DestinationError> {
-        // The receipt is verified against the store's own log BEFORE
-        // staging is dropped: over the wire nothing forces a client to
-        // hand back a receipt this store issued, and clearing on a
-        // fabricated one would silently discard the staged rows while
-        // answering `replayed`. (The sdk wrapper only replays a receipt
-        // `existing_receipt` just returned, so it never reaches this
-        // refusal.)
+        // Both guards run BEFORE staging is dropped, and both render
+        // load ids bounded: over the wire nothing forces a client to
+        // hand back a receipt this store issued OR one naming this
+        // commit, its fields are wire-authored text, and clearing
+        // staging against a receipt that vouches for some other commit
+        // — or for nothing — would silently discard the staged rows
+        // while answering `replayed`. (The sdk wrapper only replays
+        // the receipt `existing_receipt` just returned for this same
+        // commit, so it never reaches either refusal.)
+        let render = |load_id: &LoadId| {
+            rdlt_connector_sdk::spi::gate::render_diagnostic(load_id.as_str(), 256)
+        };
+        if receipt.load_id != meta.load_id || receipt.commit_seq != meta.commit_seq {
+            return Err(DestinationError::fatal(format!(
+                "reference destination: replay for commit ({}, {}) handed a receipt naming \
+                 ({}, {}) — a receipt proves only its own commit; the staged rows are kept, \
+                 not discarded",
+                render(&meta.load_id),
+                meta.commit_seq,
+                render(&receipt.load_id),
+                receipt.commit_seq
+            )));
+        }
         if store::find_receipt(&self.dir, &receipt.load_id, receipt.commit_seq)?.is_none() {
             return Err(DestinationError::fatal(format!(
                 "reference destination: replay of a receipt this store never issued — the \
                  receipt log holds no receipt for load `{}` commit {}; the staged rows are \
                  kept, not discarded",
-                receipt.load_id, receipt.commit_seq
+                render(&receipt.load_id),
+                receipt.commit_seq
             )));
         }
         // The redelivered unit was already published under this receipt;
