@@ -151,21 +151,34 @@ pub(crate) fn render_debug(cap: usize, value: &dyn std::fmt::Debug) -> String {
 
 /// The bounded render as an `fmt::Write` sink: text written to it is
 /// escaped (via the shared [`push_escaped`] rule) and KEPT only until
-/// the output reaches the cap; every byte after that is counted and
-/// discarded — `write_str` keeps answering `Ok`, so the source's
-/// `Display`/`Debug` machinery streams to completion without a full
-/// rendering ever existing. [`BoundedWriter::finish`] appends the
-/// truncation marker naming the true source length, the same marker
-/// [`render_message`] has always spelled.
+/// the output reaches the cap, with everything after counted and
+/// discarded — up to a HARD SOURCE CEILING of twice the cap. A write
+/// arriving past the ceiling is refused with `fmt::Error`, which the
+/// std formatting machinery propagates, so a hostile `Debug` that
+/// would stream tens of MB of chunks (seconds of synchronous CPU
+/// inside error construction) stops within one chunk of the ceiling
+/// instead. The one write that CROSSES the ceiling is still counted
+/// whole and accepted — so a source that arrives as a single `&str`
+/// (every `render_message` call) keeps its exact count whatever its
+/// size, and only a source with more to say AFTER the ceiling is cut.
+/// [`BoundedWriter::finish`] appends the truncation marker: the exact
+/// source length when everything was counted, `≥N` when the refusal
+/// left bytes uncounted.
 pub(crate) struct BoundedWriter {
     out: String,
     cap: usize,
-    /// Every byte the source offered, kept or discarded — what the
-    /// truncation marker reports as the true length.
+    /// Every byte the source offered before the ceiling refusal, kept
+    /// or discarded — what the truncation marker reports.
     source_bytes: usize,
     /// Set the moment the output reaches the cap: later writes only
     /// count, and `finish` appends the marker.
     saturated: bool,
+    /// Set when the counted source crosses twice the cap: the next
+    /// write refuses and nothing more is counted.
+    refused: bool,
+    /// Set when a write WAS refused — bytes exist beyond the count, so
+    /// the marker spells `≥`.
+    undercounted: bool,
 }
 
 impl BoundedWriter {
@@ -175,6 +188,8 @@ impl BoundedWriter {
             cap,
             source_bytes: 0,
             saturated: false,
+            refused: false,
+            undercounted: false,
         }
     }
 
@@ -183,7 +198,12 @@ impl BoundedWriter {
     pub(crate) fn finish(mut self) -> String {
         if self.saturated {
             use std::fmt::Write as _;
-            let _ = write!(self.out, "…[truncated; {} source bytes]", self.source_bytes);
+            let floor = if self.undercounted { "≥" } else { "" };
+            let _ = write!(
+                self.out,
+                "…[truncated; {floor}{} source bytes]",
+                self.source_bytes
+            );
         }
         self.out
     }
@@ -191,16 +211,22 @@ impl BoundedWriter {
 
 impl std::fmt::Write for BoundedWriter {
     fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        self.source_bytes += text.len();
-        if self.saturated {
-            return Ok(());
+        if self.refused {
+            self.undercounted = true;
+            return Err(std::fmt::Error);
         }
-        for character in text.chars() {
-            push_escaped(&mut self.out, character);
-            if self.out.len() >= self.cap {
-                self.saturated = true;
-                break;
+        self.source_bytes += text.len();
+        if !self.saturated {
+            for character in text.chars() {
+                push_escaped(&mut self.out, character);
+                if self.out.len() >= self.cap {
+                    self.saturated = true;
+                    break;
+                }
             }
+        }
+        if self.source_bytes > self.cap * 2 {
+            self.refused = true;
         }
         Ok(())
     }
@@ -428,33 +454,54 @@ mod tests {
         );
     }
 
-    /// The sink never materializes what it discards: a 64 MiB `Display`
-    /// source streamed through a capped writer leaves the kept text at
-    /// the cap (plus at most one escaped character of overshoot), the
-    /// finished render under the cap plus its marker envelope, and the
-    /// marker naming the full 64 MiB — the whole point of rendering
-    /// THROUGH the sink instead of materializing first.
+    /// The sink neither materializes NOR STREAMS what it discards: a
+    /// chunked `Display` source that would write ten times the source
+    /// ceiling is refused within one chunk of it — the write budget
+    /// spent is ceiling/chunk + 2 attempts, not the source's length —
+    /// and the marker spells the count as a floor (`≥`), because bytes
+    /// were left uncounted. The kept text still stops at the cap.
     #[test]
     fn a_64mib_display_source_never_grows_the_sink_past_the_cap() {
-        struct Firehose;
+        use std::cell::Cell;
+        struct Firehose {
+            attempts: Cell<usize>,
+        }
         impl std::fmt::Display for Firehose {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let chunk = "x".repeat(1024);
-                for _ in 0..(64 * 1024) {
+                // Ten times the source ceiling, in 1 KiB chunks; `?`
+                // is how every real Display reacts to a refused write.
+                for _ in 0..(10 * 2 * MESSAGE_RENDER_CAP / 1024) {
+                    self.attempts.set(self.attempts.get() + 1);
                     f.write_str(&chunk)?;
                 }
                 Ok(())
             }
         }
         use std::fmt::Write as _;
+        let source = Firehose {
+            attempts: Cell::new(0),
+        };
         let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
-        write!(sink, "{Firehose}").expect("the sink never errors");
+        write!(sink, "{source}").expect_err("the sink refuses the runaway source");
+        let ceiling = 2 * MESSAGE_RENDER_CAP;
+        assert!(
+            source.attempts.get() <= ceiling / 1024 + 2,
+            "the source is stopped within the ceiling's write budget, \
+             not streamed to completion: {} attempts",
+            source.attempts.get()
+        );
+        assert!(
+            sink.source_bytes <= ceiling + 1024,
+            "the count stops within one chunk of the ceiling: {} bytes",
+            sink.source_bytes
+        );
         assert!(
             sink.out.len() <= MESSAGE_RENDER_CAP + 4,
             "the kept text stops at the cap: {} bytes",
             sink.out.len()
         );
-        assert_eq!(sink.source_bytes, 64 << 20, "every offered byte is counted");
+        let counted = sink.source_bytes;
         let rendered = sink.finish();
         assert!(
             rendered.len() <= MESSAGE_RENDER_CAP + 64,
@@ -462,8 +509,26 @@ mod tests {
             rendered.len()
         );
         assert!(
-            rendered.ends_with(&format!("…[truncated; {} source bytes]", 64 << 20)),
-            "the marker names the true source length: …{}",
+            rendered.ends_with(&format!("…[truncated; ≥{counted} source bytes]")),
+            "the marker spells the count as a floor: …{}",
+            &rendered[rendered.len() - 60..]
+        );
+    }
+
+    /// The ceiling cuts only sources with more to say AFTER it: a
+    /// source arriving as ONE write — every `render_message` call —
+    /// keeps its exact count whatever its size, so the single-write
+    /// marker contract is unchanged at any scale.
+    #[test]
+    fn a_single_write_source_keeps_its_exact_count_at_any_size() {
+        use std::fmt::Write as _;
+        let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
+        sink.write_str(&"x".repeat(1 << 20))
+            .expect("the crossing write itself is accepted");
+        let rendered = sink.finish();
+        assert!(
+            rendered.ends_with(&format!("…[truncated; {} source bytes]", 1 << 20)),
+            "one write, exact count, no floor marker: …{}",
             &rendered[rendered.len() - 60..]
         );
     }

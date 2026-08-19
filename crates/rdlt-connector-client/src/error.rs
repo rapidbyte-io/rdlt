@@ -90,13 +90,14 @@ pub enum Error {
     /// does not decode.
     #[error("connector protocol violation: {0}")]
     Protocol(String),
-    /// The RPC layer itself failed: a raw `Status` (the served side's
+    /// The RPC layer itself failed: a `Status` (the served side's
     /// protocol-state refusals ride this shape too — see the sdk's
-    /// Status-vs-ErrorFrame rule) or a broken transport. The status
-    /// text is connector-authored display text: rendered escaped and
-    /// bounded like a frame message.
-    #[error("connector transport: code: {:?}, message: {}", .0.code(), gate::render_message(.0.message()))]
-    Transport(#[source] tonic::Status),
+    /// Status-vs-ErrorFrame rule) or a broken transport, carried
+    /// behind [`TransportStatus`] so every rendering path — this
+    /// arm's own Display AND any `source()` chain walk an embedder's
+    /// error reporter performs — goes through the bounded render.
+    #[error("connector transport: {0}")]
+    Transport(#[source] TransportStatus),
     /// The connector stayed silent past the RPC deadline: the wire is
     /// up but `operation` never arrived. The silent-but-alive twin of
     /// a dead socket's transport error — a connector that binds,
@@ -113,6 +114,58 @@ pub enum Error {
         /// The deadline that elapsed — the requirement's `rpc_deadline`.
         deadline: Duration,
     },
+}
+
+/// A `tonic::Status` as an error-CHAIN link: the raw `Status` renders
+/// its connector-authored text whole in both `Display` and `Debug`, so
+/// handing it out as a `#[source]` would let any chain-walking
+/// reporter (anyhow's `{:#}`, tracing's error fields) materialize a
+/// multi-MiB message this crate's own renders keep bounded. The shim
+/// IS the chain link instead: `Display` spells the code and the
+/// bounded text, `Debug` is manual for the same reason, `source()`
+/// forwards to the status's own cause (host-side transport errors —
+/// useful and host-authored), and the raw `Status` stays reachable
+/// only inside this crate.
+pub struct TransportStatus(pub(crate) tonic::Status);
+
+impl TransportStatus {
+    /// The gRPC status code — the one raw field callers match on
+    /// (codes are a closed enum, no connector text rides in them).
+    pub fn code(&self) -> tonic::Code {
+        self.0.code()
+    }
+}
+
+impl From<tonic::Status> for TransportStatus {
+    fn from(status: tonic::Status) -> Self {
+        TransportStatus(status)
+    }
+}
+
+impl std::fmt::Display for TransportStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "code: {:?}, message: {}",
+            self.0.code(),
+            gate::render_message(self.0.message())
+        )
+    }
+}
+
+impl std::fmt::Debug for TransportStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransportStatus")
+            .field("code", &self.0.code())
+            .field("message", &gate::render_message(self.0.message()))
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::error::Error for TransportStatus {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        std::error::Error::source(&self.0)
+    }
 }
 
 /// Manual so the [`Error::Transport`] arm routes the `Status` text —
@@ -152,8 +205,8 @@ impl std::fmt::Debug for Error {
             Error::Protocol(message) => f.debug_tuple("Protocol").field(message).finish(),
             Error::Transport(status) => f
                 .debug_struct("Transport")
-                .field("code", &status.code())
-                .field("message", &gate::render_message(status.message()))
+                .field("code", &status.0.code())
+                .field("message", &gate::render_message(status.0.message()))
                 .finish_non_exhaustive(),
             Error::Timeout {
                 operation,
@@ -208,7 +261,7 @@ pub(crate) trait FromWire: Sized {
     /// connector is the provider layer's job (`rdlt-runtime` supervises
     /// the process), never a reclassification here.
     fn transport(status: tonic::Status) -> Self {
-        Self::fatal_error(Error::Transport(status))
+        Self::fatal_error(Error::Transport(status.into()))
     }
     fn protocol(message: String) -> Self {
         Self::fatal_error(Error::Protocol(message))
@@ -575,7 +628,7 @@ mod mismatch_and_debug_render_tests {
     /// length, and the code still legible.
     #[test]
     fn a_transport_debug_renders_bounded() {
-        let error = Error::Transport(tonic::Status::internal("x".repeat(4 << 20)));
+        let error = Error::Transport(tonic::Status::internal("x".repeat(4 << 20)).into());
         let rendered = format!("{error:?}");
         assert!(
             rendered.len() <= gate::MESSAGE_RENDER_CAP + 128,
@@ -598,7 +651,7 @@ mod mismatch_and_debug_render_tests {
     /// renders them.
     #[test]
     fn a_transport_debug_renders_control_bytes_inert() {
-        let error = Error::Transport(tonic::Status::internal("\u{1b}]52;c\u{7}\nFORGED"));
+        let error = Error::Transport(tonic::Status::internal("\u{1b}]52;c\u{7}\nFORGED").into());
         let rendered = format!("{error:?}");
         assert!(
             !rendered.contains('\u{1b}') && !rendered.contains('\u{7}') && !rendered.contains('\n'),
@@ -610,6 +663,48 @@ mod mismatch_and_debug_render_tests {
         assert!(
             rendered.contains("u{1b}]52;c") && rendered.contains("FORGED"),
             "the text survives, spelled inert: {rendered}"
+        );
+    }
+
+    /// The error CHAIN is bounded end to end: `source()` hands out the
+    /// bounded shim, never the raw `Status`, so a reporter that walks
+    /// and renders every link (the anyhow shape) stays at cap scale.
+    /// The counterfactual is measured live in the same test: the raw
+    /// `Status`'s own Display renders the connector's text whole,
+    /// which is exactly what a chain walk would have materialized
+    /// when the raw `Status` WAS the source.
+    #[test]
+    fn a_chain_walk_over_a_hostile_status_renders_bounded() {
+        let hostile = format!("evil\u{1b}]52;c;A\u{7}{}", "x".repeat(4 << 20));
+        let raw = tonic::Status::internal(hostile.clone());
+        assert!(
+            raw.to_string().len() > 4 << 20,
+            "the raw Status renders its text whole — the exposure the shim closes"
+        );
+
+        let error = Error::Transport(raw.into());
+        // An anyhow-style chain render: every link's Display, joined.
+        let mut rendered = error.to_string();
+        let mut source = std::error::Error::source(&error);
+        while let Some(cause) = source {
+            use std::fmt::Write as _;
+            let _ = write!(rendered, ": {cause}");
+            source = cause.source();
+        }
+        assert!(
+            rendered.len() <= 2 * (gate::MESSAGE_RENDER_CAP + 256),
+            "the whole chain renders at cap scale, not payload scale: {} bytes",
+            rendered.len()
+        );
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "no raw control byte survives any link: {}",
+            &rendered[..120]
+        );
+        assert!(
+            rendered.contains("truncated;"),
+            "the bounded render's marker rides the chain: {}",
+            &rendered[rendered.len() - 80..]
         );
     }
 }

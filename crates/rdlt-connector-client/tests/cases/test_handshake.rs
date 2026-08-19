@@ -404,3 +404,55 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
         "the refusal names the ceiling: {rendered}"
     );
 }
+
+/// The handshake reply's DECODE layer is capped at the reply's legal
+/// maximum: a reply over the connector-service cap (18 MiB, computed
+/// at `wire::connector_client` — a legal reply cannot exceed ~16.1
+/// MiB) refuses AT DECODE, before prost materializes anything — the
+/// content gates behind it never see the frame. The refusal is the
+/// transport family's (tonic refuses the message length), so the
+/// pin asserts that shape, not the post-decode document refusal a
+/// smaller oversize (the test above) still gets.
+#[tokio::test]
+async fn a_reply_over_the_decode_cap_refuses_before_materialization() {
+    let (_dir, path) = socket_path();
+    let mut ok = rdlt_connector_protocol::proto::HandshakeOk {
+        connector_id: "rogue".to_string(),
+        connector_version: "0.0.0".to_string(),
+        spec_json: Vec::new(),
+        capabilities_json: Vec::new(),
+        state_format_versions: Default::default(),
+    };
+    // Over the 18 MiB connector-reply decode cap, well under the
+    // 64 MiB frame the wire itself admits.
+    ok.spec_json = vec![b'x'; 20 << 20];
+    let _serving = rogue::serve_handshake_ok(&path, ok);
+
+    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+        .await
+        .expect("dial");
+    let error = handshake::run(
+        &channel,
+        Role::Source,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect_err("a reply over the decode cap must refuse");
+
+    assert!(
+        matches!(error, Error::Transport(_)),
+        "the refusal is the decode layer's, through the transport arm: {error:?}"
+    );
+    // The classification OBSERVED, not assumed: tonic refuses the
+    // over-cap message as `OutOfRange` with its length-too-large text.
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("OutOfRange") && rendered.contains("message length too large"),
+        "tonic's decode refusal, named: {rendered}"
+    );
+    assert!(
+        !rendered.contains("document ceiling"),
+        "the post-decode document gate never ran: {rendered}"
+    );
+}

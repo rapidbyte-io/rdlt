@@ -183,7 +183,7 @@ pub async fn run(
         }),
     )
     .await?
-    .map_err(error::Error::Transport)?
+    .map_err(|status| error::Error::Transport(status.into()))?
     .into_inner();
 
     let ok = match reply.outcome {

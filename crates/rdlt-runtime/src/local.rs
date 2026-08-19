@@ -211,7 +211,7 @@ impl Local {
                 deadline: requirement.rpc_deadline,
             })
         })?
-        .map_err(|status| Error::Client(ClientError::Transport(status)))?
+        .map_err(|status| Error::Client(ClientError::Transport(status.into())))?
         .into_inner();
         // The same untyped `config_schema` document the client's
         // handshake gates, from the same untrusted process: the ceiling

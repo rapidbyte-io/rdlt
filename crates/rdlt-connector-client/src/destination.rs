@@ -544,12 +544,12 @@ mod unexpected_reply_tests {
 
     /// A wrong-variant reply carrying a multi-MiB bytes payload: prost's
     /// derived Debug renders bytes as a per-byte decimal list (~5× the
-    /// payload — measured 5.00× on this fixture pre-fix), and the old
-    /// seat materialized that whole rendering before keeping 2 KiB. The
-    /// render now stays under the cap plus its envelope, and the marker
-    /// names the amplified rendering's true length — proving both that
-    /// the amplification is real (the counted source is over 4× the
-    /// payload) and that it was only counted, never kept.
+    /// payload), and the sink neither keeps NOR STREAMS it — the render
+    /// stays under the cap plus its envelope, and the Debug is stopped
+    /// at the sink's source ceiling (a floor `≥` marker past twice the
+    /// render cap) rather than formatted to completion, so a 64 MiB
+    /// payload cannot buy seconds of synchronous CPU inside error
+    /// construction.
     #[test]
     fn a_payload_bearing_wrong_variant_reply_renders_bounded() {
         let payload_bytes = 8 << 20;
@@ -569,19 +569,20 @@ mod unexpected_reply_tests {
             "the refusal names the method: {}",
             &rendered[..rendered.len().min(120)]
         );
-        // The marker's named source length IS the debug rendering the
-        // pre-fix seat allocated: assert the amplification the sink
-        // absorbed.
-        let named: usize = rendered
-            .rsplit("truncated; ")
+        // The floor marker proves the Debug was CUT at the source
+        // ceiling, not streamed: the named floor sits past twice the
+        // seat's render cap and far under the payload's amplified
+        // rendering.
+        let floor: usize = rendered
+            .rsplit("truncated; ≥")
             .next()
             .and_then(|tail| tail.split(" source bytes").next())
             .and_then(|n| n.parse().ok())
-            .expect("the marker names the source length");
+            .expect("the marker names the counted floor");
         assert!(
-            named > 4 * payload_bytes,
-            "the counted rendering shows the ~5x amplification: {named} bytes \
-             for a {payload_bytes}-byte payload"
+            floor > 2 * 2048 && floor < payload_bytes,
+            "the Debug stopped at the ceiling, not at the payload's scale: \
+             floor {floor} for a {payload_bytes}-byte payload"
         );
     }
 

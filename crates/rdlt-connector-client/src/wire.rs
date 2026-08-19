@@ -141,13 +141,30 @@ pub async fn dial(
         })
 }
 
+/// The decode cap on `Connector`-service replies: the LEGAL maximum is
+/// computable, so decoding admits no more. A `HandshakeOk` — the
+/// largest reply the service defines — is two document-ceiling payloads
+/// (`spec_json` + `capabilities_json`, 8 MiB each), two identifiers
+/// (≤ 1 KiB each), and a ≤64-entry state-format map of ≤1 KiB keys
+/// (~66 KiB): ≈ 16.1 MiB with envelope; `SpecReply` (one document) and
+/// `CheckReply` are smaller by construction. 18 MiB refuses nothing an
+/// honest server can send, while a hostile frame sized to the 64 MiB
+/// wire cap — whose map/repeated fields prost would materialize at a
+/// multiple of the wire bytes BEFORE any content gate runs — now
+/// refuses at decode, cutting that amplification ~4×. The bulk
+/// services stay at [`MAX_FRAME_BYTES`]: their legal replies genuinely
+/// fill the frame.
+const MAX_CONNECTOR_REPLY_BYTES: usize = 18 * 1024 * 1024;
+
 /// A `Connector` service client with the decode cap installed — every
 /// construction site in this crate goes through one of these three
-/// helpers so [`MAX_FRAME_BYTES`] can never be forgotten at one of
-/// them: a client left at tonic's 4 MiB default dies on the first
-/// over-4 MiB frame a server legally sends.
+/// helpers so a decode ceiling can never be forgotten at one of them:
+/// a client left at tonic's 4 MiB default dies on the first over-4 MiB
+/// frame a server legally sends. This one caps at
+/// [`MAX_CONNECTOR_REPLY_BYTES`] — the service's own legal maximum —
+/// rather than the frame cap.
 pub fn connector_client(channel: Channel) -> ConnectorClient<Channel> {
-    ConnectorClient::new(channel).max_decoding_message_size(MAX_FRAME_BYTES)
+    ConnectorClient::new(channel).max_decoding_message_size(MAX_CONNECTOR_REPLY_BYTES)
 }
 
 /// A `SourceService` client with the decode cap installed — see
