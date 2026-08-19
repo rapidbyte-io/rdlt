@@ -20,7 +20,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 use super::once::run_once;
-use crate::config::Config;
+use crate::config::{Config, Jitter, RetryPolicy};
 
 static LOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -58,12 +58,55 @@ pub(super) fn new_load_id() -> LoadId {
     ))
 }
 
-/// Engine-owned retry ceiling for transient failures (source OR
-/// destination): each retry is a full run from committed state.
-const MAX_RUN_ATTEMPTS: u32 = 5;
+/// The backoff BOUND for one retry, before jitter: `base_delay` for the
+/// first retry (`retry` is 1-based), doubling per retry, capped at
+/// `max_delay`. The 1-based numbering is deliberate and pinned: the
+/// first retry must wait ~one base delay, not two — an off-by-one here
+/// silently doubles every wait in the whole ladder.
+fn backoff_bound(policy: &RetryPolicy, retry: u32) -> std::time::Duration {
+    let doublings = retry.saturating_sub(1).min(31);
+    policy
+        .base_delay
+        .saturating_mul(1u32 << doublings)
+        .min(policy.max_delay)
+}
 
-fn backoff(attempt: u32) -> std::time::Duration {
-    std::time::Duration::from_millis(100u64.saturating_mul(1 << attempt.min(6)))
+/// One retry's actual sleep: the jittered bound, or a `Retry-After`
+/// hint where the failure carried one. The hint keeps precedence — the
+/// service named its own delay — but bounded by `max_delay` and never
+/// jittered.
+fn retry_delay(policy: &RetryPolicy, retry: u32, hint_ms: Option<u64>) -> std::time::Duration {
+    match hint_ms {
+        Some(ms) => std::time::Duration::from_millis(ms).min(policy.max_delay),
+        None => {
+            let bound = backoff_bound(policy, retry);
+            match policy.jitter {
+                Jitter::None => bound,
+                Jitter::Full => uniform_within(bound),
+            }
+        }
+    }
+}
+
+/// Uniform in `0..=bound` (full jitter), millisecond granularity.
+fn uniform_within(bound: std::time::Duration) -> std::time::Duration {
+    let bound_ms = u64::try_from(bound.as_millis()).unwrap_or(u64::MAX);
+    // Widening-multiply reduction maps a 64-bit word onto 0..=bound_ms.
+    let sampled = ((u128::from(jitter_word()) * (u128::from(bound_ms) + 1)) >> 64) as u64;
+    std::time::Duration::from_millis(sampled)
+}
+
+/// A 64-bit word from splitmix64 over a Weyl sequence seeded with the
+/// process entropy. Statistical spread is all jitter needs — this is
+/// scheduling noise, not cryptography — and the workspace carries no
+/// rng dependency to reach for.
+fn jitter_word() -> u64 {
+    static WEYL: AtomicU64 = AtomicU64::new(0);
+    let step = WEYL.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    let mut word = process_entropy().wrapping_add(step);
+    word = (word ^ (word >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    word = (word ^ (word >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    word ^ (word >> 31)
 }
 
 /// Retry driver: each attempt is a full run from committed state. A per-attempt
@@ -113,22 +156,22 @@ pub(crate) async fn run(
                 message,
                 retryable: true,
                 retry_after_ms,
-            }) if attempt + 1 < MAX_RUN_ATTEMPTS && !cancel.is_cancelled() => {
+            }) if attempt + 1 < config.retry.max_attempts.get() && !cancel.is_cancelled() => {
                 (Some(stream), message, retry_after_ms)
             }
             Err(Error::Destination {
                 message,
                 retryable: true,
                 retry_after_ms,
-            }) if attempt + 1 < MAX_RUN_ATTEMPTS && !cancel.is_cancelled() => {
+            }) if attempt + 1 < config.retry.max_attempts.get() && !cancel.is_cancelled() => {
                 (None, message, retry_after_ms)
             }
             other => return other,
         };
+        // `attempt` becomes the 1-based retry number: the first retry
+        // sleeps ~base_delay (the numbering `backoff_bound` pins).
         attempt += 1;
-        let delay = retry_after_ms
-            .map(std::time::Duration::from_millis)
-            .unwrap_or_else(|| backoff(attempt));
+        let delay = retry_delay(&config.retry, attempt, retry_after_ms);
         tracing::warn!(
             stream = ?stream, attempt, %message,
             "transient failure; restarting run from committed state"
@@ -178,14 +221,87 @@ mod load_id_tests {
 
 #[cfg(test)]
 mod backoff_tests {
-    /// The retry backoff curve, by value.
+    use std::time::Duration;
+
+    use super::*;
+
+    /// THE PRODUCTION NUMBERING, at the seam the driver calls: the
+    /// first retry's bound is exactly `base_delay`. The regression this
+    /// pins was real — the driver once incremented the attempt counter
+    /// before computing the delay, so the first retry slept 2×base and
+    /// every later one rode the doubled ladder.
     #[test]
-    fn backoff_doubles_and_saturates() {
-        use std::time::Duration;
-        assert_eq!(super::backoff(0), Duration::from_millis(100));
-        assert_eq!(super::backoff(1), Duration::from_millis(200));
-        assert_eq!(super::backoff(3), Duration::from_millis(800));
-        assert_eq!(super::backoff(6), Duration::from_millis(6400));
-        assert_eq!(super::backoff(60), Duration::from_millis(6400), "capped");
+    fn the_first_retrys_bound_is_one_base_delay() {
+        let policy = RetryPolicy::default();
+        assert_eq!(backoff_bound(&policy, 1), policy.base_delay);
+        assert_eq!(backoff_bound(&policy, 2), policy.base_delay * 2);
+        assert_eq!(backoff_bound(&policy, 3), policy.base_delay * 4);
+        assert_eq!(backoff_bound(&policy, 4), policy.base_delay * 8);
+    }
+
+    /// `max_delay` caps the ladder — including the shift-saturating far
+    /// end, where the doubling count itself is clamped.
+    #[test]
+    fn the_bound_caps_at_max_delay() {
+        let policy = RetryPolicy::default();
+        assert_eq!(backoff_bound(&policy, 10), policy.max_delay);
+        assert_eq!(backoff_bound(&policy, u32::MAX), policy.max_delay);
+    }
+
+    /// Full jitter samples uniformly within `0..=bound`: never over,
+    /// and over many samples the spread reaches both ends — a sampler
+    /// stuck at one value (or quietly halved) fails the spread checks.
+    #[test]
+    fn full_jitter_stays_within_the_bound_and_spreads() {
+        let policy = RetryPolicy {
+            jitter: Jitter::Full,
+            ..Default::default()
+        };
+        let bound = backoff_bound(&policy, 1);
+        assert_eq!(bound, Duration::from_millis(100));
+        let samples: Vec<Duration> = (0..1_000).map(|_| retry_delay(&policy, 1, None)).collect();
+        assert!(samples.iter().all(|d| *d <= bound), "never over the bound");
+        let min = samples.iter().min().expect("samples");
+        let max = samples.iter().max().expect("samples");
+        assert!(
+            *min < Duration::from_millis(30),
+            "1,000 uniform samples reach the low end: min {min:?}"
+        );
+        assert!(
+            *max > Duration::from_millis(70),
+            "1,000 uniform samples reach the high end: max {max:?}"
+        );
+    }
+
+    /// `Jitter::None` sleeps the bound exactly — the deterministic arm
+    /// the paused-clock numbering pin (and coordinating embedders) lean
+    /// on.
+    #[test]
+    fn no_jitter_sleeps_the_bound_exactly() {
+        let policy = RetryPolicy {
+            jitter: Jitter::None,
+            ..Default::default()
+        };
+        assert_eq!(retry_delay(&policy, 1, None), Duration::from_millis(100));
+        assert_eq!(retry_delay(&policy, 2, None), Duration::from_millis(200));
+    }
+
+    /// A `Retry-After` hint keeps precedence over the computed backoff
+    /// — the service named its own delay — but bounded by `max_delay`
+    /// and never jittered: an adversarial or confused hint cannot park
+    /// the driver for an hour.
+    #[test]
+    fn a_retry_after_hint_wins_bounded_by_max_delay() {
+        let policy = RetryPolicy::default();
+        assert_eq!(
+            retry_delay(&policy, 1, Some(5_000)),
+            Duration::from_millis(5_000),
+            "an in-bound hint is taken verbatim"
+        );
+        assert_eq!(
+            retry_delay(&policy, 1, Some(3_600_000)),
+            policy.max_delay,
+            "an over-bound hint clamps to max_delay"
+        );
     }
 }

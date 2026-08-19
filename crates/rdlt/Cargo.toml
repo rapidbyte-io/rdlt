@@ -39,6 +39,7 @@ serde_yaml_ng = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 rdlt-testkit = { workspace = true }
 serde_yaml_ng = { workspace = true }
 tempfile = { workspace = true }

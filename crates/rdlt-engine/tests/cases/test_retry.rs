@@ -409,3 +409,69 @@ async fn retry_budget_terminates_at_exactly_five_attempts() {
         "exactly MAX_RUN_ATTEMPTS read attempts"
     );
 }
+
+/// THE PRODUCTION NUMBERING, observed at the driver itself (real clock,
+/// jitter disabled): one transient failure, then success — the run's
+/// wall time carries exactly one backoff sleep of ~base_delay. Before
+/// the numbering fix the driver incremented the attempt counter and
+/// then computed the delay FROM it on the doubled ladder, so this exact
+/// shape slept 2×base — the upper bound here is what catches that.
+#[tokio::test]
+async fn the_first_retry_sleeps_one_base_delay_not_two() {
+    use std::time::Duration;
+
+    use rdlt_engine::config::{Jitter, RetryPolicy};
+
+    let base = Duration::from_millis(400);
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(1),
+    ]);
+    let config = Config::new("numbering").with_retry_policy(RetryPolicy {
+        base_delay: base,
+        jitter: Jitter::None,
+        ..Default::default()
+    });
+    let started = std::time::Instant::now();
+    let report = Engine::new(config, source, memory::Destination::new())
+        .run()
+        .await
+        .expect("succeeds on the second attempt");
+    let elapsed = started.elapsed();
+    assert_eq!(report.retries, 1);
+    assert!(
+        elapsed >= base,
+        "the retry slept at least the base delay: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "one base delay, not two — 2×base is the numbering regression: {elapsed:?}"
+    );
+}
+
+/// `max_attempts` plumbs from the config into the driver: a policy of 2
+/// total attempts stops after exactly one retry, where the default
+/// budget would have kept going.
+#[tokio::test]
+async fn a_configured_attempt_budget_bounds_the_driver() {
+    use rdlt_engine::config::{Jitter, RetryPolicy};
+
+    let source = scripted::Source::new(vec![
+        scripted::Stream::new(StreamSpec::new("s"), three_batches()).transient_start_failures(99),
+    ]);
+    let since_log = source.since_log();
+    let config = Config::new("budget").with_retry_policy(RetryPolicy {
+        max_attempts: std::num::NonZeroU32::new(2).expect("non-zero"),
+        base_delay: std::time::Duration::from_millis(1),
+        jitter: Jitter::None,
+        ..Default::default()
+    });
+    Engine::new(config, source, memory::Destination::new())
+        .run()
+        .await
+        .expect_err("two attempts, both transient failures");
+    assert_eq!(
+        since_log.lock().expect("log").len(),
+        2,
+        "exactly the configured attempt budget"
+    );
+}

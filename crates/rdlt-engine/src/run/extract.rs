@@ -125,6 +125,9 @@ pub(super) struct StreamPlan {
     /// records channel: per-stream budgets would multiply the peak memory
     /// cap by the stream count — the one axis discovery declares.
     pub(super) records_budget: SharedBudget,
+    /// The run's read-slot pool (`config::Config::with_max_concurrent_streams`):
+    /// the task holds one permit across its whole read.
+    pub(super) read_slots: Arc<tokio::sync::Semaphore>,
     pub(super) load_id: LoadId,
     pub(super) policy: SchemaPolicy,
     /// The batch-assembly cell budget (`config::Config::with_max_batch_cells`).
@@ -149,11 +152,24 @@ pub(super) async fn stream_task(
         mode,
         root_table,
         records_budget,
+        read_slots,
         load_id,
         policy,
         max_batch_cells,
     } = plan;
     let stream_name = spec.name.clone();
+
+    // Admission: one read slot per concurrently-reading stream, held for
+    // this task's whole lifetime. Waiting here holds NOTHING — no reader
+    // spawned, no rows staged, no checkpoints owed — so the loader's
+    // commit barrier can never wait on an un-admitted stream, and
+    // cancellation stays prompt while queued.
+    let _read_slot = tokio::select! {
+        permit = Arc::clone(&read_slots).acquire_owned() => permit.map_err(|_closed| {
+            Error::internal("the run's read-slot pool closed while streams still queue")
+        })?,
+        _ = cancel.cancelled() => return Err(Error::Cancelled),
+    };
 
     let arrow_table = root_table.clone();
     // Single-owner by construction: each blocking method consumes the owner and

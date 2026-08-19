@@ -146,6 +146,22 @@ impl<S, D> Builder<S, D> {
         self.config = self.config.with_max_streams_per_source(streams);
         self
     }
+
+    /// Cap on streams READING at once (default 16). Discovery may
+    /// declare more; the rest wait for a read slot, holding no rows
+    /// while they wait. Zero clamps to one.
+    pub fn max_concurrent_streams(mut self, streams: usize) -> Self {
+        self.config = self.config.with_max_concurrent_streams(streams);
+        self
+    }
+
+    /// How transient failures are retried (default:
+    /// [`RetryPolicy::default`](crate::policy::RetryPolicy) — 5 total
+    /// attempts, 100 ms base doubling to a 30 s cap, full jitter).
+    pub fn retry_policy(mut self, policy: crate::policy::RetryPolicy) -> Self {
+        self.config = self.config.with_retry_policy(policy);
+        self
+    }
 }
 
 impl<S: Source, D: Destination> Builder<S, D> {

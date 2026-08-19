@@ -217,3 +217,113 @@ fn build_rejects_a_threshold_less_commit_policy() {
         "the refusal names the remedy: {err}"
     );
 }
+
+/// The retry and concurrency knobs thread from the facade builder into
+/// the engine, proven behaviorally: a 2-attempt policy retries exactly
+/// once (default would keep going), and a 1-slot concurrency cap
+/// serializes a 3-stream read (peak concurrency 1).
+#[tokio::test]
+async fn retry_and_concurrency_knobs_thread_through_the_builder() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use rdlt::policy::{Jitter, RetryPolicy};
+    use rdlt::sdk::spi::error::SourceError;
+    use rdlt::sdk::spi::source::{ReadRequest, Source};
+    use rdlt::sdk::spi::spec::ConnectorSpec;
+
+    // Fails every read, transiently: with 2 total attempts the run must
+    // stop after ONE retry — the attempt count is the observation.
+    struct AlwaysTransient {
+        reads: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Source for AlwaysTransient {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("always-transient", "0.0.0")
+        }
+        async fn check(&self) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![StreamSpec::new("s")])
+        }
+        async fn read(&self, _request: ReadRequest) -> Result<(), SourceError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Err(SourceError::transient("still warming up"))
+        }
+    }
+
+    let reads = Arc::new(AtomicUsize::new(0));
+    let pipeline = Pipeline::builder("retry-knob")
+        .source(AlwaysTransient {
+            reads: Arc::clone(&reads),
+        })
+        .destination(memory::Destination::new())
+        .retry_policy(RetryPolicy {
+            max_attempts: std::num::NonZeroU32::new(2).expect("non-zero"),
+            base_delay: std::time::Duration::from_millis(1),
+            jitter: Jitter::None,
+            ..Default::default()
+        })
+        .build()
+        .expect("valid config");
+    pipeline
+        .run()
+        .await
+        .expect_err("both attempts fail transiently");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        2,
+        "the 2-attempt policy reached the driver"
+    );
+
+    // Three streams, one read slot: reads never overlap.
+    struct Gauged {
+        current: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Source for Gauged {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("gauged", "0.0.0")
+        }
+        async fn check(&self) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![
+                StreamSpec::new("a"),
+                StreamSpec::new("b"),
+                StreamSpec::new("c"),
+            ])
+        }
+        async fn read(&self, _request: ReadRequest) -> Result<(), SourceError> {
+            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            self.current.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let peak = Arc::new(AtomicUsize::new(0));
+    let pipeline = Pipeline::builder("serial-reads")
+        .source(Gauged {
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::clone(&peak),
+        })
+        .destination(memory::Destination::new())
+        .max_concurrent_streams(1)
+        .build()
+        .expect("valid config");
+    pipeline.run().await.expect("the serialized run completes");
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        1,
+        "one slot means reads never overlap"
+    );
+}

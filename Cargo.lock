@@ -1765,6 +1765,7 @@ dependencies = [
 name = "rdlt"
 version = "0.3.0"
 dependencies = [
+ "async-trait",
  "rdlt-connector-client",
  "rdlt-connector-sdk",
  "rdlt-core",

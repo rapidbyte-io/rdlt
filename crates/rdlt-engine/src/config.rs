@@ -1,12 +1,68 @@
 //! The engine's configuration: working defaults for everything but the
 //! pipeline id, overridden through the `with_*` builders.
 
+use std::num::NonZeroU32;
+use std::time::Duration;
 use std::{collections::BTreeMap, path::PathBuf};
 
 use rdlt_core::commit::{CommitPolicy, WriteMode};
 use rdlt_core::id::{PipelineId, StreamName};
 
 use crate::policy::SchemaPolicy;
+
+/// How the run driver retries transient failures: each retry is a full
+/// run from committed state, slept into under exponential backoff.
+///
+/// The first retry sleeps ~`base_delay` (jittered), each further retry
+/// doubles the bound, and `max_delay` caps it. A `Retry-After` hint
+/// from a rate-limited connector takes precedence over the computed
+/// backoff, bounded by `max_delay` and never jittered — the service
+/// named its own delay.
+///
+/// Fields are public and the struct is constructible; start from
+/// `Default` and override what differs:
+/// `RetryPolicy { max_attempts: .., ..Default::default() }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Total run attempts, the first included: 5 means one run and up
+    /// to four retries. `NonZeroU32` because zero attempts is not a
+    /// policy, it is refusing to run.
+    pub max_attempts: NonZeroU32,
+    /// The first retry's backoff bound; each further retry doubles it.
+    pub base_delay: Duration,
+    /// The ceiling on any retry delay — computed backoff and
+    /// `Retry-After` hints alike.
+    pub max_delay: Duration,
+    /// How the computed bound becomes a sleep.
+    pub jitter: Jitter,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: NonZeroU32::new(5).expect("5 is non-zero"),
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            jitter: Jitter::Full,
+        }
+    }
+}
+
+/// How a computed backoff bound becomes the actual sleep.
+///
+/// `#[non_exhaustive]`: a future strategy (equal jitter, decorrelated)
+/// arrives as a new arm, not a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Jitter {
+    /// Sleep the bound exactly. Deterministic — for tests and for
+    /// embedders that coordinate retry timing themselves.
+    None,
+    /// Sleep uniformly within `0..=bound` (full jitter): retries from
+    /// many pipelines hitting one recovering service spread out instead
+    /// of arriving in synchronized waves.
+    Full,
+}
 
 /// Configuration for an [`Engine`](crate::engine::Engine).
 ///
@@ -25,6 +81,8 @@ pub struct Config {
     pub(crate) byte_budget: usize,
     pub(crate) max_batch_cells: usize,
     pub(crate) max_streams_per_source: usize,
+    pub(crate) max_concurrent_streams: usize,
+    pub(crate) retry: RetryPolicy,
 }
 
 impl Config {
@@ -51,6 +109,15 @@ impl Config {
     /// reads more raises it here.
     pub const DEFAULT_MAX_STREAMS_PER_SOURCE: usize = 1024;
 
+    /// The default bound on streams READING at once: 16. Discovery may
+    /// declare up to [`Self::DEFAULT_MAX_STREAMS_PER_SOURCE`] streams, but
+    /// only this many hold a read slot at a time — every concurrent read
+    /// costs a connection (or file handle) on the source and its share of
+    /// scheduler churn, and a thousand at once helps nobody. Streams past
+    /// the bound wait; they hold no rows while waiting, so commits never
+    /// wait on them.
+    pub const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 16;
+
     pub fn new(pipeline: impl Into<PipelineId>) -> Self {
         Self {
             pipeline: pipeline.into(),
@@ -63,6 +130,8 @@ impl Config {
             byte_budget: Self::DEFAULT_BYTE_BUDGET,
             max_batch_cells: Self::DEFAULT_MAX_BATCH_CELLS,
             max_streams_per_source: Self::DEFAULT_MAX_STREAMS_PER_SOURCE,
+            max_concurrent_streams: Self::DEFAULT_MAX_CONCURRENT_STREAMS,
+            retry: RetryPolicy::default(),
         }
     }
     /// Sets the default write disposition for every stream.
@@ -157,6 +226,26 @@ impl Config {
         self
     }
 
+    /// Sets how many streams may read at once (see
+    /// [`Self::DEFAULT_MAX_CONCURRENT_STREAMS`]). Zero clamps to one —
+    /// a run must always admit at least one reader. Raising it toward
+    /// the stream count restores the read-everything-at-once shape.
+    pub fn with_max_concurrent_streams(mut self, streams: usize) -> Self {
+        self.max_concurrent_streams = streams.max(1);
+        self
+    }
+
+    /// Sets how transient failures are retried (see [`RetryPolicy`]).
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry = policy;
+        self
+    }
+
+    /// The configured retry policy.
+    pub fn retry_policy(&self) -> &RetryPolicy {
+        &self.retry
+    }
+
     /// Returns the default write disposition.
     pub fn write_mode(&self) -> &WriteMode {
         &self.write_mode
@@ -182,5 +271,37 @@ mod tests {
     #[test]
     fn a_zero_byte_budget_clamps_to_the_smallest_enforceable_window() {
         assert_eq!(Config::new("p").with_byte_budget(0).byte_budget, 1);
+    }
+
+    /// The concurrency and retry knobs: defaults as documented, the
+    /// zero clamp (a run must admit at least one reader), and the
+    /// plumb-through of an overriding policy.
+    #[test]
+    fn concurrency_and_retry_knobs_default_clamp_and_plumb() {
+        let config = Config::new("p");
+        assert_eq!(config.max_concurrent_streams, 16);
+        assert_eq!(config.retry, RetryPolicy::default());
+        assert_eq!(config.retry.max_attempts.get(), 5);
+        assert_eq!(config.retry.base_delay, Duration::from_millis(100));
+        assert_eq!(config.retry.max_delay, Duration::from_secs(30));
+        assert_eq!(config.retry.jitter, Jitter::Full);
+
+        assert_eq!(
+            Config::new("p")
+                .with_max_concurrent_streams(0)
+                .max_concurrent_streams,
+            1
+        );
+
+        let policy = RetryPolicy {
+            max_attempts: NonZeroU32::new(2).expect("non-zero"),
+            base_delay: Duration::from_millis(5),
+            jitter: Jitter::None,
+            ..Default::default()
+        };
+        assert_eq!(
+            Config::new("p").with_retry_policy(policy.clone()).retry,
+            policy
+        );
     }
 }

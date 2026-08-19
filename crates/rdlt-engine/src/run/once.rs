@@ -144,6 +144,13 @@ pub(super) async fn run_once(
     // source declared — per-stream budgets multiplied the cap by the one
     // axis a rogue source controls directly.
     let records_budget = rdlt_connector::channel::SharedBudget::new(config.byte_budget);
+    // ONE pool of read slots for the whole run: discovery may declare up
+    // to the stream cap, but only `max_concurrent_streams` of them read
+    // at a time. The permit is taken INSIDE each stream's task (before
+    // its reader spawns), so every stream still starts — and its
+    // StreamStarted still precedes any of its data events — while the
+    // reads themselves queue on the pool.
+    let read_slots = Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_streams));
     let mut stream_tasks: JoinSet<Result<(), Error>> = JoinSet::new();
 
     for spec in streams {
@@ -175,6 +182,7 @@ pub(super) async fn run_once(
             mode,
             root_table,
             records_budget: records_budget.clone(),
+            read_slots: Arc::clone(&read_slots),
             load_id: load_id.clone(),
             policy: config.schema_policy.clone(),
             max_batch_cells: config.max_batch_cells,

@@ -2,6 +2,7 @@ mod common;
 mod support;
 mod test_check;
 mod test_commit_policy;
+mod test_concurrency;
 mod test_crash_recovery;
 mod test_entry_points;
 mod test_full_sync;
