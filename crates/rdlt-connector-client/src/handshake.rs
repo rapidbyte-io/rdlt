@@ -240,16 +240,18 @@ pub async fn run(
     // The state-format versions arrive as ONE document, ceilinged on
     // its RAW BYTES before anything parses — the wire retired the map
     // field whose decode materialized a hash table ahead of any gate.
-    // The ceiling's arithmetic: a legal document is ≤64 kinds of
-    // ≤1024-byte keys plus a u32 and JSON punctuation each — ≈66 KiB —
-    // so 128 KiB refuses nothing legal with ~2× headroom. Empty means
-    // the empty map, the proto field's own convention.
+    // The ceiling's arithmetic: a maximal HONEST document — ≤64 kinds
+    // of ≤1024-byte keys plus a u32 and JSON punctuation each — measures
+    // ≈66 KiB, so 128 KiB admits every honest document with ~2×
+    // headroom; a gate-legal ADVERSARIAL document of quote-heavy keys
+    // can double under JSON escaping to ~132 KB and is refused loudly.
+    // Empty means the empty map, the proto field's own convention.
     const MAX_STATE_FORMAT_VERSIONS_BYTES: usize = 128 * 1024;
     if ok.state_format_versions_json.len() > MAX_STATE_FORMAT_VERSIONS_BYTES {
         return Err(error::Error::Protocol(format!(
             "an inbound state_format_versions_json of {} bytes exceeds the \
-             {MAX_STATE_FORMAT_VERSIONS_BYTES}-byte ceiling — a legal document \
-             (64 kinds of 1024-byte keys) measures under half of it",
+             {MAX_STATE_FORMAT_VERSIONS_BYTES}-byte ceiling — a maximal honest \
+             document (64 kinds of 1024-byte keys) measures about half of it",
             ok.state_format_versions_json.len()
         )));
     }

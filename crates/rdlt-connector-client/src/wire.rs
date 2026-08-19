@@ -145,15 +145,16 @@ pub async fn dial(
 /// computable, so decoding admits no more. A `HandshakeOk` — the
 /// largest reply the service defines — is two document-ceiling payloads
 /// (`spec_json` + `capabilities_json`, 8 MiB each), two identifiers
-/// (≤ 1 KiB each), and a ≤64-entry state-format map of ≤1 KiB keys
-/// (~66 KiB): ≈ 16.1 MiB with envelope; `SpecReply` (one document) and
+/// (≤ 1 KiB each), and the ≤128 KiB `state_format_versions_json`
+/// document: ≈ 16.13 MiB with envelope; `SpecReply` (one document) and
 /// `CheckReply` are smaller by construction. 18 MiB refuses nothing an
-/// honest server can send, while a hostile frame sized to the 64 MiB
-/// wire cap — whose map/repeated fields prost would materialize at a
-/// multiple of the wire bytes BEFORE any content gate runs — now
-/// refuses at decode, cutting that amplification ~4×. The bulk
-/// services stay at [`MAX_FRAME_BYTES`]: their legal replies genuinely
-/// fill the frame.
+/// honest server can send. The service carries only scalar bytes/string
+/// fields — the wire retired its map and repeated shapes — so decode
+/// materializes roughly what the frame weighs; the cap's post-wire role
+/// is bounding a hostile single-blob reply's TRANSIENT allocation to
+/// 18 MiB instead of the 64 MiB frame cap, before the content gates
+/// judge it. The bulk services stay at [`MAX_FRAME_BYTES`]: their legal
+/// replies genuinely fill the frame.
 const MAX_CONNECTOR_REPLY_BYTES: usize = 18 * 1024 * 1024;
 
 /// A `Connector` service client with the decode cap installed — every

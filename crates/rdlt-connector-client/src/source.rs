@@ -552,6 +552,18 @@ mod stream_spec_gate_tests {
         }
     }
 
+    /// The empty blob IS the zero-stream reply (the framing rule's
+    /// empty arm) — load-bearing: without the early return, splitting
+    /// an empty blob yields one empty line that fails the parse, and a
+    /// legitimately stream-less source would refuse at discovery.
+    #[test]
+    fn an_empty_blob_decodes_as_zero_streams() {
+        assert_eq!(
+            decode_stream_specs(b"").expect("empty means zero streams"),
+            Vec::<StreamSpec>::new()
+        );
+    }
+
     /// The reply-level count gate, BEFORE the decode loop: a 64 MiB
     /// frame of minimal specs would otherwise materialize millions of
     /// `StreamSpec`s (plus a multi-second synchronous parse) before the
