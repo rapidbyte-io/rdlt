@@ -522,12 +522,11 @@ mod tests {
     }
 
     /// The v1 structured-stream contract at the mixed-shape join: a
-    /// column that evolves between a struct-or-list shape and a scalar
-    /// shape joins to Json, and the structured path cannot render the
+    /// column that evolves between a struct shape and a scalar shape
+    /// joins to Json, and the structured path cannot render the
     /// nested side to text — the refusal STATES that contract (re-shape
     /// the stream, or push the column as JSON) instead of surfacing
-    /// arrow's cast vocabulary. Both mixed orders land on the same
-    /// spelling.
+    /// arrow's cast vocabulary.
     #[test]
     fn a_mixed_shape_evolution_refuses_stating_the_structured_stream_contract() {
         use arrow::array::{Int64Array, StructArray};
@@ -564,10 +563,57 @@ mod tests {
             .expect_err("the struct shape under the scalar-joined column must refuse");
         let rendered = error.to_string();
         assert!(
-            rendered.contains("between a struct-or-list shape and a scalar shape")
+            rendered.contains("across incompatible shapes")
                 && rendered.contains("re-shape the stream so the column keeps one shape")
                 && rendered.contains("push the column as JSON text")
                 && rendered.contains("column `v`"),
+            "the refusal states the structured-stream contract: {rendered}"
+        );
+    }
+
+    /// The list half of the same contract — and the reason it exists:
+    /// unlike the struct cast, arrow's List→Utf8 cast SUCCEEDS, by
+    /// rendering each list to its `[1, 2]` Display text — so before
+    /// this seat refused, a list ⊔ scalar evolution silently loaded
+    /// non-canonical rendered text as data (no nulls grew, so the
+    /// null-count belt never saw it). The refusal replaced a silent
+    /// alteration, not an arrow error.
+    #[test]
+    fn a_list_scalar_evolution_refuses_instead_of_silently_loading_display_text() {
+        use arrow::array::{Int64Array, ListArray};
+        use arrow::datatypes::Field;
+
+        let scalar_batch = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "v",
+                DataType::Int64,
+                true,
+            )])),
+            vec![Arc::new(Int64Array::from(vec![1, 2]))],
+        )
+        .expect("batch");
+        let list_array = ListArray::from_iter_primitive::<arrow::datatypes::Int64Type, _, _>(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(3)]),
+        ]);
+        let list_batch = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "v",
+                list_array.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(list_array)],
+        )
+        .expect("batch");
+
+        let mut registry = crate::schema::registry::SchemaRegistry::default();
+        let table = TableName::new("events");
+        pass(&mut registry, &table, &scalar_batch).expect("the scalar shape registers");
+        let error = pass(&mut registry, &table, &list_batch)
+            .expect_err("the list shape under the scalar-joined column must refuse");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("across incompatible shapes") && rendered.contains("column `v`"),
             "the refusal states the structured-stream contract: {rendered}"
         );
     }

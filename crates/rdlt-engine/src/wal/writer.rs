@@ -60,8 +60,10 @@ fn reconcile_unterminated_tail(manifest: &mut File) -> Result<(), Error> {
 /// caller measured it, and the read is `.take`-bounded to the window
 /// that length derives — a same-user writer appending to the manifest
 /// between the measurement and the read (or during it) cannot keep the
-/// read chasing a growing EOF, and its bytes are left untouched: they
-/// belong to the appender, not to this tail.
+/// read chasing a growing EOF. The bound is on MEMORY, not on the
+/// racing writer's bytes: the terminator or truncation below still
+/// lands at the measured cursor, so concurrent growth remains its
+/// author's own hazard.
 fn reconcile_unterminated_tail_within(manifest: &mut File, len: u64) -> Result<(), Error> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     if len == 0 {

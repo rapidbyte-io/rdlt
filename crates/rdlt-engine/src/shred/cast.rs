@@ -100,14 +100,18 @@ pub(super) fn refuse_inexact_cast(
             )
         }
         // A struct-or-list source meeting a text target is the
-        // mixed-shape join's landing: struct/list ⊔ scalar joins to
-        // Json, stored as Utf8 on this path, and no exact cast from a
-        // nested container to text exists (rendering nested values to
-        // canonical JSON text is the JSONL path's behavior, not this
-        // seat's). The refusal states that contract rather than
-        // arrow's cast vocabulary — and the walk recurses, so a
-        // nested field's mixed shape gets the same message at its
-        // own path.
+        // mixed-shape join's landing: struct ⊔ scalar, list ⊔ scalar,
+        // and struct ⊔ list all join to Json, stored as Utf8 on this
+        // path. Arrow's own cast would REFUSE the struct but silently
+        // RENDER a list to its "[1, 2]" Display text — non-canonical
+        // data loaded without a word, and no nulls grow so the belt
+        // cannot see it — so every nested shape refuses here with the
+        // contract stated (rendering nested values to canonical JSON
+        // text is the JSONL path's behavior, not this seat's). The
+        // walk recurses, so a nested field's mixed shape gets the same
+        // message at its own path. FixedSizeList cannot reach this
+        // seat — admission maps no logical type for it — so its arm is
+        // a belt.
         (
             DataType::Struct(_)
             | DataType::List(_)
@@ -115,10 +119,10 @@ pub(super) fn refuse_inexact_cast(
             | DataType::FixedSizeList(_, _),
             DataType::Utf8,
         ) => Err(format!(
-            "column `{path}`: the stream evolved this column between a struct-or-list shape \
-             and a scalar shape, which the structured path does not support — re-shape the \
-             stream so the column keeps one shape, or push the column as JSON text, where \
-             the engine renders and widens it"
+            "column `{path}`: the stream evolved this column across incompatible shapes — \
+             struct, list, and scalar do not join — which the structured path does not \
+             support: re-shape the stream so the column keeps one shape, or push the \
+             column as JSON text, where the engine renders and widens it"
         )),
         (DataType::Int64, DataType::Float64) => {
             let ints = source
