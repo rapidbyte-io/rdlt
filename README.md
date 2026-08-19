@@ -92,7 +92,7 @@ construction, before a row moves; `run` consumes the pipeline (a run is
 single-shot — construct the same document again to resume after a crash
 or cancellation).
 
-```rust
+```rust,no_run
 use rdlt::error::Error;
 use rdlt::pipeline::Pipeline;
 
@@ -127,30 +127,40 @@ already holds the pipeline as a value, deserialize it directly; if it
 composes pipelines in code, build the `Document` itself — no text
 involved — and hand either to `Pipeline::from_document`:
 
-```rust
-use rdlt::document::{Config, Document, WriteMode, connector::Connector};
+```rust,no_run
+use rdlt::document::{Config, Document, SchemaPolicy, WriteMode, connector::Connector};
 use rdlt::pipeline::Pipeline;
 
-// (a) JSON text
-let pipeline = Pipeline::from_text(r#"{"pipeline":"p","source":{"connector":{"id":"io.rapidbyte.reference","config":{"path":"a.jsonl"}}},"destination":{"connector":{"id":"io.rapidbyte.reference","config":"./dest.yaml"}}}"#, "").await?;
+async fn build() -> Result<(), Box<dyn std::error::Error>> {
+    // (a) JSON text
+    let pipeline = Pipeline::from_text(r#"{"pipeline":"p","source":{"connector":{"id":"io.rapidbyte.reference","config":{"path":"a.jsonl"}}},"destination":{"connector":{"id":"io.rapidbyte.reference","config":"./dest.yaml"}}}"#, "").await?;
 
-// (b) a serde_json::Value you already have
-let doc: Document = serde_json::from_value(value)?;
-let pipeline = Pipeline::from_document(&doc, "").await?;
+    // (b) a serde_json::Value your host already holds
+    let value = serde_json::json!({
+        "pipeline": "p",
+        "source": {"connector": {"id": "io.rapidbyte.reference", "config": {"path": "a.jsonl"}}},
+        "destination": {"connector": {"id": "io.rapidbyte.reference", "config": "./dest.yaml"}},
+    });
+    let doc: Document = serde_json::from_value(value)?;
+    let pipeline = Pipeline::from_document(&doc, "").await?;
 
-// (c) constructed
-let doc = Document {
-    pipeline: "p".into(),
-    workdir: None,
-    write_mode: Some(WriteMode::Append),
-    batch_policy: None,
-    commit_policy: None,
-    source: Connector { id: "io.rapidbyte.reference".into(), version: None, path: None,
-                        config: Config::Inline(serde_json::json!({ "path": "a.jsonl" })) },
-    destination: Connector { id: "io.rapidbyte.reference".into(), version: None, path: None,
-                             config: Config::Path("./dest.yaml".into()) },
-};
-let pipeline = Pipeline::from_document(&doc, "").await?;
+    // (c) constructed — no text involved
+    let doc = Document {
+        pipeline: "p".into(),
+        workdir: None,
+        write_mode: Some(WriteMode::Append),
+        batch_policy: None,
+        commit_policy: None,
+        schema_policy: Some(SchemaPolicy::Evolve),
+        resources: None,
+        source: Connector { id: "io.rapidbyte.reference".into(), version: None, path: None,
+                            config: Config::Inline(serde_json::json!({ "path": "a.jsonl" })) },
+        destination: Connector { id: "io.rapidbyte.reference".into(), version: None, path: None,
+                                 config: Config::Path("./dest.yaml".into()) },
+    };
+    let pipeline = Pipeline::from_document(&doc, "").await?;
+    Ok(())
+}
 ```
 
 The pieces, and where to look:
@@ -170,7 +180,7 @@ The pieces, and where to look:
 | Key | Meaning |
 |---|---|
 | `pipeline` | stable name; state, cursors, WAL and receipts are keyed on it — renaming starts a fresh pipeline |
-| `workdir` | where the write-ahead log lives (default `.rdlt/<pipeline>` beside the document); one workdir per pipeline; unset means no WAL — recovery still works by re-extracting from the last committed cursor |
+| `workdir` | where the write-ahead log lives; unset defaults to `.rdlt/<pipeline>` beside the document — a document-built pipeline always has a WAL. One workdir per pipeline, never shared. (Only the programmatic builder can run WAL-less by setting no workdir; recovery then re-extracts from the last committed cursor) |
 | `write_mode` | `append` (default), `replace`, or `merge: {key: [col, …]}`; per-stream overrides via the builder |
 | `batch_policy` | how many rows/bytes the engine accumulates before each destination write (`{every_rows: N}` / `{every_bytes: N}`) — memory/throughput, destination-agnostic |
 | `commit_policy` | when accumulated rows are committed — durability, i.e. what a crash costs; a batch never spans a commit |

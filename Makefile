@@ -186,7 +186,7 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-runtime --features spawn-b
 # `connector:` documents resolve to SPAWNED binaries, so its acceptance
 # arm (spawned_pipeline: discovery over the search path, no path:
 # override), its load-bearing e2e (the `e2e` binary: Pipeline::from_file +
-# persisted cursor across sessions), and the CLI's run/validate/events
+# persisted cursor across sessions), and the CLI's run/check/events
 # contract pins all need the real bin.
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(spawned_pipeline)'
 RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt --features spawn-bins -E 'binary(e2e)'

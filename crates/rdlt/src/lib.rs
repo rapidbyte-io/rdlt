@@ -58,3 +58,12 @@ pub mod prelude;
 pub mod report;
 pub mod runtime;
 pub mod sdk;
+
+/// The README's `rust` blocks, compiled as doctests: a rename that
+/// stales a README example fails `cargo test --doc` instead of
+/// shipping. `cfg(doctest)` keeps the include out of every other build
+/// — the path reaches outside the crate directory, which packaging
+/// could not carry.
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+mod readme_doctests {}
