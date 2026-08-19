@@ -4,13 +4,15 @@
 //! its dependency tree.
 //!
 //! [`wire`] is the plumbing both roles share (the socket, [`Error`], the
-//! handshake, the two refusal shapes); [`source`] serves a
+//! handshake, the two refusal shapes); the private `gate` module is the
+//! serve-side gate family's one seat; [`source`] serves a
 //! [`crate::source::SourceConnector`] and [`destination`] a
 //! [`crate::destination::DestinationConnector`] — each with `run` (what
 //! a spawned connector process runs) and `run_on` (the seam under it,
 //! bound at an explicit path without printing, for tests and embedders).
 
 pub mod destination;
+mod gate;
 pub mod source;
 pub mod wire;
 

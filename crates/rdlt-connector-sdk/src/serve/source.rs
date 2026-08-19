@@ -39,7 +39,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
-use super::wire;
+use super::{gate as serve_gate, wire};
 use crate::config::Document;
 use crate::source::{Shell, SourceConnector};
 
@@ -117,54 +117,6 @@ pub const MAX_CONCURRENT_READS: usize = 1024;
 
 /// The role a source's handshake must be asked for.
 const EXPECTED_ROLE: &str = "source";
-
-/// Every identifier a read's declared stream spec carries, through the
-/// wire identifier ceiling — the source-side mirror of the session
-/// seats' identifier gate, same ceiling, length-only (content escaping
-/// belongs to the display renders on the side that displays) — plus
-/// the COUNT caps the client's stream gate holds the same collections
-/// to, mirrored BY VALUE (the crates cannot share the constants; the
-/// mirror IS the contract — primary-key fields ≤ 64, type hints ≤
-/// 4096, the same numbers the client seat caps, and both sides say
-/// so): a spec of thousands of tiny gate-legal keys passes every
-/// per-value gate within the document ceiling otherwise, and the spec
-/// is RETAINED for the read's lifetime.
-fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Result<(), String> {
-    let refuse_count = |seat: &str, n: usize, cap: usize| {
-        if n > cap {
-            return Err(format!(
-                "a read declares {n} {seat} — over the {cap} ceiling"
-            ));
-        }
-        Ok(())
-    };
-    if let Some(key) = &spec.primary_key {
-        refuse_count("primary-key fields", key.len(), 64)?;
-    }
-    refuse_count("type-hint fields", spec.type_hints.len(), 4096)?;
-    let refuse = |kind: &str, value: &str| {
-        if value.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
-            return Err(format!(
-                "a read {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
-                 refused at the wire boundary",
-                value.len(),
-                gate::MAX_WIRE_IDENTIFIER_BYTES
-            ));
-        }
-        Ok(())
-    };
-    refuse("stream name", spec.name.as_str())?;
-    for field in spec.primary_key.iter().flatten() {
-        refuse("primary-key field", field)?;
-    }
-    if let Some(field) = &spec.cursor_field {
-        refuse("cursor field", field)?;
-    }
-    for field in spec.type_hints.keys() {
-        refuse("type-hint field", field)?;
-    }
-    Ok(())
-}
 
 // ---- the frame channel -----------------------------------------------------
 //
@@ -491,7 +443,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         // document ceiling above bounds the whole spec; this bounds any
         // ONE identifier, which a single multi-MiB name would otherwise
         // pass through.
-        if let Err(message) = refuse_oversized_spec_identifiers(&stream_spec) {
+        if let Err(message) = serve_gate::refuse_oversized_spec_identifiers(&stream_spec) {
             return Ok(error_stream(message).await);
         }
         let since = match &request.since_cursor_json {

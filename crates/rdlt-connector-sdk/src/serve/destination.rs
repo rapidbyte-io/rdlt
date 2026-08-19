@@ -59,7 +59,7 @@ use std::sync::{Arc, OnceLock};
 use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
 use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
-use rdlt_connector::core::schema::{Column, ColumnType, TableSchema};
+use rdlt_connector::core::schema::TableSchema;
 use rdlt_connector::destination::{Destination, OpenContext, PartCloseReason, PartClosed};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::{channel, gate};
@@ -79,7 +79,7 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::{Request, Response, Status, Streaming};
 
-use super::wire;
+use super::{gate as serve_gate, wire};
 use crate::config::Document;
 use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 
@@ -201,65 +201,6 @@ fn decode_document<T: serde::de::DeserializeOwned>(
             gate::describe_parse_error(&error)
         ))
     })
-}
-
-/// The identifier-length half of the wire's identifier rule at the
-/// session's inbound seats: ensured names and session ids are retained
-/// for the session's lifetime, so a rogue client's multi-megabyte name
-/// is memory and log swelling, refused at the door.
-fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_reply::Reply> {
-    if value.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
-        return Err(refuse(format!(
-            "a session {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
-             refused at the session boundary",
-            value.len(),
-            gate::MAX_WIRE_IDENTIFIER_BYTES
-        )));
-    }
-    Ok(())
-}
-
-/// Every identifier a decoded `CommitMeta` carries, through the same
-/// ceiling as the session's top-level ids: beyond its own load id and
-/// its state's pipeline id, the STATE document carries identifier
-/// SUB-MAPS — cursor keys are stream names, schema-hash keys are table
-/// names, the last commit names a load id, and the engine version is
-/// free text quoted like an identifier — all retained by the backend
-/// or quoted by its refusals. Cursor VALUES stay opaque documents
-/// (bounded by the document ceiling that admitted the meta), never
-/// walked.
-fn gate_commit_meta(meta: &CommitMeta) -> Result<(), session_reply::Reply> {
-    refuse_oversized_identifier("load id", meta.load_id.as_str())?;
-    refuse_oversized_identifier("pipeline id", meta.state.pipeline.as_str())?;
-    for stream in meta.state.cursors.keys() {
-        refuse_oversized_identifier("stream name", stream.as_str())?;
-    }
-    for table in meta.state.schema_hashes.keys() {
-        refuse_oversized_identifier("table name", table.as_str())?;
-    }
-    if let Some(last) = &meta.state.last_commit {
-        refuse_oversized_identifier("load id", last.load_id.as_str())?;
-    }
-    refuse_oversized_identifier("engine version", &meta.state.engine_version)?;
-    Ok(())
-}
-
-/// One column's name through the identifier ceiling, nested struct
-/// fields included: `ColumnType::Struct` nests `Column`s recursively,
-/// and a nested name is retained by the session and reaches backend
-/// error text exactly like a top-level one (`ScalarList` carries a bare
-/// element type — no names). Recursion depth is bounded upstream by the
-/// JSON parse that produced the schema, which refuses past serde_json's
-/// own nesting limit.
-fn gate_column(column: &Column) -> Result<(), session_reply::Reply> {
-    refuse_oversized_identifier("column name", &column.name)?;
-    // Exhaustive on purpose: a future ColumnType arm that carries named
-    // fields must fail compilation here rather than silently riding the
-    // non-recursive arms.
-    match &column.column_type {
-        ColumnType::Struct { fields } => fields.iter().try_for_each(gate_column),
-        ColumnType::Scalar { .. } | ColumnType::ScalarList { .. } => Ok(()),
-    }
 }
 
 /// One closed part, translated to its wire shape.
@@ -508,8 +449,10 @@ async fn handle_frame<C: DestinationConnector>(
         let reply = if state.guard.is_open() {
             refuse("a session accepts at most one Open frame, and it must be first")
         } else {
-            if let Err(reply) = refuse_oversized_identifier("pipeline id", &open.pipeline)
-                .and_then(|()| refuse_oversized_identifier("load id", &open.load_id))
+            if let Err(reply) =
+                serve_gate::refuse_oversized_identifier("pipeline id", &open.pipeline).and_then(
+                    |()| serve_gate::refuse_oversized_identifier("load id", &open.load_id),
+                )
             {
                 return finish(part_rx, reply_tx, reply).await;
             }
@@ -554,23 +497,25 @@ async fn handle_frame<C: DestinationConnector>(
                     // Every identifier the schema and mode carry is
                     // retained by the session or reaches a backend's
                     // error text — the same ceiling at each.
-                    let identifiers_ok =
-                        refuse_oversized_identifier("table name", schema.table.as_str())
-                            .and_then(|()| {
-                                schema.parent.iter().try_for_each(|parent| {
-                                    refuse_oversized_identifier(
-                                        "parent table name",
-                                        parent.parent.as_str(),
-                                    )
-                                })
-                            })
-                            .and_then(|()| schema.columns.iter().try_for_each(gate_column))
-                            .and_then(|()| match &mode {
-                                WriteMode::Merge { key } => key.iter().try_for_each(|column| {
-                                    refuse_oversized_identifier("merge key column", column)
-                                }),
-                                _ => Ok(()),
-                            });
+                    let identifiers_ok = serve_gate::refuse_oversized_identifier(
+                        "table name",
+                        schema.table.as_str(),
+                    )
+                    .and_then(|()| {
+                        schema.parent.iter().try_for_each(|parent| {
+                            serve_gate::refuse_oversized_identifier(
+                                "parent table name",
+                                parent.parent.as_str(),
+                            )
+                        })
+                    })
+                    .and_then(|()| schema.columns.iter().try_for_each(serve_gate::gate_column))
+                    .and_then(|()| match &mode {
+                        WriteMode::Merge { key } => key.iter().try_for_each(|column| {
+                            serve_gate::refuse_oversized_identifier("merge key column", column)
+                        }),
+                        _ => Ok(()),
+                    });
                     match identifiers_ok {
                         Err(reply) => reply,
                         Ok(()) => match backend.ensure_table(&schema, &mode).await {
@@ -589,11 +534,13 @@ async fn handle_frame<C: DestinationConnector>(
         }
         Some(session_request::Request::Write(write)) => {
             let table = TableName::new(write.table);
-            match refuse_oversized_identifier("table name", table.as_str()).and_then(|()| {
-                guard
-                    .check_write(&table)
-                    .map_err(|error| session_reply::Reply::Error(destination_error_frame(&error)))
-            }) {
+            match serve_gate::refuse_oversized_identifier("table name", table.as_str()).and_then(
+                |()| {
+                    guard.check_write(&table).map_err(|error| {
+                        session_reply::Reply::Error(destination_error_frame(&error))
+                    })
+                },
+            ) {
                 Err(reply) => reply,
                 Ok(()) => match decode_arrow_ipc(&write.arrow_ipc) {
                     Ok(batch) => match backend.write(&table, batch).await {
@@ -605,7 +552,7 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::ExistingReceipt(existing)) => {
-            match refuse_oversized_identifier("load id", &existing.load_id) {
+            match serve_gate::refuse_oversized_identifier("load id", &existing.load_id) {
                 Err(reply) => reply,
                 Ok(()) => {
                     let load_id = LoadId::new(existing.load_id);
@@ -636,8 +583,8 @@ async fn handle_frame<C: DestinationConnector>(
                 // included, rides the ceiling Open and ReadState hold
                 // theirs to.
                 (Ok(meta), Ok(receipt)) => {
-                    match gate_commit_meta(&meta).and_then(|()| {
-                        refuse_oversized_identifier("load id", receipt.load_id.as_str())
+                    match serve_gate::gate_commit_meta(&meta).and_then(|()| {
+                        serve_gate::refuse_oversized_identifier("load id", receipt.load_id.as_str())
                     }) {
                         Err(reply) => reply,
                         Ok(()) => match backend.replay(&meta, &receipt).await {
@@ -656,7 +603,7 @@ async fn handle_frame<C: DestinationConnector>(
                 // The meta walks the shared gate — every identifier
                 // it carries, sub-maps included — exactly as its
                 // Replay twin does.
-                Ok(meta) => match gate_commit_meta(&meta) {
+                Ok(meta) => match serve_gate::gate_commit_meta(&meta) {
                     Err(reply) => reply,
                     Ok(()) => match backend.publish(meta).await {
                         Ok(receipt) => session_reply::Reply::Published(Published {
@@ -670,7 +617,7 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::ReadState(read_state)) => {
-            match refuse_oversized_identifier("pipeline id", &read_state.pipeline) {
+            match serve_gate::refuse_oversized_identifier("pipeline id", &read_state.pipeline) {
                 Err(reply) => reply,
                 Ok(()) => match backend
                     .read_state(&PipelineId::new(read_state.pipeline))
