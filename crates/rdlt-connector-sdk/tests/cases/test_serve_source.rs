@@ -591,7 +591,7 @@ async fn an_undecodable_since_cursor_answers_a_terminal_error_frame_not_a_status
     );
 }
 
-/// A `since_cursor_json` above the 8 MiB document ceiling answers a
+/// A `since_cursor_json` above the 4 MiB cursor ceiling answers a
 /// terminal error frame by SIZE, before any parse — the cursor is
 /// retained inside the read for its whole lifetime, so the ceiling
 /// guards a RESIDENT expansion, not just a transient one. Valid JSON,
@@ -644,9 +644,9 @@ async fn an_oversized_since_cursor_answers_a_terminal_error_frame_by_size() {
             assert_eq!(
                 error.message,
                 format!(
-                    "since_cursor_json is {len} bytes — larger than the 4194304-byte document \
-                     ceiling; a config or cursor document measures in kilobytes, so a payload \
-                     this size is a wrong path, refused before it can expand in memory"
+                    "since_cursor_json is {len} bytes — larger than the 4194304-byte cursor \
+                     ceiling; a cursor summarizes resume state and measures in kilobytes, so a \
+                     payload this size is a wrong path, refused before it can expand in memory"
                 )
             );
         }

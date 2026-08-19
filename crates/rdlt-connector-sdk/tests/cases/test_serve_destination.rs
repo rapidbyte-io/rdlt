@@ -1909,6 +1909,88 @@ async fn an_oversized_ensure_document_refuses_before_the_backend() {
     }
 }
 
+/// The identifier walk descends into nested struct fields: a
+/// `ColumnType::Struct` column nests `Column`s recursively, and an
+/// inner field name is retained by the session and reaches backend
+/// error text exactly like a top-level one — a megabyte-scale name two
+/// levels down must refuse at the same ceiling, without echoing the
+/// name back.
+#[tokio::test]
+async fn an_oversized_nested_struct_field_name_refuses_at_the_identifier_ceiling() {
+    use rdlt_connector::core::schema::{Column, ColumnType, Provenance};
+
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    // Two levels of nesting, the hostile name at the innermost leaf —
+    // every level above it carries a clean name, so only the recursive
+    // walk can reach the refusal.
+    let hostile = "n".repeat(1 << 20);
+    let leaf = Column {
+        name: hostile.clone(),
+        column_type: ColumnType::scalar(rdlt_connector::core::types::LogicalType::Int64),
+        nullable: true,
+        provenance: Provenance::Inferred,
+    };
+    let inner = Column {
+        name: "inner".to_string(),
+        column_type: ColumnType::Struct { fields: vec![leaf] },
+        nullable: true,
+        provenance: Provenance::Inferred,
+    };
+    let mut schema = schema_for("events");
+    schema.columns.push(Column {
+        name: "outer".to_string(),
+        column_type: ColumnType::Struct {
+            fields: vec![inner],
+        },
+        nullable: true,
+        provenance: Provenance::Inferred,
+    });
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Ensure(proto::Ensure {
+                table_schema_json: serde_json::to_vec(&schema).expect("schema json"),
+                write_mode_json: serde_json::to_vec(&WriteMode::Append).expect("write mode json"),
+            })),
+        })
+        .await
+        .expect("send the nested ensure");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("identifier ceiling"),
+                "the refusal names the ceiling: {}",
+                error.message
+            );
+            assert!(
+                error.message.len() < 256 && !error.message.contains(&hostile[..64]),
+                "the refusal must not echo the name it refuses: {} bytes",
+                error.message.len()
+            );
+        }
+        other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
+    }
+}
+
 /// The identifier-length half — an oversized Open load id refuses
 /// before any session exists.
 #[tokio::test]

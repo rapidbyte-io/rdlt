@@ -268,13 +268,27 @@ pub(super) const HANDSHAKE_NOT_COMPLETED: &str = "handshake has not completed";
 /// isn't a role at all" (a typo or a version skew).
 const KNOWN_ROLES: [&str; 2] = ["source", "destination"];
 
-/// The typed size refusal for an oversized `*_json` document payload —
-/// one spelling for the config ceiling and the tighter cursor ceiling.
+/// The typed size refusal for an oversized `*_json` document payload
+/// against the document ceiling; the tighter cursor ceiling has its own
+/// spelling ([`oversized_cursor`]) so the refusal names the bound that
+/// actually refused.
 pub(super) fn oversized_document(field: &str, len: usize, ceiling: u64) -> String {
     format!(
         "{field} is {len} bytes — larger than the {ceiling}-byte document \
          ceiling; a config or cursor document measures in kilobytes, so a payload this \
          size is a wrong path, refused before it can expand in memory"
+    )
+}
+
+/// The cursor twin: the bound here is the CURSOR contract's own ceiling,
+/// deliberately tighter than the document ceiling — a cursor summarizes
+/// resume state (a high-water mark, an offset, a resume token), it never
+/// embeds the data.
+pub(super) fn oversized_cursor(field: &str, len: usize, ceiling: u64) -> String {
+    format!(
+        "{field} is {len} bytes — larger than the {ceiling}-byte cursor \
+         ceiling; a cursor summarizes resume state and measures in kilobytes, so a \
+         payload this size is a wrong path, refused before it can expand in memory"
     )
 }
 

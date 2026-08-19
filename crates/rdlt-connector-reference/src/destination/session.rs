@@ -136,8 +136,23 @@ impl Backend for Session {
     async fn replay(
         &mut self,
         _meta: &CommitMeta,
-        _receipt: &CommitReceipt,
+        receipt: &CommitReceipt,
     ) -> Result<(), DestinationError> {
+        // The receipt is verified against the store's own log BEFORE
+        // staging is dropped: over the wire nothing forces a client to
+        // hand back a receipt this store issued, and clearing on a
+        // fabricated one would silently discard the staged rows while
+        // answering `replayed`. (The sdk wrapper only replays a receipt
+        // `existing_receipt` just returned, so it never reaches this
+        // refusal.)
+        if store::find_receipt(&self.dir, &receipt.load_id, receipt.commit_seq)?.is_none() {
+            return Err(DestinationError::fatal(format!(
+                "reference destination: replay of a receipt this store never issued — the \
+                 receipt log holds no receipt for load `{}` commit {}; the staged rows are \
+                 kept, not discarded",
+                receipt.load_id, receipt.commit_seq
+            )));
+        }
         // The redelivered unit was already published under this receipt;
         // dropping its staging is what keeps a LATER commit from
         // publishing it a second time.

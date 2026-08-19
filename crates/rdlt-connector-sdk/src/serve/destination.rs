@@ -59,7 +59,7 @@ use std::sync::{Arc, OnceLock};
 use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
 use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
-use rdlt_connector::core::schema::TableSchema;
+use rdlt_connector::core::schema::{Column, ColumnType, TableSchema};
 use rdlt_connector::destination::{Destination, OpenContext, PartCloseReason, PartClosed};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::{channel, gate};
@@ -217,6 +217,21 @@ fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_re
         )));
     }
     Ok(())
+}
+
+/// One column's name through the identifier ceiling, nested struct
+/// fields included: `ColumnType::Struct` nests `Column`s recursively,
+/// and a nested name is retained by the session and reaches backend
+/// error text exactly like a top-level one (`ScalarList` carries a bare
+/// element type — no names). Recursion depth is bounded upstream by the
+/// JSON parse that produced the schema, which refuses past serde_json's
+/// own nesting limit.
+fn gate_column(column: &Column) -> Result<(), session_reply::Reply> {
+    refuse_oversized_identifier("column name", &column.name)?;
+    match &column.column_type {
+        ColumnType::Struct { fields } => fields.iter().try_for_each(gate_column),
+        _ => Ok(()),
+    }
 }
 
 /// One closed part, translated to its wire shape.
@@ -504,11 +519,7 @@ async fn handle_frame<C: DestinationConnector>(
                                     )
                                 })
                             })
-                            .and_then(|()| {
-                                schema.columns.iter().try_for_each(|column| {
-                                    refuse_oversized_identifier("column name", &column.name)
-                                })
-                            })
+                            .and_then(|()| schema.columns.iter().try_for_each(gate_column))
                             .and_then(|()| match &mode {
                                 WriteMode::Merge { key } => key.iter().try_for_each(|column| {
                                     refuse_oversized_identifier("merge key column", column)

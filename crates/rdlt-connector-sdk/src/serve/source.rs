@@ -425,7 +425,7 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         let since = match &request.since_cursor_json {
             None => None,
             Some(bytes) if bytes.len() as u64 > gate::MAX_CURSOR_BYTES => {
-                return Ok(error_stream(wire::oversized_document(
+                return Ok(error_stream(wire::oversized_cursor(
                     "since_cursor_json",
                     bytes.len(),
                     gate::MAX_CURSOR_BYTES,

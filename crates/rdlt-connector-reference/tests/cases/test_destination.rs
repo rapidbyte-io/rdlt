@@ -658,6 +658,101 @@ async fn raw_backend(
         .expect("connect")
 }
 
+/// A replay must name a receipt this store actually issued: a raw wire
+/// client handing `Replay` a fabricated receipt — one the receipt log
+/// never held — is refused typed, and its staged rows survive to be
+/// published. Before this was pinned the raw replay cleared staging
+/// unconditionally and answered Ok, silently discarding the staged
+/// rows against a receipt that vouched for nothing. (The sdk wrapper
+/// never reaches the refusal: it only replays a receipt
+/// `existing_receipt` just returned.)
+#[tokio::test]
+async fn a_replay_of_a_receipt_the_store_never_issued_refuses_and_keeps_staging() {
+    use rdlt_connector_sdk::destination::Backend;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let probe = DirProbe(dir.path().to_path_buf());
+    let pipeline = PipelineId::new("ref-fabricated-replay");
+    let load = LoadId::new("ref-load-fabricated");
+    let table = TableName::new("events");
+    let mut backend = raw_backend(dir.path(), &pipeline, &load).await;
+
+    backend
+        .write(&table, batch_of(&[1, 2, 3]))
+        .await
+        .expect("write");
+    let fabricated = CommitReceipt {
+        load_id: load.clone(),
+        commit_seq: 7,
+    };
+    let meta = commit_meta_for(&pipeline, &load, 7);
+    let error = backend
+        .replay(&meta, &fabricated)
+        .await
+        .expect_err("a receipt the log never held must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("never issued")
+            && rendered.contains("ref-load-fabricated")
+            && rendered.contains('7'),
+        "the refusal names the store's judgment and the (load, seq): {rendered}"
+    );
+
+    // The staged rows survived the refused replay: a genuine publish
+    // still persists all three.
+    backend
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publish");
+    assert_eq!(
+        probe.count(&table).await.expect("count"),
+        3,
+        "a refused replay must leave staging intact"
+    );
+}
+
+/// The held-receipt half: a replay naming a receipt the log DOES hold
+/// behaves exactly as before — Ok, staging cleared, so a later commit
+/// publishes nothing redelivered.
+#[tokio::test]
+async fn a_replay_of_a_held_receipt_clears_staging_as_before() {
+    use rdlt_connector_sdk::destination::Backend;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let probe = DirProbe(dir.path().to_path_buf());
+    let pipeline = PipelineId::new("ref-held-replay");
+    let load = LoadId::new("ref-load-held");
+    let table = TableName::new("events");
+    let mut backend = raw_backend(dir.path(), &pipeline, &load).await;
+
+    backend
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("write");
+    let receipt = backend
+        .publish(commit_meta_for(&pipeline, &load, 1))
+        .await
+        .expect("publish");
+
+    // The redelivery: rows restaged, then the held receipt replayed.
+    backend
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("redelivered write");
+    let meta = commit_meta_for(&pipeline, &load, 1);
+    backend
+        .replay(&meta, &receipt)
+        .await
+        .expect("a held receipt replays");
+    backend
+        .publish(commit_meta_for(&pipeline, &load, 2))
+        .await
+        .expect("next publish");
+    assert_eq!(
+        probe.count(&table).await.expect("count"),
+        2,
+        "replayed staging must not leak into a later commit"
+    );
+}
+
 /// A commit whose receipt is durable is FINAL: a client that publishes
 /// the same `(load, seq)` again — restaged rows and all, never having
 /// asked for the existing receipt — gets the prior receipt back, its
