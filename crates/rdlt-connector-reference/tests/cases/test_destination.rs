@@ -428,6 +428,103 @@ async fn a_corrupt_receipt_line_refusal_renders_the_line_inert() {
     );
 }
 
+/// A receipt log grown past its read ceiling refuses TYPED before any
+/// byte is read — a sparse or hostile multi-MiB occupant would
+/// otherwise materialize whole on every replay lookup. The refusal
+/// names the ceiling, not the corrupt-line spelling a full read would
+/// have produced.
+#[tokio::test]
+async fn an_oversized_receipt_log_refuses_before_reading() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
+    std::fs::write(dir.path().join("_reference_receipts.json"), oversized)
+        .expect("seed the oversized log");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let refused = session
+        .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
+        .await
+        .expect_err("an oversized log refuses");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.contains("ceiling") && !rendered.contains("corrupt receipt line"),
+        "refused by size BEFORE any read, not after parsing: {rendered}"
+    );
+}
+
+/// The state document's read seat rides the same pre-read gate: an
+/// oversized occupant refuses typed naming the ceiling, before the
+/// whole file materializes.
+#[tokio::test]
+async fn an_oversized_state_document_refuses_before_reading() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
+    std::fs::write(dir.path().join("_reference_state.json"), oversized)
+        .expect("seed the oversized state");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    let refused = session
+        .read_state(&PipelineId::new("p"))
+        .await
+        .expect_err("an oversized state document refuses");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.contains("ceiling") && !rendered.contains("corrupt state document"),
+        "refused by size BEFORE any read, not after parsing: {rendered}"
+    );
+}
+
+/// A FIFO squatting the receipt log refuses instead of HANGING: the
+/// pre-read gate requires a regular file, so the open that would block
+/// forever never happens. (No pre-fix RED run exists for this pin —
+/// the pre-fix behavior IS the hang, in both the test and any mutation
+/// of it — which is exactly why the gate exists.)
+#[tokio::test]
+async fn a_fifo_at_the_receipt_log_refuses_instead_of_hanging() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = dir.path().join("_reference_receipts.json");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "the fixture FIFO exists");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let refused = session
+        .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
+        .await
+        .expect_err("a FIFO occupant refuses typed");
+    assert!(
+        refused.to_string().contains("not a regular file"),
+        "the refusal names the shape: {refused}"
+    );
+}
+
 /// The config gate's refusal, full-string: the one-field document
 /// refuses an empty path with its own frozen wording. The gate is the
 /// `Document` trait, so it is tested through it — no shell in between.

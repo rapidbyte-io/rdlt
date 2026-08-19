@@ -219,6 +219,31 @@ fn refuse_oversized_identifier(kind: &str, value: &str) -> Result<(), session_re
     Ok(())
 }
 
+/// Every identifier a decoded `CommitMeta` carries, through the same
+/// ceiling as the session's top-level ids: beyond its own load id and
+/// its state's pipeline id, the STATE document carries identifier
+/// SUB-MAPS — cursor keys are stream names, schema-hash keys are table
+/// names, the last commit names a load id, and the engine version is
+/// free text quoted like an identifier — all retained by the backend
+/// or quoted by its refusals. Cursor VALUES stay opaque documents
+/// (bounded by the document ceiling that admitted the meta), never
+/// walked.
+fn gate_commit_meta(meta: &CommitMeta) -> Result<(), session_reply::Reply> {
+    refuse_oversized_identifier("load id", meta.load_id.as_str())?;
+    refuse_oversized_identifier("pipeline id", meta.state.pipeline.as_str())?;
+    for stream in meta.state.cursors.keys() {
+        refuse_oversized_identifier("stream name", stream.as_str())?;
+    }
+    for table in meta.state.schema_hashes.keys() {
+        refuse_oversized_identifier("table name", table.as_str())?;
+    }
+    if let Some(last) = &meta.state.last_commit {
+        refuse_oversized_identifier("load id", last.load_id.as_str())?;
+    }
+    refuse_oversized_identifier("engine version", &meta.state.engine_version)?;
+    Ok(())
+}
+
 /// One column's name through the identifier ceiling, nested struct
 /// fields included: `ColumnType::Struct` nests `Column`s recursively,
 /// and a nested name is retained by the session and reaches backend
@@ -296,11 +321,25 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
     // so the declarations are held against the frame's real bytes
     // before the reader runs.
     gate::refuse_overdeclared_framing(bytes).map_err(|reason| format!("{REFUSAL}: {reason}"))?;
+    // Arrow's error text is client-authored at frame scale — a `Field`
+    // render carries the field's whole metadata map — so every appended
+    // cause goes through the bounded diagnostic render, the client
+    // decode mirror's exact treatment.
     let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-        .map_err(|error| format!("{REFUSAL}: {error}"))?;
+        .map_err(|error| {
+        format!(
+            "{REFUSAL}: {}",
+            gate::render_diagnostic(&error.to_string(), 256)
+        )
+    })?;
     let first = match reader.next() {
         Some(Ok(batch)) => batch,
-        Some(Err(error)) => return Err(format!("{REFUSAL}: {error}")),
+        Some(Err(error)) => {
+            return Err(format!(
+                "{REFUSAL}: {}",
+                gate::render_diagnostic(&error.to_string(), 256)
+            ));
+        }
         None => return Err(REFUSAL.to_string()),
     };
     // Row count is the memory dimension the framing pre-pass cannot
@@ -320,7 +359,10 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
             "write carried more than one record batch; a Write frame is exactly one batch"
                 .to_string(),
         ),
-        Some(Err(error)) => Err(format!("{REFUSAL}: {error}")),
+        Some(Err(error)) => Err(format!(
+            "{REFUSAL}: {}",
+            gate::render_diagnostic(&error.to_string(), 256)
+        )),
         None => Ok(first),
     }
 }
@@ -589,19 +631,14 @@ async fn handle_frame<C: DestinationConnector>(
                 // The decoded receipt's load id is wire-authored
                 // identity a backend's refusals quote — gated exactly
                 // like ExistingReceipt's, so the two receipt seats
-                // cannot drift. The decoded META's identities reach the
-                // same refusal text (a wrong-load publish quotes the
-                // load id, a foreign-state read the state's pipeline
-                // id), so both ride the same gate Open and ReadState
-                // hold theirs to.
+                // cannot drift. The decoded META walks the shared
+                // gate: every identifier it carries, sub-maps
+                // included, rides the ceiling Open and ReadState hold
+                // theirs to.
                 (Ok(meta), Ok(receipt)) => {
-                    match refuse_oversized_identifier("load id", meta.load_id.as_str())
-                        .and_then(|()| {
-                            refuse_oversized_identifier("pipeline id", meta.state.pipeline.as_str())
-                        })
-                        .and_then(|()| {
-                            refuse_oversized_identifier("load id", receipt.load_id.as_str())
-                        }) {
+                    match gate_commit_meta(&meta).and_then(|()| {
+                        refuse_oversized_identifier("load id", receipt.load_id.as_str())
+                    }) {
                         Err(reply) => reply,
                         Ok(()) => match backend.replay(&meta, &receipt).await {
                             Ok(()) => session_reply::Reply::Replayed(proto::Empty {}),
@@ -616,14 +653,10 @@ async fn handle_frame<C: DestinationConnector>(
         }
         Some(session_request::Request::Publish(publish)) => {
             match decode_document::<CommitMeta>("commit_meta_json", &publish.commit_meta_json) {
-                // The meta's identities are wire-authored text a
-                // backend's refusals quote (a wrong-load publish names
-                // the load id, a foreign-state read the state's
-                // pipeline id) — the same gates its Replay twin runs.
-                Ok(meta) => match refuse_oversized_identifier("load id", meta.load_id.as_str())
-                    .and_then(|()| {
-                        refuse_oversized_identifier("pipeline id", meta.state.pipeline.as_str())
-                    }) {
+                // The meta walks the shared gate — every identifier
+                // it carries, sub-maps included — exactly as its
+                // Replay twin does.
+                Ok(meta) => match gate_commit_meta(&meta) {
                     Err(reply) => reply,
                     Ok(()) => match backend.publish(meta).await {
                         Ok(receipt) => session_reply::Reply::Published(Published {

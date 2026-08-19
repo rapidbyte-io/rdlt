@@ -105,7 +105,14 @@ const FRAME_MESSAGE_CAPACITY: usize = 64;
 /// refused `RESOURCE_EXHAUSTED`. The ceiling is a bound on a runaway
 /// client, not on the host's honest budget: per-read budgets
 /// ([`BYTE_FRAME_BUDGET`] + [`READ_CHANNEL_BUDGET`] + one push in hand)
-/// keep any single read bounded, and this bounds their count.
+/// keep any single read bounded, and this bounds their count. The
+/// RETAINED-REQUEST term the count multiplies: each admitted read
+/// holds its post-cap spec (identifiers length-gated, collections
+/// count-capped) plus its resume cursor — up to 4 MiB of document that
+/// expands ~3-5× as a parsed `Value`. The cursor term is NAMED here,
+/// not bounded further: a cursor is an opaque document (the house's
+/// third disposition), its 4 MiB input ceiling already binds it, and
+/// no count cap can apply to an opaque value.
 pub const MAX_CONCURRENT_READS: usize = 1024;
 
 /// The role a source's handshake must be asked for.
@@ -114,8 +121,27 @@ const EXPECTED_ROLE: &str = "source";
 /// Every identifier a read's declared stream spec carries, through the
 /// wire identifier ceiling — the source-side mirror of the session
 /// seats' identifier gate, same ceiling, length-only (content escaping
-/// belongs to the display renders on the side that displays).
+/// belongs to the display renders on the side that displays) — plus
+/// the COUNT caps the client's stream gate holds the same collections
+/// to, mirrored BY VALUE (the crates cannot share the constants; the
+/// mirror IS the contract — primary-key fields ≤ 64, type hints ≤
+/// 4096, the same numbers the client seat caps, and both sides say
+/// so): a spec of thousands of tiny gate-legal keys passes every
+/// per-value gate within the document ceiling otherwise, and the spec
+/// is RETAINED for the read's lifetime.
 fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Result<(), String> {
+    let refuse_count = |seat: &str, n: usize, cap: usize| {
+        if n > cap {
+            return Err(format!(
+                "a read declares {n} {seat} — over the {cap} ceiling"
+            ));
+        }
+        Ok(())
+    };
+    if let Some(key) = &spec.primary_key {
+        refuse_count("primary-key fields", key.len(), 64)?;
+    }
+    refuse_count("type-hint fields", spec.type_hints.len(), 4096)?;
     let refuse = |kind: &str, value: &str| {
         if value.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
             return Err(format!(

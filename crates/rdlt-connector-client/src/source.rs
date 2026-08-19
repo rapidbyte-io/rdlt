@@ -87,7 +87,10 @@ fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
     // thousands of tiny keys passes every per-value gate within one
     // frame otherwise. An honest primary key names one to a few
     // columns; honest type hints cover at most the stream's columns,
-    // and the engine's own per-table column cap is 4,096.
+    // and the engine's own per-table column cap is 4,096. The serve
+    // side's read seat mirrors these SAME numbers by value (the crates
+    // cannot share the constants; the mirror is the contract, and both
+    // sides say so).
     if let Some(key) = &spec.primary_key {
         gate::count("primary-key fields", key.len(), 64).map_err(SourceError::fatal)?;
     }

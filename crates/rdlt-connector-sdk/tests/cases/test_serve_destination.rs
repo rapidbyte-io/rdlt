@@ -2137,6 +2137,189 @@ async fn an_oversized_meta_state_pipeline_refuses_before_the_backend() {
     }
 }
 
+/// A Write frame whose declared schema carries multi-megabyte hostile
+/// metadata, and whose record-batch message omits that field's node:
+/// arrow's reader renders the whole `Field` — metadata map included —
+/// into its error text, so the appended cause must arrive BOUNDED in
+/// the refusal frame (escape-amplified it would be a multi-MB error
+/// string), exactly as the client's decode mirror treats it.
+#[tokio::test]
+async fn a_hostile_metadata_arrow_cause_renders_bounded_at_the_write_seat() {
+    use arrow::datatypes::{DataType, Field, Schema};
+    use rdlt_connector::arrow::RecordBatch;
+    use std::sync::Arc;
+
+    // The declared schema: the batch will carry a node for `a` only,
+    // so the reader's node walk fails AT `m` — the field whose
+    // metadata is the payload.
+    let metadata: std::collections::HashMap<String, String> =
+        [("k".to_string(), "\u{7}".repeat(2 << 20))].into();
+    let declared = Schema::new(vec![
+        Field::new("a", DataType::Int64, false),
+        Field::new("m", DataType::Int64, true).with_metadata(metadata),
+    ]);
+    let mut schema_stream = Vec::new();
+    {
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut schema_stream, &declared)
+            .expect("ipc writer");
+        writer.finish().expect("finish schema-only stream");
+    }
+    // A real one-column batch under a DIFFERENT (narrower) schema.
+    let narrow = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&narrow),
+        vec![Arc::new(arrow::array::Int64Array::from(vec![1, 2, 3]))],
+    )
+    .expect("a matching batch constructs");
+    let mut writer =
+        arrow::ipc::writer::StreamWriter::try_new(Vec::new(), &narrow).expect("ipc writer");
+    writer.write(&batch).expect("ipc write");
+    let batch_stream = writer.into_inner().expect("ipc finish");
+
+    // Splice: the metadata-bearing schema message, then everything
+    // after the narrow stream's own schema message. Every declared
+    // length stays honest, so the framing pre-pass passes it clean.
+    let first_message_end = |bytes: &[u8]| {
+        assert_eq!(&bytes[0..4], [0xff; 4], "continuation marker");
+        let meta_len = i32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes")) as usize;
+        let message = arrow::ipc::root_as_message(&bytes[8..8 + meta_len]).expect("valid metadata");
+        8 + meta_len + usize::try_from(message.bodyLength()).expect("non-negative body")
+    };
+    let mut spliced = schema_stream[..first_message_end(&schema_stream)].to_vec();
+    spliced.extend_from_slice(&batch_stream[first_message_end(&batch_stream)..]);
+
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+    handshake(&mut connector, false, false).await;
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+    req_tx
+        .send(ensure_frame("echoed"))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Write(proto::Write {
+                table: "echoed".to_string(),
+                arrow_ipc: spliced,
+            })),
+        })
+        .await
+        .expect("send the spliced write");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert!(
+                error.message.len() < 1024,
+                "the arrow cause arrives bounded, never the multi-MB field render: {} bytes",
+                error.message.len()
+            );
+            assert!(
+                error.message.contains("truncated"),
+                "the bounded render's marker rides the refusal: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the decode refusal, got {other:?}"),
+    }
+}
+
+/// The meta's STATE document carries identifier SUB-MAPS the top-level
+/// gates never walked: cursor keys (stream names), schema-hash keys
+/// (table names), the last-commit load id, and the engine version — all
+/// retained or quoted like the top-level ids. Each family refuses at
+/// the session boundary, before the backend sees the meta; the session
+/// stays usable after each refusal, so one session drives all four.
+#[tokio::test]
+async fn an_oversized_state_submap_identifier_refuses_before_the_backend() {
+    use rdlt_connector::core::cursor::Cursor;
+    use rdlt_connector::core::id::StreamName;
+    use rdlt_connector::core::id::TableName;
+
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let oversized = "x".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
+    let base = || commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1);
+
+    let mut cursor_key = base();
+    cursor_key.state.cursors.insert(
+        StreamName::new(oversized.clone()),
+        Cursor::new(serde_json::json!(1)),
+    );
+    let mut hash_key = base();
+    hash_key.state.schema_hashes.insert(
+        TableName::new(oversized.clone()),
+        rdlt_testkit::fixtures::schema_for("t").content_hash(),
+    );
+    let mut last_commit = base();
+    last_commit.state.last_commit = Some(rdlt_connector::core::state::LastCommit {
+        load_id: LoadId::new(oversized.clone()),
+        commit_seq: 1,
+    });
+    let mut engine_version = base();
+    engine_version.state.engine_version = oversized.clone();
+
+    for (meta, seat) in [
+        (cursor_key, "stream name"),
+        (hash_key, "table name"),
+        (last_commit, "load id"),
+        (engine_version, "engine version"),
+    ] {
+        req_tx
+            .send(SessionRequest {
+                request: Some(session_request::Request::Publish(proto::Publish {
+                    commit_meta_json: serde_json::to_vec(&meta).expect("meta json"),
+                })),
+            })
+            .await
+            .expect("send the hostile publish");
+        match next_reply(&mut replies)
+            .await
+            .expect("reply")
+            .expect("frame")
+            .reply
+        {
+            Some(session_reply::Reply::Error(error)) => {
+                assert_eq!(error.classification, Classification::Fatal as i32, "{seat}");
+                assert!(
+                    error.message.contains(seat) && error.message.contains("identifier ceiling"),
+                    "the refusal names the seat and the ceiling for {seat}: {}",
+                    error.message
+                );
+            }
+            other => panic!("expected the identifier-ceiling refusal for {seat}, got {other:?}"),
+        }
+    }
+}
+
 /// The identifier walk descends into nested struct fields: a
 /// `ColumnType::Struct` column nests `Column`s recursively, and an
 /// inner field name is retained by the session and reaches backend

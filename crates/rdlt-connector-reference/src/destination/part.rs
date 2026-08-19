@@ -45,6 +45,20 @@ pub(crate) fn name(
             render(&name)
         )));
     }
+    // The filesystem NAME_MAX floor: every mainstream filesystem
+    // accepts a 255-byte path component, and a longer built name would
+    // fail at write time with ENAMETOOLONG — an io error the transient
+    // classifier would retry forever, though no retry shortens a name.
+    // Wrong configuration refuses FATAL where the name is built.
+    const MAX_PART_NAME_BYTES: usize = 255;
+    if name.len() > MAX_PART_NAME_BYTES {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: generated part filename `{}` is {} bytes — over the \
+             {MAX_PART_NAME_BYTES}-byte filesystem name floor; shorten the table name",
+            render(&name),
+            name.len()
+        )));
+    }
     Ok(name)
 }
 
@@ -92,6 +106,27 @@ mod tests {
         assert!(name(&table, &LoadId::new("load/escape"), 1).is_err());
         assert!(name(&table, &LoadId::new("load..escape"), 1).is_err());
         assert!(name(&TableName::new("../evil"), &LoadId::new("load"), 1).is_err());
+    }
+
+    /// A path-safe but over-long table name refuses FATAL where the
+    /// name is built: the filesystem would refuse the write with
+    /// ENAMETOOLONG — an io error the transient classifier would retry
+    /// forever — and no retry shortens a name. The boundary is the
+    /// 255-byte NAME_MAX floor on the BUILT name.
+    #[test]
+    fn a_too_long_built_name_refuses_fatal_where_it_is_built() {
+        let long_table = TableName::new("t".repeat(300));
+        let refused = name(&long_table, &LoadId::new("load"), 1)
+            .expect_err("a built name past NAME_MAX refuses");
+        let rendered = refused.to_string();
+        assert!(
+            rendered.starts_with("fatal destination error: "),
+            "fatal, not the transient retry bait ENAMETOOLONG would be: {rendered}"
+        );
+        assert!(
+            rendered.contains("255"),
+            "the refusal names the floor: {rendered}"
+        );
     }
 
     /// Both refusals quote the offending name bounded: a control byte

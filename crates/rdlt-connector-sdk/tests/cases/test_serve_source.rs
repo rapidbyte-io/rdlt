@@ -587,6 +587,73 @@ async fn an_undecodable_stream_spec_answers_a_terminal_error_frame_not_a_status(
     );
 }
 
+/// The client twin's COUNT caps, mirrored at the serve seat: a spec of
+/// thousands of tiny gate-legal keys passes every per-value gate within
+/// the document ceiling otherwise, and the spec is RETAINED for the
+/// read's lifetime. 65 primary-key fields and 4097 type hints each
+/// refuse as the stream's terminal error frame, before the connector
+/// sees the spec.
+#[tokio::test]
+async fn an_over_count_stream_spec_refuses_at_the_serve_seat() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            expected_role: "source".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let mut over_keys = rdlt_connector::source::StreamSpec::new("numbers");
+    over_keys.primary_key = Some((0..65).map(|i| format!("k{i}")).collect());
+    let mut over_hints = rdlt_connector::source::StreamSpec::new("numbers");
+    for i in 0..4097 {
+        over_hints.type_hints.insert(
+            format!("c{i}"),
+            rdlt_connector::core::types::LogicalType::Int64,
+        );
+    }
+    for (spec, seat) in [
+        (over_keys, "primary-key fields"),
+        (over_hints, "type-hint fields"),
+    ] {
+        let mut frames = source
+            .read(ReadRequest {
+                stream_spec_json: serde_json::to_vec(&spec).expect("spec json"),
+                since_cursor_json: None,
+            })
+            .await
+            .expect("the Read RPC completes normally — the refusal is IN the stream")
+            .into_inner();
+        let frame = frames
+            .message()
+            .await
+            .expect("frame")
+            .expect("one terminal frame");
+        match frame.frame {
+            Some(read_frame::Frame::Error(error)) => {
+                assert_eq!(error.classification, Classification::Fatal as i32);
+                assert!(
+                    error.message.contains(seat) && error.message.contains("ceiling"),
+                    "the refusal names the seat and the ceiling: {}",
+                    error.message
+                );
+            }
+            other => panic!("expected a terminal error frame for {seat}, got {other:?}"),
+        }
+        assert!(
+            frames.message().await.expect("stream ends").is_none(),
+            "nothing follows the terminal error"
+        );
+    }
+}
+
 /// The declared stream spec's identifiers — its name here, the
 /// worst-carrying seat — ride the wire identifier ceiling the session
 /// seats hold theirs to: the spec is retained for the read's lifetime

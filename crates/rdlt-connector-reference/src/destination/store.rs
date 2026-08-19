@@ -68,8 +68,12 @@ pub(crate) fn persist_part(
     durable_write(dir, name, |file, temp| {
         let arrow_refusal = |error: arrow::error::ArrowError| match error {
             arrow::error::ArrowError::IoError(_, io_error) => io_refusal("write", temp, &io_error),
+            // The table name is wire-authored for a served backend and
+            // unbounded for a direct driver — quoted bounded, like
+            // every refusal seat around it.
             error => DestinationError::fatal(format!(
-                "reference destination: encode `{table}` as jsonl: {error}"
+                "reference destination: encode `{}` as jsonl: {error}",
+                rdlt_connector_sdk::spi::gate::render_diagnostic(table.as_str(), 256)
             )),
         };
         let mut writer = arrow::json::LineDelimitedWriter::new(file);
@@ -151,6 +155,9 @@ pub(crate) fn find_receipt(
     // `InvalidData` — a transient the choreography retries forever, when
     // the torn tail is contractually ABSENT. Decoding the complete lines
     // keeps the tear where it belongs: in the tail.
+    if !gate_store_read(&path, MAX_RECEIPT_LOG_BYTES, "receipt log")? {
+        return Ok(None);
+    }
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -187,6 +194,15 @@ pub(crate) fn find_receipt(
 /// The persisted state document, if any publish ever wrote one.
 pub(crate) fn read_state(dir: &Path) -> Result<Option<StateDoc>, DestinationError> {
     let path = dir.join(STATE_FILE);
+    // The state document rides the shared 8 MiB document ceiling —
+    // the same bound every untyped-document seat enforces.
+    if !gate_store_read(
+        &path,
+        rdlt_connector_sdk::spi::gate::MAX_DOCUMENT_BYTES,
+        "state document",
+    )? {
+        return Ok(None);
+    }
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -204,6 +220,46 @@ pub(crate) fn read_state(dir: &Path) -> Result<Option<StateDoc>, DestinationErro
     Ok(Some(state))
 }
 
+/// The receipt log's read ceiling. One line is at most ~1.1 KiB (a
+/// load id at the 1024-byte wire identifier ceiling, a u64 sequence,
+/// and JSON punctuation), so 8 MiB holds ~7,600 maximal-id receipts —
+/// or ~250,000 short-id ones — far past this exemplar store's honest
+/// life, and consistent with the document family's 8 MiB ceilings.
+const MAX_RECEIPT_LOG_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Refuse a store file that cannot be an honest artifact BEFORE any
+/// byte of it is read: a non-regular occupant refuses typed (a FIFO
+/// would block the read forever), and a size past the seat's ceiling
+/// refuses typed (a sparse or hostile multi-GiB occupant would
+/// materialize whole before any content check could run). `Ok(false)`
+/// is the absent arm — the caller's `NotFound` disposition. The
+/// metadata-then-read window is the at-rest directory writer's
+/// existing power (directory ownership is the trust boundary), not a
+/// new one.
+fn gate_store_read(path: &Path, ceiling: u64, what: &str) -> Result<bool, DestinationError> {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(io_refusal("probe", path, &error)),
+    };
+    if !meta.is_file() {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: {} is not a regular file — refusing to read the {what} \
+             from it",
+            rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
+        )));
+    }
+    if meta.len() > ceiling {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: {} weighs {} bytes — over the {ceiling}-byte {what} read \
+             ceiling; the store never writes it that large",
+            rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256),
+            meta.len()
+        )));
+    }
+    Ok(true)
+}
+
 /// The length of the log's durable prefix: everything up to and
 /// including the last newline.
 fn durable_len(bytes: &[u8]) -> usize {
@@ -219,6 +275,9 @@ fn durable_len(bytes: &[u8]) -> usize {
 /// this commit's receipt into a corrupt, newline-terminated INTERIOR
 /// line, which is exactly the shape every later read refuses.
 fn truncate_torn_tail(path: &Path) -> Result<(), DestinationError> {
+    if !gate_store_read(path, MAX_RECEIPT_LOG_BYTES, "receipt log")? {
+        return Ok(());
+    }
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -245,9 +304,39 @@ fn sync_dir(dir: &Path) -> Result<(), DestinationError> {
 }
 
 /// The one transient IO refusal shape: `<verb> <path>: <os error>`.
+/// The path renders BOUNDED: staged paths embed the caller-supplied
+/// part name, unbounded for a direct driver — identity for every
+/// honest path.
 fn io_refusal(verb: &str, path: &Path, error: &std::io::Error) -> DestinationError {
     DestinationError::transient(format!(
         "reference destination: {verb} {}: {error}",
-        path.display()
+        rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The staged-path io refusal renders its path BOUNDED: the path
+    /// embeds the caller-supplied part name, unbounded for a direct
+    /// driver, so a hostile multi-KB name arrives escaped and
+    /// truncated in the refusal, never whole.
+    #[test]
+    fn a_staged_path_io_refusal_renders_bounded() {
+        let missing = Path::new("/nonexistent-rdlt-test-dir");
+        let hostile = format!("evil\u{1b}]52;c;A\u{7}{}", "x".repeat(2000));
+        let refused = persist(missing, &hostile, b"x")
+            .expect_err("writing under a missing directory refuses");
+        let rendered = refused.to_string();
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "no raw control byte survives: {rendered:?}"
+        );
+        assert!(
+            rendered.len() < 700,
+            "the path render is bounded, not name-scale: {} bytes",
+            rendered.len()
+        );
+    }
 }
