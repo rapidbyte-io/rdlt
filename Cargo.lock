@@ -1879,8 +1879,6 @@ version = "0.3.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
- "serde",
- "serde_json",
  "thiserror",
  "tonic",
  "tonic-prost",

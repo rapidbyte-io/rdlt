@@ -196,3 +196,11 @@ migration worktree off main @ c4441a1f.
   test_robustness, examples-gate). The sdk's `Document` trait bound is
   now `From<serde_yaml_ng::Error>`, so the bump is compile-forced, not
   optional.
+
+## Amendment (2026-08-19)
+
+This document twice locates the graph-syntax guard in
+`rdlt_connector_sdk::yaml`. That module was later folded into
+`rdlt_connector_sdk::config`; `reject_graph_syntax` and the shared
+ceiling live there now under the same names. The decision itself is
+unchanged.

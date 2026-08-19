@@ -429,9 +429,12 @@ because that is what crosses the wire back and what the WAL records
 — a connector whose state can grow past it summarizes (a high-water
 mark, an offset, a resume token) instead of embedding the data, or its
 reads refuse typed at the gates above. Typed `*_json` fields (stream
-specs' fixed vocabulary, schemas, receipts) ride typed serde structs
+specs' fixed vocabulary, schemas, receipts, and the handshake's
+`capabilities_json`, whose one numeric bound is range-validated after
+the typed parse rather than ceiling-gated) ride typed serde structs
 with a roughly 1x parse footprint and are deliberately outside these
-ceilings, which exist to bound untyped-`Value` expansion.
+ceilings, which exist to bound untyped-`Value` expansion — "capped at
+both ends" above is the untyped kinds' rule alone.
 
 ## `Status` vs `ErrorFrame`: two refusal shapes, on purpose
 

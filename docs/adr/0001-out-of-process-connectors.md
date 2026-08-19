@@ -531,3 +531,14 @@ Connector registries and marketplaces, artifact repositories and
 downloads, Docker/Kubernetes orchestration, fleet management,
 scheduled re-certification. These are rapidbyte's layer, built on
 `ConnectorProvider`.
+
+## Amendment (2026-08-19)
+
+The 2026-08-12 amendment above records the rich YAML spellings
+(`postgres:` and its siblings) as deliberately KEPT, desugaring
+through one table to a connector reference. That ruling was later
+reversed by the house-style program (merged 2026-08-18): the desugar
+table and every rich spelling are gone, `connector: {id, config, …}`
+is the one user-facing arm, and the facade names no connector — the
+CLI schema command takes the full reverse-DNS id or a binary path.
+The rest of this document stands as written.
