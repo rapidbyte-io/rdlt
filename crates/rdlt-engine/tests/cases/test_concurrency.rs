@@ -161,3 +161,47 @@ async fn commits_proceed_while_streams_queue_past_the_bound() {
     let rows: u64 = report.tables.values().map(|t| t.rows).sum();
     assert_eq!(rows, 20, "one row per stream, all landed");
 }
+
+/// Cancellation reaches a stream still QUEUED for a read slot: with one
+/// slot and a first read parked forever, the second stream waits on the
+/// pool — the admission select must answer the cancel promptly rather
+/// than leaving the run hostage to a permit that never frees.
+#[tokio::test]
+async fn a_stream_queued_for_a_slot_answers_cancellation() {
+    struct Parked;
+
+    #[async_trait]
+    impl Source for Parked {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("parked", "0.0.0")
+        }
+        async fn check(&self) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![StreamSpec::new("a"), StreamSpec::new("b")])
+        }
+        async fn read(&self, _request: ReadRequest) -> Result<(), SourceError> {
+            std::future::pending().await
+        }
+    }
+
+    let engine = Engine::new(
+        Config::new("queued-cancel").with_max_concurrent_streams(1),
+        Parked,
+        memory::Destination::new(),
+    );
+    let cancel = engine.cancellation_token();
+    let run = engine.run();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        cancel.cancel();
+    });
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        .await
+        .expect("cancellation must not hang on the queued stream");
+    assert!(
+        matches!(outcome, Err(rdlt_core::error::Error::Cancelled)),
+        "the run reports Cancelled: {outcome:?}"
+    );
+}

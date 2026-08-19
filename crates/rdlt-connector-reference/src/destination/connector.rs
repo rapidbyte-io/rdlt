@@ -56,7 +56,11 @@ impl DestinationConnector for Reference {
         // or, when it does not exist yet, the nearest EXISTING ancestor
         // it would be created under — must be a directory. A file in
         // either seat is a misconfiguration no retry fixes, refused
-        // fatal here instead of at connect time.
+        // fatal here instead of at connect time. One known false
+        // positive: a DANGLING symlink at the seat reads NotFound (the
+        // metadata call follows links), so the probe passes while
+        // connect will still fail typed on the occupied seat — the
+        // probe errs toward optimism, never toward silence.
         let mut probe: &Path = &self.dir;
         loop {
             match tokio::fs::metadata(probe).await {
