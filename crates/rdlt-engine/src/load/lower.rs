@@ -63,9 +63,9 @@ fn lower_column(
     // pipeline today — every schema reaching this seat was depth-capped
     // at the shred's arrow gates, and `LogicalType` cannot declare
     // structs, so only `ColumnType::Struct` nests and every producing
-    // path bounds it — but the belt holds for a direct embedder call
-    // and for any future seam, and a stack overflow is an ABORT no
-    // containment absorbs.
+    // path bounds it — but the belt holds for any future in-crate seam
+    // (the function is crate-private; no embedder can reach it), and a
+    // stack overflow is an ABORT no containment absorbs.
     if full_path.len() > MAX_ARROW_DEPTH {
         return Err(Error::internal(format!(
             "schema nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
@@ -278,7 +278,7 @@ mod tests {
 
     /// The schema half's depth belt, direct-call: unreachable via the
     /// pipeline (every producing path is depth-capped upstream and
-    /// `LogicalType` cannot declare structs), but a direct embedder
+    /// `LogicalType` cannot declare structs), but a direct in-crate
     /// call can build the nest — and the walk must refuse it typed
     /// before recursion can overflow the stack, exactly like its
     /// batch-half twin.

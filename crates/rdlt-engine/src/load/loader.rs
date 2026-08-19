@@ -147,8 +147,9 @@ impl Loader {
     /// table with no recorded parent is its own root. The shared memoized
     /// walk ([`crate::lineage::Chain`], which the recovery scan's covered
     /// filter also resolves roots through — the coverage rule's two halves
-    /// stay one rule). A cycle is unreachable from any shred — its
-    /// appearance means a rogue's declared lineage or an engine defect —
+    /// stay one rule). A cycle is unreachable from any shred, and no
+    /// connector-authored path mints parent links — its appearance is
+    /// an engine defect, full stop —
     /// and an unterminated chain is never memoized, so the old degrade
     /// (attribute the table to itself) both misattributed coverage AND
     /// re-ran the full walk on every batch; refusing typed is honest and
@@ -241,12 +242,27 @@ impl Loader {
                         && existing != &link.parent
                     {
                         return Err(Error::internal(format!(
-                            "table `{}`'s delta re-parents it from `{existing}` to `{}` —                              parent links are append-only; a re-parenting delta is a defect,                              refused rather than splitting recorded lineage",
+                            "table `{}`'s delta re-parents it from `{existing}` to `{}` — \
+                             parent links are append-only; a re-parenting delta is a \
+                             defect, refused rather than splitting recorded lineage",
                             schema.table, link.parent
                         )));
                     }
                     self.parents
                         .insert(schema.table.clone(), link.parent.clone());
+                } else if let Some(existing) = self.parents.get(&schema.table) {
+                    // The family's other half: DROPPING a recorded link
+                    // is the same mutation as rewriting it — the shred
+                    // carries a child's link in every re-emitted
+                    // schema, so a link-less delta for a linked table
+                    // is equally unconstructible from any benign
+                    // producer.
+                    return Err(Error::internal(format!(
+                        "table `{}`'s delta drops its recorded parent `{existing}` — \
+                         parent links are append-only; an un-parenting delta is a \
+                         defect, refused like a re-parenting one",
+                        schema.table
+                    )));
                 }
                 self.emit(rdlt_core::event::PipelineEvent::SchemaEvolved {
                     delta: delta.clone(),
@@ -709,6 +725,30 @@ mod tests {
         );
     }
 
+    /// The other half of the lineage-mutation family: a delta that
+    /// DROPS a recorded parent (parent: None over an existing link)
+    /// refuses typed exactly like a re-parenting one — the shred always
+    /// carries a child's link in every re-emitted schema, so a
+    /// link-less delta for a linked table is the same defect class.
+    #[tokio::test]
+    async fn an_unparenting_delta_refuses_like_a_reparenting_one() {
+        let (mut loader, _commits) = recording_loader(CommitPolicy::default());
+        loader
+            .process(delta_item("child", Some("parent")))
+            .await
+            .expect("the link records");
+        let refused = loader
+            .process(delta_item("child", None))
+            .await
+            .expect_err("an un-parenting delta refuses");
+        let rendered = refused.to_string();
+        assert!(
+            rendered.contains("drops its recorded parent `parent`")
+                && rendered.contains("append-only"),
+            "the refusal names the dropped link and the rule: {rendered}"
+        );
+    }
+
     /// A delta that RE-PARENTS an already-linked table refuses typed —
     /// parent links are append-only, and a chain resolved through the
     /// old link may already be memoized with its tail shared. The SAME
@@ -731,10 +771,16 @@ mod tests {
             .await
             .expect_err("a re-parenting delta refuses");
         let rendered = refused.to_string();
+        // Asserted ACROSS the string's line-joins deliberately: a
+        // broken continuation (literal space runs inside the literal)
+        // must red this pin, not ship.
         assert!(
-            rendered.contains("re-parents it from `first_parent` to `second_parent`")
-                && rendered.contains("parent links are append-only"),
-            "the refusal names both links and the rule: {rendered}"
+            rendered.contains(
+                "re-parents it from `first_parent` to `second_parent` — parent links \
+                 are append-only; a re-parenting delta is a defect, refused rather \
+                 than splitting recorded lineage"
+            ),
+            "the refusal is the one clean spelling, joins included: {rendered}"
         );
     }
 
