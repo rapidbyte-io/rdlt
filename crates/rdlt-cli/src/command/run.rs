@@ -135,7 +135,13 @@ fn feed(
             }
             Mode::Pretty => {
                 let mut display = render::pretty::Pretty::new(&pipeline_name);
-                let mut tick = tokio::time::interval(render::pretty::REDRAW_EVERY);
+                // `interval_at`, not `interval`: a plain interval fires
+                // its first tick immediately, which would reveal the
+                // display before the run's rows exist.
+                let mut tick = tokio::time::interval_at(
+                    tokio::time::Instant::now() + render::pretty::REDRAW_EVERY,
+                    render::pretty::REDRAW_EVERY,
+                );
                 loop {
                     tokio::select! {
                         event = events.recv() => match event {
@@ -147,7 +153,13 @@ fn feed(
                             }
                             None => break,
                         },
-                        _ = tick.tick() => display.redraw(),
+                        // The first tick also reveals the display: the
+                        // initial rows exist by then, so it appears at
+                        // full height instead of growing on screen.
+                        _ = tick.tick() => {
+                            display.reveal();
+                            display.redraw();
+                        }
                     }
                 }
                 display.clear();
