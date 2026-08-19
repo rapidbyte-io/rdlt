@@ -45,16 +45,21 @@ pub(crate) fn name(
             render(&name)
         )));
     }
-    // The filesystem NAME_MAX floor: every mainstream filesystem
-    // accepts a 255-byte path component, and a longer built name would
-    // fail at write time with ENAMETOOLONG — an io error the transient
-    // classifier would retry forever, though no retry shortens a name.
-    // Wrong configuration refuses FATAL where the name is built.
-    const MAX_PART_NAME_BYTES: usize = 255;
+    // 247 = the 255-byte NAME_MAX floor (every mainstream filesystem
+    // accepts a 255-byte path component) MINUS the 8-byte `_staged-`
+    // prefix, the largest decoration the store adds on the way to
+    // publishing: a 248-byte name passes 255 bare but its staged
+    // temporary does not, failing the WRITE with ENAMETOOLONG — an io
+    // error the transient classifier would retry forever, though no
+    // retry shortens a name. Wrong configuration refuses FATAL where
+    // the name is built, judged at the bound its longest decorated
+    // form must satisfy.
+    const MAX_PART_NAME_BYTES: usize = 247;
     if name.len() > MAX_PART_NAME_BYTES {
         return Err(DestinationError::fatal(format!(
             "reference destination: generated part filename `{}` is {} bytes — over the \
-             {MAX_PART_NAME_BYTES}-byte filesystem name floor; shorten the table name",
+             {MAX_PART_NAME_BYTES}-byte bound (the 255-byte filesystem name floor less \
+             the 8-byte staging prefix); shorten the table name",
             render(&name),
             name.len()
         )));
@@ -111,21 +116,41 @@ mod tests {
     /// A path-safe but over-long table name refuses FATAL where the
     /// name is built: the filesystem would refuse the write with
     /// ENAMETOOLONG — an io error the transient classifier would retry
-    /// forever — and no retry shortens a name. The boundary is the
-    /// 255-byte NAME_MAX floor on the BUILT name.
+    /// forever — and no retry shortens a name. The boundary is 247
+    /// bytes on the BUILT name: the 255-byte NAME_MAX floor less the
+    /// 8-byte staging prefix, judged at the longest decorated form the
+    /// name must survive.
     #[test]
     fn a_too_long_built_name_refuses_fatal_where_it_is_built() {
         let long_table = TableName::new("t".repeat(300));
         let refused = name(&long_table, &LoadId::new("load"), 1)
-            .expect_err("a built name past NAME_MAX refuses");
+            .expect_err("a built name past the staged bound refuses");
         let rendered = refused.to_string();
         assert!(
             rendered.starts_with("fatal destination error: "),
             "fatal, not the transient retry bait ENAMETOOLONG would be: {rendered}"
         );
         assert!(
-            rendered.contains("255"),
-            "the refusal names the floor: {rendered}"
+            rendered.contains("247") && rendered.contains("255") && rendered.contains("8-byte"),
+            "the refusal carries the bound and its derivation: {rendered}"
+        );
+    }
+
+    /// The boundary, both sides: a built name of exactly 247 bytes
+    /// passes the gate (its staged form is exactly the 255-byte
+    /// NAME_MAX floor), and one byte more refuses AT THE GATE — never
+    /// left for the staging write to bounce as a transient. The suffix
+    /// for `(load, 1)` is 22 bytes, so the table lengths are 225/226.
+    #[test]
+    fn the_bound_admits_247_and_refuses_248() {
+        let admitted = name(&TableName::new("t".repeat(225)), &LoadId::new("load"), 1)
+            .expect("a 247-byte built name passes");
+        assert_eq!(admitted.len(), 247);
+        let refused = name(&TableName::new("t".repeat(226)), &LoadId::new("load"), 1)
+            .expect_err("a 248-byte built name refuses at the gate");
+        assert!(
+            refused.to_string().contains("248 bytes"),
+            "the refusal names the offending length: {refused}"
         );
     }
 

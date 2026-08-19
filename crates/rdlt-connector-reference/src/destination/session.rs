@@ -229,6 +229,20 @@ impl Backend for Session {
                 "reference destination: encode the state document: {error}"
             ))
         })?;
+        // Write-what-you-can-read: the read side refuses a state
+        // document past the 8 MiB ceiling, so persisting one would
+        // wedge every later open of this store. A direct driver's
+        // state is unbounded — the wire gates its own — so the writing
+        // seat is where the symmetry must hold.
+        let ceiling = rdlt_connector_sdk::spi::gate::MAX_DOCUMENT_BYTES;
+        if state.len() as u64 > ceiling {
+            return Err(DestinationError::fatal(format!(
+                "reference destination: the state document to publish is {} bytes — over \
+                 the {ceiling}-byte ceiling this store reads back; refusing to write what \
+                 no later session could read",
+                state.len()
+            )));
+        }
         store::persist(&self.dir, store::STATE_FILE, &state)?;
         let receipt = CommitReceipt {
             load_id: meta.load_id.clone(),

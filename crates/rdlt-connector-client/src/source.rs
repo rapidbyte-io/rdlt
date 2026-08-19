@@ -144,6 +144,14 @@ const MAX_DECLARED_STREAM_SPECS: usize = 1024;
 /// gate-legal spec of quote-heavy keys can double under JSON escaping
 /// to ~8.4 MiB and is refused loudly), then the per-value identifier
 /// and count gates on the parsed spec.
+///
+/// The framing's edge shapes are deliberate, not incidental: a
+/// TRAILING newline mints an empty final line and an empty line
+/// anywhere is not a JSON document — both refuse typed at the parse.
+/// A line ENDING in `\r` is ACCEPTED: a bare `\r` is JSON whitespace
+/// (RFC 8259), so a `\r\n`-joining server interoperates — the
+/// delimiter judged is `\n` alone, and the `\r` rides inside the
+/// line's own whitespace budget.
 fn decode_stream_specs(stream_specs_jsonl: &[u8]) -> Result<Vec<StreamSpec>, SourceError> {
     if stream_specs_jsonl.is_empty() {
         return Ok(Vec::new());
@@ -564,6 +572,63 @@ mod stream_spec_gate_tests {
         assert_eq!(
             decode_stream_specs(b"").expect("empty means zero streams"),
             Vec::<StreamSpec>::new()
+        );
+    }
+
+    /// The framing rule's no-trailing-newline arm: a terminator after
+    /// the last document mints an empty final line, which is not a
+    /// JSON document — refused typed, never silently trimmed. Trimming
+    /// would blur the framing rule this side and the serve emit both
+    /// state, and a blur at a framing rule is where two
+    /// implementations drift apart.
+    #[test]
+    fn a_trailing_newline_refuses_typed() {
+        let mut blob = serde_json::to_vec(&StreamSpec::new("events")).expect("spec serializes");
+        blob.push(b'\n');
+        let error = decode_stream_specs(&blob).expect_err("a trailing newline refuses");
+        assert!(
+            error
+                .to_string()
+                .contains("undecodable stream_spec_json in the streams reply"),
+            "refused at the parse, typed: {error}"
+        );
+    }
+
+    /// An empty line between documents refuses the same way — every
+    /// line must be one document; blank filler is not part of the
+    /// framing rule.
+    #[test]
+    fn an_empty_line_between_documents_refuses_typed() {
+        let doc = serde_json::to_vec(&StreamSpec::new("events")).expect("spec serializes");
+        let mut blob = doc.clone();
+        blob.push(b'\n');
+        blob.push(b'\n');
+        blob.extend_from_slice(&doc);
+        let error = decode_stream_specs(&blob).expect_err("an empty interior line refuses");
+        assert!(
+            error
+                .to_string()
+                .contains("undecodable stream_spec_json in the streams reply"),
+            "refused at the parse, typed: {error}"
+        );
+    }
+
+    /// A document terminated `\r\n` is ACCEPTED, deliberately: the
+    /// delimiter judged is `\n` alone, the leftover `\r` is JSON
+    /// whitespace (RFC 8259) inside the line, and a `\r\n`-joining
+    /// server therefore interoperates. Pinned as the contract, not an
+    /// accident of the parser.
+    #[test]
+    fn a_carriage_return_before_the_delimiter_is_accepted() {
+        let doc = serde_json::to_vec(&StreamSpec::new("events")).expect("spec serializes");
+        let mut blob = doc.clone();
+        blob.extend_from_slice(b"\r\n");
+        blob.extend_from_slice(&doc);
+        let decoded = decode_stream_specs(&blob).expect("a CRLF-joined blob decodes");
+        assert_eq!(decoded.len(), 2, "both documents arrive");
+        assert!(
+            decoded.iter().all(|spec| spec.name.as_str() == "events"),
+            "the CR rides the line's whitespace, not the name"
         );
     }
 

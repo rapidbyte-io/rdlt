@@ -428,17 +428,92 @@ async fn a_corrupt_receipt_line_refusal_renders_the_line_inert() {
     );
 }
 
-/// A receipt log grown past its read ceiling refuses TYPED before any
-/// byte is read — a sparse or hostile multi-MiB occupant would
-/// otherwise materialize whole on every replay lookup. The refusal
-/// names the ceiling, not the corrupt-line spelling a full read would
-/// have produced.
+/// A receipt log grown past 8 MiB — the document family's ceiling, and
+/// this log's own read ceiling once — still answers replay: the log is
+/// an append-only journal that grows for the store's whole life, so a
+/// total bound here was a wedge every honest store eventually reached
+/// (~250k short-id commits), turning every later publish FATAL. The
+/// scan streams one line at a time: the grown log dedups a replayed
+/// receipt AND accepts the next append.
 #[tokio::test]
-async fn an_oversized_receipt_log_refuses_before_reading() {
+async fn a_receipt_log_past_the_old_ceiling_still_answers_replay() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
-    std::fs::write(dir.path().join("_reference_receipts.json"), oversized)
-        .expect("seed the oversized log");
+    let mut log = String::from("{\"load_id\":\"l\",\"commit_seq\":1}\n");
+    for n in 0.. {
+        log.push_str(&format!("{{\"load_id\":\"load-{n}\",\"commit_seq\":1}}\n"));
+        if log.len() > 8 * 1024 * 1024 + 1024 {
+            break;
+        }
+    }
+    std::fs::write(dir.path().join("_reference_receipts.json"), &log).expect("seed the log");
+    let shell = shell_over(dir.path());
+    let probe = DirProbe(dir.path().to_path_buf());
+    let table = TableName::new("events");
+
+    // The receipted (load, seq) replays: the prior receipt comes back,
+    // the redelivered staging is dropped, nothing publishes.
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session.write(&table, batch_of(&[1])).await.expect("write");
+    let replayed = session
+        .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
+        .await
+        .expect("a grown log answers replay instead of wedging");
+    assert_eq!(
+        replayed,
+        CommitReceipt {
+            load_id: LoadId::new("l"),
+            commit_seq: 1
+        }
+    );
+    assert_eq!(
+        probe.count(&table).await.expect("count"),
+        0,
+        "the replayed unit republishes nothing"
+    );
+    drop(session);
+
+    // An unseen (load, seq) still publishes: the append lands past the
+    // old ceiling and the store keeps working.
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l2")))
+        .await
+        .expect("re-open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&table, batch_of(&[1, 2]))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(
+            &PipelineId::new("p"),
+            &LoadId::new("l2"),
+            1,
+        ))
+        .await
+        .expect("a fresh commit appends past the old ceiling");
+    assert_eq!(probe.count(&table).await.expect("count"), 2);
+}
+
+/// A newline-terminated receipt line longer than any line the gated
+/// append writes is corruption, refused typed with the line-bound
+/// spelling — the streaming scan's memory bound is the per-LINE bound,
+/// and this is the arm that keeps it honest.
+#[tokio::test]
+async fn an_oversized_receipt_line_refuses_the_log_as_corrupt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut log = vec![b'x'; 9000];
+    log.push(b'\n');
+    std::fs::write(dir.path().join("_reference_receipts.json"), log).expect("seed the log");
     let shell = shell_over(dir.path());
     let mut session = shell
         .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
@@ -455,11 +530,85 @@ async fn an_oversized_receipt_log_refuses_before_reading() {
     let refused = session
         .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
         .await
-        .expect_err("an oversized log refuses");
+        .expect_err("an over-long interior line refuses");
     let rendered = refused.to_string();
     assert!(
-        rendered.contains("ceiling") && !rendered.contains("corrupt receipt line"),
-        "refused by size BEFORE any read, not after parsing: {rendered}"
+        rendered.contains("8192-byte line bound")
+            && rendered.contains("refusing the log as corrupt"),
+        "refused at the line bound, typed: {rendered}"
+    );
+}
+
+/// The part-name bound holds END TO END: a table whose built part name
+/// is exactly 247 bytes publishes through the staging prefix — its
+/// staged temporary is exactly the 255-byte NAME_MAX floor — so the
+/// gate's bound is proven against the longest decorated form the store
+/// actually writes, not just asserted at the gate.
+#[tokio::test]
+async fn a_247_byte_part_name_publishes_through_its_staged_form() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = shell_over(dir.path());
+    let probe = DirProbe(dir.path().to_path_buf());
+    // The `(load, 1)` suffix is 22 bytes, so a 225-byte table builds a
+    // 247-byte part name.
+    let table = TableName::new("t".repeat(225));
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("load")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for(&"t".repeat(225)), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session.write(&table, batch_of(&[1])).await.expect("write");
+    session
+        .commit(commit_meta_for(
+            &PipelineId::new("p"),
+            &LoadId::new("load"),
+            1,
+        ))
+        .await
+        .expect("a 247-byte part name publishes, staging included");
+    assert_eq!(probe.count(&table).await.expect("count"), 1);
+}
+
+/// The state document's write side enforces the same 8 MiB ceiling its
+/// read side does — write-what-you-can-read symmetry: a state document
+/// this store persisted but could never read back would wedge every
+/// later open, so the publish carrying it refuses typed instead.
+#[tokio::test]
+async fn an_over_ceiling_state_document_refuses_at_the_publish() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let mut meta = commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1);
+    meta.state.cursors.insert(
+        rdlt_connector_sdk::spi::core::id::StreamName::new("s"),
+        rdlt_connector_sdk::spi::core::cursor::Cursor::new(serde_json::Value::String(
+            "x".repeat(8 * 1024 * 1024 + 1024),
+        )),
+    );
+    let refused = session
+        .commit(meta)
+        .await
+        .expect_err("a state document past the read ceiling must refuse at the write");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.starts_with("fatal destination error: ")
+            && rendered.contains("8388608")
+            && rendered.contains("read"),
+        "typed, naming the ceiling and the read symmetry: {rendered}"
     );
 }
 

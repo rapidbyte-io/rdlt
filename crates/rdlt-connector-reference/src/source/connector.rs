@@ -17,6 +17,13 @@ use super::{config, cursor};
 /// no extra resume precision a host ever used.
 const ROWS_PER_BATCH: usize = 1024;
 
+/// The per-line ceiling — the read's whole memory bound, because the
+/// file is consumed line-streaming and never materialized: one jsonl
+/// row is one document, and documents ride the family's 8 MiB bound
+/// everywhere in this workspace. A longer line refuses typed at the
+/// offset where it began.
+const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+
 /// The connector: one file, one stream.
 #[derive(Debug)]
 pub struct Reference {
@@ -51,18 +58,7 @@ impl SourceConnector for Reference {
     }
 
     async fn check(&self) -> Result<(), SourceError> {
-        let meta = tokio::fs::metadata(&self.path)
-            .await
-            .map_err(|error| classify_io(&self.path, error))?;
-        // Existing is not enough: a directory (or any non-regular file)
-        // at the path fails every read fatally, so a probe that passed
-        // it would be optimism about a misconfiguration no retry fixes.
-        if !meta.is_file() {
-            return Err(SourceError::fatal(format!(
-                "reference source: {}: not a regular file — `path` must name a jsonl file",
-                self.path
-            )));
-        }
+        self.gate_regular_file().await?;
         Ok(())
     }
 
@@ -90,15 +86,24 @@ impl SourceConnector for Reference {
                 self.path
             )));
         }
-        let bytes = tokio::fs::read(&self.path)
-            .await
-            .map_err(|error| classify_io(&self.path, error))?;
-        let start = match &since {
-            None => 0,
-            Some(cursor) => cursor::resume(&self.path, cursor, &bytes)?,
+        // The shape gate runs BEFORE any open: a FIFO parks the opener
+        // until a writer appears, and a char device reads without end —
+        // neither can be judged after the fact. The file is then
+        // consumed LINE-STREAMING: the per-line ceiling is the read's
+        // whole memory bound, so an honest multi-GiB jsonl streams
+        // where a whole-file read would have died on it.
+        let len = self.gate_regular_file().await?;
+        let read_io = |error: std::io::Error| classify_io(&self.path, error);
+        let mut file = tokio::fs::File::open(&self.path).await.map_err(read_io)?;
+        let (start, mut tail) = match &since {
+            None => (0, cursor::Tail::start()),
+            Some(resume_from) => cursor::resume(&self.path, resume_from, &mut file, len).await?,
         };
 
+        use tokio::io::AsyncBufReadExt as _;
+        let mut reader = tokio::io::BufReader::new(file);
         let mut offset = start;
+        let mut line: Vec<u8> = Vec::new();
         let mut batch = Vec::new();
         let mut checkpointed = false;
         // Only newline-TERMINATED lines are consumed. A final line
@@ -108,10 +113,39 @@ impl SourceConnector for Reference {
         // on its tail as invalid JSON). The cursor stays at the last
         // newline, and the read that sees the line completed picks it
         // up whole.
-        while let Some(newline) = bytes[offset..].iter().position(|byte| *byte == b'\n') {
-            let line = &bytes[offset..offset + newline];
+        loop {
+            let chunk = reader.fill_buf().await.map_err(read_io)?;
+            if chunk.is_empty() {
+                // EOF: whatever accumulated is the newline-less tail,
+                // left for the read that sees it complete.
+                break;
+            }
+            let Some(newline) = chunk.iter().position(|byte| *byte == b'\n') else {
+                line.extend_from_slice(chunk);
+                let taken = chunk.len();
+                reader.consume(taken);
+                if line.len() > MAX_LINE_BYTES {
+                    return Err(SourceError::fatal(format!(
+                        "reference source: {}: the line at byte {offset} is over the \
+                         {MAX_LINE_BYTES}-byte line ceiling — one jsonl row rides the \
+                         document family's 8 MiB bound",
+                        self.path
+                    )));
+                }
+                continue;
+            };
+            line.extend_from_slice(&chunk[..newline]);
+            reader.consume(newline + 1);
+            if line.len() > MAX_LINE_BYTES {
+                return Err(SourceError::fatal(format!(
+                    "reference source: {}: the line at byte {offset} is over the \
+                     {MAX_LINE_BYTES}-byte line ceiling — one jsonl row rides the \
+                     document family's 8 MiB bound",
+                    self.path
+                )));
+            }
             if !line.iter().all(u8::is_ascii_whitespace) {
-                let row: serde_json::Value = serde_json::from_slice(line).map_err(|error| {
+                let row: serde_json::Value = serde_json::from_slice(&line).map_err(|error| {
                     SourceError::fatal(format!(
                         "reference source: {}: invalid JSON on the line at byte {offset}: {error}",
                         self.path
@@ -119,7 +153,13 @@ impl SourceConnector for Reference {
                 })?;
                 batch.push(row);
             }
-            offset += newline + 1;
+            // The rolling tail covers every consumed byte — the line
+            // AND its newline — so a cursor minted at any boundary
+            // hashes the same prefix the whole-file law always did.
+            tail.push(&line);
+            tail.push(b"\n");
+            offset += line.len() as u64 + 1;
+            line.clear();
             // Checkpoint at batch boundaries, not per line: rows-so-far
             // are complete up to this byte offset — every checkpoint is
             // still a legal resume point — at a fraction of the wire
@@ -128,7 +168,7 @@ impl SourceConnector for Reference {
                 if feed.rows(std::mem::take(&mut batch)).await.is_break() {
                     return Ok(());
                 }
-                if feed.checkpoint(cursor::at(&bytes, offset)).await.is_break() {
+                if feed.checkpoint(cursor::at(&tail, offset)).await.is_break() {
                     return Ok(());
                 }
                 checkpointed = true;
@@ -138,7 +178,7 @@ impl SourceConnector for Reference {
             if feed.rows(std::mem::take(&mut batch)).await.is_break() {
                 return Ok(());
             }
-            if feed.checkpoint(cursor::at(&bytes, offset)).await.is_break() {
+            if feed.checkpoint(cursor::at(&tail, offset)).await.is_break() {
                 return Ok(());
             }
             checkpointed = true;
@@ -147,10 +187,31 @@ impl SourceConnector for Reference {
         // at its last newline, or only blank lines) still declares where
         // it stands, so the stream always certifies for resume and an
         // unchanged re-run commits the same cursor it started from.
-        if !checkpointed && feed.checkpoint(cursor::at(&bytes, offset)).await.is_break() {
+        if !checkpointed && feed.checkpoint(cursor::at(&tail, offset)).await.is_break() {
             return Ok(());
         }
         Ok(())
+    }
+}
+
+impl Reference {
+    /// The one shape judgment `check` and the read both stand on — so
+    /// they agree by construction: the configured path must name a
+    /// regular file. A directory fails every read; a FIFO parks its
+    /// opener until a writer appears; a char device reads without end.
+    /// None can be judged after opening, so the metadata is the gate.
+    /// Returns the file's current length — the read's resume bound.
+    async fn gate_regular_file(&self) -> Result<u64, SourceError> {
+        let meta = tokio::fs::metadata(&self.path)
+            .await
+            .map_err(|error| classify_io(&self.path, error))?;
+        if !meta.is_file() {
+            return Err(SourceError::fatal(format!(
+                "reference source: {}: not a regular file — `path` must name a jsonl file",
+                self.path
+            )));
+        }
+        Ok(meta.len())
     }
 }
 

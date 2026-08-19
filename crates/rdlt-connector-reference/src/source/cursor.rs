@@ -7,6 +7,7 @@
 
 use rdlt_connector_sdk::spi::core::cursor::Cursor;
 use rdlt_connector_sdk::spi::error::SourceError;
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 /// How far back the cursor's rewrite guard reaches: the hash covers the
 /// last `min(bytes_read, TAIL_WINDOW)` consumed bytes. A rewrite that
@@ -26,31 +27,65 @@ struct V1 {
     tail_hash: String,
 }
 
-/// The hash the cursor carries: the tail window of everything consumed,
-/// hex-encoded.
-fn hash(bytes: &[u8], bytes_read: usize) -> String {
-    let window = bytes_read.min(TAIL_WINDOW as usize);
-    blake3::hash(&bytes[bytes_read - window..bytes_read])
-        .to_hex()
-        .to_string()
+/// The rolling tail of everything the read has consumed — the last
+/// `min(consumed, TAIL_WINDOW)` bytes, maintained incrementally so the
+/// streaming read can mint a cursor at any batch boundary without the
+/// file's earlier bytes in memory. Newlines and skipped blank lines are
+/// consumed bytes too: the hash covers the raw prefix, not the rows.
+#[derive(Debug)]
+pub(crate) struct Tail(Vec<u8>);
+
+impl Tail {
+    /// The tail of a read starting at offset zero: empty, like the
+    /// consumed prefix.
+    pub(crate) fn start() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Extend the tail with just-consumed bytes, keeping the window.
+    pub(crate) fn push(&mut self, consumed: &[u8]) {
+        let window = TAIL_WINDOW as usize;
+        if consumed.len() >= window {
+            self.0.clear();
+            self.0
+                .extend_from_slice(&consumed[consumed.len() - window..]);
+            return;
+        }
+        self.0.extend_from_slice(consumed);
+        if self.0.len() > window {
+            self.0.drain(..self.0.len() - window);
+        }
+    }
+
+    fn hash_hex(&self) -> String {
+        blake3::hash(&self.0).to_hex().to_string()
+    }
 }
 
-/// The cursor standing at `bytes_read` into `bytes`.
-pub(crate) fn at(bytes: &[u8], bytes_read: usize) -> Cursor {
+/// The cursor standing at `bytes_read`, its guard hash read off the
+/// rolling tail.
+pub(crate) fn at(tail: &Tail, bytes_read: u64) -> Cursor {
     Cursor::new(serde_json::json!({
         "v": 1,
-        "bytes_read": bytes_read as u64,
-        "tail_hash": hash(bytes, bytes_read),
+        "bytes_read": bytes_read,
+        "tail_hash": tail.hash_hex(),
     }))
 }
 
-/// Decode a resume cursor against the file's current bytes: refuse
+/// Decode a resume cursor against the file's current shape: refuse
 /// typed when the file shrank below the cursor OR when the bytes just
 /// before it no longer hash to what the cursor recorded — a
 /// rewrite-in-place, where a bare offset would silently emit the tail
-/// of unrelated new content as appended rows.
-pub(crate) fn resume(path: &str, cursor: &Cursor, bytes: &[u8]) -> Result<usize, SourceError> {
-    let len = bytes.len() as u64;
+/// of unrelated new content as appended rows. Only the guard window is
+/// read (seek to the cursor minus the window), never the prefix, so
+/// resuming a multi-GiB file stays cheap. On success the read's rolling
+/// tail comes back seeded with the verified window.
+pub(crate) async fn resume(
+    path: &str,
+    cursor: &Cursor,
+    file: &mut tokio::fs::File,
+    len: u64,
+) -> Result<(u64, Tail), SourceError> {
     let v1: V1 = serde_json::from_value(cursor.as_value().clone()).map_err(|error| {
         // The cursor's own JSON is NOT echoed — a served cursor can
         // weigh megabytes and a direct driver's is unbounded; the serde
@@ -73,13 +108,20 @@ pub(crate) fn resume(path: &str, cursor: &Cursor, bytes: &[u8]) -> Result<usize,
             v1.bytes_read
         )));
     }
-    let bytes_read = v1.bytes_read as usize;
-    if hash(bytes, bytes_read) != v1.tail_hash {
-        let window = bytes_read.min(TAIL_WINDOW as usize);
+    let window = v1.bytes_read.min(TAIL_WINDOW);
+    let read_io = |error: std::io::Error| {
+        SourceError::transient(format!("reference source: {path}: {error}"))
+    };
+    file.seek(std::io::SeekFrom::Start(v1.bytes_read - window))
+        .await
+        .map_err(read_io)?;
+    let mut tail = vec![0u8; window as usize];
+    file.read_exact(&mut tail).await.map_err(read_io)?;
+    if blake3::hash(&tail).to_hex().to_string() != v1.tail_hash {
         return Err(SourceError::fatal(format!(
             "reference source: {path}: the {window} bytes before the cursor no longer match \
              its tail hash — the file was rewritten in place, refusing to resume"
         )));
     }
-    Ok(bytes_read)
+    Ok((v1.bytes_read, Tail(tail)))
 }

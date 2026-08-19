@@ -120,6 +120,18 @@ pub(crate) fn append_receipt(dir: &Path, receipt: &CommitReceipt) -> Result<(), 
             "reference destination: encode the receipt: {error}"
         ))
     })?;
+    // The write side gates every line at the same bound the readers
+    // enforce, so the log can never hold a line its own scans refuse —
+    // an id long enough to cross it is a wrong configuration no retry
+    // shortens, refused HERE instead of poisoning every later publish.
+    if line.len() > MAX_RECEIPT_LINE_BYTES {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: the receipt line for this commit is {} bytes — over the \
+             {MAX_RECEIPT_LINE_BYTES}-byte line bound the log's readers enforce; a load id \
+             this long cannot be receipted",
+            line.len()
+        )));
+    }
     let path = dir.join(RECEIPTS_FILE);
     truncate_torn_tail(&path)?;
     let created = !path.exists();
@@ -140,55 +152,113 @@ pub(crate) fn append_receipt(dir: &Path, receipt: &CommitReceipt) -> Result<(), 
 /// The receipt the log holds for `(load_id, commit_seq)`, if any. Only
 /// newline-terminated lines count: bytes after the LAST newline are an
 /// append that tore mid-write and never became durable, so they read as
-/// absent (the next append cuts them); an unparseable or non-UTF-8 line
-/// that IS newline-terminated sits in the log's interior, which the
-/// writer never produces — corruption, refused fatal.
+/// absent (the next append cuts them); an unparseable, non-UTF-8, or
+/// over-long line that IS newline-terminated sits in the log's
+/// interior, which the writer never produces — corruption, refused
+/// fatal. The scan STREAMS: the log is an append-only journal that
+/// grows for the store's whole life, so its reader holds one line at a
+/// time — a total ceiling here would be a wedge every honest store
+/// eventually reaches, not a bound.
 pub(crate) fn find_receipt(
     dir: &Path,
     load_id: &LoadId,
     commit_seq: u64,
 ) -> Result<Option<CommitReceipt>, DestinationError> {
+    use std::io::BufRead as _;
     let path = dir.join(RECEIPTS_FILE);
-    // Read BYTES, never `read_to_string`: a torn append can split a
-    // multi-byte UTF-8 character (a non-ASCII load id rides the receipt
-    // line verbatim), and `read_to_string` would fail the WHOLE read as
-    // `InvalidData` — a transient the choreography retries forever, when
-    // the torn tail is contractually ABSENT. Decoding the complete lines
-    // keeps the tear where it belongs: in the tail.
-    if !gate_store_read(&path, MAX_RECEIPT_LOG_BYTES, "receipt log")? {
+    if gate_regular(&path, "receipt log")?.is_none() {
         return Ok(None);
     }
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(io_refusal("read", &path, &error)),
+        Err(error) => return Err(io_refusal("open", &path, &error)),
     };
-    let durable = &bytes[..durable_len(&bytes)];
-    let durable = std::str::from_utf8(durable).map_err(|error| {
+    let mut reader = std::io::BufReader::new(file);
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        let chunk = match reader.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(error) => return Err(io_refusal("read", &path, &error)),
+        };
+        if chunk.is_empty() {
+            // EOF with accumulated bytes: a torn append that never
+            // became durable — contractually ABSENT (the next append
+            // cuts it).
+            return Ok(None);
+        }
+        let (taken, complete) = match chunk.iter().position(|byte| *byte == b'\n') {
+            Some(newline) => {
+                line.extend_from_slice(&chunk[..newline]);
+                (newline + 1, true)
+            }
+            None => {
+                line.extend_from_slice(chunk);
+                (chunk.len(), false)
+            }
+        };
+        reader.consume(taken);
+        if line.len() > MAX_RECEIPT_LINE_BYTES {
+            return Err(receipt_line_bound_refusal(&path));
+        }
+        if !complete {
+            continue;
+        }
+        if let Some(receipt) = decode_receipt_line(&path, &line)?
+            && receipt.load_id == *load_id
+            && receipt.commit_seq == commit_seq
+        {
+            return Ok(Some(receipt));
+        }
+        line.clear();
+    }
+}
+
+/// One complete (newline-terminated) receipt line, decoded — or `None`
+/// for a blank line. Decoded per line and BYTES-first, never
+/// `read_to_string` over the log: a torn append can split a multi-byte
+/// UTF-8 character (a non-ASCII load id rides the receipt line
+/// verbatim), and a whole-file decode would fail the durable prefix
+/// for the tail's tear.
+fn decode_receipt_line(
+    path: &Path,
+    line: &[u8],
+) -> Result<Option<CommitReceipt>, DestinationError> {
+    let line = std::str::from_utf8(line).map_err(|error| {
         DestinationError::fatal(format!(
             "reference destination: {} carries a corrupt receipt log (invalid UTF-8 \
              before the last complete line): {error}",
             path.display()
         ))
     })?;
-    for line in durable.lines().filter(|line| !line.trim().is_empty()) {
-        let receipt: CommitReceipt = serde_json::from_str(line).map_err(|error| {
-            // The quoted line is DISK content and the serde error can
-            // embed fragments of it — both through the bounded
-            // diagnostic render, so a corrupt log cannot hand a
-            // terminal-injection payload to whoever reads the error.
-            DestinationError::fatal(format!(
-                "reference destination: {} carries a corrupt receipt line `{}`: {}",
-                path.display(),
-                rdlt_connector_sdk::spi::gate::render_diagnostic(line, 256),
-                rdlt_connector_sdk::spi::gate::render_diagnostic(&error.to_string(), 256)
-            ))
-        })?;
-        if receipt.load_id == *load_id && receipt.commit_seq == commit_seq {
-            return Ok(Some(receipt));
-        }
+    if line.trim().is_empty() {
+        return Ok(None);
     }
-    Ok(None)
+    let receipt: CommitReceipt = serde_json::from_str(line).map_err(|error| {
+        // The quoted line is DISK content and the serde error can
+        // embed fragments of it — both through the bounded
+        // diagnostic render, so a corrupt log cannot hand a
+        // terminal-injection payload to whoever reads the error.
+        DestinationError::fatal(format!(
+            "reference destination: {} carries a corrupt receipt line `{}`: {}",
+            path.display(),
+            rdlt_connector_sdk::spi::gate::render_diagnostic(line, 256),
+            rdlt_connector_sdk::spi::gate::render_diagnostic(&error.to_string(), 256)
+        ))
+    })?;
+    Ok(Some(receipt))
+}
+
+/// The refusal for a receipt line no writer produces: the append side
+/// gates every line at the same bound, so an over-long line — complete
+/// or torn — is disk corruption, not growth.
+fn receipt_line_bound_refusal(path: &Path) -> DestinationError {
+    DestinationError::fatal(format!(
+        "reference destination: {} carries a receipt line over the \
+         {MAX_RECEIPT_LINE_BYTES}-byte line bound — the store never writes one that long; \
+         refusing the log as corrupt",
+        path.display()
+    ))
 }
 
 /// The persisted state document, if any publish ever wrote one.
@@ -220,26 +290,31 @@ pub(crate) fn read_state(dir: &Path) -> Result<Option<StateDoc>, DestinationErro
     Ok(Some(state))
 }
 
-/// The receipt log's read ceiling. One line is at most ~1.1 KiB (a
-/// load id at the 1024-byte wire identifier ceiling, a u64 sequence,
-/// and JSON punctuation), so 8 MiB holds ~7,600 maximal-id receipts —
-/// or ~250,000 short-id ones — far past this exemplar store's honest
-/// life, and consistent with the document family's 8 MiB ceilings.
-const MAX_RECEIPT_LOG_BYTES: u64 = 8 * 1024 * 1024;
+/// The receipt log's per-LINE bound — the streaming scan's whole
+/// memory footprint, and the append side's own gate, so the reader
+/// never refuses a line the writer can produce. A maximal honest line
+/// is a load id at the 1024-byte wire identifier ceiling JSON-escaped
+/// at worst six bytes per input byte (`\uXXXX`), plus keys, a u64
+/// sequence and punctuation: under 6.2 KiB. 8 KiB refuses nothing an
+/// honest append writes. The log's TOTAL size is deliberately
+/// unbounded: it is an append-only journal that grows for the store's
+/// whole life, and a total ceiling was a wedge every honest store
+/// eventually reached — once crossed, every later publish refused
+/// FATAL with no compaction story.
+const MAX_RECEIPT_LINE_BYTES: usize = 8 * 1024;
 
 /// Refuse a store file that cannot be an honest artifact BEFORE any
 /// byte of it is read: a non-regular occupant refuses typed (a FIFO
-/// would block the read forever), and a size past the seat's ceiling
-/// refuses typed (a sparse or hostile multi-GiB occupant would
-/// materialize whole before any content check could run). `Ok(false)`
-/// is the absent arm — the caller's `NotFound` disposition. The
+/// would block the read forever). `Ok(None)` is the absent arm — the
+/// caller's `NotFound` disposition; `Ok(Some(len))` carries the
+/// occupant's size for seats that bound their reads. The
 /// metadata-then-read window is the at-rest directory writer's
 /// existing power (directory ownership is the trust boundary), not a
 /// new one.
-fn gate_store_read(path: &Path, ceiling: u64, what: &str) -> Result<bool, DestinationError> {
+fn gate_regular(path: &Path, what: &str) -> Result<Option<u64>, DestinationError> {
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(io_refusal("probe", path, &error)),
     };
     if !meta.is_file() {
@@ -249,49 +324,72 @@ fn gate_store_read(path: &Path, ceiling: u64, what: &str) -> Result<bool, Destin
             rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
         )));
     }
-    if meta.len() > ceiling {
+    Ok(Some(meta.len()))
+}
+
+/// The shape-and-size gate for SINGLE-DOCUMENT store files (the state
+/// document): a size past the seat's ceiling refuses typed — a sparse
+/// or hostile multi-GiB occupant would materialize whole before any
+/// content check could run. `Ok(false)` is the absent arm.
+fn gate_store_read(path: &Path, ceiling: u64, what: &str) -> Result<bool, DestinationError> {
+    let Some(len) = gate_regular(path, what)? else {
+        return Ok(false);
+    };
+    if len > ceiling {
         return Err(DestinationError::fatal(format!(
-            "reference destination: {} weighs {} bytes — over the {ceiling}-byte {what} read \
+            "reference destination: {} weighs {len} bytes — over the {ceiling}-byte {what} read \
              ceiling; the store never writes it that large",
-            rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256),
-            meta.len()
+            rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
         )));
     }
     Ok(true)
-}
-
-/// The length of the log's durable prefix: everything up to and
-/// including the last newline.
-fn durable_len(bytes: &[u8]) -> usize {
-    bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |newline| newline + 1)
 }
 
 /// Cut a torn (newline-less) tail off the receipt log before appending
 /// to it. Those bytes were never a durable receipt — `find_receipt`
 /// already reads them as absent — and appending after them would glue
 /// this commit's receipt into a corrupt, newline-terminated INTERIOR
-/// line, which is exactly the shape every later read refuses.
+/// line, which is exactly the shape every later read refuses. Only the
+/// tail WINDOW is read (one maximal line and its would-be newline):
+/// a tear is at most one gated append, so a longer newline-less tail
+/// is not a tear at all — it is corruption, refused like the over-long
+/// interior line it would otherwise become.
 fn truncate_torn_tail(path: &Path) -> Result<(), DestinationError> {
-    if !gate_store_read(path, MAX_RECEIPT_LOG_BYTES, "receipt log")? {
+    use std::io::{Read as _, Seek as _};
+    let Some(len) = gate_regular(path, "receipt log")? else {
         return Ok(());
-    }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(io_refusal("read", path, &error)),
     };
-    let durable = durable_len(&bytes);
-    if durable == bytes.len() {
+    if len == 0 {
         return Ok(());
     }
+    let window = len.min(MAX_RECEIPT_LINE_BYTES as u64 + 1);
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io_refusal("open", path, &error)),
+    };
+    file.seek(std::io::SeekFrom::Start(len - window))
+        .map_err(|error| io_refusal("seek", path, &error))?;
+    let mut tail = vec![0u8; window as usize];
+    file.read_exact(&mut tail)
+        .map_err(|error| io_refusal("read", path, &error))?;
+    drop(file);
+    if tail.ends_with(b"\n") {
+        return Ok(());
+    }
+    let durable = match tail.iter().rposition(|byte| *byte == b'\n') {
+        Some(newline) => len - window + newline as u64 + 1,
+        // No newline anywhere in the window: either the whole log is
+        // one short torn write (cut to empty), or the newline-less
+        // tail outweighs any line the gated append writes — corruption.
+        None if window == len => 0,
+        None => return Err(receipt_line_bound_refusal(path)),
+    };
     std::fs::OpenOptions::new()
         .write(true)
         .open(path)
         .map_err(|error| io_refusal("open", path, &error))?
-        .set_len(durable as u64)
+        .set_len(durable)
         .map_err(|error| io_refusal("truncate the torn tail of", path, &error))
 }
 

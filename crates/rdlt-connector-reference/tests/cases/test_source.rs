@@ -215,9 +215,9 @@ fn the_config_gate_refuses_with_frozen_spellings() {
 }
 
 /// A configured path naming a DIRECTORY can never be read no matter how
-/// often it is retried: the failure classifies FATAL, the io error's
-/// own rendering reproduced rather than transcribed. (`check` refuses
-/// the same shape — the pin below — so the two answers agree.)
+/// often it is retried: the failure classifies FATAL with the same
+/// not-a-regular-file spelling `check` refuses — the two answers come
+/// from one shape gate, so they agree by construction.
 #[tokio::test]
 async fn a_path_naming_a_directory_reads_fatal() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -229,11 +229,11 @@ async fn a_path_naming_a_directory_reads_fatal() {
     let refused = read_stream(&shell, &stream, None)
         .await
         .expect_err("reading a directory must refuse");
-    let direct = std::fs::read(&path).expect_err("a directory does not read as a file");
     assert_eq!(
         refused.to_string(),
         format!(
-            "fatal source error: reference source: {}: {direct}",
+            "fatal source error: reference source: {}: not a regular file — `path` must \
+             name a jsonl file",
             path.display()
         )
     );
@@ -310,4 +310,141 @@ async fn an_unrecognized_cursor_refusal_does_not_echo_the_cursor() {
         "the render is bounded, never the cursor's own size: {} bytes",
         rendered.len()
     );
+}
+
+/// A configured path naming a char device refuses typed at the read —
+/// the same not-a-regular-file shape `check` refuses — instead of
+/// reading from it. `/dev/null` reads as instantly-empty, so a read
+/// that OPENS it succeeds silently; only the shape gate refuses it.
+/// (`/dev/zero`, the same shape, would grow a buffer without bound.)
+#[tokio::test]
+async fn a_char_device_path_refuses_typed_at_the_read() {
+    let shell = Shell::<Reference>::from_value(json!({"path": "/dev/null"})).expect("valid config");
+    let stream = shell.streams().await.expect("streams").remove(0);
+    let refused = read_stream(&shell, &stream, None)
+        .await
+        .expect_err("a char device must refuse at the read, not read as empty");
+    assert_eq!(
+        refused.to_string(),
+        "fatal source error: reference source: /dev/null: not a regular file — `path` must \
+         name a jsonl file"
+    );
+}
+
+/// A configured path naming a FIFO refuses typed instead of parking the
+/// read: opening a FIFO with no writer blocks forever, so the shape is
+/// judged from metadata BEFORE any open. The read is driven from a
+/// detached thread with its own runtime and a receive deadline — a
+/// tokio timeout cannot fire over a synchronous open, and a wedged
+/// worker would block the whole binary's exit — so a regression fails
+/// in two seconds instead of hanging the suite.
+#[tokio::test]
+async fn a_fifo_path_refuses_instead_of_hanging() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fifo = dir.path().join("events.jsonl");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "the fixture FIFO exists");
+    let shell = Shell::<Reference>::from_value(json!({"path": &fifo})).expect("valid config");
+    let stream = shell.streams().await.expect("streams").remove(0);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime builds")
+            .block_on(read_stream(&shell, &stream, None));
+        let _ = tx.send(outcome);
+    });
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("the FIFO read must answer instead of hanging");
+    let refused = outcome.expect_err("a FIFO must refuse typed");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "fatal source error: reference source: {}: not a regular file — `path` must \
+             name a jsonl file",
+            fifo.display()
+        )
+    );
+}
+
+/// A single line past the 8 MiB line ceiling refuses typed instead of
+/// materializing: jsonl is read line-streaming, so the ceiling is the
+/// read's whole memory bound and an over-long line is judged as it
+/// accumulates, never after it loaded.
+#[tokio::test]
+async fn an_oversized_line_refuses_typed_at_its_offset() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("events.jsonl");
+    let mut giant = String::with_capacity((8 << 20) + 64);
+    giant.push_str("{\"n\":1}\n{\"s\":\"");
+    giant.push_str(&"x".repeat(8 << 20));
+    giant.push_str("\"}\n");
+    std::fs::write(&path, giant).expect("seed file");
+    let shell = Shell::<Reference>::from_value(json!({"path": &path})).expect("valid config");
+    let stream = shell.streams().await.expect("streams").remove(0);
+    // The refusal must land BEFORE the row is pushed — a materialized
+    // 8 MiB row would out-weigh the drain harness's budget and park the
+    // read — so the pin drives it under the same fail-fast deadline as
+    // the FIFO shape: a regression answers in two seconds, never a hang.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread runtime builds")
+            .block_on(read_stream(&shell, &stream, None));
+        let _ = tx.send(outcome);
+    });
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("the over-ceiling read must answer instead of materializing");
+    let refused = outcome.expect_err("an over-ceiling line must refuse");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "fatal source error: reference source: {}: the line at byte 8 is over the \
+             8388608-byte line ceiling — one jsonl row rides the document family's 8 MiB bound",
+            path.display()
+        )
+    );
+}
+
+/// A file larger than one batch streams complete: every row arrives
+/// exactly once across the batch boundaries and the final cursor stands
+/// at EOF, so a resume reads zero — the count-integrity belt over the
+/// streaming read.
+#[tokio::test]
+async fn a_multi_batch_file_streams_every_row_exactly_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("events.jsonl");
+    let mut seed = String::new();
+    for n in 0..3000 {
+        seed.push_str(&format!("{{\"n\":{n}}}\n"));
+    }
+    std::fs::write(&path, &seed).expect("seed file");
+    let shell = Shell::<Reference>::from_value(json!({"path": &path})).expect("valid config");
+    let stream = shell.streams().await.expect("streams").remove(0);
+
+    let (rows, checkpoint) = read_stream(&shell, &stream, None).await.expect("full read");
+    assert_eq!(rows.len(), 3000, "every row exactly once across batches");
+    assert_eq!(
+        rows[2999],
+        json!({"n": 2999}),
+        "order preserved to the last row"
+    );
+    let cursor = checkpoint.expect("the read checkpoints");
+    assert_eq!(
+        cursor.as_value(),
+        &json!({"v": 1, "bytes_read": seed.len(), "tail_hash": tail_hash_of(&seed)})
+    );
+    let (rows, _) = read_stream(&shell, &stream, Some(cursor))
+        .await
+        .expect("resumed read");
+    assert!(rows.is_empty(), "nothing left after a complete stream");
 }
