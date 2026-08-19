@@ -119,7 +119,10 @@ fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
 /// own default `max_streams_per_source` (1024), mirrored at the wire
 /// edge because this seat serves EVERY host: the engine's cap refuses
 /// only after full materialization, and an embedder driving the client
-/// directly has no engine in front of it at all.
+/// directly has no engine in front of it at all. A host that raises
+/// `max_streams_per_source` past 1024 over a served source will have
+/// its streams reply refused HERE, at discovery — the ceiling is not
+/// yet configurable, a fixed 1024 today.
 const MAX_DECLARED_STREAM_SPECS: usize = 1024;
 
 /// Decode the streams reply's declared specs, gated BEFORE anything
@@ -127,10 +130,12 @@ const MAX_DECLARED_STREAM_SPECS: usize = 1024;
 /// specs would otherwise yield millions of `StreamSpec`s and a
 /// multi-second synchronous parse loop), then each spec's raw bytes
 /// against the shared document ceiling before `from_slice` builds its
-/// maps (a maximal legal spec — 4096 type hints of 1024-byte keys plus
+/// maps (a maximal honest spec — 4096 type hints of 1024-byte keys plus
 /// the key fields — serializes to ~4.3 MiB, so the 8 MiB document
-/// ceiling admits every honest spec with headroom), then the per-value
-/// identifier and count gates on the parsed spec.
+/// ceiling admits every honest spec with headroom; a gate-legal spec of
+/// quote-heavy keys can double under JSON escaping to ~8.4 MiB and is
+/// refused loudly), then the per-value identifier and count gates on
+/// the parsed spec.
 fn decode_stream_specs(stream_spec_json: &[Vec<u8>]) -> Result<Vec<StreamSpec>, SourceError> {
     gate::count(
         "declared stream specs",
