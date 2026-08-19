@@ -540,6 +540,66 @@ async fn an_undecodable_stream_spec_answers_a_terminal_error_frame_not_a_status(
     );
 }
 
+/// The declared stream spec's identifiers — its name here, the
+/// worst-carrying seat — ride the wire identifier ceiling the session
+/// seats hold theirs to: the spec is retained for the read's lifetime
+/// and its names are quoted by connector refusals, so an oversized one
+/// refuses as the stream's terminal error frame, before the connector
+/// ever sees the spec.
+#[tokio::test]
+async fn an_oversized_stream_spec_name_answers_a_terminal_error_frame() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: 0,
+            expected_role: "source".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let oversized = serde_json::json!({
+        "name": "n".repeat(rdlt_connector_sdk::spi::gate::MAX_WIRE_IDENTIFIER_BYTES + 1),
+        "primary_key": null,
+        "cursor_field": null,
+        "type_hints": {},
+    });
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: serde_json::to_vec(&oversized).expect("spec json"),
+            since_cursor_json: None,
+        })
+        .await
+        .expect("the Read RPC completes normally — the refusal is IN the stream")
+        .into_inner();
+
+    let frame = frames
+        .message()
+        .await
+        .expect("frame")
+        .expect("one terminal frame");
+    match frame.frame {
+        Some(read_frame::Frame::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("identifier ceiling"),
+                "the refusal names the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a terminal error frame, got {other:?}"),
+    }
+    assert!(
+        frames.message().await.expect("stream ends").is_none(),
+        "nothing follows the terminal error"
+    );
+}
+
 /// The `since_cursor_json` twin of the test above — same rule, same
 /// shape, its own frozen prefix. The stream spec is VALID here, so the
 /// cursor decode is provably the arm that refused.

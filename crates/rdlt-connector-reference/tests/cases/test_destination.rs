@@ -252,6 +252,182 @@ async fn another_pipelines_state_refuses_rather_than_reading_fresh() {
     );
 }
 
+/// A trailing slash over an existing FILE must refuse at the probe:
+/// `stat("…/file/")` reports NotADirectory, and a walk that steps to
+/// `.parent()` skips the file (the path API normalizes the trailing
+/// slash away, so the parent is the directory ABOVE it), passing a
+/// probe whose `connect` then fails transient — retry bait against a
+/// misconfiguration no retry fixes.
+#[tokio::test]
+async fn check_refuses_a_trailing_slash_over_a_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let occupied = dir.path().join("occupied");
+    std::fs::write(&occupied, b"x").expect("seed the file");
+    let trailing = format!("{}/", occupied.display());
+    let shell = Shell::<Reference>::from_value(json!({"path": trailing})).expect("valid config");
+    let refused = shell
+        .check()
+        .await
+        .expect_err("a file behind a trailing slash must refuse, not pass while connect fails");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.starts_with("fatal destination error: ")
+            && rendered.contains("is not a directory"),
+        "the refusal is fatal and names the occupant: {rendered}"
+    );
+}
+
+/// A commit whose meta names another load refuses — and the refusal
+/// renders BOTH load ids through the bounded diagnostic render: the
+/// meta's is wire-authored text a direct Backend driver hands in
+/// unbounded, so a hostile one arrives spelled-out and truncated, never
+/// raw in the error.
+#[tokio::test]
+async fn a_wrong_load_publish_refusal_renders_the_load_id_inert() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = shell_over(dir.path());
+    let pipeline = PipelineId::new("p");
+    let mut session = shell
+        .open(OpenContext::new(pipeline.clone(), LoadId::new("good")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let hostile = format!("evil\u{1b}]52;c;A\u{7}{}", "x".repeat(2000));
+    let refused = session
+        .commit(commit_meta_for(&pipeline, &LoadId::new(hostile), 1))
+        .await
+        .expect_err("a commit naming another load refuses");
+    let rendered = refused.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "no raw control byte survives the refusal: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("\\u{1b}") && rendered.contains("truncated from"),
+        "the hostile id arrives spelled out and bounded: {rendered}"
+    );
+}
+
+/// The unsupported-mode refusal quotes the table name — wire-authored
+/// for a served backend, unbounded for a direct driver — through the
+/// bounded diagnostic render.
+#[tokio::test]
+async fn an_unsupported_mode_refusal_renders_the_table_name_inert() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    let refused = session
+        .ensure_table(
+            &schema_for("evil\u{1b}]52;c;A\u{7}table"),
+            &WriteMode::Replace,
+        )
+        .await
+        .expect_err("replace refuses");
+    let rendered = refused.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "no raw control byte survives the refusal: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("\\u{1b}") && rendered.contains("append-only"),
+        "the name arrives spelled out inside the refusal: {rendered}"
+    );
+}
+
+/// The foreign-pipeline state refusal quotes the OCCUPANT's pipeline id
+/// — content read off DISK, which nothing upstream ever gated — through
+/// the bounded diagnostic render.
+#[tokio::test]
+async fn a_foreign_pipeline_state_refusal_renders_the_occupant_inert() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shell = shell_over(dir.path());
+    let occupant = PipelineId::new("evil\u{1b}]52;c;A\u{7}pipe");
+    let load = LoadId::new("l");
+    let mut session = shell
+        .open(OpenContext::new(occupant.clone(), load.clone()))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&occupant, &load, 1))
+        .await
+        .expect("commit under the hostile pipeline id");
+    drop(session);
+
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l2")))
+        .await
+        .expect("re-open");
+    let refused = session
+        .read_state(&PipelineId::new("p"))
+        .await
+        .expect_err("a foreign state slot refuses");
+    let rendered = refused.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "no raw control byte survives the refusal: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("\\u{1b}"),
+        "the occupant arrives spelled out: {rendered}"
+    );
+}
+
+/// A corrupt receipt line carrying control bytes renders spelled-out
+/// and bounded in the refusal — the line is DISK content, and quoting
+/// it raw would hand a terminal-injection payload to whoever reads the
+/// error.
+#[tokio::test]
+async fn a_corrupt_receipt_line_refusal_renders_the_line_inert() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let hostile_line = format!("evil\u{1b}]52;c;A\u{7}{}\n", "x".repeat(2000));
+    std::fs::write(dir.path().join("_reference_receipts.json"), hostile_line)
+        .expect("seed the corrupt log");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let refused = session
+        .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
+        .await
+        .expect_err("a corrupt interior line refuses");
+    let rendered = refused.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "no raw control byte survives the refusal: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("\\u{1b}") && rendered.contains("truncated from"),
+        "the corrupt line arrives spelled out and bounded: {rendered}"
+    );
+}
+
 /// The config gate's refusal, full-string: the one-field document
 /// refuses an empty path with its own frozen wording. The gate is the
 /// `Document` trait, so it is tested through it — no shell in between.

@@ -108,10 +108,14 @@ impl Backend for Session {
                     WriteMode::Merge { .. } => "merge".to_owned(),
                     other => format!("{other:?}"),
                 };
+                // The table name is wire-authored for a served backend
+                // and unbounded for a direct driver — quoted through
+                // the bounded diagnostic render, like the part-name
+                // seat's refusals.
                 Err(DestinationError::fatal(format!(
                     "reference destination: table `{}`: write mode `{mode_name}` is not \
                      supported — jsonl parts are append-only",
-                    schema.table
+                    rdlt_connector_sdk::spi::gate::render_diagnostic(schema.table.as_str(), 256)
                 )))
             }
         }
@@ -183,11 +187,18 @@ impl Backend for Session {
         // another load would leave a receipt vouching for files it
         // never wrote. Fatal — no retry makes the two loads agree.
         if meta.load_id != self.load_id {
+            // Both ids through the bounded diagnostic render, like the
+            // replay guards: the meta's is wire-authored, and a direct
+            // Backend driver hands both in unbounded.
+            let render = |load_id: &LoadId| {
+                rdlt_connector_sdk::spi::gate::render_diagnostic(load_id.as_str(), 256)
+            };
             return Err(DestinationError::fatal(format!(
                 "reference destination: publish for load `{}` on a session opened for \
                  load `{}` — one session serves one load; open a session for the load \
                  being committed",
-                meta.load_id, self.load_id
+                render(&meta.load_id),
+                render(&self.load_id)
             )));
         }
         // A receipted commit is FINAL. A client that publishes the same
@@ -245,15 +256,19 @@ impl Backend for Session {
         // pipelines), and the next publish would overwrite the
         // occupant's cursors in the slot.
         if state.pipeline != *pipeline {
+            // The occupant's id is DISK content nothing upstream ever
+            // gated, and this session's is wire-authored — both quoted
+            // through the bounded diagnostic render.
+            let occupant =
+                rdlt_connector_sdk::spi::gate::render_diagnostic(state.pipeline.as_str(), 256);
             return Err(DestinationError::fatal(format!(
-                "reference destination: {} carries the state of pipeline `{}` — this \
-                 session is pipeline `{pipeline}`, and one directory holds ONE pipeline's \
+                "reference destination: {} carries the state of pipeline `{occupant}` — this \
+                 session is pipeline `{}`, and one directory holds ONE pipeline's \
                  state: reading it as fresh would append every already-loaded row again, \
-                 and the next publish would destroy `{}`' cursors; give each pipeline its \
-                 own output directory",
+                 and the next publish would destroy `{occupant}`' cursors; give each pipeline \
+                 its own output directory",
                 self.dir.join(store::STATE_FILE).display(),
-                state.pipeline,
-                state.pipeline
+                rdlt_connector_sdk::spi::gate::render_diagnostic(pipeline.as_str(), 256)
             )));
         }
         Ok(Some(state))

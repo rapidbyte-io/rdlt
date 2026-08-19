@@ -7,7 +7,7 @@ use rdlt_connector_reference::source::config::Config;
 use rdlt_connector_reference::source::connector::Reference;
 use rdlt_connector_sdk::config::Document;
 use rdlt_connector_sdk::source::Shell;
-use rdlt_connector_sdk::spi::source::Source;
+use rdlt_connector_sdk::spi::source::{Source, StreamSpec};
 use serde_json::json;
 
 use super::support::read_stream;
@@ -216,9 +216,8 @@ fn the_config_gate_refuses_with_frozen_spellings() {
 
 /// A configured path naming a DIRECTORY can never be read no matter how
 /// often it is retried: the failure classifies FATAL, the io error's
-/// own rendering reproduced rather than transcribed. (`check` passes —
-/// the path exists — so the read is where the misconfiguration
-/// surfaces.)
+/// own rendering reproduced rather than transcribed. (`check` refuses
+/// the same shape — the pin below — so the two answers agree.)
 #[tokio::test]
 async fn a_path_naming_a_directory_reads_fatal() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -237,5 +236,47 @@ async fn a_path_naming_a_directory_reads_fatal() {
             "fatal source error: reference source: {}: {direct}",
             path.display()
         )
+    );
+}
+
+/// The probe answers for the exact configured path: a directory fails
+/// every read fatally, so a check that passed it was optimism about a
+/// misconfiguration no retry fixes — it must refuse the same shape the
+/// read refuses.
+#[tokio::test]
+async fn check_refuses_a_directory_like_the_read_does() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("events");
+    std::fs::create_dir(&path).expect("a directory where the file should be");
+    let shell = Shell::<Reference>::from_value(json!({"path": path})).expect("valid config");
+    let refused = shell
+        .check()
+        .await
+        .expect_err("a directory must fail the probe the way it fails the read");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.starts_with("fatal source error: "),
+        "the probe's refusal is fatal: {rendered}"
+    );
+}
+
+/// The unknown-stream refusal quotes the requested name — wire-authored
+/// text for a served source — through the bounded diagnostic render:
+/// control bytes arrive spelled out, never raw.
+#[tokio::test]
+async fn an_unknown_stream_refusal_renders_the_name_inert() {
+    let (_dir, _path, shell) = seeded_source();
+    let hostile = StreamSpec::new("evil\u{1b}]52;c;A\u{7}stream");
+    let refused = read_stream(&shell, &hostile, None)
+        .await
+        .expect_err("an unknown stream refuses");
+    let rendered = refused.to_string();
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "no raw control byte survives the refusal: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("\\u{1b}") && rendered.contains("unknown stream"),
+        "the name arrives spelled out inside the refusal: {rendered}"
     );
 }

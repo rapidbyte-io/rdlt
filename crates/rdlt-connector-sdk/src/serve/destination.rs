@@ -589,9 +589,13 @@ async fn handle_frame<C: DestinationConnector>(
                 // The decoded receipt's load id is wire-authored
                 // identity a backend's refusals quote — gated exactly
                 // like ExistingReceipt's, so the two receipt seats
-                // cannot drift.
+                // cannot drift. The decoded META's load id reaches the
+                // same refusal text (a wrong-load publish quotes it),
+                // so it rides the same gate.
                 (Ok(meta), Ok(receipt)) => {
-                    match refuse_oversized_identifier("load id", receipt.load_id.as_str()) {
+                    match refuse_oversized_identifier("load id", meta.load_id.as_str()).and_then(
+                        |()| refuse_oversized_identifier("load id", receipt.load_id.as_str()),
+                    ) {
                         Err(reply) => reply,
                         Ok(()) => match backend.replay(&meta, &receipt).await {
                             Ok(()) => session_reply::Reply::Replayed(proto::Empty {}),
@@ -606,12 +610,18 @@ async fn handle_frame<C: DestinationConnector>(
         }
         Some(session_request::Request::Publish(publish)) => {
             match decode_document::<CommitMeta>("commit_meta_json", &publish.commit_meta_json) {
-                Ok(meta) => match backend.publish(meta).await {
-                    Ok(receipt) => session_reply::Reply::Published(Published {
-                        receipt_json: serde_json::to_vec(&receipt)
-                            .expect("a CommitReceipt serializes to JSON infallibly"),
-                    }),
-                    Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                // The meta's load id is wire-authored identity a
+                // backend's refusals quote (a wrong-load publish names
+                // it) — the same gate its Replay twin runs.
+                Ok(meta) => match refuse_oversized_identifier("load id", meta.load_id.as_str()) {
+                    Err(reply) => reply,
+                    Ok(()) => match backend.publish(meta).await {
+                        Ok(receipt) => session_reply::Reply::Published(Published {
+                            receipt_json: serde_json::to_vec(&receipt)
+                                .expect("a CommitReceipt serializes to JSON infallibly"),
+                        }),
+                        Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                    },
                 },
                 Err(reply) => reply,
             }

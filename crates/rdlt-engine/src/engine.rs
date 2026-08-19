@@ -94,10 +94,12 @@ impl Engine {
     /// Connectivity, discovery and plan checks without a load session:
     /// the source's and destination's [`check`](Source::check) probes,
     /// stream discovery under the stream cap, then the same plan
-    /// validation a run performs. No workdir lock, no WAL, no session,
-    /// no reads — nothing is created or written anywhere. Consumes the
-    /// engine like [`Engine::run`]; construct a new one to run after a
-    /// check.
+    /// validation a run performs. The ENGINE creates nothing — no
+    /// workdir lock, no WAL, no session, no reads; what a connector's
+    /// own probe or construction does is that connector's behavior (a
+    /// destination that materializes its target at construction does so
+    /// here exactly as a run would). Consumes the engine like
+    /// [`Engine::run`]; construct a new one to run after a check.
     pub async fn check(self) -> Result<check::Summary, Error> {
         check::check(&self.config, self.source, self.destination).await
     }

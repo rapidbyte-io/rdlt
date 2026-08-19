@@ -166,9 +166,15 @@ pub(crate) fn find_receipt(
     })?;
     for line in durable.lines().filter(|line| !line.trim().is_empty()) {
         let receipt: CommitReceipt = serde_json::from_str(line).map_err(|error| {
+            // The quoted line is DISK content and the serde error can
+            // embed fragments of it — both through the bounded
+            // diagnostic render, so a corrupt log cannot hand a
+            // terminal-injection payload to whoever reads the error.
             DestinationError::fatal(format!(
-                "reference destination: {} carries a corrupt receipt line `{line}`: {error}",
-                path.display()
+                "reference destination: {} carries a corrupt receipt line `{}`: {}",
+                path.display(),
+                rdlt_connector_sdk::spi::gate::render_diagnostic(line, 256),
+                rdlt_connector_sdk::spi::gate::render_diagnostic(&error.to_string(), 256)
             ))
         })?;
         if receipt.load_id == *load_id && receipt.commit_seq == commit_seq {
@@ -187,9 +193,12 @@ pub(crate) fn read_state(dir: &Path) -> Result<Option<StateDoc>, DestinationErro
         Err(error) => return Err(io_refusal("read", &path, &error)),
     };
     let state: StateDoc = serde_json::from_str(&text).map_err(|error| {
+        // The serde error can embed fragments of the corrupt DISK
+        // content — bounded like the receipt-line refusal.
         DestinationError::fatal(format!(
-            "reference destination: {} carries a corrupt state document: {error}",
-            path.display()
+            "reference destination: {} carries a corrupt state document: {}",
+            path.display(),
+            rdlt_connector_sdk::spi::gate::render_diagnostic(&error.to_string(), 256)
         ))
     })?;
     Ok(Some(state))

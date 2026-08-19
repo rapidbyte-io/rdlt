@@ -61,7 +61,14 @@ impl DestinationConnector for Reference {
         // metadata call follows links), so the probe passes while
         // connect will still fail typed on the occupied seat — the
         // probe errs toward optimism, never toward silence.
-        let mut probe: &Path = &self.dir;
+        // Trailing separators normalized away first: `stat("…/file/")`
+        // answers NotADirectory, and the walk's `.parent()` step would
+        // SKIP the file (the path API drops the trailing slash, so the
+        // parent is the directory above it) — passing a probe whose
+        // connect then fails. Normalized, the file itself is stat'ed
+        // and refused by the not-a-directory arm below.
+        let normalized: std::path::PathBuf = self.dir.components().collect();
+        let mut probe: &Path = &normalized;
         loop {
             match tokio::fs::metadata(probe).await {
                 Ok(meta) if meta.is_dir() => return Ok(()),

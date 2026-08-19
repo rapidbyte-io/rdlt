@@ -3,9 +3,11 @@
 //!
 //! The choreography is the front of a run and nothing after it: the
 //! source's probe, the destination's probe, stream discovery under the
-//! stream cap, then the same plan validation a run performs. No workdir
-//! lock, no WAL, no load session, no reads — a check leaves the world
-//! exactly as it found it.
+//! stream cap, then the same plan validation a run performs. The ENGINE
+//! creates nothing — no workdir lock, no WAL, no load session, no reads;
+//! what a connector's own probe or construction does is that
+//! connector's behavior (a destination that materializes its target at
+//! construction does so here exactly as a run would).
 
 use std::sync::Arc;
 

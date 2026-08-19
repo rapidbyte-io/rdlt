@@ -111,6 +111,35 @@ pub const MAX_CONCURRENT_READS: usize = 1024;
 /// The role a source's handshake must be asked for.
 const EXPECTED_ROLE: &str = "source";
 
+/// Every identifier a read's declared stream spec carries, through the
+/// wire identifier ceiling — the source-side mirror of the session
+/// seats' identifier gate, same ceiling, length-only (content escaping
+/// belongs to the display renders on the side that displays).
+fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Result<(), String> {
+    let refuse = |kind: &str, value: &str| {
+        if value.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
+            return Err(format!(
+                "a read {kind} of {} bytes exceeds the {}-byte wire identifier ceiling — \
+                 refused at the wire boundary",
+                value.len(),
+                gate::MAX_WIRE_IDENTIFIER_BYTES
+            ));
+        }
+        Ok(())
+    };
+    refuse("stream name", spec.name.as_str())?;
+    for field in spec.primary_key.iter().flatten() {
+        refuse("primary-key field", field)?;
+    }
+    if let Some(field) = &spec.cursor_field {
+        refuse("cursor field", field)?;
+    }
+    for field in spec.type_hints.keys() {
+        refuse("type-hint field", field)?;
+    }
+    Ok(())
+}
+
 // ---- the frame channel -----------------------------------------------------
 //
 // The SPI's byte-budgeted channel over ENCODED frames: a permit that
@@ -412,16 +441,27 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         {
             return Ok(error_stream(message).await);
         }
-        let stream_spec = match serde_json::from_slice(&request.stream_spec_json) {
-            Ok(spec) => spec,
-            Err(error) => {
-                return Ok(error_stream(format!(
-                    "invalid stream_spec_json: {}",
-                    gate::describe_parse_error(&error)
-                ))
-                .await);
-            }
-        };
+        let stream_spec: source::StreamSpec =
+            match serde_json::from_slice(&request.stream_spec_json) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    return Ok(error_stream(format!(
+                        "invalid stream_spec_json: {}",
+                        gate::describe_parse_error(&error)
+                    ))
+                    .await);
+                }
+            };
+        // The spec's identifiers — name, key fields, cursor field,
+        // type-hint keys — are RETAINED for the read's lifetime and
+        // quoted by connector refusals, so each rides the same wire
+        // identifier ceiling the session seats hold theirs to. The
+        // document ceiling above bounds the whole spec; this bounds any
+        // ONE identifier, which a single multi-MiB name would otherwise
+        // pass through.
+        if let Err(message) = refuse_oversized_spec_identifiers(&stream_spec) {
+            return Ok(error_stream(message).await);
+        }
         let since = match &request.since_cursor_json {
             None => None,
             Some(bytes) if bytes.len() as u64 > gate::MAX_CURSOR_BYTES => {

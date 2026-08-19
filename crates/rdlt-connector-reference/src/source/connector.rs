@@ -51,9 +51,18 @@ impl SourceConnector for Reference {
     }
 
     async fn check(&self) -> Result<(), SourceError> {
-        tokio::fs::metadata(&self.path)
+        let meta = tokio::fs::metadata(&self.path)
             .await
             .map_err(|error| classify_io(&self.path, error))?;
+        // Existing is not enough: a directory (or any non-regular file)
+        // at the path fails every read fatally, so a probe that passed
+        // it would be optimism about a misconfiguration no retry fixes.
+        if !meta.is_file() {
+            return Err(SourceError::fatal(format!(
+                "reference source: {}: not a regular file — `path` must name a jsonl file",
+                self.path
+            )));
+        }
         Ok(())
     }
 
@@ -71,10 +80,14 @@ impl SourceConnector for Reference {
         feed: &mut Feed,
     ) -> Result<(), SourceError> {
         if stream.name.as_str() != self.stream {
+            // The requested name is wire-authored for a served source —
+            // quoted through the bounded diagnostic render, never raw.
             return Err(SourceError::fatal(format!(
                 "reference source: unknown stream `{}` — this source serves only `{}`, \
                  the file stem of `{}`",
-                stream.name, self.stream, self.path
+                rdlt_connector_sdk::spi::gate::render_diagnostic(stream.name.as_str(), 256),
+                self.stream,
+                self.path
             )));
         }
         let bytes = tokio::fs::read(&self.path)

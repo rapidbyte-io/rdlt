@@ -461,10 +461,13 @@ impl Pipeline {
     /// Connectivity, discovery and plan checks without a load session:
     /// the source's and destination's `check` probes, stream discovery
     /// under the stream cap, then the same plan validation a run
-    /// performs. No workdir, no WAL, no session, no reads — nothing is
-    /// created or written anywhere. CONSUMES the pipeline like
-    /// [`Pipeline::run`]; build the same pipeline again to run after a
-    /// check.
+    /// performs. The ENGINE creates nothing — no workdir, no WAL, no
+    /// session, no reads; what a connector's own probe or construction
+    /// does is that connector's behavior (one that materializes its
+    /// target at construction, the way the duckdb destination creates
+    /// its database file, does so here exactly as a run would).
+    /// CONSUMES the pipeline like [`Pipeline::run`]; build the same
+    /// pipeline again to run after a check.
     pub async fn check(self) -> Result<CheckSummary, Error> {
         self.engine.check().await
     }

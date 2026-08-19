@@ -1967,6 +1967,107 @@ async fn an_oversized_replay_receipt_load_id_refuses_before_the_backend() {
     }
 }
 
+/// Replay's OTHER wire-authored load id — the decoded `CommitMeta`'s —
+/// rides the same gate as the receipt's: it reaches backend refusal
+/// text the same way, so an oversized one refuses at the session
+/// boundary, before the backend sees it. The receipt here is honest,
+/// proving the META seat is the one that refused.
+#[tokio::test]
+async fn an_oversized_replay_meta_load_id_refuses_before_the_backend() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let oversized_meta = commit_meta_for(
+        &PipelineId::new("p"),
+        &LoadId::new("l".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1)),
+        1,
+    );
+    let honest_receipt = CommitReceipt {
+        load_id: LoadId::new("l"),
+        commit_seq: 1,
+    };
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Replay(proto::Replay {
+                commit_meta_json: serde_json::to_vec(&oversized_meta).expect("meta json"),
+                receipt_json: serde_json::to_vec(&honest_receipt).expect("receipt json"),
+            })),
+        })
+        .await
+        .expect("send the oversized replay");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("identifier ceiling"),
+                "the refusal names the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
+    }
+}
+
+/// Publish decodes the same `CommitMeta` shape, and its load id reaches
+/// backend refusal text exactly like Replay's — gated by the same
+/// ceiling, before the backend sees it.
+#[tokio::test]
+async fn an_oversized_publish_meta_load_id_refuses_before_the_backend() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let oversized = "l".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
+    req_tx
+        .send(publish_frame("p", &oversized, 1))
+        .await
+        .expect("send the oversized publish");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("identifier ceiling"),
+                "the refusal names the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
+    }
+}
+
 /// The identifier walk descends into nested struct fields: a
 /// `ColumnType::Struct` column nests `Column`s recursively, and an
 /// inner field name is retained by the session and reaches backend
