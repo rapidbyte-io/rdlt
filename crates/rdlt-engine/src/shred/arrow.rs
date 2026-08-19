@@ -521,6 +521,57 @@ mod tests {
         );
     }
 
+    /// The v1 structured-stream contract at the mixed-shape join: a
+    /// column that evolves between a struct-or-list shape and a scalar
+    /// shape joins to Json, and the structured path cannot render the
+    /// nested side to text — the refusal STATES that contract (re-shape
+    /// the stream, or push the column as JSON) instead of surfacing
+    /// arrow's cast vocabulary. Both mixed orders land on the same
+    /// spelling.
+    #[test]
+    fn a_mixed_shape_evolution_refuses_stating_the_structured_stream_contract() {
+        use arrow::array::{Int64Array, StructArray};
+        use arrow::datatypes::{Field, Fields};
+
+        let scalar_batch = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "v",
+                DataType::Int64,
+                true,
+            )])),
+            vec![Arc::new(Int64Array::from(vec![1, 2]))],
+        )
+        .expect("batch");
+        let struct_fields: Fields = vec![Field::new("x", DataType::Int64, true)].into();
+        let struct_batch = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "v",
+                DataType::Struct(struct_fields.clone()),
+                true,
+            )])),
+            vec![Arc::new(StructArray::new(
+                struct_fields,
+                vec![Arc::new(Int64Array::from(vec![3, 4]))],
+                None,
+            ))],
+        )
+        .expect("batch");
+
+        let mut registry = crate::schema::registry::SchemaRegistry::default();
+        let table = TableName::new("events");
+        pass(&mut registry, &table, &scalar_batch).expect("the scalar shape registers");
+        let error = pass(&mut registry, &table, &struct_batch)
+            .expect_err("the struct shape under the scalar-joined column must refuse");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("between a struct-or-list shape and a scalar shape")
+                && rendered.contains("re-shape the stream so the column keeps one shape")
+                && rendered.contains("push the column as JSON text")
+                && rendered.contains("column `v`"),
+            "the refusal states the structured-stream contract: {rendered}"
+        );
+    }
+
     /// A structured batch that OMITS a registry column while carrying
     /// another change must not shrink the durable schema. Columns only
     /// append — the registry's own promise.

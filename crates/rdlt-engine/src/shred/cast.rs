@@ -99,6 +99,27 @@ pub(super) fn refuse_inexact_cast(
                 &format!("{path}[]"),
             )
         }
+        // A struct-or-list source meeting a text target is the
+        // mixed-shape join's landing: struct/list ⊔ scalar joins to
+        // Json, stored as Utf8 on this path, and no exact cast from a
+        // nested container to text exists (rendering nested values to
+        // canonical JSON text is the JSONL path's behavior, not this
+        // seat's). The refusal states that contract rather than
+        // arrow's cast vocabulary — and the walk recurses, so a
+        // nested field's mixed shape gets the same message at its
+        // own path.
+        (
+            DataType::Struct(_)
+            | DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(_, _),
+            DataType::Utf8,
+        ) => Err(format!(
+            "column `{path}`: the stream evolved this column between a struct-or-list shape \
+             and a scalar shape, which the structured path does not support — re-shape the \
+             stream so the column keeps one shape, or push the column as JSON text, where \
+             the engine renders and widens it"
+        )),
         (DataType::Int64, DataType::Float64) => {
             let ints = source
                 .as_any()

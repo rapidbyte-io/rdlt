@@ -49,11 +49,21 @@ pub(super) fn wal_err(context: &str, e: impl std::fmt::Display) -> Error {
 /// cap could not have scanned as Discard, so it was never vouched — a
 /// window with no newline is treated as one torn tail.
 fn reconcile_unterminated_tail(manifest: &mut File) -> Result<(), Error> {
-    use std::io::{Read as _, Seek as _, SeekFrom};
     let len = manifest
         .metadata()
         .map_err(|e| wal_err("reading vouched manifest", e))?
         .len();
+    reconcile_unterminated_tail_within(manifest, len)
+}
+
+/// The windowed half: `len` is the manifest's length at the moment the
+/// caller measured it, and the read is `.take`-bounded to the window
+/// that length derives — a same-user writer appending to the manifest
+/// between the measurement and the read (or during it) cannot keep the
+/// read chasing a growing EOF, and its bytes are left untouched: they
+/// belong to the appender, not to this tail.
+fn reconcile_unterminated_tail_within(manifest: &mut File, len: u64) -> Result<(), Error> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
     if len == 0 {
         return Ok(());
     }
@@ -63,7 +73,8 @@ fn reconcile_unterminated_tail(manifest: &mut File) -> Result<(), Error> {
         .seek(SeekFrom::Start(window_start))
         .map_err(|e| wal_err("reading vouched manifest", e))?;
     let mut bytes = Vec::with_capacity(window as usize);
-    manifest
+    (&mut *manifest)
+        .take(window)
         .read_to_end(&mut bytes)
         .map_err(|e| wal_err("reading vouched manifest", e))?;
     if bytes.ends_with(b"\n") {
@@ -608,6 +619,44 @@ mod tests {
             "{manifest:?}"
         );
         assert!(manifest.ends_with('\n'));
+    }
+
+    /// The reconcile read is bounded to the window its measured length
+    /// derives: bytes a same-user writer appends after the length was
+    /// measured are never read — and so never mistaken for a torn tail
+    /// and truncated. The growth is injected at the seam the reconcile
+    /// exposes for it: the file on disk is longer than the length the
+    /// window was derived from.
+    #[test]
+    fn reconcile_reads_only_the_measured_window_when_the_manifest_has_grown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut line = encode_line(&WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("old"),
+            pipeline: PipelineId::new("p"),
+        })
+        .expect("line");
+        line.push(b'\n');
+        let measured_len = line.len() as u64;
+        // The appender's bytes: landed between the measurement and the
+        // read — newline-free, so an unbounded read would decode them
+        // as a torn tail and truncate them away.
+        let mut grown = line.clone();
+        grown.extend_from_slice(b"the-appender's-bytes-no-newline");
+        let path = dir.path().join("manifest.jsonl");
+        std::fs::write(&path, &grown).expect("manifest");
+        let mut manifest = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open");
+        reconcile_unterminated_tail_within(&mut manifest, measured_len)
+            .expect("the windowed reconcile succeeds");
+        assert_eq!(
+            std::fs::read(&path).expect("manifest"),
+            grown,
+            "bytes past the measured window belong to the appender and stay untouched"
+        );
     }
 
     /// Recovery's residue voucher never licenses following a symlink at
