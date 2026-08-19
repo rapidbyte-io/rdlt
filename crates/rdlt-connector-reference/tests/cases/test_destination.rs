@@ -973,3 +973,46 @@ async fn a_publish_for_another_load_refuses_fatal() {
         "and publishes no part"
     );
 }
+
+/// The reachability probe is READ-ONLY and honest: a clean directory
+/// (or a not-yet-created path under one) passes without creating
+/// anything; a path whose nearest existing ancestor is a FILE is the
+/// misconfiguration connect would hit, refused fatal at check instead.
+#[tokio::test]
+async fn the_check_probe_is_read_only_and_refuses_a_file_in_the_way() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // Existing directory: reachable, and the probe creates nothing.
+    let shell = shell_over(dir.path());
+    shell.check().await.expect("an existing directory passes");
+
+    // Absent target under an existing directory: still reachable —
+    // connect would create it — and STILL nothing is created.
+    let absent = dir.path().join("not").join("yet");
+    let shell = Shell::<Reference>::from_value(json!({"path": absent})).expect("valid config");
+    shell.check().await.expect("a creatable path passes");
+    assert!(
+        !dir.path().join("not").exists(),
+        "the probe must not create anything"
+    );
+
+    // A FILE where a directory must be: fatal, typed, at check time.
+    let file = dir.path().join("occupied");
+    std::fs::write(&file, b"not a directory").expect("write");
+    for path in [file.clone(), file.join("child")] {
+        let shell = Shell::<Reference>::from_value(json!({"path": path})).expect("valid config");
+        let error = shell.check().await.expect_err("a file in the way refuses");
+        let text = error.to_string();
+        assert!(
+            text.contains("is not a directory"),
+            "the refusal names the shape: {text}"
+        );
+        assert!(
+            matches!(
+                error,
+                rdlt_connector_sdk::spi::error::DestinationError::Fatal(_)
+            ),
+            "a misconfigured path is fatal, not retryable: {error:?}"
+        );
+    }
+}

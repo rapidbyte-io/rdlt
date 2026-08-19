@@ -49,6 +49,53 @@ impl DestinationConnector for Reference {
             .with_decimal(true)
     }
 
+    async fn check(&self) -> Result<(), DestinationError> {
+        // READ-ONLY on purpose: connect() is what creates the output
+        // directory, and a probe must leave the filesystem untouched.
+        // So the probe answers the question connect would: the target —
+        // or, when it does not exist yet, the nearest EXISTING ancestor
+        // it would be created under — must be a directory. A file in
+        // either seat is a misconfiguration no retry fixes, refused
+        // fatal here instead of at connect time.
+        let mut probe: &Path = &self.dir;
+        loop {
+            match tokio::fs::metadata(probe).await {
+                Ok(meta) if meta.is_dir() => return Ok(()),
+                Ok(_) => {
+                    return Err(DestinationError::fatal(format!(
+                        "reference destination: {} exists and is not a directory — \
+                         `path` must name a directory (or a path one can be created at)",
+                        probe.display()
+                    )));
+                }
+                // NotADirectory joins NotFound in the walk: it means a
+                // component further up is a file, and the walk reaches
+                // that file to refuse it fatal by name.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    match probe.parent() {
+                        // An empty parent is a relative path's implicit
+                        // working directory; no parent is the
+                        // filesystem root. Both exist and are
+                        // directories by definition — creatable.
+                        Some(parent) if !parent.as_os_str().is_empty() => probe = parent,
+                        _ => return Ok(()),
+                    }
+                }
+                Err(error) => {
+                    return Err(DestinationError::transient(format!(
+                        "reference destination: probe {}: {error}",
+                        probe.display()
+                    )));
+                }
+            }
+        }
+    }
+
     async fn connect(&self, context: &OpenContext) -> Result<session::Session, DestinationError> {
         // The open contract — a crashed predecessor's staging invisible
         // and reclaimable — holds by construction: staging lives in the
