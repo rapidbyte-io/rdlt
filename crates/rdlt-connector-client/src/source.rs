@@ -208,13 +208,23 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
     // seat wraps its reasons in the frozen one-batch prefix.
     rdlt_connector::gate::refuse_overdeclared_framing(bytes)
         .map_err(|reason| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {reason}")))?;
-    let mut reader =
-        arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-            .map_err(|error| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}")))?;
+    // Arrow's error text is connector-authored at frame scale — a
+    // `Field` render carries the field's whole metadata map — so every
+    // appended cause goes through the bounded render, never raw.
+    let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+        .map_err(|error| {
+        SourceError::fatal(format!(
+            "{ONE_BATCH_REFUSAL}: {}",
+            gate::render_message(&error.to_string())
+        ))
+    })?;
     let first = match reader.next() {
         Some(Ok(batch)) => batch,
         Some(Err(error)) => {
-            return Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}")));
+            return Err(SourceError::fatal(format!(
+                "{ONE_BATCH_REFUSAL}: {}",
+                gate::render_message(&error.to_string())
+            )));
         }
         None => return Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
     };
@@ -237,7 +247,10 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
             Ok(first)
         }
         Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
-        Some(Err(error)) => Err(SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {error}"))),
+        Some(Err(error)) => Err(SourceError::fatal(format!(
+            "{ONE_BATCH_REFUSAL}: {}",
+            gate::render_message(&error.to_string())
+        ))),
     }
 }
 
@@ -887,6 +900,82 @@ mod tests {
                  the {frame_len}-byte frame"
             ),
             "the pre-pass's own spelling proves the arrow reader never ran"
+        );
+    }
+
+    /// A legal frame whose SCHEMA field carries multi-megabyte control-byte
+    /// metadata, and whose record-batch message omits that field's node:
+    /// arrow's reader renders the whole `Field` — metadata map included —
+    /// into its error text, so the appended cause must go through the
+    /// bounded render or one small frame materializes a multi-megabyte
+    /// (escape-amplified ~5×) error string. The refusal stays under the
+    /// render cap plus its envelope and names the true source length.
+    #[test]
+    fn a_hostile_metadata_arrow_cause_renders_bounded_with_the_true_length() {
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        // The declared schema: the batch will carry a node for `a` only,
+        // so the reader's node walk fails AT `m` — the field whose
+        // metadata is the payload.
+        let metadata: std::collections::HashMap<String, String> =
+            [("k".to_string(), "\u{7}".repeat(2 << 20))].into();
+        let declared = Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("m", DataType::Int64, true).with_metadata(metadata),
+        ]);
+        let mut schema_stream = Vec::new();
+        {
+            let mut writer =
+                arrow::ipc::writer::StreamWriter::try_new(&mut schema_stream, &declared)
+                    .expect("ipc writer");
+            writer.finish().expect("finish schema-only stream");
+        }
+        // A real one-column batch under a DIFFERENT (narrower) schema —
+        // its record-batch message declares one field node.
+        let batch_stream = ipc_bytes(&[batch(&[1, 2, 3])]);
+
+        // Splice: the metadata-bearing schema message, then everything
+        // after the narrow stream's own schema message. Every declared
+        // length stays honest, so the framing pre-pass passes it clean.
+        let first_message_end = |bytes: &[u8]| {
+            assert_eq!(&bytes[0..4], [0xff; 4], "continuation marker");
+            let meta_len = i32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes")) as usize;
+            let message =
+                arrow::ipc::root_as_message(&bytes[8..8 + meta_len]).expect("valid metadata");
+            8 + meta_len + usize::try_from(message.bodyLength()).expect("non-negative body")
+        };
+        let mut spliced = schema_stream[..first_message_end(&schema_stream)].to_vec();
+        spliced.extend_from_slice(&batch_stream[first_message_end(&batch_stream)..]);
+
+        // The true cause, measured at the dependency directly: this is
+        // the text the seat would append unbounded.
+        let mut reader =
+            arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(&spliced), None)
+                .expect("the spliced schema decodes");
+        let true_cause = reader
+            .next()
+            .expect("a batch message follows")
+            .expect_err("the node walk fails at the metadata field")
+            .to_string();
+        assert!(
+            true_cause.len() > 10 << 20,
+            "the fixture amplifies to a multi-megabyte cause: {} bytes",
+            true_cause.len()
+        );
+
+        let error = decode_one_batch(&spliced)
+            .expect_err("a batch that omits a declared field's node must refuse");
+        assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+        let rendered = error.to_string();
+        assert!(
+            rendered.len() <= FROZEN.len() + 2 + crate::gate::MESSAGE_RENDER_CAP + 64,
+            "the appended cause is render-capped, not frame-scale: {} bytes",
+            rendered.len()
+        );
+        assert!(
+            rendered.contains(&format!("truncated; {} source bytes", true_cause.len())),
+            "the marker names the true source length: …{}",
+            &rendered[rendered.len().saturating_sub(80)..]
         );
     }
 

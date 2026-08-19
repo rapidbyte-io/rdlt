@@ -226,14 +226,19 @@ fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationEr
 /// CALLER produced — rendered as text for a fatal, like the serve
 /// side's `encode_arrow_ipc`.
 fn encode_one_batch(batch: &RecordBatch) -> Result<Vec<u8>, String> {
+    // Arrow's error text can render a whole `Field` — metadata map
+    // included — so even this host-authored seat bounds the cause it
+    // appends: a batch forwarded from a source connector carries that
+    // connector's schema metadata.
+    let render = |error: arrow::error::ArrowError| gate::render_message(&error.to_string());
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
-        .map_err(|error| format!("opening an arrow ipc stream writer: {error}"))?;
+        .map_err(|error| format!("opening an arrow ipc stream writer: {}", render(error)))?;
     writer
         .write(batch)
-        .map_err(|error| format!("writing an arrow ipc record batch: {error}"))?;
+        .map_err(|error| format!("writing an arrow ipc record batch: {}", render(error)))?;
     writer
         .into_inner()
-        .map_err(|error| format!("closing an arrow ipc stream writer: {error}"))
+        .map_err(|error| format!("closing an arrow ipc stream writer: {}", render(error)))
 }
 
 /// The wire backend: one bidi session, each method one frame and its
