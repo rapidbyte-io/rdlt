@@ -21,6 +21,9 @@ struct AmnesiacSource;
 
 #[async_trait]
 impl Source for AmnesiacSource {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("amnesiac", "0.0.0")
     }
@@ -61,6 +64,9 @@ struct ForgetfulDest {
 
 #[async_trait]
 impl Destination for ForgetfulDest {
+    async fn check(&self) -> Result<(), DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("forgetful", "0.0.0")
     }
@@ -149,6 +155,9 @@ struct DoublyBrokenSource;
 
 #[async_trait]
 impl Source for DoublyBrokenSource {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("doubly-broken", "0.0.0")
     }
@@ -186,6 +195,9 @@ struct UnreadableSource;
 
 #[async_trait]
 impl Source for UnreadableSource {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("unreadable", "0.0.0")
     }
@@ -230,6 +242,9 @@ struct Unopenable;
 
 #[async_trait]
 impl Destination for Unopenable {
+    async fn check(&self) -> Result<(), DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("unopenable", "0.0.0")
     }
@@ -343,6 +358,9 @@ struct ThirdOpenFails {
 
 #[async_trait]
 impl Destination for ThirdOpenFails {
+    async fn check(&self) -> Result<(), DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("third-open-fails", "0.0.0")
     }
@@ -389,6 +407,9 @@ struct TeardownFailingSource;
 
 #[async_trait]
 impl Source for TeardownFailingSource {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("teardown-failing", "0.0.0")
     }
@@ -447,6 +468,9 @@ struct CloseRecordingSession {
 
 #[async_trait]
 impl Destination for CloseRecordingDest {
+    async fn check(&self) -> Result<(), DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("close-recording", "0.0.0")
     }
@@ -563,6 +587,9 @@ struct FloodingSource;
 
 #[async_trait]
 impl Source for FloodingSource {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("flood", "0.0.0")
     }

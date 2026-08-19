@@ -4,7 +4,7 @@ The pipeline CLI over the [`rdlt`](https://docs.rs/rdlt) library.
 
 ```
 rdlt run <pipeline.yaml> [--report <path>] [--events <path|->]
-rdlt validate <pipeline.yaml>
+rdlt check <pipeline.yaml>
 rdlt schema <connector> [--role source|destination]
 ```
 
@@ -25,9 +25,11 @@ terminal, a line per event elsewhere; the run report's JSON goes to stdout
 line per event even on a terminal, `json` silences the feed and prints the
 report JSON to stdout even on a terminal. `--events <path|->` also writes
 every event as NDJSON (`-` needs `--report`, so the two machine outputs
-never share stdout). `validate` builds the pipeline through the real gates
-and runs nothing; `schema` prints a spawned connector's configuration JSON
-Schema.
+never share stdout). `check` performs connectivity, discovery and plan
+checks, without running: the build gates run for real (spawn + handshake),
+then both connectors' reachability probes, stream discovery, and the run's
+plan validation — no load session, nothing created or written anywhere.
+`schema` prints a spawned connector's configuration JSON Schema.
 
 ## Exit codes
 

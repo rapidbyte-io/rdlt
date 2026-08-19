@@ -106,6 +106,12 @@ impl rdlt_connector::source::Source for Source {
         ConnectorSpec::new("memory-source", env!("CARGO_PKG_VERSION"))
     }
 
+    async fn check(&self) -> Result<(), SourceError> {
+        // Honest, not trivial: an in-memory source has nothing external
+        // to reach — holding its data IS its reachability.
+        Ok(())
+    }
+
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(self.streams.iter().map(|s| s.spec.clone()).collect())
     }

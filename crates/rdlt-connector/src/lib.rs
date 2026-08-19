@@ -36,6 +36,10 @@
 //!     fn spec(&self) -> ConnectorSpec {
 //!         ConnectorSpec::new("countdown", "1.0.0")
 //!     }
+//!     async fn check(&self) -> Result<(), SourceError> {
+//!         // Nothing external to reach: holding the data IS reachability.
+//!         Ok(())
+//!     }
 //!     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
 //!         Ok(vec![StreamSpec::new("ticks")])
 //!     }
@@ -50,7 +54,7 @@
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() {
 //! let source = Countdown;
-//! source.check().await.expect("the default probe succeeds");
+//! source.check().await.expect("the probe succeeds");
 //!
 //! let (out, mut input) = channel::records(1 << 20);
 //! let streams = source.streams().await.expect("declared");

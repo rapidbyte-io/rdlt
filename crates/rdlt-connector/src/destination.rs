@@ -27,13 +27,13 @@ pub trait Destination: Send + Sync + 'static {
     /// anything. Failures classify exactly as a session would classify
     /// them.
     ///
-    /// The default body returns `Ok(())` WITHOUT probing anything, so a
-    /// destination that has not implemented it reports success trivially —
-    /// a host needing a real answer must know which connectors implement
-    /// the probe. Implementations replace it wholesale.
-    async fn check(&self) -> Result<(), DestinationError> {
-        Ok(())
-    }
+    /// Required deliberately — a silent default would let a destination
+    /// report success without probing anything, and a host asking "are
+    /// the credentials right" cannot tell that answer from a real one.
+    /// A destination with nothing external to reach answers `Ok(())`
+    /// honestly. Pre-open by design: a probe must not create or stage
+    /// anything a session would.
+    async fn check(&self) -> Result<(), DestinationError>;
 
     /// Truthful capability declaration — the host plans from this and
     /// does not re-verify at runtime.

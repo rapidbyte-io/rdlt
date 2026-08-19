@@ -22,9 +22,7 @@ use tokio_util::sync::CancellationToken;
 use super::extract::{StreamPlan, stream_task};
 use super::recover::{WalResidue, recover_wal};
 use super::retry::new_load_id;
-use super::validate::validate_streams;
-use super::{drain, lock};
-use crate::classify::classify_source_error;
+use super::{drain, lock, validate};
 use crate::config::Config;
 use crate::lineage;
 use crate::load::{LoadItem, Loader, Policies, Sink};
@@ -59,11 +57,13 @@ pub(super) async fn run_once(
     let capabilities = destination.capabilities();
 
     // ---- Discovery & build-time validation ----
-    let streams = source
-        .streams()
-        .await
-        .map_err(|e| classify_source_error(StreamName::new("<discovery>"), &e))?;
-    validate_streams(config, &streams, capabilities, destination.as_ref())?;
+    let streams = validate::discover_and_validate(
+        config,
+        source.as_ref(),
+        capabilities,
+        destination.as_ref(),
+    )
+    .await?;
 
     // ---- Workdir lock (one process per pipeline). Held for the whole run. ----
     let _lock = config

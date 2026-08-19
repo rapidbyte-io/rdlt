@@ -47,7 +47,7 @@ cargo build --release -p rdlt-cli
 cargo build --release -p rdlt-connector-reference --features bin-serve
 export PATH="$PWD/target/release:$PATH"
 
-rdlt validate pipeline.yaml     # the run's gates (spawn + handshake), without the run
+rdlt check pipeline.yaml        # connectivity, discovery and plan checks, without running
 rdlt run pipeline.yaml          # live progress on a terminal, one line per event in CI
 ```
 

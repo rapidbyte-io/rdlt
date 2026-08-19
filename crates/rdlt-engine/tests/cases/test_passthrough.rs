@@ -34,6 +34,9 @@ struct ArrowSource {
 
 #[async_trait]
 impl Source for ArrowSource {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("arrow-test", "0.0.0")
     }
@@ -377,6 +380,9 @@ struct KeyedArrowSource {
 
 #[async_trait]
 impl Source for KeyedArrowSource {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("keyed-arrow-test", "0.0.0")
     }

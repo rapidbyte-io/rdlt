@@ -71,6 +71,9 @@ impl<D> CrashDestination<D> {
 
 #[async_trait]
 impl<D: Destination + Clone> Destination for CrashDestination<D> {
+    async fn check(&self) -> Result<(), DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         self.inner.spec()
     }

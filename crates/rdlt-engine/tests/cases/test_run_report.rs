@@ -153,6 +153,9 @@ struct CloseFailsDest {
 
 #[async_trait::async_trait]
 impl rdlt_connector::destination::Destination for CloseFailsDest {
+    async fn check(&self) -> Result<(), rdlt_connector::error::DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
         self.inner.spec()
     }
@@ -262,6 +265,9 @@ struct CountersDest {
 
 #[async_trait::async_trait]
 impl rdlt_connector::destination::Destination for CountersDest {
+    async fn check(&self) -> Result<(), rdlt_connector::error::DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
         self.inner.spec()
     }

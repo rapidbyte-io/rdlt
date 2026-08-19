@@ -76,7 +76,7 @@ pub(crate) async fn run(
     Ok(())
 }
 
-/// Read, parse and build the document — shared with `validate`, so the
+/// Read, parse and build the document — shared with `check`, so the
 /// two can never disagree about what a valid document is. The read is
 /// capped at the facade's document bound BEFORE it happens: a pipeline
 /// document is hand-written configuration, so a multi-megabyte file is

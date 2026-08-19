@@ -11,6 +11,7 @@ use rdlt_core::event::PipelineEvent;
 use rdlt_core::report;
 use tokio_util::sync::CancellationToken;
 
+use crate::check;
 use crate::config::Config;
 use crate::run::retry;
 
@@ -88,6 +89,17 @@ impl Engine {
     /// recovers identically.
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+
+    /// Connectivity, discovery and plan checks without a load session:
+    /// the source's and destination's [`check`](Source::check) probes,
+    /// stream discovery under the stream cap, then the same plan
+    /// validation a run performs. No workdir lock, no WAL, no session,
+    /// no reads — nothing is created or written anywhere. Consumes the
+    /// engine like [`Engine::run`]; construct a new one to run after a
+    /// check.
+    pub async fn check(self) -> Result<check::Summary, Error> {
+        check::check(&self.config, self.source, self.destination).await
     }
 
     /// Run to completion (resumable, cancel-safe). Consumes the engine — a run is not

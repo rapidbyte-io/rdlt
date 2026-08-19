@@ -261,6 +261,10 @@ fn resolved_workdir(document: &Document, base: &Path) -> PathBuf {
     }
 }
 
+/// What a clean [`Pipeline::check`] found — the engine's summary under
+/// its facade name. At least the discovered stream count.
+pub use rdlt_engine::check::Summary as CheckSummary;
+
 /// A configured, runnable pipeline.
 #[derive(Debug)]
 pub struct Pipeline {
@@ -386,6 +390,17 @@ impl Pipeline {
     /// Subscribe before calling [`Pipeline::run`], which consumes the pipeline.
     pub fn events(&self) -> EventStream {
         self.engine.events()
+    }
+
+    /// Connectivity, discovery and plan checks without a load session:
+    /// the source's and destination's `check` probes, stream discovery
+    /// under the stream cap, then the same plan validation a run
+    /// performs. No workdir, no WAL, no session, no reads — nothing is
+    /// created or written anywhere. CONSUMES the pipeline like
+    /// [`Pipeline::run`]; build the same pipeline again to run after a
+    /// check.
+    pub async fn check(self) -> Result<CheckSummary, Error> {
+        self.engine.check().await
     }
 
     /// Run to completion, CONSUMING the pipeline. Resumable: after a crash or

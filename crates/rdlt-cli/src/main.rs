@@ -1,7 +1,7 @@
 //! # rdlt — the pipeline CLI
 //!
 //! `rdlt run <pipeline.yaml> [--report <path>] [--events <path|->]`,
-//! `rdlt validate <pipeline.yaml>`, `rdlt schema <connector> [--role ..]`.
+//! `rdlt check <pipeline.yaml>`, `rdlt schema <connector> [--role ..]`.
 //! ONE YAML document describes the whole pipeline; its model and its
 //! construction into a pipeline are the shared [`rdlt::document`],
 //! so this binary adds zero engine capability — it parses arguments,
@@ -85,9 +85,7 @@ fn main() -> ExitCode {
             mode,
             cli.output,
         )),
-        args::Command::Validate { spec } => {
-            runtime.block_on(command::validate::validate(spec, verbosity))
-        }
+        args::Command::Check { spec } => runtime.block_on(command::check::check(spec, verbosity)),
         args::Command::Schema { connector, role } => {
             runtime.block_on(command::schema::print(&connector, role))
         }

@@ -28,13 +28,12 @@ pub trait Source: Send + Sync + 'static {
     /// Failures classify exactly as `read` would classify them: a bad
     /// credential is fatal, an unreachable host transient.
     ///
-    /// The default body returns `Ok(())` WITHOUT probing anything, so a
-    /// source that has not implemented it reports success trivially — a
-    /// host needing a real answer must know which connectors implement
-    /// the probe. Implementations replace it wholesale.
-    async fn check(&self) -> Result<(), SourceError> {
-        Ok(())
-    }
+    /// Required deliberately — a silent default would let a source
+    /// report success without probing anything, and a host asking "are
+    /// the credentials right" cannot tell that answer from a real one.
+    /// A source with nothing external to reach answers `Ok(())`
+    /// honestly: holding its data IS its reachability.
+    async fn check(&self) -> Result<(), SourceError>;
 
     /// Discover the streams this source can read.
     ///
@@ -154,28 +153,6 @@ impl StreamSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct Probeless;
-
-    #[async_trait]
-    impl Source for Probeless {
-        fn spec(&self) -> ConnectorSpec {
-            ConnectorSpec::new("probeless", "0.0.0")
-        }
-        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
-            Ok(vec![])
-        }
-        async fn read(&self, _request: ReadRequest) -> Result<(), SourceError> {
-            Ok(())
-        }
-    }
-
-    /// The default `check` is a trivial success BY CONTRACT: a host that
-    /// needs a real probe must know the connector implements one.
-    #[tokio::test]
-    async fn the_default_check_reports_success_without_probing() {
-        assert!(Probeless.check().await.is_ok());
-    }
 
     /// Builders compose onto the minimum declaration, and an older wire
     /// form without `structured` deserializes to `false`.

@@ -22,6 +22,9 @@ fn batch() -> RecordBatch {
 
 #[async_trait]
 impl Source for ArrowOnUnstructured {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("misbehaving", "0.0.0")
     }
@@ -56,6 +59,9 @@ struct RefusalThenParked {
 
 #[async_trait]
 impl Source for RefusalThenParked {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("refusal-then-parked", "0.0.0")
     }

@@ -5,8 +5,8 @@
 //! stay dyn-compatible. This is a COMPILE-TIME property — the coercions
 //! below are the assertion, and the test body only proves the coerced
 //! objects still answer. It matters more in this generation than the
-//! last: default async trait methods (`check`) are exactly the kind of
-//! addition that can quietly disturb dyn-compatibility.
+//! last: async trait methods with defaults (`close`) are exactly the
+//! kind of addition that can quietly disturb dyn-compatibility.
 
 use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
@@ -24,6 +24,9 @@ struct InertSource;
 impl Source for InertSource {
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("inert-source", "0.0.0")
+    }
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
     }
     async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
         Ok(vec![StreamSpec::new("empty")])
@@ -72,6 +75,9 @@ impl Destination for InertDestination {
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("inert-destination", "0.0.0")
     }
+    async fn check(&self) -> Result<(), DestinationError> {
+        Ok(())
+    }
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
@@ -81,20 +87,17 @@ impl Destination for InertDestination {
 }
 
 /// The coercions ARE the assertion; the calls prove the objects answer —
-/// including the defaulted `check`, dispatched through the vtable.
+/// including `check`, dispatched through the vtable.
 #[tokio::test]
 async fn every_spi_trait_stays_dyn_compatible() {
     let source: &dyn Source = &InertSource;
     assert_eq!(source.spec().name, "inert-source");
-    source.check().await.expect("default probe through dyn");
+    source.check().await.expect("probe through dyn");
     assert_eq!(source.streams().await.expect("streams").len(), 1);
 
     let destination: &dyn Destination = &InertDestination;
     assert_eq!(destination.spec().name, "inert-destination");
-    destination
-        .check()
-        .await
-        .expect("default probe through dyn");
+    destination.check().await.expect("probe through dyn");
     assert!(!destination.capabilities().merge);
 
     let mut session: Box<dyn LoadSession> = Box::new(InertSession);

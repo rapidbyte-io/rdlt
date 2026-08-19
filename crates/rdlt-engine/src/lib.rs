@@ -33,7 +33,8 @@
 //! ```
 //!
 //! The public surface is the engine handle ([`engine::Engine`], its
-//! [`engine::EventStream`]) and its [`config::Config`], the vocabulary from
+//! [`engine::EventStream`] and the [`check::Summary`] its no-run check
+//! reports) and its [`config::Config`], the vocabulary from
 //! `rdlt_core` (canonical paths, not re-exported here), and the three
 //! engine-owned semantics an embedder configures or a host names:
 //! [`policy`] (what happens when data would change a schema), [`naming`]
@@ -43,6 +44,7 @@
 //! module, the bench/fuzz seam, which carries no semver guarantee.
 
 mod blocking;
+pub mod check;
 mod classify;
 pub mod config;
 pub mod engine;

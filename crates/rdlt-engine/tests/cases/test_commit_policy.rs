@@ -178,6 +178,9 @@ mod delta_flushes_pending_first {
 
     #[async_trait::async_trait]
     impl Destination for Recording {
+        async fn check(&self) -> Result<(), DestinationError> {
+            Ok(())
+        }
         fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
             self.inner.spec()
         }

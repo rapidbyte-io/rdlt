@@ -4,16 +4,35 @@ use std::collections::BTreeMap;
 
 use rdlt_connector::destination::{Capabilities, Destination};
 
-use rdlt_connector::source::StreamSpec;
+use rdlt_connector::source::{Source, StreamSpec};
 use rdlt_core::commit::WriteMode;
 use rdlt_core::error::Error;
 use rdlt_core::id::{StreamName, TableName};
 use rdlt_core::types::LogicalType;
 
+use crate::classify::classify_source_error;
 use crate::config::Config;
 // The crate's one stream→table attribution mapping, PROVEN injective here
 // before the run wiring, the loader, and the recovery scan build on it.
 use crate::lineage::root_table;
+
+/// Discovery then plan validation — the one shared step a run and a
+/// check both start with: ask the source for its streams, then validate
+/// the plan against them. Fails before any session opens, and touches
+/// nothing on disk.
+pub(crate) async fn discover_and_validate(
+    config: &Config,
+    source: &dyn Source,
+    capabilities: Capabilities,
+    destination: &dyn Destination,
+) -> Result<Vec<StreamSpec>, Error> {
+    let streams = source
+        .streams()
+        .await
+        .map_err(|e| classify_source_error(StreamName::new("<discovery>"), &e))?;
+    validate_streams(config, &streams, capabilities, destination)?;
+    Ok(streams)
+}
 
 /// Rule 1: `a`'s table plus a trailing `_` equals `b`'s table — a
 /// `_`-leading source field mints the same child table under either root.

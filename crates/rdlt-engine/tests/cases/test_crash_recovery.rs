@@ -498,6 +498,9 @@ mod run_started_first_on_replay {
 
     #[async_trait::async_trait]
     impl Destination for PartEmitting {
+        async fn check(&self) -> Result<(), DestinationError> {
+            Ok(())
+        }
         fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
             self.inner.spec()
         }

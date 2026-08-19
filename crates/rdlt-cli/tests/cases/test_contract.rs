@@ -156,11 +156,11 @@ fn schema_role_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
 }
 
 /// A `connector:` pipeline whose binary exists nowhere refuses at the
-/// same gate from BOTH `run` and `validate`: exit 2, the frozen
+/// same gate from BOTH `run` and `check`: exit 2, the frozen
 /// NotFound spelling on stderr, nothing on stdout — the resolve-class
 /// contract for spawned connectors.
 #[test]
-fn a_connector_spec_with_a_missing_binary_exits_2_on_run_and_validate() {
+fn a_connector_spec_with_a_missing_binary_exits_2_on_run_and_check() {
     let dir = tempfile::tempdir().expect("tempdir");
     let spec = spec_file(
         dir.path(),
@@ -168,7 +168,7 @@ fn a_connector_spec_with_a_missing_binary_exits_2_on_run_and_validate() {
         "pipeline: p\nsource:\n  connector:\n    id: io.rdlt.test.absent\n    config: {}\n\
          destination:\n  connector:\n    id: io.rdlt.test.absent\n    config: {}\n",
     );
-    for command in ["run", "validate"] {
+    for command in ["run", "check"] {
         let out = rdlt().arg(command).arg(&spec).output().expect("spawn");
         assert_eq!(out.status.code(), Some(2), "{command}: {out:?}");
         assert!(out.stdout.is_empty(), "{command}: stdout stays clean");
@@ -179,6 +179,16 @@ fn a_connector_spec_with_a_missing_binary_exits_2_on_run_and_validate() {
             "{command}: the frozen NotFound spelling surfaces: {stderr}"
         );
     }
+}
+
+/// `validate` is not a subcommand any more — `check` replaced it, with
+/// no alias. The old spelling refuses like any other unknown
+/// subcommand: exit 64, nothing on stdout.
+#[test]
+fn the_retired_validate_spelling_is_an_unknown_subcommand() {
+    let out = rdlt().args(["validate", "p.yaml"]).output().expect("spawn");
+    assert_eq!(out.status.code(), Some(64), "{out:?}");
+    assert!(out.stdout.is_empty(), "usage text never lands on stdout");
 }
 
 /// `--output` is a global flag: an unknown value is a malformed

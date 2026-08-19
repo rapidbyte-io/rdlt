@@ -523,6 +523,10 @@ mod deadline_tests {
             ConnectorSpec::new("parked", "0.0.0")
         }
 
+        async fn check(&self) -> Result<(), SourceError> {
+            Ok(())
+        }
+
         async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
             Ok(vec![StreamSpec::new("parked")])
         }

@@ -1,6 +1,6 @@
 //! The live half of the contract: real runs over the spawned reference
 //! connector — `run`'s stdout/stderr/report split, the verbosity gates,
-//! `validate`, the `--events` sink, and `--output`. Everything here
+//! `check`, the `--events` sink, and `--output`. Everything here
 //! needs the built bin, so the whole module rides `spawn-bins`.
 
 use std::path::PathBuf;
@@ -165,25 +165,43 @@ fn output_json_prints_the_report_to_stdout() {
     assert_eq!(report["pipeline"], "contract");
 }
 
-/// `validate` runs the real gates and nothing after them — for a
-/// spawned connector those gates are the real spawn and handshake —
-/// then discards the pipeline, killing the spawns with it.
+/// `check` runs the build gates for real — for a spawned connector
+/// that is the real spawn and handshake — then the connectors'
+/// reachability probes, discovery and the run's plan validation, and
+/// nothing after them: the pipeline is discarded, killing the spawns
+/// with it. The ok line reports what the check found; a check writes
+/// NOTHING — no workdir, and no destination-side artifacts (the
+/// reference destination creates its out directory at connect, which a
+/// check never reaches).
 #[test]
-fn validate_gates_without_running() {
-    let (_dir, spec) = fresh_pipeline();
-    let out = rdlt().arg("validate").arg(&spec).output().expect("spawn");
+fn check_gates_without_running() {
+    let (dir, spec) = fresh_pipeline();
+    let out = rdlt().arg("check").arg(&spec).output().expect("spawn");
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert!(out.stdout.is_empty(), "validate writes no machine output");
+    assert!(out.stdout.is_empty(), "check writes no machine output");
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("ok: pipeline contract is valid"),
+        String::from_utf8_lossy(&out.stderr).contains(
+            "ok: pipeline contract — connectors reachable, 1 streams discovered, plan valid"
+        ),
         "{:?}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    // The no-write pin: the document's workdir was never created (no
+    // lock, no WAL), and neither was the destination's out directory —
+    // Destination::check is a pre-connect probe on the connector.
+    assert!(
+        !dir.path().join(".rdlt").exists(),
+        "a check must not create the workdir"
+    );
+    assert!(
+        !dir.path().join("out").exists(),
+        "a check must not create destination artifacts"
     );
 
     // -q silences the ok line; the exit code still answers.
     let (_dir, spec) = fresh_pipeline();
     let out = rdlt()
-        .args(["-q", "validate"])
+        .args(["-q", "check"])
         .arg(&spec)
         .output()
         .expect("spawn");
@@ -200,7 +218,7 @@ fn validate_gates_without_running() {
         "bad.yaml",
         "pipeline: p\nsource:\n  connector:\n    id: io.rapidbyte.reference\n    config:\n      path: \"\"\n",
     );
-    let out = rdlt().arg("validate").arg(&bad).output().expect("spawn");
+    let out = rdlt().arg("check").arg(&bad).output().expect("spawn");
     assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
 

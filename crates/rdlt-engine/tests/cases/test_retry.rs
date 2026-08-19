@@ -207,6 +207,9 @@ struct TransientCommitDest {
 
 #[async_trait::async_trait]
 impl rdlt_connector::destination::Destination for TransientCommitDest {
+    async fn check(&self) -> Result<(), rdlt_connector::error::DestinationError> {
+        Ok(())
+    }
     fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
         self.inner.spec()
     }

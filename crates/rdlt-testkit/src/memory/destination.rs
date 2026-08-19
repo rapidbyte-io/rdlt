@@ -170,6 +170,12 @@ impl rdlt_connector::destination::Destination for Destination {
         ConnectorSpec::new("memory-destination", env!("CARGO_PKG_VERSION"))
     }
 
+    async fn check(&self) -> Result<(), DestinationError> {
+        // Honest, not trivial: an in-memory destination has nothing
+        // external to reach — holding its tables IS its reachability.
+        Ok(())
+    }
+
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }

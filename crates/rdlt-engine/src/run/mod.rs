@@ -10,4 +10,4 @@ mod lock;
 pub(crate) mod once;
 mod recover;
 pub(crate) mod retry;
-mod validate;
+pub(crate) mod validate;

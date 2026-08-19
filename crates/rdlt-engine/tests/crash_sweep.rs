@@ -251,6 +251,9 @@ struct KeyedArrowSource;
 
 #[async_trait::async_trait]
 impl rdlt_connector::source::Source for KeyedArrowSource {
+    async fn check(&self) -> Result<(), rdlt_connector::error::SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> rdlt_connector::spec::ConnectorSpec {
         rdlt_connector::spec::ConnectorSpec::new("keyed-arrow-sweep", "0.0.0")
     }

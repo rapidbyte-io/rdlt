@@ -66,14 +66,15 @@ pub(crate) enum Command {
         #[arg(long, value_name = "path|-")]
         events: Option<PathBuf>,
     },
-    /// Parse and build a pipeline through the real gates, run nothing.
+    /// Connectivity, discovery and plan checks, without running.
     ///
-    /// Every refusal a run would hit at build time surfaces here:
-    /// document typos, contradictory options, unsupported write modes.
-    /// One caveat: destinations are constructed for real, so the
-    /// duckdb destination creates its (empty) database file exactly as
-    /// a run would.
-    Validate {
+    /// The build gates run for real (spawn + handshake, so every
+    /// refusal a run would hit at build time surfaces here: document
+    /// typos, contradictory options, a config the connector's own gate
+    /// refuses), then both connectors' reachability probes, stream
+    /// discovery, and the run's plan validation. No load session opens
+    /// and nothing is created or written anywhere.
+    Check {
         /// The pipeline document.
         #[arg(value_name = "pipeline.yaml")]
         spec: PathBuf,

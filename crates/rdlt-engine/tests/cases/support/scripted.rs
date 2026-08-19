@@ -90,6 +90,9 @@ impl Source {
 
 #[async_trait]
 impl rdlt_connector::source::Source for Source {
+    async fn check(&self) -> Result<(), SourceError> {
+        Ok(())
+    }
     fn spec(&self) -> ConnectorSpec {
         ConnectorSpec::new("scripted-source", "0.0.0")
     }
