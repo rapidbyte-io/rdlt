@@ -174,6 +174,8 @@ The pieces, and where to look:
 | `write_mode` | `append` (default), `replace`, or `merge: {key: [col, …]}`; per-stream overrides via the builder |
 | `batch_policy` | how many rows/bytes the engine accumulates before each destination write (`{every_rows: N}` / `{every_bytes: N}`) — memory/throughput, destination-agnostic |
 | `commit_policy` | when accumulated rows are committed — durability, i.e. what a crash costs; a batch never spans a commit |
+| `schema_policy` | what a within-run schema drift does: `evolve` (default), `freeze`, `discard_row`, `discard_value`; per-table/column overrides stay programmatic (builder) |
+| `resources` | engine bounds, each optional: `byte_budget` (in-flight bytes, also sizes the connector wire windows), `max_batch_cells`, `max_streams_per_source`, `max_concurrent_streams` |
 | `source` / `destination` | `connector: {id, config, version?, path?}` — the ONLY arm form; `config` is the connector's own document, inline or a path (YAML/JSON) resolved relative to the pipeline file |
 
 The config inside an arm is opaque to rdlt: it crosses the wire in the

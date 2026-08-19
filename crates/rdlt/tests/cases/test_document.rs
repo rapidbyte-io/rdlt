@@ -553,3 +553,72 @@ async fn from_text_takes_yaml_or_json_and_resolves_against_the_base() {
         Ok(_) => panic!("a malformed document must not build"),
     }
 }
+
+// ---- resources + schema_policy ---------------------------------------
+
+/// The `resources` node: full, partial and absent forms parse; each
+/// field is optional and an absent one stays `None` (the engine default
+/// rules). An unknown key under `resources` refuses at parse like every
+/// other typed node — deny_unknown_fields is uniform on the document
+/// surface.
+#[test]
+fn resources_forms_parse_and_unknown_keys_refuse() {
+    let full = document(&format!(
+        "pipeline: p\nresources:\n  byte_budget: 1048576\n  max_batch_cells: 4096\n  max_streams_per_source: 8\n  max_concurrent_streams: 2\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ));
+    let resources = full.resources.expect("the block parsed");
+    assert_eq!(resources.byte_budget, Some(1_048_576));
+    assert_eq!(resources.max_batch_cells, Some(4_096));
+    assert_eq!(resources.max_streams_per_source, Some(8));
+    assert_eq!(resources.max_concurrent_streams, Some(2));
+
+    let partial = document(&format!(
+        "pipeline: p\nresources:\n  max_concurrent_streams: 1\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ));
+    let resources = partial.resources.expect("the block parsed");
+    assert_eq!(resources.max_concurrent_streams, Some(1));
+    assert_eq!(
+        resources.byte_budget, None,
+        "absent fields stay engine-default"
+    );
+
+    let absent = document(&format!(
+        "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ));
+    assert!(absent.resources.is_none());
+
+    let refused = rdlt::document::parse(&format!(
+        "pipeline: p\nresources:\n  byte_bugdet: 1\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ))
+    .expect_err("a typo under resources must refuse, never be ignored");
+    assert!(refused.contains("byte_bugdet"), "{refused}");
+}
+
+/// The `schema_policy` scalar: all four spellings parse to their
+/// variants, absent stays `None` (evolve), and an unknown spelling
+/// refuses at parse.
+#[test]
+fn schema_policy_spellings_parse_and_unknown_refuses() {
+    use rdlt::document::SchemaPolicy;
+    for (spelling, want) in [
+        ("evolve", SchemaPolicy::Evolve),
+        ("freeze", SchemaPolicy::Freeze),
+        ("discard_row", SchemaPolicy::DiscardRow),
+        ("discard_value", SchemaPolicy::DiscardValue),
+    ] {
+        let parsed = document(&format!(
+            "pipeline: p\nschema_policy: {spelling}\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+        ));
+        assert_eq!(parsed.schema_policy, Some(want), "{spelling}");
+    }
+    let absent = document(&format!(
+        "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ));
+    assert!(absent.schema_policy.is_none());
+
+    let refused = rdlt::document::parse(&format!(
+        "pipeline: p\nschema_policy: strict\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
+    ))
+    .expect_err("an unknown policy spelling must refuse");
+    assert!(refused.contains("strict"), "{refused}");
+}

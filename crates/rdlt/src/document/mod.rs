@@ -19,7 +19,8 @@
 //! paraphrase.
 //!
 //! Here: the document's typed nodes and its parse ([`Document`],
-//! [`WriteMode`], [`Config`], [`parse`], [`read`]) and the requirement
+//! [`WriteMode`], [`SchemaPolicy`], [`Resources`], [`Config`],
+//! [`parse`], [`read`]) and the requirement
 //! every arm names ([`connector`]). Every document problem construction
 //! can end in is an [`Error::Config`](crate::error::Error::Config).
 //!
@@ -32,4 +33,6 @@
 pub mod connector;
 mod model;
 
-pub use model::{Config, Document, MAX_DOCUMENT_BYTES, WriteMode, parse, read};
+pub use model::{
+    Config, Document, MAX_DOCUMENT_BYTES, Resources, SchemaPolicy, WriteMode, parse, read,
+};

@@ -51,6 +51,10 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
     let yaml = format!(
         "pipeline: spawn-acceptance\n\
          workdir: {work}\n\
+         schema_policy: evolve\n\
+         resources:\n\
+        \x20 byte_budget: 8388608\n\
+        \x20 max_concurrent_streams: 4\n\
          source:\n\
         \x20 connector:\n\
         \x20   id: io.rapidbyte.reference\n\

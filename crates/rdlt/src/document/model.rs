@@ -64,6 +64,17 @@ pub struct Document {
     /// because a crash can then cost at most one checkpoint of work.
     #[serde(default)]
     pub commit_policy: Option<CommitPolicy>,
+    /// What the engine does when a stream's observed schema drifts from
+    /// the registered one. Absent defaults to `evolve`. A run-wide
+    /// scalar only: per-table and per-column overrides stay
+    /// programmatic — `rdlt::policy::SchemaPolicy::table`/`column`
+    /// through the builder.
+    #[serde(default)]
+    pub schema_policy: Option<SchemaPolicy>,
+    /// Engine resource bounds. Absent (whole or per field) keeps the
+    /// engine defaults.
+    #[serde(default)]
+    pub resources: Option<Resources>,
     /// Where rows come from: `connector: {id, version?, path?, config}`,
     /// the one arm form.
     #[serde(deserialize_with = "connector::arm")]
@@ -71,6 +82,49 @@ pub struct Document {
     /// Where rows go: the same one form as `source`.
     #[serde(deserialize_with = "connector::arm")]
     pub destination: Connector,
+}
+
+/// The document form of the engine's schema policy: the run-wide
+/// default, as a scalar. The engine's own type carries per-table and
+/// per-column overrides too; those address destination tables by name
+/// and stay programmatic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaPolicy {
+    /// Apply the change and continue (the default).
+    Evolve,
+    /// Refuse the change typed, before any violating row is written.
+    Freeze,
+    /// Drop non-conforming rows; count them.
+    DiscardRow,
+    /// Null out non-conforming values; count them.
+    DiscardValue,
+}
+
+/// Engine resource bounds, each optional — an absent field keeps the
+/// engine's default. Every field rides the builder's own clamp, so a
+/// spelled `0` behaves as the builder documents: it clamps to the
+/// smallest enforceable value (1), never to "off".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resources {
+    /// Cap on in-flight bytes per stage channel — the resident-memory
+    /// bound (default 64 MiB). Also threads into the connector
+    /// provider's dial windows, so the wire can never hold more in
+    /// flight than the engine would buffer.
+    #[serde(default)]
+    pub byte_budget: Option<usize>,
+    /// Cap on `columns × rows` in one assembled output batch (default
+    /// 2²⁸) — the bound on assembly's null-fill expansion.
+    #[serde(default)]
+    pub max_batch_cells: Option<usize>,
+    /// Cap on streams one source may declare (default 1024).
+    #[serde(default)]
+    pub max_streams_per_source: Option<usize>,
+    /// Cap on streams reading at once (default 16); the rest wait for a
+    /// read slot, holding no rows while they wait.
+    #[serde(default)]
+    pub max_concurrent_streams: Option<usize>,
 }
 
 /// The document form of [`crate::commit::WriteMode`]. Unknown spellings

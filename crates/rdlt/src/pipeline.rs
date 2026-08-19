@@ -234,19 +234,62 @@ impl<S: Source, D: Destination> Builder<S, D> {
 }
 
 /// The engine byte budget a spawned connector's dial derives its
-/// flow-control windows from: the engine channel's OWN constant — the
-/// same number the engine's byte channel is actually built with, so the
-/// wire can never hold more in flight than the engine would buffer.
-/// Deliberately NOT the document's `batch_policy.every_bytes`: that knob
-/// paces DESTINATION writes, and the facade never resizes the engine
-/// channel from it, so deriving the wire window from it would silently
+/// flow-control windows from: the document's `resources.byte_budget`
+/// where spelled — the SAME number `apply_tuning` threads into the
+/// engine channel, with the builder's own floor clamp, so the wire can
+/// never hold more in flight than the engine would buffer — and the
+/// engine channel's own default constant otherwise. Deliberately NOT
+/// the document's `batch_policy.every_bytes`: that knob paces
+/// DESTINATION writes, and the facade never resizes the engine channel
+/// from it, so deriving the wire window from it would silently
 /// throttle the connector wire to a write-cadence number while the
-/// engine kept buffering at its default. Takes the document so the pin
-/// below can state the independence; a future document-level budget
-/// knob would thread here AND through the builder's `byte_budget`,
-/// keeping the two sides one number.
-fn engine_budget_bytes(_document: &Document) -> u64 {
-    rdlt_engine::config::Config::DEFAULT_BYTE_BUDGET as u64
+/// engine kept buffering at its default.
+fn engine_budget_bytes(document: &Document) -> u64 {
+    match document.resources.as_ref().and_then(|r| r.byte_budget) {
+        Some(bytes) => bytes.max(1) as u64,
+        None => rdlt_engine::config::Config::DEFAULT_BYTE_BUDGET as u64,
+    }
+}
+
+/// Thread the document's engine-tuning nodes — `schema_policy` and
+/// `resources` — onto the builder. Infallible by construction: each
+/// knob rides its builder method's own clamp (a spelled `0` becomes
+/// the smallest enforceable value, never "off"), and the scalar policy
+/// maps onto the engine type's run-wide default.
+fn apply_tuning<S, D>(builder: Builder<S, D>, document: &Document) -> Builder<S, D> {
+    let builder = match &document.schema_policy {
+        Some(mode) => {
+            let action = match mode {
+                document::SchemaPolicy::Evolve => rdlt_engine::policy::PolicyAction::Evolve,
+                document::SchemaPolicy::Freeze => rdlt_engine::policy::PolicyAction::Freeze,
+                document::SchemaPolicy::DiscardRow => rdlt_engine::policy::PolicyAction::DiscardRow,
+                document::SchemaPolicy::DiscardValue => {
+                    rdlt_engine::policy::PolicyAction::DiscardValue
+                }
+            };
+            builder.schema_policy(SchemaPolicy::with_default(action))
+        }
+        None => builder,
+    };
+    let Some(resources) = &document.resources else {
+        return builder;
+    };
+    let builder = match resources.byte_budget {
+        Some(bytes) => builder.byte_budget(bytes),
+        None => builder,
+    };
+    let builder = match resources.max_batch_cells {
+        Some(cells) => builder.max_batch_cells(cells),
+        None => builder,
+    };
+    let builder = match resources.max_streams_per_source {
+        Some(streams) => builder.max_streams_per_source(streams),
+        None => builder,
+    };
+    match resources.max_concurrent_streams {
+        Some(streams) => builder.max_concurrent_streams(streams),
+        None => builder,
+    }
 }
 
 /// The workdir a document runs under: the spelled path — relative
@@ -328,7 +371,10 @@ impl Pipeline {
 
     /// Construct the pipeline a parsed [`Document`] describes over the
     /// default local provider (spawn from `PATH`, or the `path:` an arm
-    /// names). Construction only — no data moves — but BOTH arms'
+    /// names). The document's `resources.byte_budget` sizes BOTH the
+    /// engine channel and this provider's dial windows — one number for
+    /// the two sides; with [`Pipeline::from_document_with`] the
+    /// caller's provider carries its own budget. Construction only — no data moves — but BOTH arms'
     /// connector requirements are resolved: spawn, dial, handshake (where
     /// the CONNECTOR validates its own config), wrap; reading a path-form
     /// config file is the one other I/O. `base` is the directory relative
@@ -365,6 +411,7 @@ impl Pipeline {
             }
         };
         let builder = builder.workdir(resolved_workdir(doc, base));
+        let builder = apply_tuning(builder, doc);
         let builder = match &doc.batch_policy {
             Some(policy) => builder.batch_policy(*policy),
             None => builder,
@@ -538,5 +585,152 @@ mod budget_tests {
             rdlt_engine::config::Config::DEFAULT_BYTE_BUDGET as u64,
             "a 1 MiB dest-write threshold must leave the wire budget at the engine default"
         );
+    }
+
+    /// `resources.byte_budget` IS the dial budget where spelled — the
+    /// one number both the engine channel and the provider's wire
+    /// windows ride — with the builder's own floor clamp (a spelled 0
+    /// becomes 1, never "off"), and the engine default where absent.
+    #[test]
+    fn the_dial_budget_follows_the_documents_byte_budget() {
+        let spelled: Document = serde_yaml_ng::from_str(
+            "pipeline: p\nresources: {byte_budget: 1048576}\n\
+             source:\n  connector: {id: io.example.src, config: s.yaml}\n\
+             destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n",
+        )
+        .expect("the fixture document parses");
+        assert_eq!(engine_budget_bytes(&spelled), 1_048_576);
+
+        let zero: Document = serde_yaml_ng::from_str(
+            "pipeline: p\nresources: {byte_budget: 0}\n\
+             source:\n  connector: {id: io.example.src, config: s.yaml}\n\
+             destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n",
+        )
+        .expect("the fixture document parses");
+        assert_eq!(
+            engine_budget_bytes(&zero),
+            1,
+            "zero clamps to the smallest enforceable window, like the builder"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tuning_tests {
+    //! `apply_tuning` observed at the engine, not inspected: the
+    //! document's knobs go through the REAL builder methods into a run
+    //! whose behavior only the threaded value can explain.
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use rdlt_testkit::memory;
+    use serde_json::json;
+
+    use super::*;
+    use crate::sdk::spi::error::SourceError;
+    use crate::sdk::spi::source::{ReadRequest, Source, StreamSpec};
+    use crate::sdk::spi::spec::ConnectorSpec;
+
+    const BODY: &str = "source:\n  connector: {id: io.example.src, config: s.yaml}\n\
+                        destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n";
+
+    fn document_from(yaml: &str) -> Document {
+        document::parse(yaml).expect("the fixture document parses")
+    }
+
+    /// Three streams whose reads overlap unless serialized, counting the
+    /// concurrency they observe.
+    struct Gauged {
+        current: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Source for Gauged {
+        fn spec(&self) -> ConnectorSpec {
+            ConnectorSpec::new("gauged", "0.0.0")
+        }
+        async fn check(&self) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn streams(&self) -> Result<Vec<StreamSpec>, SourceError> {
+            Ok(vec![
+                StreamSpec::new("a"),
+                StreamSpec::new("b"),
+                StreamSpec::new("c"),
+            ])
+        }
+        async fn read(&self, _request: ReadRequest) -> Result<(), SourceError> {
+            let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            self.current.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// End to end through the YAML: a document spelling
+    /// `max_concurrent_streams: 1` serializes a three-stream read —
+    /// only the threaded knob can produce a peak of exactly 1.
+    #[tokio::test]
+    async fn a_document_concurrency_knob_reaches_the_engine() {
+        let document = document_from(&format!(
+            "pipeline: p\nresources:\n  max_concurrent_streams: 1\n{BODY}"
+        ));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let pipeline = apply_tuning(Pipeline::builder("serialized"), &document)
+            .source(Gauged {
+                current: Arc::new(AtomicUsize::new(0)),
+                peak: Arc::clone(&peak),
+            })
+            .destination(memory::Destination::new())
+            .build()
+            .expect("valid config");
+        pipeline.run().await.expect("the run completes");
+        assert_eq!(peak.load(Ordering::SeqCst), 1, "reads never overlapped");
+    }
+
+    /// `schema_policy: freeze` reaches the engine: a within-run drift
+    /// the default (evolve) absorbs is refused typed under the
+    /// document's scalar.
+    #[tokio::test]
+    async fn a_document_schema_policy_reaches_the_engine() {
+        // Two BATCHES, the second wider: drift is judged across
+        // batches, so one batch holding both rows would just infer the
+        // union and never exercise the policy.
+        let drifting = || {
+            memory::Source::new(vec![memory::Stream::new(
+                StreamSpec::new("events"),
+                vec![
+                    memory::Batch::new(vec![json!({"id": 1})]),
+                    memory::Batch::new(vec![json!({"id": 2, "grown": true})]),
+                ],
+            )])
+        };
+
+        let frozen = document_from(&format!("pipeline: p\nschema_policy: freeze\n{BODY}"));
+        let pipeline = apply_tuning(Pipeline::builder("frozen"), &frozen)
+            .source(drifting())
+            .destination(memory::Destination::new())
+            .build()
+            .expect("valid config");
+        let error = pipeline.run().await.expect_err("freeze refuses the drift");
+        assert!(
+            matches!(error, Error::Schema(_)),
+            "a frozen schema drift is the typed contract violation: {error:?}"
+        );
+
+        let evolving = document_from(&format!("pipeline: p\n{BODY}"));
+        let pipeline = apply_tuning(Pipeline::builder("evolving"), &evolving)
+            .source(drifting())
+            .destination(memory::Destination::new())
+            .build()
+            .expect("valid config");
+        pipeline
+            .run()
+            .await
+            .expect("the absent scalar keeps the evolve default");
     }
 }
