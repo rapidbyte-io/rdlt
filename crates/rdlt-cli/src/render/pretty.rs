@@ -30,6 +30,12 @@ pub(crate) struct Pretty {
     totals: ProgressBar,
     streams: BTreeMap<StreamName, ProgressBar>,
     finished: BTreeMap<StreamName, bool>,
+    /// The real draw target, held back until [`Pretty::reveal`]: the
+    /// display assembles its rows invisibly and first appears at full
+    /// height. Drawing while the block is still growing makes the
+    /// region change height under the terminal — at the bottom of a
+    /// screen every growth forces a scroll, a visible vertical jump.
+    revealed_target: Option<ProgressDrawTarget>,
 }
 
 impl Pretty {
@@ -44,7 +50,7 @@ impl Pretty {
         // never wrapped, so the region is always exactly one row per bar
         // and a redraw's cursor arithmetic cannot disagree with the
         // terminal about how many rows a long line took.
-        let multi = MultiProgress::with_draw_target(target);
+        let multi = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
         let header = multi.add(ProgressBar::no_length());
         header.set_style(ProgressStyle::with_template("  {wide_msg}").expect("static template"));
         header.set_message(format!(
@@ -60,6 +66,28 @@ impl Pretty {
             totals,
             streams: BTreeMap::new(),
             finished: BTreeMap::new(),
+            revealed_target: Some(target),
+        }
+    }
+
+    /// Show the display once there is something to watch. Called from
+    /// every periodic tick; a no-op until the first stream row exists
+    /// (streams are announced in one burst when the run starts, so the
+    /// first frame drawn is the block's full height) and after the
+    /// reveal itself. A stream that starts later still grows the region
+    /// — inherent to a live table — but the start-up growth burst never
+    /// reaches the terminal.
+    pub(crate) fn reveal(&mut self) {
+        if self.streams.is_empty() {
+            return;
+        }
+        if let Some(target) = self.revealed_target.take() {
+            self.multi.set_draw_target(target);
+            // A bar's row reaches the terminal when the bar itself next
+            // draws; the header's text was set while hidden, so nudge it
+            // — the streams and totals refresh in the redraw that
+            // follows every reveal.
+            self.header.tick();
         }
     }
 
@@ -194,11 +222,14 @@ mod tests {
         display.redraw();
     }
 
-    /// The region's height is fixed from the moment the streams are
-    /// announced: batches, ticks, a stream finishing (the ✔ row) and a
-    /// commit change text, never the row count — a row-count change is
-    /// what shifts the display on a terminal. `clear()` leaves nothing
-    /// behind, and nothing is drawn after it.
+    /// The region's height is fixed from its FIRST drawn frame: the
+    /// display assembles invisibly and `reveal` shows it complete —
+    /// nothing reaches the terminal while the block is still growing,
+    /// because a mid-growth draw shifts the display (and scrolls the
+    /// screen at its bottom edge). After that, batches, ticks, a stream
+    /// finishing (the ✔ row) and a commit change text, never the row
+    /// count. `clear()` leaves nothing behind, and nothing is drawn
+    /// after it.
     #[test]
     fn the_display_keeps_its_height_and_clears_without_residue() {
         let term = InMemoryTerm::new(24, 100);
@@ -208,14 +239,25 @@ mod tests {
             load_id: LoadId::new("load-1"),
             resumed_from: ResumedFrom::Fresh,
         });
+        // Before any stream exists a reveal is a deliberate no-op: a
+        // header-only block would only appear to grow moments later.
+        display.reveal();
+        assert_eq!(term.contents(), "", "no stream row yet, nothing shown");
         for stream in ["a", "b"] {
             display.apply(&PipelineEvent::StreamStarted {
                 stream: StreamName::new(stream),
                 table: TableName::new(stream),
             });
         }
+        assert_eq!(
+            term.contents(),
+            "",
+            "nothing is drawn before the reveal — the growth burst stays invisible"
+        );
+        display.reveal();
         settle(&mut display);
-        // header + two stream rows + totals
+        // header + two stream rows + totals, at full height from the
+        // first frame
         assert_eq!(rows(&term), 4, "{}", term.contents());
         assert!(term.contents().contains("load load-1 · fresh"));
 
@@ -270,6 +312,7 @@ mod tests {
             stream: StreamName::new("a-stream-name-past-the-column"),
             table: TableName::new("t"),
         });
+        display.reveal();
         std::thread::sleep(Duration::from_millis(120));
         display.redraw();
         let contents = term.contents();
