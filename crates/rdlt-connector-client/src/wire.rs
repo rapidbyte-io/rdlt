@@ -162,7 +162,7 @@ const MAX_CONNECTOR_REPLY_BYTES: usize = 18 * 1024 * 1024;
 /// helpers so a decode ceiling can never be forgotten at one of them:
 /// a client left at tonic's 4 MiB default dies on the first over-4 MiB
 /// frame a server legally sends. This one caps at
-/// [`MAX_CONNECTOR_REPLY_BYTES`] — the service's own legal maximum —
+/// `MAX_CONNECTOR_REPLY_BYTES` — the service's own legal maximum —
 /// rather than the frame cap.
 pub fn connector_client(channel: Channel) -> ConnectorClient<Channel> {
     ConnectorClient::new(channel).max_decoding_message_size(MAX_CONNECTOR_REPLY_BYTES)
