@@ -115,6 +115,45 @@ fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
     Ok(())
 }
 
+/// The most stream specs one streams reply may declare — the engine's
+/// own default `max_streams_per_source` (1024), mirrored at the wire
+/// edge because this seat serves EVERY host: the engine's cap refuses
+/// only after full materialization, and an embedder driving the client
+/// directly has no engine in front of it at all.
+const MAX_DECLARED_STREAM_SPECS: usize = 1024;
+
+/// Decode the streams reply's declared specs, gated BEFORE anything
+/// materializes: the count cap first (one 64 MiB frame of minimal
+/// specs would otherwise yield millions of `StreamSpec`s and a
+/// multi-second synchronous parse loop), then each spec's raw bytes
+/// against the shared document ceiling before `from_slice` builds its
+/// maps (a maximal legal spec — 4096 type hints of 1024-byte keys plus
+/// the key fields — serializes to ~4.3 MiB, so the 8 MiB document
+/// ceiling admits every honest spec with headroom), then the per-value
+/// identifier and count gates on the parsed spec.
+fn decode_stream_specs(stream_spec_json: &[Vec<u8>]) -> Result<Vec<StreamSpec>, SourceError> {
+    gate::count(
+        "declared stream specs",
+        stream_spec_json.len(),
+        MAX_DECLARED_STREAM_SPECS,
+    )
+    .map_err(SourceError::fatal)?;
+    stream_spec_json
+        .iter()
+        .map(|bytes| {
+            gate::document("stream_spec_json", bytes).map_err(SourceError::protocol)?;
+            let spec = serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
+                SourceError::protocol(format!(
+                    "undecodable stream_spec_json in the streams reply: {}",
+                    rdlt_connector::gate::describe_parse_error(&error)
+                ))
+            })?;
+            refuse_untrusted_stream_spec(&spec)?;
+            Ok(spec)
+        })
+        .collect()
+}
+
 /// Validate every field name a decoded record batch carries, nested
 /// container fields included. The walk is iterative so an
 /// attacker-controlled schema cannot add a second recursive traversal
@@ -210,12 +249,14 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         .map_err(|reason| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {reason}")))?;
     // Arrow's error text is connector-authored at frame scale — a
     // `Field` render carries the field's whole metadata map — so every
-    // appended cause goes through the bounded render, never raw.
+    // appended cause goes through the bounded render, never raw, and
+    // THROUGH the sink: the amplified text streams into its capped
+    // prefix without ever materializing whole.
     let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
         .map_err(|error| {
         SourceError::fatal(format!(
             "{ONE_BATCH_REFUSAL}: {}",
-            gate::render_message(&error.to_string())
+            gate::render_display(&error)
         ))
     })?;
     let first = match reader.next() {
@@ -223,7 +264,7 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         Some(Err(error)) => {
             return Err(SourceError::fatal(format!(
                 "{ONE_BATCH_REFUSAL}: {}",
-                gate::render_message(&error.to_string())
+                gate::render_display(&error)
             )));
         }
         None => return Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
@@ -249,7 +290,7 @@ fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
         Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
         Some(Err(error)) => Err(SourceError::fatal(format!(
             "{ONE_BATCH_REFUSAL}: {}",
-            gate::render_message(&error.to_string())
+            gate::render_display(&error)
         ))),
     }
 }
@@ -279,20 +320,7 @@ impl rdlt_connector::source::Source for Remote {
         .map_err(SourceError::transport)?
         .into_inner();
         match reply.outcome {
-            Some(streams_reply::Outcome::Ok(list)) => list
-                .stream_spec_json
-                .iter()
-                .map(|bytes| {
-                    let spec = serde_json::from_slice::<StreamSpec>(bytes).map_err(|error| {
-                        SourceError::protocol(format!(
-                            "undecodable stream_spec_json in the streams reply: {}",
-                            rdlt_connector::gate::describe_parse_error(&error)
-                        ))
-                    })?;
-                    refuse_untrusted_stream_spec(&spec)?;
-                    Ok(spec)
-                })
-                .collect(),
+            Some(streams_reply::Outcome::Ok(list)) => decode_stream_specs(&list.stream_spec_json),
             Some(streams_reply::Outcome::Error(frame)) => Err(SourceError::from_frame(&frame)),
             None => Err(SourceError::protocol(
                 "the streams reply carried no outcome".to_string(),
@@ -506,6 +534,54 @@ mod stream_spec_gate_tests {
                 "`{name}` must pass"
             );
         }
+    }
+
+    /// The reply-level count gate, BEFORE the decode loop: a 64 MiB
+    /// frame of minimal specs would otherwise materialize millions of
+    /// `StreamSpec`s (plus a multi-second synchronous parse) before the
+    /// engine's own cap could see them. Refused by count alone — the
+    /// specs here are minimal and individually legal — and legal at the
+    /// cap itself.
+    #[test]
+    fn an_over_cap_spec_count_refuses_before_any_spec_decodes() {
+        let minimal =
+            || serde_json::to_vec(&StreamSpec::new("a")).expect("a minimal spec serializes");
+        let over: Vec<Vec<u8>> = (0..MAX_DECLARED_STREAM_SPECS + 1)
+            .map(|_| minimal())
+            .collect();
+        let error = decode_stream_specs(&over).expect_err("1025 declared specs refuse");
+        assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("1025 declared stream specs")
+                && rendered.contains("over the 1024 ceiling"),
+            "the refusal names the count and the ceiling: {rendered}"
+        );
+        let at_cap: Vec<Vec<u8>> = (0..MAX_DECLARED_STREAM_SPECS).map(|_| minimal()).collect();
+        let decoded = decode_stream_specs(&at_cap).expect("a reply at the cap is legal");
+        assert_eq!(decoded.len(), MAX_DECLARED_STREAM_SPECS);
+    }
+
+    /// The per-spec byte ceiling, BEFORE the parse whose map
+    /// materialization it bounds: the fixture is NOT valid JSON, so the
+    /// document-ceiling spelling in the refusal is the structural proof
+    /// `from_slice` never ran — an unrefused parse would have reported
+    /// undecodable bytes instead.
+    #[test]
+    fn an_oversized_spec_refuses_by_bytes_before_it_parses() {
+        let oversized = vec![b'x'; rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1];
+        let error =
+            decode_stream_specs(&[oversized]).expect_err("a spec over the byte ceiling refuses");
+        assert!(matches!(error, SourceError::Fatal(_)), "{error:?}");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("stream_spec_json") && rendered.contains("document ceiling"),
+            "the byte gate's own spelling proves the parse never ran: {rendered}"
+        );
+        assert!(
+            !rendered.contains("undecodable"),
+            "not the parse error's spelling: {rendered}"
+        );
     }
 
     /// Count caps beside the content gates — a spec with an absurd

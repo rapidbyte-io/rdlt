@@ -120,16 +120,90 @@ pub(crate) fn escape(text: &str) -> Cow<'_, str> {
 /// message cannot become a multi-hundred-MB error string. Honest
 /// messages fit under the cap and render whole.
 pub(crate) fn render_message(text: &str) -> String {
-    let mut out = String::with_capacity(text.len().min(MESSAGE_RENDER_CAP + 32));
-    for character in text.chars() {
-        push_escaped(&mut out, character);
-        if out.len() >= MESSAGE_RENDER_CAP {
-            use std::fmt::Write as _;
-            let _ = write!(out, "…[truncated; {} source bytes]", text.len());
-            break;
+    let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
+    let _ = std::fmt::Write::write_str(&mut sink, text);
+    sink.finish()
+}
+
+/// [`render_message`] for a value rendered THROUGH the sink rather
+/// than materialized first: the `Display` writes straight into the
+/// bounded writer, so a cause whose rendering amplifies (an arrow
+/// error carrying a whole `Field`, metadata map included) never
+/// exists as a full string — only its capped, escaped prefix does.
+pub(crate) fn render_display(value: &dyn std::fmt::Display) -> String {
+    use std::fmt::Write as _;
+    let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
+    let _ = write!(sink, "{value}");
+    sink.finish()
+}
+
+/// The `Debug` twin of [`render_display`], with the seat's own cap:
+/// a wrong-variant wire reply can carry a workload-sized bytes field
+/// whose derived Debug is a per-byte decimal list ~4-5× the payload —
+/// rendered through the sink, that rendering is counted but never
+/// materialized past the cap.
+pub(crate) fn render_debug(cap: usize, value: &dyn std::fmt::Debug) -> String {
+    use std::fmt::Write as _;
+    let mut sink = BoundedWriter::new(cap);
+    let _ = write!(sink, "{value:?}");
+    sink.finish()
+}
+
+/// The bounded render as an `fmt::Write` sink: text written to it is
+/// escaped (via the shared [`push_escaped`] rule) and KEPT only until
+/// the output reaches the cap; every byte after that is counted and
+/// discarded — `write_str` keeps answering `Ok`, so the source's
+/// `Display`/`Debug` machinery streams to completion without a full
+/// rendering ever existing. [`BoundedWriter::finish`] appends the
+/// truncation marker naming the true source length, the same marker
+/// [`render_message`] has always spelled.
+pub(crate) struct BoundedWriter {
+    out: String,
+    cap: usize,
+    /// Every byte the source offered, kept or discarded — what the
+    /// truncation marker reports as the true length.
+    source_bytes: usize,
+    /// Set the moment the output reaches the cap: later writes only
+    /// count, and `finish` appends the marker.
+    saturated: bool,
+}
+
+impl BoundedWriter {
+    pub(crate) fn new(cap: usize) -> Self {
+        BoundedWriter {
+            out: String::with_capacity(cap.min(4096) / 8),
+            cap,
+            source_bytes: 0,
+            saturated: false,
         }
     }
-    out
+
+    /// The rendered text, with the truncation marker appended when the
+    /// cap was reached.
+    pub(crate) fn finish(mut self) -> String {
+        if self.saturated {
+            use std::fmt::Write as _;
+            let _ = write!(self.out, "…[truncated; {} source bytes]", self.source_bytes);
+        }
+        self.out
+    }
+}
+
+impl std::fmt::Write for BoundedWriter {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.source_bytes += text.len();
+        if self.saturated {
+            return Ok(());
+        }
+        for character in text.chars() {
+            push_escaped(&mut self.out, character);
+            if self.out.len() >= self.cap {
+                self.saturated = true;
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One character, spelled inert if the inventory names it, verbatim
@@ -351,6 +425,84 @@ mod tests {
         assert!(
             error.contains("primary-key fields") && error.contains("over the 64 ceiling"),
             "the refusal names the seat and the cap: {error}"
+        );
+    }
+
+    /// The sink never materializes what it discards: a 64 MiB `Display`
+    /// source streamed through a capped writer leaves the kept text at
+    /// the cap (plus at most one escaped character of overshoot), the
+    /// finished render under the cap plus its marker envelope, and the
+    /// marker naming the full 64 MiB — the whole point of rendering
+    /// THROUGH the sink instead of materializing first.
+    #[test]
+    fn a_64mib_display_source_never_grows_the_sink_past_the_cap() {
+        struct Firehose;
+        impl std::fmt::Display for Firehose {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let chunk = "x".repeat(1024);
+                for _ in 0..(64 * 1024) {
+                    f.write_str(&chunk)?;
+                }
+                Ok(())
+            }
+        }
+        use std::fmt::Write as _;
+        let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
+        write!(sink, "{Firehose}").expect("the sink never errors");
+        assert!(
+            sink.out.len() <= MESSAGE_RENDER_CAP + 4,
+            "the kept text stops at the cap: {} bytes",
+            sink.out.len()
+        );
+        assert_eq!(sink.source_bytes, 64 << 20, "every offered byte is counted");
+        let rendered = sink.finish();
+        assert!(
+            rendered.len() <= MESSAGE_RENDER_CAP + 64,
+            "the finished render is cap plus envelope: {} bytes",
+            rendered.len()
+        );
+        assert!(
+            rendered.ends_with(&format!("…[truncated; {} source bytes]", 64 << 20)),
+            "the marker names the true source length: …{}",
+            &rendered[rendered.len() - 60..]
+        );
+    }
+
+    /// The kept prefix is escaped AS IT ARRIVES — a control byte in the
+    /// window is spelled out, and the cap bounds the ESCAPED output, so
+    /// no post-hoc escape pass can amplify past it.
+    #[test]
+    fn the_sink_escapes_the_kept_prefix_and_caps_the_escaped_form() {
+        use std::fmt::Write as _;
+        let mut sink = BoundedWriter::new(64);
+        write!(sink, "a\u{1b}b{}", "\u{7}".repeat(1000)).expect("the sink never errors");
+        let rendered = sink.finish();
+        assert!(
+            rendered.starts_with("a\\u{1b}b"),
+            "the kept prefix is escaped: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "no raw control byte survives: {rendered:?}"
+        );
+        assert!(
+            rendered.len() <= 64 + 10 + 40,
+            "the cap bounds the escaped output plus one char of overshoot \
+             and the marker: {} bytes",
+            rendered.len()
+        );
+    }
+
+    /// A source under the cap renders whole with no marker — through
+    /// both value renderers, matching what `render_message` does for
+    /// the same text.
+    #[test]
+    fn an_honest_source_renders_whole_through_the_value_renderers() {
+        assert_eq!(render_display(&"an honest cause"), "an honest cause");
+        assert_eq!(render_debug(2048, &"quoted"), "\"quoted\"");
+        assert_eq!(
+            render_display(&"an honest cause"),
+            render_message("an honest cause")
         );
     }
 

@@ -190,31 +190,17 @@ impl rdlt_connector::destination::Destination for Remote {
 /// receive — a protocol violation, not a data outcome. Not a frozen
 /// spelling: a conforming server never produces it.
 fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationError {
-    // The shared escape over a BOUNDED Debug rendering: `Debug` escapes
-    // control bytes but leaves the inventory's Lo-category fillers raw,
-    // and a wrong-variant reply can carry a workload-sized document — a
-    // diagnostic line is not a firehose, so the render truncates at a
-    // char boundary. The cap is the RAW prefix: the escape can expand
-    // each control char to ~10 bytes (`\u{10ffff}`), so the worst-case
-    // message is ~10× the cap — bounded and inert, an order below the
-    // workload-sized render it replaced.
+    // Rendered THROUGH the bounded sink, never materialized: a
+    // wrong-variant reply can carry a workload-sized bytes field whose
+    // derived Debug is a per-byte decimal list ~4-5× the payload — the
+    // sink escapes and keeps up to the cap while the rest is counted
+    // and discarded, so the peak allocation here is the cap, not the
+    // payload's amplified rendering. The cap bounds the ESCAPED output;
+    // the marker names the rendering's true length.
     const REPLY_RENDER_CAP: usize = 2048;
-    let debug = format!("{reply:?}");
-    let bounded = if debug.len() <= REPLY_RENDER_CAP {
-        gate::escape(&debug).into_owned()
-    } else {
-        let mut cut = REPLY_RENDER_CAP;
-        while !debug.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        format!(
-            "{}…[truncated from {} bytes]",
-            gate::escape(&debug[..cut]),
-            debug.len()
-        )
-    };
     DestinationError::protocol(format!(
-        "the connector answered {method} with an unexpected reply: {bounded}"
+        "the connector answered {method} with an unexpected reply: {}",
+        gate::render_debug(REPLY_RENDER_CAP, reply)
     ))
 }
 
@@ -229,8 +215,10 @@ fn encode_one_batch(batch: &RecordBatch) -> Result<Vec<u8>, String> {
     // Arrow's error text can render a whole `Field` — metadata map
     // included — so even this host-authored seat bounds the cause it
     // appends: a batch forwarded from a source connector carries that
-    // connector's schema metadata.
-    let render = |error: arrow::error::ArrowError| gate::render_message(&error.to_string());
+    // connector's schema metadata. Rendered THROUGH the bounded sink,
+    // so the amplified text is never materialized on the way to its
+    // capped prefix.
+    let render = |error: arrow::error::ArrowError| gate::render_display(&error);
     let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
         .map_err(|error| format!("opening an arrow ipc stream writer: {}", render(error)))?;
     writer
@@ -544,5 +532,72 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
             session_reply::Reply::Closed(_) => Ok(()),
             other => Err(unexpected_reply("Close", &other)),
         }
+    }
+}
+
+#[cfg(test)]
+mod unexpected_reply_tests {
+    //! The wrong-variant render seat: bounded THROUGH the sink, so the
+    //! reply's amplified Debug never materializes.
+
+    use super::*;
+
+    /// A wrong-variant reply carrying a multi-MiB bytes payload: prost's
+    /// derived Debug renders bytes as a per-byte decimal list (~5× the
+    /// payload — measured 5.00× on this fixture pre-fix), and the old
+    /// seat materialized that whole rendering before keeping 2 KiB. The
+    /// render now stays under the cap plus its envelope, and the marker
+    /// names the amplified rendering's true length — proving both that
+    /// the amplification is real (the counted source is over 4× the
+    /// payload) and that it was only counted, never kept.
+    #[test]
+    fn a_payload_bearing_wrong_variant_reply_renders_bounded() {
+        let payload_bytes = 8 << 20;
+        let reply = session_reply::Reply::Published(proto::Published {
+            receipt_json: vec![0xAB; payload_bytes],
+        });
+        let error = unexpected_reply("Ensure", &reply);
+        let rendered = error.to_string();
+        assert!(
+            rendered.len() <= 2048 + 256,
+            "the render is cap plus envelope (the refusal's own prefix and \
+             the truncation marker), not payload-scale: {} bytes",
+            rendered.len()
+        );
+        assert!(
+            rendered.contains("the connector answered Ensure with an unexpected reply: "),
+            "the refusal names the method: {}",
+            &rendered[..rendered.len().min(120)]
+        );
+        // The marker's named source length IS the debug rendering the
+        // pre-fix seat allocated: assert the amplification the sink
+        // absorbed.
+        let named: usize = rendered
+            .rsplit("truncated; ")
+            .next()
+            .and_then(|tail| tail.split(" source bytes").next())
+            .and_then(|n| n.parse().ok())
+            .expect("the marker names the source length");
+        assert!(
+            named > 4 * payload_bytes,
+            "the counted rendering shows the ~5x amplification: {named} bytes \
+             for a {payload_bytes}-byte payload"
+        );
+    }
+
+    /// An honest small wrong-variant reply renders whole — no marker,
+    /// the variant legible in the text.
+    #[test]
+    fn a_small_wrong_variant_reply_renders_whole() {
+        let reply = session_reply::Reply::Closed(proto::Empty {});
+        let rendered = unexpected_reply("Write", &reply).to_string();
+        assert!(
+            rendered.contains("the connector answered Write with an unexpected reply: Closed"),
+            "the variant stays legible: {rendered}"
+        );
+        assert!(
+            !rendered.contains("truncated"),
+            "an honest reply carries no marker: {rendered}"
+        );
     }
 }

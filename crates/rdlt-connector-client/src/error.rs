@@ -20,7 +20,12 @@ pub use rdlt_connector_protocol::proto::Classification;
 /// `#[non_exhaustive]`: the client's failure surface can grow (a spawn
 /// arm, a TLS arm for the future network binding) without a breaking
 /// change — match with a wildcard arm.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Debug` is manual (below), because the derived one would render the
+/// [`Error::Transport`] arm's `Status` text whole and raw — an
+/// embedder's `{:?}` on a returned error must stay as bounded and
+/// inert as the `Display` every other path renders.
+#[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// Connecting to the connector's Unix domain socket failed.
@@ -52,9 +57,14 @@ pub enum Error {
     },
     /// The connector reported a different identity than the requirement
     /// resolved: refused, never worked around — a wrong binary at the
-    /// resolved path is an operator problem, not a fallback.
+    /// resolved path is an operator problem, not a fallback. Both
+    /// values render through the shared escape: a joiner or control
+    /// byte in the reported identity is spelled out, so the mismatch
+    /// line cannot read as two identical strings disagreeing.
     #[error(
-        "connector identity mismatch: required `{expected}`, the connector reported `{reported}`"
+        "connector identity mismatch: required `{}`, the connector reported `{}`",
+        gate::escape(.expected),
+        gate::escape(.reported)
     )]
     IdentityMismatch {
         /// The id the requirement named.
@@ -63,8 +73,11 @@ pub enum Error {
         reported: String,
     },
     /// The requirement pinned a version the connector does not report.
+    /// Escaped like the identity arm, for the same reason.
     #[error(
-        "connector version mismatch: required `{required}`, the connector reported `{reported}`"
+        "connector version mismatch: required `{}`, the connector reported `{}`",
+        gate::escape(.required),
+        gate::escape(.reported)
     )]
     VersionMismatch {
         /// The version the requirement pinned.
@@ -100,6 +113,58 @@ pub enum Error {
         /// The deadline that elapsed — the requirement's `rpc_deadline`.
         deadline: Duration,
     },
+}
+
+/// Manual so the [`Error::Transport`] arm routes the `Status` text —
+/// connector-authored display text — through the bounded render, where
+/// the derived Debug would print it whole and raw. The other arms
+/// mirror the derived shape: their connector-authored fields are
+/// already bounded at construction ([`Error::Handshake`]'s message) or
+/// host-authored.
+impl std::fmt::Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Dial { path, source } => f
+                .debug_struct("Dial")
+                .field("path", path)
+                .field("source", source)
+                .finish(),
+            Error::Handshake {
+                classification,
+                message,
+                retry_after_ms,
+            } => f
+                .debug_struct("Handshake")
+                .field("classification", classification)
+                .field("message", message)
+                .field("retry_after_ms", retry_after_ms)
+                .finish(),
+            Error::IdentityMismatch { expected, reported } => f
+                .debug_struct("IdentityMismatch")
+                .field("expected", expected)
+                .field("reported", reported)
+                .finish(),
+            Error::VersionMismatch { required, reported } => f
+                .debug_struct("VersionMismatch")
+                .field("required", required)
+                .field("reported", reported)
+                .finish(),
+            Error::Protocol(message) => f.debug_tuple("Protocol").field(message).finish(),
+            Error::Transport(status) => f
+                .debug_struct("Transport")
+                .field("code", &status.code())
+                .field("message", &gate::render_message(status.message()))
+                .finish_non_exhaustive(),
+            Error::Timeout {
+                operation,
+                deadline,
+            } => f
+                .debug_struct("Timeout")
+                .field("operation", operation)
+                .field("deadline", deadline)
+                .finish(),
+        }
+    }
 }
 
 impl Error {
@@ -461,5 +526,90 @@ mod tests {
             }
             other => panic!("expected Handshake, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod mismatch_and_debug_render_tests {
+    //! The identity/version mismatch renders and the manual Debug —
+    //! the two renders an embedder sees outside the frame mappers.
+
+    use super::*;
+
+    /// A reported identity differing from the requirement only by an
+    /// invisible joiner: unescaped, the line reads as two identical
+    /// strings disagreeing (`required 'ab', reported 'ab'`). Both
+    /// values ride the shared escape, so the joiner is spelled out and
+    /// the mismatch is legible. The version arm renders by the same
+    /// rule.
+    #[test]
+    fn a_joiner_bearing_mismatch_renders_the_joiner_spelled_out() {
+        let identity = Error::IdentityMismatch {
+            expected: "ab".to_string(),
+            reported: "a\u{200c}b".to_string(),
+        }
+        .to_string();
+        assert!(
+            !identity.contains('\u{200c}'),
+            "no raw joiner survives: {identity:?}"
+        );
+        assert!(
+            identity.contains("required `ab`") && identity.contains("reported `a\\u{200c}b`"),
+            "the mismatch is legible: {identity}"
+        );
+
+        let version = Error::VersionMismatch {
+            required: "1.2.3".to_string(),
+            reported: "1.2.3\u{200d}".to_string(),
+        }
+        .to_string();
+        assert!(
+            !version.contains('\u{200d}') && version.contains("reported `1.2.3\\u{200d}`"),
+            "the version arm renders by the same rule: {version}"
+        );
+    }
+
+    /// The manual Debug's whole point: a multi-MiB Status text renders
+    /// bounded through `{:?}` — measured 4,194,367 bytes under the
+    /// derived Debug this replaced — with the marker naming the true
+    /// length, and the code still legible.
+    #[test]
+    fn a_transport_debug_renders_bounded() {
+        let error = Error::Transport(tonic::Status::internal("x".repeat(4 << 20)));
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.len() <= gate::MESSAGE_RENDER_CAP + 128,
+            "the Debug render is bounded: {} bytes",
+            rendered.len()
+        );
+        assert!(
+            rendered.contains(&format!("truncated; {} source bytes", 4 << 20)),
+            "and names the true length"
+        );
+        assert!(
+            rendered.starts_with("Transport") && rendered.contains("Internal"),
+            "the variant and code stay legible: {}",
+            &rendered[..60]
+        );
+    }
+
+    /// The escaped half of the Transport Debug: control bytes in the
+    /// Status text arrive spelled out, exactly as the Display arm
+    /// renders them.
+    #[test]
+    fn a_transport_debug_renders_control_bytes_inert() {
+        let error = Error::Transport(tonic::Status::internal("\u{1b}]52;c\u{7}\nFORGED"));
+        let rendered = format!("{error:?}");
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}') && !rendered.contains('\n'),
+            "no raw control byte survives the Debug: {rendered:?}"
+        );
+        // The field is Debug-quoted on top of the escape (backslashes
+        // double), so the assertion matches the spelled-out code
+        // points, not a backslash count.
+        assert!(
+            rendered.contains("u{1b}]52;c") && rendered.contains("FORGED"),
+            "the text survives, spelled inert: {rendered}"
+        );
     }
 }
