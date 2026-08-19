@@ -52,9 +52,13 @@ pub(crate) fn at(bytes: &[u8], bytes_read: usize) -> Cursor {
 pub(crate) fn resume(path: &str, cursor: &Cursor, bytes: &[u8]) -> Result<usize, SourceError> {
     let len = bytes.len() as u64;
     let v1: V1 = serde_json::from_value(cursor.as_value().clone()).map_err(|error| {
+        // The cursor's own JSON is NOT echoed — a served cursor can
+        // weigh megabytes and a direct driver's is unbounded; the serde
+        // error names the shape problem, its text bounded because it
+        // can embed value fragments.
         SourceError::fatal(format!(
-            "reference source: {path}: unrecognized resume cursor {}: {error}",
-            cursor.as_value()
+            "reference source: {path}: unrecognized resume cursor: {}",
+            rdlt_connector_sdk::spi::gate::render_diagnostic(&error.to_string(), 256)
         ))
     })?;
     if v1.v != 1 {

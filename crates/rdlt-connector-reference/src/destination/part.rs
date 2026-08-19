@@ -22,12 +22,16 @@ pub(crate) fn name(
     load_id: &LoadId,
     commit_seq: u64,
 ) -> Result<String, DestinationError> {
+    // Both refusals quote through the bounded diagnostic render:
+    // `{:?}` spells control bytes inert but keeps the FULL name, and a
+    // direct `Backend` driver hands these in unbounded.
+    let render = |name: &str| rdlt_connector_sdk::spi::gate::render_diagnostic(name, 256);
     if unsafe_for_filename(table.as_str()) {
         return Err(DestinationError::fatal(format!(
-            "reference destination: table name {:?} cannot become a part filename — \
+            "reference destination: table name `{}` cannot become a part filename — \
              names carrying path separators, `..`, or control characters are refused, \
              because a filename built from them could land outside the output directory",
-            table.as_str()
+            render(table.as_str())
         )));
     }
     let name = format!(
@@ -36,8 +40,9 @@ pub(crate) fn name(
     );
     if unsafe_for_filename(&name) {
         return Err(DestinationError::fatal(format!(
-            "reference destination: generated part filename {name:?} is unsafe — path \
-             separators, `..`, and control characters are refused"
+            "reference destination: generated part filename `{}` is unsafe — path \
+             separators, `..`, and control characters are refused",
+            render(&name)
         )));
     }
     Ok(name)
@@ -87,5 +92,35 @@ mod tests {
         assert!(name(&table, &LoadId::new("load/escape"), 1).is_err());
         assert!(name(&table, &LoadId::new("load..escape"), 1).is_err());
         assert!(name(&TableName::new("../evil"), &LoadId::new("load"), 1).is_err());
+    }
+
+    /// Both refusals quote the offending name bounded: a control byte
+    /// arrives spelled out, and a multi-KiB name arrives truncated with
+    /// the marker — never the full unbounded echo a direct `Backend`
+    /// driver could otherwise plant.
+    #[test]
+    fn part_name_refusals_render_bounded_and_inert() {
+        let hostile = format!("evil\u{1b}]52;c;A\u{7}/{}", "x".repeat(2000));
+        let refused = name(&TableName::new(hostile), &LoadId::new("load"), 1)
+            .expect_err("a hostile table name refuses");
+        let rendered = refused.to_string();
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "no raw control byte survives the refusal: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("truncated from") && rendered.len() < 700,
+            "the echo is bounded with the marker: {} bytes",
+            rendered.len()
+        );
+
+        let long_load = LoadId::new(format!("load/{}", "y".repeat(2000)));
+        let refused = name(&TableName::new("orders"), &long_load, 1)
+            .expect_err("a hostile load id refuses at the built-name gate");
+        assert!(
+            refused.to_string().len() < 700,
+            "the built-name echo is bounded too: {} bytes",
+            refused.to_string().len()
+        );
     }
 }

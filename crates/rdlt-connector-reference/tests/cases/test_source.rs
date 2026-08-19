@@ -280,3 +280,34 @@ async fn an_unknown_stream_refusal_renders_the_name_inert() {
         "the name arrives spelled out inside the refusal: {rendered}"
     );
 }
+
+/// An unrecognized resume cursor refuses WITHOUT echoing the cursor —
+/// a served cursor can weigh megabytes and a direct driver's is
+/// unbounded — and the serde error's own fragment renders bounded and
+/// inert.
+#[tokio::test]
+async fn an_unrecognized_cursor_refusal_does_not_echo_the_cursor() {
+    let (_dir, _path, shell) = seeded_source();
+    let stream = shell.streams().await.expect("streams").remove(0);
+    let hostile = format!("evil\u{1b}]52;c;A\u{7}{}", "x".repeat(4000));
+    let cursor = rdlt_connector_sdk::spi::core::cursor::Cursor::new(
+        json!({"v": 1, "bytes_read": hostile, "tail_hash": "h"}),
+    );
+    let refused = read_stream(&shell, &stream, Some(cursor))
+        .await
+        .expect_err("an unrecognized cursor shape refuses");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.contains("unrecognized resume cursor"),
+        "the refusal names the seat: {rendered}"
+    );
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+        "no raw control byte survives: {rendered:?}"
+    );
+    assert!(
+        rendered.len() < 700,
+        "the render is bounded, never the cursor's own size: {} bytes",
+        rendered.len()
+    );
+}

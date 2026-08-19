@@ -2068,6 +2068,73 @@ async fn an_oversized_publish_meta_load_id_refuses_before_the_backend() {
     }
 }
 
+/// The meta's OTHER wire-authored identity — its state document's
+/// pipeline id, which a backend's foreign-state refusals quote — rides
+/// the same gate Open and ReadState hold theirs to, at BOTH meta seats
+/// (Publish here; Replay runs the same chain).
+#[tokio::test]
+async fn an_oversized_meta_state_pipeline_refuses_before_the_backend() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let oversized_pipeline = "p".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
+    req_tx
+        .send(publish_frame(&oversized_pipeline, "l", 1))
+        .await
+        .expect("send the oversized publish");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("pipeline id")
+                    && error.message.contains("identifier ceiling"),
+                "the refusal names the seat and the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
+    }
+
+    req_tx
+        .send(replay_frame(&oversized_pipeline, "l", 1))
+        .await
+        .expect("send the oversized replay");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("pipeline id")
+                    && error.message.contains("identifier ceiling"),
+                "the Replay twin refuses the same way: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the identifier-ceiling refusal, got {other:?}"),
+    }
+}
+
 /// The identifier walk descends into nested struct fields: a
 /// `ColumnType::Struct` column nests `Column`s recursively, and an
 /// inner field name is retained by the session and reaches backend

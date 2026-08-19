@@ -700,7 +700,7 @@ async fn a_table_name_carrying_path_punctuation_is_refused_at_publish() {
         .expect_err("a traversal-shaped table name must be refused");
     assert_eq!(
         error.to_string(),
-        "fatal destination error: reference destination: table name \"../../evil\" cannot \
+        "fatal destination error: reference destination: table name `../../evil` cannot \
          become a part filename — names carrying path separators, `..`, or control \
          characters are refused, because a filename built from them could land outside \
          the output directory"
