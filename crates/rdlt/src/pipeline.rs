@@ -395,7 +395,10 @@ impl Pipeline {
     /// deciding how connector requirements become processes (or pool
     /// members, or anything else) — the engine never learns which. `base`
     /// as there: the directory relative `config:` paths and the default
-    /// `workdir` resolve against.
+    /// `workdir` resolve against. Under a caller-supplied provider the
+    /// document's `resources.byte_budget` resizes the ENGINE channel
+    /// only; the wire windows stay the provider's own budget (the
+    /// default-provider path sizes both from the one number).
     pub async fn from_document_with(
         doc: &Document,
         base: impl AsRef<Path>,
