@@ -84,9 +84,11 @@ pub fn refuse_oversized_document(field: &str, bytes: &[u8]) -> Result<(), String
 /// and the whole render truncates at `cap` raw bytes with a marker
 /// naming the true length — a forged identity as large as a frame
 /// allows must not turn a refusal into a firehose. Non-control
-/// characters pass through: this is a diagnostic quoting seat, not a
-/// display seat, and the full invisible-character inventory belongs to
-/// the wire gates and the display renders.
+/// characters pass through — Cf format characters included (bidi
+/// overrides, joiners), deliberately: this is a diagnostic quoting
+/// seat, not a display seat, and the full invisible-character
+/// inventory belongs to the wire gates and the display renders (the
+/// CLI's display boundary spells them out).
 pub fn render_diagnostic(text: &str, cap: usize) -> String {
     let mut out = String::with_capacity(text.len().min(cap + 32));
     for character in text.chars() {

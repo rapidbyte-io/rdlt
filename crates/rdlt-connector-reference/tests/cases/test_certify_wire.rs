@@ -74,3 +74,84 @@ async fn the_reference_destination_certifies_all_pass_with_the_merge_skip() {
         ],
     );
 }
+
+/// THE HONEST-CHECK CELLS, live over the wire: the built bin, spawned
+/// with a MISCONFIGURED document (a directory where the source's file
+/// is expected; a regular file behind a trailing slash where the
+/// destination's directory is expected), refuses `check()` fatal — the
+/// clause passes for both roles. And the clause CAN FAIL over the same
+/// wire: driven against a WELL-configured spawn, `check()` honestly
+/// answers Ok — exactly the lying shape from the clause's viewpoint —
+/// and the clause fails, proving it is no vacuous pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_honest_check_clauses_certify_and_can_fail_over_the_wire() {
+    use rdlt_certify::clause::c;
+    use rdlt_certify::report::{Report, Verdict};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("events");
+    std::fs::create_dir(&data_dir).expect("a directory where the file should be");
+    let mut report = Report::default();
+    c::source(
+        &mut report,
+        &Target::resolve_path(built_bin(), json!({"path": data_dir})),
+    )
+    .await;
+    assert!(
+        matches!(
+            report.entries.as_slice(),
+            [rdlt_certify::report::Entry {
+                clause: "S5",
+                verdict: Verdict::Pass
+            }]
+        ),
+        "S5 passes live: {report:?}"
+    );
+
+    let occupied = dir.path().join("occupied");
+    std::fs::write(&occupied, b"x").expect("seed the file");
+    let mut report = Report::default();
+    c::destination(
+        &mut report,
+        &Target::resolve_path(
+            built_bin(),
+            json!({"path": format!("{}/", occupied.display())}),
+        ),
+    )
+    .await;
+    assert!(
+        matches!(
+            report.entries.as_slice(),
+            [rdlt_certify::report::Entry {
+                clause: "D7",
+                verdict: Verdict::Pass
+            }]
+        ),
+        "D7 passes live: {report:?}"
+    );
+
+    // The fail-proof: a WELL-configured target's honest Ok is the
+    // clause's failing shape.
+    let good = dir.path().join("good.jsonl");
+    std::fs::write(&good, "{\"n\":1}\n").expect("seed file");
+    let mut report = Report::default();
+    c::source(
+        &mut report,
+        &Target::resolve_path(built_bin(), json!({"path": good})),
+    )
+    .await;
+    match report.entries.as_slice() {
+        [
+            rdlt_certify::report::Entry {
+                clause: "S5",
+                verdict: Verdict::Fail(why),
+            },
+        ] => {
+            assert!(
+                why.contains("answered Ok"),
+                "the failure names the lie: {why}"
+            );
+        }
+        other => panic!("the clause must FAIL a check that answers Ok: {other:?}"),
+    }
+}

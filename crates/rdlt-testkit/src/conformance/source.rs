@@ -1,4 +1,6 @@
-//! Source conformance. Asserted clauses — EXACTLY these three, no more:
+//! Source conformance. Asserted clauses — EXACTLY these four, no more
+//! ([`verify`] asserts the first three; [`verify_check_refusal`]
+//! asserts S5, on an author-supplied misconfigured instance):
 //!
 //! - **S1** the resume law: for every checkpoint `c`,
 //!   `full_read == rows_covered_by(c) ++ read(since = c)`.
@@ -9,10 +11,17 @@
 //!   up front that there is no resume to certify.
 //! - **S4** cancellation: a closed channel means stop-promptly-with-Ok,
 //!   never an error, never a hang.
+//! - **S5** honest check: `check()` on a source configured against a
+//!   target its own read must refuse answers that refusal ITSELF,
+//!   fatal — never `Ok` (a probe that passes what the read then fails)
+//!   and never transient (retry bait: no retry fixes a
+//!   misconfiguration).
 //!
-//! Verified black-box against any deterministic [`Source`]. The remaining
-//! source clauses have no check here yet; adding one is deferred work,
-//! renumbering these is forbidden.
+//! Verified black-box against any deterministic [`Source`] — plus, for
+//! S5 alone, one author-supplied MISCONFIGURED instance: only the
+//! connector's own config vocabulary can spell a target its read must
+//! refuse (the canonical shape: a directory where a file is expected).
+//! Renumbering is forbidden; S3 stays retired.
 
 use rdlt_connector::channel::{PushPayload, records};
 use rdlt_connector::core::cursor::Cursor;
@@ -20,6 +29,39 @@ use rdlt_connector::source::{ReadRequest, Source, StreamSpec};
 use serde_json::Value;
 
 use super::{Failure, Skip, Verdict};
+
+/// S5, the honest-check clause, on an author-supplied MISCONFIGURED
+/// source: its `check()` must refuse FATAL — `Ok` is a lying probe
+/// (the read then fails where the probe said go), and a transient
+/// classification is retry bait, because no retry fixes a
+/// misconfiguration. The author picks the misconfiguration from their
+/// own vocabulary; the canonical shape is a directory where a file is
+/// expected.
+pub async fn verify_check_refusal<S: Source>(misconfigured: &S) -> Verdict {
+    let mut failures: Vec<Failure> = Vec::new();
+    match misconfigured.check().await {
+        Err(rdlt_connector::error::SourceError::Fatal(_)) => {}
+        Err(other) => failures.push(Failure {
+            clause: "S5",
+            message: format!(
+                "check() on a misconfigured target must refuse FATAL — no retry fixes a \
+                 misconfiguration — but it classified: {other}"
+            ),
+        }),
+        Ok(()) => failures.push(Failure {
+            clause: "S5",
+            message: "check() answered Ok on a target its own read must refuse — a probe \
+                      that passes what a run then fails is retry bait for every caller \
+                      that trusts it"
+                .to_string(),
+        }),
+    }
+    Verdict {
+        failures,
+        skips: Vec::new(),
+        concluded: vec!["S5"],
+    }
+}
 
 /// Every clause this suite asserts, in module-doc order — THE one
 /// clause list: the terminal conclusion derives from it rather than

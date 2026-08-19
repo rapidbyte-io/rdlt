@@ -29,6 +29,10 @@ use crate::lineage;
 /// exactly the big runs; the budget exists so a corrupted WAL cannot make
 /// recovery materialize (and read) unboundedly, and 1 GiB is where "honest
 /// span" and "bounded recovery work" meet.
+/// What the budget buys in memory: scanning materializes records,
+/// schema clones, and chain links at a measured ~3-4× constant over
+/// the manifest's bytes — bounded and linear, so the budget bounds
+/// peak recovery memory too.
 pub(crate) const MAX_MANIFEST_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// The rules sidecar is the writer's `IdentRules` verbatim — a ~100-byte

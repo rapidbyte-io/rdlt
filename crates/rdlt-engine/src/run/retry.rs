@@ -74,7 +74,10 @@ fn backoff_bound(policy: &RetryPolicy, retry: u32) -> std::time::Duration {
 /// One retry's actual sleep: the jittered bound, or a `Retry-After`
 /// hint where the failure carried one. The hint keeps precedence — the
 /// service named its own delay — but bounded by `max_delay` and never
-/// jittered.
+/// jittered. Precedence includes a hint of ZERO: it sleeps nothing,
+/// bypassing the computed ladder's base floor — the service said now,
+/// and the attempt cap plus the (attempts−1)×max_delay total still
+/// bound the run.
 fn retry_delay(policy: &RetryPolicy, retry: u32, hint_ms: Option<u64>) -> std::time::Duration {
     match hint_ms {
         Some(ms) => std::time::Duration::from_millis(ms).min(policy.max_delay),

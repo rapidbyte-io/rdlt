@@ -77,6 +77,17 @@ pub const CLAUSES: &[Clause] = &[
                      returns Ok — never an error, never a hang.",
     },
     Clause {
+        id: "S5",
+        title: "honest check",
+        definition: "check() on a source configured against a target its own read must refuse \
+                     answers that refusal itself, with a fatal classification — never Ok (a \
+                     probe that passes what a read then fails), never transient (no retry \
+                     fixes a misconfiguration). Driven only when the operator supplies a \
+                     misconfigured document via --hostile-config; skipped with the reason \
+                     otherwise. A handshake that refuses the misconfigured document passes: \
+                     refusing earlier than check is honest too.",
+    },
+    Clause {
         id: "D1",
         title: "staging invisibility",
         definition: "Rows written into a load session but not yet committed are invisible to \
@@ -110,6 +121,17 @@ pub const CLAUSES: &[Clause] = &[
         id: "D6",
         title: "no state for fresh pipelines",
         definition: "A pipeline that has never committed reads back no state.",
+    },
+    Clause {
+        id: "D7",
+        title: "honest check",
+        definition: "check() on a destination configured against a target its own operations \
+                     must refuse answers that refusal itself, with a fatal classification — \
+                     never Ok (a probe that passes what a run then fails), never transient \
+                     (no retry fixes a misconfiguration). Driven only when the operator \
+                     supplies a misconfigured document via --hostile-config; skipped with \
+                     the reason otherwise. A handshake that refuses the misconfigured \
+                     document passes: refusing earlier than check is honest too.",
     },
     Clause {
         id: "D8",
@@ -592,7 +614,7 @@ mod tests {
     //! are pinned by the integration cases.
 
     use super::*;
-    use crate::clause::{d, k, p, s};
+    use crate::clause::{c, d, k, p, s};
 
     fn failure(clause: &'static str, message: &str) -> Failure {
         Failure {
@@ -1017,6 +1039,7 @@ mod tests {
         emittable.extend(p::DEST_WIRE);
         emittable.extend(s::CLAUSES);
         emittable.extend(d::CLAUSES);
+        emittable.extend(c::CLAUSES);
         emittable.extend(p::SESSION);
         emittable.extend(k::SOURCE);
         emittable.extend(k::DESTINATION);

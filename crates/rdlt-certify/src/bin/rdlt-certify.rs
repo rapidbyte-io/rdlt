@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{CommandFactory as _, Parser, ValueEnum};
-use rdlt_certify::clause::{d, k, s};
+use rdlt_certify::clause::{c, d, k, s};
 use rdlt_certify::probe::Shell;
 use rdlt_certify::report::CLAUSES;
 use rdlt_certify::target::Target;
@@ -91,6 +91,14 @@ struct Args {
     /// credentials — it is never echoed by any report or failure text
     #[arg(long, value_name = "SH_LINE")]
     probe_cmd: Option<String>,
+
+    /// A MISCONFIGURED config JSON file for the honest-check clause
+    /// (D7/S5): a document the connector's gate accepts but its
+    /// operations must refuse — a file behind a trailing slash, a
+    /// directory where a file is expected. Absent, the clause skips
+    /// with the reason
+    #[arg(long, value_name = "FILE")]
+    hostile_config: Option<PathBuf>,
 
     /// Report format on stdout
     #[arg(long, value_enum, default_value = "text")]
@@ -170,6 +178,16 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_REFUSED);
         }
     };
+    let hostile_target = match args.hostile_config.as_deref() {
+        None => None,
+        Some(path) => match load_config(Some(path)) {
+            Ok(hostile) => Some(resolve(&named, hostile)),
+            Err(why) => {
+                eprintln!("{why}");
+                return ExitCode::from(EXIT_REFUSED);
+            }
+        },
+    };
     let target = resolve(&named, config);
     let probe = args
         .probe_cmd
@@ -185,6 +203,7 @@ fn main() -> ExitCode {
         args.report,
         &args.accept_skips,
         &target,
+        hostile_target.as_ref(),
         probe.as_ref().map(|shell| shell as &dyn TableProbe),
     ))
 }
@@ -244,6 +263,7 @@ async fn run(
     format: ReportFormat,
     accept_skips: &[String],
     target: &Target,
+    hostile_target: Option<&Target>,
     probe: Option<&dyn TableProbe>,
 ) -> ExitCode {
     if let Some(refused) = preflight(target, role.runtime_role()).await {
@@ -258,6 +278,14 @@ async fn run(
         }
         CertifyRole::Destination => d::certify(target, probe).await,
     };
+    // The honest-check clause rides its OWN spawn with the
+    // misconfigured document; without one it skips with the reason.
+    match (role, hostile_target) {
+        (CertifyRole::Source, Some(hostile)) => c::source(&mut report, hostile).await,
+        (CertifyRole::Destination, Some(hostile)) => c::destination(&mut report, hostile).await,
+        (CertifyRole::Source, None) => c::skip_source(&mut report),
+        (CertifyRole::Destination, None) => c::skip_destination(&mut report),
+    }
     if kill_matrix {
         let entries = match role {
             CertifyRole::Source => k::source(target).await,

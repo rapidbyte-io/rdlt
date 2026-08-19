@@ -279,7 +279,11 @@ pub async fn run(
         gate::identifier("state format name", state_format_name).map_err(error::Error::Protocol)?;
     }
     // Empty means "a source" per the proto field's own doc — only a
-    // non-empty payload claims to be a capabilities document.
+    // non-empty payload claims to be a capabilities document. No byte
+    // ceiling ahead of this parse, deliberately: `Capabilities` is an
+    // all-scalar typed sheet whose materialization is ~1× its wire
+    // bytes — re-evaluate the moment the type grows a collection or
+    // untyped field, the way `state_doc_json` earned its ceiling.
     let capabilities: Option<Capabilities> = if ok.capabilities_json.is_empty() {
         None
     } else {

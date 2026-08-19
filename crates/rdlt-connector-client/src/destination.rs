@@ -411,6 +411,11 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
             ))
             .await?;
         match reply {
+            // No byte ceiling ahead of the receipt parse, deliberately:
+            // `CommitReceipt` is `{String, u64}` and materializes ~1×
+            // its wire bytes — re-evaluate the moment the type grows a
+            // collection or untyped field, the way `state_doc_json`
+            // earned its ceiling.
             session_reply::Reply::Receipt(receipt) => receipt
                 .receipt_json
                 .map(|bytes| {

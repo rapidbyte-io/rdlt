@@ -1,5 +1,6 @@
-//! Destination conformance. Asserted clauses — EXACTLY these seven, no
-//! more:
+//! Destination conformance. Asserted clauses — EXACTLY these eight, no
+//! more ([`verify`] asserts the first seven; [`verify_check_refusal`]
+//! asserts D7, on an author-supplied misconfigured instance):
 //!
 //! - **D1** staging invisibility: rows written but not committed are not
 //!   reader-visible.
@@ -12,13 +13,20 @@
 //!   staged rows invisible; only the new session's rows publish.
 //! - **D5** idempotent `ensure_table`.
 //! - **D6** fresh pipelines have no state.
+//! - **D7** honest check: `check()` on a connector configured against a
+//!   target its own operations must refuse answers that refusal ITSELF,
+//!   fatal — never `Ok` (a probe that passes what a run then fails) and
+//!   never transient (retry bait: no retry fixes a misconfiguration).
 //! - **D8** merge upserts by `_rdlt_id` (asserted only when the
 //!   destination declares the merge capability).
 //!
 //! Verified black-box through the SPI plus one author-supplied
 //! [`TableProbe`] — row counting is the only thing the SPI itself cannot
-//! do. D7 has no check here yet; adding one is deferred work, renumbering
-//! is forbidden.
+//! do — plus, for D7 alone, one author-supplied MISCONFIGURED instance:
+//! only the connector's own config vocabulary can spell a target its
+//! operations must refuse (the canonical shapes: a regular file behind a
+//! trailing slash where a directory is expected; a directory where a
+//! file is expected). Renumbering is forbidden.
 
 use std::sync::Arc;
 
@@ -35,6 +43,40 @@ use rdlt_connector::destination::{Destination, LoadSession, OpenContext};
 
 use super::{Failure, Skip, Verdict};
 use crate::fixtures;
+
+/// D7, the honest-check clause, on an author-supplied MISCONFIGURED
+/// connector: its `check()` must refuse FATAL. `Ok` is a lying probe —
+/// every run that trusts it then fails where the probe said go — and a
+/// transient classification is retry bait, because no retry fixes a
+/// misconfiguration. The author picks the misconfiguration from their
+/// own vocabulary; the canonical shapes are a regular file behind a
+/// trailing slash where a directory is expected, and a directory where
+/// a file is expected.
+pub async fn verify_check_refusal<D: Destination>(misconfigured: &D) -> Verdict {
+    let mut failures: Vec<Failure> = Vec::new();
+    match misconfigured.check().await {
+        Err(rdlt_connector::error::DestinationError::Fatal(_)) => {}
+        Err(other) => failures.push(Failure {
+            clause: "D7",
+            message: format!(
+                "check() on a misconfigured target must refuse FATAL — no retry fixes a \
+                 misconfiguration — but it classified: {other}"
+            ),
+        }),
+        Ok(()) => failures.push(Failure {
+            clause: "D7",
+            message: "check() answered Ok on a target its own operations must refuse — a \
+                      probe that passes what a run then fails is retry bait for every \
+                      caller that trusts it"
+                .to_string(),
+        }),
+    }
+    Verdict {
+        failures,
+        skips: Vec::new(),
+        concluded: vec!["D7"],
+    }
+}
 
 /// The one capability the SPI cannot provide: counting reader-VISIBLE
 /// rows in a table (a warehouse query). Implement per destination under

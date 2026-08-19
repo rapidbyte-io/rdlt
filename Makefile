@@ -234,6 +234,7 @@ RDLT_BUILD_CONNECTOR_BINS=1 cargo nextest run -p rdlt-certify --features spawn-b
 	tools/check-python-stubs.sh; \
 	PATH="$$(pwd)/$$venv/bin:$$PATH" $${CARGO_TARGET_DIR:-target}/debug/rdlt-certify --role source \
 		--config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
+		--hostile-config connectors/python/rdlt-connector-pyjsonl/fixtures/hostile-config.json \
 		connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl; \
 else \
 	echo "SKIP: python3 absent — the Python proof-connector certification needs it"; \

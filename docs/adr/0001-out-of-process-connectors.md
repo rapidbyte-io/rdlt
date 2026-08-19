@@ -554,3 +554,9 @@ is `rdlt_connector_v1.proto`, the package is `rdlt.connector.v1`, and a
 skewed v0 binary refuses at both the service path and the handshake's
 version check. The compatibility rules themselves stand binding as
 written.
+
+Third amendment, same date: the 039 program record above names a
+`validate` CLI subcommand among what that feature integrated. The
+subcommand was retired 2026-08-19 and its successor is spelled `check`
+(`rdlt check`); the record stands as the dated history of what 039
+built.
