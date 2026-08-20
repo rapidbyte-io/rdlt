@@ -153,12 +153,21 @@ pub(crate) fn append_receipt(dir: &Path, receipt: &CommitReceipt) -> Result<(), 
 /// the scan got having not found one for this LOAD.
 pub(crate) struct ReceiptScan {
     pub(crate) receipt: Option<CommitReceipt>,
-    /// Bytes scanned without meeting `load_id` at all. A later scan for
-    /// the SAME load may start here: the log is append-only below its
-    /// last complete line, so a prefix that named the load nowhere still
-    /// names it nowhere — for any commit_seq, since a receipt for a
-    /// sequence is a receipt for its load.
-    pub(crate) load_absent_below: u64,
+    /// The greatest `commit_seq` for the asked-about load found below
+    /// [`ReceiptScan::scanned_to`], if the load appears there at all.
+    ///
+    /// This is what makes the resume useful for the case that actually
+    /// happens: one load committing many times. A prefix holding the
+    /// load's sequences up to `n` holds none above `n`, so the next
+    /// question — always about a higher sequence, since commits count
+    /// upward — can start where this scan stopped. A question about a
+    /// sequence at or below `n` starts over, which is correct and is
+    /// what replay does.
+    pub(crate) highest_seq_seen: Option<u64>,
+    /// How far this scan read, at a line boundary. Bytes below it are
+    /// settled: the log is append-only beneath its last complete line,
+    /// and the torn-tail cut removes only a trailing incomplete one.
+    pub(crate) scanned_to: u64,
 }
 
 /// The receipt the log holds for `(load_id, commit_seq)`, if any,
@@ -192,7 +201,8 @@ pub(crate) fn find_receipt_from(
     use std::io::Seek as _;
     let absent = |scanned: u64| ReceiptScan {
         receipt: None,
-        load_absent_below: scanned,
+        highest_seq_seen: None,
+        scanned_to: scanned,
     };
     let path = dir.join(RECEIPTS_FILE);
     let Some(len) = gate_regular(&path, "receipt log")? else {
@@ -217,7 +227,9 @@ pub(crate) fn find_receipt_from(
     let mut scanned = from;
     // Whether this load is named anywhere in what was read: a resume
     // point is only offered for a prefix that never mentions it.
-    let mut load_seen = false;
+    // The greatest sequence of the asked-about load met so far — what
+    // lets the next question skip this prefix instead of re-reading it.
+    let mut highest_seq_seen: Option<u64> = None;
     let mut reader = std::io::BufReader::new(file);
     let mut line: Vec<u8> = Vec::new();
     loop {
@@ -233,7 +245,8 @@ pub(crate) fn find_receipt_from(
             // stepping over what an append will replace.
             return Ok(ReceiptScan {
                 receipt: None,
-                load_absent_below: if load_seen { 0 } else { scanned },
+                highest_seq_seen,
+                scanned_to: scanned,
             });
         }
         let (taken, complete) = match chunk.iter().position(|byte| *byte == b'\n') {
@@ -261,16 +274,15 @@ pub(crate) fn find_receipt_from(
         if let Some(receipt) = decode_receipt_line(&path, &line)?
             && receipt.load_id == *load_id
         {
-            {
-                // The load is named in this log, so no prefix of it is
-                // free of the load and no later scan may skip one.
-                load_seen = true;
-                if receipt.commit_seq == commit_seq {
-                    return Ok(ReceiptScan {
-                        receipt: Some(receipt),
-                        load_absent_below: 0,
-                    });
-                }
+            highest_seq_seen = Some(
+                highest_seq_seen.map_or(receipt.commit_seq, |seen| seen.max(receipt.commit_seq)),
+            );
+            if receipt.commit_seq == commit_seq {
+                return Ok(ReceiptScan {
+                    receipt: Some(receipt),
+                    highest_seq_seen,
+                    scanned_to: scanned,
+                });
             }
         }
         line.clear();
@@ -532,62 +544,118 @@ mod tests {
             rendered.len()
         );
     }
-}
-/// A resumed scan answers exactly what a full one does.
-///
-/// The resume point is only ever a prefix the load was absent from,
-/// so the two must agree for every question — including the one
-/// whose answer sits past the resume point, which is the whole
-/// point of resuming, and the one about a DIFFERENT load, which
-/// must not inherit another load's offset.
-#[test]
-fn a_resumed_receipt_scan_answers_what_a_full_one_does() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let other = LoadId::new("other-load");
-    let ours = LoadId::new("our-load");
-    for seq in 1..=8u64 {
+
+    /// A resumed scan answers exactly what a full one does.
+    ///
+    /// The resume point is only ever a prefix the load was absent from,
+    /// so the two must agree for every question — including the one
+    /// whose answer sits past the resume point, which is the whole
+    /// point of resuming, and the one about a DIFFERENT load, which
+    /// must not inherit another load's offset.
+    #[test]
+    fn a_resumed_receipt_scan_answers_what_a_full_one_does() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let other = LoadId::new("other-load");
+        let ours = LoadId::new("our-load");
+        for seq in 1..=8u64 {
+            append_receipt(
+                dir.path(),
+                &CommitReceipt {
+                    load_id: other.clone(),
+                    commit_seq: seq,
+                },
+            )
+            .expect("seed a foreign load's receipts");
+        }
+
+        // A prefix naming only the other load offers a resume point.
+        let scan = find_receipt_from(dir.path(), &ours, 3, 0).expect("scan");
+        assert!(scan.receipt.is_none());
+        let resume = scan.scanned_to;
+        assert!(resume > 0, "a load-free prefix is resumable");
+
+        // Our receipt lands past it, and the resumed scan finds it
+        // exactly as a full scan does.
         append_receipt(
             dir.path(),
             &CommitReceipt {
-                load_id: other.clone(),
-                commit_seq: seq,
+                load_id: ours.clone(),
+                commit_seq: 3,
             },
         )
-        .expect("seed a foreign load's receipts");
+        .expect("append ours");
+        let resumed = find_receipt_from(dir.path(), &ours, 3, resume).expect("resumed scan");
+        let full = find_receipt_from(dir.path(), &ours, 3, 0).expect("full scan");
+        assert!(resumed.receipt.is_some(), "the resumed scan finds it");
+        assert_eq!(
+            resumed.receipt.map(|r| r.commit_seq),
+            full.receipt.map(|r| r.commit_seq),
+            "resumed and full scans agree"
+        );
+
+        // A log that names the load IS resumable for a sequence above
+        // everything it names — the canonical case, one load committing
+        // many times.
+        let scan = find_receipt_from(dir.path(), &ours, 99, 0).expect("scan");
+        assert_eq!(
+            scan.highest_seq_seen,
+            Some(3),
+            "the scan reports the highest sequence of this load it met"
+        );
+        assert!(
+            scan.scanned_to > 0,
+            "and how far it read, so the next question can start there"
+        );
     }
 
-    // A prefix naming only the other load offers a resume point.
-    let scan = find_receipt_from(dir.path(), &ours, 3, 0).expect("scan");
-    assert!(scan.receipt.is_none());
-    let resume = scan.load_absent_below;
-    assert!(resume > 0, "a load-free prefix is resumable");
+    /// The canonical case is one load committing many times, and it
+    /// must not re-read the log each time. A prefix carrying this
+    /// load's sequences up to `n` carries none above `n`, so a question
+    /// about a higher sequence starts where the last scan stopped —
+    /// which is what keeps N commits from costing N² lines read.
+    #[test]
+    fn a_loads_later_commits_do_not_reread_its_earlier_receipts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ours = LoadId::new("our-load");
+        for seq in 1..=6u64 {
+            append_receipt(
+                dir.path(),
+                &CommitReceipt {
+                    load_id: ours.clone(),
+                    commit_seq: seq,
+                },
+            )
+            .expect("append");
+        }
 
-    // Our receipt lands past it, and the resumed scan finds it
-    // exactly as a full scan does.
-    append_receipt(
-        dir.path(),
-        &CommitReceipt {
-            load_id: ours.clone(),
-            commit_seq: 3,
-        },
-    )
-    .expect("append ours");
-    let resumed = find_receipt_from(dir.path(), &ours, 3, resume).expect("resumed scan");
-    let full = find_receipt_from(dir.path(), &ours, 3, 0).expect("full scan");
-    assert!(resumed.receipt.is_some(), "the resumed scan finds it");
-    assert_eq!(
-        resumed.receipt.map(|r| r.commit_seq),
-        full.receipt.map(|r| r.commit_seq),
-        "resumed and full scans agree"
-    );
+        // Ask about the load's own past, then about its future.
+        let scan = find_receipt_from(dir.path(), &ours, 6, 0).expect("scan");
+        assert!(scan.receipt.is_some(), "the sixth receipt is there");
+        let resume = scan.scanned_to;
+        let seen = scan.highest_seq_seen.expect("the load was met");
+        assert!(resume > 0 && seen >= 6);
 
-    // A load the log DOES name offers no resume point, so a later
-    // question about it cannot skip its own receipts.
-    assert_eq!(
-        find_receipt_from(dir.path(), &ours, 99, 0)
-            .expect("scan")
-            .load_absent_below,
-        0,
-        "a log naming the load is not resumable for it"
-    );
+        // The next commit resumes: it must find nothing (not yet
+        // written) and must agree with a full scan that finds nothing.
+        let resumed = find_receipt_from(dir.path(), &ours, 7, resume).expect("resumed");
+        let full = find_receipt_from(dir.path(), &ours, 7, 0).expect("full");
+        assert!(resumed.receipt.is_none() && full.receipt.is_none());
+
+        // And once written, the resumed scan finds it where the full
+        // one does — the resume skipped only what it had already read.
+        append_receipt(
+            dir.path(),
+            &CommitReceipt {
+                load_id: ours.clone(),
+                commit_seq: 7,
+            },
+        )
+        .expect("append");
+        let resumed = find_receipt_from(dir.path(), &ours, 7, resume).expect("resumed");
+        assert_eq!(
+            resumed.receipt.map(|r| r.commit_seq),
+            Some(7),
+            "the resumed scan finds a receipt written past its resume point"
+        );
+    }
 }

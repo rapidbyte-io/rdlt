@@ -25,6 +25,23 @@ use super::{part, store};
 /// preventing a client from retaining an unbounded session in memory.
 const STAGING_CEILING_BYTES: usize = 256 << 20;
 
+/// What one receipt scan learned, kept so the next need not learn it
+/// again.
+///
+/// The log grows for the store's life and every publish interrogates
+/// it, so re-reading from byte zero each time makes per-commit latency
+/// climb with lifetime commits. What makes skipping safe is the pair:
+/// the prefix already read, and the greatest sequence of this load
+/// inside it. A prefix carrying sequences up to `highest_seq` carries
+/// none above it, and the log's bytes below a complete line never
+/// change.
+#[derive(Debug)]
+struct ReceiptMemo {
+    load: LoadId,
+    scanned_to: u64,
+    highest_seq: u64,
+}
+
 /// One session over the output directory: staged batches in memory,
 /// published files, receipts and state on disk. Holds the session
 /// lease; `close` and drop both release it.
@@ -37,7 +54,7 @@ pub struct Session {
     /// each time climbs with lifetime commits; a prefix that never
     /// named a load never will, so the next question about the SAME
     /// load starts where the last one stopped.
-    receipt_scan: Option<(LoadId, u64)>,
+    receipt_scan: Option<ReceiptMemo>,
     load_id: LoadId,
     staged: Vec<(TableName, RecordBatch)>,
     staged_bytes: usize,
@@ -57,15 +74,22 @@ impl Session {
         load_id: &LoadId,
         commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError> {
+        // Resume only where the prefix cannot hold the answer: the same
+        // load, and a sequence above every one that prefix carries.
+        // Commits count upward, so the case that actually happens — a
+        // load's second, third, hundredth commit — always resumes; a
+        // replay asking about an earlier sequence starts over, which is
+        // what correctness requires and what replay does rarely.
         let from = match &self.receipt_scan {
-            Some((scanned_load, offset)) if scanned_load == load_id => *offset,
+            Some(memo) if memo.load == *load_id && commit_seq > memo.highest_seq => memo.scanned_to,
             _ => 0,
         };
         let scan = store::find_receipt_from(&self.dir, load_id, commit_seq, from)?;
-        self.receipt_scan = match scan.load_absent_below {
-            0 => None,
-            offset => Some((load_id.clone(), offset)),
-        };
+        self.receipt_scan = Some(ReceiptMemo {
+            load: load_id.clone(),
+            scanned_to: scan.scanned_to,
+            highest_seq: scan.highest_seq_seen.unwrap_or(0),
+        });
         Ok(scan.receipt)
     }
     /// A fresh session over `dir` for `load_id`, holding `lease` until
