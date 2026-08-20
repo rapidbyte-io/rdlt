@@ -212,3 +212,96 @@ async fn a_lying_read_fails_the_clause() {
     assert_eq!(failures[0].clause, "S6");
     assert!(failures[0].message.contains("completed against a target"));
 }
+
+/// S6's two real shapes, the ones a probe cannot catch and a flattened
+/// read verdict hides: a source that PARKS on the bad path, and one
+/// that FLOODS from it. Both refuse nothing and both must fail the
+/// clause — if either passes, the clause certifies the defect it
+/// exists to find.
+#[tokio::test]
+async fn a_parking_or_flooding_read_fails_the_clause() {
+    struct ParkingSource;
+    #[async_trait::async_trait]
+    impl Source for ParkingSource {
+        fn spec(&self) -> rdlt_connector_sdk::spi::spec::ConnectorSpec {
+            rdlt_connector_sdk::spi::spec::ConnectorSpec::new("parks", "0.0.0")
+        }
+        async fn check(&self) -> Result<(), rdlt_connector_sdk::spi::error::SourceError> {
+            unreachable!("the clause drives streams and read")
+        }
+        async fn streams(
+            &self,
+        ) -> Result<
+            Vec<rdlt_connector_sdk::spi::source::StreamSpec>,
+            rdlt_connector_sdk::spi::error::SourceError,
+        > {
+            Ok(vec![rdlt_connector_sdk::spi::source::StreamSpec::new("s")])
+        }
+        async fn read(
+            &self,
+            _request: rdlt_connector_sdk::spi::source::ReadRequest,
+        ) -> Result<(), rdlt_connector_sdk::spi::error::SourceError> {
+            // The FIFO shape: an open that never returns.
+            std::future::pending::<()>().await;
+            unreachable!("pending never completes")
+        }
+    }
+
+    struct FloodingSource;
+    #[async_trait::async_trait]
+    impl Source for FloodingSource {
+        fn spec(&self) -> rdlt_connector_sdk::spi::spec::ConnectorSpec {
+            rdlt_connector_sdk::spi::spec::ConnectorSpec::new("floods", "0.0.0")
+        }
+        async fn check(&self) -> Result<(), rdlt_connector_sdk::spi::error::SourceError> {
+            unreachable!("the clause drives streams and read")
+        }
+        async fn streams(
+            &self,
+        ) -> Result<
+            Vec<rdlt_connector_sdk::spi::source::StreamSpec>,
+            rdlt_connector_sdk::spi::error::SourceError,
+        > {
+            Ok(vec![rdlt_connector_sdk::spi::source::StreamSpec::new("s")])
+        }
+        async fn read(
+            &self,
+            mut request: rdlt_connector_sdk::spi::source::ReadRequest,
+        ) -> Result<(), rdlt_connector_sdk::spi::error::SourceError> {
+            // The character-device shape: content without end, then a
+            // refusal — the refusal must not excuse the flood.
+            let row = serde_json::json!({"pad": "x".repeat(4096)});
+            for _ in 0..16 {
+                let batch: Vec<serde_json::Value> = std::iter::repeat_n(row.clone(), 256).collect();
+                if request.out.rows(batch).await.is_err() {
+                    break;
+                }
+            }
+            Err(rdlt_connector_sdk::spi::error::SourceError::fatal(
+                "refused, eventually",
+            ))
+        }
+    }
+
+    let parked = conformance::source::verify_read_refusal(&ParkingSource)
+        .await
+        .expecting_no_skips();
+    assert_eq!(parked.len(), 1, "the parking read fails exactly S6");
+    assert_eq!(parked[0].clause, "S6");
+    assert!(
+        parked[0].message.contains("parks"),
+        "the refusal names the shape: {}",
+        parked[0].message
+    );
+
+    let flooded = conformance::source::verify_read_refusal(&FloodingSource)
+        .await
+        .expecting_no_skips();
+    assert_eq!(flooded.len(), 1, "the flooding read fails exactly S6");
+    assert_eq!(flooded[0].clause, "S6");
+    assert!(
+        flooded[0].message.contains("before refusing"),
+        "the refusal names the flood: {}",
+        flooded[0].message
+    );
+}

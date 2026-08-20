@@ -1758,15 +1758,33 @@ mod wire_tests {
     /// declarations than the wire admits.
     #[tokio::test]
     async fn a_rogue_violating_the_declaration_framing_is_refused_by_the_client() {
-        for (name, raw) in [
-            ("not json", b"{\"name\":\"a\"}\nnot-json".to_vec()),
-            ("trailing newline", b"{\"name\":\"a\"}\n".to_vec()),
+        // A line the client PARSES, so each arm's framing violation is
+        // what refuses it — a spec missing a required field would
+        // refuse at line 1 and prove nothing about the framing.
+        let spec = |name: &str| {
+            format!(
+                "{{\"name\":\"{name}\",\"primary_key\":null,\"cursor_field\":null,\
+                 \"type_hints\":{{}}}}"
+            )
+        };
+        for (name, raw, expected) in [
+            (
+                "not json",
+                format!("{}\nnot-json", spec("a")).into_bytes(),
+                "syntax error",
+            ),
+            (
+                "trailing newline",
+                format!("{}\n", spec("a")).into_bytes(),
+                "undecodable",
+            ),
             (
                 "over count",
                 (0..1025)
-                    .map(|i| format!("{{\"name\":\"s{i}\"}}").into_bytes())
+                    .map(|i| spec(&format!("s{i}")).into_bytes())
                     .collect::<Vec<_>>()
                     .join(&b'\n'),
+                "over the 1024",
             ),
         ] {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1796,9 +1814,17 @@ mod wire_tests {
                 .streams()
                 .await
                 .expect_err(&format!("the {name} declaration is refused"));
+            let rendered = format!("{refusal}");
             assert!(
-                !format!("{refusal}").is_empty(),
-                "the {name} refusal carries its reason"
+                rendered.contains(expected),
+                "the {name} refusal names its own violation (wanted {expected:?}): {rendered}"
+            );
+            // The well-formed line was ACCEPTED: a shape mismatch here
+            // would mean the client refused line 1 and never judged the
+            // framing this arm exists to drive.
+            assert!(
+                !rendered.contains("document shape mismatch"),
+                "the {name} arm must exercise framing, not a malformed first line: {rendered}"
             );
         }
     }

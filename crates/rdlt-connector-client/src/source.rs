@@ -153,15 +153,23 @@ const MAX_DECLARED_STREAM_SPECS: usize = 1024;
 /// delimiter judged is `\n` alone, and the `\r` rides inside the
 /// line's own whitespace budget.
 ///
-/// THE TYPED FLOOR, derived here because the posture record cites it
-/// and a figure with no anchor drifts as the type changes: the densest
-/// gate-legal declaration is many minimal specs — `{"name":"a"}` is 12
-/// wire bytes plus its delimiter, and becomes a `StreamSpec` whose own
-/// struct, its `String` allocation, and its two empty collections cost
-/// on the order of five times that. Hence the ~5× floor: it is a
-/// property of the SHAPE (small documents, fixed per-spec overhead),
-/// not of any one field, and a field added to `StreamSpec` raises it.
-/// The count ceiling below is what keeps the product bounded.
+/// THE TYPED EXPANSION, derived here because the posture record cites
+/// a number and a number with no anchor drifts as the type changes.
+/// The measure is retained heap against admitted wire bytes, counting
+/// each `String`'s allocation at its length.
+///
+/// The expansion is worst where the wire spends least per retained
+/// allocation, which is NOT the minimal spec — that one is dominated
+/// by its own fixed struct and lands near 2x. It is a spec at the
+/// COLLECTION gates: a primary key of 64 one-character fields spends
+/// about four wire bytes per field (`"a",`) and retains a 24-byte
+/// `String` header plus its heap block for each, and 4096 one-
+/// character type-hint keys spend about eight (`"a":"Str",`) for a
+/// header, a block and a map slot. Those land the ratio in the
+/// neighbourhood of five to six times the wire, which is the figure
+/// the posture record carries and the reason the COUNT gates below
+/// exist: without them the collections are what a legal reply spends
+/// its bytes on.
 fn decode_stream_specs(stream_specs_jsonl: &[u8]) -> Result<Vec<StreamSpec>, SourceError> {
     if stream_specs_jsonl.is_empty() {
         return Ok(Vec::new());

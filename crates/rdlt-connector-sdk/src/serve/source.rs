@@ -114,8 +114,9 @@ const FRAME_MESSAGE_CAPACITY: usize = 64;
 /// retains is its payload plus a few megabytes of structure, not the
 /// tens of millions of nodes a compact document of the same byte size
 /// would otherwise become. The product this ceiling multiplies is
-/// therefore bounded, which is what makes the count a budget rather
-/// than a hope. Judging the node COUNT leaves the cursor the opaque
+/// therefore bounded, and the house names its numbers: at this ceiling
+/// the retained cursors across a saturated connector come to a few
+/// gigabytes rather than the tens the byte ceiling alone allowed. Judging the node COUNT leaves the cursor the opaque
 /// document its contract says it is: no value is inspected, only
 /// counted.
 pub const MAX_CONCURRENT_READS: usize = 1024;

@@ -50,7 +50,9 @@ fn refuse_entry_flood(seat: &str, entries: usize) -> Result<(), session_reply::R
         return Err(session_reply::Reply::Error(wire::error_frame(
             Classification::Fatal,
             format!(
-                "a committed state carries {entries} {seat} — over the                  {MAX_STATE_SUBMAP_ENTRIES} ceiling"
+                "a committed state carries {entries} {seat} — over the \
+                 {MAX_STATE_SUBMAP_ENTRIES} ceiling; a state that grew here honestly \
+                 needs its dead entries pruned"
             ),
             None,
         )));
@@ -60,18 +62,26 @@ fn refuse_entry_flood(seat: &str, entries: usize) -> Result<(), session_reply::R
 
 /// The greatest number of entries either identifier sub-map of a
 /// committed state document may carry. The document ceiling that
-/// admitted the meta bounds its BYTES, but an 8 MiB document of
-/// minimal `"a":{}` entries is ~800k of them, each expanding into a
-/// map node plus an owned key — hundreds of megabytes typed, planted
-/// into whatever the backend retains and re-serialized by every later
-/// state read. This bounds the count instead: 65,536 entries cost a
-/// few megabytes typed, and the honest producer is nowhere near it —
-/// one cursor per stream against a source that declares at most 1024,
-/// and one schema hash per table the load actually wrote. A pipeline
-/// whose state genuinely outgrows this is refused loudly at the wire
-/// rather than silently multiplied; the ceiling is not configurable
-/// today.
-const MAX_STATE_SUBMAP_ENTRIES: usize = 64 * 1024;
+/// admitted the meta bounds its BYTES — about 550k minimal cursor
+/// entries, about 105k schema hashes — but every one of those becomes
+/// a map node plus an owned key, planted into whatever the backend
+/// retains and re-serialized by every later state read. This bounds
+/// the count instead.
+///
+/// WHAT IT CAN REFUSE, said plainly because the count that matters
+/// ACCUMULATES: a state's cursors are keyed by every stream name the
+/// pipeline has ever committed, not by the streams a source declares
+/// today, and nothing prunes the ones that stop appearing. A pipeline
+/// minting new stream names forever — per tenant, per day — grows the
+/// map monotonically and will, eventually, meet this ceiling and have
+/// every publish refuse. The ceiling is set far above any plausible
+/// arrival at that point (a pipeline adding a hundred new stream names
+/// every day reaches it in seven years) and below what the byte gate
+/// admits, so it trims the flood without being the wall an honest
+/// pipeline hits first. The remedy when it IS met is to prune the
+/// dead cursors from the pipeline's state; making the ceiling
+/// configurable is the standing alternative and not taken here.
+const MAX_STATE_SUBMAP_ENTRIES: usize = 256 * 1024;
 
 /// Every identifier a decoded `CommitMeta` carries, through the same
 /// ceiling as the session's top-level ids: beyond its own load id and
@@ -186,8 +196,16 @@ pub(super) const MAX_CURSOR_NODES: usize = 64 * 1024;
 /// A parsed cursor's node count against the ceiling. The walk is
 /// ITERATIVE with its own stack: a cursor's nesting is bounded by the
 /// parser that produced it, but a recursive walk would make this gate
-/// the thing that overflows. It short-circuits the moment the ceiling
-/// is crossed, so a hostile document costs the ceiling, not its size.
+/// the thing that overflows.
+///
+/// What this bounds is RETENTION, which is what a read holds for its
+/// lifetime and what the concurrency ceiling multiplies. It does not
+/// bound the parse: the document is already a `Value` by the time the
+/// walk runs, so the parse expansion has been paid whatever the count
+/// says — and the walk's own stack holds a pointer per child of every
+/// node it has popped, so crossing the ceiling is not free either. The
+/// gate stops the flood from being KEPT; the byte ceiling above is
+/// what stops it from being large.
 pub(super) fn refuse_dense_cursor(field: &str, value: &serde_json::Value) -> Result<(), String> {
     let mut pending = vec![value];
     let mut nodes = 0usize;

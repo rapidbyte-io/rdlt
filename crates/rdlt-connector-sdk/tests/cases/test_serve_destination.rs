@@ -2671,7 +2671,7 @@ async fn a_flooded_state_submap_refuses_before_the_backend() {
         .expect("opened");
 
     let mut flooded = commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1);
-    for i in 0..(64 * 1024 + 1) {
+    for i in 0..(256 * 1024 + 1) {
         flooded.state.cursors.insert(
             StreamName::new(format!("s{i}")),
             Cursor::new(serde_json::json!(1)),

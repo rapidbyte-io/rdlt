@@ -94,10 +94,13 @@ pub const CLAUSES: &[Clause] = &[
                      read is the seat that opens the target, where a bad path becomes an \
                      unbounded buffer or a parked thread, and a probe alone cannot catch \
                      either. Completing the read fails the clause, as does parking past the \
-                     probe deadline; refusing at the declaration, or earlier at the \
-                     handshake, passes. Driven only when the operator supplies a \
-                     misconfigured document via --hostile-config; skipped with the reason \
-                     otherwise.",
+                     probe deadline. Refusing earlier passes: at the handshake, or at the \
+                     declaration — and note that a connector whose streams() fails for ANY \
+                     reason, or which declares no streams at all under the misconfigured \
+                     document, passes without its read being driven; the clause trusts the \
+                     operator to supply a document that is otherwise valid. Driven only when \
+                     the operator supplies a misconfigured document via --hostile-config; \
+                     skipped with the reason otherwise.",
     },
     Clause {
         id: "D1",

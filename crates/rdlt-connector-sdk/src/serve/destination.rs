@@ -256,11 +256,19 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
     }
 }
 
-/// The greatest number of columns one wire batch may declare. A table
-/// this wide is already past what any destination models honestly; the
-/// cap exists so a rogue frame cannot spend its bytes on field COUNT
-/// (the cheapest per-byte expansion an Arrow schema offers) instead of
-/// on data.
+/// The greatest number of columns one wire batch may declare — a
+/// schema message spends only forty-odd flatbuffer bytes per field, so
+/// field COUNT is the cheapest per-byte expansion an Arrow frame
+/// offers, and each field becomes an owned `Field` and an array. A
+/// table this wide is already past what any destination models
+/// honestly.
+///
+/// This bounds WIDTH only. Rows are bounded separately, so the two
+/// together admit a rectangle of up to ~4.1e9 cells — well above the
+/// engine's own per-batch cell budget, which is the host's to enforce
+/// on its own side. The wire's job here is to keep either dimension
+/// from being spent as an allocation lever; it is deliberately not a
+/// cell budget, and calling it one would overstate it.
 const MAX_RECORD_BATCH_COLUMNS: usize = 4096;
 
 fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
@@ -283,6 +291,19 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
             gate::render_diagnostic(&error.to_string(), 256)
         )
     })?;
+    // Width is judged on the SCHEMA, before a batch is pulled: by the
+    // time a `RecordBatch` exists arrow has built every `Field` AND
+    // every array, which is the allocation this cap exists to prevent.
+    // The schema message is read by `try_new` above, so the count is
+    // known here.
+    let declared_columns = reader.schema().fields().len();
+    if declared_columns > MAX_RECORD_BATCH_COLUMNS {
+        return Err(format!(
+            "{REFUSAL}: the batch declares {declared_columns} columns, over the {}-column \
+             wire cap — column count is bounded separately from encoded bytes",
+            MAX_RECORD_BATCH_COLUMNS
+        ));
+    }
     let first = match reader.next() {
         Some(Ok(batch)) => batch,
         Some(Err(error)) => {
@@ -297,23 +318,6 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
     // see — Null and run-end-encoded columns carry millions of rows in
     // almost no body bytes, and the batch goes straight to the
     // connector's own backend.
-    // Column count is the batch's OTHER uncounted dimension: a schema
-    // message spends forty-odd flatbuffer bytes per field, so a frame
-    // inside the encode cap declares over a million of them, and each
-    // becomes an owned `Field` plus an array before the backend is
-    // handed anything. Cells — rows times columns — are what the
-    // engine's own batch budget bounds, so the wire holds the same
-    // product: the row cap above and this together admit any honest
-    // batch (a thousand columns leaves room for a million rows) and
-    // refuse the shapes that are wide for width's sake.
-    if first.num_columns() > MAX_RECORD_BATCH_COLUMNS {
-        return Err(format!(
-            "{REFUSAL}: the batch carries {} columns, over the {}-column wire cap — column \
-             count is bounded separately from encoded bytes",
-            first.num_columns(),
-            MAX_RECORD_BATCH_COLUMNS
-        ));
-    }
     if first.num_rows() > channel::MAX_RECORD_BATCH_ROWS {
         return Err(format!(
             "{REFUSAL}: the batch carries {} rows, over the {}-row wire cap — row count is \

@@ -1,6 +1,7 @@
-//! Source conformance. Asserted clauses — EXACTLY these four, no more
-//! ([`verify`] asserts the first three; [`verify_check_refusal`]
-//! asserts S5, on an author-supplied misconfigured instance):
+//! Source conformance. Asserted clauses — EXACTLY these five, no more
+//! ([`verify`] asserts the first three; [`verify_check_refusal`] and
+//! [`verify_read_refusal`] assert S5 and S6, each on an
+//! author-supplied misconfigured instance):
 //!
 //! - **S1** the resume law: for every checkpoint `c`,
 //!   `full_read == rows_covered_by(c) ++ read(since = c)`.
@@ -25,7 +26,7 @@
 //!   alone certifies clean while the read stays unguarded.
 //!
 //! Verified black-box against any deterministic [`Source`] — plus, for
-//! S5 alone, one author-supplied MISCONFIGURED instance: only the
+//! S5 and S6, one author-supplied MISCONFIGURED instance: only the
 //! connector's own config vocabulary can spell a target its read must
 //! refuse (the canonical shape: a directory where a file is expected).
 //! Renumbering is forbidden; S3 stays retired.
@@ -93,32 +94,97 @@ pub async fn verify_read_refusal<S: Source>(misconfigured: &S) -> Verdict {
         // target, at the earliest seat it can be seen.
         Err(_) => None,
     };
-    match spec {
-        None => {
-            return Verdict {
-                failures,
-                skips: Vec::new(),
-                concluded: vec!["S6"],
+    let Some(spec) = spec else {
+        return Verdict {
+            failures,
+            skips: Vec::new(),
+            concluded: vec!["S6"],
+        };
+    };
+
+    // The read is driven DIRECTLY rather than through the harness's
+    // full read, because this clause must tell the outcomes apart that
+    // a shared reader flattens into one error: a source REFUSING is
+    // the clause satisfied, while a source that parks or floods is the
+    // clause's whole point. Each gets its own verdict and its own
+    // words.
+    let (out, mut input) = records(CHANNEL_BYTE_BUDGET);
+    let request = ReadRequest::new(spec, None, out);
+    let drained = tokio::spawn(async move {
+        let mut pushed: usize = 0;
+        while let Some(push) = input.recv().await {
+            pushed += match &push.payload {
+                PushPayload::RawJson(bytes) => bytes.len(),
+                PushPayload::Arrow(batch) => batch.get_array_memory_size(),
+                _ => 0,
             };
+            if pushed > REFUSAL_FLOOD_CEILING_BYTES {
+                return Err(pushed);
+            }
         }
-        Some(spec) => match read_all(misconfigured, &spec, None).await {
-            // Any typed refusal is the clause satisfied — the read said
-            // no rather than reading whatever the bad target offered.
-            Err(_) => {}
-            Ok(_) => failures.push(Failure {
-                clause: "S6",
-                message: "read() completed against a target check() must refuse — the probe \
-                          and the read disagree, and it is the read that touches the target"
-                    .to_string(),
-            }),
-        },
+        Ok(pushed)
+    });
+    let read = tokio::time::timeout(REFUSAL_DEADLINE, misconfigured.read(request)).await;
+    let flooded = match tokio::time::timeout(std::time::Duration::from_secs(5), drained).await {
+        Ok(Ok(outcome)) => outcome.is_err(),
+        // The drain outliving its bound means the read is still
+        // producing: the flood verdict either way.
+        _ => true,
+    };
+
+    match read {
+        Err(_) => failures.push(Failure {
+            clause: "S6",
+            message: format!(
+                "read() against a misconfigured target neither finished nor refused within \
+                 {}s — a read that parks on a bad path (a FIFO waits for a writer that \
+                 never comes) hangs every caller that trusts the probe",
+                REFUSAL_DEADLINE.as_secs()
+            ),
+        }),
+        Ok(Ok(())) => failures.push(Failure {
+            clause: "S6",
+            message: "read() completed against a target check() must refuse — the probe \
+                      and the read disagree, and it is the read that touches the target"
+                .to_string(),
+        }),
+        // A typed refusal is the clause satisfied — UNLESS the source
+        // shipped a flood on its way to refusing, which is the other
+        // half of what an unguarded read does to its caller.
+        Ok(Err(_)) => {}
     }
+    if flooded {
+        failures.push(Failure {
+            clause: "S6",
+            message: format!(
+                "read() against a misconfigured target pushed more than {} bytes before \
+                 refusing — a read that buffers whatever a bad path offers (a character \
+                 device offers it without end) exhausts its caller no matter how the read \
+                 ends",
+                REFUSAL_FLOOD_CEILING_BYTES
+            ),
+        });
+    }
+
     Verdict {
         failures,
         skips: Vec::new(),
         concluded: vec!["S6"],
     }
 }
+
+/// How long a misconfigured read may run before parking is the verdict.
+/// A refusal is a `metadata` call or a failed open — milliseconds — so
+/// this is generous by orders of magnitude, and it sits below the
+/// certifier's own per-clause bound so the inner framing is what an
+/// operator reads.
+const REFUSAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How much a refusing read may push before the push itself is the
+/// finding. A read that refuses its target has nothing to say; this
+/// admits a connector that emits a little before discovering the
+/// problem, and convicts one that streams a bad path's contents.
+const REFUSAL_FLOOD_CEILING_BYTES: usize = 8 << 20;
 
 /// Every clause this suite asserts, in module-doc order — THE one
 /// clause list: the terminal conclusion derives from it rather than

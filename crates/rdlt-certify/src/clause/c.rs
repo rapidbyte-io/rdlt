@@ -27,7 +27,7 @@ use rdlt_runtime::provider::{self, Provider as _};
 use crate::report::Report;
 use crate::target::{self, Target};
 
-/// The two ids this module can emit — the census's derivation source,
+/// The three ids this module can emit — the census's derivation source,
 /// like every sibling family's constant.
 pub const CLAUSES: [&str; 3] = ["S5", "S6", "D7"];
 
@@ -82,24 +82,16 @@ pub async fn source(report: &mut Report, hostile: &Target) {
         // suite already places in the operator's main config, and the
         // reason the misconfigured document is theirs to write rather
         // than the certifier's to synthesize.
-        Err(provider::Error::Client(ClientError::Handshake { .. })) => {
-            // Refused at the document, before either seat could touch
-            // the target: honest for the probe AND for the read.
-            report.pass("S5");
-            report.pass("S6");
-        }
+        // Refused at the document, before either seat could touch the
+        // target: honest for the probe. The read's own arm records S6
+        // when it runs, so this reports only what it judged.
+        Err(provider::Error::Client(ClientError::Handshake { .. })) => report.pass("S5"),
         // Anything else that kept the clause from running is the
         // clause's failure to report, never a pass.
-        Err(other) => {
-            report.fail(
-                "S5",
-                format!("the misconfigured spawn failed before check could be judged: {other}"),
-            );
-            report.fail(
-                "S6",
-                format!("the misconfigured spawn failed before read could be judged: {other}"),
-            );
-        }
+        Err(other) => report.fail(
+            "S5",
+            format!("the misconfigured spawn failed before check could be judged: {other}"),
+        ),
         Ok(managed) => match managed.check().await {
             Err(SourceError::Fatal(_)) => report.pass("S5"),
             Err(other) => report.fail(
@@ -142,7 +134,13 @@ pub async fn source_read(report: &mut Report, hostile: &Target) {
         }
     };
     let managed = match provider.source(&requirement, &hostile.config).await {
-        Err(provider::Error::Client(ClientError::Handshake { .. })) => return,
+        // Refused at the document: honest, and recorded HERE too —
+        // this function is public and a library caller may drive it
+        // alone, which must still leave an S6 verdict.
+        Err(provider::Error::Client(ClientError::Handshake { .. })) => {
+            report.pass("S6");
+            return;
+        }
         Err(other) => {
             report.fail(
                 "S6",

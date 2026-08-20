@@ -177,7 +177,7 @@ the library's clause table by test, in both directions):
 | S2 | checkpoint coverage | A stream must checkpoint at least once during a read. A stream that never checkpoints cannot be certified for resume and fails by name — unless it declares no cursor field at all: an honestly-declared snapshot stream is skipped with the reason, never vacuously passed. Certification refuses a skipped source clause unless its stream is acknowledged by name (the source certifier's accept_skips stream list; the CLI's --accept-skips <stream[,stream]>). |
 | S4 | prompt cancellation | When the record channel closes mid-read, the source stops promptly and returns Ok — never an error, never a hang. |
 | S5 | honest check | check() on a source configured against a target its own read must refuse answers that refusal itself, with a fatal classification — never Ok (a probe that passes what a read then fails), never transient (no retry fixes a misconfiguration). Driven only when the operator supplies a misconfigured document via --hostile-config; skipped with the reason otherwise. A handshake that refuses the misconfigured document passes: refusing earlier than check is honest too. |
-| S6 | honest read | read() against that same misconfigured target must refuse it too — the read is the seat that opens the target, where a bad path becomes an unbounded buffer or a parked thread, and a probe alone cannot catch either. Completing the read fails the clause, as does parking past the probe deadline; refusing at the declaration, or earlier at the handshake, passes. Driven only when the operator supplies a misconfigured document via --hostile-config; skipped with the reason otherwise. |
+| S6 | honest read | read() against that same misconfigured target must refuse it too — the read is the seat that opens the target, where a bad path becomes an unbounded buffer or a parked thread, and a probe alone cannot catch either. Completing the read fails the clause, as does parking past the probe deadline. Refusing earlier passes: at the handshake, or at the declaration — and note that a connector whose streams() fails for ANY reason, or which declares no streams at all under the misconfigured document, passes without its read being driven; the clause trusts the operator to supply a document that is otherwise valid. Driven only when the operator supplies a misconfigured document via --hostile-config; skipped with the reason otherwise. |
 | D1 | staging invisibility | Rows written into a load session but not yet committed are invisible to readers of the table. |
 | D2 | atomic state-with-data commit | A commit persists the pipeline's state document atomically with the data: reading state back afterward returns exactly the committed cursor. |
 | D3 | idempotent commit receipts | Re-committing the same (load_id, commit_seq) returns the prior receipt and re-publishes nothing. |
@@ -229,6 +229,13 @@ report::assert_all_pass(
     &[("P13", p::SOURCE_DUAL_ROLE_SKIP)],
 );
 
+// The honest-check and honest-read clauses need a second target: the
+// same connector under a MISCONFIGURED document only its own
+// vocabulary can spell.
+let hostile = Target::resolve_path(bin, json!({"path": a_directory}));
+c::source(&mut report, &hostile).await;
+c::source_read(&mut report, &hostile).await;
+
 // A destination with a read-back probe (any `TableProbe`), plus the
 // kill matrix held to its fixed clause order with fixture advice on a Skip.
 let report = d::certify(&target, Some(&probe)).await;
@@ -251,6 +258,15 @@ report::assert_in_order(&arms, &k::DESTINATION, Some("seed a larger fixture"));
 - `clause::k::source(&target)` / `clause::k::destination(&target,
   probe)` → `Vec<report::Entry>`, the kill matrix's arms in
   `clause::k::SOURCE` / `clause::k::DESTINATION` order.
+- `clause::c::source(&mut report, &hostile)` /
+  `clause::c::source_read(&mut report, &hostile)` /
+  `clause::c::destination(&mut report, &hostile)` — the honest-check
+  and honest-read clauses, each driven on its own spawn of the
+  connector configured with a MISCONFIGURED document (a second
+  `Target`, the CLI's `--hostile-config`). Without one, record the
+  honest skip instead: `clause::c::skip_source(&mut report)` /
+  `clause::c::skip_destination(&mut report)`, both carrying
+  `clause::c::NO_HOSTILE_CONFIG_SKIP`.
 - `report::assert_all_pass(&report, expected, allowed_skips)` — every
   clause in `expected` has an entry and is `Pass`; every `(clause,
   reason)` in `allowed_skips` came out `Skip` with exactly that reason
