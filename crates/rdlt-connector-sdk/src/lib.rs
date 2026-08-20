@@ -39,6 +39,8 @@
 
 pub mod config;
 pub mod destination;
+#[cfg(feature = "pem")]
+pub mod pem;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod source;
