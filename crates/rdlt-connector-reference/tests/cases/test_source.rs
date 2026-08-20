@@ -448,3 +448,63 @@ async fn a_multi_batch_file_streams_every_row_exactly_once() {
         .expect("resumed read");
     assert!(rows.is_empty(), "nothing left after a complete stream");
 }
+
+/// A LEGAL file of large lines flushes on the BYTE budget, not just the
+/// row count: twenty ~4 MiB lines would otherwise sit in one ~84 MiB
+/// batch (the row bound alone flushes at 1024 rows), retaining up to
+/// rows × the line ceiling of parsed memory. The meter is structural —
+/// each pushed frame's serialized size, never RSS: no frame may exceed
+/// the 32 MiB batch budget plus one line, and the rows still arrive
+/// exactly once, in order, across the flush boundaries.
+#[tokio::test]
+async fn large_lines_flush_on_the_byte_budget_not_the_row_count() {
+    use rdlt_connector_sdk::spi::channel::{PushPayload, records};
+    use rdlt_connector_sdk::spi::source::ReadRequest;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("events.jsonl");
+    let payload = "x".repeat(4 << 20);
+    let mut seed = String::with_capacity(20 * ((4 << 20) + 32));
+    for n in 0..20 {
+        seed.push_str(&format!("{{\"n\":{n},\"s\":\"{payload}\"}}\n"));
+    }
+    std::fs::write(&path, &seed).expect("seed file");
+    let shell = Shell::<Reference>::from_value(json!({"path": &path})).expect("valid config");
+    let stream = shell.streams().await.expect("streams").remove(0);
+
+    // The channel budget holds the whole file, so the read completes
+    // before the drain — the pin measures FRAME sizes, not backpressure.
+    let (out, mut input) = records(256 << 20);
+    shell
+        .read(ReadRequest::new(stream, None, out))
+        .await
+        .expect("a large-line file reads");
+    let mut frames = 0usize;
+    let mut rows = Vec::new();
+    while let Some(push) = input.recv().await {
+        match push.payload {
+            PushPayload::RawJson(bytes) => {
+                assert!(
+                    bytes.len() <= (32 << 20) + (8 << 20),
+                    "no frame exceeds the batch budget plus one line: {} bytes",
+                    bytes.len()
+                );
+                frames += 1;
+                for doc in serde_json::Deserializer::from_slice(&bytes).into_iter() {
+                    let doc: serde_json::Value = doc.expect("valid JSON frames");
+                    rows.push(doc["n"].as_i64().expect("the row's ordinal"));
+                }
+            }
+            PushPayload::Arrow(batch) => panic!("the reference source pushes json: {batch:?}"),
+            PushPayload::Checkpoint(_) => {}
+        }
+    }
+    assert_eq!(
+        rows,
+        (0..20).collect::<Vec<i64>>(),
+        "every row exactly once, in order, across the flush boundaries"
+    );
+    assert!(
+        frames >= 3,
+        "~84 MiB of lines crosses the 32 MiB budget at least twice: {frames} frames"
+    );
+}

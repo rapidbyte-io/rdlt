@@ -1460,3 +1460,69 @@ async fn the_check_probe_is_read_only_and_refuses_a_file_in_the_way() {
         );
     }
 }
+
+/// The torn-tail cut's boundary, both sides: a newline-less log of
+/// exactly one gated line (8192 bytes) is the writer's maximal possible
+/// tear — cut to empty, and the store keeps working. ONE byte more is
+/// a tail no gated writer can leave (the gate bounds every line before
+/// its newline), so it refuses as corruption instead of being silently
+/// repaired to empty — a repair would eat evidence of a foreign write.
+#[tokio::test]
+async fn the_torn_tail_cut_admits_a_maximal_tear_and_refuses_one_byte_more() {
+    // 8192 newline-less bytes: a maximal tear; the commit cuts it and
+    // publishes.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("_reference_receipts.json"),
+        vec![b'x'; 8192],
+    )
+    .expect("seed the torn log");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    session
+        .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
+        .await
+        .expect("a maximal tear is cut and the commit publishes");
+
+    // 8193: no gated writer leaves this; refused as corrupt.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("_reference_receipts.json"),
+        vec![b'x'; 8193],
+    )
+    .expect("seed the over-long tail");
+    let shell = shell_over(dir.path());
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("l")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session
+        .write(&TableName::new("events"), batch_of(&[1]))
+        .await
+        .expect("write");
+    let refused = session
+        .commit(commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1))
+        .await
+        .expect_err("a tail past the maximal tear refuses");
+    let rendered = refused.to_string();
+    assert!(
+        rendered.contains("8192-byte line bound")
+            && rendered.contains("refusing the log as corrupt"),
+        "refused with the line-bound corruption spelling: {rendered}"
+    );
+}

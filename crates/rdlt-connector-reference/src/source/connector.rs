@@ -17,12 +17,22 @@ use super::{config, cursor};
 /// no extra resume precision a host ever used.
 const ROWS_PER_BATCH: usize = 1024;
 
-/// The per-line ceiling — the read's whole memory bound, because the
-/// file is consumed line-streaming and never materialized: one jsonl
-/// row is one document, and documents ride the family's 8 MiB bound
-/// everywhere in this workspace. A longer line refuses typed at the
-/// offset where it began.
+/// The per-line ceiling: one jsonl row is one document, and documents
+/// ride the family's 8 MiB bound everywhere in this workspace. A longer
+/// line refuses typed at the offset where it began. This bounds each
+/// LINE; what the read retains is bounded by the batch's byte flush
+/// ([`MAX_BATCH_BYTES`]) plus at most one such line.
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+
+/// The per-batch byte flush bound, beside the row bound: parsed rows
+/// are RETAINED until the batch flushes, and every row can ride a line
+/// up to [`MAX_LINE_BYTES`], so the row count alone would retain up to
+/// 1024 × 8 MiB of a perfectly legal file. 32 MiB is the engine's
+/// byte-budget family figure; whichever bound crosses first flushes,
+/// so the largest retained batch is this budget plus ONE line (a row
+/// is judged after it lands) — ~40 MiB worst case, never rows × the
+/// line ceiling.
+const MAX_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// The connector: one file, one stream.
 #[derive(Debug)]
@@ -89,9 +99,11 @@ impl SourceConnector for Reference {
         // The shape gate runs BEFORE any open: a FIFO parks the opener
         // until a writer appears, and a char device reads without end —
         // neither can be judged after the fact. The file is then
-        // consumed LINE-STREAMING: the per-line ceiling is the read's
-        // whole memory bound, so an honest multi-GiB jsonl streams
-        // where a whole-file read would have died on it.
+        // consumed LINE-STREAMING: each line rides the per-line
+        // ceiling and the batch flushes on BYTES as well as rows, so
+        // the read retains at most one batch budget plus one line —
+        // an honest multi-GiB jsonl streams where a whole-file read
+        // would have died on it, whatever its line sizes.
         let len = self.gate_regular_file().await?;
         let read_io = |error: std::io::Error| classify_io(&self.path, error);
         let mut file = tokio::fs::File::open(&self.path).await.map_err(read_io)?;
@@ -105,6 +117,7 @@ impl SourceConnector for Reference {
         let mut offset = start;
         let mut line: Vec<u8> = Vec::new();
         let mut batch = Vec::new();
+        let mut batch_bytes = 0usize;
         let mut checkpointed = false;
         // Only newline-TERMINATED lines are consumed. A final line
         // without its newline is a row a writer may still be appending:
@@ -152,6 +165,7 @@ impl SourceConnector for Reference {
                     ))
                 })?;
                 batch.push(row);
+                batch_bytes += line.len();
             }
             // The rolling tail covers every consumed byte — the line
             // AND its newline — so a cursor minted at any boundary
@@ -163,8 +177,12 @@ impl SourceConnector for Reference {
             // Checkpoint at batch boundaries, not per line: rows-so-far
             // are complete up to this byte offset — every checkpoint is
             // still a legal resume point — at a fraction of the wire
-            // frames a per-line cadence cost.
-            if batch.len() >= ROWS_PER_BATCH {
+            // frames a per-line cadence cost. The batch flushes on
+            // WHICHEVER bound crosses first: the row count for ordinary
+            // lines, the byte budget for large ones — a row bound alone
+            // retained up to rows × the line ceiling.
+            if batch.len() >= ROWS_PER_BATCH || batch_bytes >= MAX_BATCH_BYTES {
+                batch_bytes = 0;
                 if feed.rows(std::mem::take(&mut batch)).await.is_break() {
                     return Ok(());
                 }
@@ -200,6 +218,9 @@ impl Reference {
     /// regular file. A directory fails every read; a FIFO parks its
     /// opener until a writer appears; a char device reads without end.
     /// None can be judged after opening, so the metadata is the gate.
+    /// The metadata-then-open window is the at-rest path writer's
+    /// existing power (whoever writes the configured path is trusted
+    /// with its contents), not a new one.
     /// Returns the file's current length — the read's resume bound.
     async fn gate_regular_file(&self) -> Result<u64, SourceError> {
         let meta = tokio::fs::metadata(&self.path)

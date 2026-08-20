@@ -379,10 +379,13 @@ fn truncate_torn_tail(path: &Path) -> Result<(), DestinationError> {
     }
     let durable = match tail.iter().rposition(|byte| *byte == b'\n') {
         Some(newline) => len - window + newline as u64 + 1,
-        // No newline anywhere in the window: either the whole log is
-        // one short torn write (cut to empty), or the newline-less
-        // tail outweighs any line the gated append writes — corruption.
-        None if window == len => 0,
+        // No newline anywhere in the window: the whole log being one
+        // torn write NO LONGER than a gated line is cut to empty — the
+        // gated writer's maximal torn tail is the line WITHOUT its
+        // newline, so a longer newline-less log (even by one byte) is
+        // something no writer produces: corruption, refused like the
+        // over-long interior line it would otherwise become.
+        None if window == len && len <= MAX_RECEIPT_LINE_BYTES as u64 => 0,
         None => return Err(receipt_line_bound_refusal(path)),
     };
     std::fs::OpenOptions::new()
@@ -415,6 +418,35 @@ fn io_refusal(verb: &str, path: &Path, error: &std::io::Error) -> DestinationErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The torn-tail cut's own boundary, pinned AT THE ARM (the commit
+    /// path's replay scan refuses an over-long tail before this runs,
+    /// so the belt here is only reachable directly): a newline-less
+    /// log of exactly one gated line is the writer's maximal possible
+    /// tear — cut to empty; one byte more is a tail no gated writer
+    /// leaves, refused as corruption rather than silently repaired to
+    /// empty, which would eat the evidence of a foreign write.
+    #[test]
+    fn the_torn_tail_cut_requires_a_tail_a_writer_could_leave() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(RECEIPTS_FILE);
+
+        std::fs::write(&path, vec![b'x'; MAX_RECEIPT_LINE_BYTES]).expect("seed maximal tear");
+        truncate_torn_tail(&path).expect("a maximal tear cuts");
+        assert_eq!(
+            std::fs::metadata(&path).expect("meta").len(),
+            0,
+            "the maximal tear is cut to empty"
+        );
+
+        std::fs::write(&path, vec![b'x'; MAX_RECEIPT_LINE_BYTES + 1]).expect("seed over-long");
+        let refused =
+            truncate_torn_tail(&path).expect_err("one byte past the maximal tear refuses");
+        assert!(
+            refused.to_string().contains("refusing the log as corrupt"),
+            "corruption, not repair: {refused}"
+        );
+    }
 
     /// The staged-path io refusal renders its path BOUNDED: the path
     /// embeds the caller-supplied part name, unbounded for a direct
