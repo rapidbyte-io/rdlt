@@ -82,10 +82,31 @@ fn reconcile_unterminated_tail_within(manifest: &mut File, len: u64) -> Result<(
     if bytes.ends_with(b"\n") {
         return Ok(());
     }
-    let tail_start = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |at| at + 1);
+    // Where the unterminated tail begins — IF the window can see it. A
+    // window holding no newline at all has not found the tail's start,
+    // it has run out of window: the line began before what was read.
+    // Cutting at the window would cut mid-line, leaving an unterminated
+    // head for the new run's header to glue onto — which is the exact
+    // corruption this reconcile exists to prevent. When the window
+    // starts at zero there is nothing earlier, so absence of a newline
+    // really does mean the tail starts at the beginning.
+    let tail_start = match bytes.iter().rposition(|byte| *byte == b'\n') {
+        Some(at) => at + 1,
+        None if window_start == 0 => 0,
+        None => {
+            return Err(wal_err(
+                "reconciling vouched manifest",
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "the manifest's unterminated tail is longer than the {window}-byte \
+                         reconcile window, so where it begins cannot be seen — refusing to \
+                         cut a line in half"
+                    ),
+                ),
+            ));
+        }
+    };
     let complete = std::str::from_utf8(&bytes[tail_start..])
         .is_ok_and(|tail| matches!(decode_line(tail), ManifestLine::Record(_)));
     if complete {

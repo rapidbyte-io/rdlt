@@ -11,6 +11,8 @@
 //! carry no per-row identity (no `_rdlt_id`), which is why Keyless Merge is
 //! rejected for them; keyed structured merge is supported.
 
+use std::collections::BTreeSet;
+
 use std::sync::Arc;
 
 use arrow::{
@@ -130,7 +132,11 @@ pub(crate) fn items(
 
     // ---- Policy resolution (the shared loop, on the Arrow input) ----
     let changes = registry.diff(&observed);
-    let mut dropped_columns: Vec<String> = Vec::new();
+    // A SET, not a list: the projection below asks membership once per
+    // surviving column, so a scanned list prices the projection at the
+    // schema's width times the number dropped — both the wire's to
+    // choose. Nothing iterates it in order.
+    let mut dropped_columns: BTreeSet<String> = BTreeSet::new();
     let kept = resolve::resolve_policy(
         Input::Arrow,
         policy,
@@ -141,7 +147,7 @@ pub(crate) fn items(
             schema::Change::AddColumn { column } => {
                 // Discard on a structured stream: project the refused column away
                 // (exact for column additions), counted below.
-                dropped_columns.push(column.name.clone());
+                dropped_columns.insert(column.name.clone());
                 Ok(())
             }
             schema::Change::WidenColumn { name, .. } => Err(Error::config(format!(
@@ -164,7 +170,7 @@ pub(crate) fn items(
         let mut projected = observed;
         projected
             .columns
-            .retain(|c| !dropped_columns.contains(&c.name));
+            .retain(|c| !dropped_columns.contains(c.name.as_str()));
         projected
     };
     let changes = if dropped_columns.is_empty() {

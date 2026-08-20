@@ -316,19 +316,26 @@ mod tests {
         }
     }
 
-    /// The depth a manifest line can actually carry, measured — the
-    /// number the schema door's doc quotes and the reason it does not
-    /// lower itself to match.
+    /// The depth a manifest LINE can actually carry, measured — and the
+    /// line is what the scan decodes, so the line is what is pinned.
     ///
-    /// A column type rides a manifest line as JSON, and serde's default
-    /// recursion limit is what stops it: 41 struct levels decode, 42 do
-    /// not. A schema past the boundary still LOADS — the door admits 63
-    /// — but its Delta cannot be read back, so a crashed run
-    /// re-extracts instead of replaying. Pinned in both directions so
-    /// the boundary cannot move without someone deciding to move it.
+    /// A first version of this measured a bare column and stated 42.
+    /// That is the wrong artifact: the scan never sees a bare column,
+    /// it sees a `WalRecord::Delta`, whose envelope — the record's
+    /// variant, the schema, the delta, the change carrying the column —
+    /// spends its own levels of serde's default recursion budget before
+    /// the column's nesting starts. The boundary the scan actually hits
+    /// is lower, and a pin on the bare column would stay green while an
+    /// envelope change moved it.
+    ///
+    /// Past the boundary the schema still LOADS — the door admits 63 —
+    /// but its Delta cannot be read back, so a crashed run re-extracts
+    /// instead of replaying. Safe direction, and the reason the door is
+    /// not lowered to match.
     #[test]
     fn a_manifest_line_carries_column_nesting_only_so_deep() {
-        use rdlt_core::schema::{Column, ColumnType, Provenance};
+        use rdlt_core::id::TableName;
+        use rdlt_core::schema::{self, Column, ColumnType, Provenance, TableSchema};
         use rdlt_core::types::LogicalType;
 
         fn column_nested(levels: usize) -> Column {
@@ -351,17 +358,46 @@ mod tests {
             }
         }
 
-        const CARRIED: usize = 41;
-        let json = serde_json::to_string(&column_nested(CARRIED)).expect("serializes");
+        /// The record the scan decodes, carrying a column of `levels`
+        /// struct nesting — the create-delta shape, which is what a new
+        /// deep table writes.
+        fn delta_line(levels: usize) -> String {
+            let column = column_nested(levels);
+            let schema = TableSchema {
+                table: TableName::new("t"),
+                parent: None,
+                columns: vec![column.clone()],
+            };
+            let record = WalRecord::Delta {
+                schema: schema.clone(),
+                delta: schema::Delta {
+                    table: TableName::new("t"),
+                    from: None,
+                    to: schema.content_hash(),
+                    changes: vec![schema::Change::AddColumn { column }],
+                },
+                mode: WriteMode::Append,
+            };
+            String::from_utf8(encode_line(&record).expect("a record encodes"))
+                .expect("the line is UTF-8")
+        }
+
+        // The boundary, measured on the artifact the scan reads.
+        const CARRIED: usize = 40;
         assert!(
-            serde_json::from_str::<Column>(&json).is_ok(),
-            "{CARRIED} levels must round-trip — the doc at the schema door says so"
+            matches!(
+                decode_line(delta_line(CARRIED).trim_end()),
+                ManifestLine::Record(_)
+            ),
+            "{CARRIED} levels must decode as a record — the door's doc quotes this number"
         );
-        let json = serde_json::to_string(&column_nested(CARRIED + 1)).expect("serializes");
         assert!(
-            serde_json::from_str::<Column>(&json).is_err(),
-            "one level past the boundary must NOT round-trip — if it now does, the \
-             ceiling moved and the door's doc is stale"
+            !matches!(
+                decode_line(delta_line(CARRIED + 1).trim_end()),
+                ManifestLine::Record(_)
+            ),
+            "one level past the boundary must NOT decode — if it now does, the ceiling \
+             moved and the door's doc is stale"
         );
     }
 }

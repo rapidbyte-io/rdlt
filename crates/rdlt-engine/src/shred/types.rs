@@ -113,10 +113,12 @@ fn join_column_types_at(
 ///
 /// WHAT THE CAP DOES NOT PROMISE, measured rather than assumed: a
 /// schema this door admits is not guaranteed to survive the WAL. A
-/// manifest line carries a column type as JSON, and serde's default
-/// recursion limit stops decoding one at 42 struct levels — so a
-/// schema of 42 or more nests loads correctly but its Delta record
-/// cannot be read back, and a crashed run degrades to re-extraction
+/// manifest line carries a Delta record as JSON, and serde's default
+/// recursion limit stops decoding one at 41 struct levels — the
+/// record's own envelope spends part of that budget before the
+/// column's nesting starts, so the figure is lower than a bare
+/// column's. A schema of 41 or more nests loads correctly but its
+/// Delta record cannot be read back, and a crashed run re-extracts
 /// instead of replaying. That is the safe direction (the rows are
 /// re-read, never lost), and it is why the door is not lowered to
 /// match: refusing a schema that loads perfectly well, to protect a

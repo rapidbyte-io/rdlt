@@ -2,7 +2,7 @@
 //! identity, and schema resolution — everything the JSON traversal and the
 //! resolve pipeline build on.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_core::id::TableName;
 use rdlt_core::schema::{self, Column, IdentRules, ParentLink, Provenance, TableSchema};
@@ -217,13 +217,19 @@ impl TableBuffer {
         // Restores first, while every slot still means what the index
         // says: each is an in-place assignment that moves nothing.
         let mut removals: BTreeSet<&str> = BTreeSet::new();
+        // The snapshot is indexed once rather than searched per key: a
+        // scan per reverted column costs the snapshot's width times the
+        // number reverted, and a batch rollback reverts as many as the
+        // policy discarded.
+        let prior_states: BTreeMap<&str, &ColumnState> = rollback_snapshot
+            .unwrap_or(&[])
+            .iter()
+            .map(|(key, state)| (key.as_str(), state))
+            .collect();
         for source_key in source_keys {
-            let prior = rollback_snapshot.and_then(|columns| {
-                columns
-                    .iter()
-                    .find(|(key, _)| key == source_key)
-                    .map(|(_, state)| state.clone())
-            });
+            let prior = prior_states
+                .get(source_key.as_str())
+                .map(|state| (*state).clone());
             match prior {
                 Some(state) => {
                     if let Some(idx) = self.column_slots.slot_of(&self.columns, source_key) {
