@@ -9,11 +9,12 @@
 //! knowing it — an unrecognized [`proto::Classification`] normalizes
 //! safe-loud to `Fatal` rather than being guessed retryable.
 //!
-//! The negotiated version NUMBER stays `0` ([`PROTOCOL_VERSION`]): it
-//! is the identifier both sides compare at the handshake, and bumping
-//! it for a freeze that moves no byte would break every shipped
-//! handshake for nothing — "v1" is the name of the frozen contract, not
-//! a value on the wire.
+//! The negotiated version NUMBER is [`PROTOCOL_VERSION`], the
+//! identifier both sides compare at the handshake. It moves when the
+//! wire moves: a peer built against a different number is refused
+//! there, loudly, instead of mis-reading fields that changed shape
+//! under it. The proto package carries the same number, so the service
+//! paths themselves refuse a mismatched peer one layer lower.
 //!
 //! Two halves: [`handshake`] is the plaintext stdout line a spawned
 //! connector prints before it starts serving; [`proto`] is the

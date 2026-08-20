@@ -152,6 +152,16 @@ const MAX_DECLARED_STREAM_SPECS: usize = 1024;
 /// (RFC 8259), so a `\r\n`-joining server interoperates — the
 /// delimiter judged is `\n` alone, and the `\r` rides inside the
 /// line's own whitespace budget.
+///
+/// THE TYPED FLOOR, derived here because the posture record cites it
+/// and a figure with no anchor drifts as the type changes: the densest
+/// gate-legal declaration is many minimal specs — `{"name":"a"}` is 12
+/// wire bytes plus its delimiter, and becomes a `StreamSpec` whose own
+/// struct, its `String` allocation, and its two empty collections cost
+/// on the order of five times that. Hence the ~5× floor: it is a
+/// property of the SHAPE (small documents, fixed per-spec overhead),
+/// not of any one field, and a field added to `StreamSpec` raises it.
+/// The count ceiling below is what keeps the product bounded.
 fn decode_stream_specs(stream_specs_jsonl: &[u8]) -> Result<Vec<StreamSpec>, SourceError> {
     if stream_specs_jsonl.is_empty() {
         return Ok(Vec::new());

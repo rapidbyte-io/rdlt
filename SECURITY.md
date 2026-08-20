@@ -34,7 +34,9 @@ in place; legacy formats and compatibility shims are not supported.
   every decode seat). In-flight read bytes are capped by one budget shared
   across a run's streams. An admitted (gate-legal) frame can still expand
   in memory when it becomes typed values — a maximally dense legal streams
-  reply retains ~5–5.5× its wire bytes as parsed specs — and that typed
+  reply retains ~5–5.5× its wire bytes as parsed specs (the arithmetic
+  is derived at the client's declaration-decode seat, so it moves with
+  the type rather than drifting here) — and that typed
   floor is the accepted residual: the ceilings bound what a frame may
   DECLARE, and declaration-layer amplification beyond it (collections
   materialized before any gate could run) has been removed from the wire

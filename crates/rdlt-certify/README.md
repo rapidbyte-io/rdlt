@@ -23,7 +23,8 @@ $ rdlt-certify --explain
 
 ```text
 rdlt-certify --role source|destination [--config <file>] [--probe-cmd '<sh line>']
-             [--kill-matrix] [--accept-skips <stream[,stream]>] [--report text|json]
+             [--hostile-config <file>] [--kill-matrix]
+             [--accept-skips <stream[,stream]>] [--report text|json]
              <target>
 rdlt-certify --explain
 ```
@@ -79,7 +80,8 @@ document, `{"entries": [{"clause": "P3", "verdict": "Pass"}, …]}`, with
   regressed co-stream green beside a genuine snapshot stream. The rule
   lives in the library (`clause::s::certify` takes the same stream
   list), so an embedder gating on `Report::passed` shares it. Kill
-  matrix skips and destination probe skips never refuse.
+  matrix skips, destination probe skips, and the honest-check/read
+  skips a run without `--hostile-config` earns never refuse.
 - `1` — at least one clause failed or was never reached; the report
   names each. Tooling acting on refusals must read both `FAIL` and
   `NOT-REACHED` — grepping `^FAIL` alone misses a run whose suite died
@@ -214,7 +216,7 @@ certification cell is another. Every name is reached by its module
 path — nothing is re-exported at the crate root.
 
 ```rust
-use rdlt_certify::clause::{d, k, p, s};
+use rdlt_certify::clause::{c, d, k, p, s};
 use rdlt_certify::report;
 use rdlt_certify::target::Target;
 
@@ -290,11 +292,15 @@ src/
   probe.rs           Shell — the --probe-cmd TableProbe runner
   contract.rs        assert_bin_arg_contract, assert_spec_identity
   clause/
-    mod.rs           table of contents: s, d, p, k
+    mod.rs           table of contents: s, d, p, k, c
     s.rs             certify() for a source; CLAUSES = S1/S2/S4; the
                      skip-acknowledgment fold
     d.rs             certify() for a destination; CLAUSES = D1–D6/D8;
                      NO_PROBE_SKIP, NO_MERGE_SKIP; the settling adapter
+    c.rs             the honest-check clauses S5/D7 and the honest-read
+                     clause S6, driven on a second spawn configured with
+                     the operator's --hostile-config document;
+                     NO_HOSTILE_CONFIG_SKIP
     p.rs             every protocol clause P1–P13 in id order: the
                      role-generic probes, the wire clauses, the session
                      clauses; GENERIC/SELF_PROBED/SOURCE_WIRE/DEST_WIRE/

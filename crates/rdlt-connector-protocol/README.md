@@ -123,7 +123,7 @@ every clause id with its full definition (`rdlt-certify --explain`).
 This list is a HIGHLIGHT, not the whole contract: it names the
 wire-shape rules a client author most easily gets wrong. The
 certifier's FULL clause set — the source resume and cancellation laws,
-the destination's exactly-once laws, all ten protocol clauses, and the
+the destination's exactly-once laws, all thirteen protocol clauses, and the
 `SIGKILL` matrix — is the behavioral contract a connector must pass,
 and none of it is less frozen for going unlisted here.
 
@@ -247,7 +247,7 @@ the RPC protocol is — see below):
 | field | meaning |
 |---|---|
 | `rdlt-connector` | leading token; anything else and the line is not one of ours |
-| `1` | the LINE FORMAT's own version — independent of `PROTOCOL_VERSION` below; the line could reach format `2` while the RPC protocol stays at `0` |
+| `1` | the LINE FORMAT's own version — independent of `PROTOCOL_VERSION` below; the two move on their own schedules, and the line could reach format `2` with the RPC protocol unchanged |
 | `protocol_min` | lowest `PROTOCOL_VERSION` this connector process will accept over `Handshake` |
 | `protocol_max` | highest `PROTOCOL_VERSION` this connector process will accept |
 | `socket_path` | the Unix domain socket to dial `Connector`/`SourceService`/`DestinationService` on |
@@ -383,7 +383,12 @@ Served connectors raise tonic's default 4 MiB per-message receive cap
 to a hard ceiling of **64 MiB** — THIS crate's [`MAX_FRAME_BYTES`],
 which both sides of the wire import (the sdk's `serve` module installs
 it on every served service; a dialing client sets its decode cap from
-the same constant, so the ceiling can never skew between the two). The
+the same constant, so the SERVED ceiling is one number on both sides).
+A dialing client may hold a REPLY it asks for to a tighter cap of its
+own — the Connector service's replies have a computable legal maximum
+far below the frame ceiling, and the client caps them there — so a
+refusal citing a limit smaller than 64 MiB is that per-call cap, not a
+skew. The
 SPI's byte-budget channels run
 8-64 MiB, so a single legitimate Arrow batch in a `Write` frame (or a
 `ReadFrame`) may exceed 4 MiB — and the one-batch-per-frame rule means
