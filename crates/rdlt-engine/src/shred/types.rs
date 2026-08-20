@@ -110,6 +110,15 @@ fn join_column_types_at(
 /// and an uncapped recursive map turns a deep declaration into a stack
 /// overflow — an ABORT, not a catchable panic, so `spawn_blocking`
 /// containment cannot absorb it.
+///
+/// The cap admits the SAME depth the lowering walk accepts, so a schema
+/// this door lets through can always be written. Aligning them refused
+/// one shape that used to load: a declaration at exactly the old door's
+/// limit, against a destination that takes structs natively (where the
+/// lowering walk never recurses and so never disagreed). That shape now
+/// refuses at admission, before anything is recorded — which is the
+/// point: the alternative was refusing it later, from inside a load,
+/// with the record already durable.
 pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String> {
     column_type_from_arrow_at(dt, 0)
 }

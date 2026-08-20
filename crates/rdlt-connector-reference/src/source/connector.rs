@@ -20,19 +20,29 @@ const ROWS_PER_BATCH: usize = 1024;
 /// The per-line ceiling: one jsonl row is one document, and documents
 /// ride the family's 8 MiB bound everywhere in this workspace. A longer
 /// line refuses typed at the offset where it began. This bounds each
-/// LINE; what the read retains is bounded by the batch's byte flush
-/// ([`MAX_BATCH_BYTES`]) plus at most one such line.
+/// LINE; the INPUT bytes a batch accumulates are bounded by the byte
+/// flush ([`MAX_BATCH_BYTES`]) plus at most one such line.
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The per-batch byte flush bound, beside the row bound: parsed rows
 /// are RETAINED until the batch flushes, and every row can ride a line
 /// up to [`MAX_LINE_BYTES`], so the row count alone would retain up to
-/// 1024 × 8 MiB of a perfectly legal file. 32 MiB is the engine's
-/// byte-budget family figure; whichever bound crosses first flushes,
-/// so the largest retained batch is this budget plus ONE line (a row
-/// is judged after it lands) — ~40 MiB worst case, never rows × the
-/// line ceiling.
-const MAX_BATCH_BYTES: usize = 32 * 1024 * 1024;
+/// 1024 × 8 MiB of a perfectly legal file. Whichever bound crosses
+/// first flushes.
+///
+/// What this bounds EXACTLY: the INPUT bytes one batch consumes — the
+/// summed lengths of its lines, at most this budget plus the one line
+/// that crossed it. What the batch then costs is a multiple of that:
+/// parsed values carry their own per-value overhead, and the frame the
+/// feed encodes is re-serialized (a compact number can render longer
+/// than it arrived). Those multiples are bounded because this is, which
+/// is the point; the figure to quote is the input bound, not a memory
+/// total.
+///
+/// 8 MiB is chosen to sit AT the budget of the read channel a served
+/// source pushes through, so an honest batch is one the channel admits
+/// without leaning on its at-least-one-frame exception.
+const MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 /// The connector: one file, one stream.
 #[derive(Debug)]
@@ -101,9 +111,9 @@ impl SourceConnector for Reference {
         // neither can be judged after the fact. The file is then
         // consumed LINE-STREAMING: each line rides the per-line
         // ceiling and the batch flushes on BYTES as well as rows, so
-        // the read retains at most one batch budget plus one line —
-        // an honest multi-GiB jsonl streams where a whole-file read
-        // would have died on it, whatever its line sizes.
+        // the input a batch accumulates is one budget plus one line
+        // whatever the file's size or line sizes — an honest multi-GiB
+        // jsonl streams where a whole-file read would have died on it.
         let len = self.gate_regular_file().await?;
         let read_io = |error: std::io::Error| classify_io(&self.path, error);
         let mut file = tokio::fs::File::open(&self.path).await.map_err(read_io)?;
@@ -218,9 +228,12 @@ impl Reference {
     /// regular file. A directory fails every read; a FIFO parks its
     /// opener until a writer appears; a char device reads without end.
     /// None can be judged after opening, so the metadata is the gate.
-    /// The metadata-then-open window is the at-rest path writer's
-    /// existing power (whoever writes the configured path is trusted
-    /// with its contents), not a new one.
+    /// The metadata-then-open window is the at-rest DIRECTORY writer's
+    /// existing power (directory ownership is the trust boundary):
+    /// replacing the file between the two calls needs write on the
+    /// containing directory, and it grants what writing the file's
+    /// CONTENTS cannot — a read that never terminates. The store's own
+    /// read gate states the same boundary in the same words.
     /// Returns the file's current length — the read's resume bound.
     async fn gate_regular_file(&self) -> Result<u64, SourceError> {
         let meta = tokio::fs::metadata(&self.path)

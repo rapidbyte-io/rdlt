@@ -21,6 +21,14 @@ const LINEAR_PRELUDE: usize = 16;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SlotIndex {
     /// key → entry position; `None` while the set is inside the prelude.
+    /// Held INLINE rather than behind a box. Boxing shrinks
+    /// `ColumnState` — cloned per push for the rollback snapshot — and
+    /// was tried and measured: worth about a tenth of a percent of the
+    /// nested-shred instruction count, in the good direction. It is not
+    /// taken because the workspace's lint refuses a boxed map as an
+    /// extra indirection, and a tenth of a percent does not buy an
+    /// exemption. Recorded so the next reader knows the trade was
+    /// measured rather than assumed.
     index: Option<std::collections::HashMap<String, usize>>,
     /// Structural cost meter: key comparisons made by linear scans plus
     /// one per map lookup — what the complexity pins bound (wall-clock

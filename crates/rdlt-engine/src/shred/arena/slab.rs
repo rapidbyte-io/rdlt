@@ -19,6 +19,16 @@ pub(crate) type NodeId = u32;
 /// which is ~100 GB of arena before the cast even matters) panics with a clear
 /// message instead of silently wrapping into aliased ranges; the engine
 /// surfaces test/prod panics from the shred stage as typed task errors.
+/// How wide an object must be before its parse-time key index is KEPT
+/// rather than dropped. The dedup scan builds an index much earlier
+/// (16 entries — the width at which that scan's own quadratic starts to
+/// cost), but keeping one is a different trade: retention is paid per
+/// OBJECT, per row, for the arena's whole life, while the linear find
+/// it saves is cheap until an object is genuinely wide. Below this
+/// width an ordinary row keeps the memory profile the value budget's
+/// arithmetic assumes.
+pub(super) const PERSIST_INDEX_WIDTH: usize = 128;
+
 #[inline]
 pub(super) fn checked_idx(len: usize) -> u32 {
     u32::try_from(len).expect("arena index overflow: a single JSON document exceeds 4.29e9 nodes")
@@ -44,14 +54,19 @@ pub(crate) struct Arena<'s> {
     pub(super) nodes: Vec<ArenaNode<'s>>,
     pub(super) obj_entries: Vec<(Cow<'s, str>, NodeId)>,
     pub(super) arr_items: Vec<NodeId>,
-    /// key→value indexes for the objects WIDE enough that the parser's
-    /// duplicate scan already built one — persisted here instead of
-    /// dropped, so `obj_get` answers wide objects in O(1) where a
-    /// linear find priced the batch build at O(columns × entries)
-    /// compares per row. Narrow objects never appear here and stay
-    /// linear (cheaper than hashing).
+    /// key→slot indexes for the objects WIDE enough to earn one
+    /// ([`PERSIST_INDEX_WIDTH`]): the parser's duplicate scan already
+    /// built the map, and for those objects it is kept rather than
+    /// dropped, so `obj_get` answers in O(1) where a linear find priced
+    /// the batch build at O(columns × entries) compares per row. The
+    /// values are slot offsets within the object's OWN entry range, so
+    /// the map is moved here exactly as parsed — nothing is rebuilt or
+    /// re-hashed — and the lookup adds the object's `start`. Narrower
+    /// objects never appear here: they stay linear (cheaper than
+    /// hashing at that width) and their index stays the parse transient
+    /// it has always been.
     pub(super) obj_indexes:
-        std::collections::HashMap<NodeId, std::collections::HashMap<Cow<'s, str>, NodeId>>,
+        std::collections::HashMap<NodeId, std::collections::HashMap<Cow<'s, str>, u32>>,
     /// Structural cost meter for `obj_get`: key comparisons by linear
     /// scans plus one per index lookup — what the complexity pin reads
     /// (wall-clock would flake). Test-only so the hot path carries no
@@ -189,7 +204,10 @@ impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
             && let Some(index) = self.arena.obj_indexes.get(&self.id)
         {
             self.arena.probe(1);
-            return index.get(key).map(|id| self.arena.node(*id));
+            return index.get(key).map(|slot| {
+                self.arena
+                    .node(self.arena.obj_entries[(start + slot) as usize].1)
+            });
         }
         let entries = &self.arena.obj_entries[start as usize..end as usize];
         let mut scanned = 0;
@@ -280,7 +298,10 @@ mod tests {
     /// arena's meter), never wall-clock.
     #[test]
     fn wide_object_lookups_ride_the_persisted_index() {
-        const W: usize = 128;
+        // Bound to the threshold itself, not a literal: an object at
+        // the width that earns an index is exactly the boundary case,
+        // and a threshold change must move this pin with it.
+        const W: usize = PERSIST_INDEX_WIDTH;
         let mut doc = String::from("{");
         for k in 0..W {
             if k > 0 {
@@ -311,6 +332,36 @@ mod tests {
             probes <= bound,
             "wide lookups stay linear: {probes} probes for {W} lookups (bound {bound})"
         );
+
+        // The other side of the threshold: an object one key NARROWER
+        // keeps no index, so its lookups scan — which is the cheaper
+        // trade at that width and the reason the retained-memory
+        // profile of an ordinary row is unchanged. Pinned so a
+        // threshold quietly lowered to zero (every object retaining a
+        // table) fails here rather than in a memory graph.
+        let narrow = W - 1;
+        let mut doc = String::from("{");
+        for k in 0..narrow {
+            if k > 0 {
+                doc.push(',');
+            }
+            doc.push_str(&format!("\"k{k}\":{k}"));
+        }
+        doc.push('}');
+        let mut arena = Arena::default();
+        let rows = arena
+            .parse_rows(
+                doc.as_bytes(),
+                MAX_RECORD_BATCH_ROWS,
+                MAX_JSON_VALUES_PER_PUSH,
+            )
+            .expect("parse");
+        assert!(
+            arena.obj_indexes.is_empty(),
+            "an object below the threshold keeps no index"
+        );
+        let node = arena.node(rows[0]);
+        assert!(node.obj_get("k0").is_some(), "it still answers, linearly");
     }
 
     /// The array iterator must ADVANCE. `self.next += 1` is the only thing

@@ -1467,6 +1467,12 @@ async fn the_check_probe_is_read_only_and_refuses_a_file_in_the_way() {
 /// a tail no gated writer can leave (the gate bounds every line before
 /// its newline), so it refuses as corruption instead of being silently
 /// repaired to empty — a repair would eat evidence of a foreign write.
+///
+/// WHICH SEAT ANSWERS, said plainly: on the commit path the receipt
+/// scan reaches the over-long line first and refuses there, so this
+/// pin's second arm proves the STORE refuses, not that the cut does.
+/// The cut's own arm is pinned directly beside it in the store's unit
+/// tests, where reverting the guard actually reds.
 #[tokio::test]
 async fn the_torn_tail_cut_admits_a_maximal_tear_and_refuses_one_byte_more() {
     // 8192 newline-less bytes: a maximal tear; the commit cuts it and

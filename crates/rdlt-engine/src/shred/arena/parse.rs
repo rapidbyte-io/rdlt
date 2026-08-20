@@ -14,7 +14,7 @@ use std::{borrow::Cow, fmt, marker::PhantomData};
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 
-use super::slab::{Arena, ArenaNode, NodeId, checked_idx};
+use super::slab::{Arena, ArenaNode, NodeId, PERSIST_INDEX_WIDTH, checked_idx};
 
 /// Why a slab refused to parse into rows.
 #[derive(Debug)]
@@ -283,7 +283,7 @@ where
         // the index is built lazily the moment an object outgrows the
         // prelude.
         let mut entries: Vec<(Cow<'s, str>, NodeId)> = Vec::new();
-        let mut index: Option<std::collections::HashMap<Cow<'s, str>, usize>> = None;
+        let mut index: Option<std::collections::HashMap<Cow<'s, str>, u32>> = None;
         while let Some(key) = map.next_key_seed(KeySeed(PhantomData))? {
             // Every entry spends from the value budget AS IT PARSES:
             // object entries are arena nodes the row budget never saw.
@@ -298,7 +298,7 @@ where
                 budgets: self.budgets,
             })?;
             let existing = match &index {
-                Some(index) => index.get(key.as_ref()).copied(),
+                Some(index) => index.get(key.as_ref()).map(|slot| *slot as usize),
                 None => entries.iter().position(|(k, _)| *k == key),
             };
             match existing {
@@ -307,28 +307,29 @@ where
                     if index.is_none() && entries.len() >= 16 {
                         let mut built = std::collections::HashMap::with_capacity(entries.len() * 2);
                         for (i, (k, _)) in entries.iter().enumerate() {
-                            built.insert(k.clone(), i);
+                            built.insert(k.clone(), checked_idx(i));
                         }
                         index = Some(built);
                     }
                     if let Some(index) = &mut index {
-                        index.insert(key.clone(), entries.len());
+                        index.insert(key.clone(), checked_idx(entries.len()));
                     }
                     entries.push((key, value));
                 }
             }
         }
-        // An index the duplicate scan built is worth keeping: re-pointed
-        // from entry slots to value nodes it answers `obj_get` for this
-        // WIDE object in O(1) — the batch build asks per column per row,
-        // and a linear find priced that quadratically. The keys were
-        // already cloned into the index at insert; nothing new allocates.
-        let persisted = index.map(|index| {
-            index
-                .into_iter()
-                .map(|(key, slot)| (key, entries[slot].1))
-                .collect::<std::collections::HashMap<_, _>>()
-        });
+        // The duplicate scan's index is worth KEEPING only for objects
+        // wide enough that the batch build's per-column linear find
+        // actually costs — it asks once per column per row, which is
+        // what priced the find quadratically. Below that width the index
+        // stays what it always was, a parse-time transient dropped here:
+        // an ordinary row of a few dozen columns keeps its old memory
+        // profile, because a retained hash table per object is a real
+        // cost paid per ROW while the scan it saves is cheap at that
+        // width. When it IS kept the map moves whole — its slots are
+        // already offsets into this object's own entry range, so nothing
+        // is rebuilt, re-hashed, or allocated a second time.
+        let persisted = index.filter(|index| index.len() >= PERSIST_INDEX_WIDTH);
         let start = checked_idx(self.arena.obj_entries.len());
         self.arena.obj_entries.extend(entries);
         let end = checked_idx(self.arena.obj_entries.len());

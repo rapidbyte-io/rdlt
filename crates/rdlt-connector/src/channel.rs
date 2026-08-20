@@ -63,7 +63,14 @@ pub const MAX_RECORD_BATCH_ROWS: usize = 1_000_000;
 /// id)` tuple, and the per-object parse transients (the entries Vec,
 /// the dedup map's escaped-key clones) roughly double the peak again —
 /// so a 64 MiB frame of dense values would otherwise build a ~12-16×
-/// arena before any traversal-time check could refuse. The value budget
+/// arena before any traversal-time check could refuse. One of those
+/// transients is KEPT rather than dropped for objects wide enough to
+/// earn it (the engine's parse persists a wide object's key index so
+/// the batch build stops re-scanning it per column per row); the
+/// threshold is set so ordinary rows keep the transient-only profile
+/// this arithmetic assumes, and a document wide enough to cross it
+/// trades a bounded per-object table for a quadratic it would
+/// otherwise pay per row. The value budget
 /// caps that transient at the same order an honest maximal push already
 /// pays: sixteen units per row covers a full-row-cap push of fifteen
 /// fields or list elements per row, so no honest shape is refused,
