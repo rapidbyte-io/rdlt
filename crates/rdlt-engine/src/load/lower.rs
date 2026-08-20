@@ -318,6 +318,38 @@ mod tests {
         lower_schema(&legal, &capabilities(false, true)).expect("a legal depth lowers");
     }
 
+    /// The two depth seams AGREE at the boundary: the deepest declared
+    /// schema the arrow door admits also LOWERS under a structs-off
+    /// destination, and one level past it refuses at the DOOR — never
+    /// here. A door one level looser than this walk admitted a schema
+    /// whose ensure could only fail internal after the delta was
+    /// already recorded, and recovery re-delivered it on every restart.
+    #[test]
+    fn the_depth_doors_agree_at_the_boundary() {
+        use arrow::datatypes::{DataType, Field};
+        let deep = |levels: usize| -> DataType {
+            let mut dt = DataType::Int64;
+            for _ in 0..levels {
+                dt = DataType::Struct(vec![Field::new("f", dt, true)].into());
+            }
+            dt
+        };
+        // 63 struct levels: through the door AND through the lowering.
+        let admitted = crate::shred::types::column_type_from_arrow(&deep(63))
+            .expect("the door admits its deepest level");
+        let schema = TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![col("root", admitted)],
+        };
+        lower_schema(&schema, &capabilities(false, true))
+            .expect("what the door admits, the lowering walk lowers");
+        // One level deeper: refused at the DOOR, so no schema carrying
+        // it can ever exist to meet this walk's internal-class belt.
+        crate::shred::types::column_type_from_arrow(&deep(64))
+            .expect_err("past the boundary the DOOR refuses, not the lowering walk");
+    }
+
     fn schema_with_struct_and_decimal() -> TableSchema {
         TableSchema {
             table: TableName::new("t"),

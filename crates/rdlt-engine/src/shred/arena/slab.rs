@@ -44,6 +44,20 @@ pub(crate) struct Arena<'s> {
     pub(super) nodes: Vec<ArenaNode<'s>>,
     pub(super) obj_entries: Vec<(Cow<'s, str>, NodeId)>,
     pub(super) arr_items: Vec<NodeId>,
+    /// key→value indexes for the objects WIDE enough that the parser's
+    /// duplicate scan already built one — persisted here instead of
+    /// dropped, so `obj_get` answers wide objects in O(1) where a
+    /// linear find priced the batch build at O(columns × entries)
+    /// compares per row. Narrow objects never appear here and stay
+    /// linear (cheaper than hashing).
+    pub(super) obj_indexes:
+        std::collections::HashMap<NodeId, std::collections::HashMap<Cow<'s, str>, NodeId>>,
+    /// Structural cost meter for `obj_get`: key comparisons by linear
+    /// scans plus one per index lookup — what the complexity pin reads
+    /// (wall-clock would flake). Test-only so the hot path carries no
+    /// accounting; a `Cell` because `obj_get` reads through `&Arena`.
+    #[cfg(test)]
+    pub(super) probes: std::cell::Cell<u64>,
 }
 
 impl<'s> Arena<'s> {
@@ -64,7 +78,24 @@ impl<'s> Arena<'s> {
             nodes: Vec::with_capacity(nodes),
             obj_entries: Vec::with_capacity(nodes),
             arr_items: Vec::with_capacity(nodes / 4),
+            ..Self::default()
         }
+    }
+
+    /// See the `probes` field: counted only under test.
+    #[cfg(test)]
+    fn probe(&self, comparisons: usize) {
+        self.probes.set(self.probes.get() + comparisons as u64);
+    }
+
+    #[cfg(not(test))]
+    fn probe(&self, _comparisons: usize) {}
+
+    /// Total comparisons `obj_get` has cost on this arena — the meter
+    /// the complexity pin reads.
+    #[cfg(test)]
+    pub(crate) fn obj_probes(&self) -> u64 {
+        self.probes.get()
     }
 
     /// `{"value": <node>}` — for bare-scalar/array rows and scalar child items.
@@ -149,10 +180,25 @@ impl<'a, 's: 'a> JsonView<'a> for Node<'a, 's> {
         let ArenaNode::Obj(start, end) = self.arena.nodes[self.id as usize] else {
             return None;
         };
-        self.arena.obj_entries[start as usize..end as usize]
-            .iter()
-            .find(|(k, _)| k.as_ref() == key)
-            .map(|(_, id)| self.arena.node(*id))
+        // Wide objects carry the parser's persisted index; narrow ones
+        // (the common shape) stay linear — see `Arena::obj_indexes`. The
+        // emptiness check first: an arena with no wide object at all (the
+        // common honest slab) pays one load-and-branch here, not a hash
+        // probe per lookup.
+        if !self.arena.obj_indexes.is_empty()
+            && let Some(index) = self.arena.obj_indexes.get(&self.id)
+        {
+            self.arena.probe(1);
+            return index.get(key).map(|id| self.arena.node(*id));
+        }
+        let entries = &self.arena.obj_entries[start as usize..end as usize];
+        let mut scanned = 0;
+        let found = entries.iter().find(|(k, _)| {
+            scanned += 1;
+            k.as_ref() == key
+        });
+        self.arena.probe(scanned);
+        found.map(|(_, id)| self.arena.node(*id))
     }
 }
 
@@ -222,6 +268,48 @@ mod tests {
         assert!(
             small.nodes.capacity() < 64 * 1024,
             "a 320-byte slab must not reserve the cap"
+        );
+    }
+
+    /// THE COMPLEXITY PIN over `obj_get`: W lookups against one W-wide
+    /// object cost O(W) comparisons, not O(W²) — the parser's
+    /// duplicate-scan index is PERSISTED for wide objects and answers
+    /// here, where the batch build asks per column per row. Narrow
+    /// objects stay linear (no index is built for them; correctness is
+    /// pinned by every other test in this file). Structural (the
+    /// arena's meter), never wall-clock.
+    #[test]
+    fn wide_object_lookups_ride_the_persisted_index() {
+        const W: usize = 128;
+        let mut doc = String::from("{");
+        for k in 0..W {
+            if k > 0 {
+                doc.push(',');
+            }
+            doc.push_str(&format!("\"k{k}\":{k}"));
+        }
+        doc.push('}');
+        let mut arena = Arena::default();
+        let rows = arena
+            .parse_rows(
+                doc.as_bytes(),
+                MAX_RECORD_BATCH_ROWS,
+                MAX_JSON_VALUES_PER_PUSH,
+            )
+            .expect("parse");
+        let node = arena.node(rows[0]);
+        for k in 0..W {
+            assert!(
+                node.obj_get(&format!("k{k}")).is_some(),
+                "every key answers"
+            );
+        }
+        assert!(node.obj_get("absent").is_none(), "a miss answers None");
+        let probes = arena.obj_probes();
+        let bound = (W as u64) * 2;
+        assert!(
+            probes <= bound,
+            "wide lookups stay linear: {probes} probes for {W} lookups (bound {bound})"
         );
     }
 

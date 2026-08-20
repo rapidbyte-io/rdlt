@@ -318,10 +318,25 @@ where
                 }
             }
         }
+        // An index the duplicate scan built is worth keeping: re-pointed
+        // from entry slots to value nodes it answers `obj_get` for this
+        // WIDE object in O(1) — the batch build asks per column per row,
+        // and a linear find priced that quadratically. The keys were
+        // already cloned into the index at insert; nothing new allocates.
+        let persisted = index.map(|index| {
+            index
+                .into_iter()
+                .map(|(key, slot)| (key, entries[slot].1))
+                .collect::<std::collections::HashMap<_, _>>()
+        });
         let start = checked_idx(self.arena.obj_entries.len());
         self.arena.obj_entries.extend(entries);
         let end = checked_idx(self.arena.obj_entries.len());
-        Ok(self.arena.push_node(ArenaNode::Obj(start, end)))
+        let id = self.arena.push_node(ArenaNode::Obj(start, end));
+        if let Some(persisted) = persisted {
+            self.arena.obj_indexes.insert(id, persisted);
+        }
+        Ok(id)
     }
 }
 

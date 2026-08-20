@@ -172,6 +172,51 @@ impl Loader {
             })
     }
 
+    /// The lineage-mutation guards, all three shapes, judged BEFORE a
+    /// delta is recorded or ensured (see `process`): parent links are
+    /// append-only and precede a table's first batch, so a delta that
+    /// (1) RE-PARENTS a linked table, (2) DROPS a recorded link, or
+    /// (3) records a FIRST link for a table any resolve has already
+    /// walked is unconstructible from a benign shred — each would split
+    /// lineage between what was memoized and what is recorded. The same
+    /// link re-recorded (schema evolution re-emits deltas) is
+    /// idempotent and passes.
+    fn guard_parent_link(&self, schema: &rdlt_core::schema::TableSchema) -> Result<(), Error> {
+        match (&schema.parent, self.parents.get(&schema.table)) {
+            (Some(link), Some(existing)) if existing != &link.parent => {
+                Err(Error::internal(format!(
+                    "table `{}`'s delta re-parents it from `{existing}` to `{}` — \
+                     parent links are append-only; a re-parenting delta is a \
+                     defect, refused rather than splitting recorded lineage",
+                    schema.table, link.parent
+                )))
+            }
+            (Some(link), None) if self.root_cache.has_memo(&schema.table) => {
+                // The memo deliberately has no invalidation (the
+                // walker's doc says why none is needed while links
+                // precede first batches); a late first link would leave
+                // every chain already resolved through this table
+                // answering the old root while the manifest records the
+                // new one — the commit gate and recovery's replay
+                // disagreeing about the same rows.
+                Err(Error::internal(format!(
+                    "table `{}`'s delta records a first parent `{}` after its lineage \
+                     was already walked — a table's link precedes its first batch, so \
+                     a late first link is a defect, refused rather than leaving \
+                     memoized chains stale",
+                    schema.table, link.parent
+                )))
+            }
+            (None, Some(existing)) => Err(Error::internal(format!(
+                "table `{}`'s delta drops its recorded parent `{existing}` — \
+                 parent links are append-only; an un-parenting delta is a \
+                 defect, refused like a re-parenting one",
+                schema.table
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     fn emit(&self, event: rdlt_core::event::PipelineEvent) {
         let _ = self.events.send(event); // no listeners is fine
     }
@@ -181,6 +226,14 @@ impl Loader {
         // await stays on the worker thread's span stack while other tasks run
         // there. The loader is a single task, so the span is bound to its future
         // at the call site instead.
+        // The lineage guards run FIRST — before the write-ahead record and
+        // before the destination's ensure: a refused mutation delta must
+        // never become durable manifest state, because recovery replays the
+        // manifest's links last-wins with no guard of its own, and the
+        // commit gate and that replay must resolve the SAME lineage.
+        if let LoadItem::Delta { schema, .. } = &item {
+            self.guard_parent_link(schema)?;
+        }
         // Write-ahead: the item is durable-intent before the destination sees it.
         if let Some(wal) = &mut self.wal {
             wal.record(&item).await?;
@@ -229,40 +282,12 @@ impl Loader {
                     self.structured_merge_keys
                         .insert(schema.table.clone(), key.clone());
                 }
+                // The lineage-mutation guards already ran at the top of
+                // `process`, before the record and the ensure; what
+                // remains here is only the accepted link's bookkeeping.
                 if let Some(link) = &schema.parent {
-                    // A delta that RE-PARENTS an already-linked table is
-                    // refused: parent links are append-only, and a chain
-                    // resolved through the OLD link may already be
-                    // memoized with its tail shared by later chains —
-                    // accepting the rewrite would silently split lineage
-                    // between what was walked and what is recorded. The
-                    // same link re-recorded (schema evolution re-emits
-                    // deltas) is idempotent and passes.
-                    if let Some(existing) = self.parents.get(&schema.table)
-                        && existing != &link.parent
-                    {
-                        return Err(Error::internal(format!(
-                            "table `{}`'s delta re-parents it from `{existing}` to `{}` — \
-                             parent links are append-only; a re-parenting delta is a \
-                             defect, refused rather than splitting recorded lineage",
-                            schema.table, link.parent
-                        )));
-                    }
                     self.parents
                         .insert(schema.table.clone(), link.parent.clone());
-                } else if let Some(existing) = self.parents.get(&schema.table) {
-                    // The family's other half: DROPPING a recorded link
-                    // is the same mutation as rewriting it — the shred
-                    // carries a child's link in every re-emitted
-                    // schema, so a link-less delta for a linked table
-                    // is equally unconstructible from any benign
-                    // producer.
-                    return Err(Error::internal(format!(
-                        "table `{}`'s delta drops its recorded parent `{existing}` — \
-                         parent links are append-only; an un-parenting delta is a \
-                         defect, refused like a re-parenting one",
-                        schema.table
-                    )));
                 }
                 self.emit(rdlt_core::event::PipelineEvent::SchemaEvolved {
                     delta: delta.clone(),
@@ -781,6 +806,100 @@ mod tests {
                  than splitting recorded lineage"
             ),
             "the refusal is the one clean spelling, joins included: {rendered}"
+        );
+    }
+
+    /// The third lineage-mutation shape: a table with NO recorded parent
+    /// whose lineage has already been RESOLVED (a batch attributed its
+    /// rows through the memoized walk) gains a first link. The memo has
+    /// no invalidation — deliberately, the walker's doc says why — so
+    /// accepting the link would leave every already-resolved chain
+    /// answering the OLD root: this table's later rows commit under a
+    /// coverage the manifest's recorded link contradicts, and a recovery
+    /// replay attributes its segments by the recorded link — rows
+    /// silently dropped between the two answers. Refused typed, like the
+    /// re-parenting and un-parenting shapes beside it.
+    #[tokio::test]
+    async fn a_first_parent_after_resolution_refuses_instead_of_going_stale() {
+        let (mut loader, _commits) = recording_loader(CommitPolicy::default());
+        loader
+            .process(delta_item("events", None))
+            .await
+            .expect("a parentless delta records");
+        loader
+            .process(batch_item("events"))
+            .await
+            .expect("the batch resolves and memoizes the table's lineage");
+        let refused = loader
+            .process(delta_item("events", Some("late_parent")))
+            .await
+            .expect_err("a first parent after resolution refuses");
+        let rendered = refused.to_string();
+        assert!(
+            rendered.contains(
+                "records a first parent `late_parent` after its lineage was already \
+                 walked — a table's link precedes its first batch, so a late first \
+                 link is a defect, refused rather than leaving memoized chains stale"
+            ),
+            "the refusal is the one clean spelling, joins included: {rendered}"
+        );
+        // A first link for a NEVER-resolved table still records: this is
+        // the benign order (a child's delta precedes its first batch).
+        loader
+            .process(delta_item("events__items", Some("events")))
+            .await
+            .expect("a first link ahead of any resolution records");
+    }
+
+    /// The guards run BEFORE the write-ahead record: a refused mutation
+    /// delta must never become durable manifest state, because recovery
+    /// replays the manifest under last-wins attribution with no guard —
+    /// the two halves of the lineage rule would disagree about the same
+    /// bytes. The pin reads the manifest itself: the refused link's
+    /// parent name must be absent.
+    #[tokio::test]
+    async fn a_refused_mutation_delta_never_reaches_the_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wal = crate::wal::writer::Wal::open(
+            dir.path().join("wal"),
+            &PipelineId::new("p"),
+            &LoadId::new("l"),
+            Capabilities::default().ident_rules,
+            false,
+        )
+        .expect("wal opens");
+        let (events, _rx) = tokio::sync::broadcast::channel(16);
+        let pipeline = PipelineId::new("p");
+        let load_id = LoadId::new("l");
+        let mut loader = Loader::new(
+            Sink {
+                session: Box::new(FakeSession::default()),
+                capabilities: Capabilities::default(),
+            },
+            report::Run::new(pipeline.clone(), load_id.clone()),
+            StateDoc::new(pipeline, "test"),
+            load_id,
+            policies(CommitPolicy::default()),
+            Some(wal),
+            events,
+        );
+        loader
+            .process(delta_item("child", Some("first_parent")))
+            .await
+            .expect("the first link records");
+        loader
+            .process(delta_item("child", Some("second_parent")))
+            .await
+            .expect_err("a re-parenting delta refuses");
+        let manifest = std::fs::read_to_string(dir.path().join("wal").join("manifest.jsonl"))
+            .expect("the manifest exists");
+        assert!(
+            manifest.contains("first_parent"),
+            "the accepted link is durable: {manifest}"
+        );
+        assert!(
+            !manifest.contains("second_parent"),
+            "the refused link never became durable manifest state: {manifest}"
         );
     }
 

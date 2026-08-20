@@ -119,14 +119,51 @@ impl ScalarState {
 #[derive(Debug)]
 pub(crate) struct FieldCapExceeded;
 
+/// A struct column's observed fields: first-seen order (order is part of
+/// the schema hash) with the shared key→slot lookup riding beside the
+/// vector — observation resolves a field per key per ROW, so a linear
+/// find priced one wide struct column's push quadratically. Derefs to
+/// the entry slice so read-side walks stay slice-shaped.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StructFields {
+    entries: Vec<(String, ColumnState)>,
+    slots: super::slots::SlotIndex,
+}
+
+impl StructFields {
+    fn state_mut(&mut self, key: &str) -> Option<&mut ColumnState> {
+        let slot = self.slots.slot_of(&self.entries, key)?;
+        Some(&mut self.entries[slot].1)
+    }
+
+    fn push(&mut self, key: String, state: ColumnState) {
+        self.entries.push((key, state));
+        self.slots.grew(&self.entries);
+    }
+
+    /// Total key comparisons the field lookup has cost — the meter the
+    /// complexity pin reads.
+    #[cfg(test)]
+    pub(crate) fn probes(&self) -> u64 {
+        self.slots.probes()
+    }
+}
+
+impl std::ops::Deref for StructFields {
+    type Target = [(String, ColumnState)];
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
 /// Observation state for one column position, tracking shape as well as type.
 #[derive(Debug, Clone)]
 pub(crate) enum ColumnState {
     /// Only nulls seen so far.
     Unknown,
     Scalar(ScalarState),
-    /// Nested object: fields in first-seen order (order is part of the schema hash).
-    Struct(Vec<(String, ColumnState)>),
+    /// Nested object — see [`StructFields`].
+    Struct(StructFields),
     ScalarList(ScalarState),
     /// List of objects — rows live in a child table; the column itself vanishes.
     ChildTable,
@@ -170,15 +207,15 @@ impl ColumnState {
             ColumnState::Struct(fields) => match value.kind() {
                 ValueKind::Object => {
                     for (key, item) in value.obj_entries() {
-                        match fields.iter_mut().find(|(name, _)| name == key) {
-                            Some((_, state)) => {
+                        match fields.state_mut(key) {
+                            Some(state) => {
                                 state.observe(item, lists_as_columns, field_budget)?;
                             }
                             None => {
                                 take_field(field_budget)?;
                                 let mut state = ColumnState::Unknown;
                                 state.observe(item, lists_as_columns, field_budget)?;
-                                fields.push((key.to_owned(), state));
+                                fields.push(key.to_owned(), state);
                             }
                         }
                     }
@@ -229,12 +266,12 @@ impl ColumnState {
     ) -> Result<Self, FieldCapExceeded> {
         Ok(match value.kind() {
             ValueKind::Object => {
-                let mut fields = Vec::new();
+                let mut fields = StructFields::default();
                 for (key, item) in value.obj_entries() {
                     take_field(field_budget)?;
                     let mut state = ColumnState::Unknown;
                     state.observe(item, lists_as_columns, field_budget)?;
-                    fields.push((key.to_owned(), state));
+                    fields.push(key.to_owned(), state);
                 }
                 ColumnState::Struct(fields)
             }
@@ -367,6 +404,38 @@ mod tests {
                 .expect("these fixtures sit far under the field cap");
         }
         state
+    }
+
+    /// THE COMPLEXITY PIN over struct-field observation: R observations
+    /// of one W-field object cost O(R·W) key comparisons, not O(R·W²) —
+    /// one wide struct column otherwise bought the same quadratic the
+    /// column seat did, outside every top-level meter. Structural (the
+    /// slot meter), never wall-clock.
+    #[test]
+    fn wide_struct_observation_costs_linear_probes_per_field() {
+        const R: usize = 64;
+        const W: usize = 64;
+        let mut object = serde_json::Map::new();
+        for k in 0..W {
+            object.insert(format!("k{k}"), json!(1));
+        }
+        let value = Value::Object(object);
+        let mut state = ColumnState::Unknown;
+        let mut budget = crate::shred::limits::MAX_SOURCE_COLUMNS_PER_TABLE;
+        for _ in 0..R {
+            state
+                .observe(&value, true, &mut budget)
+                .expect("far under the field cap");
+        }
+        let ColumnState::Struct(fields) = &state else {
+            panic!("a W-field object observes as a struct");
+        };
+        let probes = fields.probes();
+        let bound = ((R * W + 16 * 16 + W) * 2) as u64;
+        assert!(
+            probes <= bound,
+            "field lookups stay linear: {probes} probes for {R}x{W} (bound {bound})"
+        );
     }
 
     /// A leading NULL must not DECIDE the column. `fresh` maps a null to

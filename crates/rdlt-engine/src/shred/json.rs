@@ -320,12 +320,7 @@ impl Shredder {
         // Every document in a push repeats its keys, so after the first one
         // this replaces a normalized-name construction (which formats, and may
         // hash and truncate) plus the by-name index lookup.
-        if let Some(idx) = self.tables[parent_idx]
-            .child_tables
-            .iter()
-            .find(|(key, _)| key == source_key)
-            .map(|(_, idx)| *idx)
-        {
+        if let Some(idx) = self.tables[parent_idx].child_idx_of(source_key) {
             return Ok(idx);
         }
         if self.tables[parent_idx].child_tables.len() >= MAX_CHILD_TABLES_PER_PARENT {
@@ -378,9 +373,7 @@ impl Shredder {
                 idx
             }
         };
-        self.tables[parent_idx]
-            .child_tables
-            .push((source_key.to_owned(), idx));
+        self.tables[parent_idx].record_child(source_key.to_owned(), idx);
         Ok(idx)
     }
 }
@@ -433,6 +426,70 @@ mod cardinality_tests {
             }
             Ok(_) => panic!("a push over the row cap must refuse"),
         }
+    }
+
+    /// THE COMPLEXITY PIN over the column-observation seat: a push of
+    /// R rows × W keys costs O(R·W) key comparisons in the column
+    /// lookup, not O(R·W²) — the wide-table quadratic that priced one
+    /// legal byte-budgeted push at minutes of uninterruptible CPU
+    /// inside `spawn_blocking`. Structural (the slot meter), never
+    /// wall-clock.
+    #[test]
+    fn wide_row_observation_costs_linear_probes_per_key() {
+        const R: usize = 64;
+        const W: usize = 64;
+        let mut slab = Vec::new();
+        for _ in 0..R {
+            slab.push(b'{');
+            for k in 0..W {
+                if k > 0 {
+                    slab.push(b',');
+                }
+                slab.extend_from_slice(format!("\"k{k}\":1").as_bytes());
+            }
+            slab.extend_from_slice(b"}\n");
+        }
+        let mut shredder = shredder();
+        push(&mut shredder, &slab).unwrap_or_else(|_| panic!("a wide slab shreds"));
+        let probes = shredder.tables[0].column_probes();
+        // Per-key lookups linear in R·W, plus the prelude's linear
+        // scans before the index exists — with slack, nowhere near the
+        // R·W²/2 (~131k here) the linear find cost.
+        let bound = ((R * W + 16 * 16 + W) * 2) as u64;
+        assert!(
+            probes <= bound,
+            "column lookups stay linear: {probes} probes for {R}x{W} (bound {bound})"
+        );
+    }
+
+    /// THE COMPLEXITY PIN over the child-table memo: R rows × W child
+    /// keys cost O(R·W) comparisons in the memo, not O(R·W²) — the
+    /// same keyed-vector rule as the column seat, at the seat that
+    /// answers per child key per row.
+    #[test]
+    fn many_child_keys_cost_linear_memo_probes() {
+        const R: usize = 32;
+        const W: usize = 32;
+        let mut slab = Vec::new();
+        for _ in 0..R {
+            slab.push(b'{');
+            for k in 0..W {
+                if k > 0 {
+                    slab.push(b',');
+                }
+                slab.extend_from_slice(format!("\"c{k}\":[{{}}]").as_bytes());
+            }
+            slab.extend_from_slice(b"}\n");
+        }
+        let mut shredder = shredder();
+        push(&mut shredder, &slab).unwrap_or_else(|_| panic!("a many-child slab shreds"));
+        assert_eq!(shredder.tables.len(), 1 + W, "root plus W child tables");
+        let probes = shredder.tables[0].child_probes();
+        let bound = ((R * W + 16 * 16 + W) * 2) as u64;
+        assert!(
+            probes <= bound,
+            "child-memo lookups stay linear: {probes} probes for {R}x{W} (bound {bound})"
+        );
     }
 
     /// The idle-table skip contract: a push that leaves a table entirely

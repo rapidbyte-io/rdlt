@@ -521,6 +521,42 @@ mod tests {
         );
     }
 
+    /// A schema declared one level past the depth boundary refuses AT
+    /// ADMISSION, config-class: the refusal is the connector's
+    /// declaration to fix, and because `items` refuses before any
+    /// `LoadItem` exists, nothing of the batch can become durable
+    /// write-ahead state — the shape that admitted-then-refused-
+    /// downstream turns into is a permanent internal error recovery
+    /// re-delivers on every restart.
+    #[test]
+    fn a_past_boundary_schema_refuses_config_class_at_admission() {
+        use arrow::datatypes::Field;
+        let mut dt = DataType::Int64;
+        for _ in 0..64 {
+            dt = DataType::Struct(vec![Field::new("f", dt, true)].into());
+        }
+        let batch = RecordBatch::try_new(
+            Arc::new(arrow::datatypes::Schema::new(vec![Field::new(
+                "deep",
+                dt.clone(),
+                true,
+            )])),
+            vec![arrow::array::new_null_array(&dt, 1)],
+        )
+        .expect("batch");
+        let mut registry = crate::schema::registry::SchemaRegistry::default();
+        let refused = pass(&mut registry, &TableName::new("events"), &batch)
+            .expect_err("a past-boundary declaration refuses at admission");
+        assert!(
+            matches!(refused, Error::Config { .. }),
+            "config-class — the declaration is the connector's to fix: {refused}"
+        );
+        assert!(
+            refused.to_string().contains("nesting"),
+            "the refusal names the cap: {refused}"
+        );
+    }
+
     /// The v1 structured-stream contract at the mixed-shape join: a
     /// column that evolves between a struct shape and a scalar shape
     /// joins to Json, and the structured path cannot render the

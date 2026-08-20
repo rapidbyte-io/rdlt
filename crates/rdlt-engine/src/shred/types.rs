@@ -71,7 +71,7 @@ fn join_column_types_at(
     depth: usize,
 ) -> Result<ColumnType, String> {
     use rdlt_core::types::widen;
-    if depth > MAX_ARROW_DEPTH {
+    if depth >= MAX_ARROW_DEPTH {
         return Err(format!(
             "column nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
              the cross-batch join can overflow the stack"
@@ -115,7 +115,14 @@ pub(crate) fn column_type_from_arrow(dt: &DataType) -> Result<ColumnType, String
 }
 
 fn column_type_from_arrow_at(dt: &DataType, depth: usize) -> Result<ColumnType, String> {
-    if depth > MAX_ARROW_DEPTH {
+    // `>=`, aligned with the arena parser's ingest gate and — one level
+    // at a time — with the lowering walk's path-length bound: the
+    // deepest schema this door admits (63 struct levels, the leaf
+    // visited at depth 63) is exactly the deepest a structs-off
+    // destination can lower (a leaf's path of 64 names). A door one
+    // level looser admits a schema the destination seam can only refuse
+    // internal AFTER the delta is durable.
+    if depth >= MAX_ARROW_DEPTH {
         return Err(format!(
             "schema nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
              the mapping walk can overflow the stack"
@@ -245,6 +252,29 @@ mod tests {
             column_type_from_arrow(&deep(10)).is_ok(),
             "ordinary nesting still maps"
         );
+    }
+
+    /// THE BOUNDARY, exactly: this door and the lowering walk must admit
+    /// the same deepest schema. The lowering walk admits 63 struct
+    /// levels (a leaf's path is levels + 1 names, refused past
+    /// `MAX_ARROW_DEPTH`), so the 63rd level maps here and the 64th
+    /// refuses HERE — at admission, where the refusal classifies as the
+    /// connector's declaration. A door one level looser hands the
+    /// destination seam a schema it must refuse as internal AFTER the
+    /// delta became durable, and recovery then re-delivers the admitted
+    /// record forever.
+    #[test]
+    fn the_door_admits_63_struct_levels_and_refuses_the_64th() {
+        let deep = |levels: usize| -> DataType {
+            let mut dt = DataType::Int64;
+            for _ in 0..levels {
+                dt = DataType::Struct(vec![Field::new("f", dt, true)].into());
+            }
+            dt
+        };
+        column_type_from_arrow(&deep(63)).expect("63 struct levels map");
+        let err = column_type_from_arrow(&deep(64)).expect_err("the 64th level refuses");
+        assert!(err.contains("nesting"), "the refusal names the cap: {err}");
     }
 
     /// The cross-batch join walks the SAME connector-controlled nesting and

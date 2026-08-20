@@ -20,6 +20,13 @@ pub(crate) struct TableBuffer {
     pub(crate) parent: Option<ParentLink>,
     /// Column observation states in first-seen order; source key → state.
     pub(crate) columns: Vec<(String, ColumnState)>,
+    /// The key→slot lookup beside `columns` ([`super::slots::SlotIndex`]):
+    /// observation resolves a column per key per ROW, so a linear find
+    /// priced a wide table's push quadratically. Kept coherent by
+    /// `column_index` (append) and `revert_column` (rebuild after
+    /// removal); deliberately NOT in the pre-push snapshot — the
+    /// rollback path re-points it itself.
+    column_slots: super::slots::SlotIndex,
     /// Source key → normalized column/child name mapping (collision-safe).
     namer: UniqueNamer,
     /// The memoized name pairings, BOTH directions: schema resolution maps
@@ -43,6 +50,12 @@ pub(crate) struct TableBuffer {
     /// vector, so it stays valid across a column rollback. Adding it to the
     /// snapshot would change that struct's shape and its content.
     pub(crate) child_tables: Vec<(String, usize)>,
+    /// The key→slot lookup beside `child_tables` — the memo answers per
+    /// child key per ROW, so a linear find priced a many-child parent's
+    /// push at O(keys × children) compares. Same append-only validity as
+    /// the memo itself: kept coherent by [`Self::record_child`], never
+    /// snapshotted, never reverted.
+    child_slots: super::slots::SlotIndex,
     /// Nested struct fields retained across all columns — they spend from the
     /// SAME per-table budget as top-level columns, because a single struct
     /// column can otherwise smuggle unbounded breadth past the column cap
@@ -80,10 +93,12 @@ impl TableBuffer {
             table,
             parent,
             columns: Vec::new(),
+            column_slots: super::slots::SlotIndex::default(),
             namer,
             to_normalized: std::collections::HashMap::new(),
             normalized_to_source: std::collections::HashMap::new(),
             child_tables: Vec::new(),
+            child_slots: super::slots::SlotIndex::default(),
             nested_fields: 0,
             dirty: true,
             pre_push_snapshot: None,
@@ -189,11 +204,15 @@ impl TableBuffer {
         });
         match prior {
             Some(state) => {
-                if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
+                if let Some(idx) = self.column_slots.slot_of(&self.columns, source_key) {
                     self.columns[idx].1 = state;
                 }
             }
-            None => self.columns.retain(|(k, _)| k != source_key),
+            None => {
+                self.columns.retain(|(k, _)| k != source_key);
+                // Removal shifts every later slot; the lookup re-derives.
+                self.column_slots.rebuilt(&self.columns);
+            }
         }
         // A rollback can remove or shrink a struct column, so the running
         // nested-field count is re-derived from what actually remains. Cold
@@ -203,6 +222,20 @@ impl TableBuffer {
             .iter()
             .map(|(_, state)| state.nested_field_count())
             .sum();
+    }
+
+    /// The memoized child-table index for a source key, if this parent has
+    /// resolved that exact key before.
+    pub(crate) fn child_idx_of(&mut self, source_key: &str) -> Option<usize> {
+        self.child_slots
+            .slot_of(&self.child_tables, source_key)
+            .map(|slot| self.child_tables[slot].1)
+    }
+
+    /// Memoize `source_key` → child table `idx` (see `child_tables`).
+    pub(crate) fn record_child(&mut self, source_key: String, idx: usize) {
+        self.child_tables.push((source_key, idx));
+        self.child_slots.grew(&self.child_tables);
     }
 
     /// Normalized column name for a source key, memoizing the pairing on first
@@ -234,7 +267,7 @@ impl TableBuffer {
     /// budget arithmetic lives in [`Self::observe_value`], which is why the
     /// creation check here subtracts the running nested-field total too.
     fn column_index(&mut self, source_key: &str) -> Result<usize, rdlt_core::error::Error> {
-        if let Some(idx) = self.columns.iter().position(|(k, _)| k == source_key) {
+        if let Some(idx) = self.column_slots.slot_of(&self.columns, source_key) {
             return Ok(idx);
         }
         if self.columns.len() + self.nested_fields >= MAX_SOURCE_COLUMNS_PER_TABLE {
@@ -246,7 +279,22 @@ impl TableBuffer {
         }
         self.columns
             .push((source_key.to_owned(), ColumnState::Unknown));
+        self.column_slots.grew(&self.columns);
         Ok(self.columns.len() - 1)
+    }
+
+    /// Total key comparisons the column lookup has cost — the meter the
+    /// complexity pin reads.
+    #[cfg(test)]
+    pub(crate) fn column_probes(&self) -> u64 {
+        self.column_slots.probes()
+    }
+
+    /// Total key comparisons the child memo has cost — the meter the
+    /// complexity pin reads.
+    #[cfg(test)]
+    pub(crate) fn child_probes(&self) -> u64 {
+        self.child_slots.probes()
     }
 }
 

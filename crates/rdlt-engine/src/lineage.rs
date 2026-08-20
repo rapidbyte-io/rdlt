@@ -34,9 +34,15 @@ pub(crate) fn root_table(stream: &StreamName, rules: IdentRules) -> TableName {
 /// has already WALKED as anyone's ancestor — the suffix sharing below leans
 /// on that wider form, since a walked node's memoized tail is read by every
 /// LATER chain that descends through it, not just the query that walked it.
-/// ENFORCED, not merely relied on: the loader refuses a re-parenting delta
-/// typed at its recording seat, and the scan resolves against a map frozen
-/// before any resolve runs.
+/// ENFORCED, not merely relied on — all three mutation shapes, BEFORE the
+/// delta becomes durable: the loader refuses a delta that re-parents a
+/// linked table, one that drops a recorded link, and one that records a
+/// FIRST link for a table any resolve has already walked (the [`has_memo`]
+/// probe below is that guard's eye), and the guards run ahead of the
+/// write-ahead record so no refused mutation reaches the manifest recovery
+/// replays. The scan resolves against a map frozen before any resolve runs.
+///
+/// [`has_memo`]: Chain::has_memo
 ///
 /// EVERY node a walk visits is memoized, its tail SHARED with its parent's
 /// link ([`Link`] is a persistent list), and a walk stops at the first
@@ -166,6 +172,17 @@ impl Chain {
             }
         }
         Ok(self.links.get(table).map(std::sync::Arc::as_ref))
+    }
+
+    /// Whether any resolve has already walked (and memoized) `table` —
+    /// as a query or as an ancestor on someone else's chain. The
+    /// loader's lineage guard asks this before accepting a FIRST parent
+    /// link: the memo has no invalidation (none is needed while links
+    /// precede first batches), so a link recorded for an
+    /// already-memoized table would leave every resolved chain through
+    /// it answering the old root.
+    pub(crate) fn has_memo(&self, table: &TableName) -> bool {
+        self.links.contains_key(table)
     }
 
     /// Total `parent_of` calls made across every resolve — the
