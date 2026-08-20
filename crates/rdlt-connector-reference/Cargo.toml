@@ -55,7 +55,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+# `io-util` on top of the workspace set: the source reads its file
+# line-streaming (`AsyncBufReadExt`/`BufReader`) and the cursor's resume
+# seeks and reads its guard window (`AsyncSeekExt`/`AsyncReadExt`) — this
+# crate's own uses, declared here so it builds alone rather than by
+# feature unification with whatever happens to be compiled beside it.
+tokio = { workspace = true, features = ["io-util"] }
 
 [dev-dependencies]
 # The certification cells: the certify library drives the built bin
