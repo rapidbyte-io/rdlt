@@ -91,15 +91,29 @@ const MAX_STATE_SUBMAP_ENTRIES: usize = 256 * 1024;
 /// free text quoted like an identifier — all retained by the backend
 /// or quoted by its refusals. Each sub-map is held to a COUNT as well
 /// as to per-key lengths: length gates alone admit a flood of tiny
-/// keys. Cursor VALUES stay opaque documents (bounded by the document
-/// ceiling that admitted the meta), never walked.
+/// keys.
+///
+/// Cursor VALUES are counted too, though never inspected. They stay
+/// opaque documents — what a cursor MEANS is the source's business —
+/// but the meta's byte ceiling bounds only what arrived, and a dense
+/// document becomes far more once parsed. They are planted into
+/// whatever the backend retains and re-serialized by every later state
+/// read, so the same node count the read seat holds a resume cursor to
+/// applies here.
 pub(super) fn gate_commit_meta(meta: &CommitMeta) -> Result<(), session_reply::Reply> {
     refuse_oversized_identifier("load id", meta.load_id.as_str())?;
     refuse_oversized_identifier("pipeline id", meta.state.pipeline.as_str())?;
     refuse_entry_flood("cursors", meta.state.cursors.len())?;
     refuse_entry_flood("schema hashes", meta.state.schema_hashes.len())?;
-    for stream in meta.state.cursors.keys() {
+    for (stream, cursor) in &meta.state.cursors {
         refuse_oversized_identifier("stream name", stream.as_str())?;
+        if let Err(message) = refuse_dense_cursor("a committed cursor", cursor.as_value()) {
+            return Err(session_reply::Reply::Error(wire::error_frame(
+                Classification::Fatal,
+                message,
+                None,
+            )));
+        }
     }
     for table in meta.state.schema_hashes.keys() {
         refuse_oversized_identifier("table name", table.as_str())?;
@@ -119,12 +133,36 @@ pub(super) fn gate_commit_meta(meta: &CommitMeta) -> Result<(), session_reply::R
 /// JSON parse that produced the schema, which refuses past serde_json's
 /// own nesting limit.
 pub(super) fn gate_column(column: &Column) -> Result<(), session_reply::Reply> {
+    let mut counted = 0usize;
+    gate_column_at(column, &mut counted)
+}
+
+/// [`gate_column`] carrying the running field count: the top-level
+/// column cap bounds how many columns a schema declares, but a single
+/// column can nest hundreds of thousands of fields inside the same
+/// document, and every one of them is a retained `Column` the backend's
+/// DDL walks. The whole tree is held to the same number as the top
+/// level — a schema is as wide as its fields, wherever they sit.
+fn gate_column_at(column: &Column, counted: &mut usize) -> Result<(), session_reply::Reply> {
+    *counted += 1;
+    if *counted > MAX_ENSURED_COLUMNS {
+        return Err(session_reply::Reply::Error(wire::error_frame(
+            Classification::Fatal,
+            format!(
+                "an ensured table declares more than {MAX_ENSURED_COLUMNS} columns once \
+                 nested fields are counted"
+            ),
+            None,
+        )));
+    }
     refuse_oversized_identifier("column name", &column.name)?;
     // Exhaustive on purpose: a future ColumnType arm that carries named
     // fields must fail compilation here rather than silently riding the
     // non-recursive arms.
     match &column.column_type {
-        ColumnType::Struct { fields } => fields.iter().try_for_each(gate_column),
+        ColumnType::Struct { fields } => fields
+            .iter()
+            .try_for_each(|field| gate_column_at(field, counted)),
         ColumnType::Scalar { .. } | ColumnType::ScalarList { .. } => Ok(()),
     }
 }

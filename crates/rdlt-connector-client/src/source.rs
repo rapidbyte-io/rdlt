@@ -118,15 +118,7 @@ fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
     Ok(())
 }
 
-/// The most stream specs one streams reply may declare — the engine's
-/// own default `max_streams_per_source` (1024), mirrored at the wire
-/// edge because this seat serves EVERY host: the engine's cap refuses
-/// only after full materialization, and an embedder driving the client
-/// directly has no engine in front of it at all. A host that raises
-/// `max_streams_per_source` past 1024 over a served source will have
-/// its streams reply refused HERE, at discovery — the ceiling is not
-/// yet configurable, a fixed 1024 today.
-const MAX_DECLARED_STREAM_SPECS: usize = 1024;
+use rdlt_connector::gate::MAX_DECLARED_STREAM_SPECS;
 
 /// Decode the streams reply's declared specs, gated BEFORE anything
 /// materializes — literally: the reply is ONE newline-delimited bytes

@@ -2702,3 +2702,124 @@ async fn a_flooded_state_submap_refuses_before_the_backend() {
         other => panic!("expected the sub-map count refusal, got {other:?}"),
     }
 }
+
+/// A committed cursor is counted as well as key-gated. The meta's byte
+/// ceiling bounds what ARRIVED; a dense document becomes far more once
+/// parsed, and this one is planted into whatever the backend retains
+/// and re-serialized by every state read after it. Counted, never
+/// inspected — the cursor stays opaque.
+#[tokio::test]
+async fn a_node_flooded_committed_cursor_refuses_before_the_backend() {
+    use rdlt_connector::core::cursor::Cursor;
+    use rdlt_connector::core::id::StreamName;
+
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let mut flooded = commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1);
+    // Two wire bytes an element, one retained node each — a byte-legal
+    // document the node walk is what refuses.
+    let dense: Vec<serde_json::Value> = (0..200_000).map(|_| serde_json::json!(0)).collect();
+    flooded
+        .state
+        .cursors
+        .insert(StreamName::new("s"), Cursor::new(serde_json::json!(dense)));
+
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Publish(proto::Publish {
+                commit_meta_json: serde_json::to_vec(&flooded).expect("meta json"),
+            })),
+        })
+        .await
+        .expect("send the flooded publish");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("document nodes"),
+                "the refusal names the node ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the cursor node refusal, got {other:?}"),
+    }
+}
+
+/// Nested fields count toward the column cap. A schema declares few
+/// top-level columns and hides hundreds of thousands of fields inside
+/// one of them otherwise — every one a retained `Column` the backend's
+/// DDL walks.
+#[tokio::test]
+async fn a_deeply_populated_struct_column_refuses_at_the_column_cap() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let mut schema = schema_for(ECHOED_TABLE);
+    let exemplar = schema.columns[0].clone();
+    let fields: Vec<rdlt_connector::core::schema::Column> = (0..5000)
+        .map(|i| rdlt_connector::core::schema::Column {
+            name: format!("f{i}"),
+            ..exemplar.clone()
+        })
+        .collect();
+    schema.columns = vec![rdlt_connector::core::schema::Column {
+        name: "wide".into(),
+        column_type: rdlt_connector::core::schema::ColumnType::Struct { fields },
+        ..exemplar
+    }];
+
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Ensure(proto::Ensure {
+                table_schema_json: serde_json::to_vec(&schema).expect("schema json"),
+                write_mode_json: serde_json::to_vec(&WriteMode::Append).expect("mode json"),
+            })),
+        })
+        .await
+        .expect("send the deeply populated ensure");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert!(
+                error.message.contains("nested fields are counted"),
+                "the refusal says the nesting is what counted: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the nested column-count refusal, got {other:?}"),
+    }
+}

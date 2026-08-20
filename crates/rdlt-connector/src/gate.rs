@@ -43,6 +43,21 @@ pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 /// absurd for a name.
 pub const MAX_WIRE_IDENTIFIER_BYTES: usize = 1024;
 
+/// The most stream specs one `Streams` reply may declare.
+///
+/// Both ends of the wire hold the reply to this: the serving side so a
+/// connector learns from its own refusal rather than by building a
+/// reply no frame can carry, and the dialing side because it serves
+/// every host — an embedder driving the client directly has no engine
+/// in front of it, and the engine's own per-source cap refuses only
+/// after the reply has fully materialized.
+///
+/// It is the engine's default `max_streams_per_source`. A host that
+/// raises that knob past this number over a SERVED source will have its
+/// streams reply refused at discovery; the ceiling is not configurable
+/// today.
+pub const MAX_DECLARED_STREAM_SPECS: usize = 1024;
+
 /// Render a JSON parse failure as kind and position only: which class
 /// of failure, at which line and column.
 ///

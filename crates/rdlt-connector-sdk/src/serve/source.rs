@@ -256,6 +256,10 @@ struct SourceServer<C: SourceConnector> {
     /// The process-wide `Read` admission ceiling ([`MAX_CONCURRENT_READS`]
     /// permits): every served connection shares it.
     read_admission: Arc<tokio::sync::Semaphore>,
+    /// The process-wide ceiling on concurrent `Check`/`Streams` calls
+    /// ([`wire::MAX_CONCURRENT_PROBES`]): both run the connector's own
+    /// code, and neither had an admission bound of its own.
+    probe_admission: Arc<tokio::sync::Semaphore>,
 }
 
 impl<C: SourceConnector> SourceServer<C> {
@@ -263,6 +267,7 @@ impl<C: SourceConnector> SourceServer<C> {
         Self {
             shell: OnceLock::new(),
             read_admission: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
+            probe_admission: Arc::new(tokio::sync::Semaphore::new(wire::MAX_CONCURRENT_PROBES)),
         }
     }
 
@@ -345,6 +350,12 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
     }
 
     async fn check(&self, _request: Request<CheckRequest>) -> Result<Response<CheckReply>, Status> {
+        // Admission BEFORE the connector's own code runs: what a check
+        // costs is the connector's business, and unbounded concurrent
+        // ones are the caller's choice, not the connector's.
+        let _probe = Arc::clone(&self.probe_admission)
+            .try_acquire_owned()
+            .map_err(|_| wire::probes_exhausted())?;
         let shell = self.shell()?;
         let outcome = match shell.check().await {
             Ok(()) => check_reply::Outcome::Ok(proto::Empty {}),
@@ -371,31 +382,42 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
 /// cannot carry a raw newline inside a string, so the join is
 /// unambiguous for the client's line-wise gates.
 ///
-/// The gates run HERE, before the join builds: the client refuses a
-/// reply of more than 1024 specs or a spec line past the document
-/// ceiling, and a served connector that would emit one must learn it
-/// from its own refusal rather than by building gigabytes and watching
-/// the encode cap reject the frame. The count is the client's own
-/// ceiling mirrored BY VALUE (the crates cannot share the constant;
-/// the mirror IS the contract — 1024 declared specs, the same number
-/// the client admits, and both sides say so); the per-line ceiling is
-/// the SPI's document bound, the belt behind the count.
+/// The gates run HERE, before the join builds: a served connector that
+/// would emit a reply the wire cannot carry must learn it from its own
+/// refusal rather than by building gigabytes and watching the encode
+/// cap reject the frame. Three bounds, each answering a different way
+/// to be too big: the COUNT (the SPI's one ceiling, which the dialing
+/// side holds the same reply to), each LINE against the document
+/// bound, and the running TOTAL against the frame — because a thousand
+/// individually-legal lines still make a blob no frame carries, and
+/// discovering that at the encode cap means having built it.
 fn declaration_jsonl(streams: &[source::StreamSpec]) -> Result<Vec<u8>, String> {
-    const MAX_DECLARED_STREAMS: usize = 1024;
-    if streams.len() > MAX_DECLARED_STREAMS {
+    if streams.len() > gate::MAX_DECLARED_STREAM_SPECS {
         return Err(format!(
-            "this connector declares {} streams — over the {MAX_DECLARED_STREAMS} the wire \
-             admits",
-            streams.len()
+            "this connector declares {} streams — over the {} the wire admits",
+            streams.len(),
+            gate::MAX_DECLARED_STREAM_SPECS
         ));
     }
-    let mut lines = Vec::with_capacity(streams.len());
+    // Joined in place: one copy, and the total is known as it grows
+    // rather than after a second one.
+    let mut blob: Vec<u8> = Vec::new();
     for stream in streams {
         let line = serde_json::to_vec(stream).expect("a StreamSpec serializes to JSON infallibly");
         gate::refuse_oversized_document("a declared stream spec", &line)?;
-        lines.push(line);
+        let delimiter = usize::from(!blob.is_empty());
+        if blob.len() + delimiter + line.len() > MAX_FRAME_BYTES {
+            return Err(format!(
+                "this connector's declaration exceeds the {MAX_FRAME_BYTES}-byte frame the \
+                 wire carries"
+            ));
+        }
+        if delimiter == 1 {
+            blob.push(b'\n');
+        }
+        blob.extend_from_slice(&line);
     }
-    Ok(lines.join(&b'\n'))
+    Ok(blob)
 }
 
 #[tonic::async_trait]
@@ -404,6 +426,10 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         &self,
         _request: Request<StreamsRequest>,
     ) -> Result<Response<StreamsReply>, Status> {
+        // Admission BEFORE the connector enumerates: see `check`.
+        let _probe = Arc::clone(&self.probe_admission)
+            .try_acquire_owned()
+            .map_err(|_| wire::probes_exhausted())?;
         let shell = self.shell()?;
         let outcome = match shell.streams().await {
             Ok(streams) => match declaration_jsonl(&streams) {
@@ -760,6 +786,25 @@ mod tests {
     use tokio_stream::StreamExt as _;
 
     use super::*;
+
+    /// The declaration is bounded in THREE ways, and this is the one a
+    /// per-item gate cannot give: a thousand individually-legal lines
+    /// still make a blob no frame carries. Discovering that at the
+    /// encode cap would mean having built it.
+    #[test]
+    fn a_declaration_too_large_for_a_frame_refuses_before_it_is_built() {
+        // Lines just under the document ceiling, enough of them to pass
+        // the frame: every one legal alone, the total impossible.
+        let wide = "w".repeat((rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize) - 1024);
+        let streams: Vec<source::StreamSpec> = (0..16)
+            .map(|i| source::StreamSpec::new(format!("{wide}{i}")))
+            .collect();
+        let refusal = declaration_jsonl(&streams).expect_err("the total is past a frame");
+        assert!(
+            refusal.contains("frame"),
+            "the refusal names what it could not fit: {refusal}"
+        );
+    }
 
     /// The declaration's gates run at the EMIT, not only at the
     /// client's decode: a connector that would declare more streams

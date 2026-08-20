@@ -699,3 +699,81 @@ mod tests {
         drop(first);
     }
 }
+
+/// A served connector admits at most this many concurrent calls to the
+/// unary RPCs that run its OWN code — `Check` and `Streams`.
+///
+/// Every other seat that reaches a connector's backend already has an
+/// admission bound: reads have their per-source ceiling, sessions have
+/// the one-session slot. These two had none, and they are not free
+/// calls: a `Check` opens whatever the connector must touch to answer,
+/// a `Streams` asks it to enumerate. What they cost is the connector's
+/// business — a pool acquisition, a catalog round trip, a directory
+/// walk — which is exactly why the count belongs here rather than in
+/// each connector: the sdk is the template, and a template that admits
+/// unbounded concurrent probes teaches every connector to.
+///
+/// Generous against honest use by orders of magnitude: a host probes
+/// once per pipeline and enumerates once per source, so the honest
+/// concurrent count is one. This bounds a client that decided
+/// otherwise.
+pub const MAX_CONCURRENT_PROBES: usize = 64;
+
+/// The refusal a probe past [`MAX_CONCURRENT_PROBES`] answers with — a
+/// `Status`, like the other admission ceilings, because a full ceiling
+/// is a protocol-state answer rather than something the connector said.
+pub fn probes_exhausted() -> tonic::Status {
+    tonic::Status::resource_exhausted(format!(
+        "{MAX_CONCURRENT_PROBES} concurrent probe calls per connector process — the \
+         ceiling is reached"
+    ))
+}
+
+#[cfg(test)]
+mod probe_admission_tests {
+    use super::*;
+
+    /// The probe ceiling refuses, and says which ceiling it was.
+    ///
+    /// Pinned at the seat rather than over the wire because holding
+    /// permits open needs a connector that parks inside `check` or
+    /// `streams`, and what matters here is the bound itself: the
+    /// semaphore admits exactly its count, the next caller is turned
+    /// away, and the refusal is a protocol-state `Status` naming the
+    /// number — the same shape the read ceiling answers with, so an
+    /// operator reads one story for both.
+    #[test]
+    fn the_probe_ceiling_admits_its_count_and_refuses_the_next() {
+        let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
+        let held: Vec<_> = (0..MAX_CONCURRENT_PROBES)
+            .map(|_| {
+                std::sync::Arc::clone(&admission)
+                    .try_acquire_owned()
+                    .expect("every permit up to the ceiling is admitted")
+            })
+            .collect();
+        assert!(
+            std::sync::Arc::clone(&admission)
+                .try_acquire_owned()
+                .is_err(),
+            "the ceiling admits {MAX_CONCURRENT_PROBES} and no more"
+        );
+
+        let refusal = probes_exhausted();
+        assert_eq!(refusal.code(), tonic::Code::ResourceExhausted);
+        assert!(
+            refusal
+                .message()
+                .contains(&MAX_CONCURRENT_PROBES.to_string()),
+            "the refusal names the ceiling: {}",
+            refusal.message()
+        );
+
+        drop(held);
+        assert!(
+            admission.try_acquire_owned().is_ok(),
+            "a released permit is admitted again — the ceiling bounds concurrency, \
+             not lifetime calls"
+        );
+    }
+}
