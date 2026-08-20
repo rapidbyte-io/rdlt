@@ -73,12 +73,25 @@ rdlt-certify = { path = "crates/rdlt-certify" }
 # `RecordBatch` through the rdlt-connector re-export, so version identity is a
 # correctness requirement, not a preference — the rdlt-connectors repository
 # carries the same pin for the same reason, and the two move together.
-arrow = "58.3"
-arrow-schema = "58.3"
-arrow-array = "58.3"
-arrow-buffer = "58.3"
-arrow-data = "58.3"
-arrow-ipc = "58.3"
+# arrow-rs: one major workspace-wide. A connector binary links this arrow
+# beside its own driver's, and a `RecordBatch` crossing that seam must be the
+# same crate version, not merely the same shape — so this major is a contract
+# with every connector, not a private choice.
+#
+# It is 59 here and the connector repository is still on 58, deliberately:
+# duckdb-rs re-exports arrow and NO published release takes 59 (every version
+# through 1.10505.0 requires ^58), so a duckdb connector built against this
+# workspace fails with "expected duckdb::arrow::array::RecordBatch, found
+# RecordBatch". Connectors consume this workspace through a git dependency and
+# hold an older revision until duckdb-rs publishes against 59; bridging the two
+# majors by re-encoding batches through IPC was rejected — it buys nothing and
+# costs a serialize/deserialize on the load path the benchmark bars measure.
+arrow = "59.2"
+arrow-schema = "59.2"
+arrow-array = "59.2"
+arrow-buffer = "59.2"
+arrow-data = "59.2"
+arrow-ipc = "59.2"
 
 # `process` (039): rdlt-runtime spawns connector binaries and supervises
 # them through its lifecycle guard.
@@ -92,7 +105,6 @@ bytes = "1"
 blake3 = "1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 tokio-util = "0.7"
-fs4 = "0.13"
 # Unix open flags (engine) and the CLI's mallopt FFI.
 libc = "0.2"
 rustix = { version = "1.1", features = ["process"] }
@@ -122,14 +134,14 @@ schemars = "1"
 
 # Dev / test
 proptest = "1"
-criterion = "0.5"
+criterion = "0.8"
 # iai-callgrind: the instruction-count bench library. Pinned EXACTLY to the
 # iai-callgrind-runner version installed by CI (.github/workflows/ci.yml,
 # perf-gate job) — lib and runner must agree or counts skew; the perf-gate job
 # has a step that fails loudly if these drift.
 iai-callgrind = "=0.16.1"
 tempfile = "3"
-toml = "0.8"
+toml = "1.1"
 # The tonic-client-over-UDS idiom: `tower::service_fn` supplies
 # `connect_with_connector`'s connector, `hyper_util::rt::TokioIo` adapts
 # `tokio::net::UnixStream` to hyper's IO traits. Born as the sdk serve()

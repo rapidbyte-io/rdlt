@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use fs4::fs_std::FileExt as _;
 use rdlt_connector_sdk::config::schema_of;
 use rdlt_connector_sdk::destination::DestinationConnector;
 use rdlt_connector_sdk::spi::destination::{Capabilities, OpenContext};
@@ -144,15 +143,13 @@ fn lease(dir: &Path) -> Result<std::fs::File, DestinationError> {
         .write(true)
         .open(&path)
         .map_err(|error| framed("open", error))?;
-    if !file
-        .try_lock_exclusive()
-        .map_err(|error| framed("lock", error))?
-    {
-        return Err(DestinationError::fatal(format!(
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => DestinationError::fatal(format!(
             "reference destination: another session holds the lease at {} — one session \
              per output directory",
             path.display()
-        )));
-    }
+        )),
+        std::fs::TryLockError::Error(error) => framed("lock", error),
+    })?;
     Ok(file)
 }

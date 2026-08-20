@@ -49,7 +49,6 @@ async-trait = { workspace = true }
 blake3 = { workspace = true }
 # The session lease: an OS advisory lock beside the state slot, released
 # automatically on process death so a crashed run never blocks recovery.
-fs4 = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

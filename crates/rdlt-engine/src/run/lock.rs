@@ -4,12 +4,11 @@
 //! blocks its own recovery (a lock *file* existence check would).
 
 use std::{
-    fs::{File, OpenOptions},
+    fs::{File, OpenOptions, TryLockError},
     os::unix::fs::OpenOptionsExt as _,
     path::Path,
 };
 
-use fs4::fs_std::FileExt;
 use rdlt_core::error::Error;
 
 #[derive(Debug)]
@@ -49,15 +48,13 @@ impl WorkdirLock {
                 }
                 Error::config(format!("opening lock {}: {e}", path.display()))
             })?;
-        if !file
-            .try_lock_exclusive()
-            .map_err(|e| Error::config(format!("locking {}: {e}", path.display())))?
-        {
-            return Err(Error::config(format!(
+        file.try_lock().map_err(|e| match e {
+            TryLockError::WouldBlock => Error::config(format!(
                 "another run holds the workdir lock at {} — one process per pipeline",
                 path.display()
-            )));
-        }
+            )),
+            TryLockError::Error(e) => Error::config(format!("locking {}: {e}", path.display())),
+        })?;
         Ok(Self { _file: file })
     }
 }
@@ -70,10 +67,15 @@ mod tests {
     fn second_lock_in_same_process_fails_and_releases_on_drop() {
         let dir = tempfile::tempdir().expect("tempdir");
         let first = WorkdirLock::acquire(dir.path()).expect("first lock");
-        // fs4 advisory locks are per-file-handle; a second handle must be refused.
+        // OS advisory locks are per-file-handle; a second handle must be
+        // refused, and refused AS CONTENTION — an I/O failure on the lock
+        // file reaches the operator through a different sentence.
+        let second = WorkdirLock::acquire(dir.path()).expect_err("second lock must fail");
         assert!(
-            WorkdirLock::acquire(dir.path()).is_err(),
-            "second lock must fail"
+            second
+                .to_string()
+                .contains("another run holds the workdir lock"),
+            "contention must name itself, said: {second}"
         );
         drop(first);
         WorkdirLock::acquire(dir.path()).expect("lock reacquirable after drop");

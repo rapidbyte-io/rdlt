@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-arrow = "58.3"
+arrow = "59.2"
 # The same prost minor the protocol crate generates against, so the
 # decode targets drive the identical wire decoding.
 prost = "0.14"
