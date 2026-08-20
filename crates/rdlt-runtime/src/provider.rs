@@ -2,7 +2,28 @@
 //! object — and [`Error`], its typed failure surface.
 
 use async_trait::async_trait;
-use rdlt_connector_client::handshake::Requirement;
+// Re-exported, not merely used: every method of [`Provider`] takes a
+// `Requirement`, [`Error::Client`] carries a client error a caller must
+// be able to match on, and a spawn is asked for a `Role`. A consumer
+// naming what these signatures already demand would otherwise have to
+// depend on the client crate to do it — a dependency the layering
+// exists to avoid, added for nothing but a name. `Classification`
+// comes along because a client error carries one and matching on the
+// error means naming it.
+pub use rdlt_connector_client::error::{Classification, Error as ClientError};
+pub use rdlt_connector_client::handshake::{Requirement, Role};
+
+/// What [`Provider::source`] hands back: a dialed source, alive for as
+/// long as the value is.
+///
+/// Named here for the same reason the types above are re-exported — a
+/// caller holding what this trait returns must be able to say what it
+/// holds, and spelling it out reaches past this crate for two names
+/// that are this crate's own answer.
+pub type ManagedSource = Managed<source::Remote>;
+
+/// What [`Provider::destination`] hands back. See [`ManagedSource`].
+pub type ManagedDestination = Managed<destination::Remote>;
 use rdlt_connector_client::{destination, source};
 use rdlt_connector_protocol::handshake;
 
