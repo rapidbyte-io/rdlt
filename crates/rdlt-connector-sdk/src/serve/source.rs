@@ -108,11 +108,16 @@ const FRAME_MESSAGE_CAPACITY: usize = 64;
 /// keep any single read bounded, and this bounds their count. The
 /// RETAINED-REQUEST term the count multiplies: each admitted read
 /// holds its post-cap spec (identifiers length-gated, collections
-/// count-capped) plus its resume cursor — up to 4 MiB of document that
-/// expands ~3-5× as a parsed `Value`. The cursor term is NAMED here,
-/// not bounded further: a cursor is an opaque document (the house's
-/// third disposition), its 4 MiB input ceiling already binds it, and
-/// no count cap can apply to an opaque value.
+/// count-capped) plus its resume cursor. The cursor is bounded in BOTH
+/// dimensions — 4 MiB of arriving bytes, and
+/// a bounded node count once parsed — so what a read
+/// retains is its payload plus a few megabytes of structure, not the
+/// tens of millions of nodes a compact document of the same byte size
+/// would otherwise become. The product this ceiling multiplies is
+/// therefore bounded, which is what makes the count a budget rather
+/// than a hope. Judging the node COUNT leaves the cursor the opaque
+/// document its contract says it is: no value is inspected, only
+/// counted.
 pub const MAX_CONCURRENT_READS: usize = 1024;
 
 /// The role a source's handshake must be asked for.
@@ -359,6 +364,39 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
     }
 }
 
+/// The declaration a `Streams` reply carries, joined under THE FRAMING
+/// RULE (the proto field's contract): one JSON document per line,
+/// single `\n` joins, no trailing newline, empty = zero streams. JSON
+/// cannot carry a raw newline inside a string, so the join is
+/// unambiguous for the client's line-wise gates.
+///
+/// The gates run HERE, before the join builds: the client refuses a
+/// reply of more than 1024 specs or a spec line past the document
+/// ceiling, and a served connector that would emit one must learn it
+/// from its own refusal rather than by building gigabytes and watching
+/// the encode cap reject the frame. The count is the client's own
+/// ceiling mirrored BY VALUE (the crates cannot share the constant;
+/// the mirror IS the contract — 1024 declared specs, the same number
+/// the client admits, and both sides say so); the per-line ceiling is
+/// the SPI's document bound, the belt behind the count.
+fn declaration_jsonl(streams: &[source::StreamSpec]) -> Result<Vec<u8>, String> {
+    const MAX_DECLARED_STREAMS: usize = 1024;
+    if streams.len() > MAX_DECLARED_STREAMS {
+        return Err(format!(
+            "this connector declares {} streams — over the {MAX_DECLARED_STREAMS} the wire \
+             admits",
+            streams.len()
+        ));
+    }
+    let mut lines = Vec::with_capacity(streams.len());
+    for stream in streams {
+        let line = serde_json::to_vec(stream).expect("a StreamSpec serializes to JSON infallibly");
+        gate::refuse_oversized_document("a declared stream spec", &line)?;
+        lines.push(line);
+    }
+    Ok(lines.join(&b'\n'))
+}
+
 #[tonic::async_trait]
 impl<C: SourceConnector> SourceService for SourceServer<C> {
     async fn streams(
@@ -367,22 +405,16 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
     ) -> Result<Response<StreamsReply>, Status> {
         let shell = self.shell()?;
         let outcome = match shell.streams().await {
-            Ok(streams) => {
-                // THE FRAMING RULE (the proto field's contract): one
-                // JSON document per line, joined by single `\n` bytes,
-                // no trailing newline, empty = zero streams. JSON
-                // cannot carry a raw newline inside a string, so the
-                // join is unambiguous for the client's line-wise gates.
-                let stream_specs_jsonl = streams
-                    .iter()
-                    .map(|stream| {
-                        serde_json::to_vec(stream)
-                            .expect("a StreamSpec serializes to JSON infallibly")
-                    })
-                    .collect::<Vec<_>>()
-                    .join(&b'\n');
-                streams_reply::Outcome::Ok(StreamList { stream_specs_jsonl })
-            }
+            Ok(streams) => match declaration_jsonl(&streams) {
+                Ok(stream_specs_jsonl) => {
+                    streams_reply::Outcome::Ok(StreamList { stream_specs_jsonl })
+                }
+                Err(message) => streams_reply::Outcome::Error(wire::error_frame(
+                    Classification::Fatal,
+                    message,
+                    None,
+                )),
+            },
             Err(error) => streams_reply::Outcome::Error(source_error_frame(&error)),
         };
         Ok(Response::new(StreamsReply {
@@ -457,7 +489,19 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
                 .await);
             }
             Some(bytes) => match serde_json::from_slice::<serde_json::Value>(bytes) {
-                Ok(value) => Some(rdlt_connector::core::cursor::Cursor::new(value)),
+                Ok(value) => {
+                    // The byte ceiling above bounded what ARRIVED; this
+                    // bounds what the arrival BECAME, the dimension a
+                    // compact document expands worst — and it judges
+                    // only the count, never a value, so the cursor
+                    // stays opaque.
+                    if let Err(message) =
+                        serve_gate::refuse_dense_cursor("since_cursor_json", &value)
+                    {
+                        return Ok(error_stream(message).await);
+                    }
+                    Some(rdlt_connector::core::cursor::Cursor::new(value))
+                }
                 Err(error) => {
                     return Ok(error_stream(format!(
                         "invalid since_cursor_json: {}",
@@ -715,6 +759,45 @@ mod tests {
     use tokio_stream::StreamExt as _;
 
     use super::*;
+
+    /// The declaration's gates run at the EMIT, not only at the
+    /// client's decode: a connector that would declare more streams
+    /// than the wire admits learns it from its own refusal instead of
+    /// building the whole blob and watching the frame cap reject it.
+    /// The count is the client's own, mirrored by value.
+    #[test]
+    fn the_declaration_refuses_more_streams_than_the_wire_admits() {
+        let honest: Vec<source::StreamSpec> = (0..1024)
+            .map(|i| source::StreamSpec::new(format!("s{i}")))
+            .collect();
+        let jsonl = declaration_jsonl(&honest).expect("1024 streams are admitted");
+        assert_eq!(
+            jsonl.iter().filter(|byte| **byte == b'\n').count(),
+            1023,
+            "the join is one newline between documents, none trailing"
+        );
+
+        let flood: Vec<source::StreamSpec> = (0..1025)
+            .map(|i| source::StreamSpec::new(format!("s{i}")))
+            .collect();
+        let refusal = declaration_jsonl(&flood).expect_err("1025 streams are refused");
+        assert!(
+            refusal.contains("1025") && refusal.contains("1024"),
+            "the refusal names the count and the ceiling: {refusal}"
+        );
+    }
+
+    /// Zero streams is the empty blob, the framing rule's own
+    /// stated case — not an error, and not a single empty line.
+    #[test]
+    fn a_source_declaring_nothing_emits_an_empty_blob() {
+        assert!(
+            declaration_jsonl(&[])
+                .expect("zero streams are admitted")
+                .is_empty(),
+            "empty means zero streams"
+        );
+    }
 
     /// Every wait that must SUCCEED is bounded: the failure mode under
     /// test is a hang, and an unbounded await would report it as a

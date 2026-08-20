@@ -1390,3 +1390,120 @@ async fn reads_over_the_concurrency_ceiling_refuse_while_admitted_ones_proceed()
     .await
     .expect("a released permit admits the next read");
 }
+
+/// A resume cursor is bounded in two dimensions, and this is the
+/// second: the byte ceiling admits a compact document that becomes
+/// tens of millions of `Value` nodes, and the read RETAINS it for its
+/// whole lifetime — so the node COUNT is judged too. Judged, never
+/// inspected: the cursor stays opaque, and an honest one (a watermark,
+/// a page token) is orders of magnitude below the ceiling.
+#[tokio::test]
+async fn a_node_flooded_since_cursor_answers_a_terminal_error_frame() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            expected_role: "source".to_string(),
+            config_json: echo_config(3, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    // Every element is two wire bytes and one retained node: well
+    // inside the cursor's byte ceiling, well past its node ceiling.
+    let flood = format!("[{}]", vec!["0"; 200_000].join(","));
+    assert!(
+        (flood.len() as u64) < rdlt_connector_sdk::spi::gate::MAX_CURSOR_BYTES,
+        "the flood is a BYTE-legal cursor — the node walk is what refuses it"
+    );
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: serde_json::to_vec(&serde_json::json!({
+                "name": "s",
+                "primary_key": null,
+                "cursor_field": null,
+                "type_hints": {},
+            }))
+            .expect("spec json"),
+            since_cursor_json: Some(flood.into_bytes()),
+        })
+        .await
+        .expect("the Read RPC completes normally — the refusal is IN the stream")
+        .into_inner();
+
+    let frame = frames
+        .message()
+        .await
+        .expect("frame")
+        .expect("one terminal frame");
+    match frame.frame {
+        Some(read_frame::Frame::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("document nodes"),
+                "the refusal names the node ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected a terminal error frame, got {other:?}"),
+    }
+    assert!(
+        frames.message().await.expect("stream ends").is_none(),
+        "nothing follows the terminal error"
+    );
+}
+
+/// An honest nested cursor — the shape a real source resumes from —
+/// passes the node walk untouched and the read proceeds.
+#[tokio::test]
+async fn an_honest_nested_cursor_passes_the_node_walk() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoSource>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut source = SourceServiceClient::new(channel);
+
+    connector
+        .handshake(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            expected_role: "source".to_string(),
+            config_json: echo_config(1, false),
+        })
+        .await
+        .expect("handshake rpc");
+
+    let cursor = serde_json::json!({
+        "partitions": {"a": {"offset": 41, "epoch": 7}, "b": {"offset": 5, "epoch": 7}},
+        "watermark": "2026-08-20T00:00:00Z",
+    });
+    let mut frames = source
+        .read(ReadRequest {
+            stream_spec_json: serde_json::to_vec(&serde_json::json!({
+                "name": "s",
+                "primary_key": null,
+                "cursor_field": null,
+                "type_hints": {},
+            }))
+            .expect("spec json"),
+            since_cursor_json: Some(serde_json::to_vec(&cursor).expect("cursor json")),
+        })
+        .await
+        .expect("read rpc")
+        .into_inner();
+
+    let frame = frames
+        .message()
+        .await
+        .expect("frame")
+        .expect("a first frame");
+    assert!(
+        !matches!(frame.frame, Some(read_frame::Frame::Error(_))),
+        "an honest cursor is not refused: {:?}",
+        frame.frame
+    );
+}

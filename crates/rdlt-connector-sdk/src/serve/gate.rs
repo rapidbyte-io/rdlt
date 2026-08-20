@@ -14,8 +14,8 @@
 //! mirror the client's stream gates ride inside the functions that
 //! enforce them, spelled with the mirror-is-the-contract rule at each.
 
-use rdlt_connector::core::commit::CommitMeta;
-use rdlt_connector::core::schema::{Column, ColumnType};
+use rdlt_connector::core::commit::{CommitMeta, WriteMode};
+use rdlt_connector::core::schema::{Column, ColumnType, TableSchema};
 use rdlt_connector::{gate, source};
 use rdlt_connector_protocol::proto::{Classification, session_reply};
 
@@ -44,18 +44,50 @@ pub(super) fn refuse_oversized_identifier(
     Ok(())
 }
 
+/// One state sub-map's entry count against the flood ceiling.
+fn refuse_entry_flood(seat: &str, entries: usize) -> Result<(), session_reply::Reply> {
+    if entries > MAX_STATE_SUBMAP_ENTRIES {
+        return Err(session_reply::Reply::Error(wire::error_frame(
+            Classification::Fatal,
+            format!(
+                "a committed state carries {entries} {seat} — over the                  {MAX_STATE_SUBMAP_ENTRIES} ceiling"
+            ),
+            None,
+        )));
+    }
+    Ok(())
+}
+
+/// The greatest number of entries either identifier sub-map of a
+/// committed state document may carry. The document ceiling that
+/// admitted the meta bounds its BYTES, but an 8 MiB document of
+/// minimal `"a":{}` entries is ~800k of them, each expanding into a
+/// map node plus an owned key — hundreds of megabytes typed, planted
+/// into whatever the backend retains and re-serialized by every later
+/// state read. This bounds the count instead: 65,536 entries cost a
+/// few megabytes typed, and the honest producer is nowhere near it —
+/// one cursor per stream against a source that declares at most 1024,
+/// and one schema hash per table the load actually wrote. A pipeline
+/// whose state genuinely outgrows this is refused loudly at the wire
+/// rather than silently multiplied; the ceiling is not configurable
+/// today.
+const MAX_STATE_SUBMAP_ENTRIES: usize = 64 * 1024;
+
 /// Every identifier a decoded `CommitMeta` carries, through the same
 /// ceiling as the session's top-level ids: beyond its own load id and
 /// its state's pipeline id, the STATE document carries identifier
 /// SUB-MAPS — cursor keys are stream names, schema-hash keys are table
 /// names, the last commit names a load id, and the engine version is
 /// free text quoted like an identifier — all retained by the backend
-/// or quoted by its refusals. Cursor VALUES stay opaque documents
-/// (bounded by the document ceiling that admitted the meta), never
-/// walked.
+/// or quoted by its refusals. Each sub-map is held to a COUNT as well
+/// as to per-key lengths: length gates alone admit a flood of tiny
+/// keys. Cursor VALUES stay opaque documents (bounded by the document
+/// ceiling that admitted the meta), never walked.
 pub(super) fn gate_commit_meta(meta: &CommitMeta) -> Result<(), session_reply::Reply> {
     refuse_oversized_identifier("load id", meta.load_id.as_str())?;
     refuse_oversized_identifier("pipeline id", meta.state.pipeline.as_str())?;
+    refuse_entry_flood("cursors", meta.state.cursors.len())?;
+    refuse_entry_flood("schema hashes", meta.state.schema_hashes.len())?;
     for stream in meta.state.cursors.keys() {
         refuse_oversized_identifier("stream name", stream.as_str())?;
     }
@@ -131,6 +163,88 @@ pub(super) fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Re
     }
     for field in spec.type_hints.keys() {
         refuse("type-hint field", field)?;
+    }
+    Ok(())
+}
+
+/// The greatest number of NODES a resume cursor may carry once parsed.
+/// The cursor's 4 MiB byte ceiling bounds what arrives; it does not
+/// bound what the arrival becomes, and structure is where an untyped
+/// document expands worst: `[0,0,0,…]` spends two wire bytes per
+/// element and buys a `Value` node — tens of bytes plus vector slack —
+/// so a legal 4 MiB cursor reaches tens of millions of nodes, and the
+/// read RETAINS it for its whole lifetime, once per admitted read.
+/// Counting the nodes bounds that dimension without inspecting a
+/// single value: the cursor stays the opaque document its contract
+/// says it is, and only its size is judged. At this ceiling a retained
+/// cursor costs a few megabytes of structure beside the payload its
+/// byte ceiling already bounds; an honest resume cursor — a watermark,
+/// a page token, a handful of per-partition offsets — is orders of
+/// magnitude below it.
+pub(super) const MAX_CURSOR_NODES: usize = 64 * 1024;
+
+/// A parsed cursor's node count against the ceiling. The walk is
+/// ITERATIVE with its own stack: a cursor's nesting is bounded by the
+/// parser that produced it, but a recursive walk would make this gate
+/// the thing that overflows. It short-circuits the moment the ceiling
+/// is crossed, so a hostile document costs the ceiling, not its size.
+pub(super) fn refuse_dense_cursor(field: &str, value: &serde_json::Value) -> Result<(), String> {
+    let mut pending = vec![value];
+    let mut nodes = 0usize;
+    while let Some(node) = pending.pop() {
+        nodes += 1;
+        if nodes > MAX_CURSOR_NODES {
+            return Err(format!(
+                "{field} carries more than {MAX_CURSOR_NODES} document nodes — a resume cursor \
+                 is a position, not a payload"
+            ));
+        }
+        match node {
+            serde_json::Value::Array(items) => pending.extend(items.iter()),
+            serde_json::Value::Object(fields) => pending.extend(fields.values()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The greatest number of columns one ensured schema may declare, and
+/// of key columns one merge mode may name. The document ceiling that
+/// admitted the schema bounds its bytes; a minimal column object costs
+/// a few dozen of them, so a legal `table_schema_json` declares tens of
+/// thousands of columns and a merge key names millions of strings —
+/// each an owned `Column` or `String` the session RETAINS and the
+/// backend's DDL walks. The cap is the wire batch's column cap: a
+/// schema wider than any batch that could fill it is refused here
+/// rather than at the first Write.
+const MAX_ENSURED_COLUMNS: usize = 4096;
+
+/// An ensured schema's collection COUNTS, beside the per-identifier
+/// lengths every name rides: length gates alone admit a flood of tiny
+/// legal names.
+pub(super) fn refuse_ensure_counts(
+    schema: &TableSchema,
+    mode: &WriteMode,
+) -> Result<(), session_reply::Reply> {
+    refuse_collection_flood("columns", schema.columns.len(), MAX_ENSURED_COLUMNS)?;
+    if let WriteMode::Merge { key } = mode {
+        refuse_collection_flood("merge key columns", key.len(), MAX_ENSURED_COLUMNS)?;
+    }
+    Ok(())
+}
+
+/// One ensured collection's count against its ceiling.
+fn refuse_collection_flood(
+    seat: &str,
+    entries: usize,
+    cap: usize,
+) -> Result<(), session_reply::Reply> {
+    if entries > cap {
+        return Err(session_reply::Reply::Error(wire::error_frame(
+            Classification::Fatal,
+            format!("an ensured table declares {entries} {seat} — over the {cap} ceiling"),
+            None,
+        )));
     }
     Ok(())
 }

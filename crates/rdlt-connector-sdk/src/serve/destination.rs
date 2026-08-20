@@ -60,6 +60,7 @@ use rdlt_connector::arrow::RecordBatch;
 use rdlt_connector::core::commit::{CommitMeta, CommitReceipt, WriteMode};
 use rdlt_connector::core::id::{LoadId, PipelineId, TableName};
 use rdlt_connector::core::schema::TableSchema;
+use rdlt_connector::core::state::StateDoc;
 use rdlt_connector::destination::{Destination, OpenContext, PartCloseReason, PartClosed};
 use rdlt_connector::error::DestinationError;
 use rdlt_connector::{channel, gate};
@@ -92,9 +93,11 @@ use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 /// replies can never outnumber the requests the client chose to send
 /// before reading, plus whatever part events those calls emitted. What
 /// a count does not bound is bytes: `StateReply` carries the pipeline's
-/// whole state document, which is workload-sized, so the worst case
-/// held here is 16 such documents, reachable only by a client that
-/// pipelines 16 `ReadState` frames and reads none of the replies. The
+/// whole state document. That document is held to the wire's document
+/// ceiling on the way OUT as well as in, so the worst case held here
+/// is 16 documents of that bound — a few tens of megabytes, reachable
+/// only by a client that pipelines 16 `ReadState` frames and reads
+/// none of the replies. The
 /// bulk data path (`Write` frames carrying Arrow IPC) travels the OTHER
 /// way and never touches this channel.
 const REPLY_CHANNEL_BUDGET: usize = 16;
@@ -253,6 +256,13 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
     }
 }
 
+/// The greatest number of columns one wire batch may declare. A table
+/// this wide is already past what any destination models honestly; the
+/// cap exists so a rogue frame cannot spend its bytes on field COUNT
+/// (the cheapest per-byte expansion an Arrow schema offers) instead of
+/// on data.
+const MAX_RECORD_BATCH_COLUMNS: usize = 4096;
+
 fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
 
@@ -287,6 +297,23 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
     // see — Null and run-end-encoded columns carry millions of rows in
     // almost no body bytes, and the batch goes straight to the
     // connector's own backend.
+    // Column count is the batch's OTHER uncounted dimension: a schema
+    // message spends forty-odd flatbuffer bytes per field, so a frame
+    // inside the encode cap declares over a million of them, and each
+    // becomes an owned `Field` plus an array before the backend is
+    // handed anything. Cells — rows times columns — are what the
+    // engine's own batch budget bounds, so the wire holds the same
+    // product: the row cap above and this together admit any honest
+    // batch (a thousand columns leaves room for a million rows) and
+    // refuse the shapes that are wide for width's sake.
+    if first.num_columns() > MAX_RECORD_BATCH_COLUMNS {
+        return Err(format!(
+            "{REFUSAL}: the batch carries {} columns, over the {}-column wire cap — column \
+             count is bounded separately from encoded bytes",
+            first.num_columns(),
+            MAX_RECORD_BATCH_COLUMNS
+        ));
+    }
     if first.num_rows() > channel::MAX_RECORD_BATCH_ROWS {
         return Err(format!(
             "{REFUSAL}: the batch carries {} rows, over the {}-row wire cap — row count is \
@@ -306,6 +333,23 @@ fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
         )),
         None => Ok(first),
     }
+}
+
+/// The state a `ReadState` answers with, held to the wire's document
+/// ceiling on the way OUT as well as on the way in. A backend whose
+/// retained state has outgrown what the wire admits cannot ship it: the
+/// reply would build at frame scale and the reply channel would hold as
+/// many of them as the client pipelined. Refusing names the seat
+/// instead — a state document past the ceiling means the store grew it
+/// by some path other than this wire, which is a defect to see, not to
+/// stream.
+fn state_reply(state: Option<StateDoc>) -> Result<StateReply, String> {
+    let state_doc_json = state
+        .map(|state| serde_json::to_vec(&state).expect("a StateDoc serializes to JSON infallibly"));
+    if let Some(bytes) = state_doc_json.as_deref() {
+        gate::refuse_oversized_document("state_doc_json", bytes)?;
+    }
+    Ok(StateReply { state_doc_json })
 }
 
 #[tonic::async_trait]
@@ -497,25 +541,28 @@ async fn handle_frame<C: DestinationConnector>(
                     // Every identifier the schema and mode carry is
                     // retained by the session or reaches a backend's
                     // error text — the same ceiling at each.
-                    let identifiers_ok = serve_gate::refuse_oversized_identifier(
-                        "table name",
-                        schema.table.as_str(),
-                    )
-                    .and_then(|()| {
-                        schema.parent.iter().try_for_each(|parent| {
+                    let identifiers_ok = serve_gate::refuse_ensure_counts(&schema, &mode)
+                        .and_then(|()| {
                             serve_gate::refuse_oversized_identifier(
-                                "parent table name",
-                                parent.parent.as_str(),
+                                "table name",
+                                schema.table.as_str(),
                             )
                         })
-                    })
-                    .and_then(|()| schema.columns.iter().try_for_each(serve_gate::gate_column))
-                    .and_then(|()| match &mode {
-                        WriteMode::Merge { key } => key.iter().try_for_each(|column| {
-                            serve_gate::refuse_oversized_identifier("merge key column", column)
-                        }),
-                        _ => Ok(()),
-                    });
+                        .and_then(|()| {
+                            schema.parent.iter().try_for_each(|parent| {
+                                serve_gate::refuse_oversized_identifier(
+                                    "parent table name",
+                                    parent.parent.as_str(),
+                                )
+                            })
+                        })
+                        .and_then(|()| schema.columns.iter().try_for_each(serve_gate::gate_column))
+                        .and_then(|()| match &mode {
+                            WriteMode::Merge { key } => key.iter().try_for_each(|column| {
+                                serve_gate::refuse_oversized_identifier("merge key column", column)
+                            }),
+                            _ => Ok(()),
+                        });
                     match identifiers_ok {
                         Err(reply) => reply,
                         Ok(()) => match backend.ensure_table(&schema, &mode).await {
@@ -623,12 +670,14 @@ async fn handle_frame<C: DestinationConnector>(
                     .read_state(&PipelineId::new(read_state.pipeline))
                     .await
                 {
-                    Ok(state) => session_reply::Reply::State(StateReply {
-                        state_doc_json: state.map(|state| {
-                            serde_json::to_vec(&state)
-                                .expect("a StateDoc serializes to JSON infallibly")
-                        }),
-                    }),
+                    Ok(state) => match state_reply(state) {
+                        Ok(reply) => session_reply::Reply::State(reply),
+                        Err(message) => session_reply::Reply::Error(wire::error_frame(
+                            Classification::Fatal,
+                            message,
+                            None,
+                        )),
+                    },
                     Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
                 },
             }
@@ -870,6 +919,30 @@ pub async fn run<C: DestinationConnector>() -> Result<(), wire::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Egress rides the ingress ceiling: a state document the wire
+    /// would refuse on the way in cannot leave on the way out either.
+    /// The honest document passes untouched; the overgrown one refuses
+    /// naming its seat, instead of building at frame scale and being
+    /// held as many times over as the client pipelined `ReadState`.
+    #[test]
+    fn a_state_document_past_the_ceiling_refuses_instead_of_shipping() {
+        let mut doc = StateDoc::new(rdlt_connector::core::id::PipelineId::new("p"), "test");
+        assert!(
+            state_reply(Some(doc.clone())).is_ok(),
+            "an honest state document ships"
+        );
+        assert!(state_reply(None).is_ok(), "no state is not a refusal");
+
+        // Grown past the ceiling by its own contents — the shape a
+        // store that outgrew the wire would actually present.
+        doc.engine_version = "v".repeat(gate::MAX_DOCUMENT_BYTES as usize + 1);
+        let refusal = state_reply(Some(doc)).expect_err("an overgrown document refuses");
+        assert!(
+            refusal.contains("state_doc_json"),
+            "the refusal names the seat: {refusal}"
+        );
+    }
 
     /// [`part_close_reason_str`]'s whole point: it must never drift from
     /// [`PartCloseReason`]'s own `Serialize`. All FIVE variants, not a

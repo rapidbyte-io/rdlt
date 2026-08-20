@@ -2500,3 +2500,205 @@ async fn a_panicking_backend_call_still_closes_the_session_and_answers_typed() {
         "best-effort close ran after the panic: {log:?}"
     );
 }
+
+/// Width is the batch dimension the encode cap cannot see: a schema
+/// message spends a few dozen bytes per field, so a frame well inside
+/// the cap declares hundreds of thousands of them, and every one
+/// becomes an owned `Field` and an array before the backend is handed
+/// anything. The column cap refuses that shape the way the row cap
+/// refuses its own.
+#[tokio::test]
+async fn an_over_wide_batch_refuses_before_the_backend_writes() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    // Zero rows: the frame is small, and width alone is the shape
+    // under judgment.
+    let columns = 4097;
+    let fields: Vec<arrow::datatypes::Field> = (0..columns)
+        .map(|i| {
+            arrow::datatypes::Field::new(
+                format!("c{i}"),
+                arrow::datatypes::DataType::Boolean,
+                false,
+            )
+        })
+        .collect();
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(fields));
+    let arrays: Vec<std::sync::Arc<dyn arrow::array::Array>> = (0..columns)
+        .map(|_| {
+            std::sync::Arc::new(arrow::array::BooleanArray::from(Vec::<bool>::new()))
+                as std::sync::Arc<dyn arrow::array::Array>
+        })
+        .collect();
+    let wide = rdlt_connector::arrow::RecordBatch::try_new(std::sync::Arc::clone(&schema), arrays)
+        .expect("an over-wide batch constructs");
+    let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), wide.schema_ref())
+        .expect("open an arrow ipc stream writer");
+    writer.write(&wide).expect("write the over-wide batch");
+    let arrow_ipc = writer
+        .into_inner()
+        .expect("close an arrow ipc stream writer");
+
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Write(proto::Write {
+                table: ECHOED_TABLE.to_string(),
+                arrow_ipc,
+            })),
+        })
+        .await
+        .expect("send the over-wide write");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert!(
+                error.message.contains("over the 4096-column wire cap"),
+                "the refusal names the column cap: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the column-cap refusal, got {other:?}"),
+    }
+}
+
+/// An ensured schema's COLLECTIONS are counted, not only its names:
+/// a document inside the ceiling declares tens of thousands of
+/// minimally-named columns, each retained by the session and walked by
+/// the backend's DDL.
+#[tokio::test]
+async fn an_over_wide_ensure_refuses_before_the_backend_ensures() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    // Built from the real type, not hand-written JSON: the shape under
+    // test is the COUNT, and a serialization the wire would reject for
+    // any other reason would pin nothing.
+    let mut schema = schema_for(ECHOED_TABLE);
+    let exemplar = schema.columns[0].clone();
+    schema.columns = (0..4097)
+        .map(|i| rdlt_connector::core::schema::Column {
+            name: format!("c{i}"),
+            ..exemplar.clone()
+        })
+        .collect();
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Ensure(proto::Ensure {
+                table_schema_json: serde_json::to_vec(&schema).expect("schema json"),
+                write_mode_json: serde_json::to_vec(&WriteMode::Append).expect("mode json"),
+            })),
+        })
+        .await
+        .expect("send the over-wide ensure");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert!(
+                error.message.contains("4097 columns") && error.message.contains("ceiling"),
+                "the refusal names the count and the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the ensure column-count refusal, got {other:?}"),
+    }
+}
+
+/// Length gates alone admit a FLOOD: a state document inside the
+/// wire's ceiling carries hundreds of thousands of minimal cursor or
+/// schema-hash entries, each becoming a map node with an owned key
+/// that the backend then retains and every later state read
+/// re-serializes. The counts are judged beside the lengths, at the
+/// same seat, before the backend sees the meta.
+#[tokio::test]
+async fn a_flooded_state_submap_refuses_before_the_backend() {
+    use rdlt_connector::core::cursor::Cursor;
+    use rdlt_connector::core::id::StreamName;
+
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+
+    handshake(&mut connector, false, false).await;
+
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let mut flooded = commit_meta_for(&PipelineId::new("p"), &LoadId::new("l"), 1);
+    for i in 0..(64 * 1024 + 1) {
+        flooded.state.cursors.insert(
+            StreamName::new(format!("s{i}")),
+            Cursor::new(serde_json::json!(1)),
+        );
+    }
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Publish(proto::Publish {
+                commit_meta_json: serde_json::to_vec(&flooded).expect("meta json"),
+            })),
+        })
+        .await
+        .expect("send the flooded publish");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => {
+            assert_eq!(error.classification, Classification::Fatal as i32);
+            assert!(
+                error.message.contains("cursors") && error.message.contains("ceiling"),
+                "the refusal names the sub-map and the ceiling: {}",
+                error.message
+            );
+        }
+        other => panic!("expected the sub-map count refusal, got {other:?}"),
+    }
+}
