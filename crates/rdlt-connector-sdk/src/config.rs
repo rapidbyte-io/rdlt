@@ -187,6 +187,11 @@ pub fn reject_graph_syntax(text: &str) -> Result<(), String> {
     // multi-line plain continuation is exactly the ambiguity it exists
     // to track.
     let mut run_open = false;
+    // How many flow collections are open. Flow is where a `,` or an
+    // opener starts a fresh node — in block context both are ordinary
+    // scalar characters, and treating them alike is what made a
+    // wildcard selector look like an alias.
+    let mut flow_depth: usize = 0;
     // The immediately-previous character was a blank or a line start —
     // the precondition for `#` opening a comment.
     let mut prev_blank = true;
@@ -333,21 +338,44 @@ pub fn reject_graph_syntax(text: &str) -> Result<(), String> {
                         prev_blank = false;
                     }
                     ',' | '[' | '{' => {
-                        // Flow separators are token-starts in flow and
-                        // scalar data in block context; holding
-                        // token-start in both is the refusing
-                        // direction.
+                        // A flow indicator opens a token in FLOW
+                        // context and is scalar data in BLOCK context,
+                        // and the two must be told apart: `key:
+                        // data.items[*]` is one plain scalar whose `[`
+                        // is data, so treating it as a token-start made
+                        // the `*` behind it read as an alias — refusing
+                        // a document YAML itself accepts, and the shape
+                        // every path-like selector writes. Inside flow
+                        // the indicator always starts a token (a plain
+                        // scalar cannot contain one there), and a `[`
+                        // or `{` with no scalar running opens one.
                         if line_prefix_only {
                             anchor_col = Some(col);
                             line_prefix_only = false;
                         }
-                        node_start = true;
+                        let opens_node = flow_depth > 0 || (c != ',' && !run_open);
+                        if opens_node {
+                            if c != ',' {
+                                flow_depth += 1;
+                            }
+                            node_start = true;
+                            run_open = false;
+                        }
                         prev_blank = false;
                     }
                     ']' | '}' => {
                         if line_prefix_only {
                             anchor_col = Some(col);
                             line_prefix_only = false;
+                        }
+                        // Closing what an opener counted; in block
+                        // context (depth zero) it is scalar data and
+                        // the depth stays put.
+                        if flow_depth > 0 {
+                            flow_depth -= 1;
+                            run_open = false;
+                        } else {
+                            run_open = true;
                         }
                         node_start = false;
                         prev_blank = false;
@@ -874,5 +902,37 @@ mod tests {
     fn directives_and_markers_are_inert() {
         assert_accepted("%YAML 1.1\n---\nkey: v\n");
         assert_accepted("key: v\n...\n");
+    }
+
+    /// A path-shaped selector is scalar data, not a graph reference.
+    /// `data.items[*]` is one plain scalar: its `[` cannot open a flow
+    /// collection mid-scalar, so the `*` behind it is a wildcard the
+    /// document is entitled to write. Refusing it would reject a
+    /// document YAML itself accepts — and every JSONPath-shaped config
+    /// key writes this shape.
+    #[test]
+    fn a_wildcard_inside_a_plain_scalar_is_data_not_an_alias() {
+        for document in [
+            "records_path: data.items[*].payload\n",
+            "select: a[*]\nother: b\n",
+            "nested:\n  path: root.items[*]\n",
+        ] {
+            reject_graph_syntax(document)
+                .unwrap_or_else(|e| panic!("{document:?} is a tree document, refused: {e}"));
+        }
+    }
+
+    /// The refusal still fires where a flow collection genuinely opens
+    /// a node — the indicator is a token-start when no plain scalar is
+    /// running, which is where an alias can actually appear.
+    #[test]
+    fn an_alias_opening_a_flow_node_is_still_refused() {
+        for document in [
+            "a: &x 1\nb: [*x]\n",
+            "a: &x 1\nb: {k: *x}\n",
+            "a: &x 1\nb: [1, *x]\n",
+        ] {
+            reject_graph_syntax(document).expect_err(&format!("{document:?} carries an alias"));
+        }
     }
 }
