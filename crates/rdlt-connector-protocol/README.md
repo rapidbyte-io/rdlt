@@ -19,7 +19,7 @@ both sides depend on.
 The freeze closed the protocol's experimental period on evidence, not
 on a date. Three things beat on this wire before it froze: a
 standalone certifier (`rdlt-certify`) that drives
-any connector executable, in any language, against 29 conformance
+any connector executable, in any language, against 35 conformance
 clauses — each one proven capable of FAILING against a deliberately
 broken connector, and including a `SIGKILL` matrix at every message
 boundary, which is a truer crash than an injected failpoint; a
@@ -288,12 +288,12 @@ answers before the handshake — it carries no session state, only the
 connector's static identity: `SpecReply.spec_json` is `ConnectorSpec`
 JSON (name, version, config_schema), served from the connector's
 statics alone, so a provider can ask a spawned connector what it IS
-before deciding what config to hand it. `state_format_versions` on
+before deciding what config to hand it. `state_format_versions_json` on
 `HandshakeOk` is a **deliberate HOLE, not an oversight**: servers send
 the empty document (= the empty map), and the dialing client
 (`rdlt-connector-client`, surfaced through `rdlt-runtime`) threads the
 parsed map through to embedders UNREAD (the handshake `Outcome`'s
-`state_format_versions`, reachable through the runtime's
+`state_format_versions_json`, reachable through the runtime's
 `Managed::outcome`) — with one format version per state kind there is
 nothing to negotiate yet.
 Negotiation semantics are owned by the feature that adds a second

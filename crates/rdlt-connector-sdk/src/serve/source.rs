@@ -112,11 +112,13 @@ const FRAME_MESSAGE_CAPACITY: usize = 64;
 /// dimensions — 4 MiB of arriving bytes, and
 /// a bounded node count once parsed — so what a read
 /// retains is its payload plus a few megabytes of structure, not the
-/// tens of millions of nodes a compact document of the same byte size
+/// couple of million nodes a compact document of the same byte size
 /// would otherwise become. The product this ceiling multiplies is
 /// therefore bounded, and the house names its numbers: at this ceiling
-/// the retained cursors across a saturated connector come to a few
-/// gigabytes rather than the tens the byte ceiling alone allowed. Judging the node COUNT leaves the cursor the opaque
+/// the retained cursors across a saturated connector come to roughly
+/// ten gigabytes rather than the fifty the byte ceiling alone allowed —
+/// a fifth of the exposure, and the honest number rather than a
+/// comfortable one. Judging the node COUNT leaves the cursor the opaque
 /// document its contract says it is: no value is inspected, only
 /// counted.
 pub const MAX_CONCURRENT_READS: usize = 1024;

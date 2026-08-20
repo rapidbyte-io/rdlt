@@ -95,7 +95,7 @@ use crate::destination::{Backend, DestinationConnector, Shell, WriteGuard};
 /// a count does not bound is bytes: `StateReply` carries the pipeline's
 /// whole state document. That document is held to the wire's document
 /// ceiling on the way OUT as well as in, so the worst case held here
-/// is 16 documents of that bound — a few tens of megabytes, reachable
+/// is 16 documents of that bound — 128 MiB, reachable
 /// only by a client that pipelines 16 `ReadState` frames and reads
 /// none of the replies. The
 /// bulk data path (`Write` frames carrying Arrow IPC) travels the OTHER

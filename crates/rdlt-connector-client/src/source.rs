@@ -147,21 +147,22 @@ use rdlt_connector::gate::MAX_DECLARED_STREAM_SPECS;
 ///
 /// THE TYPED EXPANSION, derived here because the posture record cites
 /// a number and a number with no anchor drifts as the type changes.
-/// The measure is retained heap against admitted wire bytes, counting
-/// each `String`'s allocation at its length.
+/// The measure is retained heap plus the typed struct against admitted
+/// wire bytes, and it is MEASURED rather than reasoned — the pin below
+/// asserts both ends of the band, so a field added to `StreamSpec`
+/// moves the number here instead of leaving it behind.
 ///
 /// The expansion is worst where the wire spends least per retained
-/// allocation, which is NOT the minimal spec — that one is dominated
-/// by its own fixed struct and lands near 2x. It is a spec at the
-/// COLLECTION gates: a primary key of 64 one-character fields spends
-/// about four wire bytes per field (`"a",`) and retains a 24-byte
-/// `String` header plus its heap block for each, and 4096 one-
-/// character type-hint keys spend about eight (`"a":"Str",`) for a
-/// header, a block and a map slot. Those land the ratio in the
-/// neighbourhood of five to six times the wire, which is the figure
-/// the posture record carries and the reason the COUNT gates below
-/// exist: without them the collections are what a legal reply spends
-/// its bytes on.
+/// allocation, which is not the minimal spec: that one is dominated by
+/// its own fixed struct and measures about 1.2× (86 wire bytes for
+/// ~105 retained). It is a spec at the COLLECTION gates — a primary
+/// key of sixty-four one-character fields spends a few wire bytes per
+/// field and retains a `String` header plus its heap block for each,
+/// and type hints spend a key and a variant name (`"a":"Bool"`) for a
+/// header, a block and a map slot. That shape measures about 5×, which
+/// is the figure the posture record carries, and the reason the COUNT
+/// gates below exist: without them the collections are what a legal
+/// reply spends its bytes on.
 fn decode_stream_specs(stream_specs_jsonl: &[u8]) -> Result<Vec<StreamSpec>, SourceError> {
     if stream_specs_jsonl.is_empty() {
         return Ok(Vec::new());
@@ -747,6 +748,53 @@ mod tests {
 
     /// The refusal, rendered as `read()` returns it.
     const FROZEN: &str = "fatal source error: read frame violated the one-batch rule";
+
+    /// The typed-expansion band the decode seat's doc quotes, measured
+    /// rather than reasoned — so a field added to `StreamSpec` moves
+    /// the doc instead of silently invalidating it.
+    ///
+    /// Both ends matter: the minimal spec is NOT the maximizer (its
+    /// fixed struct dominates), and the collection-heavy spec is, which
+    /// is the whole reason the count gates exist.
+    #[test]
+    fn the_typed_expansion_band_is_what_the_seat_says_it_is() {
+        fn ratio(spec: &StreamSpec) -> f64 {
+            let wire = serde_json::to_vec(spec).expect("a spec serializes").len();
+            let mut retained = std::mem::size_of::<StreamSpec>() + spec.name.as_str().len();
+            if let Some(key) = &spec.primary_key {
+                retained += key.len() * std::mem::size_of::<String>();
+                retained += key.iter().map(String::len).sum::<usize>();
+            }
+            // A map entry costs its key, its value and the slot holding
+            // them; 64 bytes is the conservative round number the doc
+            // reasons with.
+            retained += spec.type_hints.len() * 64;
+            retained += spec.type_hints.keys().map(String::len).sum::<usize>();
+            retained as f64 / wire as f64
+        }
+
+        let minimal = ratio(&StreamSpec::new("a"));
+        assert!(
+            (1.0..2.0).contains(&minimal),
+            "the minimal spec is struct-dominated, near 1.2x — measured {minimal:.1}x"
+        );
+
+        let mut keyed = StreamSpec::new("a");
+        keyed.primary_key = Some(
+            (0..64)
+                .map(|i| ((b'a' + (i % 26) as u8) as char).to_string())
+                .collect(),
+        );
+        let collections = ratio(&keyed);
+        assert!(
+            (4.0..7.0).contains(&collections),
+            "the collection-heavy spec is the maximizer, near 5x — measured {collections:.1}x"
+        );
+        assert!(
+            collections > minimal,
+            "the collections must be the worse shape, or the doc names the wrong maximizer"
+        );
+    }
 
     fn batch(values: &[i64]) -> RecordBatch {
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![

@@ -220,7 +220,7 @@ pub(super) fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Re
 /// bound what the arrival becomes, and structure is where an untyped
 /// document expands worst: `[0,0,0,…]` spends two wire bytes per
 /// element and buys a `Value` node — tens of bytes plus vector slack —
-/// so a legal 4 MiB cursor reaches tens of millions of nodes, and the
+/// so a legal 4 MiB cursor reaches a couple of million nodes, and the
 /// read RETAINS it for its whole lifetime, once per admitted read.
 /// Counting the nodes bounds that dimension without inspecting a
 /// single value: the cursor stays the opaque document its contract

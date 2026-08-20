@@ -12,7 +12,7 @@
 //! failures are actionable (`FAIL P1 (<title>): <why>`); reports name
 //! clauses, never config bytes.
 //!
-//! The modules are the map: [`clause`] holds the four clause families
+//! The modules are the map: [`clause`] holds the five clause families
 //! (`s`, `d`, `p`, `k`) over the substrate — [`report`] the vocabulary
 //! and renders, [`target`] what a session points at and how it spawns,
 //! `wire` the raw-frame probe below the client adapters, `clock` the
