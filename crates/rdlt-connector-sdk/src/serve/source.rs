@@ -258,10 +258,10 @@ struct SourceServer<C: SourceConnector> {
     /// The process-wide `Read` admission ceiling ([`MAX_CONCURRENT_READS`]
     /// permits): every served connection shares it.
     read_admission: Arc<tokio::sync::Semaphore>,
-    /// The process-wide ceiling on concurrent `Check`/`Streams` calls
-    /// ([`wire::MAX_CONCURRENT_PROBES`]): both run the connector's own
-    /// code, and neither had an admission bound of its own.
-    probe_admission: Arc<tokio::sync::Semaphore>,
+    /// The process-wide ceiling on concurrent calls that run the
+    /// connector's own code — `Handshake`, `Check` and `Streams`
+    /// ([`wire::MAX_CONCURRENT_CONNECTOR_CALLS`]).
+    connector_admission: Arc<tokio::sync::Semaphore>,
 }
 
 impl<C: SourceConnector> SourceServer<C> {
@@ -269,7 +269,9 @@ impl<C: SourceConnector> SourceServer<C> {
         Self {
             shell: OnceLock::new(),
             read_admission: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
-            probe_admission: Arc::new(tokio::sync::Semaphore::new(wire::MAX_CONCURRENT_PROBES)),
+            connector_admission: Arc::new(tokio::sync::Semaphore::new(
+                wire::MAX_CONCURRENT_CONNECTOR_CALLS,
+            )),
         }
     }
 
@@ -344,6 +346,15 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeReply>, Status> {
+        // Admission BEFORE the connector's own code runs. The success
+        // slot stops only a SECOND success: every failed attempt parses
+        // its document and runs the connector's validate and assemble,
+        // which is where pools are built and keys are read, so an
+        // unbounded flood of failing handshakes is an unbounded flood
+        // into the connector.
+        let _admitted = Arc::clone(&self.connector_admission)
+            .try_acquire_owned()
+            .map_err(|_| wire::connector_calls_exhausted())?;
         Ok(wire::handshake(
             &self.shell,
             EXPECTED_ROLE,
@@ -355,9 +366,9 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
         // Admission BEFORE the connector's own code runs: what a check
         // costs is the connector's business, and unbounded concurrent
         // ones are the caller's choice, not the connector's.
-        let _probe = Arc::clone(&self.probe_admission)
+        let _probe = Arc::clone(&self.connector_admission)
             .try_acquire_owned()
-            .map_err(|_| wire::probes_exhausted())?;
+            .map_err(|_| wire::connector_calls_exhausted())?;
         let shell = self.shell()?;
         let outcome = match shell.check().await {
             Ok(()) => check_reply::Outcome::Ok(proto::Empty {}),
@@ -429,9 +440,9 @@ impl<C: SourceConnector> SourceService for SourceServer<C> {
         _request: Request<StreamsRequest>,
     ) -> Result<Response<StreamsReply>, Status> {
         // Admission BEFORE the connector enumerates: see `check`.
-        let _probe = Arc::clone(&self.probe_admission)
+        let _probe = Arc::clone(&self.connector_admission)
             .try_acquire_owned()
-            .map_err(|_| wire::probes_exhausted())?;
+            .map_err(|_| wire::connector_calls_exhausted())?;
         let shell = self.shell()?;
         let outcome = match shell.streams().await {
             Ok(streams) => match declaration_jsonl(&streams) {

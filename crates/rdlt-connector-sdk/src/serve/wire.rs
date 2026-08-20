@@ -701,36 +701,41 @@ mod tests {
 }
 
 /// A served connector admits at most this many concurrent calls to the
-/// unary RPCs that run its OWN code — `Check` and `Streams`.
+/// unary RPCs that run its OWN code — `Handshake`, `Check` and
+/// `Streams`.
 ///
-/// Every other seat that reaches a connector's backend already has an
-/// admission bound: reads have their per-source ceiling, sessions have
-/// the one-session slot. These two had none, and they are not free
-/// calls: a `Check` opens whatever the connector must touch to answer,
-/// a `Streams` asks it to enumerate. What they cost is the connector's
-/// business — a pool acquisition, a catalog round trip, a directory
-/// walk — which is exactly why the count belongs here rather than in
-/// each connector: the sdk is the template, and a template that admits
-/// unbounded concurrent probes teaches every connector to.
+/// The other seats reaching a connector's backend have their own
+/// bounds: reads have the per-source ceiling, sessions the one-session
+/// slot. These three are what remains, and none is a free call. A
+/// `Check` opens whatever the connector must touch to answer; a
+/// `Streams` asks it to enumerate; and a `Handshake` — every FAILED
+/// one, since the success slot only stops the second success — parses
+/// a config document and runs the connector's own validate and
+/// assemble, which is where pools are built and keys are read. What
+/// any of that costs is the connector's business, which is exactly why
+/// the count belongs here rather than in each connector: the sdk is
+/// the template, and a template that admits unbounded concurrent calls
+/// teaches every connector to.
 ///
-/// Generous against honest use by orders of magnitude: a host probes
-/// once per pipeline and enumerates once per source, so the honest
-/// concurrent count is one. This bounds a client that decided
-/// otherwise.
-pub const MAX_CONCURRENT_PROBES: usize = 64;
+/// Generous against honest use by orders of magnitude: a host shakes
+/// hands once per connector, probes once per pipeline and enumerates
+/// once per source, so the honest concurrent count is one. This bounds
+/// a client that decided otherwise.
+pub const MAX_CONCURRENT_CONNECTOR_CALLS: usize = 64;
 
-/// The refusal a probe past [`MAX_CONCURRENT_PROBES`] answers with — a
-/// `Status`, like the other admission ceilings, because a full ceiling
-/// is a protocol-state answer rather than something the connector said.
-pub fn probes_exhausted() -> tonic::Status {
+/// The refusal a call past [`MAX_CONCURRENT_CONNECTOR_CALLS`] answers
+/// with — a `Status`, like the other admission ceilings, because a full
+/// ceiling is a protocol-state answer rather than something the
+/// connector said.
+pub fn connector_calls_exhausted() -> tonic::Status {
     tonic::Status::resource_exhausted(format!(
-        "{MAX_CONCURRENT_PROBES} concurrent probe calls per connector process — the \
-         ceiling is reached"
+        "{MAX_CONCURRENT_CONNECTOR_CALLS} concurrent calls into the connector per process \
+         — the ceiling is reached"
     ))
 }
 
 #[cfg(test)]
-mod probe_admission_tests {
+mod connector_admission_tests {
     use super::*;
 
     /// The probe ceiling refuses, and says which ceiling it was.
@@ -743,9 +748,10 @@ mod probe_admission_tests {
     /// number — the same shape the read ceiling answers with, so an
     /// operator reads one story for both.
     #[test]
-    fn the_probe_ceiling_admits_its_count_and_refuses_the_next() {
-        let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_PROBES));
-        let held: Vec<_> = (0..MAX_CONCURRENT_PROBES)
+    fn the_connector_call_ceiling_admits_its_count_and_refuses_the_next() {
+        let admission =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTOR_CALLS));
+        let held: Vec<_> = (0..MAX_CONCURRENT_CONNECTOR_CALLS)
             .map(|_| {
                 std::sync::Arc::clone(&admission)
                     .try_acquire_owned()
@@ -756,15 +762,15 @@ mod probe_admission_tests {
             std::sync::Arc::clone(&admission)
                 .try_acquire_owned()
                 .is_err(),
-            "the ceiling admits {MAX_CONCURRENT_PROBES} and no more"
+            "the ceiling admits {MAX_CONCURRENT_CONNECTOR_CALLS} and no more"
         );
 
-        let refusal = probes_exhausted();
+        let refusal = connector_calls_exhausted();
         assert_eq!(refusal.code(), tonic::Code::ResourceExhausted);
         assert!(
             refusal
                 .message()
-                .contains(&MAX_CONCURRENT_PROBES.to_string()),
+                .contains(&MAX_CONCURRENT_CONNECTOR_CALLS.to_string()),
             "the refusal names the ceiling: {}",
             refusal.message()
         );

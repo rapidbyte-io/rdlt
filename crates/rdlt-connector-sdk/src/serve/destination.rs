@@ -112,11 +112,11 @@ const EXPECTED_ROLE: &str = "destination";
 struct DestinationServer<C: DestinationConnector> {
     shell: OnceLock<Arc<Shell<C>>>,
     session_active: Arc<AtomicBool>,
-    /// The process-wide ceiling on concurrent `Check` calls
-    /// ([`wire::MAX_CONCURRENT_PROBES`]): a check runs the connector's
-    /// own code, and had no admission bound of its own. The session
-    /// seat has the one-session slot; this is the other door.
-    probe_admission: Arc<tokio::sync::Semaphore>,
+    /// The process-wide ceiling on concurrent calls that run the
+    /// connector's own code — `Handshake` and `Check` here
+    /// ([`wire::MAX_CONCURRENT_CONNECTOR_CALLS`]). The session seat has
+    /// the one-session slot; this is the other door.
+    connector_admission: Arc<tokio::sync::Semaphore>,
 }
 
 impl<C: DestinationConnector> DestinationServer<C> {
@@ -124,7 +124,9 @@ impl<C: DestinationConnector> DestinationServer<C> {
         Self {
             shell: OnceLock::new(),
             session_active: Arc::new(AtomicBool::new(false)),
-            probe_admission: Arc::new(tokio::sync::Semaphore::new(wire::MAX_CONCURRENT_PROBES)),
+            connector_admission: Arc::new(tokio::sync::Semaphore::new(
+                wire::MAX_CONCURRENT_CONNECTOR_CALLS,
+            )),
         }
     }
 
@@ -368,6 +370,15 @@ impl<C: DestinationConnector> Connector for DestinationServer<C> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeReply>, Status> {
+        // Admission BEFORE the connector's own code runs. The success
+        // slot stops only a SECOND success: every failed attempt parses
+        // its document and runs the connector's validate and assemble,
+        // which is where pools are built and keys are read, so an
+        // unbounded flood of failing handshakes is an unbounded flood
+        // into the connector.
+        let _admitted = Arc::clone(&self.connector_admission)
+            .try_acquire_owned()
+            .map_err(|_| wire::connector_calls_exhausted())?;
         Ok(wire::handshake(
             &self.shell,
             EXPECTED_ROLE,
@@ -379,9 +390,9 @@ impl<C: DestinationConnector> Connector for DestinationServer<C> {
         // Admission BEFORE the connector's own code runs: what a check
         // costs is the connector's business, and unbounded concurrent
         // ones are the caller's choice, not the connector's.
-        let _probe = Arc::clone(&self.probe_admission)
+        let _probe = Arc::clone(&self.connector_admission)
             .try_acquire_owned()
-            .map_err(|_| wire::probes_exhausted())?;
+            .map_err(|_| wire::connector_calls_exhausted())?;
         let shell = self.shell()?;
         let outcome = match shell.check().await {
             Ok(()) => check_reply::Outcome::Ok(proto::Empty {}),
