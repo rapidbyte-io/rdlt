@@ -8,6 +8,8 @@
 //! `shred_invariants_hold`) and the hazard cases beside the arena parser and
 //! among the crate's integration cases.
 
+use std::collections::BTreeSet;
+
 use std::collections::{BTreeMap, VecDeque};
 
 use rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
@@ -194,7 +196,7 @@ impl Shredder {
                         parent_id: row.parent_id,
                         root_id: row.root_id,
                         pos: row.pos,
-                        nulled: Vec::new(),
+                        nulled: BTreeSet::new(),
                     })
                     .collect()
             })

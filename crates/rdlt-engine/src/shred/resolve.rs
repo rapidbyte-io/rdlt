@@ -45,7 +45,14 @@ pub(crate) struct Row<V> {
     pub(crate) pos: Option<u64>,
     /// Source keys nulled by `DiscardValue` policy enforcement. An overlay
     /// instead of value mutation, so borrowed (arena) rows work identically.
-    pub(crate) nulled: Vec<String>,
+    ///
+    /// A SET, because every use of it is a membership question: the
+    /// overlay is consulted once per key per row at enforcement and
+    /// again per column per row at build, so a linear scan here is
+    /// paid a second time for every key the policy discarded — the
+    /// table's width squared, over a width the wire chooses. Nothing
+    /// iterates it in order, so a set costs the ordering nobody wanted.
+    pub(crate) nulled: BTreeSet<String>,
 }
 
 impl<V: Copy> Row<V> {
@@ -54,7 +61,7 @@ impl<V: Copy> Row<V> {
     where
         V: JsonView<'a>,
     {
-        if self.nulled.iter().any(|k| k == key) {
+        if self.nulled.contains(key) {
             return None;
         }
         self.value.obj_get(key)
@@ -415,7 +422,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
                     break;
                 }
                 PolicyAction::DiscardValue => {
-                    row.nulled.push(offense.source_key.clone());
+                    row.nulled.insert(offense.source_key.clone());
                     nulled_values += 1;
                 }
                 PolicyAction::Evolve | PolicyAction::Freeze => unreachable!("filtered above"),
@@ -435,5 +442,55 @@ fn enforce_discards<'v, V: JsonView<'v>>(
             rows: dropped_rows,
             values: nulled_values,
         });
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// The DiscardValue overlay is consulted once per key per row while
+    /// the policy is enforced and again per column per row while the
+    /// batch builds — so what one consultation costs is paid over the
+    /// table's width squared, across a width the wire chooses, inside
+    /// one blocking call and repeatable every push. That is why it is a
+    /// SET: membership is the only question asked of it, and a set
+    /// answers in logarithmic time by its own contract rather than by
+    /// anything a test here could measure.
+    ///
+    /// What this holds is the BEHAVIOUR the change must not alter — a
+    /// nulled key reads as absent, an untouched one reads through, and
+    /// nulling the same key twice is nulling it once, which the scanned
+    /// list counted and re-scanned twice over.
+    #[test]
+    fn the_overlay_hides_exactly_what_was_nulled() {
+        // The real view, so the overlay is tested over the thing it
+        // actually overlays.
+        let mut arena = crate::shred::arena::Arena::default();
+        let rows = arena
+            .parse_rows(
+                br#"{"kept":1,"gone":2}"#,
+                rdlt_connector::channel::MAX_RECORD_BATCH_ROWS,
+                rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH,
+            )
+            .expect("the fixture parses");
+        let mut row = Row {
+            value: arena.node(rows[0]),
+            id: RowId::from_bytes([0u8; 32]),
+            parent_id: None,
+            root_id: None,
+            pos: None,
+            nulled: BTreeSet::new(),
+        };
+        assert!(row.top_level("gone").is_some(), "untouched, so it reads");
+
+        row.nulled.insert("gone".to_string());
+        row.nulled.insert("gone".to_string());
+        assert_eq!(row.nulled.len(), 1, "nulling twice nulls once");
+        assert!(row.top_level("gone").is_none(), "nulled, so it is absent");
+        assert!(
+            row.top_level("kept").is_some(),
+            "its neighbour is untouched"
+        );
     }
 }
