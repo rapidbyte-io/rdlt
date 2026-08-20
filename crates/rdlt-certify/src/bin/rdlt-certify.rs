@@ -281,7 +281,10 @@ async fn run(
     // The honest-check clause rides its OWN spawn with the
     // misconfigured document; without one it skips with the reason.
     match (role, hostile_target) {
-        (CertifyRole::Source, Some(hostile)) => c::source(&mut report, hostile).await,
+        (CertifyRole::Source, Some(hostile)) => {
+            c::source(&mut report, hostile).await;
+            c::source_read(&mut report, hostile).await;
+        }
         (CertifyRole::Destination, Some(hostile)) => c::destination(&mut report, hostile).await,
         (CertifyRole::Source, None) => c::skip_source(&mut report),
         (CertifyRole::Destination, None) => c::skip_destination(&mut report),

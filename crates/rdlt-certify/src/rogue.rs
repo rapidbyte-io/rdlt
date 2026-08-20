@@ -164,6 +164,12 @@ pub(crate) struct RogueSource {
     pub(crate) handshake: HandshakeScript,
     /// The streams the `Streams` RPC declares.
     pub(crate) streams: Vec<StreamSpec>,
+    /// When set, the `Streams` RPC answers THESE BYTES verbatim
+    /// instead of a well-formed join — the seam for driving the
+    /// declaration's framing rule from the hostile side, where a
+    /// client that trusted the framing would split, parse, or retain
+    /// whatever arrived.
+    pub(crate) streams_raw: Option<Vec<u8>>,
     /// Frames served when `Read` names a declared stream.
     pub(crate) read_declared: Vec<proto::ReadFrame>,
     /// Frames served when `Read` names anything else.
@@ -246,15 +252,19 @@ impl SourceService for RogueSource {
         _request: Request<proto::StreamsRequest>,
     ) -> Result<Response<proto::StreamsReply>, Status> {
         // The framing rule the real serve side follows: one JSON
-        // document per line, no trailing newline.
-        let stream_specs_jsonl = self
-            .streams
-            .iter()
-            .map(|stream| {
-                serde_json::to_vec(stream).expect("a StreamSpec serializes to JSON infallibly")
-            })
-            .collect::<Vec<_>>()
-            .join(&b'\n');
+        // document per line, no trailing newline — unless this rogue
+        // is scripted to violate it.
+        let stream_specs_jsonl = match &self.streams_raw {
+            Some(raw) => raw.clone(),
+            None => self
+                .streams
+                .iter()
+                .map(|stream| {
+                    serde_json::to_vec(stream).expect("a StreamSpec serializes to JSON infallibly")
+                })
+                .collect::<Vec<_>>()
+                .join(&b'\n'),
+        };
         Ok(Response::new(proto::StreamsReply {
             outcome: Some(streams_reply::Outcome::Ok(proto::StreamList {
                 stream_specs_jsonl,

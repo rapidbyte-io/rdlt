@@ -16,6 +16,13 @@
 //!   fatal — never `Ok` (a probe that passes what the read then fails)
 //!   and never transient (retry bait: no retry fixes a
 //!   misconfiguration).
+//! - **S6** honest read: the READ against that same misconfigured
+//!   target must refuse it too — typed and promptly. A probe is only
+//!   half the promise; the seat that actually opens the target is
+//!   where a bad path becomes an unbounded buffer, a parked thread, or
+//!   a flood, and none of those is a refusal. The clause is the read
+//!   twin of S5, and it exists because a suite that drives `check()`
+//!   alone certifies clean while the read stays unguarded.
 //!
 //! Verified black-box against any deterministic [`Source`] — plus, for
 //! S5 alone, one author-supplied MISCONFIGURED instance: only the
@@ -60,6 +67,56 @@ pub async fn verify_check_refusal<S: Source>(misconfigured: &S) -> Verdict {
         failures,
         skips: Vec::new(),
         concluded: vec!["S5"],
+    }
+}
+
+/// S6, the honest-read clause, on the same author-supplied
+/// MISCONFIGURED source S5 probes: the read must refuse the target its
+/// probe refuses — typed, and inside the harness's own read deadline
+/// and retention ceiling. What this catches that S5 cannot: a probe
+/// that judges the path correctly while the read opens it anyway and
+/// buffers whatever it finds, parks on something that never yields, or
+/// floods the caller. `Ok` fails the clause (a read that succeeded on a
+/// target the probe called impossible is a contradiction the caller
+/// cannot act on); so does a deadline or ceiling failure, reported with
+/// the harness's own words.
+///
+/// A stream is needed to read at all: the misconfigured instance's own
+/// `streams()` is asked first, and an instance whose declaration is
+/// what refuses earns the clause honestly — the target never opened
+/// because it never got that far.
+pub async fn verify_read_refusal<S: Source>(misconfigured: &S) -> Verdict {
+    let mut failures: Vec<Failure> = Vec::new();
+    let spec = match misconfigured.streams().await {
+        Ok(streams) => streams.into_iter().next(),
+        // The declaration refusing IS a refusal of the misconfigured
+        // target, at the earliest seat it can be seen.
+        Err(_) => None,
+    };
+    match spec {
+        None => {
+            return Verdict {
+                failures,
+                skips: Vec::new(),
+                concluded: vec!["S6"],
+            };
+        }
+        Some(spec) => match read_all(misconfigured, &spec, None).await {
+            // Any typed refusal is the clause satisfied — the read said
+            // no rather than reading whatever the bad target offered.
+            Err(_) => {}
+            Ok(_) => failures.push(Failure {
+                clause: "S6",
+                message: "read() completed against a target check() must refuse — the probe \
+                          and the read disagree, and it is the read that touches the target"
+                    .to_string(),
+            }),
+        },
+    }
+    Verdict {
+        failures,
+        skips: Vec::new(),
+        concluded: vec!["S6"],
     }
 }
 

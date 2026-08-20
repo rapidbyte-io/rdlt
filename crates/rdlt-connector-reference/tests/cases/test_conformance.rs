@@ -152,3 +152,63 @@ async fn a_lying_check_fails_the_clause() {
     assert_eq!(failures[0].clause, "D7");
     assert!(failures[0].message.contains("answered Ok"));
 }
+
+/// S6 live on the reference's own hostile shape: the source
+/// configured at a DIRECTORY must refuse at the READ, not only at the
+/// probe. This is the clause that would have caught an unguarded read
+/// behind an honest `check()` — the seat where a bad path becomes an
+/// unbounded buffer or a parked thread.
+#[tokio::test]
+async fn the_read_refusal_clause_certifies_the_source_shell() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("events");
+    std::fs::create_dir(&data_dir).expect("a directory where the file should be");
+    let source_shell =
+        rdlt_connector_sdk::source::Shell::<source::connector::Reference>::from_value(
+            json!({"path": data_dir}),
+        )
+        .expect("valid config");
+    assert_conformant(
+        conformance::source::verify_read_refusal(&source_shell)
+            .await
+            .expecting_no_skips(),
+    );
+}
+
+/// The kill matrix's read half: a source whose READ succeeds on a
+/// target its own probe must refuse fails S6 by name. The double
+/// declares one stream and reads it happily — the shape a connector
+/// with a gated `check()` and an ungated read presents.
+#[tokio::test]
+async fn a_lying_read_fails_the_clause() {
+    struct LyingReadSource;
+    #[async_trait::async_trait]
+    impl Source for LyingReadSource {
+        fn spec(&self) -> rdlt_connector_sdk::spi::spec::ConnectorSpec {
+            rdlt_connector_sdk::spi::spec::ConnectorSpec::new("liar", "0.0.0")
+        }
+        async fn check(&self) -> Result<(), rdlt_connector_sdk::spi::error::SourceError> {
+            unreachable!("the clause drives streams and read")
+        }
+        async fn streams(
+            &self,
+        ) -> Result<
+            Vec<rdlt_connector_sdk::spi::source::StreamSpec>,
+            rdlt_connector_sdk::spi::error::SourceError,
+        > {
+            Ok(vec![rdlt_connector_sdk::spi::source::StreamSpec::new("s")])
+        }
+        async fn read(
+            &self,
+            _request: rdlt_connector_sdk::spi::source::ReadRequest,
+        ) -> Result<(), rdlt_connector_sdk::spi::error::SourceError> {
+            Ok(())
+        }
+    }
+    let failures = conformance::source::verify_read_refusal(&LyingReadSource)
+        .await
+        .expecting_no_skips();
+    assert_eq!(failures.len(), 1, "the lying read fails exactly S6");
+    assert_eq!(failures[0].clause, "S6");
+    assert!(failures[0].message.contains("completed against a target"));
+}

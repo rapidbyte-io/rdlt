@@ -9,6 +9,12 @@
 //! handshake passes: refusing earlier than check is honest too).
 //! `Ok` is a lying probe and FAILS; a transient classification is
 //! retry bait and FAILS.
+//!
+//! S6 is the source's READ twin, driven on the same spawn: the seat
+//! that opens the target must refuse it too. A probe is half the
+//! promise — the read is where a bad path becomes an unbounded buffer
+//! or a parked thread — and a suite that drives `check()` alone
+//! certifies clean while the read stays unguarded.
 
 use rdlt_connector::destination::Destination as _;
 use rdlt_connector::error::{DestinationError, SourceError};
@@ -23,7 +29,7 @@ use crate::target::{self, Target};
 
 /// The two ids this module can emit — the census's derivation source,
 /// like every sibling family's constant.
-pub const CLAUSES: [&str; 2] = ["S5", "D7"];
+pub const CLAUSES: [&str; 3] = ["S5", "S6", "D7"];
 
 /// The skip reason when no misconfigured document was supplied — the
 /// clause needs one, and only the operator knows the connector's
@@ -37,6 +43,7 @@ pub const NO_HOSTILE_CONFIG_SKIP: &str = "no misconfigured document supplied —
 /// Skip carrying [`NO_HOSTILE_CONFIG_SKIP`].
 pub fn skip_source(report: &mut Report) {
     report.skip("S5", NO_HOSTILE_CONFIG_SKIP.to_string());
+    report.skip("S6", NO_HOSTILE_CONFIG_SKIP.to_string());
 }
 
 /// See [`skip_source`].
@@ -62,13 +69,37 @@ pub async fn source(report: &mut Report, hostile: &Target) {
     match provider.source(&requirement, &hostile.config).await {
         // The connector's own typed handshake refusal of the document —
         // honest even earlier than check.
-        Err(provider::Error::Client(ClientError::Handshake { .. })) => report.pass("S5"),
+        //
+        // WHAT THIS ARM TRUSTS, stated because it cannot be checked:
+        // the refusal says the document was rejected, not WHICH part of
+        // it was. A connector that refuses this document for a reason
+        // unrelated to the misconfiguration — a typo the operator left
+        // in it, a field it never supported — passes the clause without
+        // ever judging the hostile shape. The protocol is black-box
+        // here by design (a refusal names no seat), so the clause rests
+        // on the operator supplying a document that is otherwise VALID
+        // and hostile in exactly one dimension. The same trust the
+        // suite already places in the operator's main config, and the
+        // reason the misconfigured document is theirs to write rather
+        // than the certifier's to synthesize.
+        Err(provider::Error::Client(ClientError::Handshake { .. })) => {
+            // Refused at the document, before either seat could touch
+            // the target: honest for the probe AND for the read.
+            report.pass("S5");
+            report.pass("S6");
+        }
         // Anything else that kept the clause from running is the
         // clause's failure to report, never a pass.
-        Err(other) => report.fail(
-            "S5",
-            format!("the misconfigured spawn failed before check could be judged: {other}"),
-        ),
+        Err(other) => {
+            report.fail(
+                "S5",
+                format!("the misconfigured spawn failed before check could be judged: {other}"),
+            );
+            report.fail(
+                "S6",
+                format!("the misconfigured spawn failed before read could be judged: {other}"),
+            );
+        }
         Ok(managed) => match managed.check().await {
             Err(SourceError::Fatal(_)) => report.pass("S5"),
             Err(other) => report.fail(
@@ -89,6 +120,83 @@ pub async fn source(report: &mut Report, hostile: &Target) {
         },
     }
 }
+
+/// S6 against the same misconfigured spawn: the READ must refuse the
+/// target too. Driven on its own spawn so a source left in whatever
+/// state a refused check leaves it cannot decide the verdict.
+///
+/// The read needs a stream to ask for. A declaration that refuses is
+/// the target refused at the earliest seat there is, and passes; a
+/// declaration that succeeds hands its first stream to the read, and
+/// only a completed read fails the clause. The read is bounded by the
+/// harness's deadline — a source that PARKS on a hostile path (the
+/// FIFO shape) fails by name rather than hanging the certification.
+pub async fn source_read(report: &mut Report, hostile: &Target) {
+    let provider = Local::new();
+    let spec = target::fetch_spec(&provider, &hostile.requirement, Role::Source).await;
+    let requirement = match target::resolved_requirement(&hostile.requirement, &spec) {
+        Ok(requirement) => requirement,
+        Err(why) => {
+            report.fail("S6", why);
+            return;
+        }
+    };
+    let managed = match provider.source(&requirement, &hostile.config).await {
+        Err(provider::Error::Client(ClientError::Handshake { .. })) => return,
+        Err(other) => {
+            report.fail(
+                "S6",
+                format!("the misconfigured spawn failed before read could be judged: {other}"),
+            );
+            return;
+        }
+        Ok(managed) => managed,
+    };
+    let stream = match managed.streams().await {
+        Err(_) => {
+            report.pass("S6");
+            return;
+        }
+        Ok(streams) => match streams.into_iter().next() {
+            None => {
+                report.pass("S6");
+                return;
+            }
+            Some(stream) => stream,
+        },
+    };
+    let (out, mut rows) = rdlt_connector::channel::records(READ_PROBE_BUDGET);
+    let request = rdlt_connector::source::ReadRequest::new(stream, None, out);
+    let drain = tokio::spawn(async move { while rows.recv().await.is_some() {} });
+    let read = tokio::time::timeout(READ_PROBE_DEADLINE, managed.read(request)).await;
+    drain.abort();
+    match read {
+        Err(_) => report.fail(
+            "S6",
+            format!(
+                "read() against a misconfigured target neither finished nor refused within \
+                 {}s — a read that parks on a bad path is the shape a probe cannot catch",
+                READ_PROBE_DEADLINE.as_secs()
+            ),
+        ),
+        Ok(Err(_)) => report.pass("S6"),
+        Ok(Ok(())) => report.fail(
+            "S6",
+            "read() completed against a target check() must refuse — the probe and the \
+             read disagree, and it is the read that touches the target"
+                .to_string(),
+        ),
+    }
+}
+
+/// The read probe's channel budget: the drain keeps nothing, so this
+/// bounds only what one hostile push may hold in flight.
+const READ_PROBE_BUDGET: usize = 4 << 20;
+
+/// How long a misconfigured read may take before parking is the
+/// verdict. Generous for any refusal a connector can spell, short
+/// enough that a certification never becomes a hang.
+const READ_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// D7 against a spawned destination configured with the misconfigured
 /// document — the same resolved-identity discipline as [`source`].

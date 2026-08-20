@@ -1337,7 +1337,7 @@ mod generic_tests {
     /// already listening) and then stays alive holding the pipes —
     /// `exec` so the pid the provider's guard kills is the process
     /// actually holding them.
-    fn write_connector_fake(dir: &Path, name: &str, socket: &Path) -> PathBuf {
+    pub(super) fn write_connector_fake(dir: &Path, name: &str, socket: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
         std::fs::write(
@@ -1450,6 +1450,7 @@ mod generic_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: vec![],
                 read_hold_open: false,
@@ -1747,6 +1748,61 @@ mod wire_tests {
 
     use super::support::{assert_fail, assert_pass, verdict};
     use super::*;
+
+    /// The declaration's framing rule, driven from the HOSTILE side: a
+    /// connector that answers the `Streams` RPC with bytes that are not
+    /// the joined documents the field promises must be refused by the
+    /// client, not split, parsed or retained on faith. Three shapes,
+    /// one after another over real sockets: a line that is not JSON at
+    /// all, a trailing newline (an empty final document), and more
+    /// declarations than the wire admits.
+    #[tokio::test]
+    async fn a_rogue_violating_the_declaration_framing_is_refused_by_the_client() {
+        for (name, raw) in [
+            ("not json", b"{\"name\":\"a\"}\nnot-json".to_vec()),
+            ("trailing newline", b"{\"name\":\"a\"}\n".to_vec()),
+            (
+                "over count",
+                (0..1025)
+                    .map(|i| format!("{{\"name\":\"s{i}\"}}").into_bytes())
+                    .collect::<Vec<_>>()
+                    .join(&b'\n'),
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket = dir.path().join("rogue.sock");
+            let _serving = rogue::serve_source(
+                &socket,
+                RogueSource {
+                    handshake: HandshakeScript::truthful(),
+                    streams: vec![],
+                    streams_raw: Some(raw),
+                    read_declared: vec![],
+                    read_undeclared: vec![],
+                    read_hold_open: false,
+                },
+            );
+            let script =
+                crate::clause::p::generic_tests::write_connector_fake(dir.path(), "rogue", &socket);
+            let requirement = Requirement::new("rogue").with_path(&script);
+            use rdlt_connector::source::Source as _;
+            use rdlt_runtime::provider::Provider as _;
+            let provider = rdlt_runtime::local::Local::new();
+            let managed = provider
+                .source(&requirement, &serde_json::json!({}))
+                .await
+                .expect("the handshake is truthful — the declaration is what misbehaves");
+            let refusal = managed
+                .streams()
+                .await
+                .expect_err(&format!("the {name} declaration is refused"));
+            assert!(
+                !format!("{refusal}").is_empty(),
+                "the {name} refusal carries its reason"
+            );
+        }
+    }
+
     use crate::report::Verdict;
     use crate::rogue::{self, HandshakeScript, RogueSource};
 
@@ -1801,6 +1857,7 @@ mod wire_tests {
                     state_format_versions: &[("cursor", 2)],
                 },
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: shaped_refusal(),
                 read_hold_open: false,
@@ -1834,6 +1891,7 @@ mod wire_tests {
                     state_format_versions: &[],
                 },
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: shaped_refusal(),
                 read_hold_open: false,
@@ -1857,6 +1915,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: shaped_refusal(),
                 read_hold_open: false,
@@ -1880,6 +1939,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![StreamSpec::new("rogue_stream")],
+                streams_raw: None,
                 read_declared: vec![rogue::arrow_read_frame(2)],
                 read_undeclared: shaped_refusal(),
                 read_hold_open: false,
@@ -1915,6 +1975,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![StreamSpec::new("rogue_stream")],
+                streams_raw: None,
                 read_declared: vec![rogue::oversized_read_frame()],
                 read_undeclared: shaped_refusal(),
                 read_hold_open: false,
@@ -1944,6 +2005,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: vec![rogue::error_read_frame(rogue::error_frame(
                     Classification::Fatal,
@@ -1980,6 +2042,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![StreamSpec::new("rogue_stream")],
+                streams_raw: None,
                 read_declared: vec![rogue::raw_arrow_read_frame(crafted)],
                 read_undeclared: shaped_refusal(),
                 read_hold_open: false,
@@ -2025,6 +2088,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![StreamSpec::new("rogue_stream")],
+                streams_raw: None,
                 read_declared: vec![rogue::raw_arrow_read_frame(REPRO.to_vec())],
                 read_undeclared: shaped_refusal(),
                 read_hold_open: false,
@@ -2051,6 +2115,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: vec![
                     rogue::error_read_frame(rogue::error_frame(
@@ -2082,6 +2147,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: vec![],
                 read_hold_open: false,
@@ -2105,6 +2171,7 @@ mod wire_tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: vec![rogue::error_read_frame(proto::ErrorFrame {
                     classification: Classification::Unspecified as i32,
@@ -2135,6 +2202,7 @@ mod wire_tests {
                     message: "the config document is not mine",
                 },
                 streams: vec![],
+                streams_raw: None,
                 read_declared: vec![],
                 read_undeclared: vec![],
                 read_hold_open: false,
@@ -2170,6 +2238,7 @@ mod wire_tests {
                 RogueSource {
                     handshake: HandshakeScript::Silence,
                     streams: vec![],
+                    streams_raw: None,
                     read_declared: vec![],
                     read_undeclared: vec![],
                     read_hold_open: false,

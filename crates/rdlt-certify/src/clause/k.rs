@@ -710,6 +710,7 @@ mod tests {
             RogueSource {
                 handshake: HandshakeScript::truthful(),
                 streams: vec![StreamSpec::new("rogue_stream")],
+                streams_raw: None,
                 read_declared: vec![rogue::json_read_frame(), rogue::checkpoint_read_frame()],
                 read_undeclared: vec![],
                 read_hold_open: true,

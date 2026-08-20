@@ -88,6 +88,18 @@ pub const CLAUSES: &[Clause] = &[
                      refusing earlier than check is honest too.",
     },
     Clause {
+        id: "S6",
+        title: "honest read",
+        definition: "read() against that same misconfigured target must refuse it too — the \
+                     read is the seat that opens the target, where a bad path becomes an \
+                     unbounded buffer or a parked thread, and a probe alone cannot catch \
+                     either. Completing the read fails the clause, as does parking past the \
+                     probe deadline; refusing at the declaration, or earlier at the \
+                     handshake, passes. Driven only when the operator supplies a \
+                     misconfigured document via --hostile-config; skipped with the reason \
+                     otherwise.",
+    },
+    Clause {
         id: "D1",
         title: "staging invisibility",
         definition: "Rows written into a load session but not yet committed are invisible to \
