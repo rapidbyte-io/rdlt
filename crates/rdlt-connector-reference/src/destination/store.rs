@@ -149,24 +149,6 @@ pub(crate) fn append_receipt(dir: &Path, receipt: &CommitReceipt) -> Result<(), 
     Ok(())
 }
 
-/// The receipt the log holds for `(load_id, commit_seq)`, if any. Only
-/// newline-terminated lines count: bytes after the LAST newline are an
-/// append that tore mid-write and never became durable, so they read as
-/// absent (the next append cuts them); an unparseable, non-UTF-8, or
-/// over-long line that IS newline-terminated sits in the log's
-/// interior, which the writer never produces — corruption, refused
-/// fatal. The scan STREAMS: the log is an append-only journal that
-/// grows for the store's whole life, so its reader holds one line at a
-/// time — a total ceiling here would be a wedge every honest store
-/// eventually reaches, not a bound.
-pub(crate) fn find_receipt(
-    dir: &Path,
-    load_id: &LoadId,
-    commit_seq: u64,
-) -> Result<Option<CommitReceipt>, DestinationError> {
-    find_receipt_from(dir, load_id, commit_seq, 0).map(|found| found.receipt)
-}
-
 /// What a scan learned: the receipt if this log holds it, and how far
 /// the scan got having not found one for this LOAD.
 pub(crate) struct ReceiptScan {
@@ -179,8 +161,18 @@ pub(crate) struct ReceiptScan {
     pub(crate) load_absent_below: u64,
 }
 
-/// [`find_receipt`] resuming a previous scan of the SAME log for the
-/// SAME load.
+/// The receipt the log holds for `(load_id, commit_seq)`, if any,
+/// resuming a previous scan of the SAME log for the SAME load.
+///
+/// Only newline-terminated lines count: bytes after the LAST newline
+/// are an append that tore mid-write and never became durable, so they
+/// read as absent (the next append cuts them); an unparseable,
+/// non-UTF-8, or over-long line that IS newline-terminated sits in the
+/// log's interior, which the writer never produces — corruption,
+/// refused fatal. The scan STREAMS: the log is an append-only journal
+/// that grows for the store's whole life, so its reader holds one line
+/// at a time — a total ceiling here would be a wedge every honest
+/// store eventually reaches, not a bound.
 ///
 /// The log grows for the store's life and every publish asks it a
 /// question, so scanning from byte zero each time makes per-commit
@@ -266,8 +258,10 @@ pub(crate) fn find_receipt_from(
         // partial chunk is bytes an append will finish, and resuming
         // inside one would read a fragment as a line.
         scanned = consumed;
-        if let Some(receipt) = decode_receipt_line(&path, &line)? {
-            if receipt.load_id == *load_id {
+        if let Some(receipt) = decode_receipt_line(&path, &line)?
+            && receipt.load_id == *load_id
+        {
+            {
                 // The load is named in this log, so no prefix of it is
                 // free of the load and no later scan may skip one.
                 load_seen = true;
