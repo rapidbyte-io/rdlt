@@ -85,7 +85,58 @@ impl Material {
         self.0.trim_start().starts_with("-----BEGIN")
     }
 
+    /// The greatest file a path-form value may name.
+    ///
+    /// PEM is kilobytes — a chain of certificates is a few, a key is
+    /// one — so this is generous by orders of magnitude. It is the
+    /// config document's own ceiling, chosen for the symmetry that
+    /// makes it explainable: the path form admits exactly what the
+    /// inline form could have carried, since an inline value arrives
+    /// inside a document already held to this bound.
+    pub const MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+    /// What the path names, judged before it is opened.
+    ///
+    /// A config-authored path is not a promise of a file. A character
+    /// device reads without end, a FIFO parks its opener until a writer
+    /// appears, and a directory fails every read — none of which can be
+    /// judged after opening, so the metadata is the gate. Symlinks are
+    /// FOLLOWED and then judged by what they point at: a certificate
+    /// living behind `/etc/ssl/certs` is routinely a link, and refusing
+    /// links would refuse honest configurations to catch nothing a kind
+    /// check does not already catch.
+    fn gate_path(&self) -> std::io::Result<()> {
+        let meta = std::fs::metadata(&self.0)?;
+        if !meta.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{}: not a regular file — PEM material must be a file or inline text",
+                    self.0
+                ),
+            ));
+        }
+        if meta.len() > Self::MAX_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{}: {} bytes of PEM material, over the {}-byte ceiling — a certificate \
+                     or key is kilobytes",
+                    self.0,
+                    meta.len(),
+                    Self::MAX_BYTES
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// The PEM bytes, reading the file when this is a path.
+    ///
+    /// The path is judged before it is opened (see [`Material::gate_path`]):
+    /// this type is what every connector taking a certificate reaches
+    /// for, so an ungated open here would teach the hole rather than
+    /// close it.
     ///
     /// The error stays `io::Error` on purpose: what went wrong reading a
     /// file is the same everywhere, and each connector maps it into its
@@ -94,11 +145,13 @@ impl Material {
         if self.is_inline() {
             Ok(self.0.as_bytes().to_vec())
         } else {
+            self.gate_path()?;
             std::fs::read(&self.0)
         }
     }
 
-    /// The PEM text, reading the file when this is a path.
+    /// The PEM text, reading the file when this is a path — gated like
+    /// [`Material::read`].
     ///
     /// For the libraries that want a `String`. Non-UTF-8 file contents
     /// surface as `InvalidData` rather than lossy text — a mangled key
@@ -107,6 +160,7 @@ impl Material {
         if self.is_inline() {
             Ok(self.0.clone())
         } else {
+            self.gate_path()?;
             std::fs::read_to_string(&self.0)
         }
     }
@@ -132,6 +186,81 @@ mod tests {
         // A path CONTAINING the armour text is still a path: the check is
         // anchored at the start.
         assert!(!Material::new("/keys/-----BEGIN/x.pem").is_inline());
+    }
+
+    /// A path is judged before it is opened. This type is the primitive
+    /// every connector taking a certificate reaches for, so what it
+    /// does with a hostile path is what all of them will do: a
+    /// character device would read without end, a FIFO would park the
+    /// opener until a writer appeared, a directory fails every read.
+    /// None can be judged after opening.
+    #[test]
+    fn a_path_that_is_not_a_regular_file_refuses_before_the_open() {
+        let refusal = Material::new("/dev/zero")
+            .read()
+            .expect_err("a character device is not PEM material");
+        assert_eq!(refusal.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            refusal.to_string().contains("not a regular file"),
+            "the refusal says what it judged: {refusal}"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let refusal = Material::new(dir.path().display().to_string())
+            .read_to_string()
+            .expect_err("a directory is not PEM material");
+        assert_eq!(refusal.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    /// The path form admits exactly what the inline form could have
+    /// carried — a value past the document ceiling could not have
+    /// arrived inline, and pointing at it does not make it admissible.
+    #[test]
+    fn a_file_past_the_ceiling_refuses_naming_the_bound() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("huge.pem");
+        // Sparse: the ceiling is judged from the metadata, so the test
+        // costs an inode rather than eight megabytes.
+        let file = std::fs::File::create(&path).expect("create");
+        file.set_len(Material::MAX_BYTES + 1).expect("size it");
+        drop(file);
+
+        let refusal = Material::new(path.display().to_string())
+            .read()
+            .expect_err("a file past the ceiling refuses");
+        assert!(
+            refusal
+                .to_string()
+                .contains(&Material::MAX_BYTES.to_string()),
+            "the refusal names the ceiling: {refusal}"
+        );
+
+        // At the ceiling it reads: the bound admits what it says it does.
+        let path = dir.path().join("big.pem");
+        let file = std::fs::File::create(&path).expect("create");
+        file.set_len(Material::MAX_BYTES).expect("size it");
+        drop(file);
+        Material::new(path.display().to_string())
+            .read()
+            .expect("a file AT the ceiling is admitted");
+    }
+
+    /// A symlink is followed and judged by what it points at: a
+    /// certificate behind `/etc/ssl/certs` is routinely a link, so
+    /// refusing links would refuse honest configurations while catching
+    /// nothing the kind check misses.
+    #[test]
+    fn a_symlink_to_a_regular_file_is_followed_and_admitted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real.pem");
+        std::fs::write(&real, b"-----BEGIN CERTIFICATE-----\n").expect("seed");
+        let link = dir.path().join("link.pem");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+
+        let read = Material::new(link.display().to_string())
+            .read()
+            .expect("a link to a regular file is admitted");
+        assert!(read.starts_with(b"-----BEGIN"));
     }
 
     #[test]

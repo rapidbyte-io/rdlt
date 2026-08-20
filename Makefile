@@ -129,6 +129,9 @@ lint:
 	# here for the one crate that owns it; turning it on workspace-wide
 	# would pull tonic into every OTHER crate's default clippy run too.
 	cargo clippy -p rdlt-connector-sdk --all-targets --features serve -- -D warnings
+	# Same class, `pem`: OFF by default and reached by no other line, so
+	# without this the module was never linted at all.
+	cargo clippy -p rdlt-connector-sdk --all-targets --features pem -- -D warnings
 
 # THE FAST SUITE, stated once and expanded in BOTH gate blocks — the
 # default verb and TARGET=unit (the 024 both-blocks discipline: a suite
@@ -144,6 +147,11 @@ cargo nextest run --workspace
 # (the 024 zero-second-pass class). `-E 'test(schema_of)'` so an empty
 # selection — a renamed test — fails rather than passing vacuously.
 cargo nextest run -p rdlt-connector-sdk --features schema -E 'test(schema_of)'
+# Same class again, `pem`: OFF by default and enabled by nothing else in
+# the workspace, so its tests had never executed either — including the
+# inline-redaction pins, which are the type's one security property, and
+# the hostile-path refusals. `-E 'test(pem)'` so a rename fails loudly.
+cargo nextest run -p rdlt-connector-sdk --features pem -E 'test(pem)'
 # Same class, `serve`: OFF by default. A plain workspace run reaches
 # serve/ and its tests only through feature unification (in-tree
 # dev-dependencies enable it), which a dependency edit could silently
