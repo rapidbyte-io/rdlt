@@ -31,6 +31,13 @@ const STAGING_CEILING_BYTES: usize = 256 << 20;
 #[derive(Debug)]
 pub struct Session {
     dir: PathBuf,
+    /// Where the last receipt scan got to without meeting a load, and
+    /// which load that was. The receipt log grows for the store's life
+    /// and every publish interrogates it, so scanning from byte zero
+    /// each time climbs with lifetime commits; a prefix that never
+    /// named a load never will, so the next question about the SAME
+    /// load starts where the last one stopped.
+    receipt_scan: Option<(LoadId, u64)>,
     load_id: LoadId,
     staged: Vec<(TableName, RecordBatch)>,
     staged_bytes: usize,
@@ -38,11 +45,35 @@ pub struct Session {
 }
 
 impl Session {
+    /// Ask the receipt log about `(load_id, commit_seq)`, resuming the
+    /// previous scan when it was about the same load.
+    ///
+    /// The resume point is only ever a prefix the load was ABSENT from,
+    /// so skipping it cannot skip a receipt: a receipt for a sequence
+    /// is a receipt for its load, and the log's bytes below its last
+    /// complete line never change. A different load asks from zero.
+    fn scan_receipts(
+        &mut self,
+        load_id: &LoadId,
+        commit_seq: u64,
+    ) -> Result<Option<CommitReceipt>, DestinationError> {
+        let from = match &self.receipt_scan {
+            Some((scanned_load, offset)) if scanned_load == load_id => *offset,
+            _ => 0,
+        };
+        let scan = store::find_receipt_from(&self.dir, load_id, commit_seq, from)?;
+        self.receipt_scan = match scan.load_absent_below {
+            0 => None,
+            offset => Some((load_id.clone(), offset)),
+        };
+        Ok(scan.receipt)
+    }
     /// A fresh session over `dir` for `load_id`, holding `lease` until
     /// close or drop.
     pub(crate) fn new(dir: PathBuf, load_id: LoadId, lease: std::fs::File) -> Self {
         Self {
             dir,
+            receipt_scan: None,
             load_id,
             staged: Vec::new(),
             staged_bytes: 0,
@@ -134,7 +165,7 @@ impl Backend for Session {
         load_id: &LoadId,
         commit_seq: u64,
     ) -> Result<Option<CommitReceipt>, DestinationError> {
-        store::find_receipt(&self.dir, load_id, commit_seq)
+        self.scan_receipts(load_id, commit_seq)
     }
 
     async fn replay(
@@ -165,7 +196,10 @@ impl Backend for Session {
                 receipt.commit_seq
             )));
         }
-        if store::find_receipt(&self.dir, &receipt.load_id, receipt.commit_seq)?.is_none() {
+        if self
+            .scan_receipts(&receipt.load_id, receipt.commit_seq)?
+            .is_none()
+        {
             return Err(DestinationError::fatal(format!(
                 "reference destination: replay of a receipt this store never issued — the \
                  receipt log holds no receipt for load `{}` commit {}; the staged rows are \
@@ -207,7 +241,7 @@ impl Backend for Session {
         // and its restaged rows are dropped: the rows were published
         // under that receipt already, and re-persisting the restaged
         // ones would silently replace them under the same part names.
-        if let Some(prior) = store::find_receipt(&self.dir, &meta.load_id, meta.commit_seq)? {
+        if let Some(prior) = self.scan_receipts(&meta.load_id, meta.commit_seq)? {
             self.clear_staging();
             return Ok(prior);
         }
@@ -311,6 +345,7 @@ mod tests {
 
     fn session_at(staged_bytes: usize) -> Session {
         Session {
+            receipt_scan: None,
             dir: std::path::PathBuf::new(),
             load_id: LoadId::new("load"),
             staged: Vec::new(),

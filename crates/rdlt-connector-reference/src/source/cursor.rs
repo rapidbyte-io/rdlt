@@ -109,8 +109,22 @@ pub(crate) async fn resume(
         )));
     }
     let window = v1.bytes_read.min(TAIL_WINDOW);
+    // An IO failure reading the guard window is transient — EXCEPT the
+    // one that means the file no longer holds what the cursor says it
+    // does. The length was checked a moment ago; a short read here says
+    // it shrank in between, which is the same fact the shrink refusal
+    // above states and no retry can change. Classifying it transient
+    // would spend a retry on a certainty and then report exhaustion in
+    // place of the real cause.
     let read_io = |error: std::io::Error| {
-        SourceError::transient(format!("reference source: {path}: {error}"))
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            SourceError::fatal(format!(
+                "reference source: {path} shrank below the cursor while its guard window \
+                 was being read: refusing to guess"
+            ))
+        } else {
+            SourceError::transient(format!("reference source: {path}: {error}"))
+        }
     };
     file.seek(std::io::SeekFrom::Start(v1.bytes_read - window))
         .await
