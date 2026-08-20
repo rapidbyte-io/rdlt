@@ -315,4 +315,53 @@ mod tests {
             );
         }
     }
+
+    /// The depth a manifest line can actually carry, measured — the
+    /// number the schema door's doc quotes and the reason it does not
+    /// lower itself to match.
+    ///
+    /// A column type rides a manifest line as JSON, and serde's default
+    /// recursion limit is what stops it: 41 struct levels decode, 42 do
+    /// not. A schema past the boundary still LOADS — the door admits 63
+    /// — but its Delta cannot be read back, so a crashed run
+    /// re-extracts instead of replaying. Pinned in both directions so
+    /// the boundary cannot move without someone deciding to move it.
+    #[test]
+    fn a_manifest_line_carries_column_nesting_only_so_deep() {
+        use rdlt_core::schema::{Column, ColumnType, Provenance};
+        use rdlt_core::types::LogicalType;
+
+        fn column_nested(levels: usize) -> Column {
+            let mut column_type = ColumnType::scalar(LogicalType::Int64);
+            for _ in 0..levels {
+                column_type = ColumnType::Struct {
+                    fields: vec![Column {
+                        name: "f".into(),
+                        column_type,
+                        nullable: true,
+                        provenance: Provenance::Inferred,
+                    }],
+                };
+            }
+            Column {
+                name: "c".into(),
+                column_type,
+                nullable: true,
+                provenance: Provenance::Inferred,
+            }
+        }
+
+        const CARRIED: usize = 41;
+        let json = serde_json::to_string(&column_nested(CARRIED)).expect("serializes");
+        assert!(
+            serde_json::from_str::<Column>(&json).is_ok(),
+            "{CARRIED} levels must round-trip — the doc at the schema door says so"
+        );
+        let json = serde_json::to_string(&column_nested(CARRIED + 1)).expect("serializes");
+        assert!(
+            serde_json::from_str::<Column>(&json).is_err(),
+            "one level past the boundary must NOT round-trip — if it now does, the \
+             ceiling moved and the door's doc is stale"
+        );
+    }
 }

@@ -2,6 +2,8 @@
 //! identity, and schema resolution — everything the JSON traversal and the
 //! resolve pipeline build on.
 
+use std::collections::BTreeSet;
+
 use rdlt_core::id::TableName;
 use rdlt_core::schema::{self, Column, IdentRules, ParentLink, Provenance, TableSchema};
 
@@ -186,37 +188,62 @@ impl TableBuffer {
             .map(String::as_str)
     }
 
-    /// Policy enforcement: revert one column's observation state to its pre-batch
-    /// snapshot (or remove it if the column first appeared this batch).
-    pub(crate) fn revert_column(
+    /// Undo a batch of column changes the policy discarded: each key is
+    /// restored to the state the snapshot holds for it, or removed when
+    /// the snapshot has none (the column was born in this push).
+    ///
+    /// BATCHED on purpose, and this is the whole reason the method takes
+    /// a slice. Every removal shifts the slots after it, so the lookup
+    /// index must be re-derived — and a re-derive clones and re-hashes
+    /// every remaining key. Doing that per discarded column costs the
+    /// table's width once per discard, which is quadratic in a width the
+    /// wire chooses: a legal push of four thousand columns, every one of
+    /// them discarded, would spend minutes inside one blocking call. One
+    /// pass over the table answers all of them: restores land in place
+    /// (they shift nothing), the removals go in a single `retain`, and
+    /// the index and the nested-field count are each re-derived once.
+    pub(crate) fn revert_columns(
         &mut self,
-        source_key: &str,
+        source_keys: &[String],
         rollback_snapshot: Option<&[(String, ColumnState)]>,
     ) {
+        if source_keys.is_empty() {
+            return;
+        }
         // A rollback IS a mutation: the resolved state no longer matches the
         // registry until the re-resolve lands.
         self.dirty = true;
-        let prior = rollback_snapshot.and_then(|columns| {
-            columns
-                .iter()
-                .find(|(key, _)| key == source_key)
-                .map(|(_, state)| state.clone())
-        });
-        match prior {
-            Some(state) => {
-                if let Some(idx) = self.column_slots.slot_of(&self.columns, source_key) {
-                    self.columns[idx].1 = state;
+
+        // Restores first, while every slot still means what the index
+        // says: each is an in-place assignment that moves nothing.
+        let mut removals: BTreeSet<&str> = BTreeSet::new();
+        for source_key in source_keys {
+            let prior = rollback_snapshot.and_then(|columns| {
+                columns
+                    .iter()
+                    .find(|(key, _)| key == source_key)
+                    .map(|(_, state)| state.clone())
+            });
+            match prior {
+                Some(state) => {
+                    if let Some(idx) = self.column_slots.slot_of(&self.columns, source_key) {
+                        self.columns[idx].1 = state;
+                    }
+                }
+                None => {
+                    removals.insert(source_key.as_str());
                 }
             }
-            None => {
-                self.columns.retain(|(k, _)| k != source_key);
-                // Removal shifts every later slot; the lookup re-derives.
-                self.column_slots.rebuilt(&self.columns);
-            }
         }
+
+        // Then the removals, in one pass, and one re-derive behind them.
+        if !removals.is_empty() {
+            self.columns.retain(|(k, _)| !removals.contains(k.as_str()));
+            self.column_slots.rebuilt(&self.columns);
+        }
+
         // A rollback can remove or shrink a struct column, so the running
-        // nested-field count is re-derived from what actually remains. Cold
-        // path — this runs only under Discard* policy enforcement.
+        // nested-field count is re-derived from what actually remains.
         self.nested_fields = self
             .columns
             .iter()
@@ -281,6 +308,13 @@ impl TableBuffer {
             .push((source_key.to_owned(), ColumnState::Unknown));
         self.column_slots.grew(&self.columns);
         Ok(self.columns.len() - 1)
+    }
+
+    /// Wholesale index rebuilds this table's columns have paid for —
+    /// what the rollback's complexity pin reads.
+    #[cfg(test)]
+    pub(crate) fn column_rebuilds(&self) -> u64 {
+        self.column_slots.rebuilds()
     }
 
     /// Total key comparisons the column lookup has cost — the meter the

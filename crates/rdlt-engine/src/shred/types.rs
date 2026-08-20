@@ -111,6 +111,19 @@ fn join_column_types_at(
 /// overflow — an ABORT, not a catchable panic, so `spawn_blocking`
 /// containment cannot absorb it.
 ///
+/// WHAT THE CAP DOES NOT PROMISE, measured rather than assumed: a
+/// schema this door admits is not guaranteed to survive the WAL. A
+/// manifest line carries a column type as JSON, and serde's default
+/// recursion limit stops decoding one at 42 struct levels — so a
+/// schema of 42 or more nests loads correctly but its Delta record
+/// cannot be read back, and a crashed run degrades to re-extraction
+/// instead of replaying. That is the safe direction (the rows are
+/// re-read, never lost), and it is why the door is not lowered to
+/// match: refusing a schema that loads perfectly well, to protect a
+/// recovery optimisation, would cost more than it saves. The boundary
+/// is pinned in the WAL's own tests so the number cannot drift here
+/// unnoticed.
+///
 /// The cap admits the SAME depth the lowering walk accepts, so a schema
 /// this door lets through can always be written. Aligning them refused
 /// one shape that used to load: a declaration at exactly the old door's

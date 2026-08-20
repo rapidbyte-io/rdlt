@@ -35,6 +35,9 @@ pub(crate) struct SlotIndex {
     /// would flake). Test-only so the hot path carries no accounting.
     #[cfg(test)]
     probes: u64,
+    /// Wholesale rebuilds paid — see [`SlotIndex::rebuilds`].
+    #[cfg(test)]
+    rebuilds: u64,
 }
 
 impl SlotIndex {
@@ -76,11 +79,18 @@ impl SlotIndex {
         }
     }
 
-    /// Re-derive after the caller removed entries (the policy-rollback
-    /// path): removal shifts every later slot, so a live index is rebuilt
-    /// wholesale. Cold path — rollbacks run only under Discard* policy
-    /// enforcement.
+    /// Re-derive after the caller removed entries: removal shifts every
+    /// later slot, so a live index is rebuilt wholesale.
+    ///
+    /// Every key is cloned and re-hashed, so this is priced per CALL, not
+    /// per removed entry — a caller removing many entries must remove
+    /// them all and rebuild ONCE. Calling it per removal is quadratic in
+    /// the table's width, and the width is the wire's to choose.
     pub(crate) fn rebuilt<T>(&mut self, entries: &[(String, T)]) {
+        #[cfg(test)]
+        {
+            self.rebuilds += 1;
+        }
         if self.index.is_some() {
             self.index = Some(
                 entries
@@ -90,6 +100,14 @@ impl SlotIndex {
                     .collect(),
             );
         }
+    }
+
+    /// How many wholesale rebuilds this index has paid for — what the
+    /// rollback's complexity pin reads, because the cost the pin bounds
+    /// is per-rebuild rather than per-comparison.
+    #[cfg(test)]
+    pub(crate) fn rebuilds(&self) -> u64 {
+        self.rebuilds
     }
 
     #[cfg(test)]

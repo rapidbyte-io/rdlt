@@ -381,19 +381,25 @@ impl Shredder {
 #[cfg(test)]
 mod cardinality_tests {
     use super::*;
-    use crate::policy::SchemaPolicy;
+    use crate::policy::{PolicyAction, SchemaPolicy};
     use crate::schema::registry::SchemaRegistry;
     use rdlt_core::commit::WriteMode;
     use rdlt_core::id::LoadId;
 
     /// Drive one slab through the full push path with a throwaway context.
     fn push(shredder: &mut Shredder, bytes: &[u8]) -> Result<Vec<LoadItem>, PushError> {
+        push_under(shredder, bytes, SchemaPolicy::evolve())
+    }
+
+    /// [`push`] with the schema policy as a parameter — the seam the
+    /// rollback pin needs, since only a Discard* policy reverts columns.
+    fn push_under(
+        shredder: &mut Shredder,
+        bytes: &[u8],
+        policy: SchemaPolicy,
+    ) -> Result<Vec<LoadItem>, PushError> {
         let mut registry = SchemaRegistry::default();
-        let (load_id, mode, policy) = (
-            LoadId::new("test-load"),
-            WriteMode::Append,
-            SchemaPolicy::evolve(),
-        );
+        let (load_id, mode) = (LoadId::new("test-load"), WriteMode::Append);
         shredder.push_and_resolve(
             bytes,
             ShredContext {
@@ -679,5 +685,70 @@ mod cardinality_tests {
             .child_table_idx(0, "one-too-many", &mut vec![Vec::new()])
             .expect_err("the child-table cap must refuse");
         assert!(error.to_string().contains("child-table cap"));
+    }
+    /// The rollback is priced ONCE, however many columns a policy
+    /// discards. Every removal shifts the slots behind it, so the lookup
+    /// index must be re-derived — and a re-derive clones and re-hashes
+    /// every remaining key. Paying that per discarded column is quadratic
+    /// in a width the wire chooses: at four thousand columns it is
+    /// minutes inside one blocking call, repeatable every push, because
+    /// the rollback empties the table and the identical push re-triggers
+    /// it. One rebuild for the whole batch is the bound, and the meter
+    /// says so rather than the wall clock.
+    ///
+    /// The shape has to be real to be worth pinning: a policy judges
+    /// EVOLUTION, so the schema is registered by a first push and the
+    /// wide add arrives in a second one against it.
+    #[test]
+    fn a_wide_discard_rebuilds_the_column_index_once() {
+        const W: usize = 64;
+        let mut shredder = shredder();
+        let mut registry = SchemaRegistry::default();
+        let load_id = LoadId::new("test-load");
+
+        let mut drive = |bytes: &[u8], policy: SchemaPolicy, shredder: &mut Shredder| {
+            let mode = WriteMode::Append;
+            shredder.push_and_resolve(
+                bytes,
+                ShredContext {
+                    registry: &mut registry,
+                    load_id: &load_id,
+                    mode: &mode,
+                    policy: &policy,
+                    max_batch_cells: crate::config::Config::DEFAULT_MAX_BATCH_CELLS,
+                },
+            )
+        };
+
+        // Register the table with one column, evolving freely.
+        if drive(b"{\"anchor\":1}\n", SchemaPolicy::evolve(), &mut shredder).is_err() {
+            panic!("the first push registers the schema");
+        }
+
+        // Then W columns it has never seen, every one of them refused by
+        // the policy — the shape that made the old per-change revert
+        // quadratic, since each new column takes the removal arm.
+        let mut slab = Vec::new();
+        slab.extend_from_slice(b"{\"anchor\":1");
+        for k in 0..W {
+            slab.extend_from_slice(format!(",\"k{k}\":1").as_bytes());
+        }
+        slab.extend_from_slice(b"}\n");
+        let _ = drive(
+            &slab,
+            SchemaPolicy::with_default(PolicyAction::DiscardValue),
+            &mut shredder,
+        );
+
+        let rebuilds = shredder.tables[0].column_rebuilds();
+        assert!(
+            rebuilds > 0,
+            "the pin must actually reach the rollback — it reverted nothing"
+        );
+        assert!(
+            rebuilds <= 1,
+            "a {W}-column discard rebuilds the index {rebuilds} times, not once — \
+             the rollback is priced per change again"
+        );
     }
 }

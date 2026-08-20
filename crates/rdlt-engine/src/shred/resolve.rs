@@ -373,7 +373,6 @@ fn enforce_discards<'v, V: JsonView<'v>>(
             .source_key_for(normalized)
             .unwrap_or(normalized)
             .to_owned();
-        buffer.revert_column(&source_key, rollback_snapshot);
         let must_fit = match change {
             schema::Change::WidenColumn { from, .. } => Some(from.clone()),
             _ => None,
@@ -384,6 +383,15 @@ fn enforce_discards<'v, V: JsonView<'v>>(
             action: *action,
         });
     }
+
+    // ONE rollback for all of them: reverting per change would re-derive
+    // the buffer's whole column index once per discarded column, which is
+    // quadratic in a width the wire chooses.
+    let reverted: Vec<String> = offenses
+        .iter()
+        .map(|offense| offense.source_key.clone())
+        .collect();
+    buffer.revert_columns(&reverted, rollback_snapshot);
 
     let mut dropped_rows = 0u64;
     let mut nulled_values = 0u64;
