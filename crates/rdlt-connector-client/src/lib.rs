@@ -30,8 +30,11 @@
 //! Two refusal spellings are frozen verbatim: `read frame violated the
 //! one-batch rule` and `the connector session ended before replying`.
 //!
-//! The wire is frozen: field numbers never move, evolution is
-//! additive, and an unknown value from a newer peer normalizes
+//! The wire's rules of change bind whether or not it is frozen (it was
+//! frozen 2026-08-07 and re-opened 2026-08-19 while the workspace is
+//! pre-release — the protocol crate's doc carries the dates): field
+//! numbers never move, evolution is additive, and an unknown value
+//! from a newer peer normalizes
 //! safe-loud — an unrecognized classification arrives as
 //! [`error::Classification::Fatal`], never a guess.
 

@@ -23,11 +23,14 @@ The protocol (SPI) is reached through the sdk's re-export — `use
 rdlt_connector_sdk::spi::{SourceError, StreamSpec, ...}`, vocabulary via
 `spi::core` — never as a direct dependency. The sdk forwards every SPI
 feature under the same spelling: `failpoints` (crash sweeps) and
-`schema` (generated config schemas). Storage-, format-, and
-driver-specific pieces (parquet options, part rolling, PEM material,
-object-store retry rules) are the connector's own: the sdk carries only
-what is true of every connector by virtue of the protocol, so a
-connector that needs one of those owns its copy, sized to its use.
+`schema` (generated config schemas), and carries `pem` (PEM material
+given inline or as a path) for the connectors that take a certificate
+or a key — config mechanics every one of them must answer identically,
+since reading the rule two ways would treat a key as a filename.
+Storage-, format-, and driver-specific pieces (parquet options, part
+rolling, object-store retry rules) are the connector's own: the sdk
+carries only what is true of every connector, so a connector that needs
+one of those owns its copy, sized to its use.
 `rdlt-testkit` is a **dev**-dependency (the verification half),
 tolerated in `[dependencies]` only as an *optional* dep behind a
 `fixtures` feature.

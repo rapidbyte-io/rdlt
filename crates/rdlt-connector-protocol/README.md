@@ -220,7 +220,9 @@ authentication on this wire:
   CLI plugin or a `sudo` child crosses;
 - nothing in this protocol redacts or encrypts a `*_json` payload —
   never log `config_json`, `table_schema_json`, or any other `*_json`
-  field verbatim, since it may carry a `Secret`'s revealed value.
+  field verbatim, since it may carry a `Secret`'s revealed value — or
+  inline PEM material, which is deliberately not a `Secret` (a path is
+  not a credential) and is a private key just the same.
 
 `Secret` *references* (a config field naming WHERE a credential lives —
 an environment variable, a secret-manager path — rather than carrying
@@ -293,7 +295,7 @@ before deciding what config to hand it. `state_format_versions_json` on
 the empty document (= the empty map), and the dialing client
 (`rdlt-connector-client`, surfaced through `rdlt-runtime`) threads the
 parsed map through to embedders UNREAD (the handshake `Outcome`'s
-`state_format_versions_json`, reachable through the runtime's
+`state_format_versions`, reachable through the runtime's
 `Managed::outcome`) — with one format version per state kind there is
 nothing to negotiate yet.
 Negotiation semantics are owned by the feature that adds a second

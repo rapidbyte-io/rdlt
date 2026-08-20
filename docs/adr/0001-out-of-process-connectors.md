@@ -322,7 +322,7 @@ the publish wave is separate, owner-scheduled work.
 **What the freeze does NOT foreclose, and one live defect that does
 not reopen it.** Additive growth is exactly what rules 1-3 preserve.
 Three doors stay open: network transports (TCP+mTLS, D3) as a future
-binding of this same proto; `state_format_versions` negotiation, whose
+binding of this same proto; `state_format_versions_json` negotiation, whose
 field is frozen at its number but ships empty because there is nothing
 to negotiate until a second format version exists; and a `ReadCredit`
 message as the documented escape hatch for backpressure. That hatch matters, because a real defect was

@@ -127,8 +127,9 @@ use rdlt_connector::gate::MAX_DECLARED_STREAM_SPECS;
 /// newline inside a string, so the split is unambiguous), decoded by
 /// prost as a single allocation bounded by the frame. The gates then
 /// run as a RAW BYTE SCAN over that blob: the line-count cap first
-/// (one 64 MiB frame of minimal lines would otherwise yield millions
-/// of `StreamSpec`s and a multi-second synchronous parse loop), then
+/// (one 64 MiB frame of minimal lines would otherwise yield close to a
+/// million `StreamSpec`s and a multi-second synchronous parse loop),
+/// then
 /// each LINE's length against the shared document ceiling — and only
 /// then does any line parse (a maximal honest spec — 4096 type hints
 /// of 1024-byte keys plus the key fields — serializes to ~4.3 MiB, so
@@ -155,14 +156,16 @@ use rdlt_connector::gate::MAX_DECLARED_STREAM_SPECS;
 /// The expansion is worst where the wire spends least per retained
 /// allocation, which is not the minimal spec: that one is dominated by
 /// its own fixed struct and measures about 1.2× (86 wire bytes for
-/// ~105 retained). It is a spec at the COLLECTION gates — a primary
-/// key of sixty-four one-character fields spends a few wire bytes per
-/// field and retains a `String` header plus its heap block for each,
-/// and type hints spend a key and a variant name (`"a":"Bool"`) for a
-/// header, a block and a map slot. That shape measures about 5×, which
-/// is the figure the posture record carries, and the reason the COUNT
-/// gates below exist: without them the collections are what a legal
-/// reply spends its bytes on.
+/// ~105 retained). It is a spec at the COLLECTION gates, and the two
+/// gates differ. A primary key of sixty-four one-character fields
+/// spends about four wire bytes per field and retains a `String`
+/// header plus its heap block for each: about 5×, the figure the
+/// posture record carries. Type hints spend more wire for the same
+/// retention — a hint's value is a TAGGED OBJECT (`"h0":{"type":
+/// "bool"}`), so roughly twenty bytes buy one map entry: about 3×.
+/// Both are pinned below, and both are why the COUNT gates exist —
+/// without them the collections are what a legal reply spends its
+/// bytes on.
 fn decode_stream_specs(stream_specs_jsonl: &[u8]) -> Result<Vec<StreamSpec>, SourceError> {
     if stream_specs_jsonl.is_empty() {
         return Ok(Vec::new());
@@ -644,8 +647,9 @@ mod stream_spec_gate_tests {
     }
 
     /// The reply-level count gate, BEFORE the decode loop: a 64 MiB
-    /// frame of minimal specs would otherwise materialize millions of
-    /// `StreamSpec`s (plus a multi-second synchronous parse) before the
+    /// frame of minimal specs would otherwise materialize close to a
+    /// million `StreamSpec`s (plus a multi-second synchronous parse)
+    /// before the
     /// engine's own cap could see them. Refused by count alone — the
     /// specs here are minimal and individually legal — and legal at the
     /// cap itself.
@@ -786,6 +790,27 @@ mod tests {
                 .collect(),
         );
         let collections = ratio(&keyed);
+
+        // The other collection gate, measured rather than modelled: a
+        // hint's value is a tagged object on the wire, which is why it
+        // expands less than a key field does.
+        let mut hinted = StreamSpec::new("a");
+        for i in 0..64 {
+            hinted.type_hints.insert(
+                format!("h{i}"),
+                rdlt_connector::core::types::LogicalType::Bool,
+            );
+        }
+        let hints = ratio(&hinted);
+        assert!(
+            (2.0..4.0).contains(&hints),
+            "hints expand less than key fields — their wire form is a tagged object, \
+             near 3x — measured {hints:.1}x"
+        );
+        assert!(
+            hints < collections,
+            "the doc names key fields as the worse of the two collection shapes"
+        );
         assert!(
             (4.0..7.0).contains(&collections),
             "the collection-heavy spec is the maximizer, near 5x — measured {collections:.1}x"

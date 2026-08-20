@@ -1,6 +1,11 @@
 //! # rdlt-connector-protocol — the out-of-process connector wire protocol (v1)
 //!
-//! FROZEN as of 2026-08-07. Frozen means the rules of change bind:
+//! Frozen 2026-08-07 and RE-OPENED 2026-08-19 by the owner while the
+//! workspace is pre-release: both halves of the wire live in this
+//! repository, so a change lands in both at once and the negotiated
+//! version refuses any peer built against the other. Both manifests
+//! carry the same dates. While it is open the rules of change still
+//! bind, because they are what keeps a change survivable:
 //! field numbers are never renumbered, repurposed, or recycled — a
 //! retired number is `reserved`; evolution is ADDITIVE ONLY (new fields
 //! take fresh numbers; new messages, RPCs, `oneof` arms and enum values

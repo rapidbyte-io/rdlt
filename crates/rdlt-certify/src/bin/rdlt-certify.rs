@@ -93,7 +93,7 @@ struct Args {
     probe_cmd: Option<String>,
 
     /// A MISCONFIGURED config JSON file for the honest-check clause
-    /// (D7/S5): a document the connector's gate accepts but its
+    /// (D7/S5/S6): a document the connector's gate accepts but its
     /// operations must refuse — a file behind a trailing slash, a
     /// directory where a file is expected. Absent, the clause skips
     /// with the reason

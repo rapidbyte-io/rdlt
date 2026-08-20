@@ -133,7 +133,7 @@ impl Material {
 
     /// The PEM bytes, reading the file when this is a path.
     ///
-    /// The path is judged before it is opened (see [`Material::gate_path`]):
+    /// The path is judged before it is opened — its kind and its size:
     /// this type is what every connector taking a certificate reaches
     /// for, so an ungated open here would teach the hole rather than
     /// close it.
@@ -150,8 +150,8 @@ impl Material {
         }
     }
 
-    /// The PEM text, reading the file when this is a path — gated like
-    /// [`Material::read`].
+    /// The PEM text, reading the file when this is a path — its path
+    /// judged like [`Material::read`]'s.
     ///
     /// For the libraries that want a `String`. Non-UTF-8 file contents
     /// surface as `InvalidData` rather than lossy text — a mangled key

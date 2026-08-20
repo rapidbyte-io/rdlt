@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-08-20T13:34:54.483Z",
+  "sessionId": "sess_845a6b92-2b25-4096-921a-f3a2d2c63e34",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "GLM_SECURITY_FINDINGS_16.md",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 3,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

@@ -27,6 +27,10 @@ use rdlt_connector_sdk::spi::{SourceError, StreamSpec};
 alone and reaches the SPI through it, so a connector crate has one
 foundation dependency and one version of every protocol type. The
 SPI's `schema` and `failpoints` features forward under the same names.
+`pem` (OFF by default) carries [`pem::Material`] for the connectors that
+take a certificate or a key: whether a configured value IS the material
+or names a file holding it is a rule every one of them must answer the
+same way.
 
 ## The three seams
 

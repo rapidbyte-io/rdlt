@@ -421,7 +421,7 @@ fn gate_store_read(path: &Path, ceiling: u64, what: &str) -> Result<bool, Destin
 }
 
 /// Cut a torn (newline-less) tail off the receipt log before appending
-/// to it. Those bytes were never a durable receipt — `find_receipt`
+/// to it. Those bytes were never a durable receipt — `find_receipt_from`
 /// already reads them as absent — and appending after them would glue
 /// this commit's receipt into a corrupt, newline-terminated INTERIOR
 /// line, which is exactly the shape every later read refuses. Only the
