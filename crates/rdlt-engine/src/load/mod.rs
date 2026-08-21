@@ -5,6 +5,7 @@
 //! WAL replay both go through.
 
 pub(crate) mod apply;
+pub(crate) mod session_exit;
 mod item;
 mod loader;
 mod lower;

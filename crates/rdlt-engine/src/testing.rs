@@ -25,6 +25,7 @@ pub(crate) struct FakeSession {
     pub(crate) commits: Arc<Mutex<Vec<CommitMeta>>>,
     pub(crate) writes: Arc<Mutex<usize>>,
     on_ensure: Option<Box<dyn FnMut() + Send>>,
+    close_failure: Option<String>,
     unreachable: bool,
 }
 
@@ -43,6 +44,12 @@ impl FakeSession {
     pub(crate) fn on_ensure(mut self, hook: impl FnMut() + Send + 'static) -> Self {
         self.on_ensure = Some(Box::new(hook));
         self
+    }
+
+    /// Fail the next (and every) `close` with this cause — the seam the
+    /// session-exit discipline's pins use.
+    pub(crate) fn fail_close(&mut self, cause: impl Into<String>) {
+        self.close_failure = Some(cause.into());
     }
 }
 
@@ -76,6 +83,13 @@ impl LoadSession for FakeSession {
     async fn read_state(&mut self, _: &PipelineId) -> Result<Option<StateDoc>, DestinationError> {
         assert!(!self.unreachable, "this session must never be touched");
         Ok(None)
+    }
+    async fn close(&mut self) -> Result<(), DestinationError> {
+        assert!(!self.unreachable, "this session must never be touched");
+        match &self.close_failure {
+            Some(cause) => Err(DestinationError::fatal(cause.clone())),
+            None => Ok(()),
+        }
     }
 }
 

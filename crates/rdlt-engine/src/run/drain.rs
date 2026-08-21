@@ -98,8 +98,8 @@ pub(super) async fn drive(
     }
     // The strict, success-only close: the run's last commit just
     // succeeded, and every path above this point that could still fail
-    // has already returned early. `Loader::close` classifies its own
-    // error non-retryable and prefixes it — see that method's doc.
+    // has already returned early. The close discipline — non-retryable
+    // classification, frozen prefix — lives in `load::session_exit`.
     loader.close().await?;
     Ok(loader.report)
 }

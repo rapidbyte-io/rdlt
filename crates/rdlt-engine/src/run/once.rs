@@ -118,7 +118,7 @@ pub(super) async fn run_once(
             // retry) a `TTL_SECS`-long wait for a holder that is already
             // gone. Best-effort — a close failure must not shadow the
             // real `Wal::open` error being propagated.
-            session.close().await.ok();
+            crate::load::session_exit::best_effort(session.as_mut()).await;
             return Err(e);
         }
     };

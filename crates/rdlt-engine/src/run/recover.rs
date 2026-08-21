@@ -227,7 +227,7 @@ async fn replay_span(
         Ok(recovered) => recovered
             .unwrap_or_else(|| StateDoc::new(config.pipeline.clone(), env!("CARGO_PKG_VERSION"))),
         Err(e) => {
-            session.close().await.ok();
+            crate::load::session_exit::best_effort(session.as_mut()).await;
             return Err(e);
         }
     };
@@ -236,7 +236,7 @@ async fn replay_span(
         match replay::replay(wal_dir, span, &mut *session, &mut state, capabilities).await {
             Ok(replayed) => replayed,
             Err(e) => {
-                session.close().await.ok();
+                crate::load::session_exit::best_effort(session.as_mut()).await;
                 return Err(e);
             }
         };
@@ -246,22 +246,14 @@ async fn replay_span(
             // The replay's own commit just landed — this session's last
             // (and only) commit succeeded, so its orderly STRICT close
             // belongs here, symmetric with the run's own session in
-            // the loader drive. Non-retryable and prefixed like
-            // `Loader::close`: the
-            // commit is already durable, so a close failure here can
-            // never mean lost data, and retrying the whole run would
-            // re-execute a commit that already landed. The run's own
+            // the loader drive. The discipline (non-retryable, frozen
+            // prefix) lives in `load::session_exit`. The run's own
             // session opens next, under the SAME `destination` reference
             // (one connector instance for this whole attempt) — its
             // `Lease::acquire` hits the same-owner reacquire branch
             // regardless of whether this close ran, so this is prompt
             // cleanup, not a correctness requirement for what follows.
-            session.close().await.map_err(|e| {
-                Error::destination(format!(
-                    "session close failed AFTER all commits were durable (the data is \
-                     committed): {e}"
-                ))
-            })?;
+            crate::load::session_exit::strict(session.as_mut()).await?;
             Ok(Some(ResumedFrom::Wal { replayed_batches }))
         }
         None => {
@@ -272,7 +264,7 @@ async fn replay_span(
             // exactly like the two error arms above — this is still an
             // abandonment, not a success; only
             // its own log line is `warn` rather than an error return.
-            session.close().await.ok();
+            crate::load::session_exit::best_effort(session.as_mut()).await;
             tracing::warn!("WAL segments unreadable; falling back to cursor re-extraction");
             Ok(None)
         }

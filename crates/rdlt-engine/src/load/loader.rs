@@ -387,7 +387,7 @@ impl Loader {
                 // `run::validate` warns at plan time when the stream set mixes
                 // snapshot and cursored streams.
                 if self.policy_triggers() {
-                    if self.uncovered_roots.is_empty() {
+                    if self.covered_boundary() {
                         self.commit().await?;
                     } else if !self.warned_deferred_commit {
                         self.warned_deferred_commit = true;
@@ -540,41 +540,42 @@ impl Loader {
 
     /// The session's orderly end on the SUCCESS path — called by
     /// the run's loader drive exactly once, after [`Loader::finish`]'s last
-    /// commit has already succeeded. Every commit is ALREADY durable by
-    /// the time this runs, so a close failure here can never mean lost
-    /// data — it means some OTHER resource (a lock, a lease document,
-    /// ...) failed to release, and the prefixed message says so
-    /// explicitly rather than leaving the operator to wonder if the
-    /// run's data survived. Classified NON-RETRYABLE unconditionally
-    /// (`Error::destination`, never `classify_dest_error`, which
-    /// would trust the destination's OWN transient/fatal classification
-    /// — a destination has no way to know this specific failure can
-    /// never be helped by re-running the WHOLE load from committed
-    /// state, since retrying would re-execute a commit that already
-    /// landed). The error still propagates, never swallowed: an
-    /// operator should know close failed even though the run itself
-    /// did not. The ABANDONMENT path (a failed or cancelled run) never
-    /// calls this — see [`Loader::close_best_effort`].
+    /// commit has already succeeded. The discipline itself — what a
+    /// strict close means, why its failure is non-retryable, and the
+    /// frozen prefix — lives in [`session_exit`]; this wrapper only
+    /// names the moment for the drive's readers. The ABANDONMENT path
+    /// (a failed or cancelled run) never calls this — see
+    /// [`Loader::close_best_effort`].
     pub(crate) async fn close(&mut self) -> Result<(), Error> {
-        self.sink.session.close().await.map_err(|e| {
-            Error::destination(format!(
-                "session close failed AFTER all commits were durable (the data is committed): {e}"
-            ))
-        })
+        crate::load::session_exit::strict(self.sink.session.as_mut()).await
     }
 
     /// Best-effort close on an ABANDONMENT path — a failed or cancelled
-    /// run whose session would otherwise
-    /// simply be dropped. The lease (or whatever a destination's close
-    /// releases) protects CONCURRENT sessions, not dead ones: once this
-    /// run will write no more, holding it protects nothing, and the
-    /// next session's own reclaim runs under ITS OWN lease regardless.
-    /// The close error is deliberately swallowed and never returned —
-    /// the run's REAL error must not be masked by a cleanup failure on
-    /// the way out; a caller calls this and then still returns the
-    /// error that made it abandon the session in the first place.
+    /// run whose session would otherwise simply be dropped; the
+    /// discipline (and why the error is swallowed) lives in
+    /// [`session_exit`].
     pub(crate) async fn close_best_effort(&mut self) {
-        let _ = self.sink.session.close().await;
+        crate::load::session_exit::best_effort(self.sink.session.as_mut()).await;
+    }
+
+    /// Is this checkpoint boundary COMMIT-LEGAL — has every stream with
+    /// staged rows checkpointed since?
+    ///
+    /// A commit publishes the whole staged unit atomically (the
+    /// session's `commit` takes no table subset), so with uncovered
+    /// co-stream rows in the unit it would publish rows no committed
+    /// cursor covers, and a crash after it re-extracts them as
+    /// permanent duplicates (the multi-table crash sweep shows it
+    /// live). The trigger therefore waits for coverage — a snapshot
+    /// co-stream suspends the mid-run cadence for the whole run, only
+    /// `finish`'s trailing commit breaks the cycle — and never
+    /// SILENTLY: the first deferred trigger warns once, naming the
+    /// blocking roots (`uncovered_roots`), and `run::validate` warns at
+    /// plan time when the stream set mixes snapshot and cursored
+    /// streams. This predicate is THE rule; the advisory above renders
+    /// from this doc, not from its own re-derivation.
+    fn covered_boundary(&self) -> bool {
+        self.uncovered_roots.is_empty()
     }
 
     async fn commit(&mut self) -> Result<(), Error> {
