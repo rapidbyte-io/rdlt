@@ -1,0 +1,58 @@
+//! The two destination-facing apply primitives, shared by the live loader and
+//! WAL replay so both drive the session through the SAME lowering seam.
+//!
+//! A schema delta and a batch each lower for the destination's capabilities
+//! exactly once, in one place: the live `Loader::process` and both legs of
+//! `wal::replay` (the pre-loop table ensure and the per-record delta arm)
+//! route through here, so recovery reproduces the live path byte-for-byte.
+
+use rdlt_connector::arrow::RecordBatch;
+
+use rdlt_connector::destination::{Capabilities, LoadSession};
+use rdlt_core::commit::WriteMode;
+use rdlt_core::error::Error;
+use rdlt_core::id::TableName;
+use rdlt_core::schema::TableSchema;
+use rdlt_core::state::StateDoc;
+
+use super::lower;
+
+/// Apply one schema delta to the session: lower the rich engine schema for the
+/// destination, ensure the (lowered) table exists, and record the ORIGINAL
+/// schema's content hash in the pipeline state. Re-ensuring a table a
+/// destination already holds is tolerated — callers deduplicate the code, not
+/// the ensure calls.
+pub(crate) async fn apply_delta(
+    session: &mut dyn LoadSession,
+    state: &mut StateDoc,
+    capabilities: &Capabilities,
+    schema: &TableSchema,
+    mode: &WriteMode,
+) -> Result<(), Error> {
+    let lowered = lower::lower_schema(schema, capabilities)?;
+    session
+        .ensure_table(&lowered, mode)
+        .await
+        .map_err(|e| crate::classify::classify_dest_error(&e))?;
+    state
+        .schema_hashes
+        .insert(schema.table.clone(), schema.content_hash());
+    Ok(())
+}
+
+/// Apply one batch to the session: lower it for the destination's capabilities,
+/// then write it under `table`. Row/byte accounting stays with the caller — it
+/// is measured from the un-lowered batch and differs between the live loader and
+/// replay.
+pub(crate) async fn apply_batch(
+    session: &mut dyn LoadSession,
+    capabilities: &Capabilities,
+    table: &TableName,
+    batch: &RecordBatch,
+) -> Result<(), Error> {
+    let lowered = lower::lower_batch(batch, capabilities)?;
+    session
+        .write(table, lowered)
+        .await
+        .map_err(|e| crate::classify::classify_dest_error(&e))
+}

@@ -708,22 +708,12 @@ fn read_frame_of(payload: PushPayload) -> Result<proto::ReadFrame, String> {
     Ok(proto::ReadFrame { frame: Some(frame) })
 }
 
-/// One Arrow batch as an IPC *stream* (not the `File` container — no
-/// footer, a schema message followed by one record-batch message,
-/// exactly what a single-batch push needs). Writing into an in-memory
-/// `Vec` fails only on a schema/batch mismatch the connector itself
-/// produced — an `expect()` would turn that into a panicked task
-/// indistinguishable, from the client's side, from a clean end of
-/// stream.
+/// One Arrow batch as an IPC *stream* — the shared encoder seat (the
+/// SPI owns the one implementation; this side's pushes and the client's
+/// `Write` frames encode through the same function, so their stream
+/// shape and cause treatment cannot drift).
 fn encode_arrow_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
-    let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
-        .map_err(|error| format!("opening an arrow ipc stream writer: {error}"))?;
-    writer
-        .write(batch)
-        .map_err(|error| format!("writing an arrow ipc record batch: {error}"))?;
-    writer
-        .into_inner()
-        .map_err(|error| format!("closing an arrow ipc stream writer: {error}"))
+    gate::encode_batch_ipc(batch)
 }
 
 /// Bind at an explicit path and return the [`Line`] a spawning host

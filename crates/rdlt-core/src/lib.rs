@@ -33,6 +33,7 @@ pub mod error;
 pub mod event;
 pub mod failpoint;
 pub mod id;
+pub mod inventory;
 pub mod metrics;
 pub mod report;
 pub mod schema;

@@ -23,10 +23,10 @@
 //!
 //! Two halves: [`handshake`] is the plaintext stdout line a spawned
 //! connector prints before it starts serving; [`proto`] is the
-//! generated gRPC/protobuf types and services. Beside them,
-//! [`inventory`] carries the wire's shared control-and-invisible
-//! codepoint table — the one table the handshake's socket-path gate and
-//! the client's identifier and display seats all refuse and escape by.
+//! generated gRPC/protobuf types and services. (The shared
+//! control-and-invisible codepoint table the handshake's socket-path
+//! gate refuses by lives in `rdlt_core::inventory` — it is vocabulary
+//! several crates agree on, not wire envelope.)
 //!
 //! Trust model: config documents — which may carry credentials — cross
 //! the Unix domain socket in the clear; the wire's boundary is the owner-only
@@ -48,7 +48,6 @@
 //! and the operational gotchas.
 
 pub mod handshake;
-pub mod inventory;
 
 /// Generated protobuf/gRPC types for `rdlt.connector.v1`, compiled at
 /// build time from `proto/rdlt_connector_v1.proto` (build.rs vendors its

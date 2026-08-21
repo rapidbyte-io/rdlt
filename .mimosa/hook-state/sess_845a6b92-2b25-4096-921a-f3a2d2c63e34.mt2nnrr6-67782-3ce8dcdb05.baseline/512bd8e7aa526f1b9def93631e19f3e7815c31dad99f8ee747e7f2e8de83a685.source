@@ -1,0 +1,211 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rdlt-core",
+    "crates/rdlt-connector",
+    "crates/rdlt-connector-sdk",
+    "crates/rdlt-engine",
+    "crates/rdlt",
+    "crates/rdlt-testkit",
+    "crates/rdlt-connector-reference",
+    "crates/rdlt-cli",
+    "crates/rdlt-bench",
+    "crates/rdlt-connector-protocol",
+    "crates/rdlt-connector-client",
+    "crates/rdlt-runtime",
+    "crates/rdlt-certify",
+]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+# MSRV floor. rust-toolchain.toml pins the exact build toolchain (1.96.0); this
+# is the minimum the workspace commits to supporting, inherited by every crate.
+rust-version = "1.96"
+license = "Apache-2.0"
+repository = "https://github.com/rapidbyte-io/rdlt"
+
+[workspace.dependencies]
+fail = "0.5"
+# Internal crates (path deps; version for future publishing). The seven
+# first-party connectors (and the sqlcore merge substrate) live in the
+# sibling rdlt-connectors repository since 044; they consume these crates
+# as git dependencies on this repository's main branch.
+rdlt-core = { path = "crates/rdlt-core", version = "0.3.0" }
+rdlt-connector = { path = "crates/rdlt-connector", version = "0.3.0" }
+rdlt-connector-sdk = { path = "crates/rdlt-connector-sdk", version = "0.3.0" }
+rdlt-engine = { path = "crates/rdlt-engine", version = "0.3.0" }
+rdlt = { path = "crates/rdlt", version = "0.3.0" }
+rdlt-testkit = { path = "crates/rdlt-testkit", version = "0.3.0" }
+rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.3.0" }
+rdlt-connector-protocol = { path = "crates/rdlt-connector-protocol", version = "0.3.0" }
+rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.0" }
+# PATH-ONLY, deliberately no `version` key — the rule for a `publish =
+# false` crate that a PUBLISHABLE crate consumes. Both of these are
+# unpublished for the same recorded reason (their own manifests say it:
+# the wire is frozen, the publish wave is separate owner-scheduled work),
+# and a version key on such an entry is a trap with two faces, both of
+# them measured on a scratch workspace rather than argued:
+#
+#   * on a NORMAL dep, `cargo package` resolves the version against
+#     crates.io and dies "no matching package named ... found" — a
+#     refusal, but one that reads like a registry outage rather than
+#     "this crate is not published yet";
+#   * on a DEV dep it is worse. Cargo STRIPS a version-less dev-dep from
+#     the packaged manifest entirely (proven: the `[dev-dependencies]`
+#     table comes out empty) but KEEPS a versioned one — so a versioned
+#     entry pointing at an unpublishable crate blocks packaging every
+#     consumer that merely TESTS against it, which is exactly what the
+#     reference connector's certification suite does (rdlt-certify in
+#     its dev-dependencies).
+#
+# Path-only gets both right: the dev-dep vanishes from the published
+# manifest (the suite is not a consumer's problem), and a normal dep
+# fails at manifest VERIFICATION — "all dependencies must have a version
+# requirement specified when packaging" — before any network round trip,
+# naming the offending dependency. `rdlt` holds exactly such a normal dep
+# on rdlt-runtime and cannot publish until the wave runs; this is the
+# loud way to say so.
+rdlt-runtime = { path = "crates/rdlt-runtime" }
+rdlt-certify = { path = "crates/rdlt-certify" }
+
+# arrow-rs: single workspace-wide major (research.md R10). Connectors receive
+# `RecordBatch` through the rdlt-connector re-export, so version identity is a
+# correctness requirement, not a preference — the rdlt-connectors repository
+# carries the same pin for the same reason, and the two move together.
+arrow = "58.3"
+arrow-schema = "58.3"
+arrow-array = "58.3"
+arrow-buffer = "58.3"
+arrow-data = "58.3"
+
+# `process` (039): rdlt-runtime spawns connector binaries and supervises
+# them through its lifecycle guard.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "fs", "macros", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+bytes = "1"
+blake3 = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+tokio-util = "0.7"
+fs4 = "0.13"
+# Unix open flags (engine) and the CLI's mallopt FFI.
+libc = "0.2"
+rustix = { version = "1.1", features = ["process"] }
+
+# Out-of-process connector protocol (038): rdlt-connector-protocol is a LEAF
+# crate. rdlt-connector-sdk also reaches tonic, but ONLY behind its `serve`
+# feature (OFF by default) — tonic must never enter a CONNECTOR's dependency
+# tree at its default features (`cargo tree -i tonic` against a connector
+# crate with no extra features proves it; connectors depend on the sdk
+# alone). tonic-prost is a RUNTIME dependency, not just a build-dep alongside
+# tonic-prost-build: the code tonic-prost-build generates calls
+# `tonic_prost::ProstCodec` directly, so the companion has to be linked into
+# the crate that includes that generated code.
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tonic-prost-build = "0.14"
+protoc-bin-vendored = "3"
+# The server-side counterpart to tokio's own stream/channel primitives:
+# wraps a `UnixListener` (accept loop) and a `mpsc::Receiver` (one `Read`
+# call's response frames) as `Stream`s for tonic's server builder.
+tokio-stream = "0.1"
+
+# The SPI's opt-in object-store seam (rdlt-connector's `object-store`
+# feature); the connector crates that consume it live in rdlt-connectors.
+object_store = { version = "0.12", features = ["aws"] }
+serde_yaml_ng = "0.10"
+schemars = "1"
+
+# Dev / test
+proptest = "1"
+criterion = "0.5"
+# iai-callgrind: the instruction-count bench library. Pinned EXACTLY to the
+# iai-callgrind-runner version installed by CI (.github/workflows/ci.yml,
+# perf-gate job) — lib and runner must agree or counts skew; the perf-gate job
+# has a step that fails loudly if these drift.
+iai-callgrind = "=0.16.1"
+tempfile = "3"
+toml = "0.8"
+# The tonic-client-over-UDS idiom: `tower::service_fn` supplies
+# `connect_with_connector`'s connector, `hyper_util::rt::TokioIo` adapts
+# `tokio::net::UnixStream` to hyper's IO traits. Born as the sdk serve()
+# tests' dev-dependency idiom (038); promoted to proper runtime
+# dependencies when rdlt-connector-client made that exact dial shape its
+# production `dial()` (039).
+tower = "0.5"
+hyper-util = { version = "0.1", features = ["tokio"] }
+# The CLI's argument surface (and rdlt-bench's).
+clap = { version = "4", features = ["derive"] }
+console = "0.16"
+indicatif = "0.18"
+
+# Adopted 2026-07-25 from a recorded four-arm sweep (stock / cgu1 / thin / fat+cgu1,
+# 9 interleaved runs each on the 1M-row relational cell): fat+cgu1 is the only arm
+# that clears a 10% processor-time reduction, at -13.2% CPU, -1.7% wall and a 16%
+# smaller binary (93.9 -> 79.0 MB). It costs 119 s on a clean release build (112 ->
+# 231 s); thin LTO was measured at -6.1% CPU for no build cost but no size benefit,
+# and codegen-units=1 alone carries 11 of the 16 size points for ~free.
+#
+# NOTE: `[profile.bench]` deliberately does NOT pin the old codegen settings. It
+# inherits this profile, so instruction-count baselines shift once and are
+# re-recorded deliberately (benches/harness/compare-iai.sh --record) rather than being
+# insulated — a divergent bench profile would stop the perf-gate job sharing build
+# artifacts with `make release`.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+# The distribution profile for the shipped CLI. `panic` is deliberately NOT set
+# anywhere: an abort strategy would be inherited by every application embedding
+# the library, and cargo silently forces unwind for test/bench units regardless,
+# so setting it buys a smaller binary at the cost of changing semantics for
+# embedders who never asked. Symbol stripping gets most of the size anyway.
+[profile.dist]
+inherits = "release"
+strip = "symbols"
+
+# The mutation-testing profile. Mutation runs rebuild the workspace ONCE PER
+# MUTANT — hundreds of times — so build time is the run's dominant cost, and
+# nothing about a mutation run needs a debuggable binary: the only question
+# asked of it is whether the test suite passes.
+#
+# `debug = 0` is the large lever. Full debug info dominated both codegen and
+# link time AND disk: scratch build directories measured 50-60 GiB EACH under
+# the dev profile.
+#
+# `incremental = false` because each mutant patches a DIFFERENT crate, so
+# incremental state rarely hits while always costing disk and bookkeeping.
+#
+# `codegen-units = 16` is rustc's own non-incremental default, and it is a
+# MEASURED choice, not a guess. Setting it to 256 (the incremental default) made
+# builds 3x faster and the TEST phase 2.6x slower — 16s build / 66s test against
+# the dev profile's 48s / 25s — for a net throughput HALVING, because every
+# mutant runs the whole suite and the test phase dominates. Runtime speed is not
+# irrelevant here: it is the larger half of the cost.
+#
+# Deliberately KEPT: `debug-assertions` and `overflow-checks` stay on, because
+# they are part of how mutants get CAUGHT — an arithmetic mutant that trips an
+# overflow check is a kill, and disabling them would quietly weaken the gate to
+# buy speed. `panic` stays `unwind`: the test harness requires it.
+[profile.mutants]
+inherits = "dev"
+debug = 0
+strip = "debuginfo"
+incremental = false
+codegen-units = 16
+debug-assertions = true
+overflow-checks = true
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"

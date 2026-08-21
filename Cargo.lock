@@ -1816,6 +1816,7 @@ dependencies = [
  "rdlt",
  "rdlt-connector-client",
  "rdlt-connector-protocol",
+ "rdlt-core",
  "rdlt-testkit",
  "serde_json",
  "tempfile",
@@ -1853,6 +1854,7 @@ dependencies = [
  "rdlt-connector",
  "rdlt-connector-protocol",
  "rdlt-connector-sdk",
+ "rdlt-core",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1870,6 +1872,7 @@ version = "0.3.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
+ "rdlt-core",
  "thiserror",
  "tonic",
  "tonic-prost",

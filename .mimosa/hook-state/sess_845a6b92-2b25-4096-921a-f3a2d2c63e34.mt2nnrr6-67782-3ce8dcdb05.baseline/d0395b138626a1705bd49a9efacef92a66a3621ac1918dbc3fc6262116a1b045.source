@@ -1,0 +1,65 @@
+[package]
+name = "rdlt-connector-sdk"
+description = "rdlt connector-builder SDK: the authoring framework over the connector SPI — config documents, the source shell, the destination session choreography"
+keywords = ["elt", "connector", "sdk", "framework"]
+categories = ["database"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+schemars = { workspace = true, optional = true }
+# `serve` only, below: the out-of-process protocol server.
+rdlt-connector-protocol = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["net"] }
+tokio-stream = { workspace = true, optional = true, features = ["net"] }
+arrow = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+[dev-dependencies]
+rdlt-testkit = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+# `serve` tests only: a raw tonic client dialed over UDS the way a real
+# out-of-process host would, per the tonic-UDS idiom (research.md #3).
+tower = { workspace = true }
+hyper-util = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+# Connectors depend on the sdk ALONE (the one-dependency rule) and reach
+# the SPI through the `spi` re-export, so every SPI feature a connector
+# may need forwards through the same spelling here.
+# `config::schema_of` + the SPI's schemars impls for shared config types.
+schema = ["dep:schemars", "rdlt-connector/schema"]
+# The crash-sweep seam, forwarded to the vocabulary crate that defines
+# `crash_point!`.
+failpoints = ["rdlt-connector/failpoints"]
+# The object-store vocabulary (one shared recoverability rule).
+object-store = ["rdlt-connector/object-store"]
+# `serve()`: turns an sdk connector into an out-of-process protocol
+# server (038). OFF by default — a connector that never runs
+# out-of-process pays nothing, not even tonic in its dependency tree
+# (connectors depend on the sdk alone, so this is the one feature edge
+# that would otherwise pull tonic into every connector unconditionally).
+serve = [
+    "dep:rdlt-connector-protocol",
+    "dep:tonic",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:arrow",
+    "dep:thiserror",
+]

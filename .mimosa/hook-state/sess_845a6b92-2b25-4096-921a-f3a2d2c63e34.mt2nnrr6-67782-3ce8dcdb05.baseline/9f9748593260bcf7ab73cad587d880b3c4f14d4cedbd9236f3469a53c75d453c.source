@@ -1,0 +1,76 @@
+[package]
+name = "rdlt-connector-reference"
+description = "rdlt reference connector: the contract's own connector — one JSONL file in, JSONL parts and commit receipts out"
+keywords = ["elt", "jsonl", "reference"]
+categories = ["database", "encoding"]
+documentation = "https://docs.rs/rdlt-connector-reference"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# The out-of-process server binary (039 T6). OFF by default, with
+# `required-features` on the [[bin]], so LIBRARY consumers of this crate
+# never pull tonic or clap into their dependency tree — `cargo tree -p
+# rdlt-connector-reference -i tonic` (and `-i clap`) at default features
+# stays empty.
+bin-serve = ["rdlt-connector-sdk/serve", "dep:clap"]
+# The spawn suite: tests that spawn the REAL built binary. OFF by
+# default — a plain workspace run must not depend on a bin no workspace
+# command builds. The Makefile's own lines enable it AND set
+# RDLT_BUILD_CONNECTOR_BINS=1 so the suite's helper (re)builds the bin
+# via cargo before spawning; without the env var the helper requires the
+# bin to already exist and fails loudly, never silently. It gates the
+# `#[cfg(feature = "spawn-bins")]` test modules in `tests/cases/mod.rs`
+# — nothing else; the suite's dev-deps are NOT optional (cargo rejects
+# an optional dev-dependency), so the feature saves running the cells,
+# not building their support.
+spawn-bins = []
+
+# Behind `bin-serve` only — `cargo build` at default features never even
+# discovers this target, so no workspace command pays for tonic. The
+# gate compiles it explicitly (Makefile `test:`, the 024 never-compiled
+# class).
+[[bin]]
+name = "rdlt-connector-reference"
+path = "src/bin/rdlt-connector-reference.rs"
+required-features = ["bin-serve"]
+
+[dependencies]
+# The ONE rdlt dependency (the one-dependency rule): the SPI is reached
+# through the sdk's `spi` re-export.
+rdlt-connector-sdk = { workspace = true, features = ["schema"] }
+# The server binary's argument surface alone (`--role`, the free
+# `--version`); optional so the library surface never carries it.
+clap = { workspace = true, optional = true }
+# The jsonl part encoder: arrow's own line-delimited JSON writer renders
+# the SPI's RecordBatch — the destination writes nothing else.
+arrow = { workspace = true }
+async-trait = { workspace = true }
+# The cursor's rewrite-in-place guard (tail hash) — the same hash the
+# file connector's resume rulebook rides.
+blake3 = { workspace = true }
+# The session lease: an OS advisory lock beside the state slot, released
+# automatically on process death so a crashed run never blocks recovery.
+fs4 = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+# The certification cells: the certify library drives the built bin
+# through both role suites against hermetic tempdir fixtures.
+# PACKAGING: rdlt-certify and rdlt-testkit ride the workspace's
+# path-only spellings where required — dev-dependencies never reach a
+# consumer.
+rdlt-certify = { workspace = true }
+rdlt-testkit = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

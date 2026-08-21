@@ -1,0 +1,43 @@
+[package]
+name = "rdlt-cli"
+description = "rdlt CLI: run a YAML pipeline spec, stream events, report the outcome"
+keywords = ["elt", "etl", "pipeline", "cli", "data"]
+categories = ["command-line-utilities", "database"]
+documentation = "https://docs.rs/rdlt-cli"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rdlt"
+path = "src/main.rs"
+
+[features]
+# The live run-contract pins: cli_contract.rs tests that run REAL
+# pipelines through the binary, which — since the 043 D1 swap — spawn
+# connector binaries. OFF by default so a plain workspace run never
+# depends on bins no workspace command builds; the Makefile's
+# spawn-bins line enables it AND sets RDLT_BUILD_CONNECTOR_BINS=1,
+# the same discipline as rdlt-runtime's suite.
+spawn-bins = []
+
+[dependencies]
+clap = { workspace = true }
+console = { workspace = true }
+indicatif = { workspace = true }
+libc = { workspace = true }
+rdlt = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+serde_yaml_ng = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+rdlt-testkit = { workspace = true }
+tempfile = { workspace = true }

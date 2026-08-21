@@ -1,0 +1,22 @@
+[package]
+name = "rdlt-testkit"
+description = "rdlt test kit: memory connectors, conformance suites, crash injection, and skip-not-fail container fixtures"
+keywords = ["elt", "testing", "conformance", "connector", "mock"]
+categories = ["development-tools::testing", "database"]
+documentation = "https://docs.rs/rdlt-testkit"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true }
+arrow = { workspace = true, features = ["json"] }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

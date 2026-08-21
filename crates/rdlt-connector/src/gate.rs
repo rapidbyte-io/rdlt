@@ -7,7 +7,19 @@
 //! client's decode seats (whose adversary is a rogue connector) import
 //! the same functions, so the two sides cannot drift. The engine's
 //! in-process validation imports the same ceilings, so a declaration
-//! that would be refused on the wire is refused in-process too.
+//! that would be refused on the wire is refused in-process too. The
+//! Arrow IPC seats live here too — the one decode/encode discipline
+//! every wire frame's batch payload passes, in whichever direction it
+//! travels.
+
+use std::borrow::Cow;
+
+use arrow_array::RecordBatch;
+// ArrowError is defined in arrow-schema and re-exported at its root
+// (`pub use error::*`) — the fine-grained crates carry no other public
+// path to it.
+use arrow_schema::ArrowError;
+use rdlt_core::inventory;
 
 /// The most a JSON configuration/state DOCUMENT may weigh, in bytes.
 ///
@@ -235,6 +247,352 @@ pub fn refuse_overdeclared_framing(bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+// ---- the bounded render -----------------------------------------------------
+
+/// Render text inert for display: every control or invisible character
+/// — the full inventory, joiners included — becomes its spelled-out
+/// escape, while everything else (quotes, non-ASCII text, which are
+/// data) passes byte-identical. Borrowed unchanged when there is
+/// nothing to escape, which is every honest message.
+pub fn escape(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(inventory::is_control_or_invisible) {
+        return Cow::Borrowed(text);
+    }
+    let mut escaped = String::with_capacity(text.len() + 8);
+    for character in text.chars() {
+        push_escaped(&mut escaped, character);
+    }
+    Cow::Owned(escaped)
+}
+
+/// One character, spelled inert if the inventory names it, verbatim
+/// otherwise — the escape rule both renders share.
+fn push_escaped(out: &mut String, character: char) {
+    if inventory::is_control_or_invisible(character) {
+        // `escape_debug` passes "printable" characters through, and
+        // the inventory's two Hangul fillers are category Lo —
+        // printable to it while rendering as blank glyphs — so
+        // anything it hands back unchanged is spelled out by hand.
+        let mut debug = character.escape_debug();
+        if debug.len() == 1 && debug.next() == Some(character) {
+            use std::fmt::Write as _;
+            let _ = write!(out, "\\u{{{:x}}}", character as u32);
+        } else {
+            out.extend(character.escape_debug());
+        }
+    } else {
+        out.push(character);
+    }
+}
+
+/// The bounded render as an `fmt::Write` sink: text written to it is
+/// escaped (via the shared [`push_escaped`] rule) and KEPT only until
+/// the output reaches `cap`, with everything after counted and
+/// discarded — up to a HARD SOURCE CEILING of twice the cap. A write
+/// arriving past the ceiling is refused with `fmt::Error`, which the
+/// std formatting machinery propagates, so a hostile `Debug` that
+/// would stream tens of MB of chunks (seconds of synchronous CPU
+/// inside error construction) stops within one chunk of the ceiling
+/// instead. The one write that CROSSES the ceiling is still counted
+/// whole and accepted — so a source that arrives as a single `&str`
+/// keeps its exact count whatever its size, and only a source with
+/// more to say AFTER the ceiling is cut. [`BoundedWriter::finish`]
+/// appends the truncation marker: the exact source length when
+/// everything was counted, `≥N` when the refusal left bytes uncounted.
+#[derive(Debug)]
+pub struct BoundedWriter {
+    out: String,
+    cap: usize,
+    /// Every byte the source offered before the ceiling refusal, kept
+    /// or discarded — what the truncation marker reports.
+    source_bytes: usize,
+    /// Set the moment the output reaches the cap: later writes only
+    /// count, and `finish` appends the marker.
+    saturated: bool,
+    /// Set when the counted source crosses twice the cap: the next
+    /// write refuses and nothing more is counted.
+    refused: bool,
+    /// Set when a write WAS refused — bytes exist beyond the count, so
+    /// the marker spells `≥`.
+    undercounted: bool,
+}
+
+impl BoundedWriter {
+    /// A sink keeping at most `cap` escaped bytes.
+    pub fn new(cap: usize) -> Self {
+        BoundedWriter {
+            out: String::with_capacity(cap.min(4096) / 8),
+            cap,
+            source_bytes: 0,
+            saturated: false,
+            refused: false,
+            undercounted: false,
+        }
+    }
+
+    /// The rendered text, with the truncation marker appended when the
+    /// cap was reached.
+    pub fn finish(mut self) -> String {
+        if self.saturated {
+            use std::fmt::Write as _;
+            let floor = if self.undercounted { "≥" } else { "" };
+            let _ = write!(
+                self.out,
+                "…[truncated; {floor}{} source bytes]",
+                self.source_bytes
+            );
+        }
+        self.out
+    }
+}
+
+impl std::fmt::Write for BoundedWriter {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        if self.refused {
+            self.undercounted = true;
+            return Err(std::fmt::Error);
+        }
+        self.source_bytes += text.len();
+        if !self.saturated {
+            for character in text.chars() {
+                push_escaped(&mut self.out, character);
+                if self.out.len() >= self.cap {
+                    self.saturated = true;
+                    break;
+                }
+            }
+        }
+        if self.source_bytes > self.cap * 2 {
+            self.refused = true;
+        }
+        Ok(())
+    }
+}
+
+/// Render a value for display THROUGH the bounded sink rather than
+/// materialized first: a cause whose rendering amplifies (an arrow
+/// error carrying a whole `Field`, metadata map included) never exists
+/// as a full string — only its capped, escaped prefix does.
+pub fn render_bounded(cap: usize, value: &dyn std::fmt::Display) -> String {
+    use std::fmt::Write as _;
+    let mut sink = BoundedWriter::new(cap);
+    let _ = write!(sink, "{value}");
+    sink.finish()
+}
+
+/// The `Debug` twin of [`render_bounded`]: a wrong-variant wire reply
+/// can carry a workload-sized bytes field whose derived Debug is a
+/// per-byte decimal list ~4-5× the payload — rendered through the
+/// sink, that rendering is counted but never materialized past the cap.
+pub fn render_bounded_debug(cap: usize, value: &dyn std::fmt::Debug) -> String {
+    use std::fmt::Write as _;
+    let mut sink = BoundedWriter::new(cap);
+    let _ = write!(sink, "{value:?}");
+    sink.finish()
+}
+
+// ---- the Arrow IPC seats ----------------------------------------------------
+
+/// One Arrow batch as an IPC *stream* (not the `File` container — no
+/// footer, a schema message followed by one record-batch message,
+/// exactly what a single-batch frame needs). THE encoder seat for both
+/// directions of the wire: the serve side encoding a source's push,
+/// the client encoding a `Write` frame's batch. Writing into an
+/// in-memory `Vec` fails only on a schema/batch mismatch the caller
+/// itself produced; even that cause is rendered through the bounded
+/// sink, because a batch forwarded from a connector carries that
+/// connector's schema metadata and arrow's error text can render a
+/// whole `Field`.
+pub fn encode_batch_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
+    let render = |error: ArrowError| render_bounded(PANIC_TEXT_CAP, &error);
+    let mut writer =
+        arrow_ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
+            .map_err(|error| format!("opening an arrow ipc stream writer: {}", render(error)))?;
+    writer
+        .write(batch)
+        .map_err(|error| format!("writing an arrow ipc record batch: {}", render(error)))?;
+    writer
+        .into_inner()
+        .map_err(|error| format!("closing an arrow ipc stream writer: {}", render(error)))
+}
+
+/// One `arrow_ipc` stream's exactly-one record batch — THE decode seat
+/// for both directions of the wire: the client decoding a read frame's
+/// payload (adversary: the connector), the serve side decoding a
+/// `Write` frame's (adversary: the client). Every defense runs in one
+/// fixed order, whichever direction the bytes travel:
+///
+/// 1. the panic belt — arrow's IPC reader PANICS on some crafted
+///    frames instead of returning `Err` (the schema converter aborts
+///    on e.g. an Int field declaring a negative bit width; found by
+///    the `arrow_ipc_decode` fuzz target), so the whole decode runs
+///    under `catch_unwind` and this seat owns its failure as the typed
+///    refusal. What the belt cannot suppress: the process panic HOOK
+///    still writes its line to stderr before the unwind is caught — a
+///    library must not replace the global hook;
+/// 2. the framing pre-pass — declared metadata/body lengths are held
+///    against the frame's real bytes ([`refuse_overdeclared_framing`])
+///    BEFORE arrow's reader sees a byte, closing the commit-and-memset
+///    and aborting-allocation arms no belt contains;
+/// 3. the schema WIDTH cap, judged on the schema message before any
+///    batch is pulled — by the time a `RecordBatch` exists arrow has
+///    built every `Field` AND every array, which is the allocation the
+///    cap exists to prevent;
+/// 4. the ROW cap on the first batch — the memory dimension the
+///    framing pre-pass cannot see, since Null and run-end-encoded
+///    columns carry millions of rows in almost no body bytes;
+/// 5. the ONE-BATCH rule — a second decodable batch refuses with
+///    `multi_batch_refusal` rather than silently taking the first,
+///    because on the write direction of this wire that same silence
+///    was measured as row loss;
+/// 6. every field name the decoded batch carries — nested containers
+///    and dictionary value types included ([`refuse_record_batch_field_names`])
+///    — through `refuse_field_name`, each side's own identifier
+///    discipline (the client's content gate; the serve side's
+///    length-only rule).
+///
+/// `refusal` is the seat's frozen prefix, prepended to every
+/// Err-shaped arm's cause; `multi_batch_refusal` is the frozen
+/// second-batch spelling, rendered bare (no cause exists for it).
+/// Causes render through the bounded sink — never raw, never
+/// materialized whole. `fatal` lifts the rendered refusal into the
+/// caller's error type.
+pub fn decode_one_batch_ipc<E>(
+    bytes: &[u8],
+    refusal: &str,
+    multi_batch_refusal: &str,
+    fatal: impl Fn(String) -> E,
+    refuse_field_name: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<RecordBatch, E> {
+    // The belt wraps the whole erring half in `AssertUnwindSafe`: the
+    // closure captures only `bytes` (a shared slice) and the shared
+    // refusal strings by reference, plus the field-name predicate —
+    // none of which a mid-decode unwind can leave broken behind, and
+    // no mutable state escapes the closure.
+    match contain_panics(
+        || decode_one_batch_ipc_erring(bytes, refusal, multi_batch_refusal, refuse_field_name),
+        refusal,
+    ) {
+        Ok(decoded) => Ok(decoded),
+        Err(refusal_message) => Err(fatal(refusal_message)),
+    }
+}
+
+/// The seat's panic belt: `catch_unwind` contains PANICS only — the
+/// declared-length ABORT class is closed by the framing pre-pass, the
+/// two defenses are disjoint. A payload is attacker-adjacent text; the
+/// shared rendering bounds it. What the belt cannot suppress: the
+/// process panic HOOK still writes its line to stderr before the
+/// unwind is caught — a library must not replace the global hook.
+fn contain_panics<T>(
+    work: impl FnOnce() -> Result<T, String>,
+    refusal: &str,
+) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+        Ok(decoded) => decoded,
+        Err(payload) => Err(format!(
+            "{refusal}: the Arrow decoder panicked: {}",
+            panic_text(payload.as_ref())
+        )),
+    }
+}
+
+/// The `Err`-shaped half of the decode: every failure arrow REPORTS
+/// (as opposed to panics on) maps behind the frozen prefix here.
+fn decode_one_batch_ipc_erring(
+    bytes: &[u8],
+    refusal: &str,
+    multi_batch_refusal: &str,
+    refuse_field_name: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<RecordBatch, String> {
+    refuse_overdeclared_framing(bytes).map_err(|reason| format!("{refusal}: {reason}"))?;
+    let mut reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+        .map_err(|error| format!("{refusal}: {}", render_bounded(PANIC_TEXT_CAP, &error)))?;
+    let declared_columns = reader.schema().fields().len();
+    if declared_columns > MAX_SOURCE_COLUMNS_PER_TABLE {
+        return Err(format!(
+            "{refusal}: the batch declares {declared_columns} columns, over the \
+             {}-column wire cap — column count is bounded separately from encoded bytes",
+            MAX_SOURCE_COLUMNS_PER_TABLE
+        ));
+    }
+    let first = match reader.next() {
+        Some(Ok(batch)) => batch,
+        Some(Err(error)) => {
+            return Err(format!(
+                "{refusal}: {}",
+                render_bounded(PANIC_TEXT_CAP, &error)
+            ));
+        }
+        None => return Err(refusal.to_string()),
+    };
+    if first.num_rows() > crate::channel::MAX_RECORD_BATCH_ROWS {
+        return Err(format!(
+            "{refusal}: the batch carries {} rows, over the {}-row wire cap — \
+             row count is bounded separately from encoded bytes",
+            first.num_rows(),
+            crate::channel::MAX_RECORD_BATCH_ROWS
+        ));
+    }
+    match reader.next() {
+        None => {
+            refuse_record_batch_field_names(&first, refuse_field_name)
+                .map_err(|reason| format!("{refusal}: {reason}"))?;
+            Ok(first)
+        }
+        Some(Ok(_)) => Err(multi_batch_refusal.to_string()),
+        Some(Err(error)) => Err(format!(
+            "{refusal}: {}",
+            render_bounded(PANIC_TEXT_CAP, &error)
+        )),
+    }
+}
+
+/// Validate every field name a decoded record batch carries, nested
+/// container fields included, through `refuse_name`. The walk is
+/// iterative so an attacker-controlled schema cannot add a second
+/// recursive traversal after Arrow's own verified decoder. A dictionary
+/// encodes another type without a field of its own, but its VALUE type
+/// can carry named fields (a struct, a list, another dictionary) —
+/// unwrapped before matching, or those inner names bypass the gate.
+/// The unwrap loop is bounded by the schema's finite type depth, and a
+/// dictionary's key type is always a bare integer carrying no fields.
+pub fn refuse_record_batch_field_names(
+    batch: &RecordBatch,
+    refuse_name: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    use arrow_schema::DataType;
+
+    let schema = batch.schema();
+    let mut pending: Vec<std::sync::Arc<arrow_schema::Field>> =
+        schema.fields().iter().cloned().collect();
+    while let Some(field) = pending.pop() {
+        refuse_name(field.name())?;
+        let mut data_type = field.data_type();
+        while let DataType::Dictionary(_, value) = data_type {
+            data_type = value;
+        }
+        match data_type {
+            DataType::Struct(fields) => pending.extend(fields.iter().cloned()),
+            DataType::List(child)
+            | DataType::LargeList(child)
+            | DataType::ListView(child)
+            | DataType::LargeListView(child)
+            | DataType::FixedSizeList(child, _)
+            | DataType::Map(child, _) => pending.push(std::sync::Arc::clone(child)),
+            DataType::Union(fields, _) => {
+                pending.extend(fields.iter().map(|(_, child)| std::sync::Arc::clone(child)));
+            }
+            DataType::RunEndEncoded(run_ends, values) => {
+                pending.push(std::sync::Arc::clone(run_ends));
+                pending.push(std::sync::Arc::clone(values));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The most bytes of a panic payload any decode belt will render:
 /// arrow's own panics are static strings, but a payload is arbitrary
 /// attacker-adjacent text, and an evidence line is not a firehose —
@@ -390,5 +748,537 @@ mod tests {
         writer.write(&batch).expect("write");
         let bytes = writer.into_inner().expect("finish");
         refuse_overdeclared_framing(&bytes).expect("an honest one-batch stream walks clean");
+    }
+
+    // ---- the bounded render -------------------------------------------------
+
+    /// Escaping spells control bytes out and touches nothing else —
+    /// quotes and backslashes included, which `escape_debug` over the
+    /// WHOLE string would mangle.
+    #[test]
+    fn escaping_spells_control_bytes_and_leaves_data_alone() {
+        assert_eq!(
+            escape("\u{1b}]52;\u{7}\nx \"quoted\" \\slash é"),
+            "\\u{1b}]52;\\u{7}\\nx \"quoted\" \\slash é"
+        );
+        assert!(matches!(
+            escape("clean \"text\""),
+            Cow::Borrowed("clean \"text\"")
+        ));
+    }
+
+    /// The inventory's two Hangul fillers are category `Lo` — printable
+    /// to `escape_debug`, which hands them back unchanged while they
+    /// render as blank glyphs. The display seat's invariant is that
+    /// rendered text cannot hide an inventory character, so the
+    /// fallback spells them out.
+    #[test]
+    fn the_hangul_fillers_escaped_raw_get_spelled_out() {
+        assert_eq!(escape("a\u{3164}b"), "a\\u{3164}b");
+        assert_eq!(escape("a\u{ffa0}b"), "a\\u{ffa0}b");
+    }
+
+    /// The invariant at the refusal seats too: every inventory
+    /// character renders spelled-out through the shared escape, so a
+    /// refusal quoting a hostile value cannot carry the bytes it
+    /// refuses. (Mechanical sweep across the whole table, not a
+    /// sample.)
+    #[test]
+    fn no_inventory_character_survives_the_escape_raw() {
+        let table: Vec<char> = ('\u{0}'..='\u{10FFFF}')
+            .filter(|c| inventory::is_control_or_invisible(*c))
+            .collect();
+        assert!(table.len() > 100, "the sweep covers the inventory");
+        for character in table {
+            let input = character.to_string();
+            let escaped = escape(&input);
+            assert_ne!(
+                escaped, input,
+                "U+{:04X} must not survive the escape raw",
+                character as u32
+            );
+        }
+    }
+
+    const RENDER_CAP: usize = 4096;
+
+    /// The sink neither materializes NOR STREAMS what it discards: a
+    /// chunked `Display` source that would write ten times the source
+    /// ceiling is refused within one chunk of it — the write budget
+    /// spent is ceiling/chunk + 2 attempts, not the source's length —
+    /// and the marker spells the count as a floor (`≥`), because bytes
+    /// were left uncounted. The kept text still stops at the cap.
+    #[test]
+    fn a_64mib_display_source_never_grows_the_sink_past_the_cap() {
+        use std::cell::Cell;
+        struct Firehose {
+            attempts: Cell<usize>,
+        }
+        impl std::fmt::Display for Firehose {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let chunk = "x".repeat(1024);
+                // Ten times the source ceiling, in 1 KiB chunks; `?`
+                // is how every real Display reacts to a refused write.
+                for _ in 0..(10 * 2 * RENDER_CAP / 1024) {
+                    self.attempts.set(self.attempts.get() + 1);
+                    f.write_str(&chunk)?;
+                }
+                Ok(())
+            }
+        }
+        use std::fmt::Write as _;
+        let source = Firehose {
+            attempts: Cell::new(0),
+        };
+        let mut sink = BoundedWriter::new(RENDER_CAP);
+        write!(sink, "{source}").expect_err("the sink refuses the runaway source");
+        let ceiling = 2 * RENDER_CAP;
+        assert!(
+            source.attempts.get() <= ceiling / 1024 + 2,
+            "the source is stopped within the ceiling's write budget, \
+             not streamed to completion: {} attempts",
+            source.attempts.get()
+        );
+        assert!(
+            sink.source_bytes <= ceiling + 1024,
+            "the count stops within one chunk of the ceiling: {} bytes",
+            sink.source_bytes
+        );
+        assert!(
+            sink.out.len() <= RENDER_CAP + 4,
+            "the kept text stops at the cap: {} bytes",
+            sink.out.len()
+        );
+        let counted = sink.source_bytes;
+        let rendered = sink.finish();
+        assert!(
+            rendered.len() <= RENDER_CAP + 64,
+            "the finished render is cap plus envelope: {} bytes",
+            rendered.len()
+        );
+        assert!(
+            rendered.ends_with(&format!("…[truncated; ≥{counted} source bytes]")),
+            "the marker spells the count as a floor: …{}",
+            &rendered[rendered.len() - 60..]
+        );
+    }
+
+    /// The ceiling cuts only sources with more to say AFTER it: a
+    /// source arriving as ONE write keeps its exact count whatever its
+    /// size, so the single-write marker contract is unchanged at any
+    /// scale.
+    #[test]
+    fn a_single_write_source_keeps_its_exact_count_at_any_size() {
+        use std::fmt::Write as _;
+        let mut sink = BoundedWriter::new(RENDER_CAP);
+        sink.write_str(&"x".repeat(1 << 20))
+            .expect("the crossing write itself is accepted");
+        let rendered = sink.finish();
+        assert!(
+            rendered.ends_with(&format!("…[truncated; {} source bytes]", 1 << 20)),
+            "one write, exact count, no floor marker: …{}",
+            &rendered[rendered.len() - 60..]
+        );
+    }
+
+    /// The kept prefix is escaped AS IT ARRIVES — a control byte in the
+    /// window is spelled out, and the cap bounds the ESCAPED output, so
+    /// no post-hoc escape pass can amplify past it.
+    #[test]
+    fn the_sink_escapes_the_kept_prefix_and_caps_the_escaped_form() {
+        use std::fmt::Write as _;
+        let mut sink = BoundedWriter::new(64);
+        write!(sink, "a\u{1b}b{}", "\u{7}".repeat(1000)).expect("the sink never errors");
+        let rendered = sink.finish();
+        assert!(
+            rendered.starts_with("a\\u{1b}b"),
+            "the kept prefix is escaped: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
+            "no raw control byte survives: {rendered:?}"
+        );
+        assert!(
+            rendered.len() <= 64 + 10 + 40,
+            "the cap bounds the escaped output plus one char of overshoot \
+             and the marker: {} bytes",
+            rendered.len()
+        );
+    }
+
+    /// An honest source renders whole through both value renderers.
+    #[test]
+    fn an_honest_source_renders_whole_through_the_value_renderers() {
+        assert_eq!(render_bounded(RENDER_CAP, &"an honest cause"), "an honest cause");
+        assert_eq!(render_bounded_debug(2048, &"quoted"), "\"quoted\"");
+    }
+
+    // ---- the shared Arrow seats ---------------------------------------------
+
+    /// A batch through the encode seat decodes back through the decode
+    /// seat — the two seats agree on the stream shape they produce and
+    /// consume.
+    #[test]
+    fn the_encode_seat_feeds_the_decode_seat() {
+        use arrow_array::Int64Array;
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![1, 2, 3]))])
+            .expect("batch");
+        let bytes = encode_batch_ipc(&batch).expect("an honest batch encodes");
+        let decoded = decode_one_batch_ipc(
+            &bytes,
+            "test refusal",
+            "test multi",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect("the encoded stream decodes");
+        assert_eq!(decoded.num_rows(), 3);
+    }
+
+    /// Zero batches (a schema-only stream) refuse with the bare
+    /// refusal; a second decodable batch refuses with the bare
+    /// multi-batch spelling — no cause exists for either, and the seat
+    /// invents none.
+    #[test]
+    fn zero_and_second_batch_refuse_with_their_bare_spellings() {
+        use arrow_array::Int64Array;
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let batch = |values: Vec<i64>| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(values))],
+            )
+            .expect("batch")
+        };
+        let schema_only = {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema)
+                .expect("writer");
+            writer.finish().expect("finish");
+            writer.into_inner().expect("inner")
+        };
+        let error = decode_one_batch_ipc(
+            &schema_only,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("zero batches must refuse");
+        assert_eq!(error, "REFUSAL");
+
+        // One stream carrying TWO record-batch messages: the reader
+        // sees a second decodable batch behind the first.
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema)
+            .expect("writer");
+        writer.write(&batch(vec![1])).expect("first");
+        writer.write(&batch(vec![2])).expect("second");
+        let bytes = writer.into_inner().expect("finish");
+        let error = decode_one_batch_ipc(
+            &bytes,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("a second batch must refuse");
+        assert_eq!(error, "MULTI");
+    }
+
+    /// The row cap is the memory dimension the framing pre-pass cannot
+    /// see: one row over refuses behind the refusal prefix, a batch at
+    /// exactly the cap decodes.
+    #[test]
+    fn the_row_cap_refuses_one_row_over_and_admits_the_cap() {
+        use arrow_array::BooleanArray;
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Boolean, true)]));
+        let batch = |rows: usize| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(BooleanArray::from(vec![None::<bool>; rows]))],
+            )
+            .expect("batch")
+        };
+        let over = encode_batch_ipc(&batch(crate::channel::MAX_RECORD_BATCH_ROWS + 1))
+            .expect("an over-row batch still ENCODES");
+        let error = decode_one_batch_ipc(
+            &over,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("one row over the cap refuses");
+        assert!(
+            error.contains("row wire cap"),
+            "the refusal names the row cap: {error}"
+        );
+        let at_cap = encode_batch_ipc(&batch(crate::channel::MAX_RECORD_BATCH_ROWS))
+            .expect("a batch at the cap encodes");
+        decode_one_batch_ipc(
+            &at_cap,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect("a batch at exactly the row cap decodes");
+    }
+
+    /// The width cap is judged on the SCHEMA, before any batch is
+    /// pulled: one column over the shared per-table width refuses
+    /// behind the refusal prefix.
+    #[test]
+    fn the_width_cap_refuses_a_schema_over_the_per_table_width() {
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let fields: Vec<_> = (0..MAX_SOURCE_COLUMNS_PER_TABLE + 1)
+            .map(|i| Field::new(format!("f{i}"), DataType::Int64, true))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema)
+            .expect("a wide schema still encodes");
+        writer.finish().expect("finish");
+        let bytes = writer.into_inner().expect("inner");
+        let error = decode_one_batch_ipc(
+            &bytes,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("a schema over the width cap refuses");
+        assert!(
+            error.contains("column wire cap"),
+            "the refusal names the width cap: {error}"
+        );
+    }
+
+    /// The field-name walk reaches nested containers and dictionary
+    /// value types: `Dictionary(Int32, Struct([...]))` is encodable by
+    /// arrow's own writer, and without a Dictionary arm the walk never
+    /// reaches the inner struct's names.
+    #[test]
+    fn the_field_walk_reaches_nested_and_dictionary_names() {
+        use arrow_schema::DataType;
+        use std::sync::Arc;
+
+        let nested = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new(
+                "outer",
+                DataType::Struct(
+                    vec![arrow_schema::Field::new("inner\u{202e}", DataType::Int64, true)].into(),
+                ),
+                true,
+            ),
+        ])));
+        let refused = refuse_record_batch_field_names(&nested, &mut |name| {
+            if name.contains('\u{202e}') {
+                Err(format!("hostile: {name}"))
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("a nested hostile name is reached");
+        assert!(refused.contains("hostile"), "{refused}");
+
+        let dictionary = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new(
+                "outer",
+                DataType::Dictionary(
+                    Box::new(DataType::Int32),
+                    Box::new(DataType::Struct(
+                        vec![arrow_schema::Field::new("inner\u{202e}", DataType::Int64, true)]
+                            .into(),
+                    )),
+                ),
+                true,
+            ),
+        ])));
+        let refused = refuse_record_batch_field_names(&dictionary, &mut |name| {
+            if name.contains('\u{202e}') {
+                Err(format!("hostile: {name}"))
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("a dictionary's inner hostile name is reached");
+        assert!(refused.contains("hostile"), "{refused}");
+    }
+
+    /// The fuzzer-found frame (the arrow_ipc_decode target's first
+    /// catch): a 160-byte crafted stream declaring an Int field whose
+    /// bit width is negative — arrow-ipc's schema converter PANICS on
+    /// it inside `StreamReader::try_new` instead of returning `Err`.
+    /// Today the framing pre-pass refuses these bytes FIRST (their
+    /// double continuation marker reads as an overdeclared length),
+    /// which is the defense working as layered; the pin is the TYPED
+    /// refusal behind the frozen prefix — whichever layer answers,
+    /// never an unwind escaping to the caller. Bytes embedded verbatim
+    /// so the pin is hermetic.
+    #[test]
+    fn a_crafted_frame_that_panics_arrow_refuses_typed() {
+        const REPRO: [u8; 160] = [
+            0xff, 0xff, 0xff, 0xff, 0x78, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x0a, 0x00, 0x0c, 0x00, 0x06, 0x00, 0x05, 0x00, 0x08, 0x00, 0x0a, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x04, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x14, 0x00, 0x00, 0x00, 0x10, 0x00, 0x14, 0x00, 0x08, 0x00, 0x06, 0x00, 0x07, 0x00,
+            0x0c, 0x00, 0x00, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x10, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x69, 0x64, 0x00, 0x00, 0x08, 0x00, 0x0c, 0x00,
+            0x08, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x40, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x29, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+            0x88, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x00,
+            0x16, 0x00, 0x06, 0x00, 0x05, 0x00,
+        ];
+
+        let error = decode_one_batch_ipc(
+            &REPRO,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("crafted bytes must refuse typed");
+        assert!(
+            error.starts_with("REFUSAL: ") && error.len() > "REFUSAL: ".len() + 2,
+            "the refusal rides behind the frozen prefix with a cause: {error}"
+        );
+    }
+
+    /// The belt pinned DIRECTLY (synthetic, because every live input
+    /// that once reached it now refuses earlier at the pre-pass): an
+    /// unwind inside the decode is classified as a typed refusal, never
+    /// an escape.
+    #[test]
+    fn a_decoder_panic_is_contained_as_a_typed_refusal() {
+        let error = contain_panics::<RecordBatch>(|| panic!("crafted metadata"), "REFUSAL")
+            .expect_err("the unwind is contained");
+        assert!(error.contains("Arrow decoder panicked"), "{error}");
+        assert!(error.contains("crafted metadata"), "{error}");
+    }
+
+    /// A ~24-byte frame whose 4-byte length field declares ~2 GiB of
+    /// metadata. arrow-ipc's stream reader `resize`s its metadata
+    /// buffer to the DECLARED size — committing and zero-filling the
+    /// full 2 GiB — before `read_exact` discovers the frame holds no
+    /// such bytes. The framing pre-pass must refuse first: the refusal
+    /// spelling is the pre-pass's own, which is the structural proof
+    /// arrow's reader (and its allocation) was never entered.
+    #[test]
+    fn a_frame_declaring_a_huge_metadata_length_refuses_before_arrow_allocates() {
+        let mut frame = vec![0xff, 0xff, 0xff, 0xff];
+        frame.extend_from_slice(&0x7fff_fff0_i32.to_le_bytes());
+        frame.extend_from_slice(&[0u8; 16]);
+
+        let error = decode_one_batch_ipc(
+            &frame,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("a declared length past the frame's end must refuse");
+        assert_eq!(
+            error,
+            "REFUSAL: a declared metadata length of 2147483632 bytes exceeds \
+             the 24-byte frame"
+        );
+    }
+
+    /// The body-length sibling: a real one-batch stream whose
+    /// record-batch message is patched to declare a ~2 GiB body — the
+    /// allocation whose failure ABORTS, which no belt contains. The
+    /// patch locates `bodyLength` structurally (root table offset →
+    /// vtable → the field's slot), self-verified against the decoded
+    /// value before patching.
+    #[test]
+    fn a_frame_declaring_a_huge_body_length_refuses_before_arrow_allocates() {
+        use arrow_array::Int64Array;
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+        )
+        .expect("batch");
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema)
+            .expect("writer");
+        writer.write(&batch).expect("write");
+        let mut bytes = writer.into_inner().expect("finish");
+        decode_one_batch_ipc(
+            &bytes,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect("the unpatched stream decodes");
+
+        // Walk to the second message (the record batch); patch its
+        // declared bodyLength.
+        let (meta_start, meta_end) = {
+            let mut pos = 0usize;
+            let mut spans = Vec::new();
+            while spans.len() < 2 {
+                assert_eq!(&bytes[pos..pos + 4], [0xff; 4], "continuation marker");
+                let meta_len =
+                    i32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().expect("4 bytes"))
+                        as usize;
+                let start = pos + 8;
+                spans.push((start, start + meta_len));
+                let body = usize::try_from(
+                    arrow_ipc::root_as_message(&bytes[start..start + meta_len])
+                        .expect("valid metadata")
+                        .bodyLength(),
+                )
+                .expect("non-negative body");
+                pos = start + meta_len + body;
+            }
+            spans[1]
+        };
+        let meta = &bytes[meta_start..meta_end];
+        let root = u32::from_le_bytes(meta[0..4].try_into().expect("4 bytes")) as i64;
+        let soffset = i32::from_le_bytes(
+            meta[root as usize..root as usize + 4]
+                .try_into()
+                .expect("4 bytes"),
+        ) as i64;
+        let vtable = usize::try_from(root - soffset).expect("in-bounds vtable");
+        let slot =
+            u16::from_le_bytes(meta[vtable + 10..vtable + 12].try_into().expect("2 bytes")) as i64;
+        assert_ne!(slot, 0, "bodyLength is present in the message");
+        let field_pos = meta_start + usize::try_from(root + slot).expect("in-bounds field");
+        bytes[field_pos..field_pos + 8].copy_from_slice(&0x7fff_fff0_i64.to_le_bytes());
+
+        let frame_len = bytes.len();
+        let error = decode_one_batch_ipc(
+            &bytes,
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("an overdeclared body refuses typed");
+        assert_eq!(
+            error,
+            format!(
+                "REFUSAL: a declared body length of 2147483632 bytes exceeds \
+                 the {frame_len}-byte frame"
+            )
+        );
     }
 }

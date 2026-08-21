@@ -12,7 +12,6 @@
 //! wire adds transport, never semantics.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -203,55 +202,16 @@ fn decode_stream_specs(stream_specs_jsonl: &[u8]) -> Result<Vec<StreamSpec>, Sou
         .collect()
 }
 
-/// Validate every field name a decoded record batch carries, nested
-/// container fields included. The walk is iterative so an
-/// attacker-controlled schema cannot add a second recursive traversal
-/// after Arrow's own verified decoder.
-fn refuse_untrusted_record_batch_fields(batch: &RecordBatch) -> Result<(), SourceError> {
-    use arrow::datatypes::DataType;
-
-    let schema = batch.schema();
-    let mut pending: Vec<Arc<arrow::datatypes::Field>> = schema.fields().iter().cloned().collect();
-    while let Some(field) = pending.pop() {
-        gate::identifier("record-batch field name", field.name()).map_err(SourceError::fatal)?;
-        // A dictionary encodes another type without a field of its own,
-        // but its VALUE type can carry named fields (a struct, a list,
-        // another dictionary) — unwrap before matching, or those inner
-        // names bypass the gate. The unwrap loop is bounded by the
-        // schema's finite type depth, and a dictionary's key type is
-        // always a bare integer carrying no fields.
-        let mut data_type = field.data_type();
-        while let DataType::Dictionary(_, value) = data_type {
-            data_type = value;
-        }
-        match data_type {
-            DataType::Struct(fields) => pending.extend(fields.iter().cloned()),
-            DataType::List(child)
-            | DataType::LargeList(child)
-            | DataType::ListView(child)
-            | DataType::LargeListView(child)
-            | DataType::FixedSizeList(child, _)
-            | DataType::Map(child, _) => pending.push(Arc::clone(child)),
-            DataType::Union(fields, _) => {
-                pending.extend(fields.iter().map(|(_, child)| Arc::clone(child)));
-            }
-            DataType::RunEndEncoded(run_ends, values) => {
-                pending.push(Arc::clone(run_ends));
-                pending.push(Arc::clone(values));
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
 /// One `arrow_ipc` read frame's exactly-one record batch — the CLIENT
 /// seat of the proto's one-batch rule (the field's own doc): `Read` is
 /// server-streamed, so the refusal seat sits here — a conforming client
 /// refuses a frame carrying a second batch rather than silently taking
 /// the first, because on the write direction of this wire that same
-/// silence was measured as row loss, and this is its read-direction
-/// mirror.
+/// silence was measured as row loss. The decode discipline itself —
+/// belt, framing pre-pass, width and row caps, one-batch rule, field
+/// walk — is the SPI's one shared seat; what lives here is the seat's
+/// vocabulary: the frozen refusal spellings and this side's identifier
+/// content gate for field names.
 ///
 /// The spelling `read frame violated the one-batch rule` is frozen;
 /// the underlying arrow cause is appended where one exists (unreadable
@@ -260,89 +220,19 @@ fn refuse_untrusted_record_batch_fields(batch: &RecordBatch) -> Result<(), Sourc
 /// inventing sub-spellings would put unfrozen text in a pinned surface;
 /// the serving side's own encoder is where the two are told apart.
 pub(crate) fn decode_one_batch(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
-    // arrow's IPC reader PANICS on some crafted frames instead of
-    // returning Err — the schema converter aborts on e.g. an Int field
-    // declaring a negative bit width (found by the arrow_ipc_decode
-    // fuzz target; pinned below with the 160-byte reproducer). The
-    // whole decode runs under catch_unwind so this seat owns its own
-    // failure as the typed refusal, rather than leaning on the
-    // engine's task boundary to contain an unwind. The closure
-    // captures only `bytes` (a shared slice — UnwindSafe) and no
-    // mutable state escapes it, so a mid-decode unwind can leave
-    // nothing broken behind. What this cannot suppress: the process
-    // panic HOOK still writes its line to stderr before the unwind is
-    // caught — a library must not replace the global hook.
-    match std::panic::catch_unwind(|| decode_one_batch_erring(bytes)) {
-        Ok(decoded) => decoded,
-        Err(payload) => Err(SourceError::fatal(format!(
-            "{ONE_BATCH_REFUSAL}: the arrow decoder panicked: {}",
-            rdlt_connector::gate::panic_text(payload.as_ref())
-        ))),
-    }
+    rdlt_connector::gate::decode_one_batch_ipc(
+        bytes,
+        ONE_BATCH_REFUSAL,
+        ONE_BATCH_REFUSAL,
+        SourceError::fatal,
+        &mut |name| gate::identifier("record-batch field name", name),
+    )
 }
 
-/// The frozen refusal prefix of the one-batch seat — shared by the
-/// `Err`-shaped arms in [`decode_one_batch_erring`] and the
-/// caught-panic arm in [`decode_one_batch`].
+/// The frozen refusal prefix of the one-batch seat — shared by every
+/// Err-shaped arm of the shared decode seat behind this side's
+/// delegation.
 const ONE_BATCH_REFUSAL: &str = "read frame violated the one-batch rule";
-
-/// The `Err`-shaped half of the decode: every failure arrow REPORTS
-/// (as opposed to panics on) maps behind the frozen prefix here.
-fn decode_one_batch_erring(bytes: &[u8]) -> Result<RecordBatch, SourceError> {
-    // The framing pre-pass runs FIRST, before arrow's reader sees a
-    // byte: it refuses declared metadata/body lengths that exceed the
-    // frame, which the reader would otherwise allocate on trust. The
-    // SPI owns the one implementation for every wire decode seat; this
-    // seat wraps its reasons in the frozen one-batch prefix.
-    rdlt_connector::gate::refuse_overdeclared_framing(bytes)
-        .map_err(|reason| SourceError::fatal(format!("{ONE_BATCH_REFUSAL}: {reason}")))?;
-    // Arrow's error text is connector-authored at frame scale — a
-    // `Field` render carries the field's whole metadata map — so every
-    // appended cause goes through the bounded render, never raw, and
-    // THROUGH the sink: the amplified text streams into its capped
-    // prefix without ever materializing whole.
-    let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-        .map_err(|error| {
-        SourceError::fatal(format!(
-            "{ONE_BATCH_REFUSAL}: {}",
-            gate::render_display(&error)
-        ))
-    })?;
-    let first = match reader.next() {
-        Some(Ok(batch)) => batch,
-        Some(Err(error)) => {
-            return Err(SourceError::fatal(format!(
-                "{ONE_BATCH_REFUSAL}: {}",
-                gate::render_display(&error)
-            )));
-        }
-        None => return Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
-    };
-    // Row count is the memory dimension the framing pre-pass cannot
-    // see — it bounds declared LENGTHS, not a RecordBatch's `length`
-    // field, and Null/run-end-encoded columns carry millions of rows
-    // in almost no bytes. The engine enforces this cap at its own
-    // ingress; this seat serves it to every host.
-    if first.num_rows() > rdlt_connector::channel::MAX_RECORD_BATCH_ROWS {
-        return Err(SourceError::fatal(format!(
-            "{ONE_BATCH_REFUSAL}: the batch carries {} rows, over the {}-row wire cap — \
-             row count is bounded separately from encoded bytes",
-            first.num_rows(),
-            rdlt_connector::channel::MAX_RECORD_BATCH_ROWS
-        )));
-    }
-    match reader.next() {
-        None => {
-            refuse_untrusted_record_batch_fields(&first)?;
-            Ok(first)
-        }
-        Some(Ok(_)) => Err(SourceError::fatal(ONE_BATCH_REFUSAL)),
-        Some(Err(error)) => Err(SourceError::fatal(format!(
-            "{ONE_BATCH_REFUSAL}: {}",
-            gate::render_display(&error)
-        ))),
-    }
-}
 
 #[async_trait]
 impl rdlt_connector::source::Source for Remote {
@@ -918,8 +808,7 @@ mod tests {
         let long = "f".repeat(crate::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
         let schema = Arc::new(Schema::new(vec![Field::new(long, DataType::Int64, true)]));
         let batch = RecordBatch::new_empty(schema);
-        let error = refuse_untrusted_record_batch_fields(&batch)
-            .expect_err("an over-length field name refuses");
+        let error = shared_field_gate(&batch).expect_err("an over-length field name refuses");
         let rendered = error.to_string();
         assert!(
             rendered.contains("identifier ceiling"),
@@ -937,9 +826,9 @@ mod tests {
             true,
         )]));
         let batch = RecordBatch::new_empty(schema);
-        let error = refuse_untrusted_record_batch_fields(&batch)
-            .expect_err("nested field names use the identifier gate");
-        assert!(error.to_string().contains("record-batch field"));
+        let error =
+            shared_field_gate(&batch).expect_err("nested field names use the identifier gate");
+        assert!(error.contains("record-batch field"));
     }
 
     /// A dictionary-encoded nested container carries field names too:
@@ -961,9 +850,18 @@ mod tests {
             true,
         )]));
         let batch = RecordBatch::new_empty(schema);
-        let error = refuse_untrusted_record_batch_fields(&batch)
+        let error = shared_field_gate(&batch)
             .expect_err("field names inside a dictionary's value type use the identifier gate");
-        assert!(error.to_string().contains("record-batch field"));
+        assert!(error.contains("record-batch field"));
+    }
+
+    /// The decode seat's field-name discipline exactly as the seat
+    /// wires it: the SPI's shared walk through this side's identifier
+    /// gate.
+    fn shared_field_gate(batch: &RecordBatch) -> Result<(), String> {
+        rdlt_connector::gate::refuse_record_batch_field_names(batch, &mut |name| {
+            crate::gate::identifier("record-batch field name", name)
+        })
     }
 
     /// Zero batches (a schema-only stream) refuse with the bare frozen

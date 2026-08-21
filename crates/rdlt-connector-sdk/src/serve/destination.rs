@@ -244,109 +244,37 @@ fn part_close_reason_str(reason: PartCloseReason) -> String {
 /// record batch`) with the underlying arrow cause appended, so no leg
 /// silently drops the diagnostic; a stream carrying a SECOND, DECODABLE
 /// batch gets its own distinct refusal, because silently taking only
-/// the first would drop every row after it.
+/// the first would drop every row after it. The decode discipline
+/// itself — belt, framing pre-pass, width and row caps, one-batch rule,
+/// field walk — is the SPI's one shared seat; what lives here is the
+/// seat's vocabulary and this side's LENGTH-ONLY field-name rule (the
+/// family rule above: serve gates are length-only at the wire).
 fn decode_arrow_ipc(bytes: &[u8]) -> Result<RecordBatch, String> {
-    contained_decode(|| decode_arrow_ipc_erring(bytes))
-}
-
-/// The seat's panic belt: `catch_unwind` contains PANICS only. The
-/// declared-length ABORT class is closed by the framing pre-pass inside
-/// `decode_arrow_ipc_erring` — the two defenses are disjoint.
-fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
-        Ok(decoded) => decoded,
-        Err(payload) => Err(format!(
-            "write carried no decodable record batch: the Arrow decoder panicked: {}",
-            // A panic payload is attacker-adjacent text; the shared
-            // rendering bounds it.
-            gate::panic_text(payload.as_ref())
-        )),
-    }
-}
-
-/// The greatest number of columns one wire batch may declare — the
-/// SPI's shared [`gate::MAX_SOURCE_COLUMNS_PER_TABLE`], the same width
-/// the ensure seat and the engine's shred assembly hold tables to. A
-/// schema message spends only forty-odd flatbuffer bytes per field, so
-/// field COUNT is the cheapest per-byte expansion an Arrow frame
-/// offers, and each field becomes an owned `Field` and an array. A
-/// table this wide is already past what any destination models
-/// honestly.
-///
-/// This bounds WIDTH only. Rows are bounded separately, so the two
-/// together admit a rectangle of up to ~4.1e9 cells — well above the
-/// engine's own per-batch cell budget, which is the host's to enforce
-/// on its own side. The wire's job here is to keep either dimension
-/// from being spent as an allocation lever; it is deliberately not a
-/// cell budget, and calling it one would overstate it.
-const MAX_RECORD_BATCH_COLUMNS: usize = gate::MAX_SOURCE_COLUMNS_PER_TABLE;
-
-fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";
+    gate::decode_one_batch_ipc(
+        bytes,
+        REFUSAL,
+        "write carried more than one record batch; a Write frame is exactly one batch",
+        |message| message,
+        &mut refuse_oversized_field_name,
+    )
+}
 
-    // The framing pre-pass: the panic belt catches arrow's unwinds, but
-    // the DECLARED-length arms — a 2 GiB metadata memset, a `bodyLength`
-    // allocation whose failure ABORTS — are neither panics nor errors,
-    // so the declarations are held against the frame's real bytes
-    // before the reader runs.
-    gate::refuse_overdeclared_framing(bytes).map_err(|reason| format!("{REFUSAL}: {reason}"))?;
-    // Arrow's error text is client-authored at frame scale — a `Field`
-    // render carries the field's whole metadata map — so every appended
-    // cause goes through the bounded diagnostic render, the client
-    // decode mirror's exact treatment.
-    let mut reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
-        .map_err(|error| {
-        format!(
-            "{REFUSAL}: {}",
-            gate::render_diagnostic(&error.to_string(), 256)
-        )
-    })?;
-    // Width is judged on the SCHEMA, before a batch is pulled: by the
-    // time a `RecordBatch` exists arrow has built every `Field` AND
-    // every array, which is the allocation this cap exists to prevent.
-    // The schema message is read by `try_new` above, so the count is
-    // known here.
-    let declared_columns = reader.schema().fields().len();
-    if declared_columns > MAX_RECORD_BATCH_COLUMNS {
+/// A write batch's field names through the wire identifier ceiling,
+/// length-only: these names are retained by the session and reach
+/// backend error text exactly like any other inbound identifier, and
+/// the family rule holds — content escaping belongs to the display
+/// renders on the side that displays.
+fn refuse_oversized_field_name(name: &str) -> Result<(), String> {
+    if name.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
         return Err(format!(
-            "{REFUSAL}: the batch declares {declared_columns} columns, over the {}-column \
-             wire cap — column count is bounded separately from encoded bytes",
-            MAX_RECORD_BATCH_COLUMNS
+            "a write field name of {} bytes exceeds the {}-byte wire identifier \
+             ceiling — refused at the wire boundary",
+            name.len(),
+            gate::MAX_WIRE_IDENTIFIER_BYTES
         ));
     }
-    let first = match reader.next() {
-        Some(Ok(batch)) => batch,
-        Some(Err(error)) => {
-            return Err(format!(
-                "{REFUSAL}: {}",
-                gate::render_diagnostic(&error.to_string(), 256)
-            ));
-        }
-        None => return Err(REFUSAL.to_string()),
-    };
-    // Row count is the memory dimension the framing pre-pass cannot
-    // see — Null and run-end-encoded columns carry millions of rows in
-    // almost no body bytes, and the batch goes straight to the
-    // connector's own backend.
-    if first.num_rows() > channel::MAX_RECORD_BATCH_ROWS {
-        return Err(format!(
-            "{REFUSAL}: the batch carries {} rows, over the {}-row wire cap — row count is \
-             bounded separately from encoded bytes",
-            first.num_rows(),
-            channel::MAX_RECORD_BATCH_ROWS
-        ));
-    }
-    match reader.next() {
-        Some(Ok(_)) => Err(
-            "write carried more than one record batch; a Write frame is exactly one batch"
-                .to_string(),
-        ),
-        Some(Err(error)) => Err(format!(
-            "{REFUSAL}: {}",
-            gate::render_diagnostic(&error.to_string(), 256)
-        )),
-        None => Ok(first),
-    }
+    Ok(())
 }
 
 /// The state a `ReadState` answers with, held to the wire's document
@@ -1031,13 +959,6 @@ mod tests {
     /// once reached it now refuses earlier at the pre-pass): an unwind
     /// inside the decode is classified as a typed refusal, never an
     /// escape.
-    #[test]
-    fn a_decoder_panic_is_contained_as_a_typed_refusal() {
-        let error = contained_decode::<()>(|| panic!("crafted metadata"))
-            .expect_err("the unwind is contained");
-        assert!(error.contains("Arrow decoder panicked"), "{error}");
-        assert!(error.contains("crafted metadata"), "{error}");
-    }
 
     /// The panic belt cannot contain the DECLARED-length arms — a 4-byte
     /// word declaring ~2 GiB of metadata makes arrow's reader
@@ -1058,77 +979,4 @@ mod tests {
         );
     }
 
-    /// The body-length sibling: a real one-batch stream whose
-    /// record-batch message is patched to declare a ~2 GiB body — the
-    /// allocation whose failure ABORTS, which no belt contains. The
-    /// patch locates `bodyLength` structurally (root table offset →
-    /// vtable → the field's slot), self-verified against the decoded
-    /// value before patching.
-    #[test]
-    fn a_write_declaring_a_huge_body_length_refuses_before_arrow_allocates() {
-        use arrow::array::Int64Array;
-        use arrow::datatypes::{DataType, Field, Schema};
-        use std::sync::Arc;
-
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
-        )
-        .expect("batch");
-        let mut writer =
-            arrow::ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("writer");
-        writer.write(&batch).expect("write");
-        let mut bytes = writer.into_inner().expect("finish");
-        assert!(
-            decode_arrow_ipc(&bytes).is_ok(),
-            "the unpatched stream decodes"
-        );
-
-        // Walk to the second message (the record batch); patch its
-        // declared bodyLength.
-        let (meta_start, meta_end) = {
-            let mut pos = 0usize;
-            let mut spans = Vec::new();
-            while spans.len() < 2 {
-                assert_eq!(&bytes[pos..pos + 4], [0xff; 4], "continuation marker");
-                let meta_len =
-                    i32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().expect("4 bytes"))
-                        as usize;
-                let start = pos + 8;
-                spans.push((start, start + meta_len));
-                let body = usize::try_from(
-                    arrow::ipc::root_as_message(&bytes[start..start + meta_len])
-                        .expect("valid metadata")
-                        .bodyLength(),
-                )
-                .expect("non-negative body");
-                pos = start + meta_len + body;
-            }
-            spans[1]
-        };
-        let meta = &bytes[meta_start..meta_end];
-        let root = u32::from_le_bytes(meta[0..4].try_into().expect("4 bytes")) as i64;
-        let soffset = i32::from_le_bytes(
-            meta[root as usize..root as usize + 4]
-                .try_into()
-                .expect("4 bytes"),
-        ) as i64;
-        let vtable = usize::try_from(root - soffset).expect("in-bounds vtable");
-        let slot =
-            u16::from_le_bytes(meta[vtable + 10..vtable + 12].try_into().expect("2 bytes")) as i64;
-        assert_ne!(slot, 0, "bodyLength is present in the message");
-        let field_pos = meta_start + usize::try_from(root + slot).expect("in-bounds field");
-        bytes[field_pos..field_pos + 8].copy_from_slice(&0x7fff_fff0_i64.to_le_bytes());
-
-        let frame_len = bytes.len();
-        let error = decode_arrow_ipc(&bytes).expect_err("an overdeclared body refuses typed");
-        assert_eq!(
-            error,
-            format!(
-                "write carried no decodable record batch: a declared body length of \
-                 2147483632 bytes exceeds the {frame_len}-byte frame"
-            )
-        );
-    }
 }

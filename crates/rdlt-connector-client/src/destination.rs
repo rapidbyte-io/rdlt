@@ -208,25 +208,12 @@ fn unexpected_reply(method: &str, reply: &session_reply::Reply) -> DestinationEr
 /// message — the `Write` frame's encoder seat of the proto's one-batch
 /// rule (a multi-batch write is several `Write` frames, one batch
 /// each; `Session` hands this method one batch at a time, so the rule
-/// holds by construction here). Failure is a schema/batch mismatch the
-/// CALLER produced — rendered as text for a fatal, like the serve
-/// side's `encode_arrow_ipc`.
+/// holds by construction here). The shared encoder seat; failure is a
+/// schema/batch mismatch the CALLER produced — rendered as text for a
+/// fatal, like the serve side's encoder, through the one shared
+/// function so the two directions cannot drift.
 fn encode_one_batch(batch: &RecordBatch) -> Result<Vec<u8>, String> {
-    // Arrow's error text can render a whole `Field` — metadata map
-    // included — so even this host-authored seat bounds the cause it
-    // appends: a batch forwarded from a source connector carries that
-    // connector's schema metadata. Rendered THROUGH the bounded sink,
-    // so the amplified text is never materialized on the way to its
-    // capped prefix.
-    let render = |error: arrow::error::ArrowError| gate::render_display(&error);
-    let mut writer = arrow::ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
-        .map_err(|error| format!("opening an arrow ipc stream writer: {}", render(error)))?;
-    writer
-        .write(batch)
-        .map_err(|error| format!("writing an arrow ipc record batch: {}", render(error)))?;
-    writer
-        .into_inner()
-        .map_err(|error| format!("closing an arrow ipc stream writer: {}", render(error)))
+    rdlt_connector::gate::encode_batch_ipc(batch)
 }
 
 /// The wire backend: one bidi session, each method one frame and its

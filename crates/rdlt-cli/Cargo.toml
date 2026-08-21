@@ -28,6 +28,8 @@ console = { workspace = true }
 indicatif = { workspace = true }
 libc = { workspace = true }
 rdlt = { workspace = true }
+# The stderr display seat escapes by the shared character inventory.
+rdlt-core = { workspace = true }
 # The connector requirement and role the `schema` command hands the
 # runtime's provider, spelled at the client crate's own paths.
 rdlt-connector-client = { workspace = true }

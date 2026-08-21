@@ -1,0 +1,74 @@
+[package]
+name = "rdlt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arrow = "59.2"
+# The same prost minor the protocol crate generates against, so the
+# decode targets drive the identical wire decoding.
+prost = "0.14"
+rdlt-engine = { path = "../crates/rdlt-engine" }
+rdlt-connector-protocol = { path = "../crates/rdlt-connector-protocol" }
+# The hardened wire-edge arrow decode seat (its doc-hidden fuzzing hook)
+# — arrow_ipc_decode drives it, not arrow's raw reader.
+rdlt-connector-client = { path = "../crates/rdlt-connector-client" }
+
+# Standalone workspace: libFuzzer needs nightly; the main build never sees this.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "jsonl_slab"
+path = "fuzz_targets/jsonl_slab.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "arrow_schema_map"
+path = "fuzz_targets/arrow_schema_map.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "shred_push"
+path = "fuzz_targets/shred_push.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_frame_decode"
+path = "fuzz_targets/wire_frame_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "arrow_ipc_decode"
+path = "fuzz_targets/arrow_ipc_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "handshake_line"
+path = "fuzz_targets/handshake_line.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wal_manifest_line"
+path = "fuzz_targets/wal_manifest_line.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wal_segment_decode"
+path = "fuzz_targets/wal_segment_decode.rs"
+test = false
+doc = false

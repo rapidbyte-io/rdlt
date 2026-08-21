@@ -16,6 +16,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rdlt-core = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }

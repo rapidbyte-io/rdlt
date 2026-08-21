@@ -1,0 +1,52 @@
+[package]
+name = "rdlt-connector"
+description = "rdlt connector SPI: Source/Destination/LoadSession traits, the byte-budget record channel, capabilities, error taxonomy"
+keywords = ["elt", "connector", "spi", "arrow", "data"]
+categories = ["database", "asynchronous"]
+documentation = "https://docs.rs/rdlt-connector"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-core = { workspace = true }
+arrow-array = { workspace = true }
+# The buffer type the footprint walk trims (arrow-data does not
+# re-export it); already in the tree via arrow-array.
+arrow-buffer = { workspace = true }
+# `ArrayData` by name, for the byte-budget walk over a batch's buffer
+# tree; arrow-array uses the type but does not re-export it.
+arrow-data = { workspace = true }
+# `root_as_message`, for the shared IPC framing pre-pass (`gate` module):
+# the declared-length guard every wire decode seat installs.
+arrow-ipc = { workspace = true }
+arrow-schema = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+# The umbrella crate for its `ipc` reader/writer: the byte-size test must
+# meter a batch decoded the way the remote wire decodes one — zero-copy
+# slices of a single IPC message body — not a hand-built imitation of it.
+arrow = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+# The crash-sweep seam: connectors depend on the SPI alone, so arming fail
+# points routes through this feature to the vocabulary crate that defines
+# the `crash_point!` macro.
+failpoints = ["rdlt-core/failpoints"]
+# `schemars::JsonSchema` for `Secret`. Opt-in so the SPI carries no
+# mandatory schemars edge; a connector that generates config schemas
+# turns it on.
+schema = ["dep:schemars"]

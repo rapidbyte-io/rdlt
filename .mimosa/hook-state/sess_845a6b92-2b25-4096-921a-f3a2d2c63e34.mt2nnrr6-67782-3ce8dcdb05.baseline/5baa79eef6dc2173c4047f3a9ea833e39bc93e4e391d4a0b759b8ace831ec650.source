@@ -1,0 +1,38 @@
+[package]
+name = "rdlt-bench"
+description = "rdlt dev benchmark harness: declarative cells -> run -> gate -> report"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rdlt-bench"
+path = "src/main.rs"
+
+# Contract BH8: runtime crates gain nothing from this manifest. clap is the
+# harness's one dev-only dependency beyond the existing tree (owner decision,
+# 2026-07-21); everything else ships in the workspace already.
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+# The harness itself execs the built `rdlt` CLI; only the TEST suites
+# parse specs through the facade's shared model, so it rides dev-deps.
+# The connector `config:` blocks are validated by the connectors' OWN
+# Document gates in the rdlt-connectors repository since the cut (044);
+# this workspace pins rendering, the Spec parse, and the desugar ids.
+rdlt = { workspace = true }
+
+[lints]
+workspace = true

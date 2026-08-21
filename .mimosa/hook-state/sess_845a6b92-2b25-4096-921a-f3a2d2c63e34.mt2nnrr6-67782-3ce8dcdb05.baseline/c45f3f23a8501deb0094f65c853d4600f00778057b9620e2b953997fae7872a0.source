@@ -1,0 +1,994 @@
+//! The one protocol that runs every cell: fixtures up, competitors FIRST
+//! (baseline-first discipline — the competitor runs before the rdlt side on
+//! the same quiet machine), then rdlt — warmups, N runs, stats, artifact.
+//! Every measured number comes from the release-CLI subprocess.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use crate::artifact::{Artifact, CpuStats, RdltSide, RssStats, VerifyOutcome};
+use crate::cells::{Cell, Timing};
+use crate::paths::Paths;
+use crate::protocol::{self, Sample};
+use crate::sample::{ResourceUsage, Sampler};
+use crate::template::substitute;
+use crate::{BenchError, Result};
+
+/// Every `{{key}}` a cell's PIPELINE template may reference — the ONE
+/// place the render vocabulary is written down.
+///
+/// `tests/remote_cells.rs` renders the five cell templates exactly
+/// as a live run would, and it builds its stand-in map from THIS slice
+/// rather than a second hand-written list. The hand-written copy it used
+/// to carry made the test agree with itself: a key renamed here left the
+/// test green while a real session died on an unrendered `{{…}}`.
+///
+/// `put` below refuses any key not named here, so the two cannot drift
+/// in the dangerous direction either — adding or renaming a substitution
+/// without touching this slice fails at the first cell that runs, by
+/// name, instead of silently leaving the test's vocabulary behind.
+///
+/// `spec` is deliberately ABSENT: it is inserted by `render_spec`
+/// AFTER the pipeline template has been rendered, so only a `command`
+/// line can see it. A template referencing `{{spec}}` would be asking
+/// for its own path before it exists.
+pub const PIPELINE_SUBSTITUTION_KEYS: &[&str] = &[
+    "benches", "bins", "cli", "conn", "data", "port", "repo", "run", "workdir",
+];
+
+/// Insert one render substitution, refusing a key
+/// [`PIPELINE_SUBSTITUTION_KEYS`] does not name.
+///
+/// The guard is the half of the single-source-of-truth that the test
+/// cannot supply: the test reads the slice, this refuses anything the
+/// slice omits.
+fn put(subs: &mut BTreeMap<String, String>, key: &str, value: String) {
+    assert!(
+        PIPELINE_SUBSTITUTION_KEYS.contains(&key),
+        "`{key}` is not in runner::PIPELINE_SUBSTITUTION_KEYS — add it there \
+         (the remote-cell suite renders templates from that slice, and a key \
+         missing from it is a key no test can see)"
+    );
+    subs.insert(key.to_owned(), value);
+}
+
+/// Attach the path an io failure concerns — a bare `?` on `std::fs` yields
+/// only "io: {e}" (the `From<io::Error>` shape) with no offender named.
+fn at(path: &Path) -> impl Fn(std::io::Error) -> BenchError + '_ {
+    move |e| BenchError(format!("{}: {e}", path.display()))
+}
+
+/// Rows/bytes totals a RunReport JSON attributes to its tables.
+fn report_totals(report: &serde_json::Value) -> (u64, u64) {
+    let mut rows = 0;
+    let mut bytes = 0;
+    if let Some(tables) = report.get("tables").and_then(|t| t.as_object()) {
+        for table in tables.values() {
+            rows += table.get("rows").and_then(|v| v.as_u64()).unwrap_or(0);
+            bytes += table.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        }
+    }
+    (rows, bytes)
+}
+
+fn report_table_rows(report: &serde_json::Value, table: &str) -> u64 {
+    report
+        .get("tables")
+        .and_then(|t| t.get(table))
+        .and_then(|t| t.get("rows"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+/// Detail attached to each counted run.
+#[derive(Debug, Default)]
+pub struct RunDetail {
+    pub report: Option<serde_json::Value>,
+    pub usage: Option<ResourceUsage>,
+    /// Harness wall clock around the child — the window the sampler ran
+    /// over. For self-timed cells this differs from `wall_ms` (the reported
+    /// measurement), and CPU utilization must divide by THIS (finding 7).
+    pub clock_ms: f64,
+}
+
+/// Render the cell's pipeline template into `run_dir/pipeline.yaml` and expose
+/// it to later substitutions as `{{spec}}`. Runs BEFORE prepare_sh so untimed
+/// setup (snapshot loads, seed refreshes) can drive the very pipeline. `None`
+/// when the cell has no `pipeline` (a custom `command` cell).
+fn render_spec(
+    cell: &Cell,
+    subs: &mut BTreeMap<String, String>,
+    paths: &Paths,
+    run_dir: &Path,
+) -> Result<Option<PathBuf>> {
+    let Some(template) = &cell.pipeline else {
+        return Ok(None);
+    };
+    let raw = std::fs::read_to_string(paths.benches.join(template)).map_err(|e| {
+        BenchError(format!(
+            "cell `{}`: reading template {}: {e}",
+            cell.id,
+            template.display()
+        ))
+    })?;
+    let spec = run_dir.join("pipeline.yaml");
+    std::fs::write(&spec, substitute(&raw, subs)).map_err(at(&spec))?;
+    subs.insert("spec".into(), spec.display().to_string());
+    Ok(Some(spec))
+}
+
+/// The connector binaries a pipeline template names through literal
+/// `{{bins}}/<name>` paths, read straight from the unrendered text.
+///
+/// Scoped by construction — a template that never mentions `{{bins}}`
+/// (a rich-spelling spec resolves its bins off PATH instead) yields an
+/// empty set, so the precondition
+/// built on this is invisible to it. A `{{bins}}` used as a bare
+/// directory, with no `/<name>` after it, also yields nothing: there is
+/// no binary to name, so there is nothing to check.
+fn required_connector_bins(template: &str) -> BTreeSet<&str> {
+    let mut names = BTreeSet::new();
+    for tail in template.split("{{bins}}/").skip(1) {
+        // A path component ends at whitespace or a YAML quote.
+        let name = tail
+            .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+/// The conventional connector binaries named by the pipeline's source
+/// and destination declarations. Rich spellings use their key directly;
+/// `connector:` declarations use the last segment of their `id`.
+fn declared_connector_bins(template: &str) -> Result<BTreeSet<String>> {
+    let mut rendered = template.to_owned();
+    for key in PIPELINE_SUBSTITUTION_KEYS {
+        rendered = rendered.replace(&format!("{{{{{key}}}}}"), "rdlt-placeholder");
+    }
+    let document: serde_yaml_ng::Value = serde_yaml_ng::from_str(&rendered)
+        .map_err(|error| BenchError(format!("parsing pipeline template: {error}")))?;
+    let mut bins = BTreeSet::new();
+    for role in ["source", "destination"] {
+        let Some(declaration) = document
+            .get(role)
+            .and_then(serde_yaml_ng::Value::as_mapping)
+        else {
+            continue;
+        };
+        let connector = serde_yaml_ng::Value::String("connector".to_owned());
+        let spelling = if let Some(explicit) = declaration
+            .get(&connector)
+            .and_then(serde_yaml_ng::Value::as_mapping)
+        {
+            // A declaration carrying `path:` names its OWN binary —
+            // possibly one no conventional build produces — so
+            // demanding the conventional `{{bins}}` name would refuse
+            // a cell no provisioning step can satisfy. The spawn
+            // diagnoses that path itself. The override is any STRING,
+            // exactly as the Spec model reads it: a null `path:`
+            // parses as None there (PATH discovery — provision), while
+            // `path: ""` parses as a real override the runtime will
+            // try to exec, so provisioning a conventional bin for it
+            // would misdirect the operator toward a fix that cannot
+            // help.
+            let path = serde_yaml_ng::Value::String("path".to_owned());
+            if explicit
+                .get(&path)
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some()
+            {
+                continue;
+            }
+            let id = serde_yaml_ng::Value::String("id".to_owned());
+            explicit
+                .get(&id)
+                .and_then(serde_yaml_ng::Value::as_str)
+                .and_then(|value| value.rsplit('.').next())
+        } else {
+            declaration.keys().find_map(serde_yaml_ng::Value::as_str)
+        };
+        if let Some(segment) = spelling.filter(|segment| !segment.is_empty()) {
+            bins.insert(format!("rdlt-connector-{segment}"));
+        }
+    }
+    Ok(bins)
+}
+
+/// Everything a cell needs on disk before anything is built, seeded or
+/// measured: the release CLI and every connector binary its pipeline
+/// names through a literal path, a rich spelling, or a connector id.
+///
+/// The function depends only on the cell and paths, so `run_one_cell`
+/// calls it before `fixtures::start` brings up containers or generates
+/// datasets and before competitor baselines run.
+///
+/// `run_cell` calls it too because that public entry point is also used
+/// directly. Each call performs filesystem metadata checks and one
+/// small template read.
+pub fn preconditions(cell: &Cell, paths: &Paths) -> Result<()> {
+    // Every cell runs the same way: the release-CLI subprocess, warmups then N
+    // counted runs. A `command` cell (selftest) needs no CLI; a pipeline cell
+    // does, so refuse with the build hint rather than fail mid-protocol.
+    if cell.command.is_none() && !paths.cli.is_file() {
+        return Err(BenchError(format!(
+            "release CLI missing at {} — run `make release` first",
+            paths.cli.display()
+        )));
+    }
+    // The same question for connector binaries. The literal token check
+    // preserves path-specific diagnostics; the declaration check covers
+    // rich spellings and connector ids before PATH resolution can reach a
+    // host-installed binary.
+    if let Some(template) = &cell.pipeline {
+        let path = paths.benches.join(template);
+        let raw = std::fs::read_to_string(&path).map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: reading template {}: {e}",
+                cell.id,
+                path.display()
+            ))
+        })?;
+        for name in required_connector_bins(&raw) {
+            let bin = paths.bins.join(name);
+            if !bin.is_file() {
+                return Err(BenchError(format!(
+                    "cell `{}`: connector binary missing at {} — the template names it \
+                     as `{{{{bins}}}}/{name}`; the first-party connector bins are built \
+                     in the sibling rdlt-connectors repository (`make connector-bins` \
+                     there builds them release — a debug fallback would measure an \
+                     unoptimized connector); copy or link the bin into this \
+                     workspace's target/release",
+                    cell.id,
+                    bin.display()
+                )));
+            }
+        }
+        let declared = declared_connector_bins(&raw).map_err(|error| {
+            BenchError(format!(
+                "cell `{}`: reading connector declarations from {}: {error}",
+                cell.id,
+                path.display()
+            ))
+        })?;
+        for name in declared {
+            let bin = paths.bins.join(&name);
+            if !bin.is_file() {
+                return Err(BenchError(format!(
+                    "cell `{}`: connector binary missing at {} — pipeline {} requires \
+                     `{name}`; build it in the sibling rdlt-connectors repository \
+                     (`make connector-bins` there) and copy or link it into this \
+                     workspace's target/release before benchmarking",
+                    cell.id,
+                    bin.display(),
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The PATH the measured CLI (and any prepare-run CLI) sees: the
+/// connector-binary directory prepended to the harness's own PATH.
+///
+/// A rich-spelling pipeline (`postgres:`, `oracle:`, …) carries no
+/// `path:` override — the CLI resolves its connector ids by a PATH walk
+/// for `rdlt-connector-<name>` — so the harness points that walk at the
+/// same `<target>/release` directory `{{bins}}` names. Without this, a
+/// cell like `oracle-to-pg-200k` (or the dedup cell's load-1 prepare)
+/// dies at spawn on whatever connectors the operator happens to have
+/// installed, instead of measuring the bins this tree built.
+fn path_with_bins(paths: &Paths) -> std::ffi::OsString {
+    let mut entries = vec![paths.bins.clone()];
+    if let Some(path) = std::env::var_os("PATH") {
+        entries.extend(std::env::split_paths(&path));
+    }
+    std::env::join_paths(entries).expect("paths.bins joins the process's own PATH entries")
+}
+
+/// Run the cell's untimed `prepare_sh` (seed refresh, state wipe) if declared.
+fn run_prepare(cell: &Cell, subs: &BTreeMap<String, String>, paths: &Paths) -> Result<()> {
+    let Some(prepare) = &cell.prepare_sh else {
+        return Ok(());
+    };
+    let script = substitute(prepare, subs);
+    let status = std::process::Command::new("sh")
+        .args(["-c", &script])
+        .env("PATH", path_with_bins(paths))
+        .status()?;
+    if !status.success() {
+        return Err(BenchError(format!("cell `{}`: prepare_sh failed", cell.id)));
+    }
+    Ok(())
+}
+
+/// Measure what an arm left behind, by running its declared shell line and
+/// reading a byte count off stdout.
+///
+/// Deliberately untimed and AFTER the runs: it must not appear in any timing,
+/// and it reads the output of the LAST run, which is the one still on disk.
+///
+/// A failure here is recorded as absent, never as zero and never as a run
+/// failure. The size is context for interpreting a comparison, not part of
+/// the comparison — a cell whose sizer cannot reach its object store should
+/// still produce timings.
+pub fn measure_artifact_bytes(
+    label: &str,
+    script: Option<&String>,
+    subs: &BTreeMap<String, String>,
+) -> Option<u64> {
+    let script = substitute(script?, subs);
+    let output = match std::process::Command::new("sh")
+        .args(["-c", &script])
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            // The one path that used to be silent. An unspawnable `sh` and a
+            // cell that declared no sizer both produce an absent size, and
+            // without this line they are indistinguishable in the artifact.
+            eprintln!("  {label}: artifact_bytes_sh could not run ({e}) — recording absent");
+            return None;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "  {label}: artifact_bytes_sh failed ({}) — recording absent, not zero",
+            output.status
+        );
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    match text.trim().parse::<u64>() {
+        Ok(bytes) => Some(bytes),
+        Err(_) => {
+            eprintln!(
+                "  {label}: artifact_bytes_sh printed {:?}, which is not a byte count — \
+                 recording absent",
+                text.trim()
+            );
+            None
+        }
+    }
+}
+
+/// The measured argv: a custom `command` (substituted), else the release CLI
+/// running the rendered spec with a `--report` sink.
+fn measured_argv(
+    cell: &Cell,
+    subs: &BTreeMap<String, String>,
+    paths: &Paths,
+    spec_path: Option<&PathBuf>,
+    report_path: &Path,
+) -> Vec<String> {
+    match &cell.command {
+        Some(custom) => custom.iter().map(|a| substitute(a, subs)).collect(),
+        None => {
+            let spec = spec_path.expect("checked at load: pipeline or command");
+            vec![
+                paths.cli.display().to_string(),
+                "run".into(),
+                spec.display().to_string(),
+                "--report".into(),
+                report_path.display().to_string(),
+            ]
+        }
+    }
+}
+
+/// The reported measurement for one run, per the cell's timing mode: harness
+/// wall clock, a numeric stdout line, or a `seconds` field in self-reported
+/// JSON (the latter two let a self-timing command exclude its own setup).
+fn measured_wall_ms(cell: &Cell, output: &std::process::Output, clock_ms: f64) -> Result<f64> {
+    match cell.timing {
+        Timing::Wall => Ok(clock_ms),
+        Timing::StdoutMs => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .lines()
+                .rev()
+                .find_map(|l| l.trim().parse::<f64>().ok())
+                .ok_or_else(|| {
+                    BenchError(format!(
+                        "cell `{}`: timing=stdout_ms but no numeric line on stdout: {stdout}",
+                        cell.id
+                    ))
+                })
+        }
+        Timing::SelfJsonSeconds => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            protocol::last_json_field(&stdout, "seconds")
+                .and_then(|v| v.as_f64())
+                .map(|s| s * 1000.0)
+                .ok_or_else(|| {
+                    BenchError(format!(
+                        "cell `{}`: timing=self_json_seconds but no `seconds` JSON on stdout: {stdout}",
+                        cell.id
+                    ))
+                })
+        }
+    }
+}
+
+fn run_once_subprocess(
+    cell: &Cell,
+    subs: &BTreeMap<String, String>,
+    paths: &Paths,
+    run_dir: &Path,
+    seq: u32,
+    counted: bool,
+) -> Result<Sample<RunDetail>> {
+    let mut subs = subs.clone();
+    put(&mut subs, "workdir", run_dir.display().to_string());
+    // Per-run sequence for prepare scripts that need run-unique mutations
+    // (the merge-strategy 50%-changed regime, finding 1).
+    put(&mut subs, "run", seq.to_string());
+
+    let report_path = run_dir.join("report.json");
+    let spec_path = render_spec(cell, &mut subs, paths, run_dir)?;
+    run_prepare(cell, &subs, paths)?;
+    let argv = measured_argv(cell, &subs, paths, spec_path.as_ref(), &report_path);
+
+    let capture_stdout = cell.timing != Timing::Wall;
+    let started = Instant::now();
+    let child = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .env("PATH", path_with_bins(paths))
+        .current_dir(run_dir)
+        .stdout(if capture_stdout {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| BenchError(format!("cell `{}`: spawning {}: {e}", cell.id, argv[0])))?;
+    let sampler = counted.then(|| Sampler::spawn(child.id()));
+    let output = child.wait_with_output()?;
+    let clock_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let usage = sampler.map(Sampler::stop);
+
+    if !output.status.success() {
+        return Err(BenchError(format!(
+            "cell `{}`: run failed ({}): {}",
+            cell.id,
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    let wall_ms = measured_wall_ms(cell, &output, clock_ms)?;
+
+    // "Absent" must mean genuinely absent. Collapsing a corrupt or unreadable
+    // report into `None` reports the cell as having produced no report at all,
+    // which reads as a harness gap rather than the real failure.
+    let report = if report_path.exists() {
+        let raw = std::fs::read_to_string(&report_path).map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: reading the run report at {}: {e}",
+                cell.id,
+                report_path.display()
+            ))
+        })?;
+        Some(serde_json::from_str(&raw).map_err(|e| {
+            BenchError(format!(
+                "cell `{}`: parsing the run report at {}: {e}",
+                cell.id,
+                report_path.display()
+            ))
+        })?)
+    } else {
+        None
+    };
+    Ok(Sample {
+        wall_ms,
+        detail: RunDetail {
+            report,
+            usage,
+            clock_ms,
+        },
+    })
+}
+
+/// CPU stats from the (last counted run's) sampler series. The denominator
+/// is the SAMPLER window (process wall clock), never a self-reported
+/// measurement window (finding 7).
+fn cpu_stats(usage: Option<&ResourceUsage>, sampled_window_ms: f64) -> CpuStats {
+    let Some(usage) = usage else {
+        return CpuStats {
+            note: Some("no sampler ran".into()),
+            ..CpuStats::default()
+        };
+    };
+    let Some(cpu_ms) = usage.cpu_ms else {
+        return CpuStats {
+            note: usage.note.clone(),
+            ..CpuStats::default()
+        };
+    };
+    let mean = (cpu_ms as f64 / sampled_window_ms).max(0.0);
+    let peak = usage
+        .series
+        .windows(2)
+        .filter_map(|w| {
+            let dt = w[1].at_ms.saturating_sub(w[0].at_ms);
+            let dc = w[1].cpu_ms.saturating_sub(w[0].cpu_ms);
+            (dt > 0).then(|| dc as f64 / dt as f64)
+        })
+        .fold(None::<f64>, |acc, u| Some(acc.map_or(u, |a| a.max(u))));
+    CpuStats {
+        mean_util: Some(mean),
+        peak_util: peak.or(Some(mean)),
+        user_sys_ms: Some(cpu_ms),
+        note: usage.note.clone(),
+    }
+}
+
+fn rss_stats(usage: Option<&ResourceUsage>) -> RssStats {
+    match usage {
+        Some(u) => RssStats {
+            peak_bytes: u.peak_rss_bytes,
+            note: u.note.clone(),
+        },
+        None => RssStats {
+            peak_bytes: None,
+            note: Some("no sampler ran".into()),
+        },
+    }
+}
+
+/// Assemble the rdlt side from counted samples (+ the last run's detail).
+pub(crate) fn rdlt_side(samples: &[Sample<RunDetail>]) -> RdltSide {
+    let runs_ms: Vec<f64> = samples.iter().map(|s| s.wall_ms).collect();
+    let median_ms = protocol::median(&runs_ms);
+    let p95_ms = protocol::p95(&runs_ms);
+    let last = samples.last().expect("protocol guarantees >= 1 run");
+    let (rows, bytes) = last
+        .detail
+        .report
+        .as_ref()
+        .map(report_totals)
+        .map_or((None, None), |(r, b)| (Some(r), Some(b)));
+    let secs = median_ms / 1000.0;
+    RdltSide {
+        median_ms,
+        p95_ms,
+        rows,
+        bytes,
+        artifact_bytes: None, // filled by the caller, which knows the cell
+        rows_per_s: rows.map(|r| r as f64 / secs),
+        mb_per_s: bytes.map(|b| b as f64 / (1024.0 * 1024.0) / secs),
+        cpu: cpu_stats(last.detail.usage.as_ref(), last.detail.clock_ms),
+        rss: rss_stats(last.detail.usage.as_ref()),
+        runs_ms,
+    }
+}
+
+fn verify_outcome(cell: &Cell, samples: &[Sample<RunDetail>]) -> Result<Option<VerifyOutcome>> {
+    let Some(verify) = &cell.verify else {
+        return Ok(None);
+    };
+    let report = samples
+        .last()
+        .and_then(|s| s.detail.report.as_ref())
+        .ok_or_else(|| {
+            BenchError(format!(
+                "cell `{}`: verify declared but no RunReport captured",
+                cell.id
+            ))
+        })?;
+    // The delivered set must MATCH the declared set, not merely contain it.
+    // Checking only the declared tables' row counts leaves a run free to move
+    // extra streams the cell never claimed — which makes its timing
+    // incomparable with a competitor arm that moved only the declared set,
+    // while every row count still passes.
+    let delivered: BTreeSet<&str> = report
+        .get("tables")
+        .and_then(serde_json::Value::as_object)
+        .map(|t| t.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    let declared: BTreeSet<&str> = verify.keys().map(String::as_str).collect();
+    let surplus: Vec<&str> = delivered.difference(&declared).copied().collect();
+    let missing: Vec<&str> = declared.difference(&delivered).copied().collect();
+    if !surplus.is_empty() || !missing.is_empty() {
+        let mut detail = Vec::new();
+        if !surplus.is_empty() {
+            detail.push(format!(
+                "delivered but not declared: {}",
+                surplus.join(", ")
+            ));
+        }
+        if !missing.is_empty() {
+            detail.push(format!(
+                "declared but not delivered: {}",
+                missing.join(", ")
+            ));
+        }
+        return Err(BenchError(format!(
+            "cell `{}`: verify FAILED — the run's tables do not match the cell's \
+             declared set ({}); a cell that moves undeclared tables is not comparable \
+             with its competitor arms",
+            cell.id,
+            detail.join("; ")
+        )));
+    }
+    let mut outcome = VerifyOutcome::new();
+    for (table, expected) in verify {
+        let actual = report_table_rows(report, table);
+        if actual != *expected {
+            return Err(BenchError(format!(
+                "cell `{}`: verify FAILED — table `{table}` has {actual} rows, expected {expected}",
+                cell.id
+            )));
+        }
+        outcome.insert(table.clone(), actual);
+    }
+    Ok(Some(outcome))
+}
+
+/// Merge every fixture's recorded dataset identity into one map for the
+/// fingerprint. Keys are prefixed with the fixture id so a cross-store cell
+/// records both stores' identities without collision.
+fn merged_fixture_hashes(fixtures: &[&crate::fixtures::Started]) -> BTreeMap<String, String> {
+    let mut merged = BTreeMap::new();
+    for fixture in fixtures {
+        for (key, value) in &fixture.hashes {
+            merged.insert(format!("{}:{key}", fixture.def.id), value.clone());
+        }
+    }
+    merged
+}
+
+/// Run one cell end to end and return its artifact (not yet written).
+///
+/// `fixtures` are the cell's started fixtures, primary first: the primary
+/// supplies `{{conn}}`/`{{data}}`/`{{port}}` and its data dir is the working
+/// data; every fixture is reset before each run (a cross-store cell resets
+/// both its source and destination stores).
+pub fn run_cell(
+    cell: &Cell,
+    paths: &Paths,
+    fixtures: &[&crate::fixtures::Started],
+    competitor_pins: BTreeMap<String, String>,
+    competitors: BTreeMap<String, crate::artifact::CompetitorSide>,
+    // Quiet-guard verdict, obtained by the CALLER before any competitor ran
+    // (finding 2: the baseline side must be guarded too).
+    quiet_note: Option<String>,
+    // Whether the quiet guard was overridden (`RDLT_BENCH_FORCE=1`) — stamped
+    // into the artifact so a forced number is never mistaken for evidence.
+    forced: bool,
+) -> Result<Artifact> {
+    let primary = fixtures
+        .first()
+        .expect("cell has >= 1 fixture (load-checked)");
+    let mut subs: BTreeMap<String, String> = BTreeMap::new();
+    put(&mut subs, "repo", paths.repo.display().to_string());
+    put(&mut subs, "benches", paths.benches.display().to_string());
+    put(&mut subs, "cli", paths.cli.display().to_string());
+    // The connector-binary directory (`<target>/release`) for the cells'
+    // `connector: path:` overrides — release unconditionally, like
+    // `cli` above: an absent release bin fails LOUD at spawn, whereas a
+    // debug fallback would measure an unoptimized connector silently.
+    put(&mut subs, "bins", paths.bins.display().to_string());
+    put(
+        &mut subs,
+        "data",
+        primary.data_dir.path().display().to_string(),
+    );
+    if let Some(conn) = primary.conn() {
+        put(&mut subs, "conn", conn.to_owned());
+    }
+    if let Some(port) = primary.def.port {
+        put(&mut subs, "port", port.to_string());
+    }
+
+    let invocation = tempfile::tempdir().map_err(|e| BenchError(format!("tempdir: {e}")))?;
+    let mut run_seq = 0u32;
+
+    preconditions(cell, paths)?;
+    let samples = protocol::run_protocol(cell.warmups, cell.runs, |counted| {
+        // Reset every store the cell uses — a cross-store cell resets both its
+        // source and destination fixtures before each run.
+        for fixture in fixtures {
+            fixture.reset()?;
+        }
+        let run_dir = invocation.path().join(format!("run-{run_seq}"));
+        run_seq += 1;
+        std::fs::create_dir_all(&run_dir).map_err(at(&run_dir))?;
+        let seq = run_seq - 1;
+        run_once_subprocess(cell, &subs, paths, &run_dir, seq, counted)
+    })?;
+    let mut rdlt_side = rdlt_side(&samples);
+    rdlt_side.artifact_bytes =
+        measure_artifact_bytes("rdlt", cell.artifact_bytes_sh.as_ref(), &subs);
+    let verify = verify_outcome(cell, &samples)?;
+
+    let mut artifact = Artifact {
+        format_version: crate::artifact::ARTIFACT_FORMAT_VERSION,
+        cell_id: cell.id.clone(),
+        recorded_at: crate::artifact::recorded_at(),
+        fingerprint: crate::artifact::fingerprint(
+            merged_fixture_hashes(fixtures),
+            competitor_pins,
+            quiet_note,
+        ),
+        workload: cell.workload.clone(),
+        rdlt: rdlt_side,
+        competitors,
+        verify,
+        forced,
+        extra: serde_json::Map::new(),
+    };
+
+    // Fill competitor→rdlt ratios now that the rdlt median exists.
+    let rdlt_median = artifact.rdlt.median_ms;
+    for side in artifact.competitors.values_mut() {
+        if let crate::artifact::CompetitorSide::Ok {
+            median_ms,
+            ratio_vs_rdlt,
+            ..
+        } = side
+        {
+            *ratio_vs_rdlt = Some(*median_ms / rdlt_median);
+        }
+    }
+    Ok(artifact)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Literal paths and pipeline declarations independently identify
+    /// the connector binaries a cell requires.
+    #[test]
+    fn connector_bins_are_read_from_paths_and_declarations() {
+        let remote = "source:\n  connector:\n    path: {{bins}}/rdlt-connector-postgres\n\
+                      destination:\n  connector:\n    path: \"{{bins}}/rdlt-connector-file\"\n";
+        assert_eq!(
+            required_connector_bins(remote)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["rdlt-connector-file", "rdlt-connector-postgres"]
+        );
+        // Repeats collapse; the same bin on both sides is one check.
+        let twice = "a {{bins}}/rdlt-connector-postgres b {{bins}}/rdlt-connector-postgres";
+        assert_eq!(required_connector_bins(twice).len(), 1);
+        // An ordinary cell's template, and a bare `{{bins}}` with no
+        // name after it, both demand nothing.
+        assert!(required_connector_bins("source:\n  postgres:\n    conn: {{conn}}\n").is_empty());
+        assert!(required_connector_bins("dir: {{bins}}\n").is_empty());
+
+        let rich = "source:\n  oracle: {{data}}/oracle.yaml\n\
+                    destination:\n  postgres:\n    conn: '{{conn}}'\n";
+        assert_eq!(
+            declared_connector_bins(rich).expect("the rich template parses"),
+            BTreeSet::from([
+                "rdlt-connector-oracle".to_owned(),
+                "rdlt-connector-postgres".to_owned(),
+            ])
+        );
+        let explicit = "source:\n  connector:\n    id: io.rapidbyte.file\n\
+                        destination:\n  connector:\n    id: io.rapidbyte.postgres\n";
+        assert_eq!(
+            declared_connector_bins(explicit).expect("the connector template parses"),
+            BTreeSet::from([
+                "rdlt-connector-file".to_owned(),
+                "rdlt-connector-postgres".to_owned(),
+            ])
+        );
+        // A `path:` override names its OWN binary — the conventional
+        // workspace name is NOT demanded for it (an out-of-tree bin
+        // would otherwise make the cell permanently unrunnable), while
+        // the other side's id-only declaration still is.
+        let overridden = "source:\n  connector:\n    id: com.example.foo\n    \
+                          path: /opt/foo/bin/foo-connector\n\
+                          destination:\n  connector:\n    id: io.rapidbyte.postgres\n";
+        assert_eq!(
+            declared_connector_bins(overridden).expect("the overridden template parses"),
+            BTreeSet::from(["rdlt-connector-postgres".to_owned()])
+        );
+        // A NULL `path:` is not an override: the Spec model reads it
+        // as None and falls back to PATH discovery, so preflight must
+        // still provision the conventional bin — while `path: ""` IS
+        // an override there (a string the runtime will try to exec),
+        // so preflight must not demand a bin the run would never use.
+        // Both templates are parsed through the REAL Spec model below,
+        // pinning the agreement itself rather than one reader's half.
+        let null_path = "source:\n  connector:\n    id: io.rapidbyte.postgres\n    path:\n    \
+                         config: {}\n\
+                         destination:\n  connector:\n    id: io.rapidbyte.file\n    config: {}\n";
+        assert_eq!(
+            declared_connector_bins(null_path).expect("the null-path template parses"),
+            BTreeSet::from([
+                "rdlt-connector-file".to_owned(),
+                "rdlt-connector-postgres".to_owned(),
+            ])
+        );
+        let empty_path = null_path.replace("path:\n", "path: \"\"\n");
+        assert_eq!(
+            declared_connector_bins(&empty_path).expect("the empty-path template parses"),
+            BTreeSet::from(["rdlt-connector-file".to_owned()])
+        );
+        for (template, expected_path) in [(null_path, None), (empty_path.as_str(), Some(""))] {
+            let spec: rdlt::pipeline_spec::Spec =
+                serde_yaml_ng::from_str(&format!("pipeline: p\n{template}"))
+                    .expect("the template parses through the real Spec model");
+            let reference = spec
+                .source
+                .desugar(std::path::Path::new(""))
+                .expect("the connector arm desugars");
+            assert_eq!(
+                reference.path.as_deref(),
+                expected_path.map(std::path::Path::new),
+                "the Spec model's reading this rule mirrors"
+            );
+        }
+    }
+
+    /// A rich-spelling pipeline refuses a missing release connector
+    /// before the runner can resolve a host-installed binary from PATH.
+    #[test]
+    fn rich_pipeline_refuses_a_missing_release_connector() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let benches = root.path().join("benches");
+        let pipeline = benches.join("cells/pipelines/rich.yaml");
+        let bins = root.path().join("target/release");
+        std::fs::create_dir_all(pipeline.parent().expect("pipeline parent"))
+            .expect("the pipeline directory creates");
+        std::fs::create_dir_all(&bins).expect("the release directory creates");
+        std::fs::write(
+            &pipeline,
+            "source:\n  oracle: config.yaml\ndestination:\n  postgres: {}\n",
+        )
+        .expect("the rich pipeline writes");
+        let cli = bins.join("rdlt");
+        std::fs::write(&cli, "").expect("the release CLI marker writes");
+        let paths = Paths {
+            repo: root.path().to_owned(),
+            benches,
+            cells_dir: root.path().join("unused-cells"),
+            fixtures_toml: root.path().join("unused-fixtures.toml"),
+            bars_toml: root.path().join("unused-bars.toml"),
+            results: root.path().join("unused-results"),
+            recorded_results: root.path().join("unused-recorded-results"),
+            recorded_history: root.path().join("unused-recorded-history.jsonl"),
+            cli,
+            bins: bins.clone(),
+        };
+        let file: toml::Value = toml::from_str(
+            "[[cell]]\nid='rich'\nfixtures=['oracle']\npipeline='cells/pipelines/rich.yaml'\n\
+             [cell.verify]\nevents=1\n",
+        )
+        .expect("the cell TOML parses");
+        let cell: Cell = file["cell"][0]
+            .clone()
+            .try_into()
+            .expect("the cell deserializes");
+
+        let error = preconditions(&cell, &paths)
+            .expect_err("a missing rich connector must refuse")
+            .to_string();
+        assert!(
+            error.contains(
+                bins.join("rdlt-connector-oracle")
+                    .to_str()
+                    .expect("utf-8 path")
+            ),
+            "the refusal names the missing binary: {error}"
+        );
+        assert!(
+            error.contains("rdlt-connectors") && error.contains("make connector-bins"),
+            "the refusal points at the connectors repository's build verb: {error}"
+        );
+    }
+
+    /// The `put` guard is live, not decorative: a key outside
+    /// [`PIPELINE_SUBSTITUTION_KEYS`] refuses. Without this the whole
+    /// single-source-of-truth could rot into a slice nothing consults.
+    #[test]
+    #[should_panic(expected = "PIPELINE_SUBSTITUTION_KEYS")]
+    fn put_refuses_a_key_the_shared_slice_does_not_name() {
+        let mut subs = BTreeMap::new();
+        put(&mut subs, "binaries", "/t/release".into());
+    }
+
+    #[test]
+    fn report_totals_sum_across_tables() {
+        let report: serde_json::Value = serde_json::json!({
+            "tables": {
+                "events": {"rows": 10, "bytes": 100},
+                "events__tags": {"rows": 20, "bytes": 50},
+            }
+        });
+        assert_eq!(report_totals(&report), (30, 150));
+        assert_eq!(report_table_rows(&report, "events"), 10);
+        assert_eq!(report_table_rows(&report, "ghost"), 0);
+    }
+
+    /// Build a cell whose only interesting property is its declared table set,
+    /// paired with one sample carrying a RunReport of the delivered set.
+    fn cell_and_sample(
+        declared: &[(&str, u64)],
+        delivered: &[(&str, u64)],
+    ) -> (Cell, Vec<Sample<RunDetail>>) {
+        let toml = format!(
+            "[[cell]]\nid='c'\nfixtures=['f']\npipeline='p'\n[cell.verify]\n{}\n",
+            declared
+                .iter()
+                .map(|(t, r)| format!("{t} = {r}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let file: toml::Value = toml::from_str(&toml).unwrap();
+        let cell: Cell = file["cell"][0].clone().try_into().unwrap();
+        let tables: serde_json::Map<String, serde_json::Value> = delivered
+            .iter()
+            .map(|(t, r)| ((*t).to_owned(), serde_json::json!({"rows": r, "bytes": 1})))
+            .collect();
+        let sample = Sample {
+            wall_ms: 1.0,
+            detail: RunDetail {
+                report: Some(serde_json::json!({ "tables": tables })),
+                usage: None,
+                clock_ms: 1.0,
+            },
+        };
+        (cell, vec![sample])
+    }
+
+    /// The defect this check exists for: the keep-in-sync cell verified one
+    /// table's row count while the run also delivered two others, so its timing
+    /// covered three times the rows its competitor arm moved and every recorded
+    /// count still passed.
+    #[test]
+    fn a_run_delivering_undeclared_tables_fails_naming_them() {
+        let (cell, samples) = cell_and_sample(
+            &[("events_merged", 1_000_000)],
+            &[
+                ("events_merged", 1_000_000),
+                ("events", 1_000_000),
+                ("events_v2", 1_000_000),
+            ],
+        );
+        let err = verify_outcome(&cell, &samples)
+            .expect_err("undeclared tables make the arm incomparable")
+            .to_string();
+        assert!(err.contains("delivered but not declared"), "{err}");
+        assert!(err.contains("events") && err.contains("events_v2"), "{err}");
+    }
+
+    #[test]
+    fn a_declared_table_the_run_never_landed_fails_too() {
+        let (cell, samples) = cell_and_sample(
+            &[("events", 200_000), ("events__tags", 400_000)],
+            &[("events", 200_000)],
+        );
+        let err = verify_outcome(&cell, &samples).unwrap_err().to_string();
+        assert!(err.contains("declared but not delivered"), "{err}");
+        assert!(err.contains("events__tags"), "{err}");
+    }
+
+    #[test]
+    fn a_matching_set_records_every_declared_table() {
+        let (cell, samples) = cell_and_sample(
+            &[("events", 200_000), ("events__tags", 400_000)],
+            &[("events", 200_000), ("events__tags", 400_000)],
+        );
+        let outcome = verify_outcome(&cell, &samples).unwrap().unwrap();
+        assert_eq!(outcome["events"], 200_000);
+        assert_eq!(outcome["events__tags"], 400_000);
+    }
+
+    #[test]
+    fn a_matching_set_with_a_wrong_count_still_fails() {
+        let (cell, samples) = cell_and_sample(&[("events", 200_000)], &[("events", 199_999)]);
+        let err = verify_outcome(&cell, &samples).unwrap_err().to_string();
+        assert!(err.contains("199999") && err.contains("200000"), "{err}");
+    }
+}

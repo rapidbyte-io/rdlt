@@ -1,0 +1,49 @@
+[package]
+name = "rdlt"
+description = "rdlt facade: the pipeline document and its construction over spawned connectors"
+keywords = ["elt", "etl", "pipeline", "arrow", "data"]
+categories = ["database", "asynchronous"]
+documentation = "https://docs.rs/rdlt"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# The spawn suites: pipelines built from `connector:` documents and run
+# over REAL connector binaries. OFF by default — a plain workspace run
+# must not depend on bins no workspace command builds; the Makefile's
+# spawn-bins line enables it AND sets RDLT_BUILD_CONNECTOR_BINS=1.
+spawn-bins = []
+
+[dependencies]
+rdlt-connector-sdk = { workspace = true }
+rdlt-core = { workspace = true }
+rdlt-engine = { workspace = true }
+# The out-of-process connector seam, the ONLY seam: every document arm
+# resolves through a runtime Provider into a spawned binary (the facade
+# holds the default local one), and the requirement type is the client
+# crate's. Both crates are unpublished; rdlt cannot publish until they do.
+rdlt-connector-client = { workspace = true }
+rdlt-runtime = { workspace = true }
+# tokio-util only: `cancellation_token()` hands one out. tokio itself is
+# a DEV dependency — a library that pulls in a runtime it never names
+# forces that cost on every consumer.
+tokio-util = { workspace = true }
+# The pipeline document: serde derive, serde_yaml_ng's singleton_map for
+# `write_mode`, and serde_json for the opaque connector config documents.
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+rdlt-testkit = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

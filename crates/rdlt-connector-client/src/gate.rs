@@ -14,7 +14,7 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
-use rdlt_connector_protocol::inventory;
+use rdlt_core::inventory;
 use rdlt_connector_protocol::proto::{self, Classification};
 
 /// The most bytes a wire identifier may carry — the SPI's constant,
@@ -101,17 +101,10 @@ pub(crate) const MESSAGE_RENDER_CAP: usize = 4096;
 /// Render text inert for display: every control or invisible character
 /// — the full inventory, joiners included — becomes its spelled-out
 /// escape, while everything else (quotes, non-ASCII text, which are
-/// data) passes byte-identical. Borrowed unchanged when there is
-/// nothing to escape, which is every honest message.
+/// data) passes byte-identical. The SPI's one implementation, shared
+/// with the serve side's decode seats.
 pub(crate) fn escape(text: &str) -> Cow<'_, str> {
-    if !text.chars().any(inventory::is_control_or_invisible) {
-        return Cow::Borrowed(text);
-    }
-    let mut escaped = String::with_capacity(text.len() + 8);
-    for character in text.chars() {
-        push_escaped(&mut escaped, character);
-    }
-    Cow::Owned(escaped)
+    rdlt_connector::gate::escape(text)
 }
 
 /// Render a connector's DIAGNOSTIC text for display, escaped like
@@ -120,21 +113,7 @@ pub(crate) fn escape(text: &str) -> Cow<'_, str> {
 /// message cannot become a multi-hundred-MB error string. Honest
 /// messages fit under the cap and render whole.
 pub(crate) fn render_message(text: &str) -> String {
-    let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
-    let _ = std::fmt::Write::write_str(&mut sink, text);
-    sink.finish()
-}
-
-/// [`render_message`] for a value rendered THROUGH the sink rather
-/// than materialized first: the `Display` writes straight into the
-/// bounded writer, so a cause whose rendering amplifies (an arrow
-/// error carrying a whole `Field`, metadata map included) never
-/// exists as a full string — only its capped, escaped prefix does.
-pub(crate) fn render_display(value: &dyn std::fmt::Display) -> String {
-    use std::fmt::Write as _;
-    let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
-    let _ = write!(sink, "{value}");
-    sink.finish()
+    rdlt_connector::gate::render_bounded(MESSAGE_RENDER_CAP, &text)
 }
 
 /// The `Debug` twin of [`render_display`], with the seat's own cap:
@@ -143,113 +122,7 @@ pub(crate) fn render_display(value: &dyn std::fmt::Display) -> String {
 /// rendered through the sink, that rendering is counted but never
 /// materialized past the cap.
 pub(crate) fn render_debug(cap: usize, value: &dyn std::fmt::Debug) -> String {
-    use std::fmt::Write as _;
-    let mut sink = BoundedWriter::new(cap);
-    let _ = write!(sink, "{value:?}");
-    sink.finish()
-}
-
-/// The bounded render as an `fmt::Write` sink: text written to it is
-/// escaped (via the shared [`push_escaped`] rule) and KEPT only until
-/// the output reaches the cap, with everything after counted and
-/// discarded — up to a HARD SOURCE CEILING of twice the cap. A write
-/// arriving past the ceiling is refused with `fmt::Error`, which the
-/// std formatting machinery propagates, so a hostile `Debug` that
-/// would stream tens of MB of chunks (seconds of synchronous CPU
-/// inside error construction) stops within one chunk of the ceiling
-/// instead. The one write that CROSSES the ceiling is still counted
-/// whole and accepted — so a source that arrives as a single `&str`
-/// (every `render_message` call) keeps its exact count whatever its
-/// size, and only a source with more to say AFTER the ceiling is cut.
-/// [`BoundedWriter::finish`] appends the truncation marker: the exact
-/// source length when everything was counted, `≥N` when the refusal
-/// left bytes uncounted.
-pub(crate) struct BoundedWriter {
-    out: String,
-    cap: usize,
-    /// Every byte the source offered before the ceiling refusal, kept
-    /// or discarded — what the truncation marker reports.
-    source_bytes: usize,
-    /// Set the moment the output reaches the cap: later writes only
-    /// count, and `finish` appends the marker.
-    saturated: bool,
-    /// Set when the counted source crosses twice the cap: the next
-    /// write refuses and nothing more is counted.
-    refused: bool,
-    /// Set when a write WAS refused — bytes exist beyond the count, so
-    /// the marker spells `≥`.
-    undercounted: bool,
-}
-
-impl BoundedWriter {
-    pub(crate) fn new(cap: usize) -> Self {
-        BoundedWriter {
-            out: String::with_capacity(cap.min(4096) / 8),
-            cap,
-            source_bytes: 0,
-            saturated: false,
-            refused: false,
-            undercounted: false,
-        }
-    }
-
-    /// The rendered text, with the truncation marker appended when the
-    /// cap was reached.
-    pub(crate) fn finish(mut self) -> String {
-        if self.saturated {
-            use std::fmt::Write as _;
-            let floor = if self.undercounted { "≥" } else { "" };
-            let _ = write!(
-                self.out,
-                "…[truncated; {floor}{} source bytes]",
-                self.source_bytes
-            );
-        }
-        self.out
-    }
-}
-
-impl std::fmt::Write for BoundedWriter {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        if self.refused {
-            self.undercounted = true;
-            return Err(std::fmt::Error);
-        }
-        self.source_bytes += text.len();
-        if !self.saturated {
-            for character in text.chars() {
-                push_escaped(&mut self.out, character);
-                if self.out.len() >= self.cap {
-                    self.saturated = true;
-                    break;
-                }
-            }
-        }
-        if self.source_bytes > self.cap * 2 {
-            self.refused = true;
-        }
-        Ok(())
-    }
-}
-
-/// One character, spelled inert if the inventory names it, verbatim
-/// otherwise — the escape rule both renders share.
-fn push_escaped(out: &mut String, character: char) {
-    if inventory::is_control_or_invisible(character) {
-        // `escape_debug` passes "printable" characters through, and
-        // the inventory's two Hangul fillers are category Lo —
-        // printable to it while rendering as blank glyphs — so
-        // anything it hands back unchanged is spelled out by hand.
-        let mut debug = character.escape_debug();
-        if debug.len() == 1 && debug.next() == Some(character) {
-            use std::fmt::Write as _;
-            let _ = write!(out, "\\u{{{:x}}}", character as u32);
-        } else {
-            out.extend(character.escape_debug());
-        }
-    } else {
-        out.push(character);
-    }
+    rdlt_connector::gate::render_bounded_debug(cap, value)
 }
 
 /// Decode a frame's raw classification safe-loud: `Unspecified`
@@ -335,50 +208,18 @@ mod tests {
     /// Escaping spells control bytes out and touches nothing else —
     /// quotes and backslashes included, which `escape_debug` over the
     /// WHOLE string would mangle.
-    #[test]
-    fn escaping_spells_control_bytes_and_leaves_data_alone() {
-        assert_eq!(
-            escape("\u{1b}]52;\u{7}\nx \"quoted\" \\slash é"),
-            "\\u{1b}]52;\\u{7}\\nx \"quoted\" \\slash é"
-        );
-        assert!(matches!(
-            escape("clean \"text\""),
-            Cow::Borrowed("clean \"text\"")
-        ));
-    }
 
     /// The inventory's two Hangul fillers are category `Lo` — printable
     /// to `escape_debug`, which hands them back unchanged while they
     /// render as blank glyphs. The display seat's invariant is that
     /// rendered text cannot hide an inventory character, so the
     /// fallback spells them out.
-    #[test]
-    fn the_hangul_fillers_escaped_raw_get_spelled_out() {
-        assert_eq!(escape("a\u{3164}b"), "a\\u{3164}b");
-        assert_eq!(escape("a\u{ffa0}b"), "a\\u{ffa0}b");
-    }
 
     /// The invariant at the refusal seats too: every inventory
     /// character renders spelled-out through the shared escape, so a
     /// refusal quoting a hostile value cannot carry the bytes it
     /// refuses. (Mechanical sweep across the whole table, not a
     /// sample.)
-    #[test]
-    fn no_inventory_character_survives_the_escape_raw() {
-        let inventory: Vec<char> = ('\u{0}'..='\u{10FFFF}')
-            .filter(|c| inventory::is_control_or_invisible(*c))
-            .collect();
-        assert!(inventory.len() > 100, "the sweep covers the inventory");
-        for character in inventory {
-            let input = character.to_string();
-            let escaped = escape(&input);
-            assert_ne!(
-                escaped, input,
-                "U+{:04X} must not survive the escape raw",
-                character as u32
-            );
-        }
-    }
 
     /// The length half of the identifier gate, exact at its boundary: a
     /// name of exactly the ceiling passes, one byte over refuses naming
@@ -460,116 +301,19 @@ mod tests {
     /// spent is ceiling/chunk + 2 attempts, not the source's length —
     /// and the marker spells the count as a floor (`≥`), because bytes
     /// were left uncounted. The kept text still stops at the cap.
-    #[test]
-    fn a_64mib_display_source_never_grows_the_sink_past_the_cap() {
-        use std::cell::Cell;
-        struct Firehose {
-            attempts: Cell<usize>,
-        }
-        impl std::fmt::Display for Firehose {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                let chunk = "x".repeat(1024);
-                // Ten times the source ceiling, in 1 KiB chunks; `?`
-                // is how every real Display reacts to a refused write.
-                for _ in 0..(10 * 2 * MESSAGE_RENDER_CAP / 1024) {
-                    self.attempts.set(self.attempts.get() + 1);
-                    f.write_str(&chunk)?;
-                }
-                Ok(())
-            }
-        }
-        use std::fmt::Write as _;
-        let source = Firehose {
-            attempts: Cell::new(0),
-        };
-        let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
-        write!(sink, "{source}").expect_err("the sink refuses the runaway source");
-        let ceiling = 2 * MESSAGE_RENDER_CAP;
-        assert!(
-            source.attempts.get() <= ceiling / 1024 + 2,
-            "the source is stopped within the ceiling's write budget, \
-             not streamed to completion: {} attempts",
-            source.attempts.get()
-        );
-        assert!(
-            sink.source_bytes <= ceiling + 1024,
-            "the count stops within one chunk of the ceiling: {} bytes",
-            sink.source_bytes
-        );
-        assert!(
-            sink.out.len() <= MESSAGE_RENDER_CAP + 4,
-            "the kept text stops at the cap: {} bytes",
-            sink.out.len()
-        );
-        let counted = sink.source_bytes;
-        let rendered = sink.finish();
-        assert!(
-            rendered.len() <= MESSAGE_RENDER_CAP + 64,
-            "the finished render is cap plus envelope: {} bytes",
-            rendered.len()
-        );
-        assert!(
-            rendered.ends_with(&format!("…[truncated; ≥{counted} source bytes]")),
-            "the marker spells the count as a floor: …{}",
-            &rendered[rendered.len() - 60..]
-        );
-    }
 
     /// The ceiling cuts only sources with more to say AFTER it: a
     /// source arriving as ONE write — every `render_message` call —
     /// keeps its exact count whatever its size, so the single-write
     /// marker contract is unchanged at any scale.
-    #[test]
-    fn a_single_write_source_keeps_its_exact_count_at_any_size() {
-        use std::fmt::Write as _;
-        let mut sink = BoundedWriter::new(MESSAGE_RENDER_CAP);
-        sink.write_str(&"x".repeat(1 << 20))
-            .expect("the crossing write itself is accepted");
-        let rendered = sink.finish();
-        assert!(
-            rendered.ends_with(&format!("…[truncated; {} source bytes]", 1 << 20)),
-            "one write, exact count, no floor marker: …{}",
-            &rendered[rendered.len() - 60..]
-        );
-    }
 
     /// The kept prefix is escaped AS IT ARRIVES — a control byte in the
     /// window is spelled out, and the cap bounds the ESCAPED output, so
     /// no post-hoc escape pass can amplify past it.
-    #[test]
-    fn the_sink_escapes_the_kept_prefix_and_caps_the_escaped_form() {
-        use std::fmt::Write as _;
-        let mut sink = BoundedWriter::new(64);
-        write!(sink, "a\u{1b}b{}", "\u{7}".repeat(1000)).expect("the sink never errors");
-        let rendered = sink.finish();
-        assert!(
-            rendered.starts_with("a\\u{1b}b"),
-            "the kept prefix is escaped: {rendered:?}"
-        );
-        assert!(
-            !rendered.contains('\u{1b}') && !rendered.contains('\u{7}'),
-            "no raw control byte survives: {rendered:?}"
-        );
-        assert!(
-            rendered.len() <= 64 + 10 + 40,
-            "the cap bounds the escaped output plus one char of overshoot \
-             and the marker: {} bytes",
-            rendered.len()
-        );
-    }
 
     /// A source under the cap renders whole with no marker — through
     /// both value renderers, matching what `render_message` does for
     /// the same text.
-    #[test]
-    fn an_honest_source_renders_whole_through_the_value_renderers() {
-        assert_eq!(render_display(&"an honest cause"), "an honest cause");
-        assert_eq!(render_debug(2048, &"quoted"), "\"quoted\"");
-        assert_eq!(
-            render_display(&"an honest cause"),
-            render_message("an honest cause")
-        );
-    }
 
     /// The safe-loud decode: `Unspecified` (a server that never set the
     /// field) and a value this build does not know both normalize to

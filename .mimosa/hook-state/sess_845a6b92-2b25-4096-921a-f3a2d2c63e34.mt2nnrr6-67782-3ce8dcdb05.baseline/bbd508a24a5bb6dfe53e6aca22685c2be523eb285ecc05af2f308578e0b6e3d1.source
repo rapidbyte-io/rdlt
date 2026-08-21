@@ -1,0 +1,14 @@
+# Runtime pins for the io.rapidbyte.pyjsonl proof connector — installed
+# into the certification gate's venv (target/py-certify-venv, rebuilt
+# whenever this file changes). Exact pins on purpose: the gate proves
+# the wire against one known dependency set, not a floating one.
+grpcio==1.83.0
+# The vendored stubs' runtime — grpcio itself does not depend on the
+# protobuf package, and the generated code refuses a runtime older than
+# its generator's bundled protobuf (7.35.1 for grpcio-tools 1.83.0).
+protobuf==7.35.1
+# Dev/regeneration pin, deliberately NOT installed here:
+#   grpcio-tools==1.83.0
+# tools/check-python-stubs.sh installs it into its own scratch venv,
+# regenerates the stubs from the proto, and diffs against the vendored
+# pair — the stub headers name the same pin.

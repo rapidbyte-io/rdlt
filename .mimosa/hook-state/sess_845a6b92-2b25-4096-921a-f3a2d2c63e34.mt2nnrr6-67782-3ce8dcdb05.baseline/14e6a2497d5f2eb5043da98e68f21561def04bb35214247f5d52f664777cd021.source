@@ -1,0 +1,788 @@
+//! Capability-driven lowering at the destination seam.
+//!
+//! Inside the engine, nested objects are struct columns. Destinations without native
+//! structs receive a FLATTENED schema and batches: `profile.city` becomes column
+//! `profile__city`, collision-safe (distinct source paths never merge — hash-suffixed
+//! by `UniqueNamer`). Decimals lower to canonical text when unsupported.
+//! Names are a pure function of the engine schema (first-seen order, append-only), so
+//! they are stable across batches and runs.
+//!
+//! The schema half and the batch half MUST agree field-for-field, and the
+//! `parity_tests` module below proves it by machine — which is why both halves
+//! and their proof live in one file.
+
+use std::sync::Arc;
+
+use arrow::{
+    array::{Array, ArrayRef, Decimal128Array, StringArray, StructArray},
+    buffer::NullBuffer,
+    record_batch::RecordBatch,
+};
+use rdlt_connector::channel::MAX_ARROW_DEPTH;
+use rdlt_connector::destination::Capabilities;
+use rdlt_core::error::Error;
+use rdlt_core::schema::{Column, ColumnType, TableSchema};
+use rdlt_core::types::LogicalType;
+
+use crate::naming::UniqueNamer;
+
+fn needs_lowering(capabilities: &Capabilities) -> bool {
+    !capabilities.structs || !capabilities.decimal
+}
+
+/// Lower a schema for the destination's capabilities.
+pub(crate) fn lower_schema(
+    schema: &TableSchema,
+    capabilities: &Capabilities,
+) -> Result<TableSchema, Error> {
+    if !needs_lowering(capabilities) {
+        return Ok(schema.clone());
+    }
+    let mut namer = UniqueNamer::new(capabilities.ident_rules);
+    let mut columns: Vec<Column> = Vec::new();
+    for column in &schema.columns {
+        lower_column(column, &[], capabilities, &mut namer, &mut columns)?;
+    }
+    Ok(TableSchema {
+        table: schema.table.clone(),
+        parent: schema.parent.clone(),
+        columns,
+    })
+}
+
+fn lower_column(
+    column: &Column,
+    path: &[&str],
+    capabilities: &Capabilities,
+    namer: &mut UniqueNamer,
+    out: &mut Vec<Column>,
+) -> Result<(), Error> {
+    let mut full_path: Vec<&str> = path.to_vec();
+    full_path.push(&column.name);
+    // The batch half's depth cap, mirrored: unreachable through the
+    // pipeline today — every schema reaching this seat was depth-capped
+    // at the shred's arrow gates, and `LogicalType` cannot declare
+    // structs, so only `ColumnType::Struct` nests and every producing
+    // path bounds it — but the belt holds for any future in-crate seam
+    // (the function is crate-private; no embedder can reach it), and a
+    // stack overflow is an ABORT no containment absorbs.
+    if full_path.len() > MAX_ARROW_DEPTH {
+        return Err(Error::internal(format!(
+            "schema nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
+             the lowering walk can overflow the stack"
+        )));
+    }
+    match &column.column_type {
+        ColumnType::Struct { fields } if !capabilities.structs => {
+            for field in fields {
+                lower_column(field, &full_path, capabilities, namer, out)?;
+            }
+        }
+        ty => {
+            let lowered_ty = match ty {
+                ColumnType::Scalar {
+                    scalar: LogicalType::Decimal { .. },
+                } if !capabilities.decimal => ColumnType::scalar(LogicalType::Utf8),
+                other => other.clone(),
+            };
+            out.push(Column {
+                name: namer.name_for(&full_path.join("__")),
+                column_type: lowered_ty,
+                nullable: column.nullable || !path.is_empty(),
+                provenance: column.provenance,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Lower a batch. Driven by the batch's OWN arrow schema (which mirrors the engine
+/// schema), so replay can lower without engine-schema bookkeeping.
+/// Field names/paths are identical to `lower_schema`'s inputs → identical names out.
+pub(crate) fn lower_batch(
+    batch: &RecordBatch,
+    capabilities: &Capabilities,
+) -> Result<RecordBatch, Error> {
+    if !needs_lowering(capabilities) {
+        return Ok(batch.clone());
+    }
+    let mut namer = UniqueNamer::new(capabilities.ident_rules);
+    let mut fields: Vec<arrow::datatypes::Field> = Vec::new();
+    let mut arrays: Vec<ArrayRef> = Vec::new();
+    for (idx, field) in batch.schema().fields().iter().enumerate() {
+        flatten_array(
+            field,
+            &[],
+            Arc::clone(batch.column(idx)),
+            capabilities,
+            &mut namer,
+            &mut fields,
+            &mut arrays,
+        )?;
+    }
+    RecordBatch::try_new(Arc::new(arrow::datatypes::Schema::new(fields)), arrays)
+        .map_err(|e| Error::internal(format!("lowering produced invalid batch: {e}")))
+}
+
+fn flatten_array(
+    field: &arrow::datatypes::Field,
+    path: &[&str],
+    array: ArrayRef,
+    capabilities: &Capabilities,
+    namer: &mut UniqueNamer,
+    fields: &mut Vec<arrow::datatypes::Field>,
+    out: &mut Vec<ArrayRef>,
+) -> Result<(), Error> {
+    use arrow::datatypes::DataType;
+    let mut full_path: Vec<&str> = path.to_vec();
+    full_path.push(field.name());
+    // Batch nesting is connector-controlled (IPC-decoded child data skips
+    // arrow's validator), and a stack overflow is an ABORT no containment
+    // absorbs — refuse past the shared cap.
+    if full_path.len() > MAX_ARROW_DEPTH {
+        return Err(Error::internal(format!(
+            "batch nesting exceeds the {MAX_ARROW_DEPTH}-level cap — refused before \
+             the flatten walk can overflow the stack"
+        )));
+    }
+    match field.data_type() {
+        DataType::Struct(children) if !capabilities.structs => {
+            let struct_array = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .ok_or_else(|| Error::internal("schema says struct, array is not"))?;
+            let parent_nulls = struct_array.nulls().cloned();
+            for (i, child_field) in children.iter().enumerate() {
+                let child = with_merged_nulls(struct_array.column(i), parent_nulls.as_ref())?;
+                flatten_array(
+                    child_field,
+                    &full_path,
+                    child,
+                    capabilities,
+                    namer,
+                    fields,
+                    out,
+                )?;
+            }
+            Ok(())
+        }
+        DataType::Decimal128(_, scale) if !capabilities.decimal => {
+            let decimals = array
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .ok_or_else(|| Error::internal("schema says decimal, array is not"))?;
+            let scale = (*scale).max(0) as u8;
+            let rendered: StringArray = decimals
+                .iter()
+                .map(|v| v.map(|raw| render_decimal(raw, scale)))
+                .collect();
+            fields.push(arrow::datatypes::Field::new(
+                namer.name_for(&full_path.join("__")),
+                DataType::Utf8,
+                // The SAME rule as every other lowered field, and as the schema
+                // side in `lower_column`. This arm hardcoded `true`, so a
+                // NON-nullable decimal lowered to a nullable column while the
+                // schema said otherwise — the two halves of lowering disagreeing
+                // about one field.
+                //
+                // Latent rather than live: reaching it needs a non-nullable
+                // decimal at the TOP level (a nested one is nullable under both
+                // rules anyway), and inference never produces one — only a
+                // declared hint on a required column would. Recorded at its real
+                // severity instead of promoted: the parity property test below
+                // is what makes it stay fixed.
+                field.is_nullable() || !path.is_empty(),
+            ));
+            out.push(Arc::new(rendered));
+            Ok(())
+        }
+        other => {
+            fields.push(arrow::datatypes::Field::new(
+                namer.name_for(&full_path.join("__")),
+                other.clone(),
+                field.is_nullable() || !path.is_empty(),
+            ));
+            out.push(array);
+            Ok(())
+        }
+    }
+}
+
+/// A struct-null row must null its flattened children too.
+///
+/// A child whose length disagrees with the parent's validity buffer is
+/// impossible from the engine's own builders but reachable from an
+/// IPC-decoded batch (which skips arrow's validator) — `NullBuffer::union`
+/// panics on it, so the mismatch is refused with a typed error instead.
+fn with_merged_nulls(child: &ArrayRef, parent: Option<&NullBuffer>) -> Result<ArrayRef, Error> {
+    let Some(parent) = parent else {
+        return Ok(Arc::clone(child));
+    };
+    if parent.len() != child.len() {
+        return Err(Error::internal(format!(
+            "struct null-merge: the parent's validity buffer covers {} rows but the \
+             child array holds {} — an inconsistent batch, refused instead of unwound",
+            parent.len(),
+            child.len()
+        )));
+    }
+    let merged = match child.nulls() {
+        Some(own) => NullBuffer::union(Some(own), Some(parent)),
+        None => Some(parent.clone()),
+    };
+    let data = child
+        .to_data()
+        .into_builder()
+        .nulls(merged)
+        .build()
+        .expect("null-merge preserves layout");
+    Ok(arrow::array::make_array(data))
+}
+
+fn render_decimal(raw: i128, scale: u8) -> String {
+    if scale == 0 {
+        return raw.to_string();
+    }
+    let negative = raw < 0;
+    let digits = raw.unsigned_abs().to_string();
+    let scale = scale as usize;
+    let padded = format!("{digits:0>width$}", width = scale + 1);
+    let (int_part, frac_part) = padded.split_at(padded.len() - scale);
+    format!("{}{int_part}.{frac_part}", if negative { "-" } else { "" })
+}
+
+#[cfg(test)]
+mod tests {
+    // Direct pins on the seam: the integration suites use full-capability
+    // destinations, which never lower.
+    use super::*;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use rdlt_core::id::TableName;
+    use rdlt_core::schema::Provenance;
+
+    fn capabilities(structs: bool, decimal: bool) -> Capabilities {
+        Capabilities::default()
+            .with_structs(structs)
+            .with_decimal(decimal)
+    }
+
+    fn col(name: &str, ty: ColumnType) -> Column {
+        Column {
+            name: name.into(),
+            column_type: ty,
+            nullable: false,
+            provenance: Provenance::Inferred,
+        }
+    }
+
+    /// The schema half's depth belt, direct-call: unreachable via the
+    /// pipeline (every producing path is depth-capped upstream and
+    /// `LogicalType` cannot declare structs), but a direct in-crate
+    /// call can build the nest — and the walk must refuse it typed
+    /// before recursion can overflow the stack, exactly like its
+    /// batch-half twin.
+    #[test]
+    fn an_over_deep_schema_refuses_before_the_lowering_walk_overflows() {
+        use rdlt_connector::channel::MAX_ARROW_DEPTH;
+        let mut ty = ColumnType::scalar(LogicalType::Int64);
+        for _ in 0..(MAX_ARROW_DEPTH + 2) {
+            ty = ColumnType::Struct {
+                fields: vec![col("nested", ty)],
+            };
+        }
+        let schema = TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![col("root", ty)],
+        };
+        let refused = lower_schema(&schema, &capabilities(false, true))
+            .expect_err("an over-deep schema refuses");
+        assert!(
+            refused.to_string().contains("-level cap"),
+            "the refusal names the cap: {refused}"
+        );
+        // At a legal depth the walk completes — the belt bounds, it
+        // does not narrow.
+        let mut ty = ColumnType::scalar(LogicalType::Int64);
+        for _ in 0..(MAX_ARROW_DEPTH - 2) {
+            ty = ColumnType::Struct {
+                fields: vec![col("nested", ty)],
+            };
+        }
+        let legal = TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![col("root", ty)],
+        };
+        lower_schema(&legal, &capabilities(false, true)).expect("a legal depth lowers");
+    }
+
+    /// The two depth seams AGREE at the boundary: the deepest declared
+    /// schema the arrow door admits also LOWERS under a structs-off
+    /// destination, and one level past it refuses at the DOOR — never
+    /// here. A door one level looser than this walk admitted a schema
+    /// whose ensure could only fail internal after the delta was
+    /// already recorded, and recovery re-delivered it on every restart.
+    #[test]
+    fn the_depth_doors_agree_at_the_boundary() {
+        use arrow::datatypes::{DataType, Field};
+        let deep = |levels: usize| -> DataType {
+            let mut dt = DataType::Int64;
+            for _ in 0..levels {
+                dt = DataType::Struct(vec![Field::new("f", dt, true)].into());
+            }
+            dt
+        };
+        // 63 struct levels: through the door AND through the lowering.
+        let admitted = crate::shred::types::column_type_from_arrow(&deep(63))
+            .expect("the door admits its deepest level");
+        let schema = TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![col("root", admitted)],
+        };
+        lower_schema(&schema, &capabilities(false, true))
+            .expect("what the door admits, the lowering walk lowers");
+        // One level deeper: refused at the DOOR, so no schema carrying
+        // it can ever exist to meet this walk's internal-class belt.
+        crate::shred::types::column_type_from_arrow(&deep(64))
+            .expect_err("past the boundary the DOOR refuses, not the lowering walk");
+    }
+
+    fn schema_with_struct_and_decimal() -> TableSchema {
+        TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns: vec![
+                col("id", ColumnType::scalar(LogicalType::Int64)),
+                col(
+                    "profile",
+                    ColumnType::Struct {
+                        fields: vec![
+                            col("city", ColumnType::scalar(LogicalType::Utf8)),
+                            col(
+                                "geo",
+                                ColumnType::Struct {
+                                    fields: vec![col(
+                                        "lat",
+                                        ColumnType::scalar(LogicalType::Float64),
+                                    )],
+                                },
+                            ),
+                        ],
+                    },
+                ),
+                col(
+                    "price",
+                    ColumnType::scalar(LogicalType::Decimal {
+                        precision: 10,
+                        scale: 2,
+                    }),
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn needs_lowering_tracks_each_capability() {
+        assert!(!needs_lowering(&capabilities(true, true)));
+        assert!(needs_lowering(&capabilities(false, true)));
+        assert!(needs_lowering(&capabilities(true, false)));
+    }
+
+    #[test]
+    fn full_capabilities_lower_to_identity() {
+        let schema = schema_with_struct_and_decimal();
+        assert_eq!(
+            lower_schema(&schema, &capabilities(true, true)).expect("lowering succeeds"),
+            schema
+        );
+    }
+
+    #[test]
+    fn structs_off_flattens_recursively_and_children_go_nullable() {
+        let lowered = lower_schema(
+            &schema_with_struct_and_decimal(),
+            &capabilities(false, true),
+        )
+        .expect("lowering succeeds");
+        let names: Vec<&str> = lowered.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["id", "profile__city", "profile__geo__lat", "price"]
+        );
+        let city = &lowered.columns[1];
+        assert_eq!(city.column_type, ColumnType::scalar(LogicalType::Utf8));
+        assert!(city.nullable, "flattened children must be nullable");
+        // Decimal untouched: only structs were lowered.
+        assert_eq!(
+            lowered.columns[3].column_type,
+            ColumnType::scalar(LogicalType::Decimal {
+                precision: 10,
+                scale: 2
+            })
+        );
+    }
+
+    #[test]
+    fn decimal_off_lowers_to_utf8_leaving_structs() {
+        let lowered = lower_schema(
+            &schema_with_struct_and_decimal(),
+            &capabilities(true, false),
+        )
+        .expect("lowering succeeds");
+        assert_eq!(
+            lowered.columns[2].column_type,
+            ColumnType::scalar(LogicalType::Utf8)
+        );
+        assert!(matches!(
+            lowered.columns[1].column_type,
+            ColumnType::Struct { .. }
+        ));
+    }
+
+    #[test]
+    fn batch_lowering_flattens_structs_and_propagates_parent_nulls() {
+        use arrow::array::StructArray;
+        use arrow::buffer::NullBuffer;
+        use std::sync::Arc;
+        let inner = Int64Array::from(vec![Some(1), Some(2), Some(3)]);
+        let struct_array = StructArray::new(
+            vec![Field::new("lat", DataType::Int64, true)].into(),
+            vec![Arc::new(inner) as ArrayRef],
+            Some(NullBuffer::from(vec![true, false, true])), // row 1 struct-null
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "geo",
+                struct_array.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(struct_array)],
+        )
+        .expect("batch");
+
+        let lowered = lower_batch(&batch, &capabilities(false, true)).expect("lower");
+        assert_eq!(lowered.schema().field(0).name(), "geo__lat");
+        let column = lowered
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int column");
+        assert_eq!(column.value(0), 1);
+        assert!(column.is_null(1), "parent struct-null must null the child");
+        assert_eq!(column.value(2), 3);
+    }
+
+    #[test]
+    fn batch_lowering_renders_decimals_as_canonical_text() {
+        use arrow::array::Decimal128Array;
+        use std::sync::Arc;
+        let decimals = Decimal128Array::from(vec![Some(1234i128), Some(-50i128), None])
+            .with_precision_and_scale(10, 2)
+            .expect("decimal array");
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "price",
+                decimals.data_type().clone(),
+                true,
+            )])),
+            vec![Arc::new(decimals)],
+        )
+        .expect("batch");
+        let lowered = lower_batch(&batch, &capabilities(true, false)).expect("lower");
+        let strings = lowered
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8 column");
+        assert_eq!(strings.value(0), "12.34");
+        assert_eq!(strings.value(1), "-0.50");
+        assert!(strings.is_null(2));
+        // Full capabilities: the batch passes through unchanged.
+        let same = lower_batch(&batch, &capabilities(true, true)).expect("identity");
+        assert_eq!(same, batch);
+    }
+
+    #[test]
+    fn render_decimal_scale_zero_and_padding() {
+        assert_eq!(render_decimal(42, 0), "42");
+        assert_eq!(render_decimal(-42, 0), "-42");
+        assert_eq!(render_decimal(7, 3), "0.007");
+    }
+
+    /// A batch carrying BOTH a struct and a decimal column, which is the only
+    /// shape that reaches `flatten_array` with one capability on and the other
+    /// off. Every prior batch test used a single-kind batch, so each match guard
+    /// was only ever evaluated with its capability already false — negating it
+    /// changed nothing. Here each guard is exercised in its FALSE state, where
+    /// the mutant lowers a column the destination said it supports.
+    fn mixed_batch() -> RecordBatch {
+        use arrow::array::Decimal128Array;
+        let lat = Int64Array::from(vec![Some(7i64)]);
+        let struct_array = StructArray::new(
+            vec![Field::new("lat", DataType::Int64, true)].into(),
+            vec![Arc::new(lat) as ArrayRef],
+            None,
+        );
+        let price = Decimal128Array::from(vec![Some(1234i128)])
+            .with_precision_and_scale(10, 2)
+            .expect("decimal array");
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("geo", struct_array.data_type().clone(), true),
+                Field::new("price", price.data_type().clone(), true),
+            ])),
+            vec![Arc::new(struct_array), Arc::new(price)],
+        )
+        .expect("mixed batch")
+    }
+
+    #[test]
+    fn mixed_batch_lowers_only_the_unsupported_kind() {
+        // Structs supported, decimal NOT: the struct must survive intact.
+        let lowered = lower_batch(&mixed_batch(), &capabilities(true, false)).expect("lower");
+        assert_eq!(lowered.num_columns(), 2, "the struct must NOT be flattened");
+        assert_eq!(lowered.schema().field(0).name(), "geo");
+        assert!(
+            matches!(lowered.schema().field(0).data_type(), DataType::Struct(_)),
+            "capabilities.structs = true: the struct column stays a struct"
+        );
+        assert_eq!(
+            lowered.schema().field(1).data_type(),
+            &DataType::Utf8,
+            "capabilities.decimal = false: only the decimal lowers"
+        );
+
+        // Decimal supported, structs NOT: the decimal must survive intact.
+        let lowered = lower_batch(&mixed_batch(), &capabilities(false, true)).expect("lower");
+        assert_eq!(lowered.num_columns(), 2, "struct flattens to one child");
+        assert_eq!(lowered.schema().field(0).name(), "geo__lat");
+        assert_eq!(
+            lowered.schema().field(1).data_type(),
+            &DataType::Decimal128(10, 2),
+            "capabilities.decimal = true: the decimal is NOT rendered to text"
+        );
+    }
+
+    /// Lowered nullability is `field.is_nullable() || !path.is_empty()`, and the
+    /// two halves need cases that DISAGREE — a batch of all-nullable fields
+    /// cannot distinguish `||` from `&&`. A non-nullable top level (false, false)
+    /// catches dropping the `!`, which would report it nullable; a non-nullable
+    /// struct child (false, true) catches `||`→`&&`, which would report it
+    /// non-nullable even though flattening leaves nowhere to record a
+    /// struct-null row.
+    #[test]
+    fn lowered_nullability_pins_both_halves_of_the_or() {
+        let child = Int64Array::from(vec![Some(1i64)]);
+        let struct_array = StructArray::new(
+            vec![Field::new("lat", DataType::Int64, false)].into(), // non-nullable CHILD
+            vec![Arc::new(child) as ArrayRef],
+            None,
+        );
+        let top = Int64Array::from(vec![Some(9i64)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false), // non-nullable TOP LEVEL
+                Field::new("geo", struct_array.data_type().clone(), true),
+            ])),
+            vec![Arc::new(top), Arc::new(struct_array)],
+        )
+        .expect("batch");
+
+        let lowered = lower_batch(&batch, &capabilities(false, true)).expect("lower");
+        assert_eq!(lowered.schema().field(0).name(), "id");
+        assert!(
+            !lowered.schema().field(0).is_nullable(),
+            "a non-nullable top-level field stays non-nullable (its path is empty)"
+        );
+        assert_eq!(lowered.schema().field(1).name(), "geo__lat");
+        assert!(
+            lowered.schema().field(1).is_nullable(),
+            "a flattened child is nullable regardless of its own flag: the parent \
+             struct can be null and flattening has nowhere else to record that"
+        );
+    }
+
+    /// Batch nesting is connector-controlled (IPC-decoded child
+    /// data skips arrow's validator), and an uncapped flatten walk turns a
+    /// deep declaration into a stack overflow — an ABORT, not a panic.
+    /// Past the shared cap the walk refuses with a typed error.
+    #[test]
+    fn a_batch_nested_past_the_depth_cap_refuses_instead_of_recursing() {
+        use arrow::array::StructArray;
+        use std::sync::Arc;
+
+        let deep = |levels: usize| -> RecordBatch {
+            let mut array: ArrayRef = Arc::new(Int64Array::from(vec![1i64]));
+            let mut field = Field::new("leaf", DataType::Int64, true);
+            for level in 0..levels {
+                let wrapped = StructArray::new(vec![field.clone()].into(), vec![array], None);
+                field = Field::new(format!("n{level}"), wrapped.data_type().clone(), true);
+                array = Arc::new(wrapped);
+            }
+            RecordBatch::try_new(Arc::new(Schema::new(vec![field.clone()])), vec![array])
+                .expect("nested batch")
+        };
+
+        let error = lower_batch(&deep(100), &capabilities(false, true))
+            .expect_err("a 100-deep batch must refuse, not walk");
+        assert!(
+            error.to_string().contains("nesting"),
+            "the refusal names the nesting: {error}"
+        );
+        lower_batch(&deep(10), &capabilities(false, true)).expect("ordinary nesting still lowers");
+    }
+
+    /// A struct child whose length disagrees with its parent's
+    /// validity buffer is impossible from the engine's own builders but
+    /// reachable from an IPC-decoded batch — `NullBuffer::union` panicked
+    /// on it; the merge now refuses with a typed error instead.
+    #[test]
+    fn a_length_mismatched_null_merge_is_a_typed_error_not_a_panic() {
+        use arrow::buffer::NullBuffer;
+        use std::sync::Arc;
+
+        let child: ArrayRef = Arc::new(Int64Array::from(vec![1i64, 2, 3]));
+        let parent = NullBuffer::from(vec![true, false, true, true, false]);
+        let error = with_merged_nulls(&child, Some(&parent))
+            .expect_err("a 3-row child under a 5-row parent must refuse");
+        assert!(
+            error.to_string().contains("3") && error.to_string().contains("5"),
+            "the refusal names both lengths: {error}"
+        );
+
+        // The healthy shape still merges.
+        let matched = NullBuffer::from(vec![true, false, true]);
+        let merged = with_merged_nulls(&child, Some(&matched)).expect("equal lengths merge");
+        assert_eq!(merged.null_count(), 1);
+    }
+
+    /// Boundaries chosen so each mutant CHANGES the output. `raw < 0` → `<=`
+    /// differs only at exactly zero. `len - scale` → `len / scale` agrees on the
+    /// short values the test above uses ("12.34": 4-2 == 4/2), so it needs a
+    /// value where they diverge: 6 digits at scale 2 splits at 4 under
+    /// subtraction and at 3 under division.
+    #[test]
+    fn render_decimal_boundaries_zero_and_split_point() {
+        assert_eq!(render_decimal(0, 2), "0.00", "zero is not negative");
+        assert_eq!(render_decimal(123456, 2), "1234.56", "split at len - scale");
+        assert_eq!(render_decimal(-123456, 2), "-1234.56");
+        assert_eq!(render_decimal(1, 2), "0.01", "padding to scale + 1");
+        assert_eq!(render_decimal(i128::MAX, 0), i128::MAX.to_string());
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    //! The two halves of lowering must agree, checked by machine rather than by
+    //! hand.
+    //!
+    //! `lower_schema` tells the destination what columns to CREATE;
+    //! `lower_batch` decides what columns actually ARRIVE. They are written
+    //! separately — one walks `Column`s, the other walks arrow `Field`s — and
+    //! every rule has to be stated twice. A disagreement is not a compile error
+    //! and usually not a test failure either: the destination creates one shape
+    //! and receives another, and what happens next depends on the destination.
+    //!
+    //! That is exactly how the decimal arm drifted, hardcoding `true` for
+    //! nullability while the schema side computed it. This property closes the
+    //! whole class: over generated schemas × every capability combination, the
+    //! arrow schema of the lowered SCHEMA must equal the schema of the lowered
+    //! BATCH — field for field, including names, types, nullability and order.
+    //!
+    //! Zero-row batches on purpose: the question is entirely about shape, and no
+    //! row is needed to ask it.
+    use super::*;
+    use crate::shred::types::arrow_schema;
+    use proptest::prelude::*;
+    use rdlt_core::id::TableName;
+    use rdlt_core::schema::Provenance;
+
+    fn capabilities(structs: bool, decimal: bool) -> Capabilities {
+        Capabilities::default()
+            .with_structs(structs)
+            .with_decimal(decimal)
+    }
+
+    fn scalar_type() -> impl Strategy<Value = ColumnType> {
+        prop_oneof![
+            Just(ColumnType::scalar(LogicalType::Bool)),
+            Just(ColumnType::scalar(LogicalType::Int64)),
+            Just(ColumnType::scalar(LogicalType::Float64)),
+            Just(ColumnType::scalar(LogicalType::Utf8)),
+            Just(ColumnType::scalar(LogicalType::TimestampTz)),
+            Just(ColumnType::scalar(LogicalType::Json)),
+            // The decimal arm is the one that drifted; give it real weight.
+            (1u8..=38u8).prop_flat_map(|p| {
+                (0u8..=p).prop_map(move |s| {
+                    ColumnType::scalar(LogicalType::Decimal {
+                        precision: p,
+                        scale: s,
+                    })
+                })
+            }),
+        ]
+    }
+
+    fn column(depth: u32) -> impl Strategy<Value = Column> {
+        let leaf = ("[a-z][a-z0-9_]{0,7}", scalar_type(), any::<bool>()).prop_map(
+            |(name, column_type, nullable)| Column {
+                name,
+                column_type,
+                nullable,
+                provenance: Provenance::Inferred,
+            },
+        );
+        leaf.prop_recursive(depth, 8, 3, |inner| {
+            (
+                "[a-z][a-z0-9_]{0,7}",
+                prop::collection::vec(inner, 1..3),
+                any::<bool>(),
+            )
+                .prop_map(|(name, fields, nullable)| Column {
+                    name,
+                    column_type: ColumnType::Struct { fields },
+                    nullable,
+                    provenance: Provenance::Inferred,
+                })
+        })
+    }
+
+    fn schema() -> impl Strategy<Value = TableSchema> {
+        prop::collection::vec(column(2), 1..5).prop_map(|columns| TableSchema {
+            table: TableName::new("t"),
+            parent: None,
+            columns,
+        })
+    }
+
+    /// An empty batch in the shape the engine would hand the loader.
+    fn empty_batch(schema: &TableSchema) -> RecordBatch {
+        let arrow = arrow_schema(schema);
+        RecordBatch::new_empty(Arc::new(arrow))
+    }
+
+    proptest! {
+        #[test]
+        fn lowered_schema_and_lowered_batch_agree(schema in schema()) {
+            for (structs, decimal) in [(true, true), (true, false), (false, true), (false, false)] {
+                let c = capabilities(structs, decimal);
+                let expected =
+                    arrow_schema(&lower_schema(&schema, &c).expect("lowering succeeds"));
+                let actual = lower_batch(&empty_batch(&schema), &c)
+                    .expect("lowering an empty batch cannot fail")
+                    .schema();
+                prop_assert_eq!(
+                    &expected,
+                    actual.as_ref(),
+                    "structs={} decimal={}: the schema the destination CREATES must \
+                     equal the schema it RECEIVES",
+                    structs,
+                    decimal
+                );
+            }
+        }
+    }
+}

@@ -2224,17 +2224,22 @@ async fn a_hostile_metadata_arrow_cause_renders_bounded_at_the_write_seat() {
         .reply
     {
         Some(session_reply::Reply::Error(error)) => {
-            assert!(
-                error.message.len() < 1024,
-                "the arrow cause arrives bounded, never the multi-MB field render: {} bytes",
-                error.message.len()
-            );
-            assert!(
-                error.message.contains("truncated"),
-                "the bounded render's marker rides the refusal: {}",
-                error.message
-            );
-        }
+        // The shared decode seat renders appended causes through the
+        // bounded sink at the shared 4 KiB diagnostic cap — the same
+        // discipline the client's decode mirror has always used — so
+        // the escaped multi-MB field render arrives as a capped prefix
+        // plus its marker.
+        assert!(
+            error.message.len() < 2 * 4096,
+            "the arrow cause arrives bounded, never the multi-MB field render: {} bytes",
+            error.message.len()
+        );
+        assert!(
+            error.message.contains("truncated"),
+            "the bounded render's marker rides the refusal: {}",
+            error.message
+        );
+    }
         other => panic!("expected the decode refusal, got {other:?}"),
     }
 }

@@ -3,7 +3,7 @@
 //! human lines verbatim by design; this is the boundary that keeps it
 //! from driving the operator's terminal.
 
-use rdlt_connector_protocol::inventory::is_control_or_invisible;
+use rdlt_core::inventory::is_control_or_invisible;
 
 /// Best-effort stderr line: `eprintln!` PANICS on a closed stderr,
 /// which would turn a finished run into exit 101 — the human channel

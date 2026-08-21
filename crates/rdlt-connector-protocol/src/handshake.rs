@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::inventory;
+use rdlt_core::inventory;
 
 /// This line format's own version — distinct from [`crate::PROTOCOL_VERSION`].
 const LINE_FORMAT_VERSION: u32 = 1;
