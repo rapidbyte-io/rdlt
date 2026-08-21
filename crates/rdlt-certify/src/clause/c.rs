@@ -1,30 +1,28 @@
-//! The honest-check clause, both roles: D7 (destination) and S5
-//! (source). Driven on a SECOND spawn of the connector, configured with
-//! the operator-supplied MISCONFIGURED document (`--hostile-config`) —
-//! only the connector's own vocabulary can spell a target its
-//! operations must refuse (the canonical shapes: a regular file behind
-//! a trailing slash where a directory is expected; a directory where a
-//! file is expected). The contract: the connector refuses FATAL — at
-//! `check()`, or even earlier at its own config gate (a refused
-//! handshake passes: refusing earlier than check is honest too).
-//! `Ok` is a lying probe and FAILS; a transient classification is
-//! retry bait and FAILS.
+//! The honest-check clauses, both roles: D7 (destination) and S5
+//! (source), plus S6 — the source's READ twin. Driven on a SECOND
+//! spawn of the connector, configured with the operator-supplied
+//! MISCONFIGURED document (`--hostile-config`) — only the connector's
+//! own vocabulary can spell a target its operations must refuse (the
+//! canonical shapes: a regular file behind a trailing slash where a
+//! directory is expected; a directory where a file is expected).
 //!
-//! S6 is the source's READ twin, driven on the same spawn: the seat
-//! that opens the target must refuse it too. A probe is half the
-//! promise — the read is where a bad path becomes an unbounded buffer
-//! or a parked thread — and a suite that drives `check()` alone
-//! certifies clean while the read stays unguarded.
+//! THE LAW LIVES ONCE: the judgments themselves are the testkit's
+//! conformance suites (`verify_check_refusal`, `verify_read_refusal`),
+//! run here through the managed wire adapter — the wire is certified by
+//! the SAME law an in-process connector answers to, at the SAME
+//! strength, and the two sides cannot drift. What is genuinely
+//! wire-specific and lives here: spawning the connector with the
+//! hostile document, and the handshake arm — a connector whose own
+//! config gate refuses the document before any RPC is honest even
+//! earlier than check.
 
-use rdlt_connector::destination::Destination as _;
-use rdlt_connector::error::{DestinationError, SourceError};
-use rdlt_connector::source::Source as _;
 use rdlt_connector_client::error::Error as ClientError;
 use rdlt_connector_client::handshake::Role;
 use rdlt_runtime::local::Local;
 use rdlt_runtime::provider::{self, Provider as _};
+use rdlt_testkit::conformance::{destination as d_suite, source as s_suite};
 
-use crate::report::Report;
+use crate::report::{self, Report};
 use crate::target::{self, Target};
 
 /// The three ids this module can emit — the census's derivation source,
@@ -51,11 +49,33 @@ pub fn skip_destination(report: &mut Report) {
     report.skip("D7", NO_HOSTILE_CONFIG_SKIP.to_string());
 }
 
+/// Fold one suite verdict into the report: every failure renders under
+/// its clause id, and the pass for an exercised-and-silent clause is
+/// minted by the same absorb the sibling families use — never by hand.
+/// The skips are taken explicitly (the honest-check suites emit none;
+/// taking them by name keeps the consumption honest by construction).
+fn absorb(report: &mut Report, clause: &'static str, verdict: rdlt_testkit::conformance::Verdict) {
+    let (failures, skips, concluded) = verdict.tolerating_skips();
+    report.absorb(failures, skips, report::Concluded(&concluded), &[clause]);
+}
+
 /// S5 against a spawned source configured with the misconfigured
 /// document. The requirement is resolved through the connector's own
 /// spec first, exactly as the main suite resolves it — a path-only
 /// target's identity is learned, never guessed — so an identity
 /// mismatch can never masquerade as an honest refusal.
+///
+/// WHAT THE HANDSHAKE ARM TRUSTS, stated because it cannot be checked:
+/// the refusal says the document was rejected, not WHICH part of it
+/// was. A connector that refuses this document for a reason unrelated
+/// to the misconfiguration — a typo the operator left in it, a field it
+/// never supported — passes the clause without ever judging the hostile
+/// shape. The protocol is black-box here by design (a refusal names no
+/// seat), so the clause rests on the operator supplying a document that
+/// is otherwise VALID and hostile in exactly one dimension. The same
+/// trust the suite already places in the operator's main config, and
+/// the reason the misconfigured document is theirs to write rather than
+/// the certifier's to synthesize.
 pub async fn source(report: &mut Report, hostile: &Target) {
     let provider = Local::new();
     let spec = target::fetch_spec(&provider, &hostile.requirement, Role::Source).await;
@@ -68,22 +88,7 @@ pub async fn source(report: &mut Report, hostile: &Target) {
     };
     match provider.source(&requirement, &hostile.config).await {
         // The connector's own typed handshake refusal of the document —
-        // honest even earlier than check.
-        //
-        // WHAT THIS ARM TRUSTS, stated because it cannot be checked:
-        // the refusal says the document was rejected, not WHICH part of
-        // it was. A connector that refuses this document for a reason
-        // unrelated to the misconfiguration — a typo the operator left
-        // in it, a field it never supported — passes the clause without
-        // ever judging the hostile shape. The protocol is black-box
-        // here by design (a refusal names no seat), so the clause rests
-        // on the operator supplying a document that is otherwise VALID
-        // and hostile in exactly one dimension. The same trust the
-        // suite already places in the operator's main config, and the
-        // reason the misconfigured document is theirs to write rather
-        // than the certifier's to synthesize.
-        // Refused at the document, before either seat could touch the
-        // target: honest for the probe. The read's own arm records S6
+        // honest even earlier than check. The read's own arm records S6
         // when it runs, so this reports only what it judged.
         Err(provider::Error::Client(ClientError::Handshake { .. })) => report.pass("S5"),
         // Anything else that kept the clause from running is the
@@ -92,37 +97,15 @@ pub async fn source(report: &mut Report, hostile: &Target) {
             "S5",
             format!("the misconfigured spawn failed before check could be judged: {other}"),
         ),
-        Ok(managed) => match managed.check().await {
-            Err(SourceError::Fatal(_)) => report.pass("S5"),
-            Err(other) => report.fail(
-                "S5",
-                format!(
-                    "check() on a misconfigured target must refuse with a fatal \
-                     classification — no retry fixes a misconfiguration — but it \
-                     classified: {other}"
-                ),
-            ),
-            Ok(()) => report.fail(
-                "S5",
-                "check() answered Ok on a target its own read must refuse — a probe that \
-                 passes what a read then fails is retry bait for every caller that \
-                 trusts it"
-                    .to_string(),
-            ),
-        },
+        Ok(managed) => absorb(report, "S5", s_suite::verify_check_refusal(&managed).await),
     }
 }
 
-/// S6 against the same misconfigured spawn: the READ must refuse the
+/// S6 against a second misconfigured spawn: the READ must refuse the
 /// target too. Driven on its own spawn so a source left in whatever
-/// state a refused check leaves it cannot decide the verdict.
-///
-/// The read needs a stream to ask for. A declaration that refuses is
-/// the target refused at the earliest seat there is, and passes; a
-/// declaration that succeeds hands its first stream to the read, and
-/// only a completed read fails the clause. The read is bounded by the
-/// harness's deadline — a source that PARKS on a hostile path (the
-/// FIFO shape) fails by name rather than hanging the certification.
+/// state a refused check leaves it cannot decide the verdict. The law
+/// — typed refusal, the deadline, and the flood ceiling a refusing read
+/// must stay under — is the testkit's `verify_read_refusal`, unmodified.
 pub async fn source_read(report: &mut Report, hostile: &Target) {
     let provider = Local::new();
     let spec = target::fetch_spec(&provider, &hostile.requirement, Role::Source).await;
@@ -133,71 +116,24 @@ pub async fn source_read(report: &mut Report, hostile: &Target) {
             return;
         }
     };
-    let managed = match provider.source(&requirement, &hostile.config).await {
+    match provider.source(&requirement, &hostile.config).await {
         // Refused at the document: honest, and recorded HERE too —
         // this function is public and a library caller may drive it
         // alone, which must still leave an S6 verdict.
         Err(provider::Error::Client(ClientError::Handshake { .. })) => {
             report.pass("S6");
-            return;
         }
-        Err(other) => {
-            report.fail(
-                "S6",
-                format!("the misconfigured spawn failed before read could be judged: {other}"),
-            );
-            return;
-        }
-        Ok(managed) => managed,
-    };
-    let stream = match managed.streams().await {
-        Err(_) => {
-            report.pass("S6");
-            return;
-        }
-        Ok(streams) => match streams.into_iter().next() {
-            None => {
-                report.pass("S6");
-                return;
-            }
-            Some(stream) => stream,
-        },
-    };
-    let (out, mut rows) = rdlt_connector::channel::records(READ_PROBE_BUDGET);
-    let request = rdlt_connector::source::ReadRequest::new(stream, None, out);
-    let drain = tokio::spawn(async move { while rows.recv().await.is_some() {} });
-    let read = tokio::time::timeout(READ_PROBE_DEADLINE, managed.read(request)).await;
-    drain.abort();
-    match read {
-        Err(_) => report.fail(
+        Err(other) => report.fail(
             "S6",
-            format!(
-                "read() against a misconfigured target neither finished nor refused within \
-                 {}s — a read that parks on a bad path is the shape a probe cannot catch",
-                READ_PROBE_DEADLINE.as_secs()
-            ),
+            format!("the misconfigured spawn failed before read could be judged: {other}"),
         ),
-        Ok(Err(_)) => report.pass("S6"),
-        Ok(Ok(())) => report.fail(
-            "S6",
-            "read() completed against a target check() must refuse — the probe and the \
-             read disagree, and it is the read that touches the target"
-                .to_string(),
-        ),
+        Ok(managed) => absorb(report, "S6", s_suite::verify_read_refusal(&managed).await),
     }
 }
 
-/// The read probe's channel budget: the drain keeps nothing, so this
-/// bounds only what one hostile push may hold in flight.
-const READ_PROBE_BUDGET: usize = 4 << 20;
-
-/// How long a misconfigured read may take before parking is the
-/// verdict. Generous for any refusal a connector can spell, short
-/// enough that a certification never becomes a hang.
-const READ_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// D7 against a spawned destination configured with the misconfigured
-/// document — the same resolved-identity discipline as [`source`].
+/// document — the same resolved-identity discipline as [`source`], and
+/// the same one-home law through the destination suite.
 pub async fn destination(report: &mut Report, hostile: &Target) {
     let provider = Local::new();
     let spec = target::fetch_spec(&provider, &hostile.requirement, Role::Destination).await;
@@ -214,23 +150,6 @@ pub async fn destination(report: &mut Report, hostile: &Target) {
             "D7",
             format!("the misconfigured spawn failed before check could be judged: {other}"),
         ),
-        Ok(managed) => match managed.check().await {
-            Err(DestinationError::Fatal(_)) => report.pass("D7"),
-            Err(other) => report.fail(
-                "D7",
-                format!(
-                    "check() on a misconfigured target must refuse with a fatal \
-                     classification — no retry fixes a misconfiguration — but it \
-                     classified: {other}"
-                ),
-            ),
-            Ok(()) => report.fail(
-                "D7",
-                "check() answered Ok on a target its own operations must refuse — a probe \
-                 that passes what a run then fails is retry bait for every caller that \
-                 trusts it"
-                    .to_string(),
-            ),
-        },
+        Ok(managed) => absorb(report, "D7", d_suite::verify_check_refusal(&managed).await),
     }
 }
