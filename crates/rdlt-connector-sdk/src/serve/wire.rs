@@ -114,11 +114,15 @@ pub fn socket_path() -> Result<PathBuf, Error> {
 /// `rdlt-serve-*` entries of `base`, every failure ignored.
 ///
 /// rmdir-only is the WHOLE liveness check, and it is sufficient and
-/// race-free: every consumer of the handshake line unlinks the socket
-/// FILE on every cleanup path, so a dead predecessor's directory is
-/// EMPTY and rmdir succeeds exactly then; a LIVE sibling's directory
-/// still holds its socket, so rmdir fails harmlessly; rmdir never
-/// follows symlinks; other users' directories fail on permissions.
+/// race-free — but only because of ITS OTHER HALF, which lives in a
+/// different crate: `rdlt_runtime::managed::Guard::drop` unlinks the
+/// socket FILE on every cleanup path (a spawned connector's consumer
+/// holds the Guard), so a dead predecessor's directory is EMPTY and
+/// rmdir succeeds exactly then; a LIVE sibling's directory still holds
+/// its socket, so rmdir fails harmlessly; rmdir never follows
+/// symlinks; other users' directories fail on permissions. The two
+/// halves are pinned together end-to-end by
+/// `rdlt-runtime`'s `a_dead_predecessors_serve_dir_is_empty_and_rmdir_able`.
 /// Accepted: between a concurrent sibling's mkdir and its bind, its
 /// directory is briefly empty and a sweep could rmdir it — that
 /// sibling's bind then fails loudly with [`Error::Bind`], never

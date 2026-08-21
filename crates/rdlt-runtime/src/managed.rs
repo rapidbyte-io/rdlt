@@ -95,6 +95,15 @@ impl Drop for Guard {
         // file must not commission this host to delete it. The check
         // rides `symlink_metadata` — a symlink AT the path is already
         // not a socket, and following it would judge the wrong inode.
+        //
+        // THIS UNLINK HAS A DEPENDENT HALF IN ANOTHER CRATE: the sdk's
+        // dead-predecessor sweep (`rdlt_connector_sdk::serve::wire::
+        // sweep_dead_serve_dirs`) is rmdir-ONLY, and its correctness —
+        // "a dead predecessor's directory is EMPTY exactly when the
+        // sweep may remove it" — rests on every consumer of the
+        // handshake line unlinking the socket FILE here. The two halves
+        // are pinned together by rdlt-runtime's
+        // `a_dead_predecessors_serve_dir_is_empty_and_rmdir_able`.
         let is_socket = std::fs::symlink_metadata(&self.socket_path)
             .map(|meta| {
                 use std::os::unix::fs::FileTypeExt as _;

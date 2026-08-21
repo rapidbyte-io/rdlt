@@ -117,6 +117,59 @@ async fn the_reference_bin_serves_a_source_handshake_and_streams() {
     assert_eq!(streams[0].name.as_str(), "events");
 }
 
+/// THE SOCKET-LIFECYCLE INVARIANT, end to end against the real bin.
+/// The dead-predecessor sweep in the sdk's serve side
+/// (`rdlt_connector_sdk::serve::wire::sweep_dead_serve_dirs`) is
+/// rmdir-ONLY, and its correctness rests on THIS crate's other half:
+/// `Guard::drop` unlinks the socket FILE on every cleanup path, so a
+/// dead predecessor's directory is EMPTY exactly when a sweep may
+/// remove it. The two halves live in two crates connected by this pin:
+/// a live sibling's directory refuses the rmdir (its socket still
+/// holds it); a dead one's directory is gone by the same syscall. If
+/// either half regresses, this test fails by name.
+#[tokio::test]
+async fn a_dead_predecessors_serve_dir_is_empty_and_rmdir_able() {
+    let bin = built_bin();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("events.jsonl");
+    std::fs::write(&file, "{\"id\":1}\n").expect("the fixture file writes");
+    let config = serde_json::json!({ "path": file });
+
+    let provider = Local::new();
+    let managed = provider
+        .source(
+            &Requirement::new("io.rapidbyte.reference").with_path(&bin),
+            &config,
+        )
+        .await
+        .expect("spawn + handshake against the real source bin succeeds");
+    let socket = managed
+        .guard()
+        .expect("a locally spawned connector carries its process guard")
+        .socket_path()
+        .to_path_buf();
+    let serve_dir = socket
+        .parent()
+        .expect("the socket lives inside its private serve directory")
+        .to_path_buf();
+    assert!(socket.exists(), "a live connector's socket file is bound");
+
+    // LIVE sibling: the rmdir-only sweep must refuse — the socket file
+    // still holds the directory open as a filesystem entry.
+    assert!(
+        std::fs::remove_dir(&serve_dir).is_err(),
+        "a live sibling's serve directory must not be rmdir-able"
+    );
+
+    drop(managed);
+    assert!(
+        !socket.exists(),
+        "Guard::drop unlinks the socket FILE on the cleanup path"
+    );
+    std::fs::remove_dir(&serve_dir)
+        .expect("a dead predecessor's serve directory is EMPTY — exactly what the sdk's sweep requires");
+}
+
 /// The reference bin serves its DESTINATION half — same shape, plus the
 /// exact-version pin exercised against the real binary.
 #[tokio::test]
