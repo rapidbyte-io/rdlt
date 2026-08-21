@@ -402,6 +402,55 @@ MUST set its own decode cap to match: a dialing side left at tonic's
 4 MiB default kills the stream with an opaque transport error on the
 first over-4 MiB frame a server legally sends.
 
+## The wire memory story — ONE page
+
+A stalled reader must bound total in-flight memory to a computable sum,
+not to hope. This is that sum, assembled once — every term names the
+file that owns it, because before 077 the proof existed only by reading
+four files in order.
+
+**The read direction** (a served source pushing frames a client stalls
+on), per concurrent `Read`:
+
+| term | size | owner |
+|---|---|---|
+| encoded `ReadFrame`s queued for the wire | ≤ 32 MiB | sdk `serve/source.rs` `BYTE_FRAME_BUDGET` |
+| SPI pushes queued behind them | ≤ 8 MiB | sdk `serve/source.rs` `READ_CHANNEL_BUDGET` (the SPI's own byte-budgeted channel) |
+| the one push the forwarding loop holds in hand | ≤ ~2 × `MAX_FRAME_BYTES` momentarily (decoded batch + encoded bytes coexist) | sdk `serve/source.rs`, the worst-case-sum doc |
+| what h2 has pulled for the wire | ≤ the client's window (below) | tonic/h2 flow control |
+
+Plus the count ceiling over all of it: at most
+[`MAX_CONCURRENT_READS`](../rdlt_connector/gate constant
+`MAX_DECLARED_STREAM_SPECS`) reads per process, each holding its
+length-gated spec plus a cursor bounded in BOTH dimensions (4 MiB of
+arriving bytes; a bounded node count once parsed).
+
+**The pacing mechanism**: the client sizes its h2 flow-control windows
+from `budget_bytes` (`client/wire.rs::dial`), floored at 64 KiB and
+capped at `MAX_FRAME_BYTES`; the runtime's default provider passes
+`MAX_FRAME_BYTES` unless the embedder opts down (`runtime/local.rs::
+with_budget_bytes`). A server can therefore never hold more than the
+client's own window plus the server-side queues above.
+
+**The write direction** (a client pipelining `Write`s against a served
+destination) is CLIENT-paced by construction: the reply channel is
+count-bounded (`REPLY_CHANNEL_BUDGET = 16`), so pipelined state replies
+are the only server-side queue and their worst case (~128 MiB) is
+arithmetic in `serve/destination.rs`.
+
+**Enforcement, not narration**: the byte-bound pin
+(`a_stalled_reader_buffers_bounded_bytes_not_a_fixed_frame_count` in
+the SDK's integration suite) drives an 8 MiB-frame source against a
+never-polling reader and holds admitted bytes to exactly this sum.
+It exists because a frame-COUNT bound admitted ~150 MiB here once;
+if you change any budget above, that test tightens or fails with it.
+
+**The escape hatch stays closed until measured otherwise**: if a
+workload ever shows h2 flow control bounding too loosely at batch
+sizes beyond the bench matrix, `ReadCredit` is the additive addition
+the freeze already permits — but no figure has shown it needed, and
+the door is recorded rather than built (ADR 0001 D6).
+
 ## Document ceilings, and the cursor contract
 
 Distinct from the frame ceiling, the UNTYPED `*_json` document payloads
