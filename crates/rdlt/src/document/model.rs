@@ -195,7 +195,44 @@ fn parse_yaml<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
     // so this parse and every connector's `Document::from_yaml` answer
     // to the same scanner.
     rdlt_connector_sdk::config::reject_graph_syntax(text)?;
-    serde_yaml_ng::from_str(text).map_err(|error| error.to_string())
+    serde_yaml_ng::from_str(text).map_err(|error| describe_document_error(&error))
+}
+
+/// Render a YAML document failure as position only: which line and
+/// column, nothing else.
+///
+/// serde's data errors embed the offending TOKEN (`invalid type: string
+/// "…"`, ``unknown variant `…` ``), and a pipeline document carries its
+/// connectors' credentials inline — so the same discipline the wire
+/// applies to every connector-authored refusal (`rdlt_connector`'s
+/// `describe_parse_error`) applies here: nothing derived from the
+/// document's content may reach the rendered refusal, or a malformed
+/// document rides a fragment of its own secret into a captured stderr,
+/// a shell history, or a doctor finding. `serde_yaml_ng` exposes no
+/// error classification, so every arm shares the neutral wording; the
+/// position is what locates the mistake for the author who holds the
+/// file anyway.
+fn describe_document_error(error: &serde_yaml_ng::Error) -> String {
+    match error.location() {
+        Some(location) => format!(
+            "document parse failure at line {} column {}",
+            location.line(),
+            location.column()
+        ),
+        None => "document parse failure".to_owned(),
+    }
+}
+
+/// The JSON twin of [`describe_document_error`], mirroring the wire's
+/// renderer: serde_json does expose a category, so the class names.
+fn describe_json_error(error: &serde_json::Error) -> String {
+    let kind = match error.classify() {
+        serde_json::error::Category::Syntax => "syntax error",
+        serde_json::error::Category::Eof => "unexpected end of input",
+        serde_json::error::Category::Data => "document shape mismatch",
+        serde_json::error::Category::Io => "read failure",
+    };
+    format!("{kind} at line {} column {}", error.line(), error.column())
 }
 
 /// Parse one pipeline document through the raw-text security gates.
@@ -239,8 +276,9 @@ impl Config {
                 let path = base.join(spelled);
                 let text = read(&path).map_err(Error::config)?;
                 if is_json(&path) {
-                    serde_json::from_str(&text)
-                        .map_err(|e| Error::config(format!("parsing {}: {e}", path.display())))
+                    serde_json::from_str(&text).map_err(|e| {
+                        Error::config(format!("parsing {}: {}", path.display(), describe_json_error(&e)))
+                    })
                 } else {
                     parse_yaml(&text)
                         .map_err(|e| Error::config(format!("parsing {}: {e}", path.display())))
@@ -341,6 +379,68 @@ mod yaml_graph_tests {
         .expect("indicators in scalars and comments are data");
         assert_eq!(value["literal_alias"], "*not-an-alias");
         assert_eq!(value["literal_anchor"], "&not-an-anchor");
+    }
+
+    /// serde's data errors embed the offending token, and a pipeline
+    /// document carries connector credentials inline — the rendered
+    /// refusal must carry position only, never document content, so a
+    /// wrong-typed secret cannot ride the parse error into stderr or a
+    /// doctor finding.
+    #[test]
+    fn yaml_data_errors_do_not_echo_document_tokens() {
+        let yaml = "pipeline: p\n\
+                    write_mode: \"hunter2\"\n\
+                    source:\n  connector:\n    id: io.example.source\n    config: {}\n\
+                    destination:\n  connector:\n    id: io.example.destination\n    config: {}\n";
+        let error = parse(yaml).expect_err("an unknown write_mode spelling must refuse");
+        assert!(
+            !error.contains("hunter2"),
+            "the refusal must not echo the document's token: {error}"
+        );
+        assert!(
+            error.contains("line 2"),
+            "the refusal must still locate the mistake: {error}"
+        );
+    }
+
+    /// The JSON arm of `Config::resolve` answers to the same discipline:
+    /// config documents carry credentials, and serde_json's data errors
+    /// embed tokens.
+    #[test]
+    fn json_config_errors_do_not_echo_document_tokens() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("creds.json");
+        std::fs::write(
+            &path,
+            r#"{"password": "hunter2", "port": "not-a-number"}"#,
+        )
+        .expect("write");
+        // A JSON value parses as untyped Value regardless of shape; to
+        // reach a data error the target must be typed, so drive the
+        // renderer through resolve's parse by way of a typed read is
+        // out of scope here — pin the renderer directly.
+        let error = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path).expect("read"))
+            .err();
+        assert!(error.is_none(), "untyped JSON accepts any shape");
+
+        let typed: Result<std::collections::HashMap<String, u64>, _> =
+            serde_json::from_str(r#"{"password": "hunter2"}"#);
+        let rendered = match typed {
+            Ok(_) => panic!("a string cannot deserialize as u64"),
+            Err(error) => describe_json_error(&error),
+        };
+        assert!(
+            !rendered.contains("hunter2"),
+            "the rendering must not echo the token: {rendered}"
+        );
+        assert!(rendered.contains("document shape mismatch"), "{rendered}");
+    }
+
+    #[test]
+    fn yaml_syntax_errors_render_position_only() {
+        let error = parse_yaml::<serde_json::Value>("pipeline: [unclosed\n").expect_err("syntax must refuse");
+        assert!(!error.contains("unclosed"), "{error}");
+        assert!(error.contains("line"), "{error}");
     }
 
     /// Indicator characters as scalar DATA must parse: these are
