@@ -18,6 +18,8 @@ rdlt-connector-protocol = { path = "../crates/rdlt-connector-protocol" }
 # The hardened wire-edge arrow decode seat (its doc-hidden fuzzing hook)
 # — arrow_ipc_decode drives it, not arrow's raw reader.
 rdlt-connector-client = { path = "../crates/rdlt-connector-client" }
+# THE shared decode seat (076): gate_decode_seat drives it directly.
+rdlt-connector = { path = "../crates/rdlt-connector" }
 
 # Standalone workspace: libFuzzer needs nightly; the main build never sees this.
 [workspace]
@@ -66,6 +68,11 @@ name = "wal_manifest_line"
 path = "fuzz_targets/wal_manifest_line.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "gate_decode_seat"
+path = "fuzz_targets/gate_decode_seat.rs"
+test = false
 
 [[bin]]
 name = "wal_segment_decode"

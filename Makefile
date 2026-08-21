@@ -90,6 +90,11 @@ FUZZ_RUN_BOUND ?= -max_total_time=$(FUZZ_SECONDS)
 # run. Its corpus carries real writer-produced segments plus that
 # crash input, so a future arrow bump can be probed by hand:
 #   cd fuzz && cargo +nightly fuzz run wal_segment_decode
+# gate_decode_seat (077) joins them BUILT-not-RUN for the same class of
+# reason: it drives the 076 shared decode seat directly, whose belt
+# contains arrow panics in production but whose future arrow-internal
+# panic would abort under the libfuzzer hook before containment. Its
+# corpus carries the REPRO plus framed variants; see its own header.
 FUZZ_TARGETS := jsonl_slab arrow_schema_map shred_push \
 	wire_frame_decode handshake_line wal_manifest_line
 

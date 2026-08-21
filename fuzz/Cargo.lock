@@ -1259,6 +1259,7 @@ dependencies = [
  "rdlt-connector",
  "rdlt-connector-protocol",
  "rdlt-connector-sdk",
+ "rdlt-core",
  "serde_json",
  "thiserror",
  "tokio",
@@ -1273,6 +1274,7 @@ version = "0.3.0"
 dependencies = [
  "prost",
  "protoc-bin-vendored",
+ "rdlt-core",
  "thiserror",
  "tonic",
  "tonic-prost",
@@ -1327,6 +1329,7 @@ dependencies = [
  "arrow",
  "libfuzzer-sys",
  "prost",
+ "rdlt-connector",
  "rdlt-connector-client",
  "rdlt-connector-protocol",
  "rdlt-engine",
