@@ -74,6 +74,12 @@ pub struct Remote {
     channel: Channel,
     spec: ConnectorSpec,
     capabilities: Capabilities,
+    /// The handshake's negotiated state-format kinds: the connector's
+    /// declared ceiling per kind (e.g. `rdlt.state_doc` → 2 means "I
+    /// can resume a state document AT version 2, none newer"). Empty =
+    /// the connector declared nothing, which the client tolerates and
+    /// the engine's own version gate then judges.
+    state_format_versions: std::collections::BTreeMap<String, u32>,
     deadline: Duration,
 }
 
@@ -110,6 +116,7 @@ impl Remote {
                 channel,
                 spec: outcome.spec.clone(),
                 capabilities,
+                state_format_versions: outcome.state_format_versions.clone(),
                 deadline: requirement.rpc_deadline,
             },
             outcome,
@@ -146,6 +153,10 @@ impl Remote {
             replies,
             part_events: context.part_events.clone(),
             deadline: self.deadline,
+            state_doc_ceiling: self
+                .state_format_versions
+                .get(rdlt_connector::core::state::STATE_DOC_FORMAT_KIND)
+                .copied(),
         };
         let reply = backend
             .call(session_request::Request::Open(proto::Open {
@@ -235,6 +246,9 @@ pub struct Backend {
     part_events: Option<PartEventFn>,
     /// The requirement's RPC deadline, bounding each reply await.
     deadline: Duration,
+    /// The negotiated ceiling for `STATE_DOC_FORMAT_KIND`, when the
+    /// connector declared one — the `ReadState` seat's judge.
+    state_doc_ceiling: Option<u32>,
 }
 
 impl std::fmt::Debug for Backend {
@@ -503,6 +517,26 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                                 gate::escape(stream.as_str())
                             ))
                         })?;
+                    }
+                    // THE NEGOTIATION, ENFORCED: a persisted document
+                    // NEWER than what this connector declared it can
+                    // resume refuses here — typed, naming both versions,
+                    // BEFORE any extraction begins (the 037 discipline:
+                    // refuse state you cannot resume; never reset).
+                    // Resetting would re-extract from zero and duplicate
+                    // every row under Append. A connector that declared
+                    // nothing imposes no ceiling here; the engine's own
+                    // `check_readable` still applies to what it parses.
+                    if let Some(ceiling) = self.state_doc_ceiling
+                        && doc.format_version > ceiling
+                    {
+                        return Err(DestinationError::fatal(format!(
+                            "the destination's persisted state is format version {}, but \
+                             this connector declared it can resume at most version {} — \
+                             upgrading or rolling back the connector is the resolution; \
+                             resetting the state would duplicate rows",
+                            doc.format_version, ceiling
+                        )));
                     }
                     Ok(doc)
                 })

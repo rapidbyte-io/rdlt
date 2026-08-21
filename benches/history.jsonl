@@ -32,3 +32,10 @@
 {"ts":"2026-08-21","cell":"pg-to-s3parquet-1m","variant":"rdlt","median_ms":831.56593,"rows":1000000}
 {"ts":"2026-08-21","cell":"pg-to-s3parquet-1m","variant":"dlt","median_ms":1880.465379999805,"rows":1000000}
 {"ts":"2026-08-21","cell":"pg-to-s3parquet-1m","variant":"dlt-pyarrow","median_ms":11416.608843999713,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-pg-dedup-1m","variant":"rdlt","median_ms":4772.602484,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-pg-dedup-1m","variant":"dlt","median_ms":12907.39921400018,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-pg-dedup-1m","variant":"dlt-pyarrow","median_ms":20986.802535000606,"rows":1000000}
+{"ts":"2026-08-21","cell":"s3jsonl-to-pg-200k","variant":"rdlt","median_ms":737.3152309999999,"rows":600000}
+{"ts":"2026-08-21","cell":"s3jsonl-to-pg-200k","variant":"dlt","median_ms":66692.18627300143,"rows":600000}
+{"ts":"2026-08-21","cell":"s3jsonl-to-s3parquet-200k","variant":"rdlt","median_ms":1000.076986,"rows":600000}
+{"ts":"2026-08-21","cell":"s3jsonl-to-s3parquet-200k","variant":"dlt","median_ms":61282.93989099984,"rows":600000}
