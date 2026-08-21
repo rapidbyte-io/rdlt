@@ -446,7 +446,11 @@ async fn from_file_on_an_oversized_file_refuses_at_the_document_cap() {
 
 /// `from_file` on a file that does not parse refuses as a Config error
 /// naming the file (`parsing <path>: …`) — the parse failure is a
-/// document problem like the read failure, not an engine one.
+/// document problem like the read failure, not an engine one. The
+/// rendered refusal carries POSITION only: serde's data errors embed the
+/// offending token, and the document carries connector credentials, so
+/// nothing content-derived (the arm's own `no connector:` wording
+/// included) may ride the refusal into a captured stderr.
 #[tokio::test]
 async fn from_file_on_a_malformed_document_is_a_config_error_naming_the_path() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -455,7 +459,8 @@ async fn from_file_on_a_malformed_document_is_a_config_error_naming_the_path() {
     match Pipeline::from_file(&bad).await {
         Err(Error::Config { message }) => assert!(
             message.starts_with(&format!("parsing {}:", bad.display()))
-                && message.contains(&format!("no connector: {FORM}")),
+                && message.contains("line 2 column 9")
+                && !message.contains(FORM),
             "{message}"
         ),
         Err(other) => panic!("expected a Config error, got: {other}"),
@@ -547,7 +552,8 @@ async fn from_text_takes_yaml_or_json_and_resolves_against_the_base() {
     match Pipeline::from_text("pipeline: p\nsource: {}\n", dir.path()).await {
         Err(Error::Config { message }) => assert!(
             message.starts_with("parsing document:")
-                && message.contains(&format!("no connector: {FORM}")),
+                && message.contains("line 2 column 9")
+                && !message.contains(FORM),
             "{message}"
         ),
         Err(other) => panic!("expected a Config error, got: {other}"),
@@ -592,7 +598,13 @@ fn resources_forms_parse_and_unknown_keys_refuse() {
         "pipeline: p\nresources:\n  byte_bugdet: 1\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
     ))
     .expect_err("a typo under resources must refuse, never be ignored");
-    assert!(refused.contains("byte_bugdet"), "{refused}");
+    // The refusal is position-only by the token-redaction discipline:
+    // the typo refuses (deny_unknown_fields holds) but its text never
+    // echoes the document's content back out.
+    assert!(
+        !refused.contains("byte_bugdet") && refused.contains("line 3 column 3"),
+        "{refused}"
+    );
 }
 
 /// The `schema_policy` scalar: all four spellings parse to their
@@ -621,5 +633,10 @@ fn schema_policy_spellings_parse_and_unknown_refuses() {
         "pipeline: p\nschema_policy: strict\nsource:\n  connector: {{id: io.example.src, config: s.yaml}}\n{DEST}"
     ))
     .expect_err("an unknown policy spelling must refuse");
-    assert!(refused.contains("strict"), "{refused}");
+    // Position-only rendering: the unknown spelling refuses, but a
+    // token that could have been a credential never echoes back out.
+    assert!(
+        !refused.contains("strict") && refused.contains("line 2 column 16"),
+        "{refused}"
+    );
 }
