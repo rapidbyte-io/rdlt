@@ -12,7 +12,6 @@
 //! have started.
 
 use std::future::Future as _;
-use std::io::Write as _;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
@@ -30,15 +29,15 @@ use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServe
 use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
 use rdlt_connector_protocol::proto::{
     self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeReply, HandshakeRequest,
-    StreamList, StreamsReply, StreamsRequest, check_reply, read_frame, streams_reply,
+    StreamList, StreamsReply, StreamsRequest, read_frame, streams_reply,
 };
-use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
+use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_stream::Stream;
-use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
+use super::wire::FrameCapped;
 use super::{gate as serve_gate, wire};
 use crate::config::Document;
 use crate::source::{Shell, SourceConnector};
@@ -313,34 +312,11 @@ impl<C: SourceConnector> wire::HandshakeShell for Shell<C> {
     }
 }
 
-/// Flatten a classified [`SourceError`] into the wire's [`ErrorFrame`]:
-/// the classification as the enum, the INNER cause's text as the
-/// message, and the rate-limit hint when there is one.
-///
-/// `ErrorFrame.message` is the CAUSE text, never the SPI's `Display`
-/// frame: the receiving client renders the classification frame exactly
-/// once on reconstruction, and a foreign server authoring its own cause
-/// text cannot know rdlt's spellings anyway. Nothing is lost — context
-/// is already folded into the inner cause. The wildcard arm is required
-/// (`SourceError` is `#[non_exhaustive]` from outside its crate): an
-/// unknown classification lands FATAL with the full rendered `Display`
-/// as its message — a fallback that may double-frame on reconstruction,
-/// preferred over dropping text.
+/// Flatten a classified [`SourceError`] into the wire's [`ErrorFrame`]
+/// — the shared construction behind [`wire::error_frame_of`]; this
+/// alias names the role at its call sites.
 fn source_error_frame(error: &SourceError) -> ErrorFrame {
-    let (classification, message, retry_after) = match error {
-        SourceError::Transient(cause) => (Classification::Transient, cause.to_string(), None),
-        SourceError::RateLimited {
-            retry_after,
-            source,
-        } => (
-            Classification::RateLimited,
-            source.to_string(),
-            *retry_after,
-        ),
-        SourceError::Fatal(cause) => (Classification::Fatal, cause.to_string(), None),
-        _ => (Classification::Fatal, error.to_string(), None),
-    };
-    wire::error_frame(classification, message, retry_after)
+    wire::error_frame_of(error)
 }
 
 #[tonic::async_trait]
@@ -349,37 +325,27 @@ impl<C: SourceConnector> Connector for SourceServer<C> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeReply>, Status> {
-        // Admission BEFORE the connector's own code runs. The success
-        // slot stops only a SECOND success: every failed attempt parses
-        // its document and runs the connector's validate and assemble,
-        // which is where pools are built and keys are read, so an
-        // unbounded flood of failing handshakes is an unbounded flood
-        // into the connector.
-        let _admitted = Arc::clone(&self.connector_admission)
-            .try_acquire_owned()
-            .map_err(|_| wire::connector_calls_exhausted())?;
-        Ok(wire::handshake(
-            &self.shell,
-            EXPECTED_ROLE,
-            request.into_inner(),
-        ))
+        // Admission BEFORE the connector's own code runs (see
+        // [`wire::admitted`] for why): then the shared handshake
+        // choreography.
+        wire::admitted(&self.connector_admission, async {
+            Ok::<_, Status>(wire::handshake(
+                &self.shell,
+                EXPECTED_ROLE,
+                request.into_inner(),
+            ))
+        })
+        .await
     }
 
     async fn check(&self, _request: Request<CheckRequest>) -> Result<Response<CheckReply>, Status> {
-        // Admission BEFORE the connector's own code runs: what a check
-        // costs is the connector's business, and unbounded concurrent
-        // ones are the caller's choice, not the connector's.
-        let _probe = Arc::clone(&self.connector_admission)
-            .try_acquire_owned()
-            .map_err(|_| wire::connector_calls_exhausted())?;
-        let shell = self.shell()?;
-        let outcome = match shell.check().await {
-            Ok(()) => check_reply::Outcome::Ok(proto::Empty {}),
-            Err(error) => check_reply::Outcome::Error(source_error_frame(&error)),
-        };
-        Ok(Response::new(CheckReply {
-            outcome: Some(outcome),
-        }))
+        wire::admitted(&self.connector_admission, async {
+            match self.shell() {
+                Ok(shell) => Ok(Response::new(wire::check_reply_of(shell.check().await))),
+                Err(status) => Err(status),
+            }
+        })
+        .await
     }
 
     async fn spec(
@@ -718,64 +684,35 @@ fn encode_arrow_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
 
 /// Bind at an explicit path and return the [`Line`] a spawning host
 /// would read from stdout, plus a handle for the serving task — WITHOUT
-/// printing anything. [`run`] is this at a self-minted temp path plus
-/// the printing a spawned connector process must do; this is the seam a
-/// test drives directly.
-///
-/// Both gRPC services are wired to the SAME `SourceServer` instance
-/// (`from_arc`, not two independent `new`s) — they share one
-/// handshake-populated shell, so a `Streams` or `Read` call sees the
-/// config a prior `Handshake` validated. `max_decoding_message_size` on
-/// BOTH: tonic's 4 MiB default receive cap is below what one legitimate
-/// frame may carry.
+/// printing anything, so a test can drive the very listener `run` would
+/// have started. The bind/serve/line scaffold is [`wire::bind_and_serve`];
+/// what lives here is the role's service wiring: both gRPC services on
+/// the SAME `SourceServer` instance (`from_arc`, not two independent
+/// `new`s) — they share one handshake-populated shell, so a `Streams`
+/// or `Read` call sees the config a prior `Handshake` validated.
 pub async fn run_on<C: SourceConnector>(
     path: impl AsRef<Path>,
 ) -> Result<(Line, JoinHandle<Result<(), wire::Error>>), wire::Error> {
-    let path = path.as_ref();
-    let listener = wire::bind(path)?;
-    let incoming = UnixListenerStream::new(listener);
-
-    let server = Arc::new(SourceServer::<C>::new());
-    let serving = tonic::transport::Server::builder()
-        .add_service(
-            ConnectorServer::from_arc(Arc::clone(&server))
-                .max_decoding_message_size(MAX_FRAME_BYTES)
-                .max_encoding_message_size(MAX_FRAME_BYTES),
-        )
-        .add_service(
-            SourceServiceServer::from_arc(server)
-                .max_decoding_message_size(MAX_FRAME_BYTES)
-                .max_encoding_message_size(MAX_FRAME_BYTES),
-        )
-        .serve_with_incoming(incoming);
-
-    let handle = tokio::spawn(async move { serving.await.map_err(wire::Error::Serve) });
-
-    Ok((
-        Line {
-            socket_path: path.to_path_buf(),
-            protocol_min: PROTOCOL_VERSION,
-            protocol_max: PROTOCOL_VERSION,
-        },
-        handle,
-    ))
+    wire::bind_and_serve(path.as_ref(), |incoming| async move {
+        let server = Arc::new(SourceServer::<C>::new());
+        tonic::transport::Server::builder()
+            .add_service(
+                ConnectorServer::from_arc(Arc::clone(&server)).frame_capped(),
+            )
+            .add_service(SourceServiceServer::from_arc(server).frame_capped())
+            .serve_with_incoming(incoming)
+            .await
+    })
+    .await
 }
 
 /// Turn a [`SourceConnector`] into an out-of-process protocol server:
 /// bind a fresh Unix domain socket in a private per-process directory
-/// under the system temp directory, print the handshake line on stdout
-/// (flushed — the spawning host is reading a pipe, not a TTY), then
-/// serve until the process is killed.
+/// under the system temp directory, print the handshake line on stdout,
+/// then serve until the process is killed.
 pub async fn run<C: SourceConnector>() -> Result<(), wire::Error> {
     let (line, handle) = run_on::<C>(wire::socket_path()?).await?;
-
-    // `writeln!`, not `println!`: a spawning host that exits or never
-    // reads its child's stdout leaves this write facing a broken pipe,
-    // and `println!` panics on an IO error rather than surfacing one.
-    let mut stdout = std::io::stdout();
-    writeln!(stdout, "{}", line.render()).map_err(wire::Error::Stdout)?;
-    stdout.flush().map_err(wire::Error::Stdout)?;
-
+    wire::announce(&line)?;
     handle.await.map_err(wire::Error::Join)?
 }
 

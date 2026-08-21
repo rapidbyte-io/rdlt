@@ -35,7 +35,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rdlt_connector::{gate, spec};
-use rdlt_connector_protocol::PROTOCOL_VERSION;
+use rdlt_connector_protocol::handshake::Line;
+use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 use rdlt_connector_protocol::proto;
 use tokio::net::UnixListener;
 
@@ -304,6 +305,181 @@ pub(crate) fn error_frame(
         message: message.into(),
         retry_after_ms: retry_after.map(|duration| duration.as_millis() as u64),
     }
+}
+
+/// One classified SPI error seen from the serving side. The trait is
+/// sdk-local on purpose (no public SPI surface change): it exists so
+/// BOTH roles' flatteners share one frame construction and one doc,
+/// while each error enum keeps its own arms — they are distinct
+/// `#[non_exhaustive]` types, and a wildcard arm per impl is what
+/// keeps an unknown FUTURE variant landing FATAL safe-loud.
+///
+/// `ErrorFrame.message` is the CAUSE text, never the SPI's `Display`
+/// frame: the receiving client renders the classification frame exactly
+/// once on reconstruction, and a foreign server authoring its own cause
+/// text cannot know rdlt's spellings anyway. Nothing is lost — context
+/// is already folded into the inner cause. The wildcard arm keeps the
+/// full rendered `Display` rather than dropping text — a fallback that
+/// may double-frame on reconstruction, preferred over dropping it.
+pub(super) trait ClassifiedError: std::fmt::Display {
+    /// The classification as the enum, the INNER cause's text as the
+    /// message, and the rate-limit hint when there is one.
+    fn classified_parts(&self) -> (proto::Classification, String, Option<Duration>);
+}
+
+/// Flatten a classified SPI error into the wire's [`proto::ErrorFrame`]
+/// — both roles' refusal paths converge here.
+pub(super) fn error_frame_of(error: &impl ClassifiedError) -> proto::ErrorFrame {
+    let (classification, message, retry_after) = error.classified_parts();
+    error_frame(classification, message, retry_after)
+}
+
+impl ClassifiedError for rdlt_connector::error::SourceError {
+    fn classified_parts(&self) -> (proto::Classification, String, Option<Duration>) {
+        use rdlt_connector::error::SourceError as E;
+        match self {
+            E::Transient(cause) => (proto::Classification::Transient, cause.to_string(), None),
+            E::RateLimited {
+                retry_after,
+                source,
+            } => (
+                proto::Classification::RateLimited,
+                source.to_string(),
+                *retry_after,
+            ),
+            E::Fatal(cause) => (proto::Classification::Fatal, cause.to_string(), None),
+            _ => (proto::Classification::Fatal, self.to_string(), None),
+        }
+    }
+}
+
+impl ClassifiedError for rdlt_connector::error::DestinationError {
+    fn classified_parts(&self) -> (proto::Classification, String, Option<Duration>) {
+        use rdlt_connector::error::DestinationError as E;
+        match self {
+            E::Transient(cause) => (proto::Classification::Transient, cause.to_string(), None),
+            E::RateLimited {
+                retry_after,
+                source,
+            } => (
+                proto::Classification::RateLimited,
+                source.to_string(),
+                *retry_after,
+            ),
+            E::Fatal(cause) => (proto::Classification::Fatal, cause.to_string(), None),
+            _ => (proto::Classification::Fatal, self.to_string(), None),
+        }
+    }
+}
+
+/// A `Check` RPC's reply from a connector outcome — both roles map
+/// their classified error through [`error_frame_of`] into the same
+/// reply shape.
+pub(super) fn check_reply_of<E: ClassifiedError>(outcome: Result<(), E>) -> proto::CheckReply {
+    let outcome = match outcome {
+        Ok(()) => proto::check_reply::Outcome::Ok(proto::Empty {}),
+        Err(error) => proto::check_reply::Outcome::Error(error_frame_of(&error)),
+    };
+    proto::CheckReply {
+        outcome: Some(outcome),
+    }
+}
+
+/// Run the connector's own code behind one admission permit: what a
+/// call costs is the connector's business, and unbounded concurrent
+/// ones are the caller's choice, not the connector's. For `Handshake`
+/// this stops only a SECOND success — every failed attempt parses its
+/// document and runs the connector's validate and assemble, which is
+/// where pools are built and keys are read, so an unbounded flood of
+/// failing handshakes is an unbounded flood into the connector.
+pub(super) async fn admitted<T>(
+    admission: &Arc<tokio::sync::Semaphore>,
+    probe: impl std::future::Future<Output = Result<T, tonic::Status>>,
+) -> Result<T, tonic::Status> {
+    // Held for the probe's duration: the permit IS the admission.
+    let _admitted = admission
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| connector_calls_exhausted())?;
+    probe.await
+}
+
+// ---- the shared listener scaffold ------------------------------------------
+
+/// Frame caps on either generated service server: tonic's 4 MiB default
+/// receive cap is below what one legitimate frame may carry, and the
+/// encode cap pins the same ceiling on replies. ONE spelling of the
+/// pair; every served service carries it.
+pub(super) trait FrameCapped: Sized {
+    /// Both caps at [`MAX_FRAME_BYTES`].
+    fn frame_capped(self) -> Self;
+}
+
+macro_rules! frame_capped_for {
+    ($proto:ident :: $module:ident :: $server:ident : $service:path) => {
+        impl<C: $service> FrameCapped for $proto::$module::$server<C> {
+            fn frame_capped(self) -> Self {
+                self.max_decoding_message_size(MAX_FRAME_BYTES)
+                    .max_encoding_message_size(MAX_FRAME_BYTES)
+            }
+        }
+    };
+}
+
+// The generated servers' cap methods are inherent per type, so the
+// trait gets one impl per generated family — the caps themselves are
+// spelled once above.
+frame_capped_for!(
+    proto::connector_server::ConnectorServer : proto::connector_server::Connector
+);
+frame_capped_for!(
+    proto::source_service_server::SourceServiceServer
+        : proto::source_service_server::SourceService
+);
+frame_capped_for!(
+    proto::destination_service_server::DestinationServiceServer
+        : proto::destination_service_server::DestinationService
+);
+
+/// Bind at `path`, serve BOTH wire services, and hand back the
+/// handshake line a spawning host reads plus the serving task's handle
+/// — WITHOUT printing anything. [`run_on`](super) entry points are this
+/// plus their role's two services.
+pub(super) async fn bind_and_serve<F, Fut>(
+    path: &Path,
+    build: F,
+) -> Result<(Line, tokio::task::JoinHandle<Result<(), Error>>), Error>
+where
+    F: FnOnce(tokio_stream::wrappers::UnixListenerStream) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), tonic::transport::Error>> + Send + 'static,
+{
+    let listener = bind(path)?;
+    let serving = build(tokio_stream::wrappers::UnixListenerStream::new(listener));
+    let handle =
+        tokio::spawn(async move { serving.await.map_err(Error::Serve) });
+    Ok((handshake_line(path), handle))
+}
+
+/// The handshake line for an ALREADY-BOUND socket path.
+fn handshake_line(path: &Path) -> Line {
+    Line {
+        socket_path: path.to_path_buf(),
+        protocol_min: PROTOCOL_VERSION,
+        protocol_max: PROTOCOL_VERSION,
+    }
+}
+
+/// Print the handshake line to stdout, flushed — the spawning host is
+/// reading a pipe, not a TTY. `writeln!`, not `println!`: a spawning
+/// host that exits or never reads its child's stdout leaves this write
+/// facing a broken pipe, and `println!` panics on an IO error rather
+/// than surfacing one.
+pub(super) fn announce(line: &Line) -> Result<(), Error> {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout();
+    writeln!(stdout, "{}", line.render()).map_err(Error::Stdout)?;
+    stdout.flush().map_err(Error::Stdout)?;
+    Ok(())
 }
 
 /// Answer the config-free `Spec` RPC: the connector's static identity
