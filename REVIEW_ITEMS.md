@@ -290,3 +290,29 @@ house discipline. The theme across all ten: the engineering core is
 done being built — the next value comes from shipping it, measuring
 it, hardening it where it is freshest, and opening the doors it was
 designed to open.
+
+
+---
+
+## Execution record (2026-08-21, branch 077-review-program)
+
+Every item's disposition, stated plainly — done means gated, unperformed
+means exactly that.
+
+| # | Item | Disposition |
+|---|---|---|
+| 3 | Re-certify bars | **DONE** — recorded session on the current tree: pg-to-pg-1m **12.0×** (bar ≥4×), dedup **2.7×** (≥2×), s3jsonl-to-pg **90.5×** (≥40×), s3jsonl-to-s3parquet **61.3×** (≥45×); ledger regenerated, gate green |
+| 8 | Two-repo rituals | **DONE here** — `docs/two-repo/VERSION_MATRIX.md` (rows through 076, pull flagged pending) + `certify-connector-pr.yml.template`; installing both in `rdlt-connectors` is that repo's commit to make |
+| 1 | Publish wave | **Engine half DONE** — five crates unpublished, path-only tripwire retired into versions, four READMEs written; `cargo package` green bottom-up from rdlt-core. **UNPERFORMED**: the registry uploads themselves (credentials are the owner's) and the connectors repo's git→version respell |
+| 2 | Telemetry spine | **VERIFIED PRESENT** — all four events (`BatchRead`, `CommitStarted`, `PartClosed`, `Heartbeat`), the canonical `Metrics` fold (exhaustive, CLI-consuming), and the span contract in `docs/telemetry.md`; the CLAUDE.md "planned not started" note for 036 was stale relative to the code |
+| 10 | Heavy suites vs new seams | **DONE** — `gate_decode_seat` fuzz target built + seeded with the REPRO (compiled-not-run-set, reason measured and documented like its siblings); mutants pass sweeps the new owners workspace-wide by construction |
+| 7 | Memory story | **DONE** — one page in the protocol README owning the stalled-reader sum, each term citing its file; the adversarial stress cell verified ALREADY PRESENT (the byte-bound stalled-reader pin) and cross-linked as the invariant's enforcement |
+| 6 | Negotiation v2 | **DONE, wired end-to-end** — served destinations declare their state-doc ceiling automatically; the client's ReadState seat refuses a newer persisted document typed (both versions named, before extraction); live wire pins prove refusal AND tolerance; a certify-grade drill exists against the rogue server. A literal StateDoc v2 SHAPE was deliberately NOT minted — no real format change justifies one yet, and inventing a shape for ceremony contradicts the house's own rules; the machinery now fires the day one exists |
+| 5 | Third-party authorship | **DONE here** — the Python proof connector now certifies IN CI (`certify-python.yml`) with S5/S6 hostile-config clauses green (verified locally end-to-end); the authoring guide carries the non-Rust path. P11/P12 remain owed to an ACTUAL external party — CI certification is the enforcement, the external measurement awaits an outsider |
+| 4 | TCP binding | **DONE** — `run_on_tcp` per role serves the identical service pair on an explicit listener; ONE unified `Remote::connect(impl Into<Endpoint>)` dials socket or address (per-variant trust models in the docs; distinct error variants preserved); loopback round-trip pinned. mTLS is named at its exact wrap points as the provider layer's deployment concern, not built into the sdk |
+| 9 | Operator verbs | **DONE, verified live** — `rdlt doctor` (version, PATH inventory, parse, workdir writability, run-lock probe with held-lock diagnosis), `rdlt reclaim` (sdk's own rmdir-only rule, count reported), `rdlt watch <events.ndjson>` (canonical fold over a remote run's log, sanitized at the one sink, ANSI redraw without a TUI dependency) |
+
+Gate of record: `make check` twice clean on the final tree — 1060/1060
+workspace tests, sweep suites, e2e, semver "no update required",
+cold-start 5.4 ms (bar ≤40). The Python connector certified green
+against the full clause set including hostile-config arms.
