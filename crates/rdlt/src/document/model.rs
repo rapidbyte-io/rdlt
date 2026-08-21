@@ -277,7 +277,11 @@ impl Config {
                 let text = read(&path).map_err(Error::config)?;
                 if is_json(&path) {
                     serde_json::from_str(&text).map_err(|e| {
-                        Error::config(format!("parsing {}: {}", path.display(), describe_json_error(&e)))
+                        Error::config(format!(
+                            "parsing {}: {}",
+                            path.display(),
+                            describe_json_error(&e)
+                        ))
                     })
                 } else {
                     parse_yaml(&text)
@@ -410,17 +414,15 @@ mod yaml_graph_tests {
     fn json_config_errors_do_not_echo_document_tokens() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("creds.json");
-        std::fs::write(
-            &path,
-            r#"{"password": "hunter2", "port": "not-a-number"}"#,
-        )
-        .expect("write");
+        std::fs::write(&path, r#"{"password": "hunter2", "port": "not-a-number"}"#).expect("write");
         // A JSON value parses as untyped Value regardless of shape; to
         // reach a data error the target must be typed, so drive the
         // renderer through resolve's parse by way of a typed read is
         // out of scope here — pin the renderer directly.
-        let error = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path).expect("read"))
-            .err();
+        let error = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&path).expect("read"),
+        )
+        .err();
         assert!(error.is_none(), "untyped JSON accepts any shape");
 
         let typed: Result<std::collections::HashMap<String, u64>, _> =
@@ -438,7 +440,8 @@ mod yaml_graph_tests {
 
     #[test]
     fn yaml_syntax_errors_render_position_only() {
-        let error = parse_yaml::<serde_json::Value>("pipeline: [unclosed\n").expect_err("syntax must refuse");
+        let error = parse_yaml::<serde_json::Value>("pipeline: [unclosed\n")
+            .expect_err("syntax must refuse");
         assert!(!error.contains("unclosed"), "{error}");
         assert!(error.contains("line"), "{error}");
     }
