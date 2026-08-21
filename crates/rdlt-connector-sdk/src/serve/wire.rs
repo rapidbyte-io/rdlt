@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use rdlt_connector::{gate, spec};
 use rdlt_connector_protocol::handshake::Line;
-use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 use rdlt_connector_protocol::proto;
+use rdlt_connector_protocol::{MAX_FRAME_BYTES, PROTOCOL_VERSION};
 use tokio::net::UnixListener;
 
 /// Failures standing up or running a served listener itself — never a
@@ -459,8 +459,7 @@ where
 {
     let listener = bind(path)?;
     let serving = build(tokio_stream::wrappers::UnixListenerStream::new(listener));
-    let handle =
-        tokio::spawn(async move { serving.await.map_err(Error::Serve) });
+    let handle = tokio::spawn(async move { serving.await.map_err(Error::Serve) });
     Ok((handshake_line(path), handle))
 }
 

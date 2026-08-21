@@ -166,8 +166,9 @@ async fn a_dead_predecessors_serve_dir_is_empty_and_rmdir_able() {
         !socket.exists(),
         "Guard::drop unlinks the socket FILE on the cleanup path"
     );
-    std::fs::remove_dir(&serve_dir)
-        .expect("a dead predecessor's serve directory is EMPTY — exactly what the sdk's sweep requires");
+    std::fs::remove_dir(&serve_dir).expect(
+        "a dead predecessor's serve directory is EMPTY — exactly what the sdk's sweep requires",
+    );
 }
 
 /// The reference bin serves its DESTINATION half — same shape, plus the

@@ -1,4 +1,3 @@
-
 //! The P1 reap pins and the P2/P4/P13 rogue suite: each designated
 //! rogue proves its clause CAN fail, with the evidence pinned
 //! full-string. P2 and P4
@@ -310,8 +309,7 @@ async fn a_timed_out_probe_still_reaps_its_child() {
         "staller",
         &format!("echo $$ > {}\nexec sleep 30", pidfile.display()),
     );
-    let Err(error) =
-        probe_role_refusal(&script, Role::Source, Duration::from_millis(300)).await
+    let Err(error) = probe_role_refusal(&script, Role::Source, Duration::from_millis(300)).await
     else {
         panic!("a stalled probe must time out, not conclude");
     };

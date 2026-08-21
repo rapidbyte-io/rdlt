@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// A trailing slash over an existing FILE must refuse at the probe:
 /// `stat("…/file/")` reports NotADirectory, and a walk that steps to
 /// `.parent()` skips the file (the path API normalizes the trailing

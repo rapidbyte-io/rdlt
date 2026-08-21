@@ -791,7 +791,7 @@ impl<C: DestinationConnector> DestinationService for DestinationServer<C> {
 /// Bind at an explicit path and return the [`Line`] a spawning host
 /// would read from stdout, plus a handle for the serving task — WITHOUT
 /// printing anything; the seam tests drive rather than [`run`] itself.
-/// The bind/serve/line scaffold is [`wire::bind_and_serve`]; what lives
+/// The bind/serve/line scaffold is `wire::bind_and_serve`; what lives
 /// here is the role's service wiring: both gRPC services on the SAME
 /// `DestinationServer` instance — they share one handshake-populated
 /// shell, so `OpenSession` sees the config a prior `Handshake`
@@ -802,9 +802,7 @@ pub async fn run_on<C: DestinationConnector>(
     wire::bind_and_serve(path.as_ref(), |incoming| async move {
         let server = Arc::new(DestinationServer::<C>::new());
         tonic::transport::Server::builder()
-            .add_service(
-                ConnectorServer::from_arc(Arc::clone(&server)).frame_capped(),
-            )
+            .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
             .add_service(DestinationServiceServer::from_arc(server).frame_capped())
             .serve_with_incoming(incoming)
             .await
@@ -922,5 +920,4 @@ mod tests {
              2147483632 bytes exceeds the 24-byte frame"
         );
     }
-
 }

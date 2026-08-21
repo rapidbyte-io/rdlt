@@ -188,7 +188,11 @@ pub(super) fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Re
         Ok(())
     };
     if let Some(key) = &spec.primary_key {
-        refuse_count("primary-key fields", key.len(), gate::MAX_PRIMARY_KEY_FIELDS)?;
+        refuse_count(
+            "primary-key fields",
+            key.len(),
+            gate::MAX_PRIMARY_KEY_FIELDS,
+        )?;
     }
     refuse_count(
         "type-hint fields",

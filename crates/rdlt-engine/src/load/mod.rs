@@ -5,10 +5,10 @@
 //! WAL replay both go through.
 
 pub(crate) mod apply;
-pub(crate) mod session_exit;
 mod item;
 mod loader;
 mod lower;
+pub(crate) mod session_exit;
 
 pub(crate) use item::LoadItem;
 pub(crate) use loader::{Loader, Policies, Sink};

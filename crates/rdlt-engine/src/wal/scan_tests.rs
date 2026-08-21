@@ -2,7 +2,6 @@
 //! module can read `scan`'s private helpers, which these pins need —
 //! the same placement discipline `load::loader` documents).
 
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1164,8 +1163,7 @@ fn an_unparseable_rules_sidecar_degrades() {
         ],
         IdentRules::default(),
     );
-    std::fs::write(dir.path().join(RULES_SIDECAR), b"not json at all")
-        .expect("corrupt sidecar");
+    std::fs::write(dir.path().join(RULES_SIDECAR), b"not json at all").expect("corrupt sidecar");
     let outcome = scan_dir(dir.path());
     assert!(
         matches!(outcome, ScanOutcome::Damaged(ref reason)
@@ -1566,8 +1564,7 @@ fn a_symlink_planted_as_the_sidecar_refuses_instead_of_being_read_through() {
         serde_json::to_vec(&rdlt_core::schema::IdentRules::default()).expect("rules json"),
     )
     .expect("outside rules");
-    std::os::unix::fs::symlink(&outside, dir.path().join(RULES_SIDECAR))
-        .expect("plant symlink");
+    std::os::unix::fs::symlink(&outside, dir.path().join(RULES_SIDECAR)).expect("plant symlink");
     let outcome = scan_with_deadline(dir.path().to_path_buf());
     assert!(
         matches!(outcome, ScanOutcome::Damaged(ref reason) if reason.contains("symlink")),

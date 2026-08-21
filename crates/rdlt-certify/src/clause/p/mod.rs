@@ -1274,14 +1274,14 @@ fn role_refusal_violation(
 }
 
 #[cfg(test)]
-#[path = "support.rs"]
-mod support;
-#[cfg(test)]
 #[path = "generic_tests.rs"]
 mod generic_tests;
 #[cfg(test)]
-#[path = "wire_tests.rs"]
-mod wire_tests;
-#[cfg(test)]
 #[path = "session_tests.rs"]
 mod session_tests;
+#[cfg(test)]
+#[path = "support.rs"]
+mod support;
+#[cfg(test)]
+#[path = "wire_tests.rs"]
+mod wire_tests;

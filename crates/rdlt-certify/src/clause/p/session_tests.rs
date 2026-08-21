@@ -1,4 +1,3 @@
-
 //! The P8–P12 rogue suite: each designated rogue proves its clause
 //! fails with the pinned evidence, driving the probe functions
 //! directly with the exact strings the destination certifier folds

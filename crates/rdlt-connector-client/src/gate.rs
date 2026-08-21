@@ -14,8 +14,8 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
-use rdlt_core::inventory;
 use rdlt_connector_protocol::proto::{self, Classification};
+use rdlt_core::inventory;
 
 /// The most bytes a wire identifier may carry — the SPI's constant,
 /// re-exported so seats read it beside the gate they pair it with.
@@ -205,22 +205,6 @@ mod tests {
         );
     }
 
-    /// Escaping spells control bytes out and touches nothing else —
-    /// quotes and backslashes included, which `escape_debug` over the
-    /// WHOLE string would mangle.
-
-    /// The inventory's two Hangul fillers are category `Lo` — printable
-    /// to `escape_debug`, which hands them back unchanged while they
-    /// render as blank glyphs. The display seat's invariant is that
-    /// rendered text cannot hide an inventory character, so the
-    /// fallback spells them out.
-
-    /// The invariant at the refusal seats too: every inventory
-    /// character renders spelled-out through the shared escape, so a
-    /// refusal quoting a hostile value cannot carry the bytes it
-    /// refuses. (Mechanical sweep across the whole table, not a
-    /// sample.)
-
     /// The length half of the identifier gate, exact at its boundary: a
     /// name of exactly the ceiling passes, one byte over refuses naming
     /// the ceiling.
@@ -294,26 +278,6 @@ mod tests {
             "the refusal names the seat and the cap: {error}"
         );
     }
-
-    /// The sink neither materializes NOR STREAMS what it discards: a
-    /// chunked `Display` source that would write ten times the source
-    /// ceiling is refused within one chunk of it — the write budget
-    /// spent is ceiling/chunk + 2 attempts, not the source's length —
-    /// and the marker spells the count as a floor (`≥`), because bytes
-    /// were left uncounted. The kept text still stops at the cap.
-
-    /// The ceiling cuts only sources with more to say AFTER it: a
-    /// source arriving as ONE write — every `render_message` call —
-    /// keeps its exact count whatever its size, so the single-write
-    /// marker contract is unchanged at any scale.
-
-    /// The kept prefix is escaped AS IT ARRIVES — a control byte in the
-    /// window is spelled out, and the cap bounds the ESCAPED output, so
-    /// no post-hoc escape pass can amplify past it.
-
-    /// A source under the cap renders whole with no marker — through
-    /// both value renderers, matching what `render_message` does for
-    /// the same text.
 
     /// The safe-loud decode: `Unspecified` (a server that never set the
     /// field) and a value this build does not know both normalize to

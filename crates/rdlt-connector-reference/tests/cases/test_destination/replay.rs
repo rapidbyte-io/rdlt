@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// The receipt log drives the sdk choreography: re-committing a load's
 /// already-published unit returns the prior receipt, republishes
 /// nothing, and clears the redelivered staging so no LATER commit

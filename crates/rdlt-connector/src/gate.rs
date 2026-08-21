@@ -286,7 +286,7 @@ fn push_escaped(out: &mut String, character: char) {
 }
 
 /// The bounded render as an `fmt::Write` sink: text written to it is
-/// escaped (via the shared [`push_escaped`] rule) and KEPT only until
+/// escaped (via the shared `push_escaped` rule) and KEPT only until
 /// the output reaches `cap`, with everything after counted and
 /// discarded — up to a HARD SOURCE CEILING of twice the cap. A write
 /// arriving past the ceiling is refused with `fmt::Error`, which the
@@ -405,9 +405,8 @@ pub fn render_bounded_debug(cap: usize, value: &dyn std::fmt::Debug) -> String {
 /// whole `Field`.
 pub fn encode_batch_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
     let render = |error: ArrowError| render_bounded(PANIC_TEXT_CAP, &error);
-    let mut writer =
-        arrow_ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
-            .map_err(|error| format!("opening an arrow ipc stream writer: {}", render(error)))?;
+    let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), batch.schema_ref())
+        .map_err(|error| format!("opening an arrow ipc stream writer: {}", render(error)))?;
     writer
         .write(batch)
         .map_err(|error| format!("writing an arrow ipc record batch: {}", render(error)))?;
@@ -484,10 +483,7 @@ pub fn decode_one_batch_ipc<E>(
 /// shared rendering bounds it. What the belt cannot suppress: the
 /// process panic HOOK still writes its line to stderr before the
 /// unwind is caught — a library must not replace the global hook.
-fn contain_panics<T>(
-    work: impl FnOnce() -> Result<T, String>,
-    refusal: &str,
-) -> Result<T, String> {
+fn contain_panics<T>(work: impl FnOnce() -> Result<T, String>, refusal: &str) -> Result<T, String> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
         Ok(decoded) => decoded,
         Err(payload) => Err(format!(
@@ -909,7 +905,10 @@ mod tests {
     /// An honest source renders whole through both value renderers.
     #[test]
     fn an_honest_source_renders_whole_through_the_value_renderers() {
-        assert_eq!(render_bounded(RENDER_CAP, &"an honest cause"), "an honest cause");
+        assert_eq!(
+            render_bounded(RENDER_CAP, &"an honest cause"),
+            "an honest cause"
+        );
         assert_eq!(render_bounded_debug(2048, &"quoted"), "\"quoted\"");
     }
 
@@ -925,8 +924,11 @@ mod tests {
         use std::sync::Arc;
 
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![1, 2, 3]))])
-            .expect("batch");
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
+        )
+        .expect("batch");
         let bytes = encode_batch_ipc(&batch).expect("an honest batch encodes");
         let decoded = decode_one_batch_ipc(
             &bytes,
@@ -958,8 +960,8 @@ mod tests {
             .expect("batch")
         };
         let schema_only = {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema)
-                .expect("writer");
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("writer");
             writer.finish().expect("finish");
             writer.into_inner().expect("inner")
         };
@@ -975,19 +977,16 @@ mod tests {
 
         // One stream carrying TWO record-batch messages: the reader
         // sees a second decodable batch behind the first.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema)
-            .expect("writer");
+        let mut writer =
+            arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("writer");
         writer.write(&batch(vec![1])).expect("first");
         writer.write(&batch(vec![2])).expect("second");
         let bytes = writer.into_inner().expect("finish");
-        let error = decode_one_batch_ipc(
-            &bytes,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
-        .expect_err("a second batch must refuse");
+        let error =
+            decode_one_batch_ipc(&bytes, "REFUSAL", "MULTI", |message| message, &mut |_| {
+                Ok(())
+            })
+            .expect_err("a second batch must refuse");
         assert_eq!(error, "MULTI");
     }
 
@@ -1010,27 +1009,24 @@ mod tests {
         };
         let over = encode_batch_ipc(&batch(crate::channel::MAX_RECORD_BATCH_ROWS + 1))
             .expect("an over-row batch still ENCODES");
-        let error = decode_one_batch_ipc(
-            &over,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
-        .expect_err("one row over the cap refuses");
+        let error =
+            decode_one_batch_ipc(
+                &over,
+                "REFUSAL",
+                "MULTI",
+                |message| message,
+                &mut |_| Ok(()),
+            )
+            .expect_err("one row over the cap refuses");
         assert!(
             error.contains("row wire cap"),
             "the refusal names the row cap: {error}"
         );
         let at_cap = encode_batch_ipc(&batch(crate::channel::MAX_RECORD_BATCH_ROWS))
             .expect("a batch at the cap encodes");
-        decode_one_batch_ipc(
-            &at_cap,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
+        decode_one_batch_ipc(&at_cap, "REFUSAL", "MULTI", |message| message, &mut |_| {
+            Ok(())
+        })
         .expect("a batch at exactly the row cap decodes");
     }
 
@@ -1050,14 +1046,11 @@ mod tests {
             .expect("a wide schema still encodes");
         writer.finish().expect("finish");
         let bytes = writer.into_inner().expect("inner");
-        let error = decode_one_batch_ipc(
-            &bytes,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
-        .expect_err("a schema over the width cap refuses");
+        let error =
+            decode_one_batch_ipc(&bytes, "REFUSAL", "MULTI", |message| message, &mut |_| {
+                Ok(())
+            })
+            .expect_err("a schema over the width cap refuses");
         assert!(
             error.contains("column wire cap"),
             "the refusal names the width cap: {error}"
@@ -1077,7 +1070,12 @@ mod tests {
             arrow_schema::Field::new(
                 "outer",
                 DataType::Struct(
-                    vec![arrow_schema::Field::new("inner\u{202e}", DataType::Int64, true)].into(),
+                    vec![arrow_schema::Field::new(
+                        "inner\u{202e}",
+                        DataType::Int64,
+                        true,
+                    )]
+                    .into(),
                 ),
                 true,
             ),
@@ -1098,8 +1096,12 @@ mod tests {
                 DataType::Dictionary(
                     Box::new(DataType::Int32),
                     Box::new(DataType::Struct(
-                        vec![arrow_schema::Field::new("inner\u{202e}", DataType::Int64, true)]
-                            .into(),
+                        vec![arrow_schema::Field::new(
+                            "inner\u{202e}",
+                            DataType::Int64,
+                            true,
+                        )]
+                        .into(),
                     )),
                 ),
                 true,
@@ -1143,14 +1145,11 @@ mod tests {
             0x16, 0x00, 0x06, 0x00, 0x05, 0x00,
         ];
 
-        let error = decode_one_batch_ipc(
-            &REPRO,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
-        .expect_err("crafted bytes must refuse typed");
+        let error =
+            decode_one_batch_ipc(&REPRO, "REFUSAL", "MULTI", |message| message, &mut |_| {
+                Ok(())
+            })
+            .expect_err("crafted bytes must refuse typed");
         assert!(
             error.starts_with("REFUSAL: ") && error.len() > "REFUSAL: ".len() + 2,
             "the refusal rides behind the frozen prefix with a cause: {error}"
@@ -1182,14 +1181,11 @@ mod tests {
         frame.extend_from_slice(&0x7fff_fff0_i32.to_le_bytes());
         frame.extend_from_slice(&[0u8; 16]);
 
-        let error = decode_one_batch_ipc(
-            &frame,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
-        .expect_err("a declared length past the frame's end must refuse");
+        let error =
+            decode_one_batch_ipc(&frame, "REFUSAL", "MULTI", |message| message, &mut |_| {
+                Ok(())
+            })
+            .expect_err("a declared length past the frame's end must refuse");
         assert_eq!(
             error,
             "REFUSAL: a declared metadata length of 2147483632 bytes exceeds \
@@ -1215,17 +1211,13 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
         )
         .expect("batch");
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema)
-            .expect("writer");
+        let mut writer =
+            arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("writer");
         writer.write(&batch).expect("write");
         let mut bytes = writer.into_inner().expect("finish");
-        decode_one_batch_ipc(
-            &bytes,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
+        decode_one_batch_ipc(&bytes, "REFUSAL", "MULTI", |message| message, &mut |_| {
+            Ok(())
+        })
         .expect("the unpatched stream decodes");
 
         // Walk to the second message (the record batch); patch its
@@ -1265,14 +1257,11 @@ mod tests {
         bytes[field_pos..field_pos + 8].copy_from_slice(&0x7fff_fff0_i64.to_le_bytes());
 
         let frame_len = bytes.len();
-        let error = decode_one_batch_ipc(
-            &bytes,
-            "REFUSAL",
-            "MULTI",
-            |message| message,
-            &mut |_| Ok(()),
-        )
-        .expect_err("an overdeclared body refuses typed");
+        let error =
+            decode_one_batch_ipc(&bytes, "REFUSAL", "MULTI", |message| message, &mut |_| {
+                Ok(())
+            })
+            .expect_err("an overdeclared body refuses typed");
         assert_eq!(
             error,
             format!(

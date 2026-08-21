@@ -16,13 +16,12 @@ use serde_json::json;
 
 use super::support::DirProbe;
 
-
 /// The sdk shell over `dir` — the SPI face this crate's tests drive
 /// in-process.
 fn shell_over(dir: &std::path::Path) -> Shell<Reference> {
     Shell::<Reference>::from_value(json!({"path": dir})).expect("valid config")
 }
-mod replay;
-mod refusals;
-mod sessions;
 mod gates;
+mod refusals;
+mod replay;
+mod sessions;

@@ -3,7 +3,6 @@
 use super::replay::raw_backend;
 use super::*;
 
-
 /// A commit whose meta names another load refuses — and the refusal
 /// renders BOTH load ids through the bounded diagnostic render: the
 /// meta's is wire-authored text a direct Backend driver hands in

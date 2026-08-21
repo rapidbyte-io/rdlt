@@ -1,4 +1,3 @@
-
 //! The verdict lookups the rogue suites share: find one clause's
 //! entry in a report and hold it to a pinned Fail or a Pass.
 

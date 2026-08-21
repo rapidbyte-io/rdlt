@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 /// ONE state slot means ONE pipeline per directory: a second pipeline
 /// reading the slot must refuse typed — answering `None` would read as
 /// "never committed", so the engine would re-extract from scratch,

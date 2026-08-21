@@ -24,6 +24,7 @@ use rdlt_connector::channel::{
 use rdlt_connector::error::SourceError;
 use rdlt_connector::source::Source as _;
 use rdlt_connector::{channel, gate, source};
+use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use rdlt_connector_protocol::handshake::Line;
 use rdlt_connector_protocol::proto::connector_server::{Connector, ConnectorServer};
 use rdlt_connector_protocol::proto::source_service_server::{SourceService, SourceServiceServer};
@@ -31,7 +32,6 @@ use rdlt_connector_protocol::proto::{
     self, CheckReply, CheckRequest, Classification, ErrorFrame, HandshakeReply, HandshakeRequest,
     StreamList, StreamsReply, StreamsRequest, read_frame, streams_reply,
 };
-use rdlt_connector_protocol::MAX_FRAME_BYTES;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_stream::Stream;
@@ -685,7 +685,7 @@ fn encode_arrow_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
 /// Bind at an explicit path and return the [`Line`] a spawning host
 /// would read from stdout, plus a handle for the serving task — WITHOUT
 /// printing anything, so a test can drive the very listener `run` would
-/// have started. The bind/serve/line scaffold is [`wire::bind_and_serve`];
+/// have started. The bind/serve/line scaffold is `wire::bind_and_serve`;
 /// what lives here is the role's service wiring: both gRPC services on
 /// the SAME `SourceServer` instance (`from_arc`, not two independent
 /// `new`s) — they share one handshake-populated shell, so a `Streams`
@@ -696,9 +696,7 @@ pub async fn run_on<C: SourceConnector>(
     wire::bind_and_serve(path.as_ref(), |incoming| async move {
         let server = Arc::new(SourceServer::<C>::new());
         tonic::transport::Server::builder()
-            .add_service(
-                ConnectorServer::from_arc(Arc::clone(&server)).frame_capped(),
-            )
+            .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
             .add_service(SourceServiceServer::from_arc(server).frame_capped())
             .serve_with_incoming(incoming)
             .await
