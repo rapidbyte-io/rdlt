@@ -41,7 +41,7 @@ async fn a_source_handshake_populates_the_outcome() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let outcome = handshake::run(
@@ -90,7 +90,7 @@ async fn a_destination_handshake_carries_capabilities() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, 1, DEFAULT_DEADLINE).await.expect("dial");
+    let channel = dial((&path).into(), 1, DEFAULT_DEADLINE).await.expect("dial");
     let outcome = handshake::run(
         &channel,
         Role::Destination,
@@ -145,7 +145,7 @@ async fn a_config_at_exactly_the_document_ceiling_is_accepted() {
         "the fixture IS the ceiling"
     );
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     handshake::run(
@@ -171,7 +171,7 @@ async fn an_oversized_serialized_config_is_refused_before_send() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let oversized = serde_json::json!({
@@ -201,7 +201,7 @@ async fn an_id_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -232,7 +232,7 @@ async fn a_version_mismatch_refuses_typed() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -262,7 +262,7 @@ async fn a_config_refusal_surfaces_as_a_fatal_handshake_error() {
         .await
         .expect("bind");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -298,7 +298,7 @@ async fn a_control_character_identity_refuses_inert_before_the_mismatch_render()
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_identity(&path, "ev\u{1b}]52;c;AAAA\u{7}il", "0.0.0");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -331,7 +331,7 @@ async fn a_control_character_version_refuses_inert() {
     let (_dir, path) = socket_path();
     let _serving = rogue::serve_identity(&path, "clean-id", "1.0\u{7}");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -360,7 +360,7 @@ async fn an_oversized_identity_refuses_at_the_wire_boundary() {
     let oversized: &'static str = Box::leak("a".repeat(1025).into_boxed_str());
     let _serving = rogue::serve_identity(&path, oversized, "0.0.0");
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -399,7 +399,7 @@ async fn an_oversized_spec_json_is_refused_at_the_handshake() {
     ok.spec_json = vec![b'x'; rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize + 1];
     let _serving = rogue::serve_handshake_ok(&path, ok);
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -438,7 +438,7 @@ async fn an_oversized_state_format_versions_document_refuses_before_parse() {
     };
     let _serving = rogue::serve_handshake_ok(&path, ok);
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(
@@ -478,7 +478,7 @@ async fn a_populated_state_format_versions_document_round_trips() {
     };
     let _serving = rogue::serve_handshake_ok(&path, ok);
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let outcome = handshake::run(
@@ -519,7 +519,7 @@ async fn a_reply_over_the_decode_cap_refuses_before_materialization() {
     ok.spec_json = vec![b'x'; 20 << 20];
     let _serving = rogue::serve_handshake_ok(&path, ok);
 
-    let channel = dial(&path, BUDGET_BYTES, DEFAULT_DEADLINE)
+    let channel = dial((&path).into(), BUDGET_BYTES, DEFAULT_DEADLINE)
         .await
         .expect("dial");
     let error = handshake::run(

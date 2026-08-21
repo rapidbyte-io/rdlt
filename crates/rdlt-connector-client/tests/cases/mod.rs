@@ -6,3 +6,4 @@ mod test_deadline;
 mod test_destination;
 mod test_handshake;
 mod test_source;
+mod test_tcp;

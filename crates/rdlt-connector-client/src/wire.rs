@@ -2,7 +2,6 @@
 //! capped service clients every RPC goes through, and the deadline
 //! that bounds every wire await.
 
-use std::path::Path;
 use std::time::Duration;
 
 use rdlt_connector_protocol::MAX_FRAME_BYTES;
@@ -84,9 +83,8 @@ pub(crate) async fn bounded<F: std::future::Future>(
 /// tiny budget is floored here rather than handed to h2 as-is.
 const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 
-/// Dial the Unix domain socket a served connector's handshake line
-/// advertised, returning the one [`Channel`] every service client for
-/// that connector shares.
+/// Dial the endpoint a served connector lives at, returning the one
+/// [`Channel`] every service client for that connector shares.
 ///
 /// The host's byte budget IS the pacing authority: both h2 windows are
 /// set from `budget_bytes`, so a server can never hold more bytes
@@ -96,14 +94,14 @@ const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 /// (`MIN_WINDOW_BYTES`, 64 KiB) and caps at [`MAX_FRAME_BYTES`], the
 /// wire's hard per-message ceiling.
 ///
-/// The URI handed to `Endpoint` is a placeholder — every connection
-/// goes to the UDS through the connector closure, the tonic-over-UDS
-/// idiom: `tower::service_fn` supplies the connector,
+/// The URI handed to `Endpoint` for a socket dial is a placeholder —
+/// every connection goes to the UDS through the connector closure, the
+/// tonic-over-UDS idiom: `tower::service_fn` supplies the connector,
 /// `hyper_util::rt::TokioIo` adapts `tokio::net::UnixStream` to
-/// hyper's IO traits.
+/// hyper's IO traits. An address dial parses the real thing.
 ///
 /// `rpc_deadline` bounds the WHOLE dial — a connector that accepts the
-/// socket connection but never completes the HTTP/2 setup elapses into
+/// connection but never completes the HTTP/2 setup elapses into
 /// the typed [`error::Error::Timeout`] rather than hanging the host
 /// (`Endpoint::connect_timeout` alone covers only the io connect, so
 /// the outer deadline is what makes the bound whole). The same
@@ -111,34 +109,57 @@ const MIN_WINDOW_BYTES: u64 = 64 * 1024;
 /// peer dies BETWEEN awaits errors out within roughly two deadlines
 /// instead of lingering until the next RPC.
 pub async fn dial(
-    socket_path: &Path,
+    endpoint: crate::endpoint::Endpoint,
     budget_bytes: u64,
     rpc_deadline: Duration,
 ) -> Result<Channel, error::Error> {
     let window = budget_bytes.clamp(MIN_WINDOW_BYTES, MAX_FRAME_BYTES as u64) as u32;
-    let path = socket_path.to_path_buf();
-    let endpoint = Endpoint::try_from("http://[::1]:1")
-        .expect("a static placeholder endpoint parses")
-        .initial_stream_window_size(window)
-        .initial_connection_window_size(window)
-        .connect_timeout(rpc_deadline)
-        .http2_keep_alive_interval(rpc_deadline)
-        .keep_alive_timeout(rpc_deadline)
-        .keep_alive_while_idle(true);
-    let connecting =
-        endpoint.connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
-            let path = path.clone();
-            async move {
-                let io = tokio::net::UnixStream::connect(path).await?;
-                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(io))
-            }
-        }));
-    bounded(rpc_deadline, Operation::Dial, connecting)
-        .await?
-        .map_err(|source| error::Error::Dial {
-            path: socket_path.to_path_buf(),
-            source,
-        })
+    match endpoint {
+        crate::endpoint::Endpoint::Socket(path) => {
+            let dial_path = path.clone();
+            let endpoint = Endpoint::try_from("http://[::1]:1")
+                .expect("a static placeholder endpoint parses")
+                .initial_stream_window_size(window)
+                .initial_connection_window_size(window)
+                .connect_timeout(rpc_deadline)
+                .http2_keep_alive_interval(rpc_deadline)
+                .keep_alive_timeout(rpc_deadline)
+                .keep_alive_while_idle(true);
+            let connecting = endpoint
+                .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+                    let path = dial_path.clone();
+                    async move {
+                        let io = tokio::net::UnixStream::connect(path).await?;
+                        Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(io))
+                    }
+                }));
+            bounded(rpc_deadline, Operation::Dial, connecting)
+                .await?
+                .map_err(|source| error::Error::Dial {
+                    path,
+                    source,
+                })
+        }
+        crate::endpoint::Endpoint::Address(address) => {
+            // CONFIDENTIALITY IS NOT THIS ARM'S: a plain-TCP wire is
+            // plaintext by design, and deploying one across any boundary
+            // an attacker controls is the provider's TLS layer to wrap
+            // (the serve side's `serve_with_incoming` accepts
+            // pre-wrapped streams; the wrap here lives inside the
+            // connector closure).
+            let endpoint = Endpoint::try_from(format!("http://{address}"))
+                .map_err(|source| error::Error::InvalidAddress { address, source })?
+                .initial_stream_window_size(window)
+                .initial_connection_window_size(window)
+                .connect_timeout(rpc_deadline)
+                .http2_keep_alive_interval(rpc_deadline)
+                .keep_alive_timeout(rpc_deadline)
+                .keep_alive_while_idle(true);
+            bounded(rpc_deadline, Operation::Dial, endpoint.connect())
+                .await?
+                .map_err(|source| error::Error::DialAddress { address, source })
+        }
+    }
 }
 
 /// The decode cap on `Connector`-service replies: the LEGAL maximum is
@@ -215,7 +236,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nothing-listens-here.sock");
 
-        let error = dial(&path, 8 * 1024 * 1024, DEFAULT_DEADLINE)
+        let error = dial((&path).into(), 8 * 1024 * 1024, DEFAULT_DEADLINE)
             .await
             .expect_err("nothing listens — dial must refuse");
         match &error {

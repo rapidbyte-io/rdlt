@@ -11,7 +11,6 @@
 //! server-streamed frames into the request's own byte channel — the
 //! wire adds transport, never semantics.
 
-use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -47,14 +46,22 @@ impl Remote {
     /// adapter AND the full [`handshake::Outcome`] so a caller reads
     /// what the handshake established (state-format versions, the
     /// protocol version) without a second RPC.
+    /// Dial `endpoint` and run the [`handshake::Role::Source`]
+    /// handshake, verifying the connector against `requirement`. The
+    /// endpoint is a socket path or a TCP address
+    /// ([`crate::endpoint::Endpoint`] — each variant carries its own
+    /// trust model); returns the adapter AND the full
+    /// [`handshake::Outcome`] so a caller reads what the handshake
+    /// established (state-format versions, the protocol version)
+    /// without a second RPC.
     pub async fn connect(
-        socket_path: &Path,
+        endpoint: impl Into<crate::endpoint::Endpoint>,
         budget_bytes: u64,
         config: &serde_json::Value,
         requirement: &handshake::Requirement,
     ) -> Result<(Remote, handshake::Outcome), error::Error> {
         let (channel, outcome) = handshake::establish(
-            socket_path,
+            endpoint.into(),
             budget_bytes,
             config,
             handshake::Role::Source,

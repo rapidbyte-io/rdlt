@@ -712,6 +712,30 @@ pub async fn run_on<C: SourceConnector>(
     .await
 }
 
+/// Serve a [`SourceConnector`] over TCP — the network binding of the
+/// same proto (ADR 0001 D3): identical services, gates, and ceilings,
+/// an explicit address instead of a private socket. There is NO `run`
+/// twin and NO handshake line here on purpose: a network endpoint's
+/// discovery belongs to whoever deploys it (the provider-managed model,
+/// where mTLS is also that layer's to wrap — `tonic`'s
+/// `serve_with_incoming` accepts pre-wrapped streams). Binding a plain
+/// listener onto an interface an attacker controls is a deployment
+/// error this function cannot catch.
+pub fn run_on_tcp<C: SourceConnector>(
+    listener: tokio::net::TcpListener,
+) -> JoinHandle<Result<(), wire::Error>> {
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    let server = Arc::new(SourceServer::<C>::new());
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
+            .add_service(SourceServiceServer::from_arc(server).frame_capped())
+            .serve_with_incoming(incoming)
+            .await
+            .map_err(wire::Error::Serve)
+    })
+}
+
 /// Turn a [`SourceConnector`] into an out-of-process protocol server:
 /// bind a fresh Unix domain socket in a private per-process directory
 /// under the system temp directory, print the handshake line on stdout,

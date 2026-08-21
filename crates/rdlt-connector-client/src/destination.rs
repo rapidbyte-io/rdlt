@@ -37,7 +37,6 @@
 //! in `Drop` — the client sends no frame on abandonment, matching what
 //! the in-process `Session` honestly does.
 
-use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -84,20 +83,21 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// Dial `socket_path` (the byte budget paces the wire — see
-    /// [`wire::dial`]) and run the [`handshake::Role::Destination`]
+    /// Dial `endpoint` (a socket path or a TCP address —
+    /// [`crate::endpoint::Endpoint`], each variant carrying its own
+    /// trust model) and run the [`handshake::Role::Destination`]
     /// handshake, verifying the connector against `requirement`.
     /// Returns the adapter AND the full [`handshake::Outcome`],
     /// mirroring the read seam's
     /// [`connect`](crate::source::Remote::connect).
     pub async fn connect(
-        socket_path: &Path,
+        endpoint: impl Into<crate::endpoint::Endpoint>,
         budget_bytes: u64,
         config: &serde_json::Value,
         requirement: &handshake::Requirement,
     ) -> Result<(Remote, handshake::Outcome), error::Error> {
         let (channel, outcome) = handshake::establish(
-            socket_path,
+            endpoint.into(),
             budget_bytes,
             config,
             handshake::Role::Destination,

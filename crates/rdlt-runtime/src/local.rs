@@ -189,7 +189,7 @@ impl Local {
         let (_guard, line) =
             spawn::spawn(&path, &binary, role_arg(role), true, self.line_timeout).await?;
         let channel = dial(
-            &line.socket_path,
+            (&line.socket_path).into(),
             self.budget_bytes,
             requirement.rpc_deadline,
         )

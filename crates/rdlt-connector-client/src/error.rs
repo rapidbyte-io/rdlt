@@ -37,6 +37,28 @@ pub enum Error {
         #[source]
         source: tonic::transport::Error,
     },
+    /// Connecting to the connector's TCP endpoint failed — the network
+    /// binding of the same proto (ADR 0001 D3), where the address is
+    /// the deployer's configuration rather than a handshake line.
+    #[error("dialing the connector at {address}: {source}")]
+    DialAddress {
+        /// The endpoint that refused.
+        address: std::net::SocketAddr,
+        /// The transport-level cause.
+        #[source]
+        source: tonic::transport::Error,
+    },
+    /// A TCP endpoint could not be turned into a tonic [`Endpoint`] —
+    /// in practice unreachable for a valid `SocketAddr`, but a
+    /// constructor that can fail must refuse typed, not expect.
+    #[error("an invalid connector endpoint at {address}: {source}")]
+    InvalidAddress {
+        /// The endpoint that did not parse.
+        address: std::net::SocketAddr,
+        /// The URI-level cause.
+        #[source]
+        source: tonic::transport::Error,
+    },
     /// The connector refused the handshake with a typed [`proto::ErrorFrame`]
     /// — bad role, out-of-range protocol version, undecodable or invalid
     /// config. The connector's own wording rides in `message`, rendered
@@ -180,6 +202,16 @@ impl std::fmt::Debug for Error {
             Error::Dial { path, source } => f
                 .debug_struct("Dial")
                 .field("path", path)
+                .field("source", source)
+                .finish(),
+            Error::DialAddress { address, source } => f
+                .debug_struct("DialAddress")
+                .field("address", address)
+                .field("source", source)
+                .finish(),
+            Error::InvalidAddress { address, source } => f
+                .debug_struct("InvalidAddress")
+                .field("address", address)
                 .field("source", source)
                 .finish(),
             Error::Handshake {

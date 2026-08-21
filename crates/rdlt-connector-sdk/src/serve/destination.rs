@@ -822,6 +822,24 @@ pub async fn run_on<C: DestinationConnector>(
     .await
 }
 
+/// Serve a [`DestinationConnector`] over TCP — the network binding of
+/// the same proto (ADR 0001 D3). See the source role's `run_on_tcp`
+/// for why there is no handshake line here and where TLS wraps.
+pub fn run_on_tcp<C: DestinationConnector>(
+    listener: tokio::net::TcpListener,
+) -> JoinHandle<Result<(), wire::Error>> {
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    let server = Arc::new(DestinationServer::<C>::new());
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
+            .add_service(DestinationServiceServer::from_arc(server).frame_capped())
+            .serve_with_incoming(incoming)
+            .await
+            .map_err(wire::Error::Serve)
+    })
+}
+
 /// Turn a [`DestinationConnector`] into an out-of-process protocol
 /// server: bind a fresh Unix domain socket in a private per-process
 /// directory under the system temp directory, print the handshake line

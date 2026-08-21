@@ -4,7 +4,7 @@
 //! vocabulary.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use rdlt_connector::destination::Capabilities;
@@ -320,15 +320,16 @@ pub async fn run(
 }
 
 /// Dial and verify in one motion — the shared first half of both
-/// adapters' `connect`.
+/// adapters' `connect`, over either transport (see
+/// [`crate::endpoint::Endpoint`] for the per-transport trust models).
 pub(crate) async fn establish(
-    socket_path: &Path,
+    endpoint: crate::endpoint::Endpoint,
     budget_bytes: u64,
     config: &serde_json::Value,
     role: Role,
     requirement: &Requirement,
 ) -> Result<(Channel, Outcome), error::Error> {
-    let channel = wire::dial(socket_path, budget_bytes, requirement.rpc_deadline).await?;
+    let channel = wire::dial(endpoint, budget_bytes, requirement.rpc_deadline).await?;
     let outcome = run(&channel, role, config, requirement).await?;
     Ok((channel, outcome))
 }

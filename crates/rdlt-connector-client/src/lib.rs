@@ -41,6 +41,7 @@
 mod gate;
 
 pub mod destination;
+pub mod endpoint;
 pub mod error;
 #[doc(hidden)]
 pub mod fuzzing;
