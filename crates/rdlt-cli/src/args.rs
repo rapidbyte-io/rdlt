@@ -83,6 +83,28 @@ pub(crate) enum Command {
         #[arg(value_name = "pipeline.yaml")]
         spec: PathBuf,
     },
+    /// Probe the environment offline: this CLI's version, connector
+    /// binaries discoverable on PATH, and — with a pipeline document —
+    /// that it parses, its resolved workdir's writability, and whether
+    /// another process holds the run lock. Exits 1 when any check has
+    /// a finding, 0 all-clear.
+    Doctor {
+        /// The pipeline document to inspect (optional).
+        #[arg(value_name = "pipeline.yaml")]
+        spec: Option<PathBuf>,
+    },
+    /// Sweep crashed connectors' stale serve directories from the
+    /// system temp dir NOW (the same sweep every new spawn runs
+    /// automatically). A live connector's directory is never touched.
+    Reclaim,
+    /// Watch an event log another `rdlt run --events <file>` is
+    /// writing: the canonical live fold, redrawn in place. Runs until
+    /// interrupted.
+    Watch {
+        /// The NDJSON event file (`rdlt run --events <path>`).
+        #[arg(value_name = "events.ndjson")]
+        events: PathBuf,
+    },
     /// Print a connector's configuration JSON Schema to stdout.
     Schema {
         /// Which connector's document to describe: the FULL reverse-DNS

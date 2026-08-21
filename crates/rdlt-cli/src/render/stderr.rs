@@ -18,6 +18,21 @@ pub(crate) fn line(line: &str) {
         .and_then(|()| stderr.write_all(b"\n"));
 }
 
+/// Best-effort MULTI-LINE frame (the `watch` monitor's redraw). The
+/// caller's ANSI cursor codes go out RAW (they are the renderer's own
+/// constants, never data); every BODY line is sanitized at this sink
+/// like every other line — the fold renders host vocabulary, and the
+/// one-sanitizer rule does not bend for monitors.
+pub(crate) fn frame(header_ansi: &str, body: &str) {
+    use std::io::Write as _;
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(header_ansi.as_bytes());
+    for line in body.lines() {
+        let _ = stderr.write_all(sanitize_text(line).as_bytes());
+        let _ = stderr.write_all(b"\n");
+    }
+}
+
 /// Escape terminal-control and invisible characters for MULTI-LINE
 /// display text: C0 (except newline and tab — legitimate formatting in
 /// multi-line error text), DEL, C1, and the shared inventory's

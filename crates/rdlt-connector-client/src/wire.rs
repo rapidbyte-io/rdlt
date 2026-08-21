@@ -125,20 +125,18 @@ pub async fn dial(
                 .http2_keep_alive_interval(rpc_deadline)
                 .keep_alive_timeout(rpc_deadline)
                 .keep_alive_while_idle(true);
-            let connecting = endpoint
-                .connect_with_connector(tower::service_fn(move |_: tonic::transport::Uri| {
+            let connecting = endpoint.connect_with_connector(tower::service_fn(
+                move |_: tonic::transport::Uri| {
                     let path = dial_path.clone();
                     async move {
                         let io = tokio::net::UnixStream::connect(path).await?;
                         Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(io))
                     }
-                }));
+                },
+            ));
             bounded(rpc_deadline, Operation::Dial, connecting)
                 .await?
-                .map_err(|source| error::Error::Dial {
-                    path,
-                    source,
-                })
+                .map_err(|source| error::Error::Dial { path, source })
         }
         crate::endpoint::Endpoint::Address(address) => {
             // CONFIDENTIALITY IS NOT THIS ARM'S: a plain-TCP wire is

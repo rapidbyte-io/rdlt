@@ -90,7 +90,9 @@ async fn a_destination_handshake_carries_capabilities() {
         .await
         .expect("bind");
 
-    let channel = dial((&path).into(), 1, DEFAULT_DEADLINE).await.expect("dial");
+    let channel = dial((&path).into(), 1, DEFAULT_DEADLINE)
+        .await
+        .expect("dial");
     let outcome = handshake::run(
         &channel,
         Role::Destination,

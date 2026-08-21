@@ -127,19 +127,31 @@ pub fn socket_path() -> Result<PathBuf, Error> {
 /// directory is briefly empty and a sweep could rmdir it — that
 /// sibling's bind then fails loudly with [`Error::Bind`], never
 /// silently, and the window is a few syscalls wide.
-fn sweep_dead_serve_dirs(base: &Path) {
+fn sweep_dead_serve_dirs(base: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(base) else {
-        return;
+        return 0;
     };
+    let mut reclaimed = 0usize;
     for entry in entries.flatten() {
         if entry
             .file_name()
             .as_encoded_bytes()
             .starts_with(b"rdlt-serve-")
+            && std::fs::remove_dir(entry.path()).is_ok()
         {
-            let _ = std::fs::remove_dir(entry.path());
+            reclaimed += 1;
         }
     }
+    reclaimed
+}
+
+/// `sweep_dead_serve_dirs` run on demand — the operator's reclaim
+/// verb (`rdlt reclaim`), so clearing a crashed connector's debris does
+/// not wait for the next spawn to do it. Same rmdir-only rule, same
+/// liveness guarantee: a LIVE sibling's directory still holds its
+/// socket and refuses.
+pub fn reclaim_dead_serve_dirs() -> usize {
+    sweep_dead_serve_dirs(&std::env::temp_dir())
 }
 
 /// Create `base/rdlt-serve-<random>` mode `0700`, retrying on a name

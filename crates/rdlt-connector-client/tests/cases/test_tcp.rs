@@ -1,7 +1,7 @@
 //! The TCP binding of the same proto (ADR 0001 D3), end to end: the
 //! sdk's `run_on_tcp` serves the echo connectors on a loopback listener
-//! and ONE unified [`Remote::connect`] dials it with an address — no
-//! `*_address` method family, just the [`Endpoint`] variant. Every
+//! and ONE unified [`Remote::connect`](rdlt_connector_client::source::Remote::connect) dials it with an address — no
+//! `*_address` method family, just the endpoint variant. Every
 //! gate, ceiling, and refusal shape is the wire's own; only the socket
 //! differs.
 

@@ -581,9 +581,13 @@ async fn probe_one_session_ceiling(socket: &Path, entropy: &str) -> Result<(), S
         .map_err(|why| format!("could not open the session that holds the slot: {why}"))?;
 
     let second = async {
-        let channel = dial(socket, MAX_FRAME_BYTES as u64, DEFAULT_DEADLINE)
-            .await
-            .map_err(|error| format!("re-dialing the live socket: {error}"))?;
+        let channel = dial(
+            socket.to_path_buf().into(),
+            MAX_FRAME_BYTES as u64,
+            DEFAULT_DEADLINE,
+        )
+        .await
+        .map_err(|error| format!("re-dialing the live socket: {error}"))?;
         Ok::<_, String>(
             destination_client(channel)
                 .open_session(tokio_stream::empty::<SessionRequest>())

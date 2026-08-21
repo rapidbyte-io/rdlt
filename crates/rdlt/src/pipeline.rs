@@ -253,7 +253,10 @@ fn apply_tuning<S, D>(builder: Builder<S, D>, document: &Document) -> Builder<S,
 /// path-sanitized through the same normalization destination
 /// identifiers use, so a name carrying separators or `..` cannot
 /// escape `.rdlt/`.
-fn resolved_workdir(document: &Document, base: &Path) -> PathBuf {
+/// The workdir a document runs under — the same resolution
+/// construction applies, published for diagnostics (`rdlt doctor`
+/// reports it and probes its lock without building anything).
+pub fn resolved_workdir(document: &Document, base: &Path) -> PathBuf {
     match &document.workdir {
         Some(dir) => base.join(dir),
         None => base

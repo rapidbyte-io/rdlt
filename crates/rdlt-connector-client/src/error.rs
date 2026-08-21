@@ -48,7 +48,7 @@ pub enum Error {
         #[source]
         source: tonic::transport::Error,
     },
-    /// A TCP endpoint could not be turned into a tonic [`Endpoint`] —
+    /// A TCP endpoint could not be turned into a tonic `Endpoint` —
     /// in practice unreachable for a valid `SocketAddr`, but a
     /// constructor that can fail must refuse typed, not expect.
     #[error("an invalid connector endpoint at {address}: {source}")]

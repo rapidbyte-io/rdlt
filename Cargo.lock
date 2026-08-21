@@ -1816,6 +1816,7 @@ dependencies = [
  "rdlt",
  "rdlt-connector-client",
  "rdlt-connector-protocol",
+ "rdlt-connector-sdk",
  "rdlt-core",
  "rdlt-testkit",
  "serde_json",

@@ -16,7 +16,7 @@ mod gate;
 pub mod source;
 pub mod wire;
 
-pub use wire::Error;
+pub use wire::{Error, reclaim_dead_serve_dirs};
 
 /// A connector binary's WHOLE `main`, stated once instead of copied
 /// into every served connector. The expansion is a behavior contract:

@@ -89,6 +89,13 @@ fn main() -> ExitCode {
         args::Command::Schema { connector, role } => {
             runtime.block_on(command::schema::print(&connector, role))
         }
+        // The diagnostic verbs are synchronous and runtime-free by
+        // design: doctor probes files, reclaim sweeps a directory,
+        // watch polls one — none of them needs an async runtime, so
+        // none starts one.
+        args::Command::Doctor { spec } => command::doctor::doctor(spec),
+        args::Command::Reclaim => command::reclaim::reclaim(),
+        args::Command::Watch { events } => command::watch::watch(events),
     };
     match outcome {
         Ok(()) => ExitCode::SUCCESS,

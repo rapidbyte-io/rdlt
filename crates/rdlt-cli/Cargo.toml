@@ -33,6 +33,8 @@ rdlt-core = { workspace = true }
 # The connector requirement and role the `schema` command hands the
 # runtime's provider, spelled at the client crate's own paths.
 rdlt-connector-client = { workspace = true }
+# `rdlt reclaim` sweeps the serve layer's dead-predecessor directories.
+rdlt-connector-sdk = { workspace = true, features = ["serve"] }
 rdlt-connector-protocol = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

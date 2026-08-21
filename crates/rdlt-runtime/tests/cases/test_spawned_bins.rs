@@ -228,7 +228,7 @@ async fn the_reference_bin_answers_the_spec_rpc_before_any_handshake() {
         .expect("the bin's first stdout line is a valid handshake line");
 
     let channel = dial(
-        &parsed.socket_path,
+        (&parsed.socket_path).into(),
         MAX_FRAME_BYTES as u64,
         DEFAULT_DEADLINE,
     )

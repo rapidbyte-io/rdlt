@@ -18,6 +18,10 @@ pub(crate) enum Error {
     /// `Usage`: the invocation was well-formed, the filesystem refused.
     Io(String),
     Run(error::Error),
+    /// A diagnostic command (doctor) completed and REPORTED findings —
+    /// not an invocation error at all, but a scripted caller needs a
+    /// code distinguishing "all clear" from "look at stderr".
+    Findings(String),
 }
 
 impl Error {
@@ -27,6 +31,7 @@ impl Error {
     pub(crate) fn exit(self) -> ExitCode {
         let (message, code) = match self {
             Error::Io(message) => (message, 74),
+            Error::Findings(message) => (message, 1),
             Error::Usage(message) => (message, 2),
             Error::Run(error) => (error.to_string(), code_for(&error)),
         };
