@@ -1,12 +1,12 @@
 [package]
 name = "rdlt-connector-client"
 description = "rdlt out-of-process connector client: dial a served connector over UDS, run the handshake, map wire error frames back to SPI classifications"
+readme = "README.md"
 # The wire contract was frozen 2026-08-07 and re-opened 2026-08-19 by
 # the owner while the workspace is pre-release — the protocol crate's
 # manifest carries the same dates. Publishing is a SEPARATE,
 # owner-scheduled decision and did not move with either: this stays
 # false until the owner schedules publication.
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -59,15 +59,13 @@ rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.
 #     reference connector's certification suite does (rdlt-certify in
 #     its dev-dependencies).
 #
-# Path-only gets both right: the dev-dep vanishes from the published
-# manifest (the suite is not a consumer's problem), and a normal dep
-# fails at manifest VERIFICATION — "all dependencies must have a version
-# requirement specified when packaging" — before any network round trip,
-# naming the offending dependency. `rdlt` holds exactly such a normal dep
-# on rdlt-runtime and cannot publish until the wave runs; this is the
-# loud way to say so.
-rdlt-runtime = { path = "crates/rdlt-runtime" }
-rdlt-certify = { path = "crates/rdlt-certify" }
+# Path-only was the publish-wave tripwire: a normal dep on a path-only
+# entry fails manifest VERIFICATION — "all dependencies must have a
+# version requirement specified when packaging" — naming the offender
+# before any network round trip. The wave has run (REVIEW_ITEMS item 1):
+# both entries carry their versions now, and the tripwire is retired.
+rdlt-runtime = { path = "crates/rdlt-runtime", version = "0.3.0" }
+rdlt-certify = { path = "crates/rdlt-certify", version = "0.3.0" }
 
 # arrow-rs: single workspace-wide major (research.md R10). Connectors receive
 # `RecordBatch` through the rdlt-connector re-export, so version identity is a

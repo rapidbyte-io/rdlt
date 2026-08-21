@@ -1,11 +1,11 @@
 [package]
 name = "rdlt-runtime"
 description = "rdlt connector runtime: providers that resolve, spawn and supervise out-of-process connectors behind managed SPI adapters"
+readme = "README.md"
 # The wire the crates below it speak is FROZEN (2026-08-07), but
 # publishing is a separate, owner-scheduled decision that did not move
 # with the freeze — this stays false until then, in step with the
 # protocol and client crates it composes.
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

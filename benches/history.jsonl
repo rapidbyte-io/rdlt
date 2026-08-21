@@ -26,3 +26,9 @@
 {"ts":"2026-08-16","cell":"pg-to-pg-dedup-1m","variant":"rdlt","median_ms":5175.565227,"rows":1000000}
 {"ts":"2026-08-16","cell":"pg-to-pg-dedup-1m","variant":"dlt","median_ms":13004.729381005744,"rows":1000000}
 {"ts":"2026-08-16","cell":"pg-to-pg-dedup-1m","variant":"dlt-pyarrow","median_ms":20747.571805026386,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-pg-1m","variant":"rdlt","median_ms":894.178987,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-pg-1m","variant":"dlt","median_ms":10721.35616399828,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-pg-1m","variant":"dlt-pyarrow","median_ms":18104.688929997792,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-s3parquet-1m","variant":"rdlt","median_ms":831.56593,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-s3parquet-1m","variant":"dlt","median_ms":1880.465379999805,"rows":1000000}
+{"ts":"2026-08-21","cell":"pg-to-s3parquet-1m","variant":"dlt-pyarrow","median_ms":11416.608843999713,"rows":1000000}
