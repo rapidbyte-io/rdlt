@@ -17,13 +17,11 @@
 //! and renders, [`target`] what a session points at and how it spawns,
 //! `wire` the raw-frame probe below the client adapters, `clock` the
 //! probe-time-excluded clause budget — with [`probe`] the shell-line
-//! table probe the CLI offers and [`contract`] the pins every served
-//! connector bin answers to. Every name is reached by its module path;
-//! nothing is re-exported at the root.
+//! table probe the CLI offers. Every name is reached by its module
+//! path; nothing is re-exported at the root.
 
 pub mod clause;
 pub(crate) mod clock;
-pub mod contract;
 pub mod probe;
 pub mod report;
 #[cfg(test)]

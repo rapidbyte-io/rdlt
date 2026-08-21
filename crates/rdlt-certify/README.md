@@ -284,11 +284,6 @@ report::assert_in_order(&arms, &k::DESTINATION, Some("seed a larger fixture"));
   `--probe-cmd` runner as a `TableProbe`, for embedders that want the
   CLI's shell probe; a line without the `{{table}}` placeholder is
   refused at construction (`probe::MISSING_PLACEHOLDER`), never run.
-- `contract::assert_bin_arg_contract(bin, unserved_roles, version)` and
-  `contract::assert_spec_identity(bin, role, id, version)` — the pins
-  every served connector bin answers to (the argument contract is
-  std-only and runs anywhere; the Spec identity needs a servable bin),
-  held once here rather than copied into each connector's smoke suite.
 
 ## Module map
 
@@ -306,7 +301,6 @@ src/
                      the certifier-authored request frames, refusal_shape
   clock.rs           the clause budget with the probe clock stopped
   probe.rs           Shell — the --probe-cmd TableProbe runner
-  contract.rs        assert_bin_arg_contract, assert_spec_identity
   clause/
     mod.rs           table of contents: s, d, p, k, c
     s.rs             certify() for a source; CLAUSES = S1/S2/S4; the
