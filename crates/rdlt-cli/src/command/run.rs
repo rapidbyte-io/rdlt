@@ -5,7 +5,6 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use rdlt::document::{self, Document};
 use rdlt::pipeline::Pipeline;
 
 use crate::args::{Output, Verbosity};
@@ -76,30 +75,22 @@ pub(crate) async fn run(
     Ok(())
 }
 
-/// Read, parse and build the document — shared with `check`, so the
-/// two can never disagree about what a valid document is. The read is
-/// capped at the facade's document bound BEFORE it happens: a pipeline
-/// document is hand-written configuration, so a multi-megabyte file is
-/// a wrong path, refused typed rather than slurped whole. Relative
-/// path-form configs resolve against the document's own directory — a
-/// bare `pipeline.yaml` has an EMPTY parent, which joins as the working
-/// directory, the same place the file itself was found. A construction
-/// refusal of the config class renders its message bare (`error: <the
-/// provider's or connector's own wording>`), the same exit-2 line the
-/// parse and IO refusals print; every other engine error keeps its own
-/// rendering and code.
+/// Build the document through the facade's ONE chain —
+/// [`Pipeline::from_file_with_name`] — so the CLI and any embedder can
+/// never disagree about what a valid document is; what lives here is
+/// only the exit-code mapping. A filesystem refusal (`Error::Io`) is
+/// exit 74, a config refusal of the config class renders its message
+/// bare (`error: <the provider's or connector's own wording>`) as exit
+/// 2, the same line the parse refusals print; every other engine error
+/// keeps its own rendering and code.
 pub(crate) async fn build(spec_path: &Path) -> Result<(Pipeline, String), exit::Error> {
-    let raw = document::read(spec_path).map_err(exit::Error::Io)?;
-    let spec: Document =
-        document::parse(&raw).map_err(|e| exit::Error::Usage(format!("parsing spec: {e}")))?;
-    let base = spec_path.parent().unwrap_or(Path::new(""));
-    let pipeline = Pipeline::from_document(&spec, base)
+    Pipeline::from_file_with_name(spec_path)
         .await
         .map_err(|e| match e {
+            rdlt::error::Error::Io { message } => exit::Error::Io(message),
             rdlt::error::Error::Config { message } => exit::Error::Usage(message),
             other => exit::Error::Run(other),
-        })?;
-    Ok((pipeline, spec.pipeline))
+        })
 }
 
 /// Spawn the task that drains the event feed into the chosen renderer

@@ -165,68 +165,13 @@ impl<S, D> Builder<S, D> {
 }
 
 impl<S: Source, D: Destination> Builder<S, D> {
-    /// Validate configuration against destination capabilities and construct the
-    /// pipeline. No network or destination I/O happens here; the checks are purely
-    /// against the declared destination capabilities.
+    /// Validate configuration against destination capabilities (the
+    /// engine config's own [`Config::validate`] — the engine owns what
+    /// its config means) and construct the pipeline. No network or
+    /// destination I/O happens here.
     pub fn build(self) -> Result<Pipeline, Error> {
         let caps = self.destination.capabilities();
-        // Which streams request Merge: the default write mode, and any
-        // named per-stream overrides.
-        let merge_default = matches!(self.config.write_mode(), WriteMode::Merge { .. });
-        let merge_overrides: Vec<&StreamName> = self
-            .config
-            .write_modes()
-            .iter()
-            .filter(|(_, mode)| matches!(mode, WriteMode::Merge { .. }))
-            .map(|(stream, _)| stream)
-            .collect();
-        if !caps.merge && (merge_default || !merge_overrides.is_empty()) {
-            return Err(Error::config(format!(
-                "destination `{}` does not support Merge (requested {})",
-                self.destination.spec().name,
-                if merge_default {
-                    "as the default write mode".to_owned()
-                } else {
-                    format!(
-                        "for streams: {}",
-                        merge_overrides
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
-            )));
-        }
-        // Merge-key precedence: `WriteMode::Merge { key }` and a source's
-        // `StreamSpec::primary_key` are NOT independent — for a structured
-        // stream the two must AGREE (name the same columns, as a set), and the
-        // engine enforces that agreement at plan time in `validate_streams`
-        // once the source's streams are known. `build` runs before any stream
-        // exists, so it can only enforce the stream-agnostic half: a Merge
-        // write mode must carry at least one key column.
-        for (stream, mode) in self.config.write_modes() {
-            if let WriteMode::Merge { key } = mode
-                && key.is_empty()
-            {
-                return Err(Error::config(format!(
-                    "stream `{stream}`: Merge requires at least one key column"
-                )));
-            }
-        }
-        if let WriteMode::Merge { key } = self.config.write_mode()
-            && key.is_empty()
-        {
-            return Err(Error::config("Merge requires at least one key column"));
-        }
-        // The document path refuses a threshold-less commit policy at
-        // build; the builder path makes the same refusal — such a policy
-        // would hold the whole run in one crash window, the exact shape
-        // the type refuses everywhere else.
-        if let Err(reason) = self.config.commit_policy().check() {
-            return Err(Error::config(reason.to_string()));
-        }
-
+        self.config.validate(&caps, self.destination.spec().name)?;
         Ok(Pipeline {
             engine: Engine::new(self.config, self.source, self.destination),
         })
@@ -339,21 +284,32 @@ impl Pipeline {
         Builder::new(name)
     }
 
+    /// [`Pipeline::from_file`] also returning the document's pipeline
+    /// name — THE one document chain (read → parse → construct), so an
+    /// embedder that needs the name before running (a CLI's live
+    /// display, a host logging what it is about to run) never
+    /// re-implements the chain beside it. The read is capped at
+    /// [`document::MAX_DOCUMENT_BYTES`]; a missing or oversized file
+    /// refuses as [`Error::Io`] naming the path (the FILESYSTEM
+    /// refused, not the configuration), and a document that does not
+    /// parse refuses as [`Error::Config`].
+    pub async fn from_file_with_name(path: impl AsRef<Path>) -> Result<(Pipeline, String), Error> {
+        let path = path.as_ref();
+        let text = document::read(path).map_err(Error::io)?;
+        let doc = document::parse(&text)
+            .map_err(|e| Error::config(format!("parsing {}: {e}", path.display())))?;
+        let base = path.parent().unwrap_or(Path::new(""));
+        let pipeline = Pipeline::from_document(&doc, base).await?;
+        Ok((pipeline, doc.pipeline))
+    }
+
     /// Read a pipeline document file, parse it, and construct the
     /// pipeline over the default local provider — [`Pipeline::from_document`]
     /// with the base inferred: the file's own directory (`""`, the working
     /// directory, for a bare file name), so a `config: ./creds.yaml` and
     /// the default `workdir` resolve beside the document that names them.
-    /// The read is capped at [`document::MAX_DOCUMENT_BYTES`]; a missing
-    /// or oversized file, and a document that does not parse, refuse as
-    /// [`Error::Config`] naming the path.
     pub async fn from_file(path: impl AsRef<Path>) -> Result<Pipeline, Error> {
-        let path = path.as_ref();
-        let text = document::read(path).map_err(Error::config)?;
-        let doc = document::parse(&text)
-            .map_err(|e| Error::config(format!("parsing {}: {e}", path.display())))?;
-        let base = path.parent().unwrap_or(Path::new(""));
-        Pipeline::from_document(&doc, base).await
+        Ok(Self::from_file_with_name(path).await?.0)
     }
 
     /// Parse a pipeline document from text — YAML or JSON (JSON is

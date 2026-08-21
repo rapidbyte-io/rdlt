@@ -403,19 +403,20 @@ destination:
 
 // ---- the file and text doors ------------------------------------------
 
-/// `from_file` on a path that does not exist refuses as a Config error
+/// `from_file` on a path that does not exist refuses as an IO error
 /// naming the path — the same `reading <path>:` spelling `document::read`
-/// gives the CLI, typed into the engine's taxonomy.
+/// gives the CLI, typed into the engine's taxonomy. IO, not Config: the
+/// invocation was well-formed, the FILESYSTEM refused.
 #[tokio::test]
-async fn from_file_on_a_missing_file_is_a_config_error_naming_the_path() {
+async fn from_file_on_a_missing_file_is_an_io_error_naming_the_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let missing = dir.path().join("definitely-missing.yaml");
     match Pipeline::from_file(&missing).await {
-        Err(Error::Config { message }) => assert!(
+        Err(Error::Io { message }) => assert!(
             message.starts_with(&format!("reading {}:", missing.display())),
             "the refusal names the path it looked for: {message}"
         ),
-        Err(other) => panic!("expected a Config error, got: {other}"),
+        Err(other) => panic!("expected an IO error, got: {other}"),
         Ok(_) => panic!("a missing file must not build"),
     }
 }
@@ -433,12 +434,12 @@ async fn from_file_on_an_oversized_file_refuses_at_the_document_cap() {
         .set_len(MAX_DOCUMENT_BYTES + 1)
         .expect("sparse size");
     match Pipeline::from_file(&big).await {
-        Err(Error::Config { message }) => assert!(
+        Err(Error::Io { message }) => assert!(
             message.contains(&format!("at least {} bytes", MAX_DOCUMENT_BYTES + 1))
                 && message.contains(&format!("{MAX_DOCUMENT_BYTES}-byte")),
             "the refusal names the floor and the cap: {message}"
         ),
-        Err(other) => panic!("expected a Config error, got: {other}"),
+        Err(other) => panic!("expected an IO error, got: {other}"),
         Ok(_) => panic!("an oversized file must not build"),
     }
 }

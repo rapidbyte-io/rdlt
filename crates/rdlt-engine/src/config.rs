@@ -193,6 +193,79 @@ impl Config {
         &self.commit_policy
     }
 
+    /// Refuse configuration this destination cannot honor, and policies
+    /// that could never fire — THE validation a constructed pipeline
+    /// passes before it exists. No network or destination I/O happens
+    /// here; the checks are purely against the declared capabilities
+    /// and the config's own values. This is where the checks live (not
+    /// in the facade's builder): the engine owns what its config means.
+    ///
+    /// Three rules:
+    ///
+    /// - **Merge capability.** Which streams request Merge — the
+    ///   default write mode, and any named per-stream overrides — must
+    ///   be a mode the destination declared.
+    /// - **Merge keys are non-empty.** `WriteMode::Merge { key }` and a
+    ///   source's `StreamSpec::primary_key` are NOT independent — for a
+    ///   structured stream the two must AGREE (name the same columns,
+    ///   as a set), and the engine enforces that agreement at plan time
+    ///   in `validate_streams` once the source's streams are known.
+    ///   Validation runs before any stream exists, so it enforces the
+    ///   stream-agnostic half only: a Merge write mode must carry at
+    ///   least one key column.
+    /// - **The commit policy can fire.** A threshold-less policy never
+    ///   fires — it would hold the whole run in one crash window, the
+    ///   exact shape the type refuses everywhere else.
+    pub fn validate(
+        &self,
+        capabilities: &rdlt_connector::destination::Capabilities,
+        destination_name: impl std::fmt::Display,
+    ) -> Result<(), rdlt_core::error::Error> {
+        let merge_default = matches!(self.write_mode(), WriteMode::Merge { .. });
+        let merge_overrides: Vec<&StreamName> = self
+            .write_modes()
+            .iter()
+            .filter(|(_, mode)| matches!(mode, WriteMode::Merge { .. }))
+            .map(|(stream, _)| stream)
+            .collect();
+        if !capabilities.merge && (merge_default || !merge_overrides.is_empty()) {
+            return Err(rdlt_core::error::Error::config(format!(
+                "destination `{destination_name}` does not support Merge (requested {})",
+                if merge_default {
+                    "as the default write mode".to_owned()
+                } else {
+                    format!(
+                        "for streams: {}",
+                        merge_overrides
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            )));
+        }
+        for (stream, mode) in self.write_modes() {
+            if let WriteMode::Merge { key } = mode
+                && key.is_empty()
+            {
+                return Err(rdlt_core::error::Error::config(format!(
+                    "stream `{stream}`: Merge requires at least one key column"
+                )));
+            }
+        }
+        if let WriteMode::Merge { key } = self.write_mode()
+            && key.is_empty()
+        {
+            return Err(rdlt_core::error::Error::config(
+                "Merge requires at least one key column",
+            ));
+        }
+        self.commit_policy
+            .check()
+            .map_err(|reason| rdlt_core::error::Error::config(reason.to_string()))
+    }
+
     /// Sets the working directory that holds the write-ahead log.
     ///
     /// Without a workdir the engine runs without durable recovery: a crash loses

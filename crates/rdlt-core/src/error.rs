@@ -92,6 +92,17 @@ pub enum Error {
         message: String,
     },
 
+    /// Operator action: check the local filesystem — a document or
+    /// artifact the path named could not be read. Distinct from
+    /// [`Error::Config`] on purpose: the invocation was well-formed and
+    /// the configuration may be perfect, the FILESYSTEM refused, and a
+    /// scripting caller treats the two differently.
+    #[error("io error: {message}")]
+    Io {
+        /// What failed and on which path.
+        message: String,
+    },
+
     /// An engine invariant broke — a background task panicked, or an internal
     /// contract was violated. Not operator-actionable: it means a bug to report,
     /// not a pipeline/config/destination change. Additive variant; older clients
@@ -111,6 +122,14 @@ impl Error {
     /// A configuration failure: the operator can fix this by editing the pipeline.
     pub fn config(message: impl Into<String>) -> Self {
         Error::Config {
+            message: message.into(),
+        }
+    }
+
+    /// A filesystem refusal: the path could not be read. The message
+    /// names the path.
+    pub fn io(message: impl Into<String>) -> Self {
+        Error::Io {
             message: message.into(),
         }
     }

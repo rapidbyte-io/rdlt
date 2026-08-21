@@ -43,6 +43,7 @@ pub(crate) fn code_for(error: &error::Error) -> u8 {
         error::Error::Source { .. } => 4,
         error::Error::Destination { .. } => 5,
         error::Error::Wal { .. } => 6,
+        error::Error::Io { .. } => 74,
         error::Error::Cancelled => 7,
         error::Error::Internal { .. } => 70,
         // NOT 2. Falling back to the config code tells a scripting
