@@ -1,0 +1,46 @@
+# Template: certify every connector PR against a CHOSEN engine revision.
+#
+# Install in the connectors repository as .github/workflows/certify.yml.
+# The engine revision is an explicit input (defaulting to the newest row
+# of docs/two-repo/VERSION_MATRIX.md over there) — never the lockfile's
+# accident of the day. The matrix rows are the contract; this job holds
+# connector PRs to it.
+
+name: certify
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      engine_rev:
+        description: "rdlt revision to certify against"
+        required: false
+        default: "f27c2119" # VERSION_MATRIX.md, newest row
+
+jobs:
+  certify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: rapidbyte-io/rdlt-connectors
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Pin the engine revision under certification
+        run: |
+          # The git-dep gate (make lint) demands a rev-pinned dependency;
+          # this job's whole point is choosing WHICH rev answers.
+          cargo update -d 2>/dev/null || true
+          sed -i 's|rev = "[0-9a-f]*"|rev = "${{ inputs.engine_rev || 'f27c2119' }}"|' Cargo.toml
+          cargo metadata --format-version 1 >/dev/null
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Certify the PR'd connectors against the chosen revision
+        run: make test TARGET=unit
+      - name: The spawn/certify matrix IS the boundary
+        run: |
+          # A connector that stops certifying fails THIS repo's gate —
+          # the same bar a third-party entry answers to. Nothing merges
+          # past a red clause.
+          cargo nextest run --workspace --features spawn-bins \
+            -E 'test(test_certify_wire)'
