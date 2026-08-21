@@ -240,6 +240,10 @@ pub struct RogueDestination {
     /// Overrides the handshake's capabilities sheet when `Some` — so a
     /// rogue can declare an out-of-range `ident_rules.max_len`.
     capabilities: Option<Capabilities>,
+    /// Overrides the handshake's state-format declarations when `Some` —
+    /// the negotiation pins' seam (a rogue declaring it can resume only
+    /// version 1 while answering `ReadState` with a newer document).
+    state_format_versions_json: Option<Vec<u8>>,
 }
 
 #[tonic::async_trait]
@@ -257,7 +261,10 @@ impl Connector for RogueDestination {
                     .expect("a ConnectorSpec serializes to JSON infallibly"),
                 capabilities_json: serde_json::to_vec(&self.capabilities.unwrap_or_default())
                     .expect("a capabilities sheet serializes to JSON infallibly"),
-                state_format_versions_json: Vec::new(),
+                state_format_versions_json: self
+                    .state_format_versions_json
+                    .clone()
+                    .unwrap_or_default(),
             })),
         }))
     }
@@ -524,11 +531,24 @@ pub fn serve_destination_with_capabilities(
     script: SessionScript,
     capabilities: Option<Capabilities>,
 ) -> JoinHandle<()> {
+    serve_destination_with_state_formats(path, script, capabilities, None)
+}
+
+/// [`serve_destination`] with the handshake's state-format declarations
+/// overridden — the negotiation pins' seam (a rogue declaring it can
+/// resume only version 1 while answering `ReadState` with a newer doc).
+pub fn serve_destination_with_state_formats(
+    path: &Path,
+    script: SessionScript,
+    capabilities: Option<Capabilities>,
+    state_format_versions_json: Option<Vec<u8>>,
+) -> JoinHandle<()> {
     let listener = tokio::net::UnixListener::bind(path).expect("bind the rogue's socket");
     let incoming = UnixListenerStream::new(listener);
     let rogue = Arc::new(RogueDestination {
         script,
         capabilities,
+        state_format_versions_json,
     });
     let serving = tonic::transport::Server::builder()
         .add_service(ConnectorServer::from_arc(Arc::clone(&rogue)))

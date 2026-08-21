@@ -69,7 +69,7 @@ async fn a_source_handshake_populates_the_outcome() {
     );
     assert!(
         outcome.state_format_versions.is_empty(),
-        "servers with nothing to negotiate send the empty document"
+        "a source declares no state formats — its cursors are engine-held"
     );
     assert_eq!(
         outcome.protocol_version,
@@ -109,6 +109,17 @@ async fn a_destination_handshake_carries_capabilities() {
     assert!(
         !capabilities.scalar_lists,
         "undeclared capabilities stay false"
+    );
+    // THE DECLARATION, served automatically: a destination declares the
+    // state-doc ceiling its SDK build understands — the negotiation's
+    // one shared spelling, filled by the serve layer so no connector
+    // has to remember it.
+    assert_eq!(
+        outcome
+            .state_format_versions
+            .get(rdlt_connector::core::state::STATE_DOC_FORMAT_KIND),
+        Some(&rdlt_connector::core::state::STATE_FORMAT_VERSION),
+        "a served destination declares its state-doc ceiling"
     );
 }
 

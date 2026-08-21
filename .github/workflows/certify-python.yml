@@ -1,0 +1,36 @@
+# The polyglot claim is ENFORCED here: the Python proof connector is
+# certified by the real `rdlt-certify` binary on every PR — the same
+# clause vocabulary the Rust connectors answer to. If this job goes
+# red, either the connector drifted or the frozen contract broke for
+# non-Rust authors; both are release blockers.
+name: certify-python
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  certify-pyjsonl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the certifier
+        run: cargo build -p rdlt-certify --features bin --bin rdlt-certify
+      - name: The pinned Python environment
+        run: |
+          python3 -m venv target/py-certify-venv
+          target/py-certify-venv/bin/pip install \
+            -r connectors/python/rdlt-connector-pyjsonl/requirements.txt
+      - name: Certify against the real clause set
+        run: |
+          PATH="$PWD/target/py-certify-venv/bin:$PATH" \
+            target/debug/rdlt-certify \
+            --role source \
+            --config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
+            --hostile-config connectors/python/rdlt-connector-pyjsonl/fixtures/hostile-config.json \
+            connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl

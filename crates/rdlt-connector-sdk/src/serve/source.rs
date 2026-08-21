@@ -310,6 +310,14 @@ impl<C: SourceConnector> wire::HandshakeShell for Shell<C> {
         // support) — a source has none to advertise.
         Vec::new()
     }
+
+    fn state_format_versions_json(&self) -> Vec<u8> {
+        // A source's cursors are ENGINE-held (checkpoint frames, the
+        // WAL), never connector-persisted — there is no state document
+        // for this role to declare a ceiling for. The empty document is
+        // the declared-nothing convention.
+        Vec::new()
+    }
 }
 
 /// Flatten a classified [`SourceError`] into the wire's [`ErrorFrame`]

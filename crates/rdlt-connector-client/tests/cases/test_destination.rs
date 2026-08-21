@@ -616,6 +616,114 @@ async fn an_oversized_state_document_is_refused_at_the_decode_seat() {
     );
 }
 
+/// THE NEGOTIATION, LIVE: a connector that DECLARES it can resume the
+/// state doc at version 1, then answers `ReadState` with a version-2
+/// document, is refused FATAL naming BOTH versions — before any
+/// extraction begins (the 037 discipline: refuse state you cannot
+/// resume; never reset, because resetting duplicates rows under
+/// Append). The declared ceiling rides the handshake's
+/// `state_format_versions_json`; this is the machinery firing
+/// end-to-end for the first time, against a real wire.
+#[tokio::test]
+async fn a_state_document_newer_than_the_declared_ceiling_refuses_at_read_state() {
+    let mut doc = rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p"),
+        "test",
+    );
+    doc.format_version = rdlt_connector::core::state::STATE_FORMAT_VERSION + 1;
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination_with_state_formats(
+        &path,
+        SessionScript::AnswerReadStateWith {
+            state_doc_json: serde_json::to_vec(&doc).expect("a StateDoc serializes"),
+        },
+        None,
+        // Declares: "I can resume `rdlt.state_doc` at version 1, none
+        // newer" — the exact spelling the sdk's serve layer emits.
+        Some(
+            serde_json::to_vec(&std::collections::BTreeMap::from([(
+                rdlt_connector::core::state::STATE_DOC_FORMAT_KIND,
+                rdlt_connector::core::state::STATE_FORMAT_VERSION,
+            )]))
+            .expect("a one-kind map serializes"),
+        ),
+    );
+    let remote = Remote::connect(
+        &path,
+        BUDGET_BYTES,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let mut backend = remote.open_backend(&context()).await.expect("open");
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.read_state(&rdlt_connector::core::id::PipelineId::new("p")),
+    )
+    .await
+    .expect("the refusal answers promptly")
+    .expect_err("a document newer than the declaration must refuse");
+
+    assert!(matches!(error, DestinationError::Fatal(_)), "{error:?}");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("format version 2") && rendered.contains("at most version 1"),
+        "the refusal names both versions: {rendered}"
+    );
+    assert!(
+        rendered.contains("duplicate rows"),
+        "the refusal says why resetting is not the answer: {rendered}"
+    );
+}
+
+/// The tolerant half of the negotiation: a connector that declares
+/// NOTHING (the empty document — the pre-negotiation convention, and
+/// every foreign connector that has not adopted the map yet) imposes no
+/// ceiling; the same version-2 document reads through, and the
+/// ENGINE's own version gate remains the judge for what it parses.
+#[tokio::test]
+async fn a_connector_that_declares_no_state_formats_imposes_no_ceiling() {
+    let mut doc = rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p"),
+        "test",
+    );
+    doc.format_version = rdlt_connector::core::state::STATE_FORMAT_VERSION + 1;
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::AnswerReadStateWith {
+            state_doc_json: serde_json::to_vec(&doc).expect("a StateDoc serializes"),
+        },
+    );
+    let remote = Remote::connect(
+        &path,
+        BUDGET_BYTES,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+
+    let mut backend = remote.open_backend(&context()).await.expect("open");
+    let doc = tokio::time::timeout(
+        BOUND,
+        backend.read_state(&rdlt_connector::core::id::PipelineId::new("p")),
+    )
+    .await
+    .expect("the reply answers promptly")
+    .expect("an undeclared ceiling reads through at the wire seat")
+    .expect("the connector answered with a document");
+    assert_eq!(
+        doc.format_version,
+        rdlt_connector::core::state::STATE_FORMAT_VERSION + 1,
+        "the document crosses undeclared"
+    );
+}
+
 /// The state read's cursor half: a state document inside the ceiling whose
 /// CURSOR inflates past the cursor contract on re-serialization (the
 /// float-notation shape: `1e15` parses compact and re-serializes as

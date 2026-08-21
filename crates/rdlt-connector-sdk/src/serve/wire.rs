@@ -606,6 +606,13 @@ pub(crate) trait HandshakeShell: Sized {
     /// Destination capabilities, pre-serialized: the wire field carries
     /// the destination's capabilities document and is empty for sources.
     fn capabilities_json(&self) -> Vec<u8>;
+    /// The state-format kinds this shell can resume, pre-serialized as
+    /// the handshake's ceilinged JSON document. A destination declares
+    /// `{"rdlt.state_doc": STATE_FORMAT_VERSION}` — what its SDK build
+    /// understands; the client's `ReadState` seat enforces it. A source
+    /// declares nothing (its cursors are engine-held, not
+    /// connector-persisted), which is the empty document.
+    fn state_format_versions_json(&self) -> Vec<u8>;
 }
 
 /// The handshake choreography shared by both roles: role check,
@@ -706,11 +713,10 @@ pub(crate) fn handshake<S: HandshakeShell>(
         connector_version: shell.connector_version().to_string(),
         spec_json: shell.spec_json(),
         capabilities_json: shell.capabilities_json(),
-        // The empty document (= the empty map, the proto field's own
-        // convention) by design: with one format version per state kind
-        // there is nothing to negotiate; the feature that adds a second
-        // format version owns the negotiation semantics.
-        state_format_versions_json: Vec::new(),
+        // Declared by the shell itself (see the trait method): a
+        // destination declares its state-doc ceiling; a source sends
+        // the empty document.
+        state_format_versions_json: shell.state_format_versions_json(),
     };
 
     if slot.set(Arc::new(shell)).is_err() {

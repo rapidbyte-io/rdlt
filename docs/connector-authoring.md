@@ -241,3 +241,35 @@ sweep matrix.
 - **Review**: adversarial lenses (contract parity, fresh-eyes
   correctness, test adequacy) until clean; every finding fixed gets a
   pin; the gate runs twice clean untouched at the end.
+
+## Authoring in another language
+
+The protocol is the contract — Rust is not. A connector in any language
+that speaks gRPC can certify, and `connectors/python/rdlt-connector-pyjsonl`
+is the working proof: a jsonl source in ~475 lines of stdlib-plus-grpcio
+Python, vendored protobuf stubs, and a launcher script, passing the SAME
+`rdlt-certify` clause set as the Rust connectors — resume law, prompt
+cancellation, honest check and read, the protocol clauses — with the
+hostile-config clauses included. Its certification runs in CI
+(`certify-python.yml`), so the polyglot claim is enforced on every PR,
+not asserted once.
+
+The path for a new non-Rust connector:
+
+1. **Copy the shape, not the code**: one executable on `PATH` (the
+   discovery convention is `rdlt-connector-` + the id's last
+   `.`-segment), printing ONE handshake line on stdout and nothing
+   after, then serving the proto's services. Read
+   `crates/rdlt-connector-protocol/README.md` first — the freeze
+   clauses, ceilings, and refusal shapes are the contract you are
+   answering to, and the certifier holds you to every one.
+2. **Generate your stubs from `rdlt_connector_v1.proto`** and pin the
+   generator version (the Python connector's vendored stubs carry the
+   pin on line 1; `tools/check-python-stubs.sh` shows the regen-diff
+   pattern).
+3. **Gate your config at the handshake**: validate the document, refuse
+   unknown fields typed — a config refusal that reaches your operations
+   is a clause failure, not an implementation detail.
+4. **Certify before you ship**: `rdlt-certify --role <role> --config
+   <fixture> [--hostile-config <fixture>] <your-binary>`. A connector
+   enters the ecosystem when this passes; there is no other door.

@@ -163,6 +163,18 @@ impl<C: DestinationConnector> wire::HandshakeShell for Shell<C> {
         serde_json::to_vec(&self.capabilities())
             .expect("Capabilities serializes to JSON infallibly")
     }
+
+    fn state_format_versions_json(&self) -> Vec<u8> {
+        // The state-doc ceiling, declared automatically: this build can
+        // resume exactly what its SDK understands, and the client's
+        // `ReadState` seat refuses a persisted document newer than the
+        // declaration (037: refuse before extraction, never reset).
+        serde_json::to_vec(&std::collections::BTreeMap::from([(
+            rdlt_connector::core::state::STATE_DOC_FORMAT_KIND,
+            rdlt_connector::core::state::STATE_FORMAT_VERSION,
+        )]))
+        .expect("a one-kind map serializes to JSON infallibly")
+    }
 }
 
 /// Flatten a classified [`DestinationError`] into the wire's

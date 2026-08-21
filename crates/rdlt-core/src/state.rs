@@ -17,6 +17,17 @@ use crate::id::{LoadId, PipelineId, SchemaHash, StreamName, TableName};
 /// every row under `Append`.
 pub const STATE_FORMAT_VERSION: u32 = 1;
 
+/// The state-format KIND under which a destination connector declares,
+/// in the handshake's `state_format_versions_json` map, the newest
+/// [`STATE_FORMAT_VERSION`] its build can resume. One spelling here so
+/// the declaring side (the sdk's serve layer, which fills the map
+/// automatically) and the enforcing side (the client's `ReadState`
+/// seat, which refuses a document newer than the declaration) cannot
+/// drift. A connector that declares nothing is not refused — the map's
+/// empty-means-absent convention predates negotiation — but the
+/// engine's own version gate still applies to what it parses.
+pub const STATE_DOC_FORMAT_KIND: &str = "rdlt.state_doc";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Which commit last published successfully.
 ///
