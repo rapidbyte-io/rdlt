@@ -86,15 +86,23 @@ fn refuse_untrusted_stream_spec(spec: &StreamSpec) -> Result<(), SourceError> {
     // Count caps beside the content gates — a spec with hundreds of
     // thousands of tiny keys passes every per-value gate within one
     // frame otherwise. An honest primary key names one to a few
-    // columns; honest type hints cover at most the stream's columns,
-    // and the engine's own per-table column cap is 4,096. The serve
-    // side's read seat mirrors these SAME numbers by value (the crates
-    // cannot share the constants; the mirror is the contract, and both
-    // sides say so).
+    // columns; honest type hints cover at most the stream's columns.
+    // Both caps are the SPI's shared constants, so the serve side's
+    // read seat holds the same numbers by construction, not by mirror.
     if let Some(key) = &spec.primary_key {
-        gate::count("primary-key fields", key.len(), 64).map_err(SourceError::fatal)?;
+        gate::count(
+            "primary-key fields",
+            key.len(),
+            rdlt_connector::gate::MAX_PRIMARY_KEY_FIELDS,
+        )
+        .map_err(SourceError::fatal)?;
     }
-    gate::count("type-hint fields", spec.type_hints.len(), 4096).map_err(SourceError::fatal)?;
+    gate::count(
+        "type-hint fields",
+        spec.type_hints.len(),
+        rdlt_connector::gate::MAX_SOURCE_COLUMNS_PER_TABLE,
+    )
+    .map_err(SourceError::fatal)?;
     let seats = std::iter::once(("stream name", spec.name.as_str()))
         .chain(
             spec.primary_key

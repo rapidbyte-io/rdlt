@@ -9,10 +9,9 @@
 //! and content escaping belongs to the DISPLAY renders on the side
 //! that displays (the client's bounded renders, a host's own logs).
 //! The ceilings themselves are the SPI's one set
-//! (`MAX_WIRE_IDENTIFIER_BYTES`, the document and cursor ceilings),
-//! referenced from here rather than duplicated; the count caps that
-//! mirror the client's stream gates ride inside the functions that
-//! enforce them, spelled with the mirror-is-the-contract rule at each.
+//! (`MAX_WIRE_IDENTIFIER_BYTES`, the document and cursor ceilings, the
+//! spec count caps), referenced from here rather than duplicated, so
+//! the two sides of the wire enforce one rule by construction.
 
 use rdlt_connector::core::commit::{CommitMeta, WriteMode};
 use rdlt_connector::core::schema::{Column, ColumnType, TableSchema};
@@ -172,10 +171,11 @@ fn gate_column_at(column: &Column, counted: &mut usize) -> Result<(), session_re
 /// seats' identifier gate, same ceiling, length-only (content escaping
 /// belongs to the display renders on the side that displays) — plus
 /// the COUNT caps the client's stream gate holds the same collections
-/// to, mirrored BY VALUE (the crates cannot share the constants; the
-/// mirror IS the contract — primary-key fields ≤ 64, type hints ≤
-/// 4096, the same numbers the client seat caps, and both sides say
-/// so): a spec of thousands of tiny gate-legal keys passes every
+/// to. Both caps are the SPI's shared constants
+/// ([`gate::MAX_PRIMARY_KEY_FIELDS`],
+/// [`gate::MAX_SOURCE_COLUMNS_PER_TABLE`]), so this is not a mirror:
+/// the two sides enforce one rule by construction. The counts matter
+/// because a spec of thousands of tiny gate-legal keys passes every
 /// per-value gate within the document ceiling otherwise, and the spec
 /// is RETAINED for the read's lifetime.
 pub(super) fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Result<(), String> {
@@ -188,9 +188,13 @@ pub(super) fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Re
         Ok(())
     };
     if let Some(key) = &spec.primary_key {
-        refuse_count("primary-key fields", key.len(), 64)?;
+        refuse_count("primary-key fields", key.len(), gate::MAX_PRIMARY_KEY_FIELDS)?;
     }
-    refuse_count("type-hint fields", spec.type_hints.len(), 4096)?;
+    refuse_count(
+        "type-hint fields",
+        spec.type_hints.len(),
+        gate::MAX_SOURCE_COLUMNS_PER_TABLE,
+    )?;
     let refuse = |kind: &str, value: &str| {
         if value.len() > gate::MAX_WIRE_IDENTIFIER_BYTES {
             return Err(format!(
@@ -265,15 +269,17 @@ pub(super) fn refuse_dense_cursor(field: &str, value: &serde_json::Value) -> Res
 }
 
 /// The greatest number of columns one ensured schema may declare, and
-/// of key columns one merge mode may name. The document ceiling that
-/// admitted the schema bounds its bytes; a minimal column object costs
-/// a few dozen of them, so a legal `table_schema_json` declares tens of
-/// thousands of columns and a merge key names millions of strings —
-/// each an owned `Column` or `String` the session RETAINS and the
-/// backend's DDL walks. The cap is the wire batch's column cap: a
-/// schema wider than any batch that could fill it is refused here
-/// rather than at the first Write.
-const MAX_ENSURED_COLUMNS: usize = 4096;
+/// of key columns one merge mode may name: the SPI's shared
+/// [`gate::MAX_SOURCE_COLUMNS_PER_TABLE`] — the same width the wire's
+/// batch decode and the engine's shred assembly hold tables to. The
+/// document ceiling that admitted the schema bounds its bytes; a
+/// minimal column object costs a few dozen of them, so a legal
+/// `table_schema_json` declares tens of thousands of columns and a
+/// merge key names millions of strings — each an owned `Column` or
+/// `String` the session RETAINS and the backend's DDL walks. A schema
+/// wider than any batch that could fill it is refused here rather than
+/// at the first Write.
+const MAX_ENSURED_COLUMNS: usize = gate::MAX_SOURCE_COLUMNS_PER_TABLE;
 
 /// An ensured schema's collection COUNTS, beside the per-identifier
 /// lengths every name rides: length gates alone admit a flood of tiny

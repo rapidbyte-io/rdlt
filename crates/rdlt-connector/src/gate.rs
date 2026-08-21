@@ -43,6 +43,31 @@ pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 /// absurd for a name.
 pub const MAX_WIRE_IDENTIFIER_BYTES: usize = 1024;
 
+/// The most fields one primary key may name.
+///
+/// An honest primary key names one to a few columns; a hostile spec
+/// names hundreds of thousands of tiny gate-legal keys and passes every
+/// per-value identifier gate within one frame otherwise. Every seat
+/// that admits a declared spec's key — the client's decode seat and the
+/// serve side's read seat — holds the collection to this count, so the
+/// two sides cannot drift.
+pub const MAX_PRIMARY_KEY_FIELDS: usize = 64;
+
+/// The most columns one table or stream may carry, wherever that width
+/// is declared or enforced.
+///
+/// One number, one meaning, every seat: the engine's shred assembly
+/// refuses a table past this width, the wire's batch decode refuses a
+/// frame declaring more `Field`s (a schema message spends forty-odd
+/// flatbuffer bytes per field — the cheapest per-byte expansion an
+/// Arrow frame offers), the ensure seat holds an ensured schema's
+/// column count (nested fields included) to it, and a spec's type
+/// hints — which cover at most the stream's columns — are capped at
+/// the same number. Sharing the constant is the point: a width that is
+/// legal in-process is legal on the wire, and raising one seat raises
+/// every seat or fails to compile.
+pub const MAX_SOURCE_COLUMNS_PER_TABLE: usize = 4096;
+
 /// The most stream specs one `Streams` reply may declare.
 ///
 /// Both ends of the wire hold the reply to this: the serving side so a

@@ -97,13 +97,16 @@ pub const BYTE_FRAME_BUDGET: usize = 32 * 1024 * 1024;
 const FRAME_MESSAGE_CAPACITY: usize = 64;
 
 /// A served source admits at most this many concurrent `Read` RPCs —
-/// the engine's default stream cap (`DEFAULT_MAX_STREAMS_PER_SOURCE`,
-/// mirrored here rather than imported: the sdk does not depend on the
-/// engine), since the host reads a source's streams concurrently, one
-/// `Read` per stream. A host that raises its per-source stream cap past
-/// 1024 over a served source will have its extra concurrent reads
-/// refused `RESOURCE_EXHAUSTED`. The ceiling is a bound on a runaway
-/// client, not on the host's honest budget: per-read budgets
+/// the SPI's shared [`gate::MAX_DECLARED_STREAM_SPECS`], which is also
+/// the engine's default per-source stream cap: the host reads a
+/// source's streams concurrently, one `Read` per stream, so one shared
+/// number prices both what may be declared and what may be read at
+/// once. Sharing it is compile-time, not convention — a host that
+/// raises its per-source stream cap past 1024 over a served source will
+/// have its extra concurrent reads refused `RESOURCE_EXHAUSTED` (and
+/// its streams reply refused at discovery), and raising the shared
+/// constant moves every seat together. The ceiling is a bound on a
+/// runaway client, not on the host's honest budget: per-read budgets
 /// ([`BYTE_FRAME_BUDGET`] + [`READ_CHANNEL_BUDGET`] + one push in hand)
 /// keep any single read bounded, and this bounds their count. The
 /// RETAINED-REQUEST term the count multiplies: each admitted read
@@ -121,7 +124,7 @@ const FRAME_MESSAGE_CAPACITY: usize = 64;
 /// comfortable one. Judging the node COUNT leaves the cursor the opaque
 /// document its contract says it is: no value is inspected, only
 /// counted.
-pub const MAX_CONCURRENT_READS: usize = 1024;
+pub const MAX_CONCURRENT_READS: usize = gate::MAX_DECLARED_STREAM_SPECS;
 
 /// The role a source's handshake must be asked for.
 const EXPECTED_ROLE: &str = "source";

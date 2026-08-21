@@ -107,9 +107,13 @@ impl Config {
     /// The default bound on streams one source may declare for a run: every
     /// stream costs plan-time validation and its own shred state, and
     /// discovery's list length is the one axis a source controls directly.
-    /// 1,024 is far past every honest discovery; a pipeline that genuinely
-    /// reads more raises it here.
-    pub const DEFAULT_MAX_STREAMS_PER_SOURCE: usize = 1024;
+    /// The SPI's shared ceiling — the served side refuses a streams reply
+    /// past the same number, so a host that raises this knob past it over a
+    /// served source is refused at discovery, loudly, not silently
+    /// truncated. Far past every honest discovery; a pipeline that
+    /// genuinely reads more raises both here and at the wire.
+    pub const DEFAULT_MAX_STREAMS_PER_SOURCE: usize =
+        rdlt_connector::gate::MAX_DECLARED_STREAM_SPECS;
 
     /// The default bound on streams READING at once: 16. Discovery may
     /// declare up to [`Self::DEFAULT_MAX_STREAMS_PER_SOURCE`] streams, but

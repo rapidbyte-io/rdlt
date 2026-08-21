@@ -264,7 +264,9 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
     }
 }
 
-/// The greatest number of columns one wire batch may declare — a
+/// The greatest number of columns one wire batch may declare — the
+/// SPI's shared [`gate::MAX_SOURCE_COLUMNS_PER_TABLE`], the same width
+/// the ensure seat and the engine's shred assembly hold tables to. A
 /// schema message spends only forty-odd flatbuffer bytes per field, so
 /// field COUNT is the cheapest per-byte expansion an Arrow frame
 /// offers, and each field becomes an owned `Field` and an array. A
@@ -277,7 +279,7 @@ fn contained_decode<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, St
 /// on its own side. The wire's job here is to keep either dimension
 /// from being spent as an allocation lever; it is deliberately not a
 /// cell budget, and calling it one would overstate it.
-const MAX_RECORD_BATCH_COLUMNS: usize = 4096;
+const MAX_RECORD_BATCH_COLUMNS: usize = gate::MAX_SOURCE_COLUMNS_PER_TABLE;
 
 fn decode_arrow_ipc_erring(bytes: &[u8]) -> Result<RecordBatch, String> {
     const REFUSAL: &str = "write carried no decodable record batch";

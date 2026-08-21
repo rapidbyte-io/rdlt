@@ -5,8 +5,11 @@ use rdlt_core::error::Error;
 use rdlt_core::id::TableName;
 
 /// Cumulative source columns retained for one logical table. System columns
-/// sit outside this count.
-pub(crate) const MAX_SOURCE_COLUMNS_PER_TABLE: usize = 4096;
+/// sit outside this count. The SPI's shared width — the wire's batch decode
+/// and the ensure seat hold the same number, so a table legal in-process is
+/// legal on the wire and one raise moves every seat together.
+pub(crate) const MAX_SOURCE_COLUMNS_PER_TABLE: usize =
+    rdlt_connector::gate::MAX_SOURCE_COLUMNS_PER_TABLE;
 
 /// Distinct child-table source keys retained beneath one parent table.
 pub(crate) const MAX_CHILD_TABLES_PER_PARENT: usize = 1024;
