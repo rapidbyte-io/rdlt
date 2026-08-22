@@ -1,7 +1,7 @@
 //! The CLI's error taxonomy and THE exit-code table, stated once:
-//! 0 success · 2 config · 3 schema contract · 4 source · 5 destination ·
-//! 6 WAL/disk · 7 cancelled · 64 usage · 70 internal defect · 74 file
-//! I/O. 70 is also the code for any `rdlt::error::Error` variant this build
+//! 0 success · 1 doctor found something · 2 config · 3 schema contract ·
+//! 4 source · 5 destination · 6 WAL/disk · 7 cancelled · 64 usage ·
+//! 70 internal defect · 74 file I/O. 70 is also the code for any `rdlt::error::Error` variant this build
 //! does not know: "this binary cannot classify what happened" is a bug
 //! to report, never an instruction to go and edit the pipeline
 //! configuration.

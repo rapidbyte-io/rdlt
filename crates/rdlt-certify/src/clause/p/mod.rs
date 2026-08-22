@@ -483,9 +483,10 @@ async fn p6_verdict(probe: &mut WireProbe) -> Result<(), String> {
 /// P7 — the state-format versions document: it must decode
 /// as a `map<string, u32>`, which protobuf decoding already enforced
 /// by the time a `HandshakeOk` exists (an undecodable field fails the
-/// whole handshake and cascades). Empty passes — the
-/// nothing-to-negotiate posture — and
-/// a populated map ALSO passes: tolerated, threaded, never negotiated.
+/// whole handshake and cascades). Empty passes — no ceiling declared
+/// — and a populated map ALSO passes: it is the connector's declared
+/// ceiling per state kind, which the client enforces against persisted
+/// state at its `ReadState` seat. The clause judges shape, not values.
 /// `Pass` carries no payload, so the tolerance evidence is pinned by
 /// the populated-map rogue rather than rendered here.
 fn report_p7(report: &mut Report, ok: &proto::HandshakeOk) {

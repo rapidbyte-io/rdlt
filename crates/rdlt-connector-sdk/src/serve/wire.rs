@@ -466,13 +466,165 @@ pub(super) async fn bind_and_serve<F, Fut>(
     build: F,
 ) -> Result<(Line, tokio::task::JoinHandle<Result<(), Error>>), Error>
 where
-    F: FnOnce(tokio_stream::wrappers::UnixListenerStream) -> Fut + Send + 'static,
+    F: FnOnce(Admitted<tokio_stream::wrappers::UnixListenerStream>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<(), tonic::transport::Error>> + Send + 'static,
 {
     let listener = bind(path)?;
-    let serving = build(tokio_stream::wrappers::UnixListenerStream::new(listener));
+    let serving = build(admit_connections(
+        tokio_stream::wrappers::UnixListenerStream::new(listener),
+    ));
     let handle = tokio::spawn(async move { serving.await.map_err(Error::Serve) });
     Ok((handshake_line(path), handle))
+}
+
+/// A served connector holds at most this many connections open at once.
+///
+/// Past it a new connection is accepted and closed at once, unserved.
+/// Every connection is a descriptor, a task and an HTTP/2 session
+/// before a single request arrives, so with no bound any process that
+/// can merely REACH the listener — the TCP binding's weakest adversary,
+/// needing neither a handshake nor a frame — parks connections until the
+/// descriptor table is full and every honest client is refused. A
+/// client has no say in this refusal, which is the point: the bound
+/// must hold against one that never speaks.
+///
+/// Generous against honest use: a host holds one connection per
+/// connector process, and a provider fronting several pipelines a
+/// handful. The same ceiling guards the private socket — a rogue
+/// same-UID client is the standing adversary there.
+pub const MAX_CONNECTIONS: usize = 64;
+
+/// Requests in flight at once on ONE connection, past which the rest
+/// queue. The sum of what the two admission seats admit process-wide:
+/// one connection can legitimately carry them all, and a count above it
+/// is a stream flood the per-call semaphores never see — `Spec` is
+/// admission-exempt by design, and each stream holds a frame-sized
+/// reply buffered until the client's window lets it drain.
+pub const MAX_REQUESTS_PER_CONNECTION: usize =
+    MAX_CONCURRENT_CONNECTOR_CALLS + gate::MAX_DECLARED_STREAM_SPECS;
+
+/// How often a silent connection is pinged, and how long the peer has
+/// to answer before the connection is reaped. A peer that vanished —
+/// a crashed host, a black-holed route — otherwise holds its connection
+/// slot and every stream on it forever.
+pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// See [`KEEPALIVE_INTERVAL`].
+pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The server builder every served role starts from: the connection
+/// and per-connection request ceilings and the dead-peer keepalive,
+/// stated once so the private socket and the TCP binding cannot drift
+/// apart in what they bound.
+pub(super) fn server_builder() -> tonic::transport::Server {
+    tonic::transport::Server::builder()
+        .concurrency_limit_per_connection(MAX_REQUESTS_PER_CONNECTION)
+        .http2_keepalive_interval(Some(KEEPALIVE_INTERVAL))
+        .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
+        .tcp_keepalive(Some(KEEPALIVE_INTERVAL))
+}
+
+/// A connection admitted under [`MAX_CONNECTIONS`], holding its slot
+/// for as long as it lives.
+#[derive(Debug)]
+pub struct Connection<T> {
+    io: T,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl<T: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Connection<T> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Connection<T> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
+    }
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+}
+
+impl<T: tonic::transport::server::Connected> tonic::transport::server::Connected for Connection<T> {
+    type ConnectInfo = T::ConnectInfo;
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.io.connect_info()
+    }
+}
+
+/// The accept stream under [`MAX_CONNECTIONS`]: each connection the
+/// listener yields takes a slot or is dropped on the spot. Dropping is
+/// closing — the peer sees a reset, never a served session — and it
+/// costs the process one accept, which is what the listener's backlog
+/// already charges.
+#[derive(Debug)]
+pub struct Admitted<S> {
+    incoming: S,
+    slots: Arc<tokio::sync::Semaphore>,
+}
+
+pub(super) fn admit_connections<S>(incoming: S) -> Admitted<S> {
+    Admitted {
+        incoming,
+        slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
+    }
+}
+
+impl<S, T, E> tokio_stream::Stream for Admitted<S>
+where
+    S: tokio_stream::Stream<Item = Result<T, E>> + Unpin,
+{
+    type Item = Result<Connection<T>, E>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        loop {
+            let next = match std::pin::Pin::new(&mut self.incoming).poll_next(cx) {
+                std::task::Poll::Ready(next) => next,
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            };
+            return match next {
+                None => std::task::Poll::Ready(None),
+                Some(Err(error)) => std::task::Poll::Ready(Some(Err(error))),
+                Some(Ok(io)) => match Arc::clone(&self.slots).try_acquire_owned() {
+                    Ok(slot) => std::task::Poll::Ready(Some(Ok(Connection { io, _slot: slot }))),
+                    // Past the ceiling: `io` drops here, closing it, and
+                    // the next accept is polled in the same turn.
+                    Err(_) => continue,
+                },
+            };
+        }
+    }
 }
 
 /// The handshake line for an ALREADY-BOUND socket path.
@@ -978,5 +1130,51 @@ mod connector_admission_tests {
             "a released permit is admitted again — the ceiling bounds concurrency, \
              not lifetime calls"
         );
+    }
+}
+
+#[cfg(test)]
+mod connection_admission_tests {
+    use super::*;
+    use tokio_stream::StreamExt as _;
+
+    /// Exactly the ceiling's worth of connections are admitted; the
+    /// next is dropped without being yielded, and a slot freed by a
+    /// closed connection admits again. The bound is what holds against
+    /// a peer that never speaks, so it is exercised with connections
+    /// that never do.
+    #[tokio::test]
+    async fn connections_past_the_ceiling_are_dropped_and_slots_come_back() {
+        let peers: Vec<Result<tokio::io::DuplexStream, io::Error>> = (0..MAX_CONNECTIONS + 1)
+            .map(|_| Ok(tokio::io::duplex(8).0))
+            .collect();
+        let mut admitted = admit_connections(tokio_stream::iter(peers));
+        let mut held = Vec::new();
+        while let Some(connection) = admitted.next().await {
+            held.push(connection.expect("the source never errs"));
+        }
+        assert_eq!(
+            held.len(),
+            MAX_CONNECTIONS,
+            "the one past the ceiling was dropped, not yielded"
+        );
+
+        // A closed connection gives its slot back.
+        drop(held.pop());
+        let mut again = Admitted {
+            incoming: tokio_stream::iter(vec![Ok::<_, io::Error>(tokio::io::duplex(8).0)]),
+            slots: Arc::clone(&admitted.slots),
+        };
+        assert!(again.next().await.is_some(), "the freed slot admits");
+    }
+
+    /// A source error passes through rather than costing a slot.
+    #[tokio::test]
+    async fn an_accept_error_is_yielded_and_takes_no_slot() {
+        let items: Vec<Result<tokio::io::DuplexStream, io::Error>> =
+            vec![Err(io::Error::other("accept"))];
+        let mut admitted = admit_connections(tokio_stream::iter(items));
+        assert!(admitted.next().await.expect("yielded").is_err());
+        assert_eq!(admitted.slots.available_permits(), MAX_CONNECTIONS);
     }
 }

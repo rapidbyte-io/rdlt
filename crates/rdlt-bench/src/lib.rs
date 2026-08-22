@@ -4,7 +4,7 @@
 //! declarative cells and records the result. Cells, bars, fixtures and
 //! competitor variants are DATA under `benches/`; this crate is the one
 //! protocol that runs them, judges the bars, and splices the record. It is
-//! dev-only (`publish = false`) and ships nothing.
+//! a development harness and ships nothing a pipeline runs.
 //!
 //! The modules are the map: [`cell`], [`bar`], [`fixture`] and
 //! [`competitor`] load the registry (each refusing at load with the

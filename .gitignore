@@ -51,3 +51,7 @@ connectors/python/rdlt-connector-pyjsonl/__pycache__/
 /.tmp-real/
 # Scanner hook session state — local telemetry, never part of the tree.
 /.mimosa/
+# cargo's own state under a repo-local CARGO_HOME: caches and the registry
+# symlink (a machine-local absolute path). Only mutants.toml is ours.
+/.cargo/*
+!/.cargo/mutants.toml

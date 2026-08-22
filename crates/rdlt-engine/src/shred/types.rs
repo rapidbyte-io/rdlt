@@ -89,13 +89,28 @@ fn join_column_types_at(
         }
         (ColumnType::Struct { fields: xs }, ColumnType::Struct { fields: ys }) => {
             let mut joined = xs.clone();
+            // Positions by name, so the join is one lookup per field
+            // rather than a scan of every field joined so far — a
+            // struct's width is the wire's to choose, and the scan
+            // squared it on every schema-bearing push.
+            let mut position: std::collections::BTreeMap<&str, usize> = xs
+                .iter()
+                .enumerate()
+                .map(|(index, field)| (field.name.as_str(), index))
+                .collect();
             for y in ys {
-                match joined.iter_mut().find(|x| x.name == y.name) {
-                    Some(x) => {
-                        x.column_type =
-                            join_column_types_at(&x.column_type, &y.column_type, depth + 1)?;
+                match position.get(y.name.as_str()) {
+                    Some(&index) => {
+                        joined[index].column_type = join_column_types_at(
+                            &joined[index].column_type,
+                            &y.column_type,
+                            depth + 1,
+                        )?;
                     }
-                    None => joined.push(y.clone()),
+                    None => {
+                        position.insert(y.name.as_str(), joined.len());
+                        joined.push(y.clone());
+                    }
                 }
             }
             ColumnType::Struct { fields: joined }

@@ -703,7 +703,7 @@ pub async fn run_on<C: SourceConnector>(
 ) -> Result<(Line, JoinHandle<Result<(), wire::Error>>), wire::Error> {
     wire::bind_and_serve(path.as_ref(), |incoming| async move {
         let server = Arc::new(SourceServer::<C>::new());
-        tonic::transport::Server::builder()
+        wire::server_builder()
             .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
             .add_service(SourceServiceServer::from_arc(server).frame_capped())
             .serve_with_incoming(incoming)
@@ -724,10 +724,11 @@ pub async fn run_on<C: SourceConnector>(
 pub fn run_on_tcp<C: SourceConnector>(
     listener: tokio::net::TcpListener,
 ) -> JoinHandle<Result<(), wire::Error>> {
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    let incoming =
+        wire::admit_connections(tokio_stream::wrappers::TcpListenerStream::new(listener));
     let server = Arc::new(SourceServer::<C>::new());
     tokio::spawn(async move {
-        tonic::transport::Server::builder()
+        wire::server_builder()
             .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
             .add_service(SourceServiceServer::from_arc(server).frame_capped())
             .serve_with_incoming(incoming)

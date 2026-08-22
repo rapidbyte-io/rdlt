@@ -5,6 +5,19 @@
 # of docs/two-repo/VERSION_MATRIX.md over there) — never the lockfile's
 # accident of the day. The matrix rows are the contract; this job holds
 # connector PRs to it.
+#
+# WHAT THIS GATE BINDS, AND WHAT IT CANNOT. The Makefile, the suites and
+# the manifests this job runs are the PR's OWN files. It catches honest
+# mistakes — a connector that stopped certifying, a suite that stopped
+# existing (an empty selection fails) — and it pins the engine's
+# provenance below so the record cannot name one engine while judging
+# against another. It has no mechanical answer to a PR written to pass:
+# one that rewrites the certify suite, redefines `TARGET=unit`, or
+# special-cases its own connector passes this job. The program's answer
+# is the one SECURITY.md states for the engine — installing a connector
+# is an operator trust decision, certification is a conformance bar, and
+# the adversarial backstop is diff review by a maintainer. Nothing here
+# replaces that review.
 
 name: certify
 
@@ -17,22 +30,69 @@ on:
         required: false
         default: "f27c2119" # VERSION_MATRIX.md, newest row
 
+# The job reads the checkout and nothing else; the token it is handed
+# can do nothing more than that.
+permissions:
+  contents: read
+
+env:
+  # One seat for the default: the workflow_dispatch default above and
+  # this line must agree. It is the VERSION_MATRIX.md newest row.
+  DEFAULT_ENGINE_REV: f27c2119
+  ENGINE_REPO: https://github.com/rapidbyte-io/rdlt
+
 jobs:
   certify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Actions pinned by SHA, the way the engine's own workflows pin
+      # them: a mutable tag is a supply-chain seat this job would
+      # otherwise hand to whoever controls it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: rapidbyte-io/rdlt-connectors
-      - uses: dtolnay/rust-toolchain@stable
+          # The PR's code is about to be compiled and run; the checkout
+          # token is not to stay on disk beside it.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7c8d7d138f5c09cef361f8214cf96882cd029cdb # stable
+        with:
+          toolchain: stable
       - name: Pin the engine revision under certification
+        # The input reaches the shell through the environment, never
+        # interpolated into the script: an expression inside `run:` is
+        # pasted as text, and an env var is a value.
+        env:
+          ENGINE_REV: ${{ inputs.engine_rev }}
         run: |
+          ENGINE_REV="${ENGINE_REV:-$DEFAULT_ENGINE_REV}"
           # The git-dep gate (make lint) demands a rev-pinned dependency;
-          # this job's whole point is choosing WHICH rev answers.
+          # this job's whole point is choosing WHICH rev answers. Only the
+          # engine's own rows are re-pinned — another git dependency's
+          # rev is its own business.
           cargo update -d 2>/dev/null || true
-          sed -i 's|rev = "[0-9a-f]*"|rev = "${{ inputs.engine_rev || 'f27c2119' }}"|' Cargo.toml
-          cargo metadata --format-version 1 >/dev/null
-      - uses: taiki-e/install-action@v2
+          sed -i -E "/^rdlt-[a-z-]* *=/ s|rev = \"[0-9a-f]*\"|rev = \"${ENGINE_REV}\"|" Cargo.toml
+          echo "ENGINE_REV=${ENGINE_REV}" >> "$GITHUB_ENV"
+      - name: Assert the engine's provenance
+        # The sed above pins a REV; the URL it attaches to is the PR's own
+        # manifest. Without this check a PR pointing `rdlt-connector-sdk`
+        # at a fork certifies against the fork's engine while the record
+        # says it was measured against the chosen revision. Every rdlt
+        # crate must resolve to the canonical repository at exactly that
+        # revision — a mismatch fails the job, naming the offender.
+        run: |
+          cargo metadata --format-version 1 > metadata.json
+          offenders=$(jq -r --arg repo "$ENGINE_REPO" --arg rev "$ENGINE_REV" '
+              .packages[]
+              | select(.name | startswith("rdlt-"))
+              | select(.source != null)
+              | select((.source | startswith("git+" + $repo + "?") | not)
+                       or ((.source | split("#")[1] // "") | startswith($rev) | not))
+              | "\(.name) resolves to \(.source)"' metadata.json)
+          if [ -n "$offenders" ]; then
+            echo "engine provenance mismatch — expected ${ENGINE_REPO} @ ${ENGINE_REV}:"
+            echo "$offenders"
+            exit 1
+          fi
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
         with:
           tool: cargo-nextest
       - name: Certify the PR'd connectors against the chosen revision
@@ -41,6 +101,7 @@ jobs:
         run: |
           # A connector that stops certifying fails THIS repo's gate —
           # the same bar a third-party entry answers to. Nothing merges
-          # past a red clause.
+          # past a red clause on an honest change; see the header for
+          # what a hostile one needs.
           cargo nextest run --workspace --features spawn-bins \
             -E 'test(test_certify_wire)'

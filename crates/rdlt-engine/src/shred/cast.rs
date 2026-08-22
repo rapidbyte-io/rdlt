@@ -74,8 +74,16 @@ pub(super) fn refuse_inexact_cast(
             // target field the source lacks is null-filled by the seat
             // before the cast, and a source field the target lacks never
             // reaches a cast.
+            // Source positions by name once: arrow's own `find` scans,
+            // and a scan per target field squares a width the wire
+            // chooses on every schema-bearing push.
+            let by_name: std::collections::BTreeMap<&str, usize> = fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| (field.name().as_str(), index))
+                .collect();
             for target_field in target_fields {
-                if let Some((index, _)) = fields.find(target_field.name()) {
+                if let Some(&index) = by_name.get(target_field.name().as_str()) {
                     refuse_inexact_cast(
                         struct_array.column(index),
                         target_field.data_type(),

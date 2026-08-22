@@ -14,9 +14,11 @@ jobs:
   certify-pyjsonl:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7c8d7d138f5c09cef361f8214cf96882cd029cdb # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Build the certifier
@@ -26,6 +28,8 @@ jobs:
           python3 -m venv target/py-certify-venv
           target/py-certify-venv/bin/pip install \
             -r connectors/python/rdlt-connector-pyjsonl/requirements.txt
+      - name: The vendored stubs are the proto's — regenerated, they diff to nothing
+        run: tools/check-python-stubs.sh
       - name: Certify against the real clause set
         run: |
           PATH="$PWD/target/py-certify-venv/bin:$PATH" \

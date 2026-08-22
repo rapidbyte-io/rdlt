@@ -273,3 +273,15 @@ The path for a new non-Rust connector:
 4. **Certify before you ship**: `rdlt-certify --role <role> --config
    <fixture> [--hostile-config <fixture>] <your-binary>`. A connector
    enters the ecosystem when this passes; there is no other door.
+
+The Python connector is a PROOF of the polyglot claim, not a posture to
+copy — it passes every clause while standing below the reference
+connector on four points the clauses do not reach. Know them before
+copying its shape: it has no `Read` admission ceiling (concurrent reads
+queue silently where the reference refuses typed past its bound); it
+emits a file's newline-less final line where the reference withholds a
+line until its terminator arrives; its cursor is an offset alone, with
+no rewrite guard (a file rewritten shorter and regrown is re-read from
+the offset, not refused); and its line cap is the 64 MiB frame bound
+rather than the reference's 8 MiB. A production connector, in any
+language, holds the reference's posture on all four.

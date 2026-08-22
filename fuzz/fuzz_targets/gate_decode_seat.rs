@@ -1,4 +1,4 @@
-//! Fuzz: THE shared Arrow IPC decode seat (077, REVIEW_ITEMS item 10) —
+//! Fuzz: THE shared Arrow IPC decode seat —
 //! `rdlt_connector::gate::decode_one_batch_ipc`, the one function both
 //! wire directions run a frame's batch payload through since 076: the
 //! framing pre-pass, the catch_unwind belt, the width and row caps, the

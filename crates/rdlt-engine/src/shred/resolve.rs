@@ -5,7 +5,7 @@
 //! policy loop, parameterized by [`Input`] where the two inputs genuinely
 //! differ.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_core::commit::WriteMode;
 use rdlt_core::error::Error;
@@ -400,16 +400,34 @@ fn enforce_discards<'v, V: JsonView<'v>>(
         .collect();
     buffer.revert_columns(&reverted, rollback_snapshot);
 
+    // Keyed, so each row is walked ONCE: its own entries, each asked
+    // whether it is an offense. The alternative — every offense asked of
+    // every row — is rows × offenses, and both are the wire's to choose:
+    // a million one-key rows beside one row adding four thousand columns
+    // is legal under every byte and value budget, yet multiplies to
+    // billions of consultations inside one blocking call, repeatable
+    // every push because the rollback reverts and the identical push
+    // re-offends. A row's entries already yield one value per key (the
+    // last occurrence), so walking them asks exactly what the lookup did.
+    let offenses_by_key: BTreeMap<&str, &Offense> = offenses
+        .iter()
+        .map(|offense| (offense.source_key.as_str(), offense))
+        .collect();
+
     let mut dropped_rows = 0u64;
     let mut nulled_values = 0u64;
     rows.retain_mut(|row| {
         let mut keep = true;
-        for offense in &offenses {
-            let value = row.top_level(&offense.source_key);
-            let offends = match (&value, &offense.must_fit) {
-                (None, _) => false,
-                (Some(v), None) => !v.is_null(),
-                (Some(v), Some(ty)) => !value_fits(*v, ty),
+        for (key, value) in row.value.obj_entries() {
+            let Some(offense) = offenses_by_key.get(key) else {
+                continue;
+            };
+            if row.nulled.contains(key) {
+                continue;
+            }
+            let offends = match &offense.must_fit {
+                None => !value.is_null(),
+                Some(ty) => !value_fits(value, ty),
             };
             if !offends {
                 continue;

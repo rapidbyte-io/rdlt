@@ -88,6 +88,18 @@ enum LockProbe {
     Unavailable(String),
 }
 
+/// Birth the workdir the way the engine does — 0700 on every component
+/// created — so a first-run `doctor` leaves behind exactly the private
+/// root a run would have, not a world-listable one the engine never
+/// repairs. An existing directory's mode is left as found.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
 fn probe_lock(workdir: &Path) -> LockProbe {
     use std::os::unix::fs::OpenOptionsExt as _;
     let mut options = std::fs::OpenOptions::new();
@@ -149,7 +161,7 @@ pub(crate) fn doctor(spec: Option<PathBuf>) -> Result<(), exit::Error> {
                     });
                     let base = spec_path.parent().unwrap_or(Path::new(""));
                     let workdir = rdlt::pipeline::resolved_workdir(&doc, base);
-                    match std::fs::create_dir_all(&workdir)
+                    match create_private_dir(&workdir)
                         .map_err(|e| e.to_string())
                         .and_then(|()| {
                             let probe = workdir.join(".rdlt-doctor-probe");
@@ -217,6 +229,20 @@ mod tests {
             c
         };
         assert_eq!(found, sorted, "inventory is sorted");
+    }
+
+    /// The workdir `doctor` births is the engine's: private to the
+    /// user on every component it created.
+    #[test]
+    fn a_workdir_born_by_doctor_is_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path().join("nested").join("wd");
+        create_private_dir(&workdir).expect("born");
+        for made in [workdir.as_path(), workdir.parent().expect("nested")] {
+            let mode = std::fs::metadata(made).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}: {mode:o}", made.display());
+        }
     }
 
     /// A held lock probes as HELD, and a fresh temp dir probes FREE.

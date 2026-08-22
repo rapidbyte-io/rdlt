@@ -75,9 +75,14 @@ outputs never interleave); `-q` silences the feed, `-v` adds detail,
 picks the mode explicitly (`json` = no feed, report JSON on stdout even on
 a terminal), `--color` follows `NO_COLOR` under `auto`.
 `rdlt schema <full-id-or-path>` prints a connector's config JSON Schema
-by spawning it and asking. Exit codes are stable: 0 success · 2 config ·
-3 schema · 4 source · 5 destination · 6 WAL/disk · 7 cancelled ·
-64 usage · 70 internal defect · 74 file I/O.
+by spawning it and asking. `rdlt doctor [pipeline.yaml]` probes the
+environment offline (version, connectors on `PATH`, and with a document:
+parse, workdir writability, a held run lock); `rdlt reclaim` sweeps
+crashed connectors' stale serve directories now; `rdlt watch
+<events.ndjson>` redraws the canonical live fold over a log another `rdlt
+run --events` is writing. Exit codes are stable: 0 success · 1 doctor
+found something · 2 config · 3 schema · 4 source · 5 destination ·
+6 WAL/disk · 7 cancelled · 64 usage · 70 internal defect · 74 file I/O.
 
 ## Quickstart — library
 

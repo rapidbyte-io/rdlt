@@ -682,6 +682,55 @@ mod tests {
         );
     }
 
+    /// A tail longer than the window refuses rather than cuts: with no
+    /// newline in the window and bytes before it, the tail's start is
+    /// out of sight, and truncating at the window's edge would leave an
+    /// unterminated head for the next run's header to glue onto — the
+    /// corruption the reconcile exists to prevent. The manifest is left
+    /// byte-identical. A window that starts at zero has nothing before
+    /// it, so there the same newline-free bytes ARE the whole tail.
+    #[test]
+    fn reconcile_refuses_a_tail_longer_than_its_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("manifest.jsonl");
+        let window = MAX_MANIFEST_LINE_BYTES as u64 + 2;
+        // One complete line, then a newline-free tail wider than the window.
+        let mut bytes = b"{\"complete\":true}\n".to_vec();
+        bytes.resize(bytes.len() + window as usize + 7, b'x');
+        std::fs::write(&path, &bytes).expect("manifest");
+        let mut manifest = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open");
+        let error = reconcile_unterminated_tail_within(&mut manifest, bytes.len() as u64)
+            .expect_err("a tail wider than the window refuses");
+        assert!(
+            error.to_string().contains("refusing to cut a line in half"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("manifest"),
+            bytes,
+            "a refusal touches nothing"
+        );
+
+        // From byte zero the same shape is a torn tail and is cut away.
+        let whole = vec![b'x'; 64];
+        std::fs::write(&path, &whole).expect("manifest");
+        let mut manifest = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open");
+        reconcile_unterminated_tail_within(&mut manifest, whole.len() as u64)
+            .expect("from zero the tail's start is known");
+        assert!(
+            std::fs::read(&path).expect("manifest").is_empty(),
+            "the torn tail is truncated away"
+        );
+    }
+
     /// Recovery's residue voucher never licenses following a symlink at
     /// the manifest path.
     #[test]

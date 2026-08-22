@@ -62,7 +62,7 @@ rdlt-connector-client = { path = "crates/rdlt-connector-client", version = "0.3.
 # Path-only was the publish-wave tripwire: a normal dep on a path-only
 # entry fails manifest VERIFICATION — "all dependencies must have a
 # version requirement specified when packaging" — naming the offender
-# before any network round trip. The wave has run (REVIEW_ITEMS item 1):
+# before any network round trip. The wave has run:
 # both entries carry their versions now, and the tripwire is retired.
 rdlt-runtime = { path = "crates/rdlt-runtime", version = "0.3.0" }
 rdlt-certify = { path = "crates/rdlt-certify", version = "0.3.0" }

@@ -15,7 +15,7 @@
 //! `test_spawned.rs`.
 //!
 //! The modules are the map: [`args`] the flags as data, [`command`] the
-//! three subcommands, [`render`] the stderr renderers and their mode
+//! subcommands, [`render`] the stderr renderers and their mode
 //! ladder, [`events`] the `--events` NDJSON sink, [`exit`] the error
 //! taxonomy and its codes, [`alloc`] the allocator knob.
 

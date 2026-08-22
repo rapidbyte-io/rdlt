@@ -44,8 +44,11 @@
 //! process, so the two ceilings coincide as shipped. Deliberate:
 //! loosening it later is additive; a backend's own per-session staging
 //! guard is defense in depth BEHIND this ceiling, not a replacement.
-//! There is no idle timeout: a stalled client holds the slot until the
-//! provider supervising the connector process evicts it.
+//! There is no idle timeout: a stalled but LIVE client holds the slot
+//! until the provider supervising the connector process evicts it; a
+//! client that vanished is reaped by the keepalive
+//! (`wire::KEEPALIVE_INTERVAL`), which frees the slot with its
+//! connection.
 //!
 //! [`run`] is what a spawned connector process runs; [`run_on`] is the
 //! seam under it — bind at an explicit path without printing anything,
@@ -813,7 +816,7 @@ pub async fn run_on<C: DestinationConnector>(
 ) -> Result<(Line, JoinHandle<Result<(), wire::Error>>), wire::Error> {
     wire::bind_and_serve(path.as_ref(), |incoming| async move {
         let server = Arc::new(DestinationServer::<C>::new());
-        tonic::transport::Server::builder()
+        wire::server_builder()
             .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
             .add_service(DestinationServiceServer::from_arc(server).frame_capped())
             .serve_with_incoming(incoming)
@@ -828,10 +831,11 @@ pub async fn run_on<C: DestinationConnector>(
 pub fn run_on_tcp<C: DestinationConnector>(
     listener: tokio::net::TcpListener,
 ) -> JoinHandle<Result<(), wire::Error>> {
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    let incoming =
+        wire::admit_connections(tokio_stream::wrappers::TcpListenerStream::new(listener));
     let server = Arc::new(DestinationServer::<C>::new());
     tokio::spawn(async move {
-        tonic::transport::Server::builder()
+        wire::server_builder()
             .add_service(ConnectorServer::from_arc(Arc::clone(&server)).frame_capped())
             .add_service(DestinationServiceServer::from_arc(server).frame_capped())
             .serve_with_incoming(incoming)

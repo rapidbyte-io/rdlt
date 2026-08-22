@@ -15,7 +15,7 @@ one row per deliberate forward-pull, newest last.
    run the full connector gate (`make check` there) twice, record the
    row here. A red gate stops the pull; it never rides along with
    unrelated work.
-3. **After the publish wave closes** (REVIEW_ITEMS item 1), rows gain
+3. **After the crates are published**, rows gain
    the published crate versions beside the revision, and consumption
    respells git→version crate-by-crate per the 023 packaging rule.
 
@@ -34,4 +34,11 @@ workflow the connectors repo installs: on every connector PR it runs
 that crate's `test_certify_wire` suite against the engine revision
 recorded here (input `engine_rev`, defaulting to this table's newest
 row), so certification is always measured against a CHOSEN contract,
-never an accident of the lockfile.
+never an accident of the lockfile. The job asserts that provenance —
+every `rdlt-*` crate must resolve to the canonical repository at that
+revision, or the job fails naming the offender — so the record cannot
+say one engine while a PR's manifest names another. What it binds is
+the honest change: the suites and Makefile it runs are the PR's own
+files, so a PR written to pass them does, and the backstop for that is
+maintainer diff review, the same trust decision SECURITY.md records for
+installing a connector at all.

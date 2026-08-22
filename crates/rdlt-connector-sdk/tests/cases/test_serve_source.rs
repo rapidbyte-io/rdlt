@@ -18,7 +18,7 @@ use rdlt_connector_protocol::proto::{
     read_frame, streams_reply,
 };
 use rdlt_connector_sdk::serve::source::{
-    BYTE_FRAME_BUDGET, MAX_CONCURRENT_READS, READ_CHANNEL_BUDGET, run_on,
+    BYTE_FRAME_BUDGET, MAX_CONCURRENT_READS, READ_CHANNEL_BUDGET, run_on, run_on_tcp,
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -511,6 +511,76 @@ async fn spec_answers_before_any_handshake() {
         spec.config_schema.is_none(),
         "echo declares no config schema — the trait default"
     );
+}
+
+/// The TCP binding serves the same services through the same gates:
+/// `Spec` answers, a pre-handshake `Streams` refuses with the UDS
+/// path's exact shape, and a connection past the ceiling is closed
+/// unserved while an admitted one keeps working — the bound that
+/// holds against a peer that merely reaches the listener.
+#[tokio::test]
+async fn the_tcp_binding_serves_refuses_and_caps_connections_like_the_socket() {
+    use rdlt_connector_sdk::serve::wire::MAX_CONNECTIONS;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("bound address");
+    let _handle = run_on_tcp::<EchoSource>(listener);
+
+    let channel = Endpoint::try_from(format!("http://{address}"))
+        .expect("loopback endpoint parses")
+        .connect()
+        .await
+        .expect("connect over tcp");
+    let mut connector = ConnectorClient::new(channel.clone());
+    let reply = connector
+        .spec(SpecRequest {})
+        .await
+        .expect("Spec over tcp")
+        .into_inner();
+    let spec: rdlt_connector::spec::ConnectorSpec =
+        serde_json::from_slice(&reply.spec_json).expect("ConnectorSpec JSON");
+    assert_eq!(spec.name, "echo-source");
+
+    let status = SourceServiceClient::new(channel.clone())
+        .streams(StreamsRequest {})
+        .await
+        .expect_err("Streams before a handshake refuses over tcp too");
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(status.message(), "handshake has not completed");
+
+    // One slot is the channel above; fill the rest with peers that
+    // never speak, then the one past the ceiling is closed on it.
+    let mut parked = Vec::new();
+    for _ in 1..MAX_CONNECTIONS {
+        parked.push(
+            tokio::net::TcpStream::connect(address)
+                .await
+                .expect("a parked peer connects"),
+        );
+    }
+    let mut refused = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("the kernel accepts; the server closes");
+    let mut byte = [0u8; 1];
+    let closed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut refused, &mut byte),
+    )
+    .await
+    .expect("the close arrives within the bound");
+    assert!(
+        matches!(closed, Ok(0) | Err(_)),
+        "past the ceiling the connection is closed unserved: {closed:?}"
+    );
+    // The admitted channel is untouched by the flood.
+    let reply = connector
+        .spec(SpecRequest {})
+        .await
+        .expect("an admitted connection still serves")
+        .into_inner();
+    assert!(!reply.spec_json.is_empty());
+    drop(parked);
 }
 
 /// `Read` before a handshake refuses the same way `Streams` does — see

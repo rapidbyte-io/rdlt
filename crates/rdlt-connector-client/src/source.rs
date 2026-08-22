@@ -40,13 +40,8 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// Dial `socket_path` (the byte budget paces the wire — see
-    /// [`wire::dial`]) and run the [`handshake::Role::Source`] handshake,
-    /// verifying the connector against `requirement`. Returns the
-    /// adapter AND the full [`handshake::Outcome`] so a caller reads
-    /// what the handshake established (state-format versions, the
-    /// protocol version) without a second RPC.
-    /// Dial `endpoint` and run the [`handshake::Role::Source`]
+    /// Dial `endpoint` (the byte budget paces the wire — see
+    /// [`wire::dial`]) and run the [`handshake::Role::Source`]
     /// handshake, verifying the connector against `requirement`. The
     /// endpoint is a socket path or a TCP address
     /// ([`crate::endpoint::Endpoint`] — each variant carries its own

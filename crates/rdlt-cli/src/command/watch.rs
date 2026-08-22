@@ -25,6 +25,19 @@ use crate::render;
 
 const REDRAW_EVERY: Duration = Duration::from_millis(100);
 
+/// Bytes read from the log per tick. The file is another process's
+/// and may be arbitrarily long on the first tick (or grow faster than
+/// the display drains it); the rest is read on the next tick rather
+/// than all of it held at once.
+const READ_PER_TICK: u64 = 8 * 1024 * 1024;
+
+/// The longest line the drain holds while waiting for its newline — the
+/// same bound the engine puts on its own manifest lines. A newline-free
+/// file otherwise grows the partial buffer without limit; past this a
+/// line is dropped and counted, and the drain waits for the next
+/// newline to resynchronize.
+const MAX_LINE_BYTES: usize = 5 * 1024 * 1024;
+
 pub(crate) fn watch(events_path: PathBuf) -> Result<(), exit::Error> {
     if !events_path.is_file() {
         return Err(exit::Error::Usage(format!(
@@ -35,54 +48,90 @@ pub(crate) fn watch(events_path: PathBuf) -> Result<(), exit::Error> {
     let mut file = std::fs::File::open(&events_path)
         .map_err(|e| exit::Error::Io(format!("opening {}: {e}", events_path.display())))?;
     let mut metrics = Metrics::new();
-    let mut partial = String::new();
-    let mut events_seen = 0usize;
+    let mut drain = Drain::default();
 
     loop {
         // Drain whatever arrived since the last tick: bytes appended,
         // split on newlines, each complete line one event. A torn tail
         // waits for its newline rather than parsing half an event.
         let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
+        (&mut file)
+            .take(READ_PER_TICK)
+            .read_to_end(&mut buf)
             .map_err(|e| exit::Error::Io(format!("reading {}: {e}", events_path.display())))?;
-        if !buf.is_empty() {
-            partial.push_str(&String::from_utf8_lossy(&buf));
-            while let Some(newline) = partial.find('\n') {
-                let line: String = partial.drain(..=newline).collect();
-                let line = line.trim_end();
-                if line.is_empty() {
+        drain.feed(&buf, &mut metrics);
+
+        render_snapshot(&mut metrics, &events_path, &drain);
+        std::thread::sleep(REDRAW_EVERY);
+    }
+}
+
+/// The line splitter between the file and the fold: holds at most one
+/// torn line, bounded, and counts what it could not apply.
+#[derive(Default)]
+struct Drain {
+    partial: Vec<u8>,
+    /// Bytes of a line past [`MAX_LINE_BYTES`] being discarded until
+    /// its newline arrives.
+    overlong: bool,
+    events_seen: usize,
+    /// Lines that were not events — an event kind this CLI predates,
+    /// or a line past the length bound. Counted so silence cannot
+    /// hide them; never fatal, because the writer's log is not ours.
+    skipped: usize,
+}
+
+impl Drain {
+    fn feed(&mut self, bytes: &[u8], metrics: &mut Metrics) {
+        for byte in bytes {
+            if *byte != b'\n' {
+                if self.overlong {
                     continue;
                 }
+                if self.partial.len() >= MAX_LINE_BYTES {
+                    self.partial.clear();
+                    self.overlong = true;
+                    self.skipped += 1;
+                    continue;
+                }
+                self.partial.push(*byte);
+                continue;
+            }
+            if std::mem::take(&mut self.overlong) {
+                continue;
+            }
+            let line = String::from_utf8_lossy(&self.partial);
+            let line = line.trim_end();
+            if !line.is_empty() {
                 match serde_json::from_str::<PipelineEvent>(line) {
                     Ok(event) => {
                         metrics.apply(&event);
-                        events_seen += 1;
+                        self.events_seen += 1;
                     }
-                    Err(_) => {
-                        // One unparseable line is the writer's business
-                        // (a future event kind this CLI predates) —
-                        // skipped, never fatal, and COUNTED so silence
-                        // cannot hide it.
-                    }
+                    Err(_) => self.skipped += 1,
                 }
             }
+            self.partial.clear();
         }
-
-        render_snapshot(&mut metrics, &events_path, events_seen);
-        std::thread::sleep(REDRAW_EVERY);
     }
 }
 
 /// One frame: cursor home, clear, then the snapshot's rows. Plain ANSI
 /// over stderr so stdout stays untouched (a script piping watch's
 /// stdout gets nothing).
-fn render_snapshot(metrics: &mut Metrics, source: &Path, events_seen: usize) {
+fn render_snapshot(metrics: &mut Metrics, source: &Path, drain: &Drain) {
     const CURSOR_HOME_AND_CLEAR: &str = "\x1b[H\x1b[2J";
     let snap = metrics.snapshot();
     let mut frame = String::new();
     frame.push_str(&format!(
-        "rdlt watch — {}   (events seen: {events_seen}; ctrl-c exits)\n\n",
-        source.display()
+        "rdlt watch — {}   (events seen: {}{}; ctrl-c exits)\n\n",
+        source.display(),
+        drain.events_seen,
+        if drain.skipped > 0 {
+            format!(", skipped: {}", drain.skipped)
+        } else {
+            String::new()
+        }
     ));
     frame.push_str(&format!(
         "rows read {:>10}   written {:>10}   commits {:>6}{}   retries {}\n",
@@ -130,4 +179,53 @@ fn render_snapshot(metrics: &mut Metrics, source: &Path, events_seen: usize) {
         }
     }
     render::stderr::frame(CURSOR_HOME_AND_CLEAR, &frame);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event_line() -> String {
+        let event = PipelineEvent::StreamStarted {
+            stream: rdlt::id::StreamName::new("s"),
+            table: rdlt::id::TableName::new("t"),
+        };
+        let mut line = serde_json::to_string(&event).expect("renders");
+        line.push('\n');
+        line
+    }
+
+    /// A line is applied once its newline arrives, however the bytes
+    /// were split across ticks; a line that is not an event is counted
+    /// as skipped, never fatal.
+    #[test]
+    fn the_drain_applies_complete_lines_and_counts_the_rest() {
+        let mut metrics = Metrics::new();
+        let mut drain = Drain::default();
+        let line = event_line();
+        let (head, tail) = line.as_bytes().split_at(7);
+        drain.feed(head, &mut metrics);
+        assert_eq!(drain.events_seen, 0, "a torn line waits");
+        drain.feed(tail, &mut metrics);
+        assert_eq!(drain.events_seen, 1);
+        drain.feed(b"{\"event\":\"from_the_future\"}\n\n", &mut metrics);
+        assert_eq!((drain.events_seen, drain.skipped), (1, 1));
+    }
+
+    /// A newline-free line past the bound is dropped and counted once,
+    /// its bytes never retained, and the drain resynchronizes at the
+    /// next newline.
+    #[test]
+    fn an_overlong_line_is_dropped_counted_and_never_held() {
+        let mut metrics = Metrics::new();
+        let mut drain = Drain::default();
+        let flood = vec![b'x'; MAX_LINE_BYTES + 1];
+        drain.feed(&flood, &mut metrics);
+        drain.feed(&flood, &mut metrics);
+        assert_eq!(drain.skipped, 1, "one line, however long, is one skip");
+        assert!(drain.partial.is_empty(), "the flood's bytes are not held");
+        drain.feed(b"\n", &mut metrics);
+        drain.feed(event_line().as_bytes(), &mut metrics);
+        assert_eq!((drain.events_seen, drain.skipped), (1, 1));
+    }
 }
