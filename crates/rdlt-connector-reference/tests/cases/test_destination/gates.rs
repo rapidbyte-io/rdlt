@@ -295,3 +295,81 @@ async fn the_check_probe_is_read_only_and_refuses_a_file_in_the_way() {
         );
     }
 }
+
+/// A symlink planted at any name the store writes — the staged state
+/// temporary, the receipt journal, the lease — is never followed: the
+/// publish or open refuses typed and the file the link points at keeps
+/// every byte. And an output directory another user could write is
+/// refused at open, before any of those names is touched.
+#[tokio::test]
+async fn planted_symlinks_are_never_followed_and_a_shared_directory_is_refused() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).expect("mkdir");
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let victim = dir.path().join("victim");
+    std::fs::write(&victim, b"precious").expect("victim");
+    for planted in ["_staged-_reference_state.json", "_reference_receipts.json"] {
+        std::os::unix::fs::symlink(&victim, out.join(planted)).expect("plant");
+    }
+    let shell = shell_over(&out);
+    let table = TableName::new("events");
+    let mut session = shell
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("load")))
+        .await
+        .expect("open");
+    session
+        .ensure_table(&schema_for("events"), &WriteMode::Append)
+        .await
+        .expect("ensure");
+    session.write(&table, batch_of(&[1])).await.expect("write");
+    let refused = session
+        .commit(commit_meta_for(
+            &PipelineId::new("p"),
+            &LoadId::new("load"),
+            1,
+        ))
+        .await
+        .expect_err("a planted link at a store name refuses the publish");
+    assert!(
+        refused
+            .to_string()
+            .contains("a symlink — refusing to follow it")
+            || refused.to_string().contains("not a regular file"),
+        "{refused}"
+    );
+    assert_eq!(std::fs::read(&victim).expect("victim"), b"precious");
+
+    // The lease, too.
+    let leased = dir.path().join("leased");
+    std::fs::create_dir(&leased).expect("mkdir");
+    std::fs::set_permissions(&leased, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    std::os::unix::fs::symlink(&victim, leased.join("_reference_lease.lock")).expect("plant");
+    let refused = match shell_over(&leased)
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("load")))
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a planted lease link refuses the open"),
+    };
+    assert!(refused.to_string().contains("a symlink"), "{refused}");
+    assert_eq!(std::fs::read(&victim).expect("victim"), b"precious");
+
+    // A directory other users can write is not adopted.
+    let shared = dir.path().join("shared");
+    std::fs::create_dir(&shared).expect("mkdir");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    let refused = match shell_over(&shared)
+        .open(OpenContext::new(PipelineId::new("p"), LoadId::new("load")))
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a shared directory is refused"),
+    };
+    assert!(refused.to_string().contains("0777"), "{refused}");
+    assert!(
+        std::fs::read_dir(&shared).expect("list").next().is_none(),
+        "nothing was created under the refused directory"
+    );
+}

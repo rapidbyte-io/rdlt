@@ -223,16 +223,21 @@ fn explain() -> String {
 }
 
 /// The config document: `--config`'s file parsed as one JSON document,
-/// or `{}` when the flag is absent. Refusal messages name the file and
-/// the cause — a serde_json parse error carries line/column, never the
-/// document's bytes, so nothing here can echo config content.
+/// or `{}` when the flag is absent — at most the document ceiling, a
+/// regular file only. Refusal messages name the file and the cause — a
+/// serde_json parse error carries line/column, never the document's
+/// bytes, so nothing here can echo config content.
 fn load_config(path: Option<&Path>) -> Result<Value, String> {
     let Some(path) = path else {
         return Ok(serde_json::json!({}));
     };
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("reading the config file `{}`: {error}", path.display()))?;
-    serde_json::from_str(&text).map_err(|error| {
+    // The shared document reader: a regular file judged on its handle
+    // (a FIFO refuses at once), read to the document ceiling and not a
+    // byte past it — the same bound every other config entry holds.
+    let bytes =
+        rdlt_connector::core::fs::read_document(path, rdlt_connector::gate::MAX_DOCUMENT_BYTES)
+            .map_err(|error| format!("reading the config file `{}`: {error}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|error| {
         format!(
             "the config file `{}` is not one JSON document: {error}",
             path.display()

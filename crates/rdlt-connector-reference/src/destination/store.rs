@@ -13,8 +13,10 @@
 //! the next append, so the retried commit republishes convergently over
 //! its deterministic part names.
 
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, Write as _};
 use std::path::Path;
+
+use rdlt_connector_sdk::spi::core::fs;
 
 use rdlt_connector_sdk::spi::arrow::RecordBatch;
 use rdlt_connector_sdk::spi::core::commit::CommitReceipt;
@@ -95,9 +97,36 @@ fn durable_write(
     name: &str,
     fill: impl FnOnce(&mut std::io::BufWriter<std::fs::File>, &Path) -> Result<(), DestinationError>,
 ) -> Result<(), DestinationError> {
+    // The temporary is created EXCLUSIVELY and never through a link: a
+    // truncating open at a fixed name would follow a symlink planted
+    // there and empty whatever it pointed at. Its name stays fixed —
+    // the part-name bound is sized against the 255-byte NAME_MAX floor
+    // with exactly this prefix, and the digest in the part name already
+    // makes it unique per commit — so an entry found at it is either a
+    // regular file a crashed predecessor left (reclaimed: the name
+    // space is the store's own) or something planted (refused).
     let temp = dir.join(format!("_staged-{name}"));
     let target = dir.join(name);
-    let file = std::fs::File::create(&temp).map_err(|error| io_refusal("write", &temp, &error))?;
+    let file = match fs::create_private(&temp) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let leftover = std::fs::symlink_metadata(&temp)
+                .map_err(|error| io_refusal("probe", &temp, &error))?;
+            if !leftover.is_file() {
+                return Err(io_refusal(
+                    "write",
+                    &temp,
+                    &std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "something that is not a regular file occupies the staging name",
+                    ),
+                ));
+            }
+            std::fs::remove_file(&temp).map_err(|error| io_refusal("reclaim", &temp, &error))?;
+            fs::create_private(&temp).map_err(|error| io_refusal("write", &temp, &error))?
+        }
+        Err(error) => return Err(io_refusal("write", &temp, &error)),
+    };
     let mut writer = std::io::BufWriter::new(file);
     fill(&mut writer, &temp)?;
     let file = writer
@@ -106,6 +135,8 @@ fn durable_write(
     file.sync_all()
         .map_err(|error| io_refusal("sync", &temp, &error))?;
     drop(file);
+    // A rename replaces the directory ENTRY at the target — a symlink
+    // there is replaced, never followed.
     std::fs::rename(&temp, &target).map_err(|error| io_refusal("publish", &target, &error))?;
     sync_dir(dir)
 }
@@ -133,13 +164,16 @@ pub(crate) fn append_receipt(dir: &Path, receipt: &CommitReceipt) -> Result<(), 
         )));
     }
     let path = dir.join(RECEIPTS_FILE);
-    truncate_torn_tail(&path)?;
+    // ONE verified handle for the whole append: opened never following
+    // a link and judged regular, the torn tail is cut on it, the line
+    // is written through it, and it is fsynced — no second resolution
+    // of the path between the repair and the write.
     let created = !path.exists();
-    let mut log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| io_refusal("open", &path, &error))?;
+    let mut log =
+        fs::open_or_create_private(&path).map_err(|error| io_refusal("open", &path, &error))?;
+    truncate_torn_tail(&mut log, &path)?;
+    log.seek(std::io::SeekFrom::End(0))
+        .map_err(|error| io_refusal("seek", &path, &error))?;
     writeln!(log, "{line}").map_err(|error| io_refusal("append to", &path, &error))?;
     log.sync_all()
         .map_err(|error| io_refusal("sync", &path, &error))?;
@@ -205,17 +239,12 @@ pub(crate) fn find_receipt_from(
         scanned_to: scanned,
     };
     let path = dir.join(RECEIPTS_FILE);
-    let Some(len) = gate_regular(&path, "receipt log")? else {
+    let Some((mut file, len)) = open_store_file(&path, "receipt log")? else {
         return Ok(absent(0));
     };
     // A log shorter than the resume point is one the cut reached: the
     // memo is stale and the scan starts over rather than guessing.
     let from = if from > len { 0 } else { from };
-    let mut file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(absent(0)),
-        Err(error) => return Err(io_refusal("open", &path, &error)),
-    };
     if from > 0
         && let Err(error) = file.seek(std::io::SeekFrom::Start(from))
     {
@@ -340,19 +369,24 @@ fn receipt_line_bound_refusal(path: &Path) -> DestinationError {
 pub(crate) fn read_state(dir: &Path) -> Result<Option<StateDoc>, DestinationError> {
     let path = dir.join(STATE_FILE);
     // The state document rides the shared 8 MiB document ceiling —
-    // the same bound every untyped-document seat enforces.
-    if !gate_store_read(
-        &path,
-        rdlt_connector_sdk::spi::gate::MAX_DOCUMENT_BYTES,
-        "state document",
-    )? {
+    // the same bound every untyped-document seat enforces — judged on
+    // the opened handle's size and read through that handle, never
+    // past the ceiling.
+    let ceiling = rdlt_connector_sdk::spi::gate::MAX_DOCUMENT_BYTES;
+    let Some((file, len)) = open_store_file(&path, "state document")? else {
         return Ok(None);
-    }
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(io_refusal("read", &path, &error)),
     };
+    if len > ceiling {
+        return Err(DestinationError::fatal(format!(
+            "reference destination: {} weighs {len} bytes — over the {ceiling}-byte state \
+             document read ceiling; the store never writes it that large",
+            rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
+        )));
+    }
+    let mut text = String::new();
+    std::io::Read::take(file, ceiling)
+        .read_to_string(&mut text)
+        .map_err(|error| io_refusal("read", &path, &error))?;
     let state: StateDoc = serde_json::from_str(&text).map_err(|error| {
         // The serde error can embed fragments of the corrupt DISK
         // content — bounded like the receipt-line refusal.
@@ -378,46 +412,34 @@ pub(crate) fn read_state(dir: &Path) -> Result<Option<StateDoc>, DestinationErro
 /// FATAL with no compaction story.
 const MAX_RECEIPT_LINE_BYTES: usize = 8 * 1024;
 
-/// Refuse a store file that cannot be an honest artifact BEFORE any
-/// byte of it is read: a non-regular occupant refuses typed (a FIFO
-/// would block the read forever). `Ok(None)` is the absent arm — the
-/// caller's `NotFound` disposition; `Ok(Some(len))` carries the
-/// occupant's size for seats that bound their reads. The
-/// metadata-then-read window is the at-rest directory writer's
-/// existing power (directory ownership is the trust boundary), not a
-/// new one.
-fn gate_regular(path: &Path, what: &str) -> Result<Option<u64>, DestinationError> {
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
+/// Open a store file for reading as the ONE handle every byte of it
+/// comes through: never following a link (a symlink planted at a
+/// store name would read foreign content into a verdict), opened
+/// non-blocking (a FIFO would otherwise park the read forever), its
+/// kind and size judged on the handle itself so nothing can be swapped
+/// between the judgment and the read. `Ok(None)` is the absent arm —
+/// the caller's `NotFound` disposition.
+fn open_store_file(
+    path: &Path,
+    what: &str,
+) -> Result<Option<(std::fs::File, u64)>, DestinationError> {
+    let file = match fs::open_regular(path, fs::Symlinks::Refuse) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(io_refusal("probe", path, &error)),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+            return Err(DestinationError::fatal(format!(
+                "reference destination: {} is not a regular file — refusing to read the \
+                 {what} from it",
+                rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
+            )));
+        }
+        Err(error) => return Err(io_refusal("open", path, &error)),
     };
-    if !meta.is_file() {
-        return Err(DestinationError::fatal(format!(
-            "reference destination: {} is not a regular file — refusing to read the {what} \
-             from it",
-            rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
-        )));
-    }
-    Ok(Some(meta.len()))
-}
-
-/// The shape-and-size gate for SINGLE-DOCUMENT store files (the state
-/// document): a size past the seat's ceiling refuses typed — a sparse
-/// or hostile multi-GiB occupant would materialize whole before any
-/// content check could run. `Ok(false)` is the absent arm.
-fn gate_store_read(path: &Path, ceiling: u64, what: &str) -> Result<bool, DestinationError> {
-    let Some(len) = gate_regular(path, what)? else {
-        return Ok(false);
-    };
-    if len > ceiling {
-        return Err(DestinationError::fatal(format!(
-            "reference destination: {} weighs {len} bytes — over the {ceiling}-byte {what} read \
-             ceiling; the store never writes it that large",
-            rdlt_connector_sdk::spi::gate::render_diagnostic(&path.display().to_string(), 256)
-        )));
-    }
-    Ok(true)
+    let len = file
+        .metadata()
+        .map_err(|error| io_refusal("probe", path, &error))?
+        .len();
+    Ok(Some((file, len)))
 }
 
 /// Cut a torn (newline-less) tail off the receipt log before appending
@@ -429,26 +451,21 @@ fn gate_store_read(path: &Path, ceiling: u64, what: &str) -> Result<bool, Destin
 /// a tear is at most one gated append, so a longer newline-less tail
 /// is not a tear at all — it is corruption, refused like the over-long
 /// interior line it would otherwise become.
-fn truncate_torn_tail(path: &Path) -> Result<(), DestinationError> {
+fn truncate_torn_tail(file: &mut std::fs::File, path: &Path) -> Result<(), DestinationError> {
     use std::io::{Read as _, Seek as _};
-    let Some(len) = gate_regular(path, "receipt log")? else {
-        return Ok(());
-    };
+    let len = file
+        .metadata()
+        .map_err(|error| io_refusal("probe", path, &error))?
+        .len();
     if len == 0 {
         return Ok(());
     }
     let window = len.min(MAX_RECEIPT_LINE_BYTES as u64 + 1);
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(io_refusal("open", path, &error)),
-    };
     file.seek(std::io::SeekFrom::Start(len - window))
         .map_err(|error| io_refusal("seek", path, &error))?;
     let mut tail = vec![0u8; window as usize];
     file.read_exact(&mut tail)
         .map_err(|error| io_refusal("read", path, &error))?;
-    drop(file);
     if tail.ends_with(b"\n") {
         return Ok(());
     }
@@ -463,11 +480,7 @@ fn truncate_torn_tail(path: &Path) -> Result<(), DestinationError> {
         None if window == len && len <= MAX_RECEIPT_LINE_BYTES as u64 => 0,
         None => return Err(receipt_line_bound_refusal(path)),
     };
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|error| io_refusal("open", path, &error))?
-        .set_len(durable)
+    file.set_len(durable)
         .map_err(|error| io_refusal("truncate the torn tail of", path, &error))
 }
 
@@ -507,7 +520,8 @@ mod tests {
         let path = dir.path().join(RECEIPTS_FILE);
 
         std::fs::write(&path, vec![b'x'; MAX_RECEIPT_LINE_BYTES]).expect("seed maximal tear");
-        truncate_torn_tail(&path).expect("a maximal tear cuts");
+        truncate_torn_tail(&mut fs::open_or_create_private(&path).expect("open"), &path)
+            .expect("a maximal tear cuts");
         assert_eq!(
             std::fs::metadata(&path).expect("meta").len(),
             0,
@@ -516,7 +530,8 @@ mod tests {
 
         std::fs::write(&path, vec![b'x'; MAX_RECEIPT_LINE_BYTES + 1]).expect("seed over-long");
         let refused =
-            truncate_torn_tail(&path).expect_err("one byte past the maximal tear refuses");
+            truncate_torn_tail(&mut fs::open_or_create_private(&path).expect("open"), &path)
+                .expect_err("one byte past the maximal tear refuses");
         assert!(
             refused.to_string().contains("refusing the log as corrupt"),
             "corruption, not repair: {refused}"

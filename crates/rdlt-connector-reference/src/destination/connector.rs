@@ -110,12 +110,20 @@ impl DestinationConnector for Reference {
         // The open contract — a crashed predecessor's staging invisible
         // and reclaimable — holds by construction: staging lives in the
         // dead session's memory, and nothing staged ever touches disk.
-        std::fs::create_dir_all(&self.dir).map_err(|error| {
-            DestinationError::transient(format!(
-                "reference destination: create {}: {error}",
-                self.dir.display()
-            ))
-        })?;
+        // The output directory is this process's own or nothing: born
+        // owner-only, or — when it already exists — a real directory
+        // owned by this user that nobody else can write. Whoever can
+        // write the directory chooses what its staging, journal and
+        // lease are, so a shared one is refused before any of them is
+        // touched.
+        rdlt_connector_sdk::spi::core::fs::create_or_verify_private_dir(&self.dir).map_err(
+            |error| {
+                DestinationError::fatal(format!(
+                    "reference destination: adopt {}: {error}",
+                    self.dir.display()
+                ))
+            },
+        )?;
         let lease = lease(&self.dir)?;
         Ok(session::Session::new(
             self.dir.clone(),
@@ -137,11 +145,9 @@ fn lease(dir: &Path) -> Result<std::fs::File, DestinationError> {
             path.display()
         ))
     };
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
+    // The lock file's open discipline: never following a link out of
+    // the directory, never parked on a FIFO, born owner-only.
+    let file = rdlt_connector_sdk::spi::core::fs::open_or_create_private(&path)
         .map_err(|error| framed("open", error))?;
     file.try_lock().map_err(|error| match error {
         std::fs::TryLockError::WouldBlock => DestinationError::fatal(format!(
