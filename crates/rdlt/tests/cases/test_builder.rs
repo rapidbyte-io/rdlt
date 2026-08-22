@@ -132,7 +132,7 @@ destination:
     config:
       path: /tmp/rdlt-commit-policy-out
 "#;
-    let doc: document::Document = serde_yaml_ng::from_str(with_policy).expect("parses");
+    let doc: document::Document = document::parse(with_policy).expect("parses");
     let policy = doc.commit_policy.expect("present");
     assert_eq!(policy.every_bytes, Some(104_857_600));
     assert_eq!(policy.every_seconds, Some(900));
@@ -147,7 +147,7 @@ destination:
         "commit_policy:\n  every_bytes: 104857600\n  every_seconds: 900",
         "commit_policy: {}",
     );
-    let doc: document::Document = serde_yaml_ng::from_str(&empty).expect("parses");
+    let doc: document::Document = document::parse(&empty).expect("parses");
     let err = Pipeline::from_document(&doc, std::path::Path::new(""))
         .await
         .expect_err("a policy with no threshold must not build")
@@ -159,7 +159,7 @@ destination:
         "commit_policy:\n  every_bytes: 104857600\n  every_seconds: 900\n",
         "",
     );
-    let doc: document::Document = serde_yaml_ng::from_str(&none).expect("parses");
+    let doc: document::Document = document::parse(&none).expect("parses");
     assert!(doc.commit_policy.is_none());
 }
 

@@ -68,7 +68,7 @@ fn pipeline_document_forms_parse() {
 /// document), and so does a typo inside the merge block.
 #[test]
 fn unknown_document_keys_are_refused_at_parse() {
-    let bad_key: Result<Document, _> = serde_yaml_ng::from_str(&format!(
+    let bad_key: Result<Document, _> = rdlt::document::parse(&format!(
         "pipeline: p\nworkdirr: /tmp/x\nsource:\n  connector: {{id: io.example.src, config: {{}}}}\n{DEST}"
     ));
     assert!(bad_key.is_err(), "a typoed top-level key must not parse");
@@ -76,7 +76,7 @@ fn unknown_document_keys_are_refused_at_parse() {
     // A typo INSIDE the merge block must refuse too: a silently
     // ignored `kye` would mean a merge with no key slipping toward the
     // plan-time refusal instead of failing at the typo.
-    let bad_merge_key: Result<Document, _> = serde_yaml_ng::from_str(&format!(
+    let bad_merge_key: Result<Document, _> = rdlt::document::parse(&format!(
         "pipeline: p\nwrite_mode: {{merge: {{kye: [id]}}}}\n\
          source:\n  connector: {{id: io.example.src, config: {{}}}}\n{DEST}"
     ));
@@ -86,30 +86,35 @@ fn unknown_document_keys_are_refused_at_parse() {
     );
 }
 
-/// The facade knows no connector by name: a first-party short name
-/// (`postgres:`), a name it never had (`mongodb:`), and the long-dead
-/// `parquet:` all refuse at parse the same way — an unknown key, the
-/// refusal naming it and the one accepted form. Neither alias nor
-/// shorthand exists.
+/// A short name where an arm belongs (`postgres:`, `duckdb:`) is
+/// refused at parse — neither alias nor shorthand exists — and the
+/// refusal is POSITION ONLY: the document's own tokens, the key
+/// included, never reach the rendered error, because a document
+/// carries its connectors' credentials inline and a refusal quoting
+/// a fragment of it would ride them into a captured stderr.
 #[test]
-fn a_short_name_in_an_arm_is_refused_at_parse_naming_the_one_form() {
+fn a_short_name_in_an_arm_is_refused_at_parse_without_echoing_it() {
     for (spelling, arm) in [
         ("postgres", "source:\n  postgres: {conn: x}\n"),
         ("mongodb", "source:\n  mongodb: {conn: x}\n"),
         ("parquet", "source:\n  parquet: {path: out}\n"),
     ] {
         let parsed: Result<Document, _> =
-            serde_yaml_ng::from_str(&format!("pipeline: p\n{arm}{DEST}"));
+            rdlt::document::parse(&format!("pipeline: p\n{arm}{DEST}"));
         let error = parsed
             .expect_err("a short name is not an arm form and must not parse")
             .to_string();
         assert!(
-            error.contains(&format!("unknown key `{spelling}`: {FORM}")),
-            "{spelling}: the refusal names the key and the one form: {error}"
+            error.starts_with("document parse failure at line 3 column 3"),
+            "{spelling}: the refusal locates the arm: {error}"
+        );
+        assert!(
+            !error.contains(spelling),
+            "{spelling}: the token is not echoed: {error}"
         );
     }
     // The destination side refuses identically.
-    let parsed: Result<Document, _> = serde_yaml_ng::from_str(
+    let parsed: Result<Document, _> = rdlt::document::parse(
         "pipeline: p\nsource:\n  connector: {id: io.example.src, config: {}}\n\
          destination:\n  duckdb: {path: out.db}\n",
     );
@@ -117,30 +122,33 @@ fn a_short_name_in_an_arm_is_refused_at_parse_naming_the_one_form() {
         .expect_err("a destination short name must not parse")
         .to_string();
     assert!(
-        error.contains(&format!("unknown key `duckdb`: {FORM}")),
+        error.starts_with("document parse failure at line") && !error.contains("duckdb"),
         "{error}"
     );
 }
 
 /// An arm is exactly one `connector:` key: a second key beside it, or no
-/// key at all, refuses at parse naming what was found and the one form.
+/// key at all, refuses at parse — located, never quoted.
 #[test]
 fn an_arm_with_two_keys_or_none_is_refused_at_parse() {
-    let two: Result<Document, _> = serde_yaml_ng::from_str(&format!(
+    let two: Result<Document, _> = rdlt::document::parse(&format!(
         "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: {{}}}}\n  path: /x\n{DEST}"
     ));
     let error = two
         .expect_err("two keys in one arm must not parse")
         .to_string();
     assert!(
-        error.contains(&format!("two keys, `connector` and `path`: {FORM}")),
+        error.starts_with("document parse failure at line") && !error.contains("/x"),
         "{error}"
     );
 
     let none: Result<Document, _> =
-        serde_yaml_ng::from_str(&format!("pipeline: p\nsource: {{}}\n{DEST}"));
+        rdlt::document::parse(&format!("pipeline: p\nsource: {{}}\n{DEST}"));
     let error = none.expect_err("an empty arm must not parse").to_string();
-    assert!(error.contains(&format!("no connector: {FORM}")), "{error}");
+    assert!(
+        error.starts_with("document parse failure at line"),
+        "{error}"
+    );
 }
 
 // ---- config resolution ------------------------------------------------
@@ -228,7 +236,7 @@ destination:
     config:
       path: out.db
 "#;
-    let doc: Document = serde_yaml_ng::from_str(text).expect("the connector vocabulary parses");
+    let doc: Document = rdlt::document::parse(text).expect("the connector vocabulary parses");
 
     let source = &doc.source;
     assert_eq!(source.id, "io.rapidbyte.file");
@@ -268,7 +276,7 @@ destination:
     id: io.rapidbyte.duckdb
     config: {}
 "#;
-    let parsed: Result<Document, _> = serde_yaml_ng::from_str(text);
+    let parsed: Result<Document, _> = rdlt::document::parse(text);
     assert!(
         parsed.is_err(),
         "`binary:` is not part of the connector vocabulary and must refuse"
@@ -290,7 +298,7 @@ destination:
     id: io.rapidbyte.duckdb
     config: {}
 "#;
-    let parsed: Result<Document, _> = serde_yaml_ng::from_str(text);
+    let parsed: Result<Document, _> = rdlt::document::parse(text);
     assert!(parsed.is_err(), "a missing config block must refuse");
 }
 
@@ -328,7 +336,7 @@ async fn missing_config_file_is_a_config_error() {
     let yaml = format!(
         "pipeline: p\nsource:\n  connector: {{id: io.example.src, config: /no/such/file.yaml}}\n{DEST}"
     );
-    let doc: Document = serde_yaml_ng::from_str(&yaml).expect("parses");
+    let doc: Document = rdlt::document::parse(&yaml).expect("parses");
     match Pipeline::from_document(&doc, Path::new("")).await {
         Err(Error::Config { message }) => {
             assert!(message.contains("/no/such/file.yaml"), "{message}");
@@ -355,7 +363,7 @@ destination:
     id: io.rdlt.test.absent
     config: {}
 "#;
-    let doc: Document = serde_yaml_ng::from_str(text).expect("parses");
+    let doc: Document = rdlt::document::parse(text).expect("parses");
     match Pipeline::from_document(&doc, Path::new("")).await {
         Err(Error::Config { message }) => assert_eq!(
             message,
@@ -389,7 +397,7 @@ destination:
     id: io.rdlt.test.absent
     config: {}
 "#;
-    let doc: Document = serde_yaml_ng::from_str(text).expect("parses");
+    let doc: Document = rdlt::document::parse(text).expect("parses");
     match Pipeline::from_document(&doc, dir.path()).await {
         Err(Error::Config { message }) => assert!(
             message.contains("no binary `rdlt-connector-absent`"),
@@ -637,6 +645,23 @@ fn schema_policy_spellings_parse_and_unknown_refuses() {
     // token that could have been a credential never echoes back out.
     assert!(
         !refused.contains("strict") && refused.contains("line 2 column 16"),
+        "{refused}"
+    );
+}
+
+/// The text parse carries the document ceiling itself, so
+/// `Pipeline::from_text` and `document::parse` refuse one byte over the
+/// cap before any deserializer runs — the file-backed path is no longer
+/// the only gated one.
+#[test]
+fn the_text_parse_refuses_documents_over_the_cap_before_parsing() {
+    let cap = rdlt::document::MAX_DOCUMENT_BYTES as usize;
+    let mut text = String::from("pipeline: ");
+    text.push_str(&"a".repeat(cap + 1 - text.len()));
+    assert_eq!(text.len(), cap + 1);
+    let refused = rdlt::document::parse(&text).expect_err("over the cap");
+    assert!(
+        refused.contains(&format!("over the {cap}-byte document cap")),
         "{refused}"
     );
 }

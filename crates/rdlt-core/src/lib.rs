@@ -32,6 +32,7 @@ pub mod cursor;
 pub mod error;
 pub mod event;
 pub mod failpoint;
+pub mod fs;
 pub mod id;
 pub mod inventory;
 pub mod metrics;

@@ -50,7 +50,10 @@ pub(crate) async fn run(
     let json = serde_json::to_string_pretty(&report_run)
         .map_err(|e| exit::Error::Usage(format!("encoding report: {e}")))?;
     match report {
-        Some(path) => std::fs::write(&path, json)
+        // The report carries source-defined cursors: born owner-only,
+        // and never written through a link planted at the name.
+        Some(path) => rdlt_core::fs::replace_private(&path)
+            .and_then(|mut file| file.write_all(json.as_bytes()))
             .map_err(|e| exit::Error::Io(format!("writing {}: {e}", path.display())))?,
         // An INTERACTIVE stdout gets the summary above and a hint, not
         // the JSON dump that would bury it — unless `--output json`

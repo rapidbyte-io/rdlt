@@ -95,7 +95,7 @@ fn the_five_pipelines_render_parse_and_name_their_connectors() {
              a key the product side does not provide:\n{rendered}"
         );
 
-        let spec: Document = serde_yaml_ng::from_str(&rendered).unwrap_or_else(|e| {
+        let spec: Document = rdlt::document::parse(&rendered).unwrap_or_else(|e| {
             panic!("{file}: the rendered document is not a pipeline document: {e}")
         });
 

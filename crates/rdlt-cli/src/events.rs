@@ -48,7 +48,9 @@ impl Target {
         match self {
             Target::Stdout => Ok(Sink::Stdout),
             Target::File(path) => {
-                let file = File::create(&path)
+                // The log carries source-defined cursors: born owner-only,
+                // and never written through a link planted at the name.
+                let file = rdlt_core::fs::replace_private(&path)
                     .map_err(|e| exit::Error::Io(format!("creating {}: {e}", path.display())))?;
                 Ok(Sink::File(BufWriter::new(file)))
             }

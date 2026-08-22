@@ -88,28 +88,34 @@ enum LockProbe {
     Unavailable(String),
 }
 
-/// Birth the workdir the way the engine does — 0700 on every component
-/// created — so a first-run `doctor` leaves behind exactly the private
-/// root a run would have, not a world-listable one the engine never
-/// repairs. An existing directory's mode is left as found.
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt as _;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+/// The writability probe, the way a run would touch the workdir: adopt
+/// it under the shared rule (born 0700, or this user's and nobody
+/// else's to write), then create ONE file there exclusively — a name
+/// nobody could have planted, since it carries this process's id and
+/// the clock, created `O_EXCL` and never following a link — and remove
+/// exactly that file. A fixed name written with a truncating open
+/// would follow a planted symlink and empty whatever it pointed at.
+fn probe_writable(workdir: &Path) -> std::io::Result<()> {
+    rdlt_core::fs::create_or_verify_private_dir(workdir)?;
+    let probe = workdir.join(format!(
+        ".rdlt-doctor-probe-{}-{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let created = rdlt_core::fs::create_private(&probe);
+    let removed = std::fs::remove_file(&probe);
+    created.map(drop).and(removed)
 }
 
+/// The lock probe rides the lock file's own open discipline — no
+/// symlink followed out of the workdir, no FIFO parked on — so a
+/// doctor never reports on the wrong file or hangs where the run would
+/// have refused.
 fn probe_lock(workdir: &Path) -> LockProbe {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(false);
-    options.custom_flags(libc::O_NOFOLLOW);
-    // Not the engine's O_NOFOLLOW discipline re-derived lightly: the
-    // same symlink refusal, because a doctor that follows a planted
-    // link out of the workdir is a diagnostic reporting on the WRONG
-    // file.
-    match options.open(workdir.join(".lock")) {
+    match rdlt_core::fs::open_or_create_private(&workdir.join(".lock")) {
         Ok(file) => match file.try_lock() {
             Ok(_guard) => LockProbe::Free,
             Err(std::fs::TryLockError::WouldBlock) => LockProbe::Held,
@@ -161,14 +167,7 @@ pub(crate) fn doctor(spec: Option<PathBuf>) -> Result<(), exit::Error> {
                     });
                     let base = spec_path.parent().unwrap_or(Path::new(""));
                     let workdir = rdlt::pipeline::resolved_workdir(&doc, base);
-                    match create_private_dir(&workdir)
-                        .map_err(|e| e.to_string())
-                        .and_then(|()| {
-                            let probe = workdir.join(".rdlt-doctor-probe");
-                            let r = std::fs::write(&probe, b"");
-                            let _ = std::fs::remove_file(&probe);
-                            r.map_err(|e| e.to_string())
-                        }) {
+                    match probe_writable(&workdir).map_err(|e| e.to_string()) {
                         Err(reason) => findings.push(Finding {
                             passed: false,
                             detail: format!(
@@ -238,11 +237,38 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().expect("tempdir");
         let workdir = dir.path().join("nested").join("wd");
-        create_private_dir(&workdir).expect("born");
+        probe_writable(&workdir).expect("born and probed");
         for made in [workdir.as_path(), workdir.parent().expect("nested")] {
             let mode = std::fs::metadata(made).expect("meta").permissions().mode() & 0o777;
             assert_eq!(mode, 0o700, "{}: {mode:o}", made.display());
         }
+        assert!(
+            std::fs::read_dir(&workdir).expect("list").next().is_none(),
+            "the probe removed itself"
+        );
+    }
+
+    /// A planted symlink at the old fixed probe name is never followed:
+    /// the probe's name is unpredictable and its creation exclusive, so
+    /// the victim the link points at is untouched and the workdir still
+    /// probes writable. A workdir another user could write is refused
+    /// before any probe.
+    #[test]
+    fn the_probe_follows_no_link_and_refuses_a_shared_workdir() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workdir = dir.path().join("wd");
+        std::fs::create_dir(&workdir).expect("mkdir");
+        std::fs::set_permissions(&workdir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").expect("victim");
+        std::os::unix::fs::symlink(&victim, workdir.join(".rdlt-doctor-probe")).expect("plant");
+        probe_writable(&workdir).expect("writable");
+        assert_eq!(std::fs::read(&victim).expect("victim"), b"precious");
+
+        std::fs::set_permissions(&workdir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+        let refused = probe_writable(&workdir).expect_err("shared");
+        assert!(refused.to_string().contains("0777"), "{refused}");
     }
 
     /// A held lock probes as HELD, and a fresh temp dir probes FREE.

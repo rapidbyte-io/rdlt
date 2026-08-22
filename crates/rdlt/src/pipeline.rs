@@ -539,7 +539,7 @@ mod budget_tests {
     /// h2 windows.
     #[test]
     fn the_dial_budget_ignores_batch_policy() {
-        let document: Document = serde_yaml_ng::from_str(
+        let document: Document = crate::document::parse(
             "pipeline: p\nbatch_policy: {every_bytes: 1048576}\n\
              source:\n  connector: {id: io.example.src, config: s.yaml}\n\
              destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n",
@@ -558,7 +558,7 @@ mod budget_tests {
     /// becomes 1, never "off"), and the engine default where absent.
     #[test]
     fn the_dial_budget_follows_the_documents_byte_budget() {
-        let spelled: Document = serde_yaml_ng::from_str(
+        let spelled: Document = crate::document::parse(
             "pipeline: p\nresources: {byte_budget: 1048576}\n\
              source:\n  connector: {id: io.example.src, config: s.yaml}\n\
              destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n",
@@ -566,7 +566,7 @@ mod budget_tests {
         .expect("the fixture document parses");
         assert_eq!(engine_budget_bytes(&spelled), 1_048_576);
 
-        let zero: Document = serde_yaml_ng::from_str(
+        let zero: Document = crate::document::parse(
             "pipeline: p\nresources: {byte_budget: 0}\n\
              source:\n  connector: {id: io.example.src, config: s.yaml}\n\
              destination:\n  connector: {id: io.example.dst, config: {path: out.db}}\n",

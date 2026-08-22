@@ -125,6 +125,52 @@ fn a_real_run_holds_the_stdout_stderr_and_report_contract() {
     assert_eq!(written["pipeline"], "contract");
 }
 
+/// The report and the event log carry source-defined cursors: both are
+/// born owner-only whatever the umask, and a symlink planted at either
+/// name is refused (exit 74) with its target untouched.
+#[test]
+fn report_and_event_outputs_are_private_and_follow_no_link() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (dir, spec) = fresh_pipeline();
+    let report_path = dir.path().join("report.json");
+    let events_path = dir.path().join("events.ndjson");
+    let out = rdlt()
+        .env("UMASK", "022")
+        .arg("run")
+        .arg(&spec)
+        .arg("--report")
+        .arg(&report_path)
+        .arg("--events")
+        .arg(&events_path)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    for path in [&report_path, &events_path] {
+        let mode = std::fs::metadata(path).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{}: {mode:o}", path.display());
+    }
+
+    let (dir, spec) = fresh_pipeline();
+    let victim = dir.path().join("victim");
+    std::fs::write(&victim, b"precious").expect("victim");
+    let link = dir.path().join("report.json");
+    std::os::unix::fs::symlink(&victim, &link).expect("plant");
+    let out = rdlt()
+        .arg("run")
+        .arg(&spec)
+        .arg("--report")
+        .arg(&link)
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(74), "{out:?}");
+    assert_eq!(std::fs::read(&victim).expect("victim"), b"precious");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("a symlink — refusing to follow it"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// `--output json` is machine mode: stdout is exactly the report JSON
 /// and stderr is silent — the redirected-stdout contract, spelled as a
 /// flag so a terminal gets it too. `--output plain` keeps the line-per-

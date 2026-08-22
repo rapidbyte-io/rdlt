@@ -1,10 +1,7 @@
 //! The document itself: its typed nodes, the parse through the raw-text
 //! security gates, and the config form every arm carries.
 
-use std::{
-    io::Read as _,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -13,8 +10,7 @@ use crate::commit::{BatchPolicy, CommitPolicy};
 use crate::error::Error;
 
 /// One pipeline, end to end.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct Document {
     /// The pipeline's stable name. State and cursors are persisted under it, so
     /// renaming it starts a fresh pipeline rather than continuing this one.
@@ -26,13 +22,8 @@ pub struct Document {
     /// their crashed spans (a shape the engine refuses typed).
     /// A relative spelling here resolves against the document's own
     /// directory, the same rule path-form configs follow.
-    #[serde(default)]
     pub workdir: Option<PathBuf>,
-    // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}`
-    // singleton-map form for an externally-tagged enum (serde_yaml_ng
-    // otherwise wants `!tag` syntax).
     /// How rows land at the destination. Absent defaults to `Append`.
-    #[serde(default, with = "serde_yaml_ng::with::singleton_map")]
     pub write_mode: Option<WriteMode>,
     /// How many rows the engine accumulates before each destination
     /// WRITE — and so, for file destinations, how many rows land in
@@ -52,7 +43,6 @@ pub struct Document {
     /// sdk's serve budget, and the connector's own batch knobs size
     /// its frames — this knob neither bounds nor needs to bound a
     /// connector process.
-    #[serde(default)]
     pub batch_policy: Option<BatchPolicy>,
     /// When accumulated rows are committed — and so, for file
     /// destinations, how many rows land in each part.
@@ -62,26 +52,82 @@ pub struct Document {
     /// is "100 MB or every 15 minutes". Absent defaults to committing
     /// at every source checkpoint, which is the safest cadence
     /// because a crash can then cost at most one checkpoint of work.
-    #[serde(default)]
     pub commit_policy: Option<CommitPolicy>,
     /// What the engine does when a stream's observed schema drifts from
     /// the registered one. Absent defaults to `evolve`. A run-wide
     /// scalar only: per-table and per-column overrides stay
     /// programmatic — `rdlt::policy::SchemaPolicy::table`/`column`
     /// through the builder.
-    #[serde(default)]
     pub schema_policy: Option<SchemaPolicy>,
     /// Engine resource bounds. Absent (whole or per field) keeps the
     /// engine defaults.
-    #[serde(default)]
     pub resources: Option<Resources>,
     /// Where rows come from: `connector: {id, version?, path?, config}`,
     /// the one arm form.
-    #[serde(deserialize_with = "connector::arm")]
     pub source: Connector,
     /// Where rows go: the same one form as `source`.
-    #[serde(deserialize_with = "connector::arm")]
     pub destination: Connector,
+}
+
+impl From<Raw> for Document {
+    fn from(raw: Raw) -> Self {
+        Self {
+            pipeline: raw.pipeline,
+            workdir: raw.workdir,
+            write_mode: raw.write_mode,
+            batch_policy: raw.batch_policy,
+            commit_policy: raw.commit_policy,
+            schema_policy: raw.schema_policy,
+            resources: raw.resources,
+            source: raw.source,
+            destination: raw.destination,
+        }
+    }
+}
+
+impl Document {
+    /// Build a document from an already-materialized JSON value — the
+    /// embedder entry point for a platform holding pipeline documents
+    /// as JSON. A JSON value is a tree by construction (no aliases to
+    /// expand), and it is already resident, so the text gates have
+    /// nothing to bound; the document's own shape rules still apply,
+    /// unknown fields included.
+    pub fn from_value(value: serde_json::Value) -> Result<Self, Error> {
+        let raw: Raw = serde_json::from_value(value)
+            .map_err(|error| Error::config(describe_json_error(&error)))?;
+        Ok(raw.into())
+    }
+}
+
+/// The wire form of [`Document`]: what serde builds. Private on
+/// purpose — the ONLY parser that reaches it is [`parse`], behind the
+/// raw-text gates (the byte ceiling, the graph-syntax refusal), so no
+/// public route can deserialize alias-bearing YAML straight into a
+/// runnable document; a public `Deserialize` on the document itself
+/// was exactly that route.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Raw {
+    pipeline: String,
+    #[serde(default)]
+    workdir: Option<PathBuf>,
+    // singleton_map: YAML's natural `write_mode: {merge: {key: […]}}`
+    // singleton-map form for an externally-tagged enum (serde_yaml_ng
+    // otherwise wants `!tag` syntax).
+    #[serde(default, with = "serde_yaml_ng::with::singleton_map")]
+    write_mode: Option<WriteMode>,
+    #[serde(default)]
+    batch_policy: Option<BatchPolicy>,
+    #[serde(default)]
+    commit_policy: Option<CommitPolicy>,
+    #[serde(default)]
+    schema_policy: Option<SchemaPolicy>,
+    #[serde(default)]
+    resources: Option<Resources>,
+    #[serde(deserialize_with = "connector::arm")]
+    source: Connector,
+    #[serde(deserialize_with = "connector::arm")]
+    destination: Connector,
 }
 
 /// The document form of the engine's schema policy: the run-wide
@@ -235,31 +281,49 @@ fn describe_json_error(error: &serde_json::Error) -> String {
     format!("{kind} at line {} column {}", error.line(), error.column())
 }
 
-/// Parse one pipeline document through the raw-text security gates.
+/// Parse one pipeline document through the raw-text security gates:
+/// the [`MAX_DOCUMENT_BYTES`] ceiling on the text itself — here, so
+/// every constructor that starts from text inherits it, not only the
+/// file-backed one — then the graph-syntax refusal, then the parse.
 pub fn parse(text: &str) -> Result<Document, String> {
-    parse_yaml(text)
+    if text.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(format!(
+            "the document is {} bytes, over the {MAX_DOCUMENT_BYTES}-byte document cap — a \
+             pipeline document is hand-written configuration, so text this size is almost \
+             certainly not a document",
+            text.len()
+        ));
+    }
+    parse_yaml::<Raw>(text).map(Document::from)
 }
 
 /// Read a document file with the [`MAX_DOCUMENT_BYTES`] cap enforced
 /// BEFORE the read — the read stops one byte past the cap, so the
-/// refusal names that floor ("at least") and the cap.
+/// refusal names that floor ("at least") and the cap — through the
+/// shared document reader: the open is non-blocking and the handle's
+/// kind is judged, so a FIFO or a device at the path refuses at once
+/// instead of parking `run`, `check` or `doctor` before the cap could
+/// help. A symlink is followed: naming a document through one is
+/// ordinary.
 pub fn read(path: &Path) -> Result<String, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let mut text = String::new();
-    file.take(MAX_DOCUMENT_BYTES + 1)
-        .read_to_string(&mut text)
-        .map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let len = text.len() as u64;
-    if len > MAX_DOCUMENT_BYTES {
-        return Err(format!(
-            "reading {}: the file is at least {len} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
-             document cap — a pipeline or connector document is hand-written \
-             configuration, so a file this size is almost certainly not the document \
-             the path meant to name",
-            path.display()
-        ));
-    }
-    Ok(text)
+    let bytes = rdlt_core::fs::read_document(path, MAX_DOCUMENT_BYTES).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            return format!(
+                "reading {}: {e} — a pipeline or connector document is hand-written \
+                 configuration, so a file this size is almost certainly not the document \
+                 the path meant to name",
+                path.display()
+            );
+        }
+        format!("reading {}: {e}", path.display())
+    })?;
+    String::from_utf8(bytes).map_err(|e| {
+        format!(
+            "reading {}: the document is not UTF-8 ({})",
+            path.display(),
+            e.utf8_error()
+        )
+    })
 }
 
 impl Config {
@@ -328,7 +392,7 @@ mod document_cap_tests {
             message,
             format!(
                 "reading {}: the file is at least {} bytes, over the {MAX_DOCUMENT_BYTES}-byte \
-                 document cap — a pipeline or connector document is hand-written \
+                 cap — a pipeline or connector document is hand-written \
                  configuration, so a file this size is almost certainly not the document \
                  the path meant to name",
                 path.display(),

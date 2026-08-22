@@ -139,8 +139,21 @@ pub trait Document: DeserializeOwned + Sized {
     }
 
     /// Parse from JSON text and validate — the same document shape and
-    /// the same gate as YAML.
+    /// the same gate as YAML: the byte ceiling before the parser sees
+    /// the text (JSON has no aliases to expand, so the ceiling is the
+    /// whole text gate), refused through the JSON arm of
+    /// [`Document::Error`].
     fn from_json(json: &str) -> Result<Self, Self::Error> {
+        if json.len() as u64 > rdlt_connector::gate::MAX_DOCUMENT_BYTES {
+            let refusal = <serde_json::Error as serde::de::Error>::custom(format!(
+                "the document is {} bytes, over the {}-byte cap — connector configuration \
+                 is hand-written, so a document this size is almost certainly not the \
+                 configuration it was passed as",
+                json.len(),
+                rdlt_connector::gate::MAX_DOCUMENT_BYTES
+            ));
+            return Err(refusal.into());
+        }
         let document: Self = serde_json::from_str(json)?;
         document.validate()?;
         Ok(document)
@@ -726,6 +739,32 @@ mod tests {
         assert_eq!(document.len(), cap, "the fixture IS the cap");
         let parsed = Probe::from_yaml(&document).expect("a document at exactly the cap parses");
         assert_eq!(parsed.name.len(), cap - prefix.len() - suffix.len());
+    }
+
+    /// The JSON entry rides the same ceiling as the YAML one, on the
+    /// same boundary: exactly the cap parses, one byte over refuses
+    /// through the JSON arm, before the parser runs.
+    #[test]
+    fn from_json_holds_the_same_size_cap_as_from_yaml() {
+        let cap = rdlt_connector::gate::MAX_DOCUMENT_BYTES as usize;
+        let prefix = "{\"name\":\"";
+        let suffix = "\"}";
+        let at_cap = format!(
+            "{prefix}{}{suffix}",
+            "a".repeat(cap - prefix.len() - suffix.len())
+        );
+        assert_eq!(at_cap.len(), cap);
+        Probe::from_json(&at_cap).expect("a document at exactly the cap parses");
+        let over = format!(
+            "{prefix}{}{suffix}",
+            "a".repeat(cap + 1 - prefix.len() - suffix.len())
+        );
+        let refused = Probe::from_json(&over).unwrap_err();
+        assert!(matches!(refused, ProbeError::Json(_)), "{refused}");
+        assert!(
+            refused.to_string().contains("over the 8388608-byte cap"),
+            "{refused}"
+        );
     }
 
     /// The generated schema is the parser's own shape.

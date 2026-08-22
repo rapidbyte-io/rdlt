@@ -167,7 +167,7 @@ fn spec_yaml(
 }
 
 fn parse_document(text: &str) -> Document {
-    serde_yaml_ng::from_str(text).expect("the connector pipeline document parses")
+    rdlt::document::parse(text).expect("the connector pipeline document parses")
 }
 
 /// Every PUBLISHED row's `id` under the output directory, sorted.

@@ -24,10 +24,15 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The error taxonomy and the typed refusals.
 thiserror = { workspace = true }
+# The open flags the shared filesystem discipline needs (constants
+# only; the workspace forbids unsafe code).
+libc = { workspace = true }
 
 [dev-dependencies]
 # The widening lattice's laws are property-tested.
 proptest = { workspace = true }
+# The filesystem discipline is pinned against real plants in a tempdir.
+tempfile = { workspace = true }
 # The commit and batch policies pin the document form a pipeline file writes.
 serde_yaml_ng = { workspace = true }
 

@@ -21,15 +21,11 @@ pub(crate) fn dir_in(workdir: &Path) -> PathBuf {
 /// user (0o700 on every component this call creates): the WAL holds
 /// cleartext batch data and cursors, and a default-umask directory in
 /// a shared location would let any local user read in-flight rows. An
-/// already-existing directory keeps its mode — the operator's own
-/// arrangement is not overridden. Shared with the workdir lock, so the
-/// whole workdir tree is born private, not just the WAL under it.
+/// already-existing directory keeps its mode but must be this user's
+/// and writable by nobody else — the shared adoption rule, so the whole
+/// workdir tree is born private, not just the WAL under it.
 pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt as _;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+    rdlt_core::fs::create_or_verify_private_dir(dir)
 }
 
 /// Open a WAL-path file for reading, refusing anything that is not a plain

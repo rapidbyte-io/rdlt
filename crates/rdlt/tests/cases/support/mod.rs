@@ -19,5 +19,5 @@ pub(crate) fn merge_less_destination() -> memory::Destination {
 
 /// Parse a pipeline document that the case expects to be well-formed.
 pub(crate) fn document(yaml: &str) -> Document {
-    serde_yaml_ng::from_str(yaml).expect("the pipeline document parses")
+    rdlt::document::parse(yaml).expect("the pipeline document parses")
 }

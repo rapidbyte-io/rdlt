@@ -69,7 +69,7 @@ async fn a_connector_document_runs_over_discovered_spawned_binaries() {
         fixture = src_dir.join("events.jsonl").display(),
         out = dir.path().join("out").display(),
     );
-    let doc: Document = serde_yaml_ng::from_str(&yaml).expect("the connector document parses");
+    let doc: Document = rdlt::document::parse(&yaml).expect("the connector document parses");
 
     // No `path:` overrides anywhere in the document, so this exercises
     // the full id → discovery route: the provider's search path stands

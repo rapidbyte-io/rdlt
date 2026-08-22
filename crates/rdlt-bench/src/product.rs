@@ -689,7 +689,7 @@ mod tests {
         );
         for (template, expected_path) in [(null_path, None), (empty_path.as_str(), Some(""))] {
             let spec: rdlt::document::Document =
-                serde_yaml_ng::from_str(&format!("pipeline: p\n{template}"))
+                rdlt::document::parse(&format!("pipeline: p\n{template}"))
                     .expect("the template parses through the real document model");
             assert_eq!(
                 spec.source.path.as_deref(),
