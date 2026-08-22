@@ -124,6 +124,31 @@ impl Config {
     /// wait on them.
     pub const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 16;
 
+    /// The most any caller may raise the byte budget to: 16 GiB. The
+    /// budget backs a semaphore whose permit count has a ceiling of
+    /// its own (a larger request would panic inside the constructor),
+    /// and far below that a budget is no longer a containment bound at
+    /// all — a pipeline document is not the place a process's memory
+    /// ceiling is switched off.
+    pub const MAX_BYTE_BUDGET: usize = 16 << 30;
+
+    /// The most any caller may raise the cell budget to: 2³⁶ cells, the
+    /// null-fill transient of a terabyte-scale batch. Past it the
+    /// budget would bound nothing a machine could hold.
+    pub const MAX_MAX_BATCH_CELLS: usize = 1 << 36;
+
+    /// The most streams any caller may let one source declare: 64 Ki.
+    /// Every declared stream costs plan-time state, and the wire
+    /// refuses a declaration past its own ceiling anyway; a document
+    /// raising this further asks for unbounded discovery state.
+    pub const MAX_MAX_STREAMS_PER_SOURCE: usize = 64 * 1024;
+
+    /// The most streams any caller may let read at once: 4096. A read
+    /// slot is a connection on the source and a share of the byte
+    /// budget; four thousand at once is already past any honest
+    /// source, and the count backs a semaphore too.
+    pub const MAX_MAX_CONCURRENT_STREAMS: usize = 4096;
+
     pub fn new(pipeline: impl Into<PipelineId>) -> Self {
         Self {
             pipeline: pipeline.into(),
@@ -221,6 +246,7 @@ impl Config {
         capabilities: &rdlt_connector::destination::Capabilities,
         destination_name: impl std::fmt::Display,
     ) -> Result<(), rdlt_core::error::Error> {
+        self.check_resources()?;
         let merge_default = matches!(self.write_mode(), WriteMode::Merge { .. });
         let merge_overrides: Vec<&StreamName> = self
             .write_modes()
@@ -264,6 +290,45 @@ impl Config {
         self.commit_policy
             .check()
             .map_err(|reason| rdlt_core::error::Error::config(reason.to_string()))
+    }
+
+    /// Every resource knob against its ceiling — the one boundary both
+    /// a document's `resources:` block and the builder's own setters
+    /// answer to, so a value that would disable a containment bound,
+    /// or panic the semaphore behind it, refuses typed before any
+    /// connector is dialed. The setters clamp only at the bottom (a
+    /// zero is a request for the smallest enforceable value); the top
+    /// is refused here rather than clamped, because a caller asking for
+    /// the impossible should hear so.
+    pub fn check_resources(&self) -> Result<(), rdlt_core::error::Error> {
+        let ceilings = [
+            ("byte_budget", self.byte_budget, Self::MAX_BYTE_BUDGET),
+            (
+                "max_batch_cells",
+                self.max_batch_cells,
+                Self::MAX_MAX_BATCH_CELLS,
+            ),
+            (
+                "max_streams_per_source",
+                self.max_streams_per_source,
+                Self::MAX_MAX_STREAMS_PER_SOURCE,
+            ),
+            (
+                "max_concurrent_streams",
+                self.max_concurrent_streams,
+                Self::MAX_MAX_CONCURRENT_STREAMS,
+            ),
+        ];
+        for (knob, value, ceiling) in ceilings {
+            if value > ceiling {
+                return Err(rdlt_core::error::Error::config(format!(
+                    "resources.{knob} is {value}, over the {ceiling} ceiling — the bound \
+                     exists to contain what a connector may make the engine hold, and a \
+                     value past it would contain nothing"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Sets the working directory that holds the write-ahead log.
@@ -358,6 +423,56 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every knob refuses one past its ceiling and admits the ceiling
+    /// itself — typed, naming the knob — and `usize::MAX` (what a
+    /// document can spell) never reaches a semaphore constructor.
+    #[test]
+    fn resource_knobs_refuse_past_their_ceilings_and_admit_them() {
+        let knobs: [(&str, fn(Config, usize) -> Config, usize); 4] = [
+            (
+                "byte_budget",
+                Config::with_byte_budget,
+                Config::MAX_BYTE_BUDGET,
+            ),
+            (
+                "max_batch_cells",
+                Config::with_max_batch_cells,
+                Config::MAX_MAX_BATCH_CELLS,
+            ),
+            (
+                "max_streams_per_source",
+                Config::with_max_streams_per_source,
+                Config::MAX_MAX_STREAMS_PER_SOURCE,
+            ),
+            (
+                "max_concurrent_streams",
+                Config::with_max_concurrent_streams,
+                Config::MAX_MAX_CONCURRENT_STREAMS,
+            ),
+        ];
+        for (knob, set, ceiling) in knobs {
+            set(Config::new("p"), ceiling)
+                .check_resources()
+                .expect("the ceiling is admitted");
+            for over in [ceiling + 1, usize::MAX] {
+                let error = set(Config::new("p"), over)
+                    .check_resources()
+                    .expect_err("past the ceiling refuses");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("resources.{knob} is {over}")),
+                    "{knob}: {error}"
+                );
+            }
+        }
+        assert!(
+            Config::MAX_BYTE_BUDGET <= tokio::sync::Semaphore::MAX_PERMITS
+                && Config::MAX_MAX_CONCURRENT_STREAMS <= tokio::sync::Semaphore::MAX_PERMITS,
+            "the semaphore-backed ceilings stay under tokio's permit ceiling"
+        );
+    }
 
     #[test]
     fn a_zero_byte_budget_clamps_to_the_smallest_enforceable_window() {

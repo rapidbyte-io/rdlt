@@ -786,42 +786,62 @@ pub(crate) fn refuse_handshake(
     })
 }
 
-/// Every non-null scalar LEAF the config document carries, in document
-/// order — the values [`redact_values`] shields. Values only, never
-/// keys: keys are the document's schema, and refusals legitimately name
-/// fields. Computed from the RAW BYTES by re-parsing them, so a
-/// SUCCESSFUL handshake pays neither this parse nor the per-leaf clones
-/// (the refusal arm no longer holds the parsed document — the failed
-/// construction consumed it). The bytes parsed once already, so the
-/// re-parse cannot fail; the empty fallback is belt only.
-fn config_scalar_values(config_json: &[u8]) -> Vec<String> {
-    fn walk(value: &serde_json::Value, into: &mut Vec<String>) {
-        match value {
-            serde_json::Value::String(text) => {
-                if !text.is_empty() {
-                    into.push(text.clone());
-                }
-            }
-            serde_json::Value::Number(number) => into.push(number.to_string()),
-            serde_json::Value::Bool(boolean) => into.push(boolean.to_string()),
+/// The most DISTINCT scalar values the redaction will hunt for, and
+/// the most bytes they may total. A config document inside the byte
+/// ceiling can carry a million tiny scalars; hunting each of them in
+/// every spelling through a refusal is work the refusal's author
+/// chose, not the connector. Past either bound the refusal is
+/// rendered value-free instead — the connector's wording withheld,
+/// the fact of the refusal and the reason for the withholding kept.
+const MAX_REDACTION_VALUES: usize = 4096;
+const MAX_REDACTION_VALUE_BYTES: usize = 1 << 20;
+
+/// What the redaction renders when it cannot run safely.
+const VALUE_FREE_REFUSAL: &str = "the connector refused the configuration; its wording is \
+                                  withheld because the document carries more values than \
+                                  can be redacted from it safely";
+
+/// Every distinct non-null scalar LEAF the config document carries —
+/// the values [`redact_values`] shields. Values only, never keys: keys
+/// are the document's schema, and refusals legitimately name fields.
+/// Computed from the RAW BYTES by re-parsing them, so a SUCCESSFUL
+/// handshake pays neither this parse nor the per-leaf clones (the
+/// refusal arm no longer holds the parsed document — the failed
+/// construction consumed it). The walk is iterative, deduplicates as
+/// it goes, and stops at the redaction bounds: `None` means the
+/// document is past what can be redacted.
+fn config_scalar_values(config_json: &[u8]) -> Option<std::collections::BTreeSet<String>> {
+    let Ok(config) = serde_json::from_slice::<serde_json::Value>(config_json) else {
+        return Some(Default::default());
+    };
+    let mut values = std::collections::BTreeSet::new();
+    let mut bytes = 0usize;
+    let mut pending = vec![&config];
+    while let Some(value) = pending.pop() {
+        let scalar = match value {
+            serde_json::Value::String(text) if !text.is_empty() => text.clone(),
+            serde_json::Value::Number(number) => number.to_string(),
+            serde_json::Value::Bool(boolean) => boolean.to_string(),
             serde_json::Value::Array(items) => {
-                for item in items {
-                    walk(item, into);
-                }
+                pending.extend(items.iter());
+                continue;
             }
             serde_json::Value::Object(fields) => {
-                for field in fields.values() {
-                    walk(field, into);
-                }
+                pending.extend(fields.values());
+                continue;
             }
-            _ => {}
+            _ => continue,
+        };
+        if values.contains(&scalar) {
+            continue;
         }
+        bytes = bytes.saturating_add(scalar.len());
+        if values.len() >= MAX_REDACTION_VALUES || bytes > MAX_REDACTION_VALUE_BYTES {
+            return None;
+        }
+        values.insert(scalar);
     }
-    let mut values = Vec::new();
-    if let Ok(config) = serde_json::from_slice::<serde_json::Value>(config_json) {
-        walk(&config, &mut values);
-    }
-    values
+    Some(values)
 }
 
 /// Redact every config scalar value out of a connector-rendered
@@ -832,25 +852,48 @@ fn config_scalar_values(config_json: &[u8]) -> Vec<String> {
 /// refusal can carry it — raw, its full `{:?}` Debug form (serde's
 /// `Unexpected::Str` renders tokens that way, escaping quotes,
 /// backslashes and control bytes), and the Debug body without its
-/// surrounding quotes — longest first, so a form containing another
-/// redacts whole; wording that quotes no config value crosses back
-/// untouched.
-fn redact_values(message: String, values: &[String]) -> String {
-    let mut spellings: Vec<(String, &'static str)> = Vec::new();
+/// surrounding quotes.
+///
+/// Bounded by construction: the message is capped FIRST, so the
+/// matcher walks at most a few kilobytes; the match is ONE
+/// left-to-right pass that never rescans what it inserted (an inserted
+/// marker cannot match a value, so a value spelled like the marker
+/// cannot grow the text without bound); and at each position the
+/// longest spelling wins, so a form containing another redacts whole.
+/// Wording that quotes no config value crosses back untouched.
+fn redact_values(message: String, values: &std::collections::BTreeSet<String>) -> String {
+    let message = gate::render_diagnostic(&message, gate::PANIC_TEXT_CAP);
+    if values.is_empty() {
+        return message;
+    }
+    let mut spellings: Vec<(String, &'static str)> = Vec::with_capacity(values.len() * 3);
     for value in values {
-        let debug_form = format!("{value:?}");
-        spellings.push((debug_form, "\"[redacted config value]\""));
+        spellings.push((format!("{value:?}"), "\"[redacted config value]\""));
         spellings.push((value.escape_debug().to_string(), "[redacted config value]"));
         spellings.push((value.clone(), "[redacted config value]"));
     }
-    spellings.sort_by_key(|(needle, _)| std::cmp::Reverse(needle.len()));
-    let mut redacted = message;
-    for (needle, marker) in spellings {
-        if redacted.contains(&needle) {
-            redacted = redacted.replace(&needle, marker);
+    spellings.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+    spellings.dedup_by(|a, b| a.0 == b.0);
+    let mut out = String::with_capacity(message.len());
+    let mut at = 0;
+    while at < message.len() {
+        let rest = &message[at..];
+        match spellings
+            .iter()
+            .find(|(needle, _)| rest.starts_with(needle.as_str()))
+        {
+            Some((needle, marker)) => {
+                out.push_str(marker);
+                at += needle.len();
+            }
+            None => {
+                let step = rest.chars().next().map_or(1, char::len_utf8);
+                out.push_str(&rest[..step]);
+                at += step;
+            }
         }
     }
-    redacted
+    out
 }
 
 /// What [`handshake`] needs from a served shell to run the choreography
@@ -972,8 +1015,10 @@ pub(crate) fn handshake<S: HandshakeShell>(
             // arm, and only here: it clones every scalar leaf of the
             // document, a whole-document expansion a successful
             // handshake must never pay.
-            let values = config_scalar_values(&request.config_json);
-            return refuse_handshake(redact_values(error.to_string(), &values));
+            return refuse_handshake(match config_scalar_values(&request.config_json) {
+                Some(values) => redact_values(error.to_string(), &values),
+                None => VALUE_FREE_REFUSAL.to_string(),
+            });
         }
     };
 
@@ -1005,7 +1050,8 @@ mod tests {
 
     #[test]
     fn numeric_and_boolean_config_values_are_redacted_too() {
-        let values = config_scalar_values(br#"{"password": 12345, "enabled": true}"#);
+        let values =
+            config_scalar_values(br#"{"password": 12345, "enabled": true}"#).expect("in bounds");
         let redacted = redact_values(
             "invalid type: integer `12345`; unexpected boolean `true`".to_string(),
             &values,
@@ -1015,6 +1061,51 @@ mod tests {
             "invalid type: integer `[redacted config value]`; unexpected boolean \
              `[redacted config value]`"
         );
+    }
+
+    /// The redaction is bounded by construction: a value spelled like
+    /// the marker cannot grow the text (one pass, nothing it inserted is
+    /// rescanned), a frame-sized refusal is capped before the matcher
+    /// walks it, a document of a million tiny distinct scalars is
+    /// refused value-free rather than hunted, and duplicates cost one
+    /// needle. The matcher still redacts whole: the Debug spelling of a
+    /// value, which contains its raw spelling, is replaced as one.
+    #[test]
+    fn the_redaction_is_bounded_and_never_rescans_what_it_inserted() {
+        let values = config_scalar_values(br#"{"a": "redacted", "b": "config", "c": "["}"#)
+            .expect("in bounds");
+        let redacted = redact_values("bad value \"redacted\" near [".to_string(), &values);
+        assert_eq!(
+            redacted,
+            "bad value \"[redacted config value]\" near [redacted config value]"
+        );
+        assert!(
+            redacted.len() < 128,
+            "a value spelled like the marker does not feed the matcher: {redacted}"
+        );
+
+        let flood = format!("x{}", "y".repeat(1 << 20));
+        let redacted = redact_values(flood, &values);
+        assert!(
+            redacted.len() <= gate::PANIC_TEXT_CAP + 64,
+            "the refusal is capped before it is walked: {}",
+            redacted.len()
+        );
+
+        let mut many = String::from("[");
+        for n in 0..=MAX_REDACTION_VALUES {
+            if n > 0 {
+                many.push(',');
+            }
+            many.push_str(&n.to_string());
+        }
+        many.push(']');
+        assert!(
+            config_scalar_values(many.as_bytes()).is_none(),
+            "past the value ceiling the redaction declines rather than runs"
+        );
+        let dup = config_scalar_values(br#"["s","s","s","s"]"#).expect("in bounds");
+        assert_eq!(dup.len(), 1, "duplicates cost one needle");
     }
 
     /// The private socket directory is owner-only from birth and its

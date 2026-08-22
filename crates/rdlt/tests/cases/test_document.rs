@@ -665,3 +665,28 @@ fn the_text_parse_refuses_documents_over_the_cap_before_parsing() {
         "{refused}"
     );
 }
+
+/// A document's resource value past its ceiling refuses typed as a
+/// configuration error BEFORE any connector is looked for — the
+/// refusal names the knob, and no binary was needed to reach it.
+#[tokio::test]
+async fn a_resource_value_past_its_ceiling_refuses_before_any_connector_is_spawned() {
+    let doc = document(&format!(
+        "pipeline: p\nresources:\n  byte_budget: {}\nsource:\n  connector: {{id: io.example.src, config: {{}}}}\n{DEST}",
+        usize::MAX
+    ));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let error = Pipeline::from_document(&doc, dir.path())
+        .await
+        .err()
+        .expect("refused");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resources.byte_budget is") && rendered.contains("ceiling"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("no binary"),
+        "the refusal is the ceiling's, not discovery's: {rendered}"
+    );
+}

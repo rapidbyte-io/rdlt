@@ -374,6 +374,10 @@ impl Pipeline {
         };
         let builder = builder.workdir(resolved_workdir(doc, base));
         let builder = apply_tuning(builder, doc);
+        // The resource ceilings are judged BEFORE any connector is
+        // spawned or dialed: a document asking the engine to contain
+        // nothing is refused without a process to show for it.
+        builder.config.check_resources()?;
         let builder = match &doc.batch_policy {
             Some(policy) => builder.batch_policy(*policy),
             None => builder,
