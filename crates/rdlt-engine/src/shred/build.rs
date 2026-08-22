@@ -180,6 +180,12 @@ fn entry_index<'v, V: JsonView<'v>>(
     if consumer_width <= INDEX_ROW_FROM {
         return None;
     }
+    // The width is known before anything is collected (the views'
+    // entry iterators are exact), so a narrow object costs no
+    // allocation here — the common row on the hot path.
+    if entries.size_hint().0 < INDEX_ROW_FROM {
+        return None;
+    }
     let mut entries: Vec<(&'v str, V)> = entries.collect();
     if entries.len() < INDEX_ROW_FROM {
         return None;

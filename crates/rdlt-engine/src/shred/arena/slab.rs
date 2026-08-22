@@ -236,7 +236,17 @@ impl<'a, 's: 'a> Iterator for ObjectIter<'a, 's> {
         self.next += 1;
         Some((key.as_ref(), self.arena.node(*id)))
     }
+
+    /// Exact: the entries are a slice. A consumer deciding whether an
+    /// object is wide enough to index reads this before collecting
+    /// anything.
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.end - self.next) as usize;
+        (remaining, Some(remaining))
+    }
 }
+
+impl ExactSizeIterator for ObjectIter<'_, '_> {}
 
 pub(crate) struct ArrayIter<'a, 's> {
     arena: &'a Arena<'s>,

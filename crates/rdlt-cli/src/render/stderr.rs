@@ -74,7 +74,7 @@ pub(crate) fn sanitize_text(text: &str) -> String {
 }
 
 /// Escape every character unsafe in a one-line seat — an identifier
-/// interpolated into a frame, or a whole [`line`]. Unlike
+/// interpolated into a frame, or a whole [`line()`]. Unlike
 /// [`sanitize_text`], newlines and tabs are not formatting here:
 /// accepting them would let a pipeline/table name mint additional
 /// terminal lines. The character inventory is the wire protocol's ONE

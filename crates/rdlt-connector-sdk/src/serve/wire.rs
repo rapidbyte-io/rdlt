@@ -509,7 +509,7 @@ pub const MAX_REQUESTS_PER_CONNECTION: usize =
 /// to answer before the connection is reaped. A peer that vanished —
 /// a crashed host, a black-holed route — otherwise holds its connection
 /// slot and every stream on it forever. The pings start once the peer
-/// has spoken HTTP/2; before that [`PREFACE_DEADLINE`] is the reaper.
+/// has spoken HTTP/2; before that [`ESTABLISHMENT_DEADLINE`] is the reaper.
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// See [`KEEPALIVE_INTERVAL`].
 pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
