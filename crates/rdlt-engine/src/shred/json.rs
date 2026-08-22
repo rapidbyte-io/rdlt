@@ -677,14 +677,28 @@ mod cardinality_tests {
         assert_eq!(child_batch.num_rows(), 2, "both keys' rows land in it");
     }
 
+    /// The children are registered through the real path so the
+    /// lookup index grows with them: a test writing `child_tables`
+    /// directly leaves the index stale and proves the cap against a
+    /// table no push could produce.
     #[test]
     fn a_parent_refuses_a_new_child_key_at_the_child_table_cap() {
         let mut shredder = shredder();
-        shredder.tables[0].child_tables = (0..MAX_CHILD_TABLES_PER_PARENT)
-            .map(|index| (format!("child-{index}"), 0))
-            .collect();
+        let mut rows = vec![Vec::new()];
+        for index in 0..MAX_CHILD_TABLES_PER_PARENT {
+            shredder
+                .child_table_idx(0, &format!("child-{index}"), &mut rows)
+                .expect("under the cap, a new key registers");
+        }
+        // A key already seen resolves through the memo, cap or no cap.
+        assert_eq!(
+            shredder
+                .child_table_idx(0, "child-0", &mut rows)
+                .expect("a seen key is a memo hit"),
+            1
+        );
         let error = shredder
-            .child_table_idx(0, "one-too-many", &mut vec![Vec::new()])
+            .child_table_idx(0, "one-too-many", &mut rows)
             .expect_err("the child-table cap must refuse");
         assert!(error.to_string().contains("child-table cap"));
     }

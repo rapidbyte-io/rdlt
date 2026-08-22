@@ -25,6 +25,9 @@ tonic = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["net"] }
 tokio-stream = { workspace = true, optional = true, features = ["net"] }
 arrow = { workspace = true, optional = true }
+# `pem` only: the non-blocking open flag and, in tests, mkfifo — both
+# safe wrappers, which the raw libc constants are not on every target.
+rustix = { workspace = true, optional = true, features = ["fs"] }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
@@ -47,7 +50,7 @@ schema = ["dep:schemars", "rdlt-connector/schema"]
 failpoints = ["rdlt-connector/failpoints"]
 # PEM material for the connectors that take a certificate or a key.
 # Off by default: one that takes neither carries nothing.
-pem = []
+pem = ["dep:rustix"]
 # The out-of-process protocol server. Off by default: a connector that
 # never runs out of process pays nothing, not even tonic in its tree.
 serve = [

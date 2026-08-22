@@ -48,8 +48,15 @@ in place; legacy formats and compatibility shims are not supported.
   admits at most 1024 concurrent reads (refused past it).
 - Structured (Arrow) input REFUSES typed any cast arrow would round, wrap,
   or null; it never discards.
-- Connector configuration can contain credentials. It is sent only over the
-  private local connector socket and must never be echoed in protocol errors.
+- Connector configuration can contain credentials, and must never be echoed
+  in protocol errors. The engine and runtime send it only over the private
+  local Unix socket of a connector they spawned. The sdk also exports a TCP
+  binding (`serve::{source,destination}::run_on_tcp`, paired with the
+  client's `Endpoint::Address`) for deployments that host a connector
+  elsewhere: that binding is plaintext at this layer by design, the listener
+  and its reachability are the deployer's, and confidentiality of the
+  configuration crossing it (mTLS or an equivalent wrap on both ends) is the
+  deployment's to provide. rdlt itself never dials it.
 - Each pipeline work directory is private to the rdlt process. The WAL uses an
   ownership marker before recursive cleanup and refuses symlinks at file-open
   boundaries (including a symlinked WAL directory itself). A process that can

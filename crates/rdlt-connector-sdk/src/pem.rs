@@ -95,48 +95,82 @@ impl Material {
     /// inside a document already held to this bound.
     pub const MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-    /// What the path names, judged before it is opened.
+    /// Open the path and judge what the HANDLE holds — kind and size —
+    /// before a byte is read.
     ///
     /// A config-authored path is not a promise of a file. A character
     /// device reads without end, a FIFO parks its opener until a writer
     /// appears, and a directory fails every read — none of which can be
-    /// judged after opening, so the metadata is the gate. Symlinks are
-    /// FOLLOWED and then judged by what they point at: a certificate
-    /// living behind `/etc/ssl/certs` is routinely a link, and refusing
-    /// links would refuse honest configurations to catch nothing a kind
-    /// check does not already catch.
-    fn gate_path(&self) -> std::io::Result<()> {
-        let meta = std::fs::metadata(&self.0)?;
+    /// judged from the bytes, so the metadata is the gate. It is taken
+    /// from the opened handle, not from the path: a path resolves anew
+    /// on every call, so a gate on one resolution and a read on another
+    /// would judge one file and read whatever was swapped in between.
+    /// The handle cannot be swapped out from under its reader. The open
+    /// itself is non-blocking so a FIFO at the path is opened and judged
+    /// rather than parked on. Symlinks are FOLLOWED and then judged by
+    /// what they point at: a certificate living behind `/etc/ssl/certs`
+    /// is routinely a link, and refusing links would refuse honest
+    /// configurations to catch nothing a kind check does not already
+    /// catch.
+    fn open_gated(&self) -> std::io::Result<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+        }
+        let file = options.open(&self.0)?;
+        Self::gate_handle(&file.metadata()?, &self.0)?;
+        Ok(file)
+    }
+
+    fn gate_handle(meta: &std::fs::Metadata, path: &str) -> std::io::Result<()> {
         if !meta.is_file() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!(
-                    "{}: not a regular file — PEM material must be a file or inline text",
-                    self.0
-                ),
+                format!("{path}: not a regular file — PEM material must be a file or inline text"),
             ));
         }
         if meta.len() > Self::MAX_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "{}: {} bytes of PEM material, over the {}-byte ceiling — a certificate \
-                     or key is kilobytes",
-                    self.0,
-                    meta.len(),
-                    Self::MAX_BYTES
-                ),
-            ));
+            return Err(Self::over_ceiling(path, meta.len()));
         }
         Ok(())
     }
 
+    fn over_ceiling(path: &str, len: u64) -> std::io::Error {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{path}: {len} bytes of PEM material, over the {}-byte ceiling — a certificate \
+                 or key is kilobytes",
+                Self::MAX_BYTES
+            ),
+        )
+    }
+
+    /// Read an already-judged handle to its end, never past the ceiling.
+    ///
+    /// The size was judged at the gate, but a file can be appended to
+    /// after it: the read takes one byte past the ceiling and refuses
+    /// when it arrives, so growth under the reader is caught rather
+    /// than either slurped or silently truncated.
+    fn read_handle(file: std::fs::File, path: &str) -> std::io::Result<Vec<u8>> {
+        use std::io::Read as _;
+        let mut bytes = Vec::new();
+        file.take(Self::MAX_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > Self::MAX_BYTES {
+            return Err(Self::over_ceiling(path, bytes.len() as u64));
+        }
+        Ok(bytes)
+    }
+
     /// The PEM bytes, reading the file when this is a path.
     ///
-    /// The path is judged before it is opened — its kind and its size:
-    /// this type is what every connector taking a certificate reaches
-    /// for, so an ungated open here would teach the hole rather than
-    /// close it.
+    /// The file is judged on the handle that is then read — its kind
+    /// and its size: this type is what every connector taking a
+    /// certificate reaches for, so an ungated open here would teach the
+    /// hole rather than close it.
     ///
     /// The error stays `io::Error` on purpose: what went wrong reading a
     /// file is the same everywhere, and each connector maps it into its
@@ -145,12 +179,11 @@ impl Material {
         if self.is_inline() {
             Ok(self.0.as_bytes().to_vec())
         } else {
-            self.gate_path()?;
-            std::fs::read(&self.0)
+            Self::read_handle(self.open_gated()?, &self.0)
         }
     }
 
-    /// The PEM text, reading the file when this is a path — its path
+    /// The PEM text, reading the file when this is a path — its handle
     /// judged like [`Material::read`]'s.
     ///
     /// For the libraries that want a `String`. Non-UTF-8 file contents
@@ -160,8 +193,9 @@ impl Material {
         if self.is_inline() {
             Ok(self.0.clone())
         } else {
-            self.gate_path()?;
-            std::fs::read_to_string(&self.0)
+            String::from_utf8(self.read()?).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.utf8_error())
+            })
         }
     }
 }
@@ -243,6 +277,87 @@ mod tests {
         Material::new(path.display().to_string())
             .read()
             .expect("a file AT the ceiling is admitted");
+    }
+
+    /// The gate and the read share one handle, so a swap at the path
+    /// between them changes nothing: what was judged is what is read.
+    /// Two paths of resolution would let a rogue writer pass a small
+    /// file through the gate and hand the reader something else.
+    #[test]
+    fn a_swap_at_the_path_after_the_gate_does_not_reach_the_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("key.pem");
+        std::fs::write(&path, b"-----BEGIN SMALL-----\n").expect("seed");
+        let material = Material::new(path.display().to_string());
+        let judged = material
+            .open_gated()
+            .expect("the small file passes the gate");
+
+        // The adversary's move: a file past the ceiling lands at the path.
+        let huge = dir.path().join("huge.pem");
+        let file = std::fs::File::create(&huge).expect("create");
+        file.set_len(Material::MAX_BYTES + 1).expect("size it");
+        drop(file);
+        std::fs::rename(&huge, &path).expect("swap over the path");
+
+        let read =
+            Material::read_handle(judged, material.as_str()).expect("the judged handle reads");
+        assert_eq!(read, b"-----BEGIN SMALL-----\n");
+        // The swapped-in file is what a FRESH resolution sees — refused.
+        assert!(
+            material.read().is_err(),
+            "the swapped-in file is past the ceiling"
+        );
+    }
+
+    /// A FIFO at the path is judged and refused, not parked on: the
+    /// open is non-blocking, so a pipe with no writer cannot hold the
+    /// connector until one appears. The test would hang rather than
+    /// fail if it ever did.
+    #[test]
+    fn a_fifo_at_the_path_refuses_without_waiting_for_a_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pipe.pem");
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            &path,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .expect("mkfifo");
+
+        let refusal = Material::new(path.display().to_string())
+            .read()
+            .expect_err("a FIFO is not PEM material");
+        assert_eq!(refusal.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            refusal.to_string().contains("not a regular file"),
+            "{refusal}"
+        );
+    }
+
+    /// A file that grows under the reader after the gate judged it is
+    /// refused at the ceiling, not slurped to whatever it became.
+    #[test]
+    fn growth_after_the_gate_refuses_at_the_ceiling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("growing.pem");
+        std::fs::write(&path, b"-----BEGIN-----\n").expect("seed");
+        let material = Material::new(path.display().to_string());
+        let judged = material.open_gated().expect("small at the gate");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("reopen")
+            .set_len(Material::MAX_BYTES + 1)
+            .expect("grow it");
+        let refusal =
+            Material::read_handle(judged, material.as_str()).expect_err("grown past the ceiling");
+        assert!(
+            refusal
+                .to_string()
+                .contains(&Material::MAX_BYTES.to_string()),
+            "{refusal}"
+        );
     }
 
     /// A symlink is followed and judged by what it points at: a

@@ -365,6 +365,8 @@ mod tests {
     use rdlt_connector_sdk::spi::core::id::{LoadId, TableName};
     use rdlt_testkit::fixtures::batch_of;
 
+    use rdlt_connector_sdk::spi::core::commit::CommitReceipt;
+
     use super::{STAGING_CEILING_BYTES, Session};
 
     fn session_at(staged_bytes: usize) -> Session {
@@ -376,6 +378,72 @@ mod tests {
             staged_bytes,
             lease: None,
         }
+    }
+
+    /// Over a load's lifetime of commits the receipt scan is priced per
+    /// commit, not per lifetime: after every question the memo stands
+    /// at the log's end, so the next question reads only what was
+    /// appended since. The bound is checked at every step — a memo
+    /// that lagged the log at any one would have the scan re-reading
+    /// a growing prefix, which is the square this exists to remove.
+    #[test]
+    fn a_lifetime_of_commits_scans_each_receipt_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let load = LoadId::new("long-load");
+        let mut session = session_at(0);
+        session.dir = dir.path().to_path_buf();
+        for seq in 1..=200u64 {
+            let log_len = std::fs::metadata(dir.path().join(super::store::RECEIPTS_FILE))
+                .map(|meta| meta.len())
+                .unwrap_or(0);
+            assert!(
+                session.scan_receipts(&load, seq).expect("scan").is_none(),
+                "commit {seq} is not yet receipted"
+            );
+            let memo = session
+                .receipt_scan
+                .as_ref()
+                .expect("the scan leaves a memo");
+            assert_eq!(
+                memo.scanned_to, log_len,
+                "after commit {seq}'s question the memo stands at the log's end"
+            );
+            super::store::append_receipt(
+                dir.path(),
+                &CommitReceipt {
+                    load_id: load.clone(),
+                    commit_seq: seq,
+                },
+            )
+            .expect("append");
+            assert_eq!(
+                session
+                    .scan_receipts(&load, seq)
+                    .expect("scan")
+                    .map(|r| r.commit_seq),
+                Some(seq),
+                "the replay question about a just-written receipt finds it"
+            );
+        }
+        // The proof that the memo is USED, not merely kept: damage the
+        // log's first line in place. A scan from byte zero refuses it as
+        // corruption; the resumed scan never reads it again.
+        let path = dir.path().join(super::store::RECEIPTS_FILE);
+        let mut log = std::fs::read(&path).expect("log");
+        let first_line = log.iter().position(|b| *b == b'\n').expect("a line");
+        log[..first_line].fill(b'x');
+        std::fs::write(&path, &log).expect("damage the prefix");
+        assert!(
+            session
+                .scan_receipts(&load, 201)
+                .expect("resumed past the damage")
+                .is_none()
+        );
+        session.receipt_scan = None;
+        assert!(
+            session.scan_receipts(&load, 201).is_err(),
+            "from byte zero the damaged prefix refuses — so the resume skipped it"
+        );
     }
 
     /// The boundary is inclusive, one byte past it refuses, and an

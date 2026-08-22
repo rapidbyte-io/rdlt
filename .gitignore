@@ -49,3 +49,5 @@ connectors/python/rdlt-connector-pyjsonl/__pycache__/
 # Nested benchmark/example workdirs, including per-load spellings.
 **/.rdlt*/
 /.tmp-real/
+# Scanner hook session state — local telemetry, never part of the tree.
+/.mimosa/
