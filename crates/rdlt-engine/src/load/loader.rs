@@ -454,7 +454,9 @@ impl Loader {
         // width: coalesced batches share one schema, so the width of
         // the incoming batch is the width of the fused write.
         let cells_after_crossing = self.pending.get(table).is_some_and(|pending| {
-            (pending.rows + rows).saturating_mul(batch.num_columns() as u64)
+            (pending.rows + rows).saturating_mul(crate::shred::limits::physical_width_of(
+                batch.schema().fields(),
+            ) as u64)
                 > self.max_batch_cells as u64
         });
         if schema_changed || cells_after_crossing {

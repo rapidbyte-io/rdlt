@@ -2599,7 +2599,7 @@ async fn an_over_wide_batch_refuses_before_the_backend_writes() {
     {
         Some(session_reply::Reply::Error(error)) => {
             assert!(
-                error.message.contains("over the 4096-column wire cap"),
+                error.message.contains("over the column wire cap"),
                 "the refusal names the column cap: {}",
                 error.message
             );

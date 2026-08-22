@@ -167,10 +167,20 @@ const INDEX_ROW_FROM: usize = 8;
 /// sort to pay (see [`INDEX_ROW_FROM`]); `None` when the plain lookup
 /// is the cheaper answer.
 fn row_index<'v, V: JsonView<'v>>(row: &Row<V>, data_columns: usize) -> Option<Vec<(&'v str, V)>> {
-    if data_columns <= INDEX_ROW_FROM {
+    entry_index(row.value.obj_entries(), data_columns)
+}
+
+/// [`row_index`]'s rule over any object's entries, for any width of
+/// consumer — a row against the table, a nested object against its
+/// struct type.
+fn entry_index<'v, V: JsonView<'v>>(
+    entries: impl Iterator<Item = (&'v str, V)>,
+    consumer_width: usize,
+) -> Option<Vec<(&'v str, V)>> {
+    if consumer_width <= INDEX_ROW_FROM {
         return None;
     }
-    let mut entries: Vec<(&'v str, V)> = row.value.obj_entries().collect();
+    let mut entries: Vec<(&'v str, V)> = entries.collect();
     if entries.len() < INDEX_ROW_FROM {
         return None;
     }
@@ -199,13 +209,30 @@ fn build_column<'v, V: JsonView<'v>>(
                 .iter()
                 .map(|v| v.is_some_and(|v| v.is_object()))
                 .collect();
+            // The top-level rule one level down: a nested object narrow
+            // enough to answer lookups by scanning is asked once per
+            // FIELD of the struct type, and a struct is one column to
+            // the cell budget — so the object is indexed once when it
+            // and the type are both wide enough for that to pay.
+            let indexes: Vec<Option<Vec<(&'v str, V)>>> = values
+                .iter()
+                .map(|v| match v {
+                    Some(v) if v.is_object() => entry_index(v.obj_entries(), fields.len()),
+                    _ => None,
+                })
+                .collect();
             let child_arrays: Vec<ArrayRef> = fields
                 .iter()
                 .map(|field| {
                     let projected: Vec<Option<V>> = values
                         .iter()
-                        .map(|v| match v {
-                            Some(v) if v.is_object() => v.obj_get(&field.name),
+                        .zip(&indexes)
+                        .map(|(v, index)| match (v, index) {
+                            (Some(_), Some(index)) => index
+                                .binary_search_by(|(key, _)| (*key).cmp(field.name.as_str()))
+                                .ok()
+                                .map(|at| index[at].1),
+                            (Some(v), None) if v.is_object() => v.obj_get(&field.name),
                             _ => None,
                         })
                         .collect();
@@ -952,6 +979,86 @@ mod extraction_cost_tests {
             0,
             "no column lookup reached the arena's scan: {probes} probes for {} lookups",
             ROWS * COLUMNS
+        );
+    }
+
+    /// The same bound one level down: narrow nested objects against a
+    /// wide struct type are projected without a scan per field.
+    #[test]
+    fn wide_struct_types_do_not_rescan_narrow_nested_objects_per_field() {
+        const WIDTH: usize = 100;
+        const FIELDS: usize = 2_000;
+        const ROWS: usize = 50;
+        let mut arena = crate::shred::arena::Arena::default();
+        let mut text = Vec::new();
+        for _ in 0..ROWS {
+            let object: Vec<String> = (0..WIDTH).map(|k| format!("\"f{k}\":{k}")).collect();
+            text.extend_from_slice(format!("{{\"s\":{{{}}}}}\n", object.join(",")).as_bytes());
+        }
+        let ids = arena
+            .parse_rows(
+                &text,
+                rdlt_connector::channel::MAX_RECORD_BATCH_ROWS,
+                rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH,
+            )
+            .expect("the fixture parses");
+        let rows: Vec<Row<_>> = ids
+            .into_iter()
+            .map(|id| Row {
+                value: arena.node(id),
+                id: RowId::from_bytes([0u8; 32]),
+                parent_id: None,
+                root_id: None,
+                pos: None,
+                nulled: BTreeSet::new(),
+            })
+            .collect();
+        let schema = TableSchema {
+            table: TableName::new("nested"),
+            parent: None,
+            columns: vec![Column {
+                name: "s".into(),
+                column_type: ColumnType::Struct {
+                    fields: (0..FIELDS)
+                        .map(|f| Column {
+                            name: format!("f{f}"),
+                            column_type: ColumnType::scalar(LogicalType::Int64),
+                            nullable: true,
+                            provenance: Provenance::Inferred,
+                        })
+                        .collect(),
+                },
+                nullable: true,
+                provenance: Provenance::Inferred,
+            }],
+        };
+        let before = arena.obj_probes();
+        let (batch, misfits) = build_batch(
+            &schema,
+            &std::collections::HashMap::new(),
+            &rows,
+            &LoadId::new("l"),
+        )
+        .expect("builds");
+        let probes = arena.obj_probes() - before;
+        assert_eq!((batch.num_rows(), misfits), (ROWS, 0));
+        let nested = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::StructArray>()
+            .expect("struct");
+        let first = nested
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("int64");
+        assert_eq!(first.value(0), 0, "the index answers what the scan did");
+        // The one top-level lookup per row (`s`) is all the arena sees;
+        // the 2,000 nested fields per row never reach its scan.
+        assert!(
+            probes <= (ROWS * WIDTH) as u64,
+            "nested lookups stay off the scan: {probes} probes for {} lookups",
+            ROWS * FIELDS
         );
     }
 }

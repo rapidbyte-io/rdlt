@@ -188,7 +188,7 @@ pub(crate) fn items(
     // registry width.
     limits::refuse_over_cell_budget(
         table,
-        observed.columns.len(),
+        limits::physical_width(&observed.columns),
         batch.num_rows(),
         max_batch_cells,
     )?;

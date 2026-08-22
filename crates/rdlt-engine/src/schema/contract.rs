@@ -16,31 +16,60 @@ use crate::shred::view::{JsonView, ValueKind};
 
 /// Does `value` conform to `ty` without requiring any schema change?
 /// (`true` = storable as-is; `false` = this value is what forced the widening.)
+///
+/// Compiles `ty` for one consultation — the test-side spelling; the
+/// discard walk, which asks the same type of every row, compiles it
+/// ONCE as a [`Fit`] and asks that.
+#[cfg(test)]
 pub(crate) fn value_fits<'a, V: JsonView<'a>>(value: V, ty: &ColumnType) -> bool {
-    match (value.kind(), ty) {
-        (ValueKind::Null, _) => true,
-        (_, ColumnType::Scalar { scalar }) => scalar_fits(value, *scalar),
-        (ValueKind::Object, ColumnType::Struct { fields }) => {
-            // Fields by name once per object, not a scan per entry:
-            // this arm is reached once per row by the discard walk, and
-            // a struct's width is the wire's to choose — scan × entries
-            // × rows is the product the cell budget never sees.
-            let by_name: std::collections::BTreeMap<&str, &ColumnType> = fields
-                .iter()
-                .map(|field| (field.name.as_str(), &field.column_type))
-                .collect();
-            value
-                .obj_entries()
-                .all(|(key, item)| match by_name.get(key) {
-                    Some(field_type) => value_fits(item, field_type),
-                    None => item.is_null(), // a new nested field forced an evolution
-                })
+    Fit::of(ty).admits(value)
+}
+
+/// A column type compiled for fit checks: its struct fields indexed by
+/// name at every depth, ONCE, so each value asked costs its own
+/// entries (each a lookup) and nothing of the type's width. The
+/// uncompiled walk rebuilt a field index per object per value, which
+/// priced every row — an empty object included — at the type's width,
+/// and a discard policy asks this of every row a push carries against
+/// a type as wide as the wire chose.
+#[derive(Debug)]
+pub(crate) enum Fit {
+    Scalar(LogicalType),
+    List(LogicalType),
+    Struct(std::collections::BTreeMap<String, Fit>),
+}
+
+impl Fit {
+    pub(crate) fn of(ty: &ColumnType) -> Self {
+        match ty {
+            ColumnType::Scalar { scalar } => Self::Scalar(*scalar),
+            ColumnType::ScalarList { item } => Self::List(*item),
+            ColumnType::Struct { fields } => Self::Struct(
+                fields
+                    .iter()
+                    .map(|field| (field.name.clone(), Self::of(&field.column_type)))
+                    .collect(),
+            ),
         }
-        (ValueKind::Array, ColumnType::ScalarList { item }) => {
-            let ty = ColumnType::scalar(*item);
-            value.arr_items().all(|i| value_fits(i, &ty))
+    }
+
+    pub(crate) fn admits<'a, V: JsonView<'a>>(&self, value: V) -> bool {
+        match (value.kind(), self) {
+            (ValueKind::Null, _) => true,
+            (_, Self::Scalar(scalar)) => scalar_fits(value, *scalar),
+            (ValueKind::Object, Self::Struct(fields)) => {
+                value
+                    .obj_entries()
+                    .all(|(key, item)| match fields.get(key) {
+                        Some(field) => field.admits(item),
+                        None => item.is_null(), // a new nested field forced an evolution
+                    })
+            }
+            (ValueKind::Array, Self::List(item)) => value
+                .arr_items()
+                .all(|i| scalar_fits(i, *item) || i.is_null()),
+            _ => false,
         }
-        _ => false,
     }
 }
 

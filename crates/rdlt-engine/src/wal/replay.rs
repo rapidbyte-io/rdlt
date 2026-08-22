@@ -10,7 +10,7 @@ use rdlt_core::state::StateDoc;
 
 use super::format::{WalRecord, verify_segment_file};
 use super::scan::RecoverySpan;
-use super::segment::{caught_decode, open_segment};
+use super::segment::{admit_batch, caught_decode, open_segment};
 use crate::blocking::off_runtime;
 use crate::load::apply;
 
@@ -63,8 +63,9 @@ pub(crate) async fn replay(
                     let reader = open_segment(&dir_owned, &file_owned)?;
                     let mut decoded: u64 = 0;
                     for batch in reader {
-                        let rows = batch.map_err(|e| e.to_string())?.num_rows() as u64;
-                        decoded = checked_rows_sum(decoded, rows)?;
+                        let batch = batch.map_err(|e| e.to_string())?;
+                        admit_batch(&batch)?;
+                        decoded = checked_rows_sum(decoded, batch.num_rows() as u64)?;
                     }
                     Ok::<u64, String>(decoded)
                 })
@@ -172,6 +173,13 @@ pub(crate) async fn replay(
                         tracing::warn!(segment = %file, "WAL segment failed re-read mid-replay — degrading to re-extraction");
                         return Ok(None);
                     };
+                    // Pass 2 judges each batch again: the two passes
+                    // re-open independently, and a batch the first
+                    // pass never saw must not reach the destination.
+                    if let Err(reason) = admit_batch(&batch) {
+                        tracing::warn!(segment = %file, %reason, "WAL segment batch refused mid-replay — degrading to re-extraction");
+                        return Ok(None);
+                    }
                     // The checked sum makes an overflow a typed degrade
                     // rather than the debug-build panic `+=` would be —
                     // which also settles where the sum sits relative to

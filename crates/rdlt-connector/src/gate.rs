@@ -504,14 +504,13 @@ fn decode_one_batch_ipc_erring(
     refuse_overdeclared_framing(bytes).map_err(|reason| format!("{refusal}: {reason}"))?;
     let mut reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
         .map_err(|error| format!("{refusal}: {}", render_bounded(PANIC_TEXT_CAP, &error)))?;
-    let declared_columns = reader.schema().fields().len();
-    if declared_columns > MAX_SOURCE_COLUMNS_PER_TABLE {
-        return Err(format!(
-            "{refusal}: the batch declares {declared_columns} columns, over the \
-             {}-column wire cap — column count is bounded separately from encoded bytes",
-            MAX_SOURCE_COLUMNS_PER_TABLE
-        ));
-    }
+    // The schema is judged BEFORE the first batch is decoded — its
+    // width at every depth, its names' uniqueness at every level, and
+    // every name through the caller's gate — so a schema the batch
+    // could never honestly fill is refused before arrow allocates an
+    // array per field for it.
+    gate_schema_fields(reader.schema().fields(), refuse_field_name)
+        .map_err(|reason| format!("{refusal}: {reason}"))?;
     let first = match reader.next() {
         Some(Ok(batch)) => batch,
         Some(Err(error)) => {
@@ -531,11 +530,7 @@ fn decode_one_batch_ipc_erring(
         ));
     }
     match reader.next() {
-        None => {
-            refuse_record_batch_field_names(&first, refuse_field_name)
-                .map_err(|reason| format!("{refusal}: {reason}"))?;
-            Ok(first)
-        }
+        None => Ok(first),
         Some(Ok(_)) => Err(multi_batch_refusal.to_string()),
         Some(Err(error)) => Err(format!(
             "{refusal}: {}",
@@ -545,45 +540,81 @@ fn decode_one_batch_ipc_erring(
 }
 
 /// Validate every field name a decoded record batch carries, nested
-/// container fields included, through `refuse_name`. The walk is
-/// iterative so an attacker-controlled schema cannot add a second
-/// recursive traversal after Arrow's own verified decoder. A dictionary
-/// encodes another type without a field of its own, but its VALUE type
-/// can carry named fields (a struct, a list, another dictionary) —
-/// unwrapped before matching, or those inner names bypass the gate.
-/// The unwrap loop is bounded by the schema's finite type depth, and a
-/// dictionary's key type is always a bare integer carrying no fields.
+/// container fields included, through `refuse_name` — the batch's
+/// schema through [`gate_schema_fields`].
 pub fn refuse_record_batch_field_names(
     batch: &RecordBatch,
     refuse_name: &mut dyn FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
+    gate_schema_fields(batch.schema().fields(), refuse_name)
+}
+
+/// Judge an Arrow schema as ONE tree: every named field at every depth
+/// spends the same [`MAX_SOURCE_COLUMNS_PER_TABLE`] budget (a struct of
+/// four thousand children is as wide as four thousand columns — each
+/// is an array the decoder allocates and every downstream seat
+/// null-fills, joins and casts), names are unique among their
+/// siblings at every level (the engine joins and projects struct
+/// fields BY NAME, and a duplicate would silently route one child's
+/// values into another's column or drop them), and each name passes
+/// `refuse_name`. The walk is iterative so an attacker-controlled
+/// schema cannot add a second recursive traversal after Arrow's own
+/// verified decoder; a dictionary encodes another type without a field
+/// of its own, but its VALUE type can carry named fields (a struct, a
+/// list, another dictionary) — unwrapped before matching, or those
+/// inner names bypass the gate. The unwrap loop is bounded by the
+/// schema's finite type depth, and a dictionary's key type is always a
+/// bare integer carrying no fields.
+pub fn gate_schema_fields(
+    fields: &arrow_schema::Fields,
+    refuse_name: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
     use arrow_schema::DataType;
 
-    let schema = batch.schema();
-    let mut pending: Vec<std::sync::Arc<arrow_schema::Field>> =
-        schema.fields().iter().cloned().collect();
-    while let Some(field) = pending.pop() {
-        refuse_name(field.name())?;
-        let mut data_type = field.data_type();
-        while let DataType::Dictionary(_, value) = data_type {
-            data_type = value;
-        }
-        match data_type {
-            DataType::Struct(fields) => pending.extend(fields.iter().cloned()),
-            DataType::List(child)
-            | DataType::LargeList(child)
-            | DataType::ListView(child)
-            | DataType::LargeListView(child)
-            | DataType::FixedSizeList(child, _)
-            | DataType::Map(child, _) => pending.push(std::sync::Arc::clone(child)),
-            DataType::Union(fields, _) => {
-                pending.extend(fields.iter().map(|(_, child)| std::sync::Arc::clone(child)));
+    let mut counted = 0usize;
+    // Each entry is one set of SIBLINGS — the fields whose names must
+    // not collide with each other.
+    let mut pending: Vec<Vec<&arrow_schema::FieldRef>> = vec![fields.iter().collect()];
+    while let Some(siblings) = pending.pop() {
+        let mut seen = std::collections::BTreeSet::new();
+        for field in siblings {
+            counted += 1;
+            if counted > MAX_SOURCE_COLUMNS_PER_TABLE {
+                return Err(format!(
+                    "the batch declares more than {MAX_SOURCE_COLUMNS_PER_TABLE} fields once \
+                     nested fields are counted, over the column wire cap — width is \
+                     bounded separately from encoded bytes, at every depth"
+                ));
             }
-            DataType::RunEndEncoded(run_ends, values) => {
-                pending.push(std::sync::Arc::clone(run_ends));
-                pending.push(std::sync::Arc::clone(values));
+            refuse_name(field.name())?;
+            if !seen.insert(field.name().as_str()) {
+                return Err(format!(
+                    "the batch declares the field name `{}` twice among one set of \
+                     siblings — fields are joined and projected by name, so a duplicate \
+                     would route one child's values into another's column",
+                    escape(field.name())
+                ));
             }
-            _ => {}
+            let mut data_type = field.data_type();
+            while let DataType::Dictionary(_, value) = data_type {
+                data_type = value;
+            }
+            match data_type {
+                DataType::Struct(children) => pending.push(children.iter().collect()),
+                DataType::List(child)
+                | DataType::LargeList(child)
+                | DataType::ListView(child)
+                | DataType::LargeListView(child)
+                | DataType::FixedSizeList(child, _)
+                | DataType::Map(child, _) => pending.push(vec![child]),
+                DataType::Union(union, _) => {
+                    pending.push(union.iter().map(|(_, child)| child).collect());
+                }
+                DataType::RunEndEncoded(run_ends, values) => {
+                    pending.push(vec![run_ends, values]);
+                }
+                _ => {}
+            }
         }
     }
     Ok(())
@@ -1055,6 +1086,97 @@ mod tests {
             error.contains("column wire cap"),
             "the refusal names the width cap: {error}"
         );
+    }
+
+    /// The width cap is spent by the WHOLE schema: one top-level struct
+    /// of 4,097 children refuses, and one of exactly 4,095 (the struct
+    /// itself making 4,096) is admitted. The same walk judges a decode
+    /// at the source-read and destination-write seats, since both are
+    /// this function.
+    #[test]
+    fn the_width_cap_counts_nested_fields() {
+        use arrow_schema::{DataType, Field, Fields, Schema};
+        use std::sync::Arc;
+
+        let nested = |children: usize| {
+            let fields: Vec<Field> = (0..children)
+                .map(|i| Field::new(format!("c{i}"), DataType::Int64, true))
+                .collect();
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "s",
+                DataType::Struct(Fields::from(fields)),
+                true,
+            )]));
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("encodes");
+            writer.finish().expect("finish");
+            writer.into_inner().expect("inner")
+        };
+        let error = decode_one_batch_ipc(
+            &nested(MAX_SOURCE_COLUMNS_PER_TABLE),
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("4,096 children under one struct is 4,097 fields");
+        assert!(error.contains("once nested fields are counted"), "{error}");
+        // At the cap (a schema-only stream refuses for having no batch,
+        // which is the NEXT check — so the width passed).
+        let error = decode_one_batch_ipc(
+            &nested(MAX_SOURCE_COLUMNS_PER_TABLE - 1),
+            "REFUSAL",
+            "MULTI",
+            |message| message,
+            &mut |_| Ok(()),
+        )
+        .expect_err("no batch");
+        assert_eq!(
+            error, "REFUSAL",
+            "the width passed; only the batch is missing"
+        );
+    }
+
+    /// Duplicate names among siblings refuse at any depth — two
+    /// top-level fields, or two children of one struct — while the
+    /// same name under DIFFERENT parents is honest.
+    #[test]
+    fn duplicate_sibling_names_refuse_at_every_depth() {
+        use arrow_schema::{DataType, Field, Fields};
+        let gate = |fields: Vec<Field>| gate_schema_fields(&Fields::from(fields), &mut |_| Ok(()));
+        let error = gate(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("a", DataType::Utf8, true),
+        ])
+        .expect_err("top-level twins");
+        assert!(
+            error.contains("`a` twice among one set of siblings"),
+            "{error}"
+        );
+        let error = gate(vec![Field::new(
+            "s",
+            DataType::Struct(Fields::from(vec![
+                Field::new("x", DataType::Int64, true),
+                Field::new("x", DataType::Int64, true),
+            ])),
+            true,
+        )])
+        .expect_err("nested twins");
+        assert!(error.contains("`x` twice"), "{error}");
+        gate(vec![
+            Field::new(
+                "s",
+                DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int64, true)])),
+                true,
+            ),
+            Field::new(
+                "t",
+                DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int64, true)])),
+                true,
+            ),
+            Field::new("x", DataType::Int64, true),
+        ])
+        .expect("the same name under different parents is distinct");
     }
 
     /// The field-name walk reaches nested containers and dictionary

@@ -19,7 +19,7 @@ use super::{build, limits, table};
 use crate::identity::RowId;
 use crate::load::LoadItem;
 use crate::policy::{PolicyAction, SchemaPolicy};
-use crate::schema::contract::{change_column, inherited_action, value_fits, violation_for};
+use crate::schema::contract::{Fit, change_column, inherited_action, violation_for};
 use crate::schema::registry::SchemaRegistry;
 
 /// The per-batch shred context: the mutable schema registry plus the run-scoped
@@ -300,7 +300,7 @@ pub(crate) fn resolve_tables<'v, V: JsonView<'v>>(
         if !d.rows.is_empty() {
             limits::refuse_over_cell_budget(
                 &d.buffer.table,
-                observed.columns.len(),
+                limits::physical_width(&observed.columns),
                 d.rows.len(),
                 max_batch_cells,
             )?;
@@ -367,8 +367,9 @@ fn enforce_discards<'v, V: JsonView<'v>>(
     struct Offense {
         source_key: String,
         /// `None` = new column (any non-null value offends);
-        /// `Some(ty)` = must fit this (the pre-change) type.
-        must_fit: Option<rdlt_core::schema::ColumnType>,
+        /// `Some(fit)` = must fit this (the pre-change) type — compiled
+        /// once here, consulted once per row.
+        must_fit: Option<Fit>,
         action: PolicyAction,
     }
     let mut offenses: Vec<Offense> = Vec::new();
@@ -381,7 +382,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
             .unwrap_or(normalized)
             .to_owned();
         let must_fit = match change {
-            schema::Change::WidenColumn { from, .. } => Some(from.clone()),
+            schema::Change::WidenColumn { from, .. } => Some(Fit::of(from)),
             _ => None,
         };
         offenses.push(Offense {
@@ -432,7 +433,7 @@ fn enforce_discards<'v, V: JsonView<'v>>(
             }
             let offends = match &offense.must_fit {
                 None => !value.is_null(),
-                Some(ty) => !value_fits(value, ty),
+                Some(fit) => !fit.admits(value),
             };
             if !offends {
                 continue;

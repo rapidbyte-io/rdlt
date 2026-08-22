@@ -72,6 +72,34 @@ pub(super) fn open_segment(
         })
 }
 
+/// Judge one decoded segment batch by the wire's own batch rules —
+/// the shared row ceiling and the shared schema walk (width at every
+/// depth, unique sibling names, the identifier length on every name)
+/// — so a segment can hand replay nothing a connector could not have
+/// handed the engine. A WAL directory writer has the same authority as
+/// rdlt, but a batch past those rules is damage by definition (the
+/// writer never produces one), and it degrades to re-extraction like
+/// every other damage arm rather than reaching a destination.
+pub(super) fn admit_batch(batch: &RecordBatch) -> Result<(), String> {
+    if batch.num_rows() > rdlt_connector::channel::MAX_RECORD_BATCH_ROWS {
+        return Err(format!(
+            "segment batch carries {} rows, over the {}-row batch ceiling",
+            batch.num_rows(),
+            rdlt_connector::channel::MAX_RECORD_BATCH_ROWS
+        ));
+    }
+    rdlt_connector::gate::refuse_record_batch_field_names(batch, &mut |name| {
+        if name.len() > rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES {
+            return Err(format!(
+                "segment batch field name of {} bytes, over the {}-byte identifier ceiling",
+                name.len(),
+                rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES
+            ));
+        }
+        Ok(())
+    })
+}
+
 /// Refuse a segment whose DECLARED layout exceeds its own file, before arrow's
 /// reader is allowed to allocate from those declarations: arrow allocates the
 /// footer length and every block's body from footer-declared numbers, and an
@@ -308,6 +336,71 @@ mod tests {
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+
+    /// A segment batch is held to the wire's batch rules: exactly the
+    /// row ceiling is admitted and one row more refuses; a schema
+    /// declaring twin siblings refuses; a struct wider than the column
+    /// cap refuses. What a connector could never hand the engine, a
+    /// segment cannot either.
+    #[test]
+    fn a_segment_batch_is_held_to_the_wire_batch_rules() {
+        use arrow::array::{BooleanArray, StructArray};
+        use arrow::datatypes::Fields;
+        let cap = rdlt_connector::channel::MAX_RECORD_BATCH_ROWS;
+        let rows = |n: usize| {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("b", DataType::Boolean, false)])),
+                vec![Arc::new(BooleanArray::from(vec![false; n]))],
+            )
+            .expect("constructs")
+        };
+        super::admit_batch(&rows(cap)).expect("at the ceiling");
+        let refusal = super::admit_batch(&rows(cap + 1)).expect_err("over the ceiling");
+        assert!(refusal.contains("row batch ceiling"), "{refusal}");
+
+        let twins = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int64, true),
+                Field::new("a", DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(Int64Array::from(vec![2])),
+            ],
+        )
+        .expect("arrow itself allows twins");
+        let refusal = super::admit_batch(&twins).expect_err("twins refuse");
+        assert!(
+            refusal.contains("twice among one set of siblings"),
+            "{refusal}"
+        );
+
+        let wide_fields: Vec<Field> = (0..rdlt_connector::gate::MAX_SOURCE_COLUMNS_PER_TABLE)
+            .map(|i| Field::new(format!("c{i}"), DataType::Boolean, true))
+            .collect();
+        let children: Vec<Arc<dyn arrow::array::Array>> = wide_fields
+            .iter()
+            .map(|_| Arc::new(BooleanArray::from(vec![false])) as Arc<dyn arrow::array::Array>)
+            .collect();
+        let wide = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "s",
+                DataType::Struct(Fields::from(wide_fields.clone())),
+                true,
+            )])),
+            vec![Arc::new(StructArray::new(
+                Fields::from(wide_fields),
+                children,
+                None,
+            ))],
+        )
+        .expect("constructs");
+        let refusal = super::admit_batch(&wide).expect_err("nested width refuses");
+        assert!(
+            refusal.contains("once nested fields are counted"),
+            "{refusal}"
+        );
+    }
 
     use super::{open_segment, write_segment};
 
