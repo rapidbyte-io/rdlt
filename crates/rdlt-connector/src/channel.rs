@@ -387,6 +387,15 @@ pub fn arrow_batch_footprint(batch: &RecordBatch) -> usize {
 /// (they remain resident through the chunk). No buffer content or
 /// window arithmetic is read at all, so IPC-skewed `offset`/`len`
 /// values cannot overflow, wrap, or panic the send path.
+/// What one array node holds beyond its buffers: the `ArrayData` and
+/// its vectors, charged flat. Measured on the type's own size plus the
+/// two vectors' headers, rounded to a figure that over-counts rather
+/// than under — over-counting narrows a window, under-counting uncaps
+/// memory.
+const ARRAY_NODE_OVERHEAD: usize = 256;
+/// What one struct field holds in the schema graph beyond its name.
+const FIELD_OVERHEAD: usize = 128;
+
 fn data_footprint(
     data: &arrow_data::ArrayData,
     seen: &mut std::collections::HashSet<(usize, usize)>,
@@ -414,7 +423,19 @@ fn data_footprint(
         }
     };
 
-    let mut total = 0usize;
+    // Every array NODE costs its own object — the `ArrayData`, its
+    // `DataType` (a struct's field list included), its buffer and
+    // child vectors — before a single buffer byte. A zero-row batch
+    // with a thousand-field schema holds a thousand such nodes and no
+    // buffers; charging buffers alone would queue it for nothing, once
+    // per message slot, while it held its whole schema graph resident.
+    let mut total = ARRAY_NODE_OVERHEAD.saturating_add(match data.data_type() {
+        arrow_schema::DataType::Struct(fields) => fields
+            .iter()
+            .map(|field| FIELD_OVERHEAD.saturating_add(field.name().len()))
+            .sum(),
+        _ => 0,
+    });
     for buffer in data.buffers() {
         total = total.saturating_add(count(buffer));
     }
@@ -937,8 +958,43 @@ mod byte_size_tests {
         let mut seen = std::collections::HashSet::new();
         assert_eq!(
             data_footprint(&data, &mut seen, 0),
-            0,
-            "no offsets, nothing viewed — the legal empty shape meters zero"
+            ARRAY_NODE_OVERHEAD,
+            "no offsets, nothing viewed — the legal empty shape meters its node alone"
+        );
+    }
+
+    /// A zero-row batch with a wide schema is not free: every array
+    /// node and every struct field costs the budget what it holds, so a
+    /// flood of schema-heavy empty batches cannot ride past the budget
+    /// on a zero charge.
+    #[test]
+    fn a_zero_row_wide_schema_batch_has_a_nonzero_footprint() {
+        use arrow_schema::Fields;
+        let fields: Vec<Field> = (0..1000)
+            .map(|i| Field::new(format!("f{i}"), DataType::Int64, true))
+            .collect();
+        let children: Vec<ArrayRef> = fields
+            .iter()
+            .map(|_| Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef)
+            .collect();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "s",
+                DataType::Struct(Fields::from(fields.clone())),
+                true,
+            )])),
+            vec![Arc::new(arrow_array::StructArray::new(
+                Fields::from(fields),
+                children,
+                None,
+            ))],
+        )
+        .expect("constructs");
+        assert_eq!(batch.num_rows(), 0);
+        let footprint = PushPayload::Arrow(batch).byte_size();
+        assert!(
+            footprint >= 1001 * ARRAY_NODE_OVERHEAD + 1000 * FIELD_OVERHEAD,
+            "a thousand nodes and fields are charged: {footprint}"
         );
     }
 
@@ -998,8 +1054,8 @@ mod byte_size_tests {
         .expect("shared-column batch");
         assert_eq!(
             PushPayload::Arrow(shared).byte_size(),
-            PushPayload::Arrow(alone).byte_size(),
-            "the second column re-views bytes already counted"
+            PushPayload::Arrow(alone).byte_size() + ARRAY_NODE_OVERHEAD,
+            "the second column re-views bytes already counted and costs its node alone"
         );
     }
 }
@@ -1090,7 +1146,7 @@ mod records_tests {
         assert!(parked.is_err(), "the budget is held by the reservation");
         drop(held);
         let held = out.reserve(64).await.expect("released on drop");
-        let mut out_sender = out;
+        let out_sender = out;
         out_sender
             .channel
             .send_reserved(PushPayload::RawJson(Bytes::from_static(b"1234")), held)

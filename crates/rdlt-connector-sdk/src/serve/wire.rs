@@ -1387,12 +1387,12 @@ mod connection_admission_tests {
             .await
             .expect("write");
         let mut scratch = [0u8; 64];
-        partial.read(&mut scratch).await.expect("the prefix reads");
+        let _ = partial.read(&mut scratch).await.expect("the prefix reads");
         // The requesting peer's request lands: the middleware's mark.
         tokio::io::AsyncWriteExt::write_all(&mut requesting_peer, b"x")
             .await
             .expect("write");
-        requesting.read(&mut scratch).await.expect("the byte reads");
+        let _ = requesting.read(&mut scratch).await.expect("the byte reads");
         tonic::transport::server::Connected::connect_info(&requesting).establish();
 
         tokio::time::advance(ESTABLISHMENT_DEADLINE + Duration::from_secs(1)).await;

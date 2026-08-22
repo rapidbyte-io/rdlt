@@ -476,6 +476,92 @@ fn enforce_discards<'v, V: JsonView<'v>>(
 mod overlay_tests {
     use super::*;
 
+    /// A row that is DROPPED contributes its drop and none of the
+    /// values nulled in it before the drop: the value count is settled
+    /// per row, so it cannot depend on which of the row's keys the walk
+    /// met first. A row that survives contributes every value nulled
+    /// in it.
+    #[test]
+    fn a_dropped_row_contributes_no_nulled_values() {
+        let mut arena = crate::shred::arena::Arena::default();
+        // Row 0: a nulled value AND a dropping key; row 1: two nulled values.
+        let text = b"{\"null-a\":1,\"drop\":1,\"null-b\":1}\n{\"null-a\":1,\"null-b\":1}\n";
+        let ids = arena
+            .parse_rows(
+                text,
+                rdlt_connector::channel::MAX_RECORD_BATCH_ROWS,
+                rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH,
+            )
+            .expect("the fixture parses");
+        let mut rows: Vec<Row<_>> = ids
+            .into_iter()
+            .enumerate()
+            .map(|(n, id)| Row {
+                value: arena.node(id),
+                id: RowId::from_bytes([n as u8; 32]),
+                parent_id: None,
+                root_id: None,
+                pos: None,
+                nulled: BTreeSet::new(),
+            })
+            .collect();
+        let mut buffer = TableBuffer::new(
+            rdlt_core::id::TableName::new("events"),
+            None,
+            rdlt_core::schema::IdentRules::default(),
+        );
+        let column = |name: &str| rdlt_core::schema::Column {
+            name: name.to_string(),
+            column_type: rdlt_core::schema::ColumnType::scalar(
+                rdlt_core::types::LogicalType::Int64,
+            ),
+            nullable: true,
+            provenance: rdlt_core::schema::Provenance::Inferred,
+        };
+        let discard = vec![
+            (
+                schema::Change::AddColumn {
+                    column: column("null-a"),
+                },
+                PolicyAction::DiscardValue,
+            ),
+            (
+                schema::Change::AddColumn {
+                    column: column("drop"),
+                },
+                PolicyAction::DiscardRow,
+            ),
+            (
+                schema::Change::AddColumn {
+                    column: column("null-b"),
+                },
+                PolicyAction::DiscardValue,
+            ),
+        ];
+        let mut discarded = BTreeSet::new();
+        let mut items = Vec::new();
+        enforce_discards(
+            &mut buffer,
+            &mut rows,
+            None,
+            &discard,
+            &mut discarded,
+            &mut items,
+        );
+        assert_eq!(rows.len(), 1, "the dropping row is gone");
+        assert!(
+            matches!(
+                items.as_slice(),
+                [LoadItem::Discarded {
+                    rows: 1,
+                    values: 2,
+                    ..
+                }]
+            ),
+            "{items:?}"
+        );
+    }
+
     /// The discard walk costs each row its own entries, never the
     /// offense count: the arena's lookup meter — which every
     /// per-offense `obj_get` would move — stays at zero across a walk

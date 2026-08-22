@@ -429,7 +429,8 @@ mod tests {
     /// document can spell) never reaches a semaphore constructor.
     #[test]
     fn resource_knobs_refuse_past_their_ceilings_and_admit_them() {
-        let knobs: [(&str, fn(Config, usize) -> Config, usize); 4] = [
+        type Set = fn(Config, usize) -> Config;
+        let knobs: [(&str, Set, usize); 4] = [
             (
                 "byte_budget",
                 Config::with_byte_budget,
@@ -467,11 +468,10 @@ mod tests {
                 );
             }
         }
-        assert!(
-            Config::MAX_BYTE_BUDGET <= tokio::sync::Semaphore::MAX_PERMITS
-                && Config::MAX_MAX_CONCURRENT_STREAMS <= tokio::sync::Semaphore::MAX_PERMITS,
-            "the semaphore-backed ceilings stay under tokio's permit ceiling"
-        );
+        // The semaphore-backed ceilings stay under tokio's permit
+        // ceiling: the constructors at the ceiling do not panic.
+        let _budget = tokio::sync::Semaphore::new(Config::MAX_BYTE_BUDGET);
+        let _readers = tokio::sync::Semaphore::new(Config::MAX_MAX_CONCURRENT_STREAMS);
     }
 
     #[test]

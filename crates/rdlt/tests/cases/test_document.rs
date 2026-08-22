@@ -676,10 +676,10 @@ async fn a_resource_value_past_its_ceiling_refuses_before_any_connector_is_spawn
         usize::MAX
     ));
     let dir = tempfile::tempdir().expect("tempdir");
-    let error = Pipeline::from_document(&doc, dir.path())
-        .await
-        .err()
-        .expect("refused");
+    let error = match Pipeline::from_document(&doc, dir.path()).await {
+        Err(error) => error,
+        Ok(_) => panic!("refused"),
+    };
     let rendered = error.to_string();
     assert!(
         rendered.contains("resources.byte_budget is") && rendered.contains("ceiling"),

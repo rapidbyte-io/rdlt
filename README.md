@@ -146,7 +146,7 @@ async fn build() -> Result<(), Box<dyn std::error::Error>> {
         "source": {"connector": {"id": "io.rapidbyte.reference", "config": {"path": "a.jsonl"}}},
         "destination": {"connector": {"id": "io.rapidbyte.reference", "config": "./dest.yaml"}},
     });
-    let doc: Document = serde_json::from_value(value)?;
+    let doc = Document::from_value(value)?;
     let pipeline = Pipeline::from_document(&doc, "").await?;
 
     // (c) constructed — no text involved
