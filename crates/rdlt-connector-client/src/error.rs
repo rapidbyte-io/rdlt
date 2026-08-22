@@ -112,6 +112,12 @@ pub enum Error {
     /// does not decode.
     #[error("connector protocol violation: {0}")]
     Protocol(String),
+    /// The requirement itself — the id or pinned version a document or
+    /// embedder authored — fails the identifier rule or the id grammar,
+    /// refused before any binary is looked for. Rendered escaped at
+    /// construction.
+    #[error("connector requirement refused: {0}")]
+    Requirement(String),
     /// The RPC layer itself failed: a `Status` (the served side's
     /// protocol-state refusals ride this shape too — see the sdk's
     /// Status-vs-ErrorFrame rule) or a broken transport, carried
@@ -235,6 +241,7 @@ impl std::fmt::Debug for Error {
                 .field("reported", reported)
                 .finish(),
             Error::Protocol(message) => f.debug_tuple("Protocol").field(message).finish(),
+            Error::Requirement(reason) => f.debug_tuple("Requirement").field(reason).finish(),
             Error::Transport(status) => f
                 .debug_struct("Transport")
                 .field("code", &status.0.code())

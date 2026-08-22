@@ -736,6 +736,75 @@ async fn a_state_document_past_its_entry_ceilings_refuses_at_read_state() {
     );
 }
 
+/// Every identifier a returned state document carries is gated where
+/// it is decoded: a cursor map past the stream ceiling, a pipeline id
+/// with a control character (it renders in the engine's own mismatch
+/// refusal), and a table name with one — each refused typed, naming
+/// its seat, before any of it reaches the engine.
+#[tokio::test]
+async fn a_state_document_with_a_hostile_identifier_or_too_many_cursors_refuses() {
+    use rdlt_connector_client::destination::MAX_STATE_CURSORS;
+    let mut flooded = rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p"),
+        "test",
+    );
+    for n in 0..=MAX_STATE_CURSORS {
+        flooded.cursors.insert(
+            rdlt_connector::core::id::StreamName::new(format!("s{n}")),
+            rdlt_connector::core::cursor::Cursor::new(serde_json::json!(n)),
+        );
+    }
+    let mut forged_pipeline = rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p\nerror: forged"),
+        "test",
+    );
+    forged_pipeline.format_version = rdlt_connector::core::state::STATE_FORMAT_VERSION;
+    let mut forged_table = rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p"),
+        "test",
+    );
+    forged_table.schema_hashes.insert(
+        rdlt_connector::core::id::TableName::new("t\u{1b}[2J"),
+        rdlt_connector::core::id::SchemaHash::from_bytes([0u8; 32]),
+    );
+    for (doc, expected) in [
+        (flooded, format!("{MAX_STATE_CURSORS}-stream ceiling")),
+        (forged_pipeline, "state pipeline id".to_string()),
+        (forged_table, "table name".to_string()),
+    ] {
+        let (_dir, path) = socket_path();
+        let _serving = rogue::serve_destination(
+            &path,
+            SessionScript::AnswerReadStateWith {
+                state_doc_json: serde_json::to_vec(&doc).expect("a StateDoc serializes"),
+            },
+        );
+        let remote = Remote::connect(
+            &path,
+            BUDGET_BYTES,
+            &serde_json::json!({}),
+            &Requirement::new("rogue"),
+        )
+        .await
+        .expect("connect")
+        .0;
+        let mut backend = remote.open_backend(&context()).await.expect("open");
+        let error = tokio::time::timeout(
+            BOUND,
+            backend.read_state(&rdlt_connector::core::id::PipelineId::new("p")),
+        )
+        .await
+        .expect("the refusal answers promptly")
+        .expect_err("a hostile document must refuse");
+        let rendered = error.to_string();
+        assert!(rendered.contains(&expected), "{expected}: {rendered}");
+        assert!(
+            !rendered.contains('\n'),
+            "the refusal is one line: {rendered}"
+        );
+    }
+}
+
 /// The tolerant half of the negotiation: a connector that declares
 /// NOTHING (the empty document — the pre-negotiation convention, and
 /// every foreign connector that has not adopted the map yet) imposes no

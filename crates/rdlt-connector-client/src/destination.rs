@@ -562,8 +562,21 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                             doc.schema_hashes.len()
                         )));
                     }
-                    // The table names are identifiers like the stream
-                    // names and ride the same gate.
+                    // Every identifier the document carries rides the
+                    // gate: the table names like the stream names, and
+                    // the scalars the engine renders into its own
+                    // errors — the pipeline id (the mismatch refusal
+                    // quotes it), the last commit's load id, and the
+                    // engine version, which the serve side gates
+                    // outbound and this side must gate inbound.
+                    gate::identifier("state pipeline id", doc.pipeline.as_str())
+                        .map_err(DestinationError::protocol)?;
+                    gate::identifier("state engine version", &doc.engine_version)
+                        .map_err(DestinationError::protocol)?;
+                    if let Some(last) = &doc.last_commit {
+                        gate::identifier("state last-commit load id", last.load_id.as_str())
+                            .map_err(DestinationError::protocol)?;
+                    }
                     for table in doc.schema_hashes.keys() {
                         gate::identifier("table name", table.as_str())
                             .map_err(DestinationError::protocol)?;

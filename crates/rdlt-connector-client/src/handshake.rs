@@ -64,6 +64,16 @@ pub struct Requirement {
     pub rpc_deadline: Duration,
 }
 
+/// A decoded `ConnectorSpec`'s own name and version, through the
+/// identifier rule the wire-reported pair rides: they travel into
+/// logs, reports and the certifier's identity-agreement judgment. One
+/// seat for the handshake's spec and the config-free `Spec` probe's.
+pub fn gate_spec(spec: &ConnectorSpec) -> Result<(), error::Error> {
+    gate::identifier("spec name", &spec.name).map_err(error::Error::Protocol)?;
+    gate::identifier("spec version", &spec.version).map_err(error::Error::Protocol)?;
+    Ok(())
+}
+
 impl Requirement {
     /// Require a connector by id alone.
     pub fn new(id: impl Into<String>) -> Self {
@@ -73,6 +83,48 @@ impl Requirement {
             path: None,
             rpc_deadline: wire::DEFAULT_DEADLINE,
         }
+    }
+
+    /// Hold the requirement's own text to the identifier rule a
+    /// connector's reported identity is held to — the same ceiling and
+    /// the same character inventory, plus the id's grammar: a
+    /// reverse-DNS name of non-empty ASCII segments (`io.rapidbyte.file`)
+    /// whose last segment names the binary discovery looks for. The
+    /// id and version are document-authored, render in every provider
+    /// error naming the connector, and the id's last segment becomes a
+    /// filename; none of that tolerates a control character, a path
+    /// separator, or a multi-megabyte name. Checked once, at the seat
+    /// every spawn goes through, so no provider has to remember to.
+    /// With an explicit `path` the path IS the identity and the id may
+    /// be empty (the certifier's path form); whatever id is given
+    /// still rides the identifier rule, since it renders.
+    pub fn validate(&self) -> Result<(), error::Error> {
+        gate::identifier("connector id", &self.id).map_err(error::Error::Requirement)?;
+        if self.path.is_some() && self.id.is_empty() {
+            return self.validate_version();
+        }
+        let well_formed = !self.id.is_empty()
+            && self.id.split('.').all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            });
+        if !well_formed {
+            return Err(error::Error::Requirement(format!(
+                "connector id `{}` is not a reverse-DNS name — dot-separated, non-empty \
+                 segments of ASCII letters, digits, `-` and `_`",
+                gate::escape(&self.id)
+            )));
+        }
+        self.validate_version()
+    }
+
+    fn validate_version(&self) -> Result<(), error::Error> {
+        if let Some(version) = &self.version {
+            gate::identifier("connector version", version).map_err(error::Error::Requirement)?;
+        }
+        Ok(())
     }
 
     /// Pin the exact connector version the handshake must report.
@@ -232,11 +284,7 @@ pub async fn run(
             rdlt_connector::gate::describe_parse_error(&error)
         ))
     })?;
-    // The spec's own name/version are identifiers too — they travel
-    // into logs, reports and the certifier's identity-agreement
-    // judgment — and ride the same rule as the wire-reported pair.
-    gate::identifier("spec name", &spec.name).map_err(error::Error::Protocol)?;
-    gate::identifier("spec version", &spec.version).map_err(error::Error::Protocol)?;
+    gate_spec(&spec)?;
     // The state-format versions arrive as ONE document, ceilinged on
     // its RAW BYTES before anything parses — the wire retired the map
     // field whose decode materialized a hash table ahead of any gate.
@@ -332,4 +380,47 @@ pub(crate) async fn establish(
     let channel = wire::dial(endpoint, budget_bytes, requirement.rpc_deadline).await?;
     let outcome = run(&channel, role, config, requirement).await?;
     Ok((channel, outcome))
+}
+
+#[cfg(test)]
+mod requirement_tests {
+    use super::*;
+
+    /// The id grammar: reverse-DNS of ASCII segments, nothing a
+    /// filename or a log line could be forged with; the version rides
+    /// the identifier rule alone.
+    #[test]
+    fn a_requirement_is_held_to_the_id_grammar_and_the_identifier_rule() {
+        for good in ["io.rapidbyte.file", "rogue", "echo-source", "a_b.c-d.e1"] {
+            Requirement::new(good).validate().expect(good);
+        }
+        for bad in [
+            "",
+            "io..file",
+            ".file",
+            "io/rapidbyte/file",
+            "io.rapidbyte.fi le",
+            "io.rapidbyte.\u{1b}file",
+            "io.rapidbyte.fïle",
+            "../etc",
+        ] {
+            let error = Requirement::new(bad).validate().expect_err(bad);
+            assert!(
+                matches!(error, error::Error::Requirement(_)),
+                "{bad}: {error}"
+            );
+        }
+        Requirement::new("")
+            .with_path("/usr/bin/rdlt-connector-x")
+            .validate()
+            .expect("the path form carries its identity in the path");
+        let long = "a".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
+        assert!(Requirement::new(long).validate().is_err());
+        assert!(
+            Requirement::new("io.rapidbyte.file")
+                .with_version("1.0\n2.0")
+                .validate()
+                .is_err()
+        );
+    }
 }

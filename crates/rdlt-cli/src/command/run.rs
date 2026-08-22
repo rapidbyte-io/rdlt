@@ -44,7 +44,7 @@ pub(crate) async fn run(
     // fold. Best-effort BY HAND: `eprint!` panics on a closed stderr,
     // which would turn a finished run into exit 101.
     if mode != Mode::Quiet {
-        let _ = std::io::stderr().write_all(render::summary::render(&report_run).as_bytes());
+        render::stderr::frame("", &render::summary::render(&report_run));
     }
 
     let json = serde_json::to_string_pretty(&report_run)

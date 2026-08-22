@@ -104,6 +104,9 @@ impl Local {
     /// errors name: the override as given, or the conventional binary
     /// name discovery found (or failed to).
     fn resolve(&self, requirement: &Requirement) -> Result<(PathBuf, String), Error> {
+        // The requirement's own text first: its id becomes a filename
+        // below and renders in every error naming the connector.
+        requirement.validate().map_err(Error::Client)?;
         if let Some(path) = &requirement.path {
             // The override bypasses discovery ENTIRELY — no existence
             // probe here: a wrong path fails at spawn, typed as Spawn,
@@ -227,6 +230,10 @@ impl Local {
                 rdlt_connector::gate::describe_parse_error(&error)
             )))
         })?;
+        // The same identifier rule the handshake holds a spec to: the
+        // name renders in the mismatch below and the version reaches
+        // the schema command's output.
+        rdlt_connector_client::handshake::gate_spec(&spec).map_err(Error::Client)?;
         if requirement.path.is_none() && spec.name != requirement.id {
             return Err(Error::Client(ClientError::IdentityMismatch {
                 expected: requirement.id.clone(),

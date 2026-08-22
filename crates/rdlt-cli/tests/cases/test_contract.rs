@@ -51,6 +51,53 @@ fn the_diagnostic_verbs_keep_their_codes() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// Every stderr line the CLI writes is ONE physical line, whatever a
+/// document-authored value carries: a pipeline name with a newline and
+/// a forged `ok` row renders as visible escapes inside the one finding
+/// `doctor` emits for it, and a path with a newline renders inside the
+/// one `error:` line `run` emits — neither can add a record.
+#[test]
+fn document_values_cannot_add_stderr_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let forged = spec_file(
+        dir.path(),
+        "forged.yaml",
+        "pipeline: \"p\\nok    forged finding\\tx\"\nsource:\n  connector: {id: io.example.src, config: {}}\n\
+         destination:\n  connector: {id: io.example.dst, config: {}}\n",
+    );
+    let out = rdlt()
+        .env("PATH", dir.path())
+        .arg("doctor")
+        .arg(&forged)
+        .output()
+        .expect("spawn");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let parses: Vec<&str> = stderr.lines().filter(|l| l.contains("parses")).collect();
+    assert_eq!(parses.len(), 1, "one finding line for the parse: {stderr}");
+    assert!(
+        parses[0].contains("p\\u{a}ok    forged finding\\u{9}x"),
+        "the newline and tab render as escapes: {}",
+        parses[0]
+    );
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("ok    forged")),
+        "no forged record: {stderr}"
+    );
+
+    let out = rdlt()
+        .arg("run")
+        .arg(dir.path().join("missing\nerror: forged.yaml"))
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(74));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.lines().count(), 1, "one error line: {stderr}");
+    assert!(
+        stderr.contains("missing\\u{a}error: forged.yaml"),
+        "{stderr}"
+    );
+}
+
 /// `--help` and `--version` exit 0 — clap conventions.
 #[test]
 fn help_and_version_exit_zero() {
@@ -126,10 +173,12 @@ fn schema_takes_an_id_as_written() {
 }
 
 /// An unrecognized `schema` value that names no existing file is
-/// treated as a connector id; with no such binary on PATH it exits 2
-/// carrying the provider's frozen NotFound spelling, stdout clean.
+/// treated as a connector id — and an id is held to its grammar
+/// before any binary is looked for: a path-shaped value that is not a
+/// file is refused as the non-id it is, exit 2, stdout clean. (The
+/// NotFound spelling for a WELL-FORMED absent id is pinned above.)
 #[test]
-fn schema_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
+fn schema_for_a_path_shaped_non_file_exits_2_refusing_the_id_grammar() {
     let out = rdlt()
         .args(["schema", "./nonexistent-connector-binary"])
         .output()
@@ -138,10 +187,8 @@ fn schema_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
     assert!(out.stdout.is_empty(), "no machine output on refusal");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("connector `./nonexistent-connector-binary`")
-            && stderr.contains("no binary")
-            && stderr.contains("on PATH and no explicit path was given"),
-        "the frozen NotFound spelling surfaces verbatim: {stderr}"
+        stderr.contains("connector id `./nonexistent-connector-binary` is not a reverse-DNS name"),
+        "the id grammar refuses before discovery: {stderr}"
     );
 }
 
@@ -165,7 +212,7 @@ fn schema_role_rejects_an_unknown_value_as_usage() {
 /// routes into the out-of-process path rather than growing one of its
 /// own.
 #[test]
-fn schema_role_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
+fn schema_role_for_a_path_shaped_non_file_exits_2_refusing_the_id_grammar() {
     let out = rdlt()
         .args([
             "schema",
@@ -179,10 +226,8 @@ fn schema_role_for_an_absent_connector_exits_2_with_the_notfound_spelling() {
     assert!(out.stdout.is_empty(), "no machine output on refusal");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("connector `./nonexistent-connector-binary`")
-            && stderr.contains("no binary")
-            && stderr.contains("on PATH and no explicit path was given"),
-        "the frozen NotFound spelling surfaces verbatim: {stderr}"
+        stderr.contains("connector id `./nonexistent-connector-binary` is not a reverse-DNS name"),
+        "the id grammar refuses before discovery: {stderr}"
     );
 }
 

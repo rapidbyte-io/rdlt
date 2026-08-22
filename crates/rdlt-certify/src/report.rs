@@ -344,6 +344,41 @@ pub fn clause_title(clause: &str) -> Option<&'static str> {
         .map(|entry| entry.title)
 }
 
+/// The longest payload a verdict carries, in bytes of the neutralized
+/// render; the rest is a marker naming the true length.
+pub const MAX_VERDICT_PAYLOAD_BYTES: usize = 4096;
+
+/// Every verdict payload passes through here as it is recorded — the
+/// ONE seat, so no clause's wording has to remember it. The certifier
+/// reads raw protocol replies on purpose: an `ErrorFrame` message, a
+/// `Status` text, a reported identity or stream name is quoted into
+/// the reason as the connector sent it, and the text report is one
+/// line per clause that a CI log or an author reads. So a payload is
+/// rendered inert: every control character (newline, carriage return,
+/// tab, ESC, the C1 set) and every invisible or formatting character
+/// in the wire's inventory becomes its visible `\u{..}` escape — a
+/// connector cannot mint a `PASS` line, move the cursor, or write the
+/// clipboard through its own refusal text — and the whole render is
+/// capped, so a frame-sized diagnostic is a line, not a firehose. The
+/// JSON render carries the same neutralized payload: it is what the
+/// report recorded.
+fn neutralize(payload: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(payload.len().min(MAX_VERDICT_PAYLOAD_BYTES + 64));
+    for character in payload.chars() {
+        if rdlt_connector::core::inventory::is_control_or_invisible(character) {
+            let _ = write!(out, "\\u{{{:x}}}", character as u32);
+        } else {
+            out.push(character);
+        }
+        if out.len() >= MAX_VERDICT_PAYLOAD_BYTES {
+            let _ = write!(out, "…[truncated from {} bytes]", payload.len());
+            break;
+        }
+    }
+    out
+}
+
 /// One clause's verdict. `Skip` is an honest non-verdict — a clause the
 /// session could not exercise, with the reason — and does NOT count
 /// against [`Report::passed`]; `Fail` and `NotReached` both do.
@@ -436,7 +471,7 @@ impl Report {
     pub(crate) fn fail(&mut self, clause: &'static str, why: String) {
         self.entries.push(Entry {
             clause,
-            verdict: Verdict::Fail(why),
+            verdict: Verdict::Fail(neutralize(&why)),
         });
     }
 
@@ -444,7 +479,7 @@ impl Report {
     pub(crate) fn skip(&mut self, clause: &'static str, why: String) {
         self.entries.push(Entry {
             clause,
-            verdict: Verdict::Skip(why),
+            verdict: Verdict::Skip(neutralize(&why)),
         });
     }
 
@@ -453,7 +488,7 @@ impl Report {
     pub(crate) fn not_reached(&mut self, clause: &'static str, why: String) {
         self.entries.push(Entry {
             clause,
-            verdict: Verdict::NotReached(why),
+            verdict: Verdict::NotReached(neutralize(&why)),
         });
     }
 
@@ -634,6 +669,48 @@ mod tests {
 
     use super::*;
     use crate::clause::{c, d, k, p, s};
+
+    /// A connector's reply text cannot forge a report line or drive a
+    /// terminal: newline, carriage return, tab, ESC-driven OSC/CSI,
+    /// C1 controls, bidi overrides and joiners all render as visible
+    /// escapes inside the ONE line their verdict owns, and a
+    /// frame-sized payload is cut at the cap with the true length
+    /// named. JSON carries the same neutralized text.
+    #[test]
+    fn verdict_payloads_render_inert_bounded_and_on_one_line() {
+        let mut report = Report::default();
+        report.fail(
+            "S1",
+            "refused\nPASS P1 (forged)\r\tx\u{1b}]52;c;evil\u{7}\u{9b}31m\u{202e}a\u{200d}b".into(),
+        );
+        report.skip("P2", "x".repeat(MAX_VERDICT_PAYLOAD_BYTES * 4));
+        let text = report.render_text();
+        assert_eq!(text.lines().count(), 2, "one line per clause: {text}");
+        let first = text.lines().next().expect("first");
+        assert!(first.starts_with("FAIL S1 ("), "{first}");
+        assert!(
+            first.contains("refused\\u{a}PASS P1 (forged)\\u{d}\\u{9}x\\u{1b}]52;c;evil\\u{7}\\u{9b}31m\\u{202e}a\\u{200d}b"),
+            "{first}"
+        );
+        let second = text.lines().nth(1).expect("second");
+        assert!(
+            second.len() < MAX_VERDICT_PAYLOAD_BYTES + 128
+                && second.contains(&format!(
+                    "…[truncated from {} bytes]",
+                    MAX_VERDICT_PAYLOAD_BYTES * 4
+                )),
+            "{}",
+            second.len()
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&report.render_json()).expect("valid json");
+        assert!(
+            json["entries"][0]["verdict"]["Fail"]
+                .as_str()
+                .expect("string")
+                .contains("\\u{a}PASS")
+        );
+    }
 
     fn failure(clause: &'static str, message: &str) -> Failure {
         Failure {

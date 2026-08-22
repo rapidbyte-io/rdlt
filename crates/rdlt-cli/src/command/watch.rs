@@ -133,6 +133,14 @@ fn render_snapshot(metrics: &mut Metrics, source: &Path, drain: &Drain) {
             String::new()
         }
     ));
+    if snap.untracked_keys > 0 {
+        frame.push_str(&format!(
+            "({} events for tables or streams past the {}-key display ceiling are in the \
+             totals only)\n",
+            snap.untracked_keys,
+            rdlt::metrics::MAX_TRACKED_KEYS
+        ));
+    }
     frame.push_str(&format!(
         "rows read {:>10}   written {:>10}   commits {:>6}{}   retries {}\n",
         snap.rows_read,
@@ -160,7 +168,7 @@ fn render_snapshot(metrics: &mut Metrics, source: &Path, drain: &Drain) {
         for (table, totals) in &snap.tables {
             frame.push_str(&format!(
                 "{:<20} {:>9} {:>12}\n",
-                table.as_str(),
+                render::stderr::sanitize_identifier(table.as_str()),
                 totals.rows_written,
                 totals.bytes_written
             ));
@@ -172,7 +180,7 @@ fn render_snapshot(metrics: &mut Metrics, source: &Path, drain: &Drain) {
             let totals = &snap.streams[stream];
             frame.push_str(&format!(
                 "{:<14} {:<9} {:>9}\n",
-                stream.as_str(),
+                render::stderr::sanitize_identifier(stream.as_str()),
                 format!("{state:?}").to_lowercase(),
                 totals.rows_read
             ));
