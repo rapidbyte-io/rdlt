@@ -220,7 +220,10 @@ pub enum SessionScript {
     /// does not defeat the quiet-interval deadline: every event resets
     /// the clock, and the silence AFTER the flood still times out
     /// typed. A hostile `table` drives the wire edge's control-
-    /// character refusal.
+    /// character refusal. The FIRST call after `Open` is answered
+    /// `Ensured` (the pins ensure the flooded table first, since a part
+    /// event for a table never ensured is refused on its own); the
+    /// flood answers the call after it.
     FloodPartsThenSilence { parts: u64, table: String },
     /// Answer the `Open` frame with `Opened`, consume the NEXT request
     /// frame (a `ReadState` in the pins that use this arm), and answer
@@ -310,6 +313,17 @@ impl DestinationService for RogueDestination {
                 }))
                 .await;
             let _ = requests.message().await;
+            if let SessionScript::FloodPartsThenSilence { .. } = &script {
+                // The flood names a table the session ensured: answer
+                // this first call (the pins' ensure) honestly, and
+                // flood on the one after it.
+                let _ = reply_tx
+                    .send(Ok(proto::SessionReply {
+                        reply: Some(session_reply::Reply::Ensured(proto::Empty {})),
+                    }))
+                    .await;
+                let _ = requests.message().await;
+            }
             match script {
                 SessionScript::FailNextCallWithStatus { code, message } => {
                     let _ = reply_tx.send(Err(Status::new(code, message))).await;

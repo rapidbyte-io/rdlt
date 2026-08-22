@@ -550,6 +550,10 @@ async fn a_control_character_table_in_a_part_event_refuses_typed() {
         sink.lock().expect("part log lock").push(part);
     }));
     let mut backend = remote.open_backend(&context).await.expect("open");
+    backend
+        .ensure_table(&schema_for("numbers"), &WriteMode::Append)
+        .await
+        .expect("the rogue answers the first ensure honestly");
 
     let error = tokio::time::timeout(
         BOUND,
@@ -919,6 +923,10 @@ async fn an_oversized_table_in_a_part_event_refuses_typed() {
         sink.lock().expect("part log lock").push(part);
     }));
     let mut backend = remote.open_backend(&context).await.expect("open");
+    backend
+        .ensure_table(&schema_for("numbers"), &WriteMode::Append)
+        .await
+        .expect("the rogue answers the first ensure honestly");
 
     let error = tokio::time::timeout(
         BOUND,
@@ -936,5 +944,111 @@ async fn an_oversized_table_in_a_part_event_refuses_typed() {
     assert!(
         seen.lock().expect("part log lock").is_empty(),
         "the hostile event never reaches the callback"
+    );
+}
+
+/// A part event naming a table this session never ensured is the
+/// connector inventing telemetry: refused typed before the callback,
+/// naming the table escaped.
+#[tokio::test]
+async fn a_part_event_for_a_table_never_ensured_refuses_typed() {
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::FloodPartsThenSilence {
+            parts: 1,
+            table: "never-ensured".to_string(),
+        },
+    );
+    let remote = Remote::connect(
+        &path,
+        BUDGET_BYTES,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+    let seen = Arc::new(Mutex::new(Vec::<PartClosed>::new()));
+    let sink = Arc::clone(&seen);
+    let context = context().with_part_events(Arc::new(move |part| {
+        sink.lock().expect("part log lock").push(part);
+    }));
+    let mut backend = remote.open_backend(&context).await.expect("open");
+    backend
+        .ensure_table(&schema_for("numbers"), &WriteMode::Append)
+        .await
+        .expect("the rogue answers the first ensure honestly");
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.ensure_table(&schema_for("numbers"), &WriteMode::Append),
+    )
+    .await
+    .expect("the refusal answers promptly")
+    .expect_err("an unensured table must refuse");
+    assert!(
+        error
+            .to_string()
+            .contains("`never-ensured`, which this session never ensured"),
+        "{error}"
+    );
+    assert!(
+        seen.lock().expect("lock").is_empty(),
+        "nothing reached the callback"
+    );
+}
+
+/// A call that carries more part events than any publish could close
+/// is refused at the budget rather than kept alive by the events
+/// themselves — each resets the quiet-interval clock, so without the
+/// count a connector that never resolves the call would hold it open
+/// for as long as it kept sending.
+#[tokio::test]
+async fn a_part_event_flood_past_the_budget_refuses_typed() {
+    use rdlt_connector_client::destination::MAX_PART_EVENTS_PER_CALL;
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::FloodPartsThenSilence {
+            parts: MAX_PART_EVENTS_PER_CALL + 1,
+            table: "numbers".to_string(),
+        },
+    );
+    let remote = Remote::connect(
+        &path,
+        BUDGET_BYTES,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+    let seen = Arc::new(Mutex::new(0u64));
+    let sink = Arc::clone(&seen);
+    let context = context().with_part_events(Arc::new(move |_part| {
+        *sink.lock().expect("part count lock") += 1;
+    }));
+    let mut backend = remote.open_backend(&context).await.expect("open");
+    backend
+        .ensure_table(&schema_for("numbers"), &WriteMode::Append)
+        .await
+        .expect("the rogue answers the first ensure honestly");
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        backend.ensure_table(&schema_for("numbers"), &WriteMode::Append),
+    )
+    .await
+    .expect("the budget refuses without waiting for silence")
+    .expect_err("past the budget the call refuses");
+    assert!(
+        error.to_string().contains(&format!(
+            "more than {MAX_PART_EVENTS_PER_CALL} part_closed events"
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        MAX_PART_EVENTS_PER_CALL,
+        "every event under the budget was forwarded"
     );
 }

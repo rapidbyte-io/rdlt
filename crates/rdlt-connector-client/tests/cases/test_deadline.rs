@@ -297,6 +297,13 @@ async fn a_silent_session_reply_times_out_typed() {
     .expect("the rogue handshakes");
     let context = OpenContext::new(PipelineId::new("pipe"), LoadId::new("load-1"));
     let mut backend = remote.open_backend(&context).await.expect("open");
+    backend
+        .ensure_table(
+            &schema_for("numbers"),
+            &rdlt_connector::core::commit::WriteMode::Append,
+        )
+        .await
+        .expect("the rogue answers the first ensure honestly");
 
     let error = tokio::time::timeout(
         BOUND,
@@ -348,6 +355,13 @@ async fn a_part_closed_flood_followed_by_silence_still_times_out_typed() {
             sink.lock().expect("part log lock").push(part);
         }));
     let mut backend = remote.open_backend(&context).await.expect("open");
+    backend
+        .ensure_table(
+            &schema_for("numbers"),
+            &rdlt_connector::core::commit::WriteMode::Append,
+        )
+        .await
+        .expect("the rogue answers the first ensure honestly");
 
     let error = tokio::time::timeout(
         BOUND,

@@ -96,3 +96,6 @@ pub use rdlt_core as core;
 /// for the same single-version reason (`arrow::RecordBatch` is the
 /// canonical spelling).
 pub use arrow_array as arrow;
+/// The Arrow schema vocabulary those batches describe themselves with
+/// (`Schema`, `Field`, `DataType`), re-exported for the same reason.
+pub use arrow_schema;

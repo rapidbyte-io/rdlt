@@ -514,35 +514,108 @@ pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// See [`KEEPALIVE_INTERVAL`].
 pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How long an admitted connection has to send its first byte. A peer
-/// that connects and never speaks — live, or vanished before its
-/// preface — is seen by no keepalive, since those arm only once HTTP/2
-/// is established, and would hold its slot under [`MAX_CONNECTIONS`]
-/// until the process restarted: a handful of silent connects would
-/// exclude every honest client for good. Past the deadline the read
-/// fails, the connection drops, and the slot returns.
-pub const PREFACE_DEADLINE: Duration = Duration::from_secs(10);
+/// How long an admitted connection has to make its first request.
+///
+/// Until a request arrives nothing else can reap the connection: the
+/// HTTP/2 keepalive arms only once the peer has completed the
+/// protocol's own handshake, so a peer that connects and sends nothing,
+/// one byte, a partial preface, or a preface with no settings — live,
+/// or vanished at any of those points — would hold its slot under
+/// [`MAX_CONNECTIONS`] until the process restarted, and a handful of
+/// them would exclude every honest client for good. A request is the
+/// one event that proves the whole stack below it is established, so
+/// it is the one event that disarms this deadline; past it the read
+/// fails, the connection drops, and the slot returns. An honest client
+/// makes its first request (`Spec` or `Handshake`) the moment it
+/// connects.
+pub const ESTABLISHMENT_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The server builder every served role starts from: the per-connection
-/// stream ceiling and the dead-peer keepalive, stated once so the
-/// private socket and the TCP binding cannot drift apart in what they
-/// bound. No TCP-level keepalive: tonic ignores it for a caller-supplied
-/// accept stream, and the HTTP/2 pings reap what it would have.
-pub(super) fn server_builder() -> tonic::transport::Server {
+/// stream ceiling, the dead-peer keepalive, and the middleware that
+/// marks a connection established on its first request — stated once
+/// so the private socket and the TCP binding cannot drift apart in
+/// what they bound. No TCP-level keepalive: tonic ignores it for a
+/// caller-supplied accept stream, and the HTTP/2 pings reap what it
+/// would have.
+pub(super) fn server_builder()
+-> tonic::transport::Server<tower_layer::Stack<EstablishedLayer, tower_layer::Identity>> {
     tonic::transport::Server::builder()
         .max_concurrent_streams(Some(MAX_REQUESTS_PER_CONNECTION as u32))
         .http2_keepalive_interval(Some(KEEPALIVE_INTERVAL))
         .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
+        .layer(EstablishedLayer)
+}
+
+/// What a [`Connection`] tells the services about itself: the flag a
+/// request flips to prove the connection established. Carried as the
+/// request's connect-info extension, where [`EstablishedLayer`] finds
+/// it.
+#[derive(Debug, Clone)]
+pub struct Liveness(Arc<std::sync::atomic::AtomicBool>);
+
+impl Liveness {
+    fn armed() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(false)))
+    }
+    fn establish(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+    fn established(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// The middleware that flips a connection's [`Liveness`] on every
+/// request it carries — any request, before routing, so even a call
+/// the services refuse counts as the peer having established itself.
+#[derive(Debug, Clone, Copy)]
+pub struct EstablishedLayer;
+
+impl<S> tower_layer::Layer<S> for EstablishedLayer {
+    type Service = Established<S>;
+    fn layer(&self, inner: S) -> Self::Service {
+        Established { inner }
+    }
+}
+
+/// See [`EstablishedLayer`].
+#[derive(Debug, Clone)]
+pub struct Established<S> {
+    inner: S,
+}
+
+impl<S, B> tonic::codegen::Service<tonic::codegen::http::Request<B>> for Established<S>
+where
+    S: tonic::codegen::Service<tonic::codegen::http::Request<B>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: tonic::codegen::http::Request<B>) -> Self::Future {
+        if let Some(liveness) = request.extensions().get::<Liveness>() {
+            liveness.establish();
+        }
+        self.inner.call(request)
+    }
 }
 
 /// A connection admitted under [`MAX_CONNECTIONS`], holding its slot
-/// for as long as it lives — which, until its first byte arrives, is at
-/// most [`PREFACE_DEADLINE`].
+/// for as long as it lives — which, until its first request arrives,
+/// is at most [`ESTABLISHMENT_DEADLINE`].
 #[derive(Debug)]
 pub struct Connection<T> {
     io: T,
-    /// Armed at admission, disarmed by the first byte read.
-    preface_deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    liveness: Liveness,
+    /// Armed at admission; consulted until the first request lands.
+    deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -552,24 +625,19 @@ impl<T: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Connection<T> {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        if let Some(deadline) = self.preface_deadline.as_mut()
-            && std::future::Future::poll(deadline.as_mut(), cx).is_ready()
+        if !self.liveness.established()
+            && std::future::Future::poll(self.deadline.as_mut(), cx).is_ready()
         {
             return std::task::Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "no bytes within the {}-second preface deadline — the connection is \
-                     closed and its slot released",
-                    PREFACE_DEADLINE.as_secs()
+                    "no request within the {}-second establishment deadline — the \
+                     connection is closed and its slot released",
+                    ESTABLISHMENT_DEADLINE.as_secs()
                 ),
             )));
         }
-        let before = buf.filled().len();
-        let polled = std::pin::Pin::new(&mut self.io).poll_read(cx, buf);
-        if matches!(polled, std::task::Poll::Ready(Ok(()))) && buf.filled().len() > before {
-            self.preface_deadline = None;
-        }
-        polled
+        std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
     }
 }
 
@@ -605,10 +673,10 @@ impl<T: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Connection<T> {
     }
 }
 
-impl<T: tonic::transport::server::Connected> tonic::transport::server::Connected for Connection<T> {
-    type ConnectInfo = T::ConnectInfo;
+impl<T> tonic::transport::server::Connected for Connection<T> {
+    type ConnectInfo = Liveness;
     fn connect_info(&self) -> Self::ConnectInfo {
-        self.io.connect_info()
+        self.liveness.clone()
     }
 }
 
@@ -651,7 +719,8 @@ where
                 Some(Ok(io)) => match Arc::clone(&self.slots).try_acquire_owned() {
                     Ok(slot) => std::task::Poll::Ready(Some(Ok(Connection {
                         io,
-                        preface_deadline: Some(Box::pin(tokio::time::sleep(PREFACE_DEADLINE))),
+                        liveness: Liveness::armed(),
+                        deadline: Box::pin(tokio::time::sleep(ESTABLISHMENT_DEADLINE)),
                         _slot: slot,
                     }))),
                     // Past the ceiling: `io` drops here, closing it, and
@@ -1204,45 +1273,56 @@ mod connection_admission_tests {
         assert!(again.next().await.is_some(), "the freed slot admits");
     }
 
-    /// A connection that never speaks is closed at the preface deadline
-    /// and its slot returns; one that speaks keeps its slot past it.
+    /// A connection that makes no request is closed at the
+    /// establishment deadline and its slot returns — however many bytes
+    /// it sent, since bytes short of a request prove nothing; one whose
+    /// request landed keeps its slot past it.
     #[tokio::test(start_paused = true)]
-    async fn a_silent_connection_is_reaped_at_the_preface_deadline() {
+    async fn a_connection_without_a_request_is_reaped_at_the_establishment_deadline() {
         use tokio::io::AsyncReadExt as _;
-        let (silent, _silent_peer) = tokio::io::duplex(8);
-        let (speaking, mut speaking_peer) = tokio::io::duplex(8);
-        let items: Vec<Result<tokio::io::DuplexStream, io::Error>> = vec![Ok(silent), Ok(speaking)];
+        let (silent, _silent_peer) = tokio::io::duplex(64);
+        let (partial, mut partial_peer) = tokio::io::duplex(64);
+        let (requesting, mut requesting_peer) = tokio::io::duplex(64);
+        let items: Vec<Result<tokio::io::DuplexStream, io::Error>> =
+            vec![Ok(silent), Ok(partial), Ok(requesting)];
         let mut admitted = admit_connections(tokio_stream::iter(items));
         let mut silent = admitted.next().await.expect("first").expect("admitted");
-        let mut speaking = admitted.next().await.expect("second").expect("admitted");
-        assert_eq!(admitted.slots.available_permits(), MAX_CONNECTIONS - 2);
+        let mut partial = admitted.next().await.expect("second").expect("admitted");
+        let mut requesting = admitted.next().await.expect("third").expect("admitted");
+        assert_eq!(admitted.slots.available_permits(), MAX_CONNECTIONS - 3);
 
-        // The speaking peer's first byte lands before the deadline.
-        tokio::io::AsyncWriteExt::write_all(&mut speaking_peer, b"P")
+        // The partial peer sends a preface prefix — bytes, not a request.
+        tokio::io::AsyncWriteExt::write_all(&mut partial_peer, b"PRI * HTTP/2.0")
             .await
             .expect("write");
-        let mut byte = [0u8; 1];
-        speaking
-            .read_exact(&mut byte)
+        let mut scratch = [0u8; 64];
+        partial.read(&mut scratch).await.expect("the prefix reads");
+        // The requesting peer's request lands: the middleware's mark.
+        tokio::io::AsyncWriteExt::write_all(&mut requesting_peer, b"x")
             .await
-            .expect("the preface byte");
+            .expect("write");
+        requesting.read(&mut scratch).await.expect("the byte reads");
+        tonic::transport::server::Connected::connect_info(&requesting).establish();
 
-        tokio::time::advance(PREFACE_DEADLINE + Duration::from_secs(1)).await;
-        let reaped = silent
-            .read(&mut byte)
-            .await
-            .expect_err("the silent one is reaped");
-        assert_eq!(reaped.kind(), io::ErrorKind::TimedOut);
+        tokio::time::advance(ESTABLISHMENT_DEADLINE + Duration::from_secs(1)).await;
+        for (name, connection) in [("silent", &mut silent), ("partial", &mut partial)] {
+            let reaped = connection
+                .read(&mut scratch)
+                .await
+                .expect_err("no request, so reaped");
+            assert_eq!(reaped.kind(), io::ErrorKind::TimedOut, "{name}");
+        }
         drop(silent);
+        drop(partial);
         assert_eq!(admitted.slots.available_permits(), MAX_CONNECTIONS - 1);
 
-        // Having spoken, the other is the keepalive's to judge, not this
+        // Established, the other is the keepalive's to judge, not this
         // deadline's: a read past it still waits rather than failing.
         let still_open =
-            tokio::time::timeout(Duration::from_secs(1), speaking.read(&mut byte)).await;
+            tokio::time::timeout(Duration::from_secs(1), requesting.read(&mut scratch)).await;
         assert!(
             still_open.is_err(),
-            "no deadline fires on a connection that spoke"
+            "no deadline fires on an established connection"
         );
     }
 

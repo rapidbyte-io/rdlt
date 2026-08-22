@@ -258,11 +258,73 @@ impl<C: DestinationConnector> Destination for Shell<C> {
 #[derive(Debug, Default)]
 pub struct WriteGuard {
     opened: bool,
-    /// Tables ensured BY THIS SESSION — the host's contract says every
-    /// write is preceded by an ensure at the current schema version, and
-    /// the guard refuses violations instead of trusting them.
-    ensured: std::collections::BTreeSet<TableName>,
+    /// Tables ensured BY THIS SESSION, each with the column tree its
+    /// latest ensure declared — the host's contract says every write is
+    /// preceded by an ensure at the current schema version, and the
+    /// guard refuses violations instead of trusting them: a write to a
+    /// table never ensured, and a write carrying a field the ensure
+    /// never declared, which is how a raw client would smuggle a
+    /// column past the backend's DDL.
+    ensured: std::collections::BTreeMap<TableName, EnsuredShape>,
 }
+
+/// The shape an ensure declared, kept as the names at each level: what
+/// a write's own schema is held to. Types are the backend's to judge —
+/// it sees the batch — but a name the ensure never declared has no
+/// column to land in and no DDL behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnsuredShape(std::collections::BTreeMap<String, EnsuredShape>);
+
+impl EnsuredShape {
+    fn of(columns: &[rdlt_connector::core::schema::Column]) -> Self {
+        use rdlt_connector::core::schema::ColumnType;
+        Self(
+            columns
+                .iter()
+                .map(|column| {
+                    let children = match &column.column_type {
+                        ColumnType::Struct { fields } => Self::of(fields),
+                        ColumnType::Scalar { .. } | ColumnType::ScalarList { .. } => {
+                            Self(Default::default())
+                        }
+                    };
+                    (column.name.clone(), children)
+                })
+                .collect(),
+        )
+    }
+
+    /// The first field, by path, that the ensure did not declare.
+    fn undeclared(
+        &self,
+        fields: &rdlt_connector::arrow_schema::Fields,
+        path: &str,
+    ) -> Option<String> {
+        use rdlt_connector::arrow_schema::DataType;
+        for field in fields.iter() {
+            let here = if path.is_empty() {
+                field.name().clone()
+            } else {
+                format!("{path}.{}", field.name())
+            };
+            let Some(declared) = self.0.get(field.name()) else {
+                return Some(here);
+            };
+            if let DataType::Struct(children) = field.data_type()
+                && let Some(missing) = declared.undeclared(children, &here)
+            {
+                return Some(missing);
+            }
+        }
+        None
+    }
+}
+
+/// Tables one session may ensure. The engine commits at most this many
+/// schema hashes in a state document, so a session ensuring more names
+/// tables no run could publish; each ensured name is retained for the
+/// session's life, which is why the count is bounded at all.
+pub const MAX_ENSURED_TABLES: usize = 64 * 1024;
 
 impl WriteGuard {
     /// A fresh, unopened guard.
@@ -292,20 +354,49 @@ impl WriteGuard {
         self.opened = true;
     }
 
-    /// Record `table` as ensured at the CURRENT schema version.
-    pub fn ensure(&mut self, table: TableName) {
-        self.ensured.insert(table);
+    /// Whether `schema`'s table may be ensured: a table already ensured
+    /// always may (its shape is replaced), a new one only under
+    /// [`MAX_ENSURED_TABLES`]. Asked BEFORE the backend's own ensure
+    /// runs, so a refused table costs it nothing.
+    pub fn check_ensure(&self, schema: &TableSchema) -> Result<(), DestinationError> {
+        if !self.ensured.contains_key(&schema.table) && self.ensured.len() >= MAX_ENSURED_TABLES {
+            return Err(DestinationError::fatal(format!(
+                "this session has ensured {MAX_ENSURED_TABLES} tables — the ceiling; no run \
+                 publishes more tables than that"
+            )));
+        }
+        Ok(())
     }
 
-    /// Refuse a write to a table this guard never saw [`WriteGuard::ensure`]d
-    /// — the host contract guarantees an ensure precedes the first write,
-    /// so a violation is a harness or host defect, not data.
-    pub fn check_write(&self, table: &TableName) -> Result<(), DestinationError> {
-        if !self.ensured.contains(table) {
+    /// Record `schema`'s table as ensured at this shape.
+    pub fn ensure(&mut self, schema: &TableSchema) {
+        self.ensured
+            .insert(schema.table.clone(), EnsuredShape::of(&schema.columns));
+    }
+
+    /// Refuse a write to a table this guard never saw [`WriteGuard::ensure`]d,
+    /// or one whose batch carries a field that table's ensure never
+    /// declared — the host contract guarantees an ensure precedes the
+    /// first write and declares every column it carries, so a violation
+    /// is a harness or host defect, not data.
+    pub fn check_write(
+        &self,
+        table: &TableName,
+        schema: &rdlt_connector::arrow_schema::Schema,
+    ) -> Result<(), DestinationError> {
+        let Some(shape) = self.ensured.get(table) else {
             return Err(DestinationError::fatal(format!(
                 "write before ensure_table for `{table}` on this session — \
                  the host contract guarantees an ensure precedes the first \
                  write, so this is a harness or host defect, not data"
+            )));
+        };
+        if let Some(field) = shape.undeclared(schema.fields(), "") {
+            return Err(DestinationError::fatal(format!(
+                "write to `{table}` carries field `{}`, which its ensure never declared — \
+                 the host contract guarantees every written column was ensured first, so \
+                 this is a harness or host defect, not data",
+                rdlt_connector::gate::render_diagnostic(&field, 256)
             )));
         }
         Ok(())
@@ -352,8 +443,9 @@ impl<B: Backend> LoadSession for Session<B> {
         schema: &TableSchema,
         mode: &WriteMode,
     ) -> Result<(), DestinationError> {
+        self.guard.check_ensure(schema)?;
         self.backend.ensure_table(schema, mode).await?;
-        self.guard.ensure(schema.table.clone());
+        self.guard.ensure(schema);
         Ok(())
     }
 
@@ -362,7 +454,7 @@ impl<B: Backend> LoadSession for Session<B> {
         table: &TableName,
         batch: RecordBatch,
     ) -> Result<(), DestinationError> {
-        self.guard.check_write(table)?;
+        self.guard.check_write(table, &batch.schema())?;
         self.backend.write(table, batch).await
     }
 

@@ -583,6 +583,60 @@ async fn the_tcp_binding_serves_refuses_and_caps_connections_like_the_socket() {
     drop(parked);
 }
 
+/// Over the real transport: a connection that never makes a request is
+/// closed at the establishment deadline, and one that did — the request
+/// is what flips the connect-info liveness the middleware finds on the
+/// real request path — outlives it. Real time, because the deadline is
+/// the server's own clock inside tonic's accept loop.
+#[tokio::test]
+async fn the_establishment_deadline_fires_on_the_wire_and_a_request_disarms_it() {
+    use rdlt_connector_sdk::serve::wire::ESTABLISHMENT_DEADLINE;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("bound address");
+    let _handle = run_on_tcp::<EchoSource>(listener);
+
+    let channel = Endpoint::try_from(format!("http://{address}"))
+        .expect("loopback endpoint parses")
+        .connect()
+        .await
+        .expect("connect over tcp");
+    let mut connector = ConnectorClient::new(channel);
+    connector
+        .spec(SpecRequest {})
+        .await
+        .expect("the request that establishes");
+
+    let mut silent = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("a silent peer connects");
+    // The server speaks first (its own SETTINGS frame), so the close is
+    // the END of what can be read, not the first read.
+    let mut drained = Vec::new();
+    let started = std::time::Instant::now();
+    tokio::time::timeout(
+        ESTABLISHMENT_DEADLINE + std::time::Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read_to_end(&mut silent, &mut drained),
+    )
+    .await
+    .expect("closed within the deadline plus slack")
+    .ok();
+    assert!(
+        started.elapsed() >= ESTABLISHMENT_DEADLINE - std::time::Duration::from_secs(1),
+        "closed at the deadline, not before: {:?}",
+        started.elapsed()
+    );
+
+    // The established connection is still served past the deadline.
+    let reply = connector
+        .spec(SpecRequest {})
+        .await
+        .expect("an established connection outlives the deadline")
+        .into_inner();
+    assert!(!reply.spec_json.is_empty());
+}
+
 /// `Read` before a handshake refuses the same way `Streams` does — see
 /// the comment there for the Status-vs-ErrorFrame note.
 #[tokio::test]

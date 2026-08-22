@@ -147,6 +147,7 @@ toml = "1.1"
 # dependencies when rdlt-connector-client made that exact dial shape its
 # production `dial()` (039).
 tower = "0.5"
+tower-layer = "0.3"
 hyper-util = { version = "0.1", features = ["tokio"] }
 # The CLI's argument surface (and rdlt-bench's).
 clap = { version = "4", features = ["derive"] }

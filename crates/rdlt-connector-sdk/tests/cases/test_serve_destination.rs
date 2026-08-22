@@ -169,12 +169,29 @@ fn open_frame(pipeline: &str, load_id: &str) -> SessionRequest {
 }
 
 fn ensure_frame(table: &str) -> SessionRequest {
+    ensure_frame_of(&schema_for(table))
+}
+
+/// An `Ensure` of exactly `schema`.
+fn ensure_frame_of(schema: &rdlt_connector::core::schema::TableSchema) -> SessionRequest {
     SessionRequest {
         request: Some(session_request::Request::Ensure(proto::Ensure {
-            table_schema_json: serde_json::to_vec(&schema_for(table)).expect("schema json"),
+            table_schema_json: serde_json::to_vec(schema).expect("schema json"),
             write_mode_json: serde_json::to_vec(&WriteMode::Append).expect("write mode json"),
         })),
     }
+}
+
+/// The fixture schema with one extra scalar column named `column` —
+/// for writes whose batch carries a field the one-column fixture lacks.
+fn schema_with(table: &str, column: &str) -> rdlt_connector::core::schema::TableSchema {
+    let mut schema = schema_for(table);
+    let exemplar = schema.columns[0].clone();
+    schema.columns.push(rdlt_connector::core::schema::Column {
+        name: column.to_string(),
+        ..exemplar
+    });
+    schema
 }
 
 fn write_frame(table: &str, ids: &[i64]) -> SessionRequest {
@@ -1024,7 +1041,7 @@ async fn a_write_frame_beyond_tonics_default_cap_round_trips_to_written() {
         .expect("opened");
 
     req_tx
-        .send(ensure_frame(ECHOED_TABLE))
+        .send(ensure_frame_of(&schema_with(ECHOED_TABLE, "payload")))
         .await
         .expect("send ensure");
     next_reply(&mut replies)
@@ -1733,7 +1750,7 @@ async fn a_write_at_exactly_the_row_cap_writes() {
         .expect("reply")
         .expect("opened");
     req_tx
-        .send(ensure_frame(ECHOED_TABLE))
+        .send(ensure_frame_of(&schema_with(ECHOED_TABLE, "b")))
         .await
         .expect("send ensure");
     next_reply(&mut replies)
@@ -2640,8 +2657,8 @@ async fn an_over_wide_ensure_refuses_before_the_backend_ensures() {
     {
         Some(session_reply::Reply::Error(error)) => {
             assert!(
-                error.message.contains("4097 columns") && error.message.contains("ceiling"),
-                "the refusal names the count and the ceiling: {}",
+                error.message.contains("more than 4096 columns"),
+                "the refusal names the ceiling: {}",
                 error.message
             );
         }
@@ -2827,4 +2844,242 @@ async fn a_deeply_populated_struct_column_refuses_at_the_column_cap() {
         }
         other => panic!("expected the nested column-count refusal, got {other:?}"),
     }
+}
+
+/// An opened session is bound to the identities its `Open` named: a
+/// later frame naming another pipeline or another load is refused
+/// before the backend sees it — ReadState, ExistingReceipt and Publish
+/// each — while the same identities keep working.
+#[tokio::test]
+async fn a_session_refuses_frames_naming_another_pipeline_or_load() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+    handshake(&mut connector, false, false).await;
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let foreign = [
+        ("ReadState", read_state_frame("other-pipeline")),
+        ("ExistingReceipt", existing_receipt_frame("other-load", 1)),
+        ("Publish", publish_frame("p", "other-load", 1)),
+        ("Publish", publish_frame("other-pipeline", "l", 1)),
+    ];
+    for (seat, frame) in foreign {
+        req_tx.send(frame).await.expect("send");
+        match next_reply(&mut replies)
+            .await
+            .expect("reply")
+            .expect("frame")
+            .reply
+        {
+            Some(session_reply::Reply::Error(error)) => assert!(
+                error.message.starts_with(seat)
+                    && error
+                        .message
+                        .contains("other than the one this session opened"),
+                "{seat}: {}",
+                error.message
+            ),
+            other => panic!("{seat} naming a foreign identity must refuse, got {other:?}"),
+        }
+    }
+
+    // The session's own identities still answer.
+    req_tx
+        .send(read_state_frame("p"))
+        .await
+        .expect("send read state");
+    assert!(matches!(
+        next_reply(&mut replies)
+            .await
+            .expect("reply")
+            .expect("frame")
+            .reply,
+        Some(session_reply::Reply::State(_))
+    ));
+}
+
+/// A write carrying a field its ensure never declared is refused
+/// before the backend sees the batch — at any depth, since a nested
+/// field is a column the DDL never made either — and a write of
+/// exactly the declared fields goes through.
+#[tokio::test]
+async fn a_write_with_a_field_the_ensure_never_declared_refuses() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+    handshake(&mut connector, false, false).await;
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+    req_tx
+        .send(ensure_frame(ECHOED_TABLE))
+        .await
+        .expect("send ensure");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("ensured");
+
+    let undeclared = {
+        let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("id", arrow::datatypes::DataType::Int64, false),
+            arrow::datatypes::Field::new("smuggled", arrow::datatypes::DataType::Int64, true),
+        ]));
+        let batch = rdlt_connector::arrow::RecordBatch::try_new(
+            schema,
+            vec![
+                std::sync::Arc::new(arrow::array::Int64Array::from(vec![1])),
+                std::sync::Arc::new(arrow::array::Int64Array::from(vec![2])),
+            ],
+        )
+        .expect("constructs");
+        encode_arrow_ipc(&batch)
+    };
+    req_tx
+        .send(SessionRequest {
+            request: Some(session_request::Request::Write(proto::Write {
+                table: ECHOED_TABLE.to_string(),
+                arrow_ipc: undeclared,
+            })),
+        })
+        .await
+        .expect("send");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => assert!(
+            error
+                .message
+                .contains("carries field `smuggled`, which its ensure never declared"),
+            "{}",
+            error.message
+        ),
+        other => panic!("an undeclared field must refuse, got {other:?}"),
+    }
+
+    req_tx
+        .send(write_frame(ECHOED_TABLE, &[1, 2]))
+        .await
+        .expect("send the declared write");
+    assert!(matches!(
+        next_reply(&mut replies)
+            .await
+            .expect("reply")
+            .expect("frame")
+            .reply,
+        Some(session_reply::Reply::Written(_))
+    ));
+}
+
+/// The ensured-width ceiling is spent by the WHOLE schema: several
+/// struct roots each under it, together over it, refuse — a count
+/// reset per root would let them declare a table many times wider than
+/// any batch could fill.
+#[tokio::test]
+async fn nested_fields_across_roots_spend_one_ensure_width_budget() {
+    use rdlt_connector::core::schema::{Column, ColumnType};
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+    handshake(&mut connector, false, false).await;
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("opened");
+
+    let mut schema = schema_for(ECHOED_TABLE);
+    let exemplar = schema.columns[0].clone();
+    // Four roots of 1,024 fields each: 4 + 4,096 counted, over by four.
+    schema.columns = (0..4)
+        .map(|root| Column {
+            name: format!("root{root}"),
+            column_type: ColumnType::Struct {
+                fields: (0..1024)
+                    .map(|i| Column {
+                        name: format!("f{i}"),
+                        ..exemplar.clone()
+                    })
+                    .collect(),
+            },
+            ..exemplar.clone()
+        })
+        .collect();
+    req_tx.send(ensure_frame_of(&schema)).await.expect("send");
+    match next_reply(&mut replies)
+        .await
+        .expect("reply")
+        .expect("frame")
+        .reply
+    {
+        Some(session_reply::Reply::Error(error)) => assert!(
+            error
+                .message
+                .contains("more than 4096 columns once nested fields are counted"),
+            "{}",
+            error.message
+        ),
+        other => panic!("the aggregate width must refuse, got {other:?}"),
+    }
+}
+
+/// A session stream that sends no `Open` is ended at the open-frame
+/// deadline and the one-session slot comes back: a second session
+/// opens after it where, before the deadline, it was refused.
+#[tokio::test(start_paused = true)]
+async fn a_session_that_never_opens_is_ended_and_its_slot_returns() {
+    let (_dir, path) = socket_path();
+    let (_line, _handle) = run_on::<EchoDestination>(&path).await.expect("bind");
+    let channel = dial(&path).await;
+    let mut connector = ConnectorClient::new(channel.clone());
+    let mut destination = DestinationServiceClient::new(channel);
+    handshake(&mut connector, false, false).await;
+
+    let (_silent_tx, mut silent_replies) = open_session(&mut destination).await;
+    // While it holds the slot a second session is refused.
+    let (req_tx, req_rx) = tokio::sync::mpsc::channel(16);
+    let refused = destination
+        .open_session(ReceiverStream::new(req_rx))
+        .await
+        .expect_err("the slot is held");
+    assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+    drop(req_tx);
+
+    tokio::time::advance(Duration::from_secs(11)).await;
+    assert!(
+        next_reply(&mut silent_replies)
+            .await
+            .expect("stream end")
+            .is_none(),
+        "the silent session's stream ends"
+    );
+    let (req_tx, mut replies) = open_session(&mut destination).await;
+    req_tx.send(open_frame("p", "l")).await.expect("send open");
+    assert!(matches!(
+        next_reply(&mut replies)
+            .await
+            .expect("reply")
+            .expect("frame")
+            .reply,
+        Some(session_reply::Reply::Opened(_))
+    ));
 }

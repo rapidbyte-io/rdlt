@@ -48,9 +48,9 @@
 //! HTTP/2 holds the slot until the provider supervising the connector
 //! process evicts it. A client that vanished after speaking is reaped
 //! by the HTTP/2 keepalive (`wire::KEEPALIVE_INTERVAL`); one that
-//! connected and never spoke, by the preface deadline
-//! (`wire::PREFACE_DEADLINE`) — each frees the connection slot with the
-//! connection.
+//! connected and never made a request, by the establishment deadline
+//! (`wire::ESTABLISHMENT_DEADLINE`) — each frees the connection slot
+//! with the connection.
 //!
 //! [`run`] is what a spawned connector process runs; [`run_on`] is the
 //! seam under it — bind at an explicit path without printing anything,
@@ -363,7 +363,7 @@ async fn send(
 /// the order the backend reported them. `false` means the client hung
 /// up mid-drain.
 async fn drain_parts(
-    part_rx: &mut mpsc::UnboundedReceiver<PartClosed>,
+    part_rx: &mut mpsc::Receiver<PartClosed>,
     reply_tx: &mpsc::Sender<Result<SessionReply, Status>>,
 ) -> bool {
     while let Ok(part) = part_rx.try_recv() {
@@ -383,7 +383,7 @@ async fn drain_parts(
 /// send that call's own reply — the ordering the module doc promises.
 /// Folds both steps' possible "client hung up" outcomes into [`Step`].
 async fn finish(
-    part_rx: &mut mpsc::UnboundedReceiver<PartClosed>,
+    part_rx: &mut mpsc::Receiver<PartClosed>,
     reply_tx: &mpsc::Sender<Result<SessionReply, Status>>,
     reply: session_reply::Reply,
 ) -> Step {
@@ -405,9 +405,52 @@ struct SessionState<C: DestinationConnector> {
     /// `None` until an `Open` frame succeeds, then `Some` for the rest
     /// of the stream's life.
     backend: Option<C::Backend>,
+    /// The identities `Open` established, which every later frame that
+    /// names a pipeline or a load must repeat: a session is one run of
+    /// one pipeline, and the backend it opened holds that run's staging
+    /// and that pipeline's state. A frame naming another would read or
+    /// poison a different pipeline's state through this session's
+    /// backend, so it is refused here rather than trusted to the
+    /// backend's own checks.
+    identity: Option<Identity>,
     /// Set by the explicit `Close` arm so [`drive_session`]'s
     /// best-effort cleanup does not run `Backend::close` a second time.
     closed: bool,
+}
+
+/// See [`SessionState::identity`].
+struct Identity {
+    pipeline: PipelineId,
+    load: LoadId,
+}
+
+impl Identity {
+    fn same_pipeline(&self, seat: &str, pipeline: &str) -> Result<(), session_reply::Reply> {
+        if self.pipeline.as_str() != pipeline {
+            return Err(refuse(format!(
+                "{seat} names a pipeline other than the one this session opened — a \
+                 session is one run of one pipeline"
+            )));
+        }
+        Ok(())
+    }
+
+    fn same_load(&self, seat: &str, load: &str) -> Result<(), session_reply::Reply> {
+        if self.load.as_str() != load {
+            return Err(refuse(format!(
+                "{seat} names a load other than the one this session opened — a session \
+                 is one run of one pipeline"
+            )));
+        }
+        Ok(())
+    }
+
+    /// A commit's meta must be this run's: its load, and its state's
+    /// pipeline.
+    fn same_commit(&self, seat: &str, meta: &CommitMeta) -> Result<(), session_reply::Reply> {
+        self.same_load(seat, meta.load_id.as_str())?;
+        self.same_pipeline(seat, meta.state.pipeline.as_str())
+    }
 }
 
 impl<C: DestinationConnector> SessionState<C> {
@@ -415,6 +458,7 @@ impl<C: DestinationConnector> SessionState<C> {
         Self {
             guard: WriteGuard::new(),
             backend: None,
+            identity: None,
             closed: false,
         }
     }
@@ -426,8 +470,8 @@ impl<C: DestinationConnector> SessionState<C> {
 async fn handle_frame<C: DestinationConnector>(
     shell: &Shell<C>,
     state: &mut SessionState<C>,
-    part_tx: &mpsc::UnboundedSender<PartClosed>,
-    part_rx: &mut mpsc::UnboundedReceiver<PartClosed>,
+    part_tx: &mpsc::Sender<PartClosed>,
+    part_rx: &mut mpsc::Receiver<PartClosed>,
     reply_tx: &mpsc::Sender<Result<SessionReply, Status>>,
     frame: SessionRequest,
 ) -> Step {
@@ -447,16 +491,24 @@ async fn handle_frame<C: DestinationConnector>(
                 return finish(part_rx, reply_tx, reply).await;
             }
             let tx = part_tx.clone();
-            let context =
-                OpenContext::new(PipelineId::new(open.pipeline), LoadId::new(open.load_id))
-                    .with_part_events(Arc::new(move |part| {
-                        // A sync callback that must never fail or
-                        // block: an unbounded channel is its shape.
-                        let _ = tx.send(part);
-                    }));
+            let identity = Identity {
+                pipeline: PipelineId::new(open.pipeline),
+                load: LoadId::new(open.load_id),
+            };
+            let context = OpenContext::new(identity.pipeline.clone(), identity.load.clone())
+                .with_part_events(Arc::new(move |part| {
+                    // A sync callback that must never fail or block:
+                    // a bounded channel whose overflow is DROPPED is
+                    // its shape — the events are advisory telemetry,
+                    // and a backend emitting them faster than the
+                    // session forwards them loses the excess rather
+                    // than growing a queue without bound.
+                    let _ = tx.try_send(part);
+                }));
             match shell.connect(&context).await {
                 Ok(opened) => {
                     state.backend = Some(opened);
+                    state.identity = Some(identity);
                     state.guard.mark_open();
                     session_reply::Reply::Opened(proto::Empty {})
                 }
@@ -467,7 +519,7 @@ async fn handle_frame<C: DestinationConnector>(
     }
 
     let guard = &mut state.guard;
-    let Some(backend) = state.backend.as_mut() else {
+    let (Some(backend), Some(identity)) = (state.backend.as_mut(), state.identity.as_ref()) else {
         return finish(
             part_rx,
             reply_tx,
@@ -486,34 +538,18 @@ async fn handle_frame<C: DestinationConnector>(
                 (Ok(schema), Ok(mode)) => {
                     // Every identifier the schema and mode carry is
                     // retained by the session or reaches a backend's
-                    // error text — the same ceiling at each.
-                    let identifiers_ok = serve_gate::refuse_ensure_counts(&schema, &mode)
-                        .and_then(|()| {
-                            serve_gate::refuse_oversized_identifier(
-                                "table name",
-                                schema.table.as_str(),
-                            )
+                    // error text — one walk holds them all to the
+                    // ceiling, and the session's table count to its own.
+                    let admitted = serve_gate::gate_ensure(&schema, &mode).and_then(|()| {
+                        guard.check_ensure(&schema).map_err(|error| {
+                            session_reply::Reply::Error(destination_error_frame(&error))
                         })
-                        .and_then(|()| {
-                            schema.parent.iter().try_for_each(|parent| {
-                                serve_gate::refuse_oversized_identifier(
-                                    "parent table name",
-                                    parent.parent.as_str(),
-                                )
-                            })
-                        })
-                        .and_then(|()| schema.columns.iter().try_for_each(serve_gate::gate_column))
-                        .and_then(|()| match &mode {
-                            WriteMode::Merge { key } => key.iter().try_for_each(|column| {
-                                serve_gate::refuse_oversized_identifier("merge key column", column)
-                            }),
-                            _ => Ok(()),
-                        });
-                    match identifiers_ok {
+                    });
+                    match admitted {
                         Err(reply) => reply,
                         Ok(()) => match backend.ensure_table(&schema, &mode).await {
                             Ok(()) => {
-                                guard.ensure(schema.table.clone());
+                                guard.ensure(&schema);
                                 session_reply::Reply::Ensured(proto::Empty {})
                             }
                             Err(error) => {
@@ -527,25 +563,30 @@ async fn handle_frame<C: DestinationConnector>(
         }
         Some(session_request::Request::Write(write)) => {
             let table = TableName::new(write.table);
-            match serve_gate::refuse_oversized_identifier("table name", table.as_str()).and_then(
-                |()| {
-                    guard.check_write(&table).map_err(|error| {
-                        session_reply::Reply::Error(destination_error_frame(&error))
-                    })
-                },
-            ) {
+            match serve_gate::refuse_oversized_identifier("table name", table.as_str()) {
                 Err(reply) => reply,
                 Ok(()) => match decode_arrow_ipc(&write.arrow_ipc) {
-                    Ok(batch) => match backend.write(&table, batch).await {
-                        Ok(()) => session_reply::Reply::Written(proto::Empty {}),
+                    // The guard judges the decoded batch's own schema
+                    // against the table's ensure: the table must have
+                    // been ensured, and every field the batch carries
+                    // declared by it.
+                    Ok(batch) => match guard.check_write(&table, &batch.schema()) {
                         Err(error) => session_reply::Reply::Error(destination_error_frame(&error)),
+                        Ok(()) => match backend.write(&table, batch).await {
+                            Ok(()) => session_reply::Reply::Written(proto::Empty {}),
+                            Err(error) => {
+                                session_reply::Reply::Error(destination_error_frame(&error))
+                            }
+                        },
                     },
                     Err(message) => refuse(message),
                 },
             }
         }
         Some(session_request::Request::ExistingReceipt(existing)) => {
-            match serve_gate::refuse_oversized_identifier("load id", &existing.load_id) {
+            match serve_gate::refuse_oversized_identifier("load id", &existing.load_id)
+                .and_then(|()| identity.same_load("ExistingReceipt", &existing.load_id))
+            {
                 Err(reply) => reply,
                 Ok(()) => {
                     let load_id = LoadId::new(existing.load_id);
@@ -576,9 +617,16 @@ async fn handle_frame<C: DestinationConnector>(
                 // included, rides the ceiling Open and ReadState hold
                 // theirs to.
                 (Ok(meta), Ok(receipt)) => {
-                    match serve_gate::gate_commit_meta(&meta).and_then(|()| {
-                        serve_gate::refuse_oversized_identifier("load id", receipt.load_id.as_str())
-                    }) {
+                    match serve_gate::gate_commit_meta(&meta)
+                        .and_then(|()| {
+                            serve_gate::refuse_oversized_identifier(
+                                "load id",
+                                receipt.load_id.as_str(),
+                            )
+                        })
+                        .and_then(|()| identity.same_commit("Replay", &meta))
+                        .and_then(|()| identity.same_load("Replay", receipt.load_id.as_str()))
+                    {
                         Err(reply) => reply,
                         Ok(()) => match backend.replay(&meta, &receipt).await {
                             Ok(()) => session_reply::Reply::Replayed(proto::Empty {}),
@@ -596,7 +644,9 @@ async fn handle_frame<C: DestinationConnector>(
                 // The meta walks the shared gate — every identifier
                 // it carries, sub-maps included — exactly as its
                 // Replay twin does.
-                Ok(meta) => match serve_gate::gate_commit_meta(&meta) {
+                Ok(meta) => match serve_gate::gate_commit_meta(&meta)
+                    .and_then(|()| identity.same_commit("Publish", &meta))
+                {
                     Err(reply) => reply,
                     Ok(()) => match backend.publish(meta).await {
                         Ok(receipt) => session_reply::Reply::Published(Published {
@@ -610,7 +660,9 @@ async fn handle_frame<C: DestinationConnector>(
             }
         }
         Some(session_request::Request::ReadState(read_state)) => {
-            match serve_gate::refuse_oversized_identifier("pipeline id", &read_state.pipeline) {
+            match serve_gate::refuse_oversized_identifier("pipeline id", &read_state.pipeline)
+                .and_then(|()| identity.same_pipeline("ReadState", &read_state.pipeline))
+            {
                 Err(reply) => reply,
                 Ok(()) => match backend
                     .read_state(&PipelineId::new(read_state.pipeline))
@@ -657,6 +709,39 @@ impl Drop for SessionSlot {
     }
 }
 
+/// Part events queued between a backend call and the session's drain
+/// of them. A backend closes parts as it writes, and the session
+/// forwards each before the call's reply; a backend closing more than
+/// this many inside ONE call loses the excess — advisory telemetry,
+/// counted nowhere the report's exactly-once totals come from.
+const PART_EVENT_QUEUE: usize = 4096;
+
+/// How long a just-opened session stream has to send its `Open`. The
+/// one-session slot is claimed before any frame is read, so a client
+/// that opens the stream and sends nothing would hold it until it hung
+/// up; past this the session ends and the slot returns. Later frames
+/// carry no deadline: a live client that has spoken is the keepalive's
+/// to judge, and the gaps between an honest session's frames are the
+/// source's pace, which can be long.
+const OPEN_FRAME_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The next request frame — under [`OPEN_FRAME_DEADLINE`] when it is
+/// the session's first. A deadline that lapses reads as the client
+/// having hung up, which ends the session the same way.
+async fn first_frame_of(
+    incoming: &mut Streaming<SessionRequest>,
+    first: bool,
+) -> Result<Option<SessionRequest>, Status> {
+    if first {
+        match tokio::time::timeout(OPEN_FRAME_DEADLINE, incoming.message()).await {
+            Ok(frame) => frame,
+            Err(_elapsed) => Ok(None),
+        }
+    } else {
+        incoming.message().await
+    }
+}
+
 /// Run one session's request loop, from its `Open` to whatever ends it —
 /// a clean `Close`, the client hanging up, or a transport error — then
 /// best-effort close the backend on EVERY LOOP EXIT that is not the
@@ -677,11 +762,12 @@ async fn drive_session<C: DestinationConnector>(
     reply_tx: mpsc::Sender<Result<SessionReply, Status>>,
     _slot: SessionSlot,
 ) {
-    // Unbounded because the sender is a sync callback that never
-    // awaits: advisory-volume telemetry, not an escape from the
-    // byte-budget discipline the read side observes.
-    let (part_tx, mut part_rx) = mpsc::unbounded_channel::<PartClosed>();
+    // Bounded, because the sender is a sync callback that never
+    // awaits and the events are advisory: what does not fit is dropped
+    // at the callback (see `Open`), never queued without limit.
+    let (part_tx, mut part_rx) = mpsc::channel::<PartClosed>(PART_EVENT_QUEUE);
     let mut state = SessionState::<C>::new();
+    let mut first_frame = true;
 
     loop {
         // `biased`: a part event queued from a PREVIOUS iteration's
@@ -700,7 +786,8 @@ async fn drive_session<C: DestinationConnector>(
                     break;
                 }
             }
-            frame = incoming.message() => {
+            frame = first_frame_of(&mut incoming, first_frame) => {
+                first_frame = false;
                 let frame = match frame {
                     Ok(Some(frame)) => frame,
                     // The client closed the request half, or the

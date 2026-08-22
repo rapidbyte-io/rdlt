@@ -157,6 +157,7 @@ impl Remote {
                 .state_format_versions
                 .get(rdlt_connector::core::state::STATE_DOC_FORMAT_KIND)
                 .copied(),
+            ensured: std::collections::BTreeSet::new(),
         };
         let reply = backend
             .call(session_request::Request::Open(proto::Open {
@@ -258,7 +259,20 @@ pub struct Backend {
     /// The negotiated ceiling for `STATE_DOC_FORMAT_KIND`, when the
     /// connector declared one — the `ReadState` seat's judge.
     state_doc_ceiling: Option<u32>,
+    /// Tables this backend has ensured: the only tables a `PartClosed`
+    /// may name, since a part is closed by a write and every write
+    /// follows an ensure. An event naming any other is the connector
+    /// inventing telemetry, refused typed.
+    ensured: std::collections::BTreeSet<TableName>,
 }
+
+/// `PartClosed` events one call may carry before the call is refused.
+/// Each event restarts the reply deadline's quiet interval — a publish
+/// that closes many parts legitimately reports each before its own
+/// reply — so without a count a connector could keep a call alive
+/// forever by never resolving it. A part is megabytes of output; this
+/// is more parts than one publish's writes could have closed.
+pub const MAX_PART_EVENTS_PER_CALL: u64 = 65_536;
 
 impl std::fmt::Debug for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -280,6 +294,13 @@ impl Backend {
     /// stream name, before the event can reach the callback.
     fn forward_part(&self, event: proto::PartClosedEvent) -> Result<(), DestinationError> {
         gate::identifier("table name", &event.table).map_err(DestinationError::fatal)?;
+        if !self.ensured.contains(&TableName::new(event.table.as_str())) {
+            return Err(DestinationError::protocol(format!(
+                "a part_closed event names table `{}`, which this session never ensured — \
+                 a part is closed by a write, and every write follows an ensure",
+                gate::escape(&event.table)
+            )));
+        }
         let Some(listener) = &self.part_events else {
             return Ok(());
         };
@@ -310,9 +331,10 @@ impl Backend {
     /// deadline deliberately does NOT bound: a rogue that keeps
     /// flooding `part_closed` without ever resolving the call keeps
     /// this loop spinning for as long as it keeps sending — memory
-    /// stays bounded (one reply in flight), and the spin ends when the
-    /// host cancels or drops the session; a total-duration bound here
-    /// would instead fail legitimate long publishes.
+    /// stays bounded (one reply in flight), and the spin ends at
+    /// [`MAX_PART_EVENTS_PER_CALL`], which is what bounds the call's
+    /// total duration to that many deadlines; a total-duration bound
+    /// alone would instead fail legitimate long publishes.
     async fn call(
         &mut self,
         request: session_request::Request,
@@ -339,6 +361,7 @@ impl Backend {
             Ok(_sent_or_gone) => {}
             Err(timeout) => return Err(DestinationError::fatal_error(timeout)),
         }
+        let mut parts_seen = 0u64;
         loop {
             let next = wire::bounded(
                 self.deadline,
@@ -358,7 +381,16 @@ impl Backend {
                 Err(status) => return Err(DestinationError::transport(status)),
             };
             match reply {
-                session_reply::Reply::PartClosed(event) => self.forward_part(event)?,
+                session_reply::Reply::PartClosed(event) => {
+                    parts_seen += 1;
+                    if parts_seen > MAX_PART_EVENTS_PER_CALL {
+                        return Err(DestinationError::protocol(format!(
+                            "the session sent more than {MAX_PART_EVENTS_PER_CALL} part_closed \
+                             events inside one call without resolving it"
+                        )));
+                    }
+                    self.forward_part(event)?;
+                }
                 session_reply::Reply::Error(frame) => {
                     return Err(DestinationError::from_frame(&frame));
                 }
@@ -384,7 +416,10 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
             }))
             .await?;
         match reply {
-            session_reply::Reply::Ensured(_) => Ok(()),
+            session_reply::Reply::Ensured(_) => {
+                self.ensured.insert(schema.table.clone());
+                Ok(())
+            }
             other => Err(unexpected_reply("Ensure", &other)),
         }
     }

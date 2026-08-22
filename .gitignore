@@ -58,3 +58,4 @@ connectors/python/rdlt-connector-pyjsonl/__pycache__/
 # External review reports delivered into the root; worked from, never
 # shipped — a blanket `git add -A` must not sweep them in.
 /SECURITY_CODE_REVIEW*.md
+/CODEX_SECURITY_REVIEW*.md

@@ -124,24 +124,38 @@ pub(super) fn gate_commit_meta(meta: &CommitMeta) -> Result<(), session_reply::R
     Ok(())
 }
 
-/// One column's name through the identifier ceiling, nested struct
-/// fields included: `ColumnType::Struct` nests `Column`s recursively,
-/// and a nested name is retained by the session and reaches backend
-/// error text exactly like a top-level one (`ScalarList` carries a bare
-/// element type — no names). Recursion depth is bounded upstream by the
-/// JSON parse that produced the schema, which refuses past serde_json's
-/// own nesting limit.
-pub(super) fn gate_column(column: &Column) -> Result<(), session_reply::Reply> {
+/// Everything an `Ensure` frame carries, through the session's gates
+/// in one walk: the table and parent names, every column name at every
+/// depth, the merge key's names, and ONE field count for the whole
+/// schema — top-level columns and nested struct fields spend the same
+/// budget, because a schema is as wide as its fields wherever they sit
+/// and a backend's DDL walks all of them. A count kept per root would
+/// let a dozen roots each just under the ceiling declare, together,
+/// a table many times wider than any batch could fill. Recursion depth
+/// is bounded upstream by the JSON parse that produced the schema,
+/// which refuses past serde_json's own nesting limit.
+pub(super) fn gate_ensure(
+    schema: &TableSchema,
+    mode: &WriteMode,
+) -> Result<(), session_reply::Reply> {
+    refuse_oversized_identifier("table name", schema.table.as_str())?;
+    if let Some(parent) = &schema.parent {
+        refuse_oversized_identifier("parent table name", parent.parent.as_str())?;
+    }
     let mut counted = 0usize;
-    gate_column_at(column, &mut counted)
+    for column in &schema.columns {
+        gate_column_at(column, &mut counted)?;
+    }
+    if let WriteMode::Merge { key } = mode {
+        refuse_collection_flood("merge key columns", key.len(), MAX_ENSURED_COLUMNS)?;
+        for column in key {
+            refuse_oversized_identifier("merge key column", column)?;
+        }
+    }
+    Ok(())
 }
 
-/// [`gate_column`] carrying the running field count: the top-level
-/// column cap bounds how many columns a schema declares, but a single
-/// column can nest hundreds of thousands of fields inside the same
-/// document, and every one of them is a retained `Column` the backend's
-/// DDL walks. The whole tree is held to the same number as the top
-/// level — a schema is as wide as its fields, wherever they sit.
+/// One column and everything nested under it, spending `counted`.
 fn gate_column_at(column: &Column, counted: &mut usize) -> Result<(), session_reply::Reply> {
     *counted += 1;
     if *counted > MAX_ENSURED_COLUMNS {
@@ -284,20 +298,6 @@ pub(super) fn refuse_dense_cursor(field: &str, value: &serde_json::Value) -> Res
 /// wider than any batch that could fill it is refused here rather than
 /// at the first Write.
 const MAX_ENSURED_COLUMNS: usize = gate::MAX_SOURCE_COLUMNS_PER_TABLE;
-
-/// An ensured schema's collection COUNTS, beside the per-identifier
-/// lengths every name rides: length gates alone admit a flood of tiny
-/// legal names.
-pub(super) fn refuse_ensure_counts(
-    schema: &TableSchema,
-    mode: &WriteMode,
-) -> Result<(), session_reply::Reply> {
-    refuse_collection_flood("columns", schema.columns.len(), MAX_ENSURED_COLUMNS)?;
-    if let WriteMode::Merge { key } = mode {
-        refuse_collection_flood("merge key columns", key.len(), MAX_ENSURED_COLUMNS)?;
-    }
-    Ok(())
-}
 
 /// One ensured collection's count against its ceiling.
 fn refuse_collection_flood(
