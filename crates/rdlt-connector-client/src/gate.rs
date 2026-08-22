@@ -75,6 +75,9 @@ pub(crate) fn document(field: &str, bytes: &[u8]) -> Result<(), String> {
 /// serialized bytes so a sending seat forwards exactly what was
 /// measured.
 pub(crate) fn cursor(value: &serde_json::Value) -> Result<Vec<u8>, String> {
+    // The node walk first: it is what bounds retention, and a cursor
+    // past it is refused before its bytes are even rendered.
+    rdlt_connector::gate::refuse_dense_cursor("a cursor", value)?;
     let bytes =
         serde_json::to_vec(value).expect("a serde_json::Value serializes to JSON infallibly");
     if bytes.len() as u64 > rdlt_connector::gate::MAX_CURSOR_BYTES {
@@ -248,8 +251,14 @@ mod tests {
     /// violate the contract its persistence must honor.
     #[test]
     fn the_cursor_gate_measures_the_re_serialized_form() {
-        // A compact wire spelling whose serialized form is ~4.5× larger.
-        let floats = format!("[{}]", vec!["1e15"; 300_000].join(","));
+        // Under the node ceiling — one string carries most of the
+        // bytes — with 65,000 compact floats whose serialized form is
+        // 4.5× larger, which is what crosses the byte contract.
+        let floats = format!(
+            "[{},\"{}\"]",
+            vec!["1e15"; 65_000].join(","),
+            "s".repeat(3_750_000)
+        );
         let parsed: serde_json::Value =
             serde_json::from_str(&floats).expect("compact exponent notation parses");
         assert!(

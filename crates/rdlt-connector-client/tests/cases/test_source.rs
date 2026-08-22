@@ -598,9 +598,14 @@ async fn a_control_character_cursor_value_is_data_not_refused() {
 /// crash-loop against the write-time line cap on every resume.
 #[tokio::test]
 async fn an_inflating_checkpoint_cursor_refuses_on_the_serialized_form() {
-    // ~1.4 MiB of compact wire bytes — well under the 4 MiB raw gate —
-    // whose re-serialization crosses it.
-    let floats = format!("[{}]", vec!["1e15"; 300_000].join(","));
+    // Under the 4 MiB raw gate AND the node ceiling (one string carries
+    // most of the bytes), whose re-serialization crosses the bytes:
+    // every `1e15` becomes `1000000000000000.0`.
+    let floats = format!(
+        "[{},\"{}\"]",
+        vec!["1e15"; 65_000].join(","),
+        "s".repeat(3_750_000)
+    );
     assert!(floats.len() < rdlt_connector::gate::MAX_CURSOR_BYTES as usize);
 
     let (_dir, path) = socket_path();

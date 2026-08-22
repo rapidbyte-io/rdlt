@@ -237,53 +237,10 @@ pub(super) fn refuse_oversized_spec_identifiers(spec: &source::StreamSpec) -> Re
     Ok(())
 }
 
-/// The greatest number of NODES a resume cursor may carry once parsed.
-/// The cursor's 4 MiB byte ceiling bounds what arrives; it does not
-/// bound what the arrival becomes, and structure is where an untyped
-/// document expands worst: `[0,0,0,…]` spends two wire bytes per
-/// element and buys a `Value` node — tens of bytes plus vector slack —
-/// so a legal 4 MiB cursor reaches a couple of million nodes, and the
-/// read RETAINS it for its whole lifetime, once per admitted read.
-/// Counting the nodes bounds that dimension without inspecting a
-/// single value: the cursor stays the opaque document its contract
-/// says it is, and only its size is judged. At this ceiling a retained
-/// cursor costs a few megabytes of structure beside the payload its
-/// byte ceiling already bounds; an honest resume cursor — a watermark,
-/// a page token, a handful of per-partition offsets — is orders of
-/// magnitude below it.
-pub(super) const MAX_CURSOR_NODES: usize = 64 * 1024;
-
-/// A parsed cursor's node count against the ceiling. The walk is
-/// ITERATIVE with its own stack: a cursor's nesting is bounded by the
-/// parser that produced it, but a recursive walk would make this gate
-/// the thing that overflows.
-///
-/// What this bounds is RETENTION, which is what a read holds for its
-/// lifetime and what the concurrency ceiling multiplies. It does not
-/// bound the parse: the document is already a `Value` by the time the
-/// walk runs, so the parse expansion has been paid whatever the count
-/// says — and the walk's own stack holds a pointer per child of every
-/// node it has popped, so crossing the ceiling is not free either. The
-/// gate stops the flood from being KEPT; the byte ceiling above is
-/// what stops it from being large.
+/// The cursor node ceiling and its walk are the SPI's one seat
+/// ([`gate::refuse_dense_cursor`]); this side spells the seat name.
 pub(super) fn refuse_dense_cursor(field: &str, value: &serde_json::Value) -> Result<(), String> {
-    let mut pending = vec![value];
-    let mut nodes = 0usize;
-    while let Some(node) = pending.pop() {
-        nodes += 1;
-        if nodes > MAX_CURSOR_NODES {
-            return Err(format!(
-                "{field} carries more than {MAX_CURSOR_NODES} document nodes — a resume cursor \
-                 is a position, not a payload"
-            ));
-        }
-        match node {
-            serde_json::Value::Array(items) => pending.extend(items.iter()),
-            serde_json::Value::Object(fields) => pending.extend(fields.values()),
-            _ => {}
-        }
-    }
-    Ok(())
+    gate::refuse_dense_cursor(field, value)
 }
 
 /// The greatest number of columns one ensured schema may declare, and

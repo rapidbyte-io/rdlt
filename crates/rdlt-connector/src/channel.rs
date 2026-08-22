@@ -270,7 +270,7 @@ impl ByteSized for PushPayload {
         match self {
             PushPayload::RawJson(bytes) => bytes.len(),
             PushPayload::Arrow(batch) => arrow_batch_footprint(batch),
-            PushPayload::Checkpoint(_) => 0,
+            PushPayload::Checkpoint(cursor) => cursor.resident_footprint(),
         }
     }
 }
@@ -955,10 +955,12 @@ mod records_tests {
             .expect("budget released");
     }
 
+    /// A checkpoint is charged for what its cursor holds, like every
+    /// other queued value — but a charge is capped at the budget total,
+    /// so on a zero budget a checkpoint still passes: one that could
+    /// not enqueue would stall the commit it announces.
     #[tokio::test]
     async fn a_checkpoint_passes_even_on_a_zero_budget() {
-        // A checkpoint that could not enqueue would stall the commit it
-        // announces — markers are never budgeted.
         let (mut out, mut input) = records(0);
         tokio::time::timeout(
             BOUND,
@@ -968,6 +970,33 @@ mod records_tests {
         .expect("a zero-byte marker must not wait on the budget")
         .expect("channel open");
         assert!(input.recv().await.is_some(), "the marker arrives");
+    }
+
+    /// A dense checkpoint costs the budget what it holds: against a
+    /// budget smaller than one cursor's footprint, a second checkpoint
+    /// parks until the first is drained — the flood of zero-cost
+    /// markers that rode past the budget no longer does.
+    #[tokio::test]
+    async fn a_dense_checkpoint_is_charged_to_the_budget() {
+        let cursor = Cursor::new(serde_json::Value::Array(vec![
+            serde_json::Value::Null;
+            1024
+        ]));
+        let footprint = cursor.resident_footprint();
+        assert!(
+            footprint > 1024,
+            "a thousand nodes cost more than a byte each"
+        );
+        let (mut out, mut input) = records(footprint);
+        out.checkpoint(cursor.clone())
+            .await
+            .expect("the first fills the budget");
+        let parked = tokio::time::timeout(Duration::from_millis(100), out.checkpoint(cursor)).await;
+        assert!(
+            parked.is_err(),
+            "the second waits on the budget the first holds"
+        );
+        drop(input.recv().await.expect("drain the first"));
     }
 
     #[tokio::test]

@@ -56,7 +56,10 @@ impl ByteSized for LoadItem {
     fn byte_size(&self) -> usize {
         match self {
             LoadItem::Batch { bytes, .. } => *bytes,
-            LoadItem::Delta { .. } | LoadItem::Checkpoint { .. } | LoadItem::Discarded { .. } => 0,
+            // A checkpoint's cursor is retained and persisted: charged
+            // for what it holds, like the push-side queue charges it.
+            LoadItem::Checkpoint { cursor, .. } => cursor.resident_footprint(),
+            LoadItem::Delta { .. } | LoadItem::Discarded { .. } => 0,
         }
     }
 }

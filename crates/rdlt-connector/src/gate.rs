@@ -130,6 +130,49 @@ pub fn refuse_oversized_document(field: &str, bytes: &[u8]) -> Result<(), String
     Ok(())
 }
 
+/// The greatest number of NODES a cursor may carry once parsed.
+/// [`MAX_CURSOR_BYTES`] bounds what arrives; it does not bound what the
+/// arrival becomes, and structure is where an untyped document expands
+/// worst: `[0,0,0,…]` spends two wire bytes per element and buys a
+/// `Value` node — tens of bytes plus vector slack — so a legal cursor
+/// reaches a couple of million nodes, and every seat that takes one
+/// RETAINS it (a read for its lifetime, a checkpoint into queued and
+/// persisted state, a state document into the destination's store).
+/// Counting the nodes bounds that dimension without inspecting a
+/// single value: the cursor stays the opaque document its contract
+/// says it is, and only its size is judged. An honest cursor — a
+/// watermark, a page token, a handful of per-partition offsets — is
+/// orders of magnitude below it.
+pub const MAX_CURSOR_NODES: usize = 64 * 1024;
+
+/// A parsed cursor's node count against [`MAX_CURSOR_NODES`] — the ONE
+/// walk every seat that parses a cursor runs immediately after the
+/// parse: a checkpoint from a source, a resume cursor into a source, a
+/// committed or read-back state document's cursors. Iterative with its
+/// own stack: a cursor's nesting is bounded by the parser that
+/// produced it, but a recursive walk would make this gate the thing
+/// that overflows. What it bounds is RETENTION; the byte ceiling bounds
+/// the parse that precedes it.
+pub fn refuse_dense_cursor(field: &str, value: &serde_json::Value) -> Result<(), String> {
+    let mut pending = vec![value];
+    let mut nodes = 0usize;
+    while let Some(node) = pending.pop() {
+        nodes += 1;
+        if nodes > MAX_CURSOR_NODES {
+            return Err(format!(
+                "{field} carries more than {MAX_CURSOR_NODES} document nodes — a cursor is a \
+                 position, not a payload"
+            ));
+        }
+        match node {
+            serde_json::Value::Array(items) => pending.extend(items.iter()),
+            serde_json::Value::Object(fields) => pending.extend(fields.values()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Render adversarial text for a DIAGNOSTIC, bounded: control
 /// characters (the terminal-injection class — ESC/BEL-driven OSC
 /// sequences, forged newlines) render as their spelled-out escapes,
@@ -660,6 +703,18 @@ pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cursor node ceiling is inclusive at its boundary, a broad
+    /// array spends it like a deep object, and the walk is the one
+    /// every cursor-parsing seat shares.
+    #[test]
+    fn the_cursor_node_ceiling_is_inclusive_at_the_boundary() {
+        let at = serde_json::Value::Array(vec![serde_json::Value::Null; MAX_CURSOR_NODES - 1]);
+        refuse_dense_cursor("a cursor", &at).expect("the array and its items are the ceiling");
+        let over = serde_json::Value::Array(vec![serde_json::Value::Null; MAX_CURSOR_NODES]);
+        let refusal = refuse_dense_cursor("a cursor", &over).expect_err("one node over");
+        assert!(refusal.contains(&MAX_CURSOR_NODES.to_string()), "{refusal}");
+    }
 
     /// The document ceiling, inclusive at its boundary — the client's
     /// boundary pin rides the same function through delegation.

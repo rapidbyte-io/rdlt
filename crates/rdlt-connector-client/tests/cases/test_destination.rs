@@ -860,7 +860,11 @@ async fn an_inflating_cursor_inside_the_state_document_refuses_on_serialization(
     // A document well under the 8 MiB document ceiling whose one cursor
     // serializes past the 4 MiB cursor contract — built through the real
     // `StateDoc` so the shape is the wire's own.
-    let floats = format!("[{}]", vec!["1e15"; 300_000].join(","));
+    let floats = format!(
+        "[{},\"{}\"]",
+        vec!["1e15"; 65_000].join(","),
+        "s".repeat(3_750_000)
+    );
     let mut doc = rdlt_connector::core::state::StateDoc::new(
         rdlt_connector::core::id::PipelineId::new("p"),
         "test",
