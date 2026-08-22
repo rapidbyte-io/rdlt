@@ -48,11 +48,14 @@ fn line_fake_body(role: &str, socket: &Path) -> String {
     )
 }
 
-/// Unwrap the `Client(Dial)` arm and return the socket path it names.
+/// The socket path the provider refused to reach: the advertised path
+/// of a never-bound socket is refused at acceptance (`SocketPath`,
+/// before any dial — the line was consumed and the path judged), and
+/// a bound-but-dead one at the dial.
 fn dial_path(error: Error) -> PathBuf {
     match error {
-        Error::Client(ClientError::Dial { path, .. }) => path,
-        other => panic!("expected Client(Dial), got {other:?}"),
+        Error::SocketPath { path, .. } | Error::Client(ClientError::Dial { path, .. }) => path,
+        other => panic!("expected SocketPath or Client(Dial), got {other:?}"),
     }
 }
 

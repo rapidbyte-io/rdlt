@@ -327,7 +327,20 @@ impl rdlt_connector::source::Source for Remote {
             let pushed = match frame.frame {
                 Some(read_frame::Frame::RawJson(bytes)) => out.raw_json(Bytes::from(bytes)).await,
                 Some(read_frame::Frame::ArrowIpc(bytes)) => {
-                    out.arrow(decode_one_batch(&bytes)?).await
+                    // The budget is held BEFORE the decode: decoding is
+                    // the allocation, and a read that decoded first
+                    // would hold a frame-sized batch while it waited —
+                    // once per concurrent read, which is the memory the
+                    // budget bounds. The encoded size is the floor;
+                    // the push settles the real footprint.
+                    let reservation = out.reserve(bytes.len()).await;
+                    match reservation {
+                        Ok(reservation) => match decode_one_batch(&bytes) {
+                            Ok(batch) => out.arrow_reserved(batch, reservation).await,
+                            Err(error) => return Err(error),
+                        },
+                        Err(closed) => Err(closed),
+                    }
                 }
                 Some(read_frame::Frame::CheckpointCursorJson(bytes)) => {
                     // The cursor contract, enforced at the trust boundary:

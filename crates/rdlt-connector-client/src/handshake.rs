@@ -95,12 +95,13 @@ impl Requirement {
     /// filename; none of that tolerates a control character, a path
     /// separator, or a multi-megabyte name. Checked once, at the seat
     /// every spawn goes through, so no provider has to remember to.
-    /// With an explicit `path` the path IS the identity and the id may
-    /// be empty (the certifier's path form); whatever id is given
-    /// still rides the identifier rule, since it renders.
+    /// With an explicit `path` the path IS the identity — the grammar
+    /// does not apply (the certifier's path form carries an empty id,
+    /// the CLI's carries the path itself); whatever id is given still
+    /// rides the identifier rule, since it renders.
     pub fn validate(&self) -> Result<(), error::Error> {
         gate::identifier("connector id", &self.id).map_err(error::Error::Requirement)?;
-        if self.path.is_some() && self.id.is_empty() {
+        if self.path.is_some() {
             return self.validate_version();
         }
         let well_formed = !self.id.is_empty()
@@ -410,10 +411,12 @@ mod requirement_tests {
                 "{bad}: {error}"
             );
         }
-        Requirement::new("")
-            .with_path("/usr/bin/rdlt-connector-x")
-            .validate()
-            .expect("the path form carries its identity in the path");
+        for id in ["", "/usr/bin/rdlt-connector-x"] {
+            Requirement::new(id)
+                .with_path("/usr/bin/rdlt-connector-x")
+                .validate()
+                .expect("the path form carries its identity in the path");
+        }
         let long = "a".repeat(rdlt_connector::gate::MAX_WIRE_IDENTIFIER_BYTES + 1);
         assert!(Requirement::new(long).validate().is_err());
         assert!(

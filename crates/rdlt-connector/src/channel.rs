@@ -168,11 +168,24 @@ impl<T: ByteSized> ByteSender<T> {
     /// itself exceeds `u32::MAX` (semaphore permits are `u32`), where a
     /// saturated request is still the same drain-everything request.
     pub async fn send(&self, value: T) -> Result<(), ChannelClosed> {
-        let bytes = value.byte_size();
+        let reservation = self.reserve(value.byte_size()).await?;
+        self.send_reserved(value, reservation).await
+    }
+
+    /// Hold `bytes` of the budget ahead of a value that does not exist
+    /// yet — the shape of a seat that must DECODE before it can send,
+    /// where decoding is itself the allocation: a read that decoded a
+    /// frame-sized batch and only then asked the budget would hold the
+    /// whole batch resident while it waited, once per concurrent read,
+    /// which is exactly the memory the budget exists to bound. Reserve
+    /// the encoded size first (a floor on what the decode will hold),
+    /// decode, then [`Self::send_reserved`] settles the difference.
+    /// Capped at the budget total like every request.
+    pub async fn reserve(&self, bytes: usize) -> Result<Reservation, ChannelClosed> {
         let requested = bytes.min(self.budget_total).try_into().unwrap_or(u32::MAX);
         // Zero-byte values skip the semaphore entirely: acquiring zero
         // permits would also succeed, but skipping states the intent —
-        // markers are not budgeted, and must pass even on a zero budget.
+        // a zero-cost marker must pass even on a zero budget.
         let permit = if requested > 0 {
             Some(
                 Arc::clone(&self.budget)
@@ -183,6 +196,47 @@ impl<T: ByteSized> ByteSender<T> {
         } else {
             None
         };
+        Ok(Reservation { permit })
+    }
+
+    /// Send a value under a prior [`Self::reserve`], settling the
+    /// reservation against the value's real footprint: the excess is
+    /// released, a shortfall is acquired before the send.
+    pub async fn send_reserved(
+        &self,
+        value: T,
+        reservation: Reservation,
+    ) -> Result<(), ChannelClosed> {
+        let bytes = value.byte_size();
+        let requested: u32 = bytes.min(self.budget_total).try_into().unwrap_or(u32::MAX);
+        let held: u32 = reservation.permit.as_ref().map_or(0, |permit| {
+            permit.num_permits().try_into().unwrap_or(u32::MAX)
+        });
+        let permit = match reservation.permit {
+            None if requested == 0 => None,
+            None => Some(
+                Arc::clone(&self.budget)
+                    .acquire_many_owned(requested)
+                    .await
+                    .map_err(|_| ChannelClosed)?,
+            ),
+            Some(mut permit) if held > requested => {
+                // Release the excess: split keeps `requested` here and
+                // drops the rest back into the budget.
+                let excess = held - requested;
+                drop(permit.split(excess as usize));
+                if requested == 0 { None } else { Some(permit) }
+            }
+            Some(mut permit) if held < requested => {
+                let more = Arc::clone(&self.budget)
+                    .acquire_many_owned(requested - held)
+                    .await
+                    .map_err(|_| ChannelClosed)?;
+                permit.merge(more);
+                Some(permit)
+            }
+            Some(permit) => Some(permit),
+        };
         self.messages
             .send(Permitted {
                 value,
@@ -192,6 +246,13 @@ impl<T: ByteSized> ByteSender<T> {
             .await
             .map_err(|_| ChannelClosed)
     }
+}
+
+/// Budget held ahead of a value — see [`ByteSender::reserve`]. Dropped
+/// unsent, it returns what it held.
+#[derive(Debug)]
+pub struct Reservation {
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl<T> ByteReceiver<T> {
@@ -422,6 +483,24 @@ impl RecordsOut {
     /// that already holds columnar data.
     pub async fn arrow(&mut self, batch: RecordBatch) -> Result<(), ChannelClosed> {
         self.channel.send(PushPayload::Arrow(batch)).await
+    }
+
+    /// Hold `bytes` of the budget ahead of a batch still to be decoded —
+    /// [`ByteSender::reserve`]'s shape for a wire seat: reserve the
+    /// encoded frame's size, decode, then [`Self::arrow_reserved`].
+    pub async fn reserve(&self, bytes: usize) -> Result<Reservation, ChannelClosed> {
+        self.channel.reserve(bytes).await
+    }
+
+    /// Push a batch under a prior [`Self::reserve`].
+    pub async fn arrow_reserved(
+        &mut self,
+        batch: RecordBatch,
+        reservation: Reservation,
+    ) -> Result<(), ChannelClosed> {
+        self.channel
+            .send_reserved(PushPayload::Arrow(batch), reservation)
+            .await
     }
 
     /// Declare every row pushed so far complete up to `cursor`.
@@ -997,6 +1076,45 @@ mod records_tests {
             "the second waits on the budget the first holds"
         );
         drop(input.recv().await.expect("drain the first"));
+    }
+
+    /// A reservation holds the budget ahead of the value: a second
+    /// reservation parks behind it, the send settles it to the value's
+    /// real footprint (the excess returns, a shortfall is acquired), and
+    /// a reservation dropped unsent returns everything it held.
+    #[tokio::test]
+    async fn a_reservation_holds_the_budget_and_settles_on_send() {
+        let (out, mut input) = records(64);
+        let held = out.reserve(64).await.expect("reserve the whole budget");
+        let parked = tokio::time::timeout(Duration::from_millis(50), out.reserve(1)).await;
+        assert!(parked.is_err(), "the budget is held by the reservation");
+        drop(held);
+        let held = out.reserve(64).await.expect("released on drop");
+        let mut out_sender = out;
+        out_sender
+            .channel
+            .send_reserved(PushPayload::RawJson(Bytes::from_static(b"1234")), held)
+            .await
+            .expect("settles down to four bytes");
+        let _sixty = out_sender
+            .reserve(60)
+            .await
+            .expect("the sixty released bytes are back in the budget");
+        drop(input.recv().await.expect("the queued push"));
+        // 60 held, 4 free: a one-byte reservation settling to eight
+        // needs seven more than the three left.
+        let small = out_sender.reserve(1).await.expect("one byte");
+        let parked = tokio::time::timeout(
+            Duration::from_millis(50),
+            out_sender
+                .channel
+                .send_reserved(PushPayload::RawJson(Bytes::from_static(b"12345678")), small),
+        )
+        .await;
+        assert!(
+            parked.is_err(),
+            "a shortfall waits for the budget the other reservation holds"
+        );
     }
 
     #[tokio::test]

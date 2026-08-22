@@ -29,6 +29,9 @@ use tokio::process::Child;
 pub struct Guard {
     child: Child,
     socket_path: PathBuf,
+    /// The advertised socket's identity — device and inode — at the
+    /// moment it was accepted: what the drop unlinks, and nothing else.
+    socket_inode: Option<(u64, u64)>,
     process_group: Option<u32>,
 }
 
@@ -42,6 +45,7 @@ impl Guard {
         Self {
             child,
             socket_path: PathBuf::new(),
+            socket_inode: None,
             process_group,
         }
     }
@@ -50,8 +54,34 @@ impl Guard {
         &mut self.child
     }
 
-    pub(crate) fn set_socket_path(&mut self, socket_path: impl Into<PathBuf>) {
-        self.socket_path = socket_path.into();
+    /// Accept the socket the handshake line advertised — or refuse it.
+    ///
+    /// The path came verbatim from the child's stdout, and the
+    /// connector's configuration (credentials included) is about to be
+    /// sent to whatever listens there, so the path is held to the shape
+    /// only this user's own served connector produces: a socket (not a
+    /// symlink to one), inside a directory owned by this user that
+    /// nobody else can write. A path another user could have planted,
+    /// or an unrelated socket in a shared directory, is refused before
+    /// a byte of config leaves this process. The socket's inode is
+    /// recorded so the drop unlinks exactly what was accepted.
+    pub(crate) fn accept_socket_path(
+        &mut self,
+        socket_path: impl Into<PathBuf>,
+    ) -> Result<(), String> {
+        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+        let socket_path = socket_path.into();
+        let meta = std::fs::symlink_metadata(&socket_path).map_err(|error| error.to_string())?;
+        if !meta.file_type().is_socket() {
+            return Err("not a socket (a symlink at the path is not followed)".to_string());
+        }
+        let parent = socket_path
+            .parent()
+            .ok_or_else(|| "no parent directory".to_string())?;
+        rdlt_connector::core::fs::verify_private_dir(parent).map_err(|error| error.to_string())?;
+        self.socket_inode = Some((meta.dev(), meta.ino()));
+        self.socket_path = socket_path;
+        Ok(())
     }
 
     /// Signal and disarm the owned process group while the direct
@@ -104,13 +134,21 @@ impl Drop for Guard {
         // handshake line unlinking the socket FILE here. The two halves
         // are pinned together by rdlt-runtime's
         // `a_dead_predecessors_serve_dir_is_empty_and_rmdir_able`.
-        let is_socket = std::fs::symlink_metadata(&self.socket_path)
+        //
+        // And only the socket that was ACCEPTED: the entry at the path
+        // must still be the inode recorded then — a socket something
+        // else bound at the same name since is not this guard's to
+        // remove.
+        let Some(accepted) = self.socket_inode else {
+            return;
+        };
+        let unchanged = std::fs::symlink_metadata(&self.socket_path)
             .map(|meta| {
-                use std::os::unix::fs::FileTypeExt as _;
-                meta.file_type().is_socket()
+                use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+                meta.file_type().is_socket() && (meta.dev(), meta.ino()) == accepted
             })
             .unwrap_or(false);
-        if is_socket {
+        if unchanged {
             let _ = std::fs::remove_file(&self.socket_path);
         }
     }
@@ -246,7 +284,10 @@ mod tests {
     /// (the sleep survives the bound, the socket file remains).
     #[tokio::test]
     async fn the_guard_drop_kills_the_child_and_unlinks_the_socket() {
+        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod");
         let socket = dir.path().join("guarded.sock");
         // A REAL socket, not a stand-in file: the guard's unlink is
         // deliberately socket-only, so the unlink half of this pin
@@ -254,7 +295,9 @@ mod tests {
         let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("the socket binds");
 
         let mut guard = Guard::for_process_group(spawn_sleeper());
-        guard.set_socket_path(&socket);
+        guard
+            .accept_socket_path(&socket)
+            .expect("a private socket is accepted");
         let pid = guard.pid().expect("a just-spawned child has a pid");
         assert!(!process_dead(pid), "the child is alive while guarded");
         assert_eq!(guard.socket_path(), socket);
@@ -276,23 +319,63 @@ mod tests {
         );
     }
 
-    /// The guard unlinks ONLY a socket: the path comes verbatim from
-    /// the child's stdout handshake line, so a connector naming an
-    /// unrelated regular file must not commission the host to delete
-    /// it on cleanup.
+    /// The advertised path is held to the shape only this user's own
+    /// served connector produces, BEFORE any config is sent to it: a
+    /// regular file, a symlink to a socket, and a socket in a directory
+    /// other users can write are each refused — and nothing refused is
+    /// ever unlinked by the drop.
     #[tokio::test]
-    async fn the_guard_drop_leaves_a_non_socket_path_alone() {
+    async fn an_advertised_path_is_accepted_only_as_a_private_socket() {
+        use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod");
         let important = dir.path().join("important-file");
         std::fs::write(&important, b"operator data").expect("the file writes");
+        let socket = dir.path().join("real.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("binds");
+        let link = dir.path().join("link.sock");
+        std::os::unix::fs::symlink(&socket, &link).expect("link");
+        let shared = dir.path().join("shared");
+        std::fs::create_dir(&shared).expect("mkdir");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+        let planted = shared.join("planted.sock");
+        let _planted = std::os::unix::net::UnixListener::bind(&planted).expect("binds");
 
+        for (name, path, expected) in [
+            ("a regular file", &important, "not a socket"),
+            ("a symlink", &link, "not a socket"),
+            ("a shared directory", &planted, "0777"),
+        ] {
+            let mut guard = Guard::for_process_group(spawn_sleeper());
+            let refusal = guard.accept_socket_path(path).expect_err(name);
+            assert!(refusal.contains(expected), "{name}: {refusal}");
+            drop(guard);
+            assert!(path.exists(), "{name}: nothing refused is unlinked");
+        }
+        assert_eq!(std::fs::read(&important).expect("file"), b"operator data");
+    }
+
+    /// The drop unlinks exactly the socket that was accepted: one
+    /// re-bound at the same name since — another inode — is left for
+    /// whoever bound it.
+    #[tokio::test]
+    async fn the_guard_drop_leaves_a_socket_rebound_since_acceptance_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod");
+        let socket = dir.path().join("rebound.sock");
+        let first = std::os::unix::net::UnixListener::bind(&socket).expect("binds");
         let mut guard = Guard::for_process_group(spawn_sleeper());
-        guard.set_socket_path(&important);
+        guard.accept_socket_path(&socket).expect("accepted");
+        drop(first);
+        std::fs::remove_file(&socket).expect("unbind the first");
+        let _second = std::os::unix::net::UnixListener::bind(&socket).expect("rebinds");
         drop(guard);
-
         assert!(
-            important.exists(),
-            "a handshake line naming a non-socket must not get it deleted"
+            socket.exists(),
+            "the rebound socket is not this guard's to unlink"
         );
     }
 }

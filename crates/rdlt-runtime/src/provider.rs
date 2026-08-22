@@ -140,6 +140,21 @@ pub enum Error {
         /// signal or another failure code.
         status: std::process::ExitStatus,
     },
+    /// The socket the handshake line advertised is not one this host
+    /// will hand its configuration to: not a socket, a symlink, or in a
+    /// directory that is not this user's and private. The connector's
+    /// config can carry credentials, and they are sent to whatever
+    /// listens at the advertised path — so the path must be one only
+    /// this user could have bound.
+    #[error("connector `{binary}` advertised a socket this host will not dial ({}): {reason}", path.display())]
+    SocketPath {
+        /// The binary that advertised it.
+        binary: String,
+        /// The advertised path.
+        path: std::path::PathBuf,
+        /// What was wrong with it.
+        reason: String,
+    },
     /// Everything past the handshake line is the client crate's to
     /// classify: dialing the advertised socket, the handshake RPC,
     /// identity and version verification.

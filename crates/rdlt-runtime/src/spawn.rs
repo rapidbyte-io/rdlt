@@ -203,7 +203,13 @@ pub(crate) async fn spawn(
                     ours: PROTOCOL_VERSION,
                 });
             }
-            guard.set_socket_path(parsed.socket_path.clone());
+            guard
+                .accept_socket_path(parsed.socket_path.clone())
+                .map_err(|reason| Error::SocketPath {
+                    binary: binary.to_string(),
+                    path: parsed.socket_path.clone(),
+                    reason,
+                })?;
             Ok((guard, parsed))
         }
     }
