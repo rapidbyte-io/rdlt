@@ -85,7 +85,11 @@ jobs:
         # offender. The sdk must be present at all — a connector that
         # depends on no engine cannot be certified against one. The
         # graph is read with the features the certify step runs under,
-        # so a feature-gated dependency is judged too.
+        # so a feature-gated dependency is judged too. Three engine-repo
+        # crates are deliberately NOT seats: rdlt-cli, rdlt-bench and
+        # rdlt-connector-reference judge no connector, and a connector
+        # that depends on one of them at all has already left the
+        # one-dependency rule the sdk's own gate enforces.
         run: |
           cargo metadata --format-version 1 --features spawn-bins > metadata.json
           offenders=$(jq -r --arg repo "$ENGINE_REPO" --arg rev "$ENGINE_REV" '

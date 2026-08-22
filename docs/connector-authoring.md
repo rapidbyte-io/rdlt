@@ -276,12 +276,15 @@ The path for a new non-Rust connector:
 
 The Python connector is a PROOF of the polyglot claim, not a posture to
 copy — it passes every clause while standing below the reference
-connector on four points the clauses do not reach. Know them before
-copying its shape: it has no `Read` admission ceiling (concurrent reads
-queue silently where the reference refuses typed past its bound); it
-emits a file's newline-less final line where the reference withholds a
-line until its terminator arrives; its cursor is an offset alone, with
-no rewrite guard (a file rewritten shorter and regrown is re-read from
-the offset, not refused); and its line cap is the 64 MiB frame bound
-rather than the reference's 8 MiB. A production connector, in any
-language, holds the reference's posture on all four.
+connector on points the clauses do not reach. It holds the protocol's
+ceilings where the reference does (documents 8 MiB and cursors 4 MiB
+before any parse, 1024 declared streams with discovery refusing past
+them, 64 concurrent calls and 16 concurrent reads admitted, files
+opened never following a link and never parking on a FIFO, refusals
+that name no document content). Know the rest before copying its
+shape: it emits a file's newline-less final line where the reference
+withholds a line until its terminator arrives; its cursor is an offset
+alone, with no rewrite guard (a file rewritten shorter and regrown is
+re-read from the offset, not refused); and its line cap is the 64 MiB
+frame bound rather than the reference's 8 MiB. A production connector,
+in any language, holds the reference's posture on all of them.

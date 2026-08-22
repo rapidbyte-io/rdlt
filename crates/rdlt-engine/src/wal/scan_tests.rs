@@ -697,6 +697,39 @@ fn a_manifest_written_by_another_pipeline_refuses_as_foreign() {
     );
 }
 
+/// The occupancy gate outranks damage too: a foreign manifest whose
+/// verified header is followed by a corrupt line is still the foreign
+/// pipeline's — `Damaged` is an outcome the caller clears, and the
+/// damage behind a stranger's header is the stranger's to see, not
+/// ours to erase.
+#[test]
+fn a_damaged_foreign_manifest_still_refuses_as_foreign() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_manifest(
+        dir.path(),
+        &[WalRecord::Run {
+            format_version: WAL_FORMAT_VERSION,
+            load_id: LoadId::new("l"),
+            pipeline: PipelineId::new("orders"),
+        }],
+    );
+    let manifest = dir.path().join("manifest.jsonl");
+    let mut bytes = std::fs::read(&manifest).expect("manifest");
+    bytes.extend_from_slice(b"{\"rec\":\"garbage\" this is not a record\n");
+    std::fs::write(&manifest, &bytes).expect("append damage");
+    let outcome = scan(
+        dir.path(),
+        IdentRules::default(),
+        &PipelineId::new("customers"),
+        MAX_MANIFEST_TOTAL_BYTES,
+    );
+    assert!(
+        matches!(outcome, ScanOutcome::ForeignPipeline { ref occupant }
+            if occupant.as_str() == "orders"),
+        "foreign-ness outranks damage: {outcome:?}"
+    );
+}
+
 /// The occupancy gate outranks the version gate: a foreign manifest
 /// in a DIFFERENT format version must still refuse as foreign —
 /// `Unsupported` is a resolved outcome the caller clears, and the

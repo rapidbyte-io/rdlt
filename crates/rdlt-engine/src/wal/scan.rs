@@ -267,6 +267,21 @@ pub(crate) fn scan(
         }
     }
     if let Some(reason) = damaged {
+        // Occupancy is decided BEFORE damage: a `Damaged` verdict is
+        // cleared by the caller, and a foreign pipeline's manifest that
+        // happens to carry damage after its header is still the foreign
+        // pipeline's recovery material — not ours to clear. Any
+        // checksum-verified Run header naming another pipeline settles
+        // it; the damage behind it is the occupant's to see.
+        if let Some(occupant) = records.iter().find_map(|record| match record {
+            WalRecord::Run {
+                pipeline: run_pipeline,
+                ..
+            } if run_pipeline != pipeline => Some(run_pipeline.clone()),
+            _ => None,
+        }) {
+            return ScanOutcome::ForeignPipeline { occupant };
+        }
         return ScanOutcome::Damaged(reason);
     }
 

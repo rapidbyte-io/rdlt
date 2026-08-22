@@ -30,6 +30,7 @@ import argparse
 import glob
 import json
 import os
+import stat
 import sys
 import tempfile
 import threading
@@ -61,6 +62,21 @@ CURSOR_FORMAT_VERSION = 1
 # The protocol's frame ceiling (64 MiB), mirrored on this server so a
 # legally large frame is never refused by a stale 4 MiB default.
 MAX_FRAME_BYTES = 64 * 1024 * 1024
+# The protocol's document and cursor ceilings: a config or a stream
+# spec is held to 8 MiB and a cursor to 4 MiB BEFORE it is parsed —
+# the frame ceiling bounds the wire, not what parsing a compact
+# document materializes.
+MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_CURSOR_BYTES = 4 * 1024 * 1024
+# The protocol's stream ceiling: a source declares at most this many
+# streams, and discovery stops — refusing, not truncating — at the
+# first file past it rather than listing a directory of any size.
+MAX_DECLARED_STREAMS = 1024
+# Calls in flight at once, and of those, reads: the executor bounds
+# what RUNS; this bounds what is ADMITTED, so pending decoded requests
+# cannot pile up behind four busy workers without limit.
+MAX_CONCURRENT_RPCS = 64
+MAX_CONCURRENT_READS = 16
 # `raw_json` is nested inside a protobuf ReadFrame, whose tag and
 # length prefix must fit the gRPC send ceiling too. Keep deliberate
 # headroom rather than relying on the current varint width.
@@ -151,16 +167,24 @@ def validate_config(config_json: bytes):
     cause never echoes the document's bytes or values — a config may
     carry credentials, so refusals name fields and rules, not content.
     """
+    if len(config_json) > MAX_DOCUMENT_BYTES:
+        return None, (
+            f"the config document is {len(config_json)} bytes, over the "
+            f"{MAX_DOCUMENT_BYTES}-byte document ceiling"
+        )
     try:
         config = json.loads(config_json)
     except ValueError:
         return None, "the config document is not valid JSON"
     if not isinstance(config, dict):
         return None, "the config document must be a JSON object"
-    unknown = sorted(key for key in config if key != "dir")
+    # The unknown field is COUNTED, never named: a key is document
+    # content like any value, and a credential-bearing key handed to
+    # the wrong place would otherwise ride the refusal into a log.
+    unknown = sum(1 for key in config if key != "dir")
     if unknown:
         return None, (
-            f"unknown config field `{unknown[0]}` — this connector's config "
+            f"{unknown} unknown config field(s) — this connector's config "
             "carries exactly one field, `dir`"
         )
     if "dir" not in config:
@@ -179,28 +203,94 @@ def stream_names(directory: str):
 
     Symlinks are rejected outright (isfile alone FOLLOWS them): a link
     planted inside the configured directory could otherwise pull any
-    readable file on the host into a stream.
+    readable file on the host into a stream. The directory is walked
+    incrementally and the walk REFUSES at the first eligible file past
+    the stream ceiling — a directory of any size costs at most the
+    ceiling's worth of retained names. Returns (names, None) or
+    (None, cause).
     """
+    names = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if not entry.name.endswith(".jsonl"):
+                continue
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                continue
+            if len(names) >= MAX_DECLARED_STREAMS:
+                return None, (
+                    f"the configured directory holds more than {MAX_DECLARED_STREAMS} "
+                    "*.jsonl files — over the stream ceiling a source may declare"
+                )
+            names.append(entry.name[: -len(".jsonl")])
+    names.sort()
+    return names, None
 
-    def plain_file(name):
-        path = os.path.join(directory, name)
+
+def is_stream(directory: str, name: str) -> bool:
+    """Whether `name` is one declared stream: a plain *.jsonl file of
+    the directory, judged on that one entry rather than by listing the
+    directory again per read."""
+    if not name or "/" in name or name in (".", ".."):
+        return False
+    path = os.path.join(directory, name + ".jsonl")
+    try:
         return os.path.isfile(path) and not os.path.islink(path)
+    except OSError:
+        return False
 
-    return sorted(
-        name[: -len(".jsonl")]
-        for name in os.listdir(directory)
-        if name.endswith(".jsonl") and plain_file(name)
-    )
+
+class Admission:
+    """Process-wide call admission: at most MAX_CONCURRENT_RPCS calls
+    in flight, and of those at most MAX_CONCURRENT_READS reads. A call
+    past either ceiling is refused RESOURCE_EXHAUSTED before it parses
+    or touches the filesystem — the executor's workers bound what runs,
+    this bounds what waits behind them."""
+
+    def __init__(self):
+        self._calls = threading.BoundedSemaphore(MAX_CONCURRENT_RPCS)
+        self._reads = threading.BoundedSemaphore(MAX_CONCURRENT_READS)
+
+    def call(self, context):
+        return self._admit(self._calls, context, "calls")
+
+    def read(self, context):
+        return self._admit(self._reads, context, "reads")
+
+    @staticmethod
+    def _admit(semaphore, context, what):
+        if not semaphore.acquire(blocking=False):
+            context.abort(
+                grpc.StatusCode.RESOURCE_EXHAUSTED,
+                f"too many concurrent {what} into this connector — the ceiling is reached",
+            )
+        return _Permit(semaphore)
+
+
+class _Permit:
+    def __init__(self, semaphore):
+        self._semaphore = semaphore
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self._semaphore.release()
+        return False
 
 
 class Connector(pb_grpc.ConnectorServicer):
     """The role-generic service: Handshake, Check, and the config-free
     Spec (the one RPC that legally answers before any handshake)."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, admission: "Admission"):
         self._session = session
+        self._admission = admission
 
     def Handshake(self, request, context):
+        with self._admission.call(context):
+            return self._handshake(request)
+
+    def _handshake(self, request):
         def refuse(message):
             return pb.HandshakeReply(error=fatal(message))
 
@@ -235,8 +325,9 @@ class Connector(pb_grpc.ConnectorServicer):
         )
 
     def Check(self, request, context):
-        self._session.require(context)
-        return pb.CheckReply(ok=pb.Empty())
+        with self._admission.call(context):
+            self._session.require(context)
+            return pb.CheckReply(ok=pb.Empty())
 
     def Spec(self, request, context):
         # Deliberately no session check: Spec is static identity,
@@ -248,34 +339,53 @@ class SourceService(pb_grpc.SourceServiceServicer):
     """The source half: discover-then-stream over the configured
     directory's *.jsonl files."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, admission: "Admission"):
         self._session = session
+        self._admission = admission
 
     def Streams(self, request, context):
-        directory = self._session.require(context)
-        specs = [
-            json.dumps(
-                {
-                    "name": name,
-                    "primary_key": None,
-                    "cursor_field": None,
-                    "type_hints": {},
-                    "structured": False,
-                }
-            ).encode()
-            for name in stream_names(directory)
-        ]
-        # The framing rule (the proto field's contract): one JSON
-        # document per line, joined by single newlines, no trailing
-        # newline, empty = zero streams.
-        return pb.StreamsReply(ok=pb.StreamList(stream_specs_jsonl=b"\n".join(specs)))
+        with self._admission.call(context):
+            directory = self._session.require(context)
+            names, cause = stream_names(directory)
+            if cause is not None:
+                return pb.StreamsReply(error=fatal(cause))
+            specs = [
+                json.dumps(
+                    {
+                        "name": name,
+                        "primary_key": None,
+                        "cursor_field": None,
+                        "type_hints": {},
+                        "structured": False,
+                    }
+                ).encode()
+                for name in names
+            ]
+            # The framing rule (the proto field's contract): one JSON
+            # document per line, joined by single newlines, no trailing
+            # newline, empty = zero streams.
+            return pb.StreamsReply(ok=pb.StreamList(stream_specs_jsonl=b"\n".join(specs)))
 
     def Read(self, request, context):
+        with self._admission.call(context), self._admission.read(context):
+            yield from self._read(request, context)
+
+    def _read(self, request, context):
         directory = self._session.require(context)
 
         # Every refusal below is a connector outcome, so it rides the
         # stream as its first and only frame — a terminal typed error,
-        # never a bare status and never a clean end of stream.
+        # never a bare status and never a clean end of stream. The
+        # document and cursor ceilings are judged on the raw bytes
+        # before anything is parsed.
+        if len(request.stream_spec_json) > MAX_DOCUMENT_BYTES:
+            yield pb.ReadFrame(
+                error=fatal(
+                    f"the read request's stream spec is {len(request.stream_spec_json)} "
+                    f"bytes, over the {MAX_DOCUMENT_BYTES}-byte document ceiling"
+                )
+            )
+            return
         name = None
         try:
             spec = json.loads(request.stream_spec_json)
@@ -283,37 +393,53 @@ class SourceService(pb_grpc.SourceServiceServicer):
                 name = spec.get("name")
         except ValueError:
             pass
-        if not isinstance(name, str):
+        if not isinstance(name, str) or len(name.encode()) > 1024:
             yield pb.ReadFrame(
                 error=fatal(
                     "the read request's stream spec does not decode as a "
-                    "stream declaration carrying a `name`"
+                    "stream declaration carrying a `name` within the identifier ceiling"
                 )
             )
             return
-        if name not in stream_names(directory):
+        if not is_stream(directory, name):
             yield pb.ReadFrame(
                 error=fatal(
-                    f"no stream named `{name}` — streams are the *.jsonl "
-                    "files of the configured directory"
+                    "no such stream — streams are the *.jsonl files of the "
+                    "configured directory"
                 )
             )
             return
 
         offset = 0
         if request.HasField("since_cursor_json"):
+            if len(request.since_cursor_json) > MAX_CURSOR_BYTES:
+                yield pb.ReadFrame(
+                    error=fatal(
+                        f"the since-cursor is {len(request.since_cursor_json)} bytes, "
+                        f"over the {MAX_CURSOR_BYTES}-byte cursor ceiling"
+                    )
+                )
+                return
             offset, cause = decode_cursor(request.since_cursor_json)
             if cause is not None:
                 yield pb.ReadFrame(error=fatal(cause))
                 return
 
         path = os.path.join(directory, name + ".jsonl")
-        # Open and reject symlinks atomically. The earlier directory
-        # discovery is only a snapshot; O_NOFOLLOW closes the swap
-        # window between that check and this read.
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        # Open and reject symlinks atomically, and never block: the
+        # earlier discovery is only a snapshot, O_NOFOLLOW closes the
+        # swap window for a link, O_NONBLOCK plus the fstat below close
+        # it for a FIFO (a plain open of one would park this worker
+        # until a writer appeared, which for a planted one is never).
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:
-            size = os.fstat(stream.fileno()).st_size
+            status = os.fstat(stream.fileno())
+            if not stat.S_ISREG(status.st_mode):
+                yield pb.ReadFrame(
+                    error=fatal("the stream's file is not a regular file")
+                )
+                return
+            size = status.st_size
             if offset > size:
                 yield pb.ReadFrame(
                     error=fatal(
@@ -382,8 +508,12 @@ def decode_cursor(cursor_json: bytes):
         return None, "the since-cursor is not a cursor document (a JSON object)"
     version = cursor.get("format_version")
     if version != CURSOR_FORMAT_VERSION:
+        # The version is reported by TYPE when it is not a number: a
+        # cursor's values are a document's content, and rendering a
+        # hostile container here would amplify it into the refusal.
+        found = version if isinstance(version, (int, float)) else type(version).__name__
         return None, (
-            f"unsupported cursor format_version {version!r} — this connector "
+            f"unsupported cursor format_version {found} — this connector "
             f"reads format_version {CURSOR_FORMAT_VERSION}"
         )
     offset = cursor.get("offset")
@@ -409,13 +539,17 @@ def main():
     session = Session()
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=4),
+        # The library's own admission ceiling sits beside this file's:
+        # past it a call is refused before any handler runs at all.
+        maximum_concurrent_rpcs=MAX_CONCURRENT_RPCS,
         options=(
             ("grpc.max_receive_message_length", MAX_FRAME_BYTES),
             ("grpc.max_send_message_length", MAX_FRAME_BYTES),
         ),
     )
-    pb_grpc.add_ConnectorServicer_to_server(Connector(session), server)
-    pb_grpc.add_SourceServiceServicer_to_server(SourceService(session), server)
+    admission = Admission()
+    pb_grpc.add_ConnectorServicer_to_server(Connector(session, admission), server)
+    pb_grpc.add_SourceServiceServicer_to_server(SourceService(session, admission), server)
 
     # Reclaim dead predecessors' socket dirs BEFORE minting our own.
     # rmdir-only is the WHOLE liveness check: the Rust side (probes,

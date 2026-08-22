@@ -31,8 +31,14 @@ in place; legacy formats and compatibility shims are not supported.
   measured on their serialized form — the WAL line budget), declared
   identifier lengths and key counts (names 1 KiB at the wire, 8–4096 for
   destination identifier rules), and rows per decoded Arrow batch (1 M at
-  every decode seat). In-flight read bytes are capped by one budget shared
-  across a run's streams. An admitted (gate-legal) frame can still expand
+  every decode seat, with width counted at every nesting depth and sibling
+  names unique at every level), cursor node counts (64 Ki at every seat
+  that parses one), part-close events per destination call (64 Ki, and only
+  for tables the session ensured), ensured tables per session (64 Ki), and
+  the document's own resource knobs (each with a ceiling a document cannot
+  exceed). In-flight read bytes are capped by one budget shared across a
+  run's streams — reserved on a frame's encoded size before it is decoded,
+  and charged for a checkpoint's cursor as well as a batch. An admitted (gate-legal) frame can still expand
   in memory when it becomes typed values — a maximally dense legal streams
   reply retains about 5× its wire bytes as parsed specs
   (the arithmetic is derived at the client's declaration-decode seat,
@@ -45,7 +51,12 @@ in place; legacy formats and compatibility shims are not supported.
   framing pre-pass (declared lengths must fit the bytes that carry them)
   plus a panic belt. Connector diagnostic text (ErrorFrame messages,
   Status text) is rendered escaped and bounded (4 KiB); a served source
-  admits at most 1024 concurrent reads (refused past it).
+  admits at most 1024 concurrent reads (refused past it). A read's permit
+  is held for as long as the client keeps its response stream open, with no
+  stall deadline on purpose: the engine parks a read exactly when its
+  destination is slow (the byte budget is the backpressure), so a deadline
+  there would fail honest slow pipelines to reap a rogue client that the
+  standing model already assumes can exhaust the process in other ways.
 - Structured (Arrow) input REFUSES typed any cast arrow would round, wrap,
   or null; it never discards.
 - Connector configuration can contain credentials, and must never be echoed
