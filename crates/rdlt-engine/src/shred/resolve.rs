@@ -418,6 +418,11 @@ fn enforce_discards<'v, V: JsonView<'v>>(
     let mut nulled_values = 0u64;
     rows.retain_mut(|row| {
         let mut keep = true;
+        // Counted per row and added only if the row survives: a row
+        // dropped after some of its values were nulled contributes its
+        // drop, not the nulls — otherwise the value count would depend
+        // on which of the row's keys came first.
+        let mut nulled_here = 0u64;
         for (key, value) in row.value.obj_entries() {
             let Some(offense) = offenses_by_key.get(key) else {
                 continue;
@@ -441,10 +446,13 @@ fn enforce_discards<'v, V: JsonView<'v>>(
                 }
                 PolicyAction::DiscardValue => {
                     row.nulled.insert(offense.source_key.clone());
-                    nulled_values += 1;
+                    nulled_here += 1;
                 }
                 PolicyAction::Evolve | PolicyAction::Freeze => unreachable!("filtered above"),
             }
+        }
+        if keep {
+            nulled_values += nulled_here;
         }
         keep
     });
@@ -466,6 +474,91 @@ fn enforce_discards<'v, V: JsonView<'v>>(
 #[cfg(test)]
 mod overlay_tests {
     use super::*;
+
+    /// The discard walk costs each row its own entries, never the
+    /// offense count: the arena's lookup meter — which every
+    /// per-offense `obj_get` would move — stays at zero across a walk
+    /// of many offenses over many rows, while the outcome is the one a
+    /// per-offense walk would have produced (the offending row dropped,
+    /// the honest ones kept). A regression to rows × offenses moves
+    /// the meter; the suite being green no longer hides it.
+    #[test]
+    fn the_discard_walk_never_consults_the_arena_per_offense() {
+        const OFFENSES: usize = 500;
+        const ROWS: usize = 200;
+        let mut arena = crate::shred::arena::Arena::default();
+        let mut text = Vec::new();
+        for row in 0..ROWS {
+            // Each row carries ONE key; the last row carries an offender.
+            if row + 1 == ROWS {
+                text.extend_from_slice(b"{\"new-7\":1}\n");
+            } else {
+                text.extend_from_slice(format!("{{\"honest\":{row}}}\n").as_bytes());
+            }
+        }
+        let ids = arena
+            .parse_rows(
+                &text,
+                rdlt_connector::channel::MAX_RECORD_BATCH_ROWS,
+                rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH,
+            )
+            .expect("the fixture parses");
+        let mut rows: Vec<Row<_>> = ids
+            .into_iter()
+            .enumerate()
+            .map(|(n, id)| Row {
+                value: arena.node(id),
+                id: RowId::from_bytes([n as u8; 32]),
+                parent_id: None,
+                root_id: None,
+                pos: None,
+                nulled: BTreeSet::new(),
+            })
+            .collect();
+        let mut buffer = TableBuffer::new(
+            rdlt_core::id::TableName::new("events"),
+            None,
+            rdlt_core::schema::IdentRules::default(),
+        );
+        let discard: Vec<(schema::Change, PolicyAction)> = (0..OFFENSES)
+            .map(|n| {
+                (
+                    schema::Change::AddColumn {
+                        column: rdlt_core::schema::Column {
+                            name: format!("new-{n}"),
+                            column_type: rdlt_core::schema::ColumnType::scalar(
+                                rdlt_core::types::LogicalType::Int64,
+                            ),
+                            nullable: true,
+                            provenance: rdlt_core::schema::Provenance::Inferred,
+                        },
+                    },
+                    PolicyAction::DiscardRow,
+                )
+            })
+            .collect();
+        let mut discarded = BTreeSet::new();
+        let mut items = Vec::new();
+        let before = arena.obj_probes();
+        enforce_discards(
+            &mut buffer,
+            &mut rows,
+            None,
+            &discard,
+            &mut discarded,
+            &mut items,
+        );
+        assert_eq!(arena.obj_probes() - before, 0, "no per-offense lookup");
+        assert_eq!((rows.len(), discarded.len()), (ROWS - 1, 1));
+        assert!(matches!(
+            items.as_slice(),
+            [LoadItem::Discarded {
+                rows: 1,
+                values: 0,
+                ..
+            }]
+        ));
+    }
 
     /// The DiscardValue overlay is consulted once per key per row while
     /// the policy is enforced and again per column per row while the

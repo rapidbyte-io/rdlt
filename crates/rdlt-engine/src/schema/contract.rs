@@ -21,10 +21,18 @@ pub(crate) fn value_fits<'a, V: JsonView<'a>>(value: V, ty: &ColumnType) -> bool
         (ValueKind::Null, _) => true,
         (_, ColumnType::Scalar { scalar }) => scalar_fits(value, *scalar),
         (ValueKind::Object, ColumnType::Struct { fields }) => {
+            // Fields by name once per object, not a scan per entry:
+            // this arm is reached once per row by the discard walk, and
+            // a struct's width is the wire's to choose — scan × entries
+            // × rows is the product the cell budget never sees.
+            let by_name: std::collections::BTreeMap<&str, &ColumnType> = fields
+                .iter()
+                .map(|field| (field.name.as_str(), &field.column_type))
+                .collect();
             value
                 .obj_entries()
-                .all(|(key, item)| match fields.iter().find(|f| f.name == key) {
-                    Some(field) => value_fits(item, &field.column_type),
+                .all(|(key, item)| match by_name.get(key) {
+                    Some(field_type) => value_fits(item, field_type),
                     None => item.is_null(), // a new nested field forced an evolution
                 })
         }

@@ -22,7 +22,7 @@ thiserror = { workspace = true }
 # The rest are `serve` only: the out-of-process protocol server.
 rdlt-connector-protocol = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["net"] }
+tokio = { workspace = true, optional = true, features = ["net", "time"] }
 tokio-stream = { workspace = true, optional = true, features = ["net"] }
 arrow = { workspace = true, optional = true }
 # `pem` only: the non-blocking open flag and, in tests, mkfifo — both
@@ -31,7 +31,7 @@ rustix = { workspace = true, optional = true, features = ["fs"] }
 
 [dev-dependencies]
 rdlt-testkit = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 # `serve` tests only: a raw tonic client dialed over the Unix socket the
 # way a real out-of-process host would.
 tower = { workspace = true }

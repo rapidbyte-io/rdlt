@@ -226,9 +226,10 @@ class Connector(pb_grpc.ConnectorServicer):
                 # Empty for sources — DestinationCapabilities is the
                 # destination role's document.
                 capabilities_json=b"",
-                # One cursor format exists, so there is nothing to
-                # negotiate and the versions document ships empty (the
-                # proto field's empty-means-empty-map convention).
+                # Declares no state-format ceiling: the document ships
+                # empty (the proto field's empty-means-empty-map
+                # convention). A source declares nothing the client
+                # enforces; the ceiling is the destination role's seat.
                 state_format_versions_json=b"",
             )
         )

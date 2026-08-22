@@ -44,10 +44,12 @@
 //! process, so the two ceilings coincide as shipped. Deliberate:
 //! loosening it later is additive; a backend's own per-session staging
 //! guard is defense in depth BEHIND this ceiling, not a replacement.
-//! There is no idle timeout: a stalled but LIVE client holds the slot
-//! until the provider supervising the connector process evicts it; a
-//! client that vanished is reaped by the keepalive
-//! (`wire::KEEPALIVE_INTERVAL`), which frees the slot with its
+//! There is no idle timeout: a stalled but LIVE client that has spoken
+//! HTTP/2 holds the slot until the provider supervising the connector
+//! process evicts it. A client that vanished after speaking is reaped
+//! by the HTTP/2 keepalive (`wire::KEEPALIVE_INTERVAL`); one that
+//! connected and never spoke, by the preface deadline
+//! (`wire::PREFACE_DEADLINE`) — each frees the connection slot with the
 //! connection.
 //!
 //! [`run`] is what a spawned connector process runs; [`run_on`] is the

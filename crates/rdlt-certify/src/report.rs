@@ -205,10 +205,11 @@ pub const CLAUSES: &[Clause] = &[
         definition: "The handshake's state_format_versions_json document must decode as one \
                      JSON object mapping state kind to format version; an undecodable document \
                      fails the whole handshake. Empty declares no ceiling; a populated one is \
-                     the connector's declared ceiling per state kind, which the client holds \
-                     persisted state to — a document newer than the declaration is refused \
-                     before extraction, both versions named. The clause judges the document's \
-                     shape, not its values.",
+                     the connector's declared ceiling per state kind. For a DESTINATION the \
+                     client holds persisted state to it — a document newer than the \
+                     declaration is refused before extraction, both versions named; a source \
+                     persists no state, so its map is carried and enforced nowhere. The \
+                     clause judges the document's shape, not its values.",
     },
     Clause {
         id: "P8",

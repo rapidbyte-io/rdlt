@@ -57,6 +57,15 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     load_id: &LoadId,
 ) -> Result<(RecordBatch, u64), ArrowError> {
     let mut misfits: u64 = 0;
+    let data_columns = schema
+        .columns
+        .iter()
+        .filter(|column| !schema::system::is_system(column.name.as_str()))
+        .count();
+    let indexes: Vec<Option<Vec<(&'v str, V)>>> = rows
+        .iter()
+        .map(|row| row_index(row, data_columns))
+        .collect();
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
     for column in &schema.columns {
         let array: ArrayRef = match column.name.as_str() {
@@ -112,8 +121,23 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
                     .get(column.name.as_str())
                     .map(String::as_str)
                     .unwrap_or(column.name.as_str());
-                let values: Vec<Option<V>> =
-                    rows.iter().map(|row| row.top_level(source_key)).collect();
+                let values: Vec<Option<V>> = rows
+                    .iter()
+                    .zip(&indexes)
+                    .map(|(row, index)| match index {
+                        Some(index) => {
+                            if row.nulled.contains(source_key) {
+                                None
+                            } else {
+                                index
+                                    .binary_search_by(|(key, _)| (*key).cmp(source_key))
+                                    .ok()
+                                    .map(|at| index[at].1)
+                            }
+                        }
+                        None => row.top_level(source_key),
+                    })
+                    .collect();
                 build_column(&column.column_type, &values, &mut misfits)
             }
         };
@@ -121,6 +145,37 @@ pub(crate) fn build_batch<'v, V: JsonView<'v>>(
     }
     let batch = RecordBatch::try_new(Arc::new(arrow_schema(schema)), arrays)?;
     Ok((batch, misfits))
+}
+
+/// The object width from which a row is indexed before extraction, and
+/// the table width it takes to make that worthwhile.
+///
+/// Extraction asks every row for every column, and an object's own
+/// lookup answers by scanning its entries when it is narrower than the
+/// arena's persisted-index width — priced per OBJECT, which is right
+/// for a row read a few times and wrong for one read once per column
+/// of a wide table: a row of a hundred keys against four thousand
+/// columns pays a hundred compares four thousand times over, and the
+/// cell budget, which bounds columns × rows, never sees the multiplier.
+/// Sorting a row's keys once costs its width, after which each column
+/// is a binary search; below this width the scan is the cheaper of the
+/// two and its product with the cell budget stays proportionate.
+const INDEX_ROW_FROM: usize = 8;
+
+/// A row's entries sorted by key — its keys are unique by the view
+/// contract — when the row and the table are both wide enough for the
+/// sort to pay (see [`INDEX_ROW_FROM`]); `None` when the plain lookup
+/// is the cheaper answer.
+fn row_index<'v, V: JsonView<'v>>(row: &Row<V>, data_columns: usize) -> Option<Vec<(&'v str, V)>> {
+    if data_columns <= INDEX_ROW_FROM {
+        return None;
+    }
+    let mut entries: Vec<(&'v str, V)> = row.value.obj_entries().collect();
+    if entries.len() < INDEX_ROW_FROM {
+        return None;
+    }
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    Some(entries)
 }
 
 /// Append one lineage id to a string column as lowercase hex, reusing `hex` as scratch
@@ -810,5 +865,93 @@ mod tests {
         assert_eq!(f.value(1), 9007199254740992.0, "2^53 itself is exact");
         assert_eq!(f.value(2), 1.5);
         assert!(f.is_null(3), "a string remains an ordinary misfit");
+    }
+}
+
+#[cfg(test)]
+mod extraction_cost_tests {
+    use std::collections::BTreeSet;
+
+    use rdlt_core::id::{LoadId, TableName};
+    use rdlt_core::schema::{Column, Provenance};
+
+    use super::*;
+    use crate::identity::RowId;
+
+    /// Narrow rows against a wide table are extracted in time
+    /// proportionate to the cells, not to cells × row width. The
+    /// arena's own lookup meter is the witness: rows just under its
+    /// persisted-index width would answer every column with a full
+    /// scan, and the build asks once per column per row — a product the
+    /// cell budget cannot see. Indexed at build, each row costs its
+    /// width once and a logarithm per column after.
+    #[test]
+    fn wide_tables_do_not_rescan_narrow_rows_per_column() {
+        const WIDTH: usize = 100;
+        const COLUMNS: usize = 2_000;
+        const ROWS: usize = 50;
+        let mut arena = crate::shred::arena::Arena::default();
+        let mut text = Vec::new();
+        for _ in 0..ROWS {
+            let object: Vec<String> = (0..WIDTH).map(|k| format!("\"k{k}\":{k}")).collect();
+            text.extend_from_slice(format!("{{{}}}\n", object.join(",")).as_bytes());
+        }
+        let ids = arena
+            .parse_rows(
+                &text,
+                rdlt_connector::channel::MAX_RECORD_BATCH_ROWS,
+                rdlt_connector::channel::MAX_JSON_VALUES_PER_PUSH,
+            )
+            .expect("the fixture parses");
+        let rows: Vec<Row<_>> = ids
+            .into_iter()
+            .map(|id| Row {
+                value: arena.node(id),
+                id: RowId::from_bytes([0u8; 32]),
+                parent_id: None,
+                root_id: None,
+                pos: None,
+                nulled: BTreeSet::new(),
+            })
+            .collect();
+        let schema = TableSchema {
+            table: TableName::new("wide"),
+            parent: None,
+            columns: (0..COLUMNS)
+                .map(|c| Column {
+                    name: format!("k{c}"),
+                    column_type: ColumnType::scalar(LogicalType::Int64),
+                    nullable: true,
+                    provenance: Provenance::Inferred,
+                })
+                .collect(),
+        };
+        let before = arena.obj_probes();
+        let (batch, misfits) = build_batch(
+            &schema,
+            &std::collections::HashMap::new(),
+            &rows,
+            &LoadId::new("l"),
+        )
+        .expect("builds");
+        let probes = arena.obj_probes() - before;
+        assert_eq!(
+            (batch.num_rows(), batch.num_columns(), misfits),
+            (ROWS, COLUMNS, 0)
+        );
+        // The present columns carry their values: the index answers what
+        // the scan did.
+        let first = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .expect("int64");
+        assert_eq!(first.value(0), 0);
+        assert_eq!(
+            probes,
+            0,
+            "no column lookup reached the arena's scan: {probes} probes for {} lookups",
+            ROWS * COLUMNS
+        );
     }
 }

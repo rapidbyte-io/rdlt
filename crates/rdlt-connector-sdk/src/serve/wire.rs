@@ -494,40 +494,55 @@ where
 /// same-UID client is the standing adversary there.
 pub const MAX_CONNECTIONS: usize = 64;
 
-/// Requests in flight at once on ONE connection, past which the rest
-/// queue. The sum of what the two admission seats admit process-wide:
-/// one connection can legitimately carry them all, and a count above it
-/// is a stream flood the per-call semaphores never see — `Spec` is
-/// admission-exempt by design, and each stream holds a frame-sized
-/// reply buffered until the client's window lets it drain.
+/// Streams open at once on ONE connection — the HTTP/2 setting the
+/// peer is told and that the transport enforces with `REFUSED_STREAM`
+/// past it. The sum of what the two admission seats admit
+/// process-wide: one connection can legitimately carry them all, and
+/// a count above it is a stream flood the per-call semaphores never
+/// see — `Spec` is admission-exempt by design, and each open stream
+/// costs a task and its headers before any gate runs. Refused at the
+/// transport, never queued: a queue is memory the peer fills at will.
 pub const MAX_REQUESTS_PER_CONNECTION: usize =
     MAX_CONCURRENT_CONNECTOR_CALLS + gate::MAX_DECLARED_STREAM_SPECS;
 
 /// How often a silent connection is pinged, and how long the peer has
 /// to answer before the connection is reaped. A peer that vanished —
 /// a crashed host, a black-holed route — otherwise holds its connection
-/// slot and every stream on it forever.
+/// slot and every stream on it forever. The pings start once the peer
+/// has spoken HTTP/2; before that [`PREFACE_DEADLINE`] is the reaper.
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// See [`KEEPALIVE_INTERVAL`].
 pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The server builder every served role starts from: the connection
-/// and per-connection request ceilings and the dead-peer keepalive,
-/// stated once so the private socket and the TCP binding cannot drift
-/// apart in what they bound.
+/// How long an admitted connection has to send its first byte. A peer
+/// that connects and never speaks — live, or vanished before its
+/// preface — is seen by no keepalive, since those arm only once HTTP/2
+/// is established, and would hold its slot under [`MAX_CONNECTIONS`]
+/// until the process restarted: a handful of silent connects would
+/// exclude every honest client for good. Past the deadline the read
+/// fails, the connection drops, and the slot returns.
+pub const PREFACE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The server builder every served role starts from: the per-connection
+/// stream ceiling and the dead-peer keepalive, stated once so the
+/// private socket and the TCP binding cannot drift apart in what they
+/// bound. No TCP-level keepalive: tonic ignores it for a caller-supplied
+/// accept stream, and the HTTP/2 pings reap what it would have.
 pub(super) fn server_builder() -> tonic::transport::Server {
     tonic::transport::Server::builder()
-        .concurrency_limit_per_connection(MAX_REQUESTS_PER_CONNECTION)
+        .max_concurrent_streams(Some(MAX_REQUESTS_PER_CONNECTION as u32))
         .http2_keepalive_interval(Some(KEEPALIVE_INTERVAL))
         .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
-        .tcp_keepalive(Some(KEEPALIVE_INTERVAL))
 }
 
 /// A connection admitted under [`MAX_CONNECTIONS`], holding its slot
-/// for as long as it lives.
+/// for as long as it lives — which, until its first byte arrives, is at
+/// most [`PREFACE_DEADLINE`].
 #[derive(Debug)]
 pub struct Connection<T> {
     io: T,
+    /// Armed at admission, disarmed by the first byte read.
+    preface_deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -537,7 +552,24 @@ impl<T: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Connection<T> {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+        if let Some(deadline) = self.preface_deadline.as_mut()
+            && std::future::Future::poll(deadline.as_mut(), cx).is_ready()
+        {
+            return std::task::Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "no bytes within the {}-second preface deadline — the connection is \
+                     closed and its slot released",
+                    PREFACE_DEADLINE.as_secs()
+                ),
+            )));
+        }
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.io).poll_read(cx, buf);
+        if matches!(polled, std::task::Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            self.preface_deadline = None;
+        }
+        polled
     }
 }
 
@@ -617,7 +649,11 @@ where
                 None => std::task::Poll::Ready(None),
                 Some(Err(error)) => std::task::Poll::Ready(Some(Err(error))),
                 Some(Ok(io)) => match Arc::clone(&self.slots).try_acquire_owned() {
-                    Ok(slot) => std::task::Poll::Ready(Some(Ok(Connection { io, _slot: slot }))),
+                    Ok(slot) => std::task::Poll::Ready(Some(Ok(Connection {
+                        io,
+                        preface_deadline: Some(Box::pin(tokio::time::sleep(PREFACE_DEADLINE))),
+                        _slot: slot,
+                    }))),
                     // Past the ceiling: `io` drops here, closing it, and
                     // the next accept is polled in the same turn.
                     Err(_) => continue,
@@ -1166,6 +1202,48 @@ mod connection_admission_tests {
             slots: Arc::clone(&admitted.slots),
         };
         assert!(again.next().await.is_some(), "the freed slot admits");
+    }
+
+    /// A connection that never speaks is closed at the preface deadline
+    /// and its slot returns; one that speaks keeps its slot past it.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_connection_is_reaped_at_the_preface_deadline() {
+        use tokio::io::AsyncReadExt as _;
+        let (silent, _silent_peer) = tokio::io::duplex(8);
+        let (speaking, mut speaking_peer) = tokio::io::duplex(8);
+        let items: Vec<Result<tokio::io::DuplexStream, io::Error>> = vec![Ok(silent), Ok(speaking)];
+        let mut admitted = admit_connections(tokio_stream::iter(items));
+        let mut silent = admitted.next().await.expect("first").expect("admitted");
+        let mut speaking = admitted.next().await.expect("second").expect("admitted");
+        assert_eq!(admitted.slots.available_permits(), MAX_CONNECTIONS - 2);
+
+        // The speaking peer's first byte lands before the deadline.
+        tokio::io::AsyncWriteExt::write_all(&mut speaking_peer, b"P")
+            .await
+            .expect("write");
+        let mut byte = [0u8; 1];
+        speaking
+            .read_exact(&mut byte)
+            .await
+            .expect("the preface byte");
+
+        tokio::time::advance(PREFACE_DEADLINE + Duration::from_secs(1)).await;
+        let reaped = silent
+            .read(&mut byte)
+            .await
+            .expect_err("the silent one is reaped");
+        assert_eq!(reaped.kind(), io::ErrorKind::TimedOut);
+        drop(silent);
+        assert_eq!(admitted.slots.available_permits(), MAX_CONNECTIONS - 1);
+
+        // Having spoken, the other is the keepalive's to judge, not this
+        // deadline's: a read past it still waits rather than failing.
+        let still_open =
+            tokio::time::timeout(Duration::from_secs(1), speaking.read(&mut byte)).await;
+        assert!(
+            still_open.is_err(),
+            "no deadline fires on a connection that spoke"
+        );
     }
 
     /// A source error passes through rather than costing a slot.

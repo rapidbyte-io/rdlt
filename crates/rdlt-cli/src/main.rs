@@ -51,11 +51,13 @@ fn main() -> ExitCode {
         }
     };
 
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
+    // Built on first use: the verbs that drive a connector need it, the
+    // diagnostic verbs below do not and never start one.
+    let runtime = || match tokio::runtime::Runtime::new() {
+        Ok(rt) => Ok(rt),
         Err(e) => {
             render::stderr::line(&format!("error: starting runtime: {e}"));
-            return ExitCode::from(2);
+            Err(ExitCode::from(2))
         }
     };
     match cli.color {
@@ -76,23 +78,30 @@ fn main() -> ExitCode {
             spec,
             report,
             events,
-        } => runtime.block_on(command::run::run(
-            spec,
-            report,
-            events,
-            console::Term::stdout().is_term(),
-            verbosity,
-            mode,
-            cli.output,
-        )),
-        args::Command::Check { spec } => runtime.block_on(command::check::check(spec, verbosity)),
-        args::Command::Schema { connector, role } => {
-            runtime.block_on(command::schema::print(&connector, role))
-        }
+        } => match runtime() {
+            Ok(rt) => rt.block_on(command::run::run(
+                spec,
+                report,
+                events,
+                console::Term::stdout().is_term(),
+                verbosity,
+                mode,
+                cli.output,
+            )),
+            Err(code) => return code,
+        },
+        args::Command::Check { spec } => match runtime() {
+            Ok(rt) => rt.block_on(command::check::check(spec, verbosity)),
+            Err(code) => return code,
+        },
+        args::Command::Schema { connector, role } => match runtime() {
+            Ok(rt) => rt.block_on(command::schema::print(&connector, role)),
+            Err(code) => return code,
+        },
         // The diagnostic verbs are synchronous and runtime-free by
         // design: doctor probes files, reclaim sweeps a directory,
-        // watch polls one — none of them needs an async runtime, so
-        // none starts one.
+        // watch polls one — none of them needs an async runtime, and
+        // the runtime above is built only by the arms that do.
         args::Command::Doctor { spec } => command::doctor::doctor(spec),
         args::Command::Reclaim => command::reclaim::reclaim(),
         args::Command::Watch { events } => command::watch::watch(events),

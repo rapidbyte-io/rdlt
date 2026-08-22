@@ -227,6 +227,15 @@ fn encode_one_batch(batch: &RecordBatch) -> Result<Vec<u8>, String> {
     rdlt_connector::gate::encode_batch_ipc(batch)
 }
 
+/// Cursors a state document may carry: one per stream, and a stream
+/// set is bounded by what a source may declare.
+pub const MAX_STATE_CURSORS: usize = rdlt_connector::gate::MAX_DECLARED_STREAM_SPECS;
+
+/// Schema hashes a state document may carry: one per table. The
+/// engine shreds at most 64 Ki tables per stream; a document past
+/// this names more tables than any run could have committed.
+pub const MAX_STATE_SCHEMA_HASHES: usize = 64 * 1024;
+
 /// The wire backend: one bidi session, each method one frame and its
 /// tagged reply. The public face is the sdk's
 /// [`Backend`](rdlt_connector_sdk::destination::Backend) trait —
@@ -497,6 +506,33 @@ impl rdlt_connector_sdk::destination::Backend for Backend {
                             rdlt_connector::gate::describe_parse_error(&error)
                         ))
                     })?;
+                    // The maps are counted before they are walked. A
+                    // document inside the byte ceiling can still hold
+                    // more entries than any pipeline has streams or
+                    // tables, and each entry costs a gate run here and
+                    // retention after; the counts are the engine's own
+                    // ceilings for what a stream set and its tables can
+                    // be, so an honest document never meets them.
+                    if doc.cursors.len() > MAX_STATE_CURSORS {
+                        return Err(DestinationError::protocol(format!(
+                            "the state document carries {} cursors, over the \
+                             {MAX_STATE_CURSORS}-stream ceiling",
+                            doc.cursors.len()
+                        )));
+                    }
+                    if doc.schema_hashes.len() > MAX_STATE_SCHEMA_HASHES {
+                        return Err(DestinationError::protocol(format!(
+                            "the state document carries {} schema hashes, over the \
+                             {MAX_STATE_SCHEMA_HASHES}-table ceiling",
+                            doc.schema_hashes.len()
+                        )));
+                    }
+                    // The table names are identifiers like the stream
+                    // names and ride the same gate.
+                    for table in doc.schema_hashes.keys() {
+                        gate::identifier("table name", table.as_str())
+                            .map_err(DestinationError::protocol)?;
+                    }
                     // And every cursor it carries honors the cursor
                     // contract on its SERIALIZED form — the same
                     // re-serialized gate the checkpoint seat runs, so a

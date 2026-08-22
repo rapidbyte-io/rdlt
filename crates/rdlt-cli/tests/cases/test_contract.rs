@@ -20,6 +20,37 @@ fn bad_usage_exits_64_and_stdout_stays_clean() {
     assert_eq!(out.status.code(), Some(64), "unknown subcommand");
 }
 
+/// The diagnostic verbs' codes: `doctor` exits 1 when any check has a
+/// finding (a document that does not parse is one) and 0 all-clear;
+/// `watch` of a file that does not exist yet is a usage refusal (2);
+/// `reclaim` sweeps nothing and exits 0. None of them touches stdout.
+#[test]
+fn the_diagnostic_verbs_keep_their_codes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broken = spec_file(dir.path(), "broken.yaml", "pipeline: [not a document\n");
+    let out = rdlt().arg("doctor").arg(&broken).output().expect("spawn");
+    assert_eq!(out.status.code(), Some(1), "a finding exits 1");
+    assert!(out.stdout.is_empty(), "findings render on stderr");
+
+    let out = rdlt()
+        .env("PATH", dir.path())
+        .arg("doctor")
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(0), "no document, no finding");
+
+    let out = rdlt()
+        .arg("watch")
+        .arg(dir.path().join("absent.ndjson"))
+        .output()
+        .expect("spawn");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("does not exist yet"));
+
+    let out = rdlt().arg("reclaim").output().expect("spawn");
+    assert_eq!(out.status.code(), Some(0));
+}
+
 /// `--help` and `--version` exit 0 — clap conventions.
 #[test]
 fn help_and_version_exit_zero() {

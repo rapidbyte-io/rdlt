@@ -679,6 +679,59 @@ async fn a_state_document_newer_than_the_declared_ceiling_refuses_at_read_state(
     );
 }
 
+/// A state document inside the byte ceiling that names more tables
+/// than any run could have committed is refused on the count — typed,
+/// naming the ceiling — before its entries are walked; and a table
+/// name that is not a wire identifier is refused as one.
+#[tokio::test]
+async fn a_state_document_past_its_entry_ceilings_refuses_at_read_state() {
+    use rdlt_connector_client::destination::MAX_STATE_SCHEMA_HASHES;
+    let mut doc = rdlt_connector::core::state::StateDoc::new(
+        rdlt_connector::core::id::PipelineId::new("p"),
+        "test",
+    );
+    for n in 0..=MAX_STATE_SCHEMA_HASHES {
+        doc.schema_hashes.insert(
+            rdlt_connector::core::id::TableName::new(format!("t{n}")),
+            rdlt_connector::core::id::SchemaHash::from_bytes([0u8; 32]),
+        );
+    }
+    let bytes = serde_json::to_vec(&doc).expect("a StateDoc serializes");
+    assert!(
+        (bytes.len() as u64) <= rdlt_connector::gate::MAX_DOCUMENT_BYTES,
+        "the fixture must pass the byte gate to reach the count gate"
+    );
+    let (_dir, path) = socket_path();
+    let _serving = rogue::serve_destination(
+        &path,
+        SessionScript::AnswerReadStateWith {
+            state_doc_json: bytes,
+        },
+    );
+    let remote = Remote::connect(
+        &path,
+        BUDGET_BYTES,
+        &serde_json::json!({}),
+        &Requirement::new("rogue"),
+    )
+    .await
+    .expect("connect")
+    .0;
+    let mut backend = remote.open_backend(&context()).await.expect("open");
+    let error = tokio::time::timeout(
+        BOUND,
+        backend.read_state(&rdlt_connector::core::id::PipelineId::new("p")),
+    )
+    .await
+    .expect("the refusal answers promptly")
+    .expect_err("a document past the table ceiling must refuse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains(&MAX_STATE_SCHEMA_HASHES.to_string()) && rendered.contains("ceiling"),
+        "the refusal names the ceiling: {rendered}"
+    );
+}
+
 /// The tolerant half of the negotiation: a connector that declares
 /// NOTHING (the empty document — the pre-negotiation convention, and
 /// every foreign connector that has not adopted the map yet) imposes no

@@ -37,10 +37,12 @@ $ target/py-certify-venv/bin/pip install -r connectors/python/rdlt-connector-pyj
 $ PATH="$PWD/target/py-certify-venv/bin:$PATH" target/debug/rdlt-certify \
       --role source \
       --config connectors/python/rdlt-connector-pyjsonl/fixtures/config.json \
+      --hostile-config connectors/python/rdlt-connector-pyjsonl/fixtures/hostile-config.json \
       connectors/python/rdlt-connector-pyjsonl/rdlt-connector-pyjsonl
 ```
 
-Every source clause (S1/S2/S4, P1–P7) must render PASS. The test gate
-runs exactly this line (venv cached under `target/py-certify-venv`,
+Every source clause (S1/S2/S4, the hostile-config clauses S5/S6, and
+P1–P7) must render PASS. The test gate runs this line after the
+vendored-stub drift check (venv cached under `target/py-certify-venv`,
 rebuilt when `requirements.txt` changes), skipping only when `python3`
 is absent.

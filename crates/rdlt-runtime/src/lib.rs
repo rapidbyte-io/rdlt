@@ -24,9 +24,8 @@
 //! outcome, roles, the client's error — is spelled at the client's own
 //! paths; nothing is re-exported here.
 //!
-//! The wire underneath is frozen (field numbers never move, evolution
-//! is additive), and this crate stays unpublished alongside the
-//! protocol and client crates until publishing is scheduled.
+//! The wire underneath is frozen: field numbers never move, evolution
+//! is additive.
 
 pub mod local;
 pub mod managed;

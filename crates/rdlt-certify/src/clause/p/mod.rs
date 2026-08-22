@@ -485,8 +485,10 @@ async fn p6_verdict(probe: &mut WireProbe) -> Result<(), String> {
 /// by the time a `HandshakeOk` exists (an undecodable field fails the
 /// whole handshake and cascades). Empty passes — no ceiling declared
 /// — and a populated map ALSO passes: it is the connector's declared
-/// ceiling per state kind, which the client enforces against persisted
-/// state at its `ReadState` seat. The clause judges shape, not values.
+/// ceiling per state kind, which the destination client enforces
+/// against persisted state at its `ReadState` seat (a source persists
+/// no state; its map is carried and enforced nowhere). The clause
+/// judges shape, not values.
 /// `Pass` carries no payload, so the tolerance evidence is pinned by
 /// the populated-map rogue rather than rendered here.
 fn report_p7(report: &mut Report, ok: &proto::HandshakeOk) {

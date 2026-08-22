@@ -55,3 +55,6 @@ connectors/python/rdlt-connector-pyjsonl/__pycache__/
 # symlink (a machine-local absolute path). Only mutants.toml is ours.
 /.cargo/*
 !/.cargo/mutants.toml
+# External review reports delivered into the root; worked from, never
+# shipped — a blanket `git add -A` must not sweep them in.
+/SECURITY_CODE_REVIEW*.md
