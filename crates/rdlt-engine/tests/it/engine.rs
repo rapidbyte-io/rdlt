@@ -651,3 +651,32 @@ async fn a_stopped_partition_commits_only_up_to_its_last_checkpoint() {
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!(published_ids("stopped_tail", "events"), ids(1, 20));
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_incremental_partition_that_starts_empty_reads_rows_added_later() {
+    let mut empty = ScriptStream::new("events", 1, 0, 5);
+    empty.final_checkpoint = false;
+    let (script, source) = Script::new(vec![empty]).connect("starts_empty").await;
+    let plan = pipeline(
+        "starts-empty",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let engine = engine(commit_every(10));
+    let first = engine
+        .run(plan.clone(), source, memory("starts_empty").await)
+        .await;
+    assert_eq!(
+        (first.report.status, first.report.rows),
+        (RunStatus::Succeeded, 0)
+    );
+    script.streams[0].grow(7);
+    let second = engine
+        .run(
+            plan,
+            reconnect("starts_empty").await,
+            memory("starts_empty").await,
+        )
+        .await;
+    assert_eq!(second.report.rows, 7);
+    assert_eq!(published_ids("starts_empty", "events"), ids(1, 7));
+}

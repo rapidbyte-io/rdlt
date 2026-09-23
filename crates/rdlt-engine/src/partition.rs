@@ -152,8 +152,9 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
         )
         .with_stream(&job.stream)
     })?;
-    if !ingested.stopped {
-        let state = end_state(&ingested);
+    if !ingested.stopped
+        && let Some(state) = end_state(&ingested)
+    {
         context.report(Progress::Sealed(ingested.open.seal(job.index, state, None)))?;
     }
     context.report(Progress::Ended {
@@ -162,16 +163,17 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
     })
 }
 
-/// Where a partition that read to its end resumes.
+/// Where a partition that read to its end resumes, if anywhere new.
 ///
 /// Rows written after the last checkpoint have no cursor that resumes past them, so committing
 /// them marks the partition `Done`. Otherwise the partition resumes from its last cursor, so an
-/// incremental read picks up rows the source adds later; a partition that never checkpointed is
-/// `Done`.
-fn end_state(ingested: &Ingested) -> PartitionState {
-    match &ingested.last_cursor {
-        Some(cursor) if ingested.open.rows == 0 => PartitionState::Cursor(cursor.clone()),
-        _ => PartitionState::Done,
+/// incremental read picks up rows the source adds later. A partition that read nothing and never
+/// checkpointed records no position, so its next read starts from the beginning again.
+fn end_state(ingested: &Ingested) -> Option<PartitionState> {
+    match (&ingested.last_cursor, ingested.open.rows) {
+        (Some(cursor), 0) => Some(PartitionState::Cursor(cursor.clone())),
+        (None, 0) => None,
+        _ => Some(PartitionState::Done),
     }
 }
 
