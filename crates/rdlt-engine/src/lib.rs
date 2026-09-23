@@ -18,15 +18,19 @@
     not(test),
     expect(
         dead_code,
-        reason = "the pipeline stages use these constructors from Task 5 on"
+        reason = "the attempt wires these stages together in Task 11"
     )
 )]
 
 mod compute;
+mod config;
 mod env;
 mod error;
+mod plan;
 mod scope;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
+pub use config::{CommitPolicy, EngineConfig, EngineConfigBuilder, RetryPolicy};
 pub use env::{Env, Sleep, SystemEnv};
 pub use error::{Error, ErrorKind, ErrorReport};
+pub use plan::{PipelinePlan, StreamPlan, WriteMode};
