@@ -26,14 +26,24 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   seal, even with a rows-only policy.
 - **End of partition.** A partition that reads to its end seals with its last cursor, so an
   incremental read resumes past it next run. Rows after the last checkpoint have no cursor that
-  resumes past them, so committing them marks the partition `Done`, as does never checkpointing.
-  The spec said `Done` always, which would stop incremental streams from ever growing.
+  resumes past them, so committing them marks the partition `Done`. A partition that read nothing
+  and never checkpointed records no position, so a stream that starts empty still loads rows added
+  later. The spec said `Done` always, which would stop incremental streams from ever growing.
 - **Full reads are cycles.** A `full` read records its generation when it first commits and
   deletes the previous cycle's partition entries; its last commit records it as `completed`. Each
-  run remembers the cycle it started or resumed per stream, so a retry after a landed final commit
-  (a lost response, a failed acknowledgement) does not read the stream again. Without this,
-  `full` + `append` appended a second copy. `TableRef` carries the generation `replace` writes
-  fill, and the contract gains `StateKey::Completed`.
+  run remembers the cycle it started or resumed per stream, and state keeps the stream's sixteen
+  most recently completed cycles, so a retry after a landed final commit (a lost response, a
+  failed acknowledgement) does not read the stream again, even when another run completed a cycle
+  in between. Without this, `full` + `append` appended a second copy. `TableRef` carries the
+  generation `replace` writes fill, and the contract gains `StateKey::Completed`.
+- **Every commit records its own receipt** in state. A run credits a commit whose response was lost
+  to the attempt that made it once a later attempt reads that receipt back, so the report matches
+  what the destination published.
+- **The budget is charged before a push enters its partition channel.** The contract's
+  `admitted_partition_channel` waits for admission of each push's bytes, so data a source has
+  handed over but the engine has not read stays within the budget (spec §7.5).
+- **One table per stream.** Until name maps (M2b), a stream's table is named after the stream, so
+  a plan whose streams would share a table is refused.
 - **Declared schemas and Arrow only.** Until the shredder (M3), a stream must declare its schema,
   JSON and change pushes are refused, and every batch must match the declared schema exactly.
   Until schema evolution (M2b), a committed schema that differs from the declared one is refused.
