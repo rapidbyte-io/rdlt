@@ -14,9 +14,19 @@
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```
 
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pipeline stages use these constructors from Task 5 on"
+    )
+)]
+
 mod compute;
 mod env;
+mod error;
 mod scope;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
 pub use env::{Env, Sleep, SystemEnv};
+pub use error::{Error, ErrorKind, ErrorReport};

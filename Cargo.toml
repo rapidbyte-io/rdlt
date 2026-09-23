@@ -46,6 +46,7 @@ tokio-util = { version = "0.7.19", default-features = false } # CancellationToke
 anyhow = "1.0.104"                                  # error reporting at xtask's command-line entry point
 cargo_metadata = "0.23.1"                           # xtask reads the workspace graph for the dependency rule
 clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask
+peak_alloc = "0.3.0"                                # the heap's peak size, for the engine's memory bound
 proptest = "1.11.0"                                 # property tests
 regex = "1.13.1"                                    # xtask lint patterns
 tempfile = "3.27.0"                                 # temporary directories in tests
@@ -79,3 +80,10 @@ large_futures = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unused_async_trait_impl = "allow"            # connectors implement async trait methods with `async fn`, awaiting or not
+
+# The simulation suite: optimised, since it replays thousands of seeds per run, with the overflow
+# checks and debug assertions a simulation exists to trip.
+[profile.sim]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
