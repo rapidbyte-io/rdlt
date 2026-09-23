@@ -45,6 +45,12 @@ coverage:
 mutants *args:
     cargo mutants --package rdlt-engine --package rdlt-connector {{ args }}
 
+# Mutation testing over this branch's changes, including uncommitted ones, against `base`
+mutants-diff base="origin/main":
+    mkdir -p target
+    git diff "$(git merge-base {{ base }} HEAD)" > target/mutants.diff
+    cargo mutants --package rdlt-engine --package rdlt-connector --in-diff target/mutants.diff -j 2
+
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`
 fuzz target seconds="60":
     rustup toolchain install {{ nightly }} --profile minimal
@@ -52,3 +58,6 @@ fuzz target seconds="60":
 
 # Everything the pull-request gate runs
 ci: lint test coverage (sim "" "10000")
+
+# Everything to run before pushing: the pull-request gate and mutation testing of the change
+ready: ci mutants-diff

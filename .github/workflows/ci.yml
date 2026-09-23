@@ -14,6 +14,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # A tool without a prebuilt binary fails its install instead of compiling for many minutes.
+  MISE_CARGO_BINSTALL_ONLY: "true"
 
 jobs:
   lint:
@@ -22,6 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: just typos taplo cargo-deny actionlint shellcheck pinact cargo-binstall cargo:cargo-machete cargo:cargo-hack
+          cache_key_prefix: mise-v1-lint
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -39,6 +45,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: just cargo-binstall cargo:cargo-nextest
+          cache_key_prefix: mise-v1-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -50,6 +60,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: just cargo-binstall cargo:cargo-nextest
+          cache_key_prefix: mise-v1-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -61,27 +75,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: just cargo-binstall cargo:cargo-nextest cargo:cargo-llvm-cov
+          cache_key_prefix: mise-v1-coverage
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just coverage
-
-  mutants:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: false
-      - run: git diff "origin/${BASE_REF}...HEAD" > pr.diff
-        env:
-          BASE_REF: ${{ github.base_ref }}
-      - run: just mutants --in-diff pr.diff
 
   commits:
     if: github.event_name == 'pull_request'
@@ -92,6 +93,10 @@ jobs:
         with:
           fetch-depth: 0
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: committed
+          cache_key_prefix: mise-v1-commits
       - run: committed "origin/${BASE_REF}..${HEAD_SHA}"
         env:
           BASE_REF: ${{ github.base_ref }}

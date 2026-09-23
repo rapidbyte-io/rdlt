@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  MISE_CARGO_BINSTALL_ONLY: "true"
+
 jobs:
   sim:
     runs-on: ubuntu-24.04
@@ -15,6 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: just cargo-binstall cargo:cargo-nextest
+          cache_key_prefix: mise-v1-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: false
@@ -26,4 +33,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: just cargo-binstall cargo:cargo-fuzz
+          cache_key_prefix: mise-v1-fuzz
       - run: just fuzz state_record 1200
