@@ -104,8 +104,16 @@ static SHOUT: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b[A-Z]{4,}\b"));
 static TODO: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b(TODO|FIXME|XXX)\b(\(#\d+\))?"));
 static SENTENCE_END: LazyLock<Regex> = LazyLock::new(|| pattern(r"[.!?](\s|$)"));
 static ABBREVIATION: LazyLock<Regex> = LazyLock::new(|| pattern(r"\b(e\.g|i\.e|etc|vs)\."));
-static STRINGLY: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r"Result<[^;{]*?,\s*(String|&'static\s+str)\s*>"));
+static RESULT_OPEN: LazyLock<Regex> = LazyLock::new(|| pattern(r"\bResult\s*<"));
+
+/// Error types a `Result` may not carry outside tests.
+const STRING_ERRORS: &[&str] = &[
+    "String",
+    "std::string::String",
+    "alloc::string::String",
+    "&'static str",
+    "&str",
+];
 static SELECT: LazyLock<Regex> = LazyLock::new(|| pattern(r"select!\s*\{"));
 
 /// Checks one scanned file against every rule.
@@ -231,7 +239,10 @@ fn check_code(role: FileRole, scan: &Scan, findings: &mut Vec<Finding>) {
         findings.push(finding(1, Rule::CommentRatio, message));
     }
     if !role.test {
-        for m in STRINGLY.find_iter(&scan.code) {
+        for m in RESULT_OPEN.find_iter(&scan.code) {
+            if !error_is_string(&scan.code[m.end()..]) {
+                continue;
+            }
             let line = line_of(&scan.code, m.start());
             findings.push(finding(
                 line,
@@ -250,6 +261,38 @@ fn check_code(role: FileRole, scan: &Scan, findings: &mut Vec<Finding>) {
             ));
         }
     }
+}
+
+/// Whether the last top-level argument of the generic list starting at `args` is a string type.
+fn error_is_string(args: &str) -> bool {
+    let mut depth = 0usize;
+    let mut last_start = 0;
+    let mut previous = ' ';
+    for (offset, c) in args.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' if previous == '-' => {}
+            ',' if depth == 0 => last_start = offset + 1,
+            '>' | ')' | ']' if depth == 0 => {
+                let last = args[last_start..offset].trim();
+                let last = if last.is_empty() {
+                    args[..last_start]
+                        .trim_end_matches([',', ' ', '\n'])
+                        .rsplit(',')
+                        .next()
+                } else {
+                    Some(last)
+                };
+                let normalized =
+                    last.map(|arg| arg.split_whitespace().collect::<Vec<_>>().join(" "));
+                return normalized.is_some_and(|arg| STRING_ERRORS.contains(&arg.as_str()));
+            }
+            '>' | ')' | ']' => depth -= 1,
+            _ => {}
+        }
+        previous = c;
+    }
+    false
 }
 
 fn line_of(text: &str, offset: usize) -> usize {

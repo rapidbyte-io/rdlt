@@ -38,6 +38,14 @@ fn each_rule_fires_on_its_violation() {
             Rule::StringlyError,
         ),
         ("tokio::select! { _ = a => {} }\n", Rule::UnbiasedSelect),
+        (
+            "fn f() -> Result<\n    (),\n    String,\n> {\n    g()\n}\n",
+            Rule::StringlyError,
+        ),
+        (
+            "fn f() -> Result<(), std::string::String> { g() }\n",
+            Rule::StringlyError,
+        ),
     ];
     for (source, rule) in cases {
         assert_eq!(rules(source), vec![*rule], "source: {source:?}");
@@ -56,6 +64,8 @@ fn allowed_forms_pass() {
         "/// Returns `a.b()`.\nfn f() {}\n",
         "fn f() -> Result<(), Error<String>> { g() }\n",
         "fn f() -> Result<String, Error> { g() }\n",
+        "fn f() -> Result<BTreeMap<String, String>, Error> { g() }\n",
+        "fn f(r: Result<u8, E>, m: BTreeMap<u8, String>) {}\n",
         "tokio::select! {\n    biased;\n    _ = a => {}\n}\n",
         "let s = \"select! { x }\";\n",
         "let warehouse = 1; // warehouse writer\n",
