@@ -223,7 +223,23 @@ async fn a_cursor_in_another_format_is_refused() {
     let source = connect(3).await;
     let cursor = Cursor::encode(1, &Next { n: 2 }).unwrap();
     let (result, _) = read_all(source.as_ref(), Some(cursor)).await;
-    assert_eq!(result.unwrap_err().code(), Some("cursor_version"));
+    let error = result.unwrap_err();
+    assert_eq!(error.code(), Some("cursor_version"));
+    assert!(error.to_string().contains("stream numbers"), "{error}");
+    let committed = source
+        .committed(
+            &numbers(),
+            &[(
+                PartitionId::whole(),
+                Cursor::encode(1, &Next { n: 2 }).unwrap(),
+            )],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        committed.to_string().contains("stream numbers"),
+        "{committed}"
+    );
 }
 
 #[tokio::test]

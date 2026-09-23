@@ -126,6 +126,13 @@ impl ConnectorError {
         self
     }
 
+    /// Names `stream` as the subject, for errors that would otherwise not say which stream failed.
+    #[must_use]
+    pub(crate) fn in_stream(mut self, stream: &crate::id::StreamName) -> Self {
+        self.message = format!("stream {stream}: {}", self.message);
+        self
+    }
+
     /// Attaches the underlying cause.
     #[must_use]
     pub fn with_source(mut self, source: impl StdError + Send + Sync + 'static) -> Self {

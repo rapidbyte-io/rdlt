@@ -11,8 +11,8 @@ impl LogicalType {
     /// The narrowest type that holds every value of `self` and of `other`.
     ///
     /// The join is associative, commutative and idempotent, `Null` is its identity and `Json`
-    /// absorbs every type. Floats and decimals never mix: they join to `Json` rather than round. An
-    /// integer joined with a float becomes `Float64`, which holds integers exactly only up to 2^53.
+    /// absorbs every type. Values are never rounded: an integer joins a float as `Float64` only when
+    /// `Float64` holds every value of both exactly, and floats and decimals join to `Json`.
     #[must_use]
     pub fn join(&self, other: &Self) -> Self {
         use LogicalType as T;
@@ -67,10 +67,15 @@ fn integer_digits(logical_type: &LogicalType) -> Option<u8> {
     }
 }
 
+/// Whether `a` and `b` are floats, or a float and an integer type `Float64` holds exactly.
+///
+/// `Float64` holds integers exactly up to 2^53, so `Int64` values would round: that mix joins to
+/// `Json` instead.
 fn is_numeric_float_mix(a: &LogicalType, b: &LogicalType) -> bool {
-    let is_float = |t: &LogicalType| matches!(t, LogicalType::Float32 | LogicalType::Float64);
-    let is_number = |t: &LogicalType| is_float(t) || integer_digits(t).is_some();
-    (is_float(a) && is_number(b)) || (is_float(b) && is_number(a))
+    use LogicalType as T;
+    let is_float = |t: &LogicalType| matches!(t, T::Float32 | T::Float64);
+    let is_exact = |t: &LogicalType| is_float(t) || matches!(t, T::Int8 | T::Int16 | T::Int32);
+    (is_float(a) && is_exact(b)) || (is_float(b) && is_exact(a))
 }
 
 /// A decimal holding `decimal` and a value with `integer_digits` before and `scale` after the point.
