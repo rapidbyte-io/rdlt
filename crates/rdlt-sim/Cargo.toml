@@ -9,10 +9,15 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+arrow-array.workspace = true
 parking_lot.workspace = true
+rdlt-connector.workspace = true
 rdlt-engine.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "test-util", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 
 [lints]
 workspace = true

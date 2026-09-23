@@ -15,3 +15,19 @@ fn the_same_seed_yields_the_same_sequence() {
         assert_eq!(a.next_u64(), b.next_u64());
     }
 }
+
+#[test]
+fn bounded_values_stay_below_their_bound_and_cover_it() {
+    let mut rng = SplitMix64::new(3);
+    let values: std::collections::BTreeSet<u64> = (0..200).map(|_| rng.below(5)).collect();
+    assert_eq!(values, (0..5).collect());
+}
+
+#[test]
+fn chances_follow_their_rate() {
+    let mut rng = SplitMix64::new(4);
+    assert!((0..100).all(|_| !rng.chance(0)));
+    assert!((0..100).all(|_| rng.chance(1000)));
+    let hits = (0..10_000).filter(|_| rng.chance(250)).count();
+    assert!((2_200..2_800).contains(&hits), "{hits}");
+}
