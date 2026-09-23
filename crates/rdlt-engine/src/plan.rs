@@ -75,7 +75,7 @@ pub struct PipelinePlan {
 }
 
 impl PipelinePlan {
-    /// Validates `streams` of `pipeline`: at least one stream, distinct names, and supported
+    /// Validates `streams` of `pipeline`: at least one stream, distinct names and tables, and supported
     /// combinations of read and write modes (`full` with `append` or `replace`, `incremental`
     /// with `append`).
     pub fn new(
@@ -90,6 +90,7 @@ impl PipelinePlan {
             );
         }
         let mut names = BTreeSet::new();
+        let mut tables = BTreeSet::new();
         for stream in &streams {
             if !names.insert(&stream.name) {
                 return Err(
@@ -97,6 +98,16 @@ impl PipelinePlan {
                         .with_code("plan_duplicate_stream")
                         .with_stream(&stream.name),
                 );
+            }
+            // Each stream loads the table named after it, so two names that display alike
+            // would write into one table.
+            if !tables.insert(stream.name.to_string()) {
+                return Err(Error::config(format!(
+                    "stream {} would load the same table as another selected stream",
+                    stream.name
+                ))
+                .with_code("plan_table_collision")
+                .with_stream(&stream.name));
             }
             check_modes(stream)?;
         }
