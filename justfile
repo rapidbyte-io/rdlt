@@ -23,6 +23,8 @@ lint:
     cargo deny check
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
     cargo hack check --workspace --each-feature --no-dev-deps
+    actionlint
+    pinact run --check
 
 # Run the test suite; extra arguments go to nextest
 test *args:
