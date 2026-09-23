@@ -24,7 +24,8 @@ pub struct MemoryDestinationConfig {
 /// Keeps published tables, staging and pipeline state in a named in-process store.
 ///
 /// Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
-/// fenced by the pipeline's epoch.
+/// fenced by the pipeline's epoch; so are flushes, so a fenced worker cannot stage rows that the
+/// latest session would publish.
 #[derive(Debug)]
 pub struct MemoryDestination {
     store: Arc<Mutex<Store>>,
@@ -155,6 +156,7 @@ impl Session for MemorySession {
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),
             pipeline: self.pipeline.clone(),
+            epoch: self.epoch,
             table: table.name.to_string(),
             buffered: Vec::new(),
         })
@@ -237,6 +239,7 @@ impl Session for MemorySession {
 pub struct MemoryWriter {
     store: Arc<Mutex<Store>>,
     pipeline: PipelineId,
+    epoch: Epoch,
     table: String,
     buffered: Vec<(SegmentId, RecordBatch)>,
 }
@@ -249,6 +252,17 @@ impl TableWriter for MemoryWriter {
 
     async fn flush(&mut self) -> Result<WriteStats> {
         let mut store = self.store.lock();
+        let current = store
+            .pipelines
+            .get(&self.pipeline)
+            .map(|pipeline| pipeline.epoch)
+            .unwrap_or_default();
+        if current != self.epoch {
+            return Err(ConnectorError::fenced(format!(
+                "pipeline {} is at epoch {current}; this writer's session opened at {}",
+                self.pipeline, self.epoch
+            )));
+        }
         let table = store.tables.entry(self.table.clone()).or_default();
         let mut stats = WriteStats::default();
         for (segment, batch) in self.buffered.drain(..) {

@@ -242,6 +242,11 @@ struct VaultConfig {
     no_fence: bool,
     wrong_fence_kind: bool,
     refuse_connect: bool,
+    forget_receipts: bool,
+    publish_all: bool,
+    local_epoch: bool,
+    local_state: bool,
+    stale_writes: bool,
 }
 
 #[derive(Default)]
@@ -261,22 +266,50 @@ fn vault(name: &str) -> SharedVault {
     Arc::clone(VAULTS.lock().unwrap().entry(name.to_owned()).or_default())
 }
 
+/// The shared store, and this connection's private one for the `local_*` flags.
+#[derive(Clone)]
+struct VaultStores {
+    shared: SharedVault,
+    local: SharedVault,
+}
+
+impl VaultConfig {
+    /// The pipeline's current epoch, from the store this configuration keeps epochs in.
+    fn epoch(&self, shared: &VaultStore, stores: &VaultStores, pipeline: &PipelineId) -> u64 {
+        let epochs = |store: &VaultStore| store.epochs.get(pipeline).copied().unwrap_or_default();
+        if self.local_epoch {
+            epochs(&stores.local.lock().unwrap())
+        } else {
+            epochs(shared)
+        }
+    }
+
+    fn state_store<'a>(&self, stores: &'a VaultStores) -> &'a SharedVault {
+        if self.local_state {
+            &stores.local
+        } else {
+            &stores.shared
+        }
+    }
+}
+
 struct Vault {
     config: Arc<VaultConfig>,
-    store: SharedVault,
+    stores: VaultStores,
 }
 
 struct VaultSession {
     config: Arc<VaultConfig>,
-    store: SharedVault,
+    stores: VaultStores,
     pipeline: PipelineId,
     epoch: u64,
 }
 
 struct VaultWriter {
     config: Arc<VaultConfig>,
-    store: SharedVault,
+    stores: VaultStores,
     pipeline: PipelineId,
+    epoch: u64,
     table: String,
 }
 
@@ -294,10 +327,13 @@ impl DestinationConnector for Vault {
         if config.refuse_connect {
             return Err(ConnectorError::config("refused"));
         }
-        let store = vault(&config.store);
+        let stores = VaultStores {
+            shared: vault(&config.store),
+            local: SharedVault::default(),
+        };
         Ok(Self {
             config: Arc::new(config),
-            store,
+            stores,
         })
     }
 
@@ -306,11 +342,22 @@ impl DestinationConnector for Vault {
     }
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<VaultSession>> {
-        let mut store = self.store.lock().unwrap();
-        let epoch = store.epochs.entry(context.pipeline.clone()).or_default();
-        *epoch += 1;
-        let epoch = *epoch;
-        let state = store
+        let epochs = if self.config.local_epoch {
+            &self.stores.local
+        } else {
+            &self.stores.shared
+        };
+        let epoch = {
+            let mut store = epochs.lock().unwrap();
+            let epoch = store.epochs.entry(context.pipeline.clone()).or_default();
+            *epoch += 1;
+            *epoch
+        };
+        let state = self
+            .config
+            .state_store(&self.stores)
+            .lock()
+            .unwrap()
             .state
             .get(&context.pipeline)
             .map(|state| state.values().cloned().collect())
@@ -322,7 +369,7 @@ impl DestinationConnector for Vault {
         };
         let session = VaultSession {
             config: Arc::clone(&self.config),
-            store: Arc::clone(&self.store),
+            stores: self.stores.clone(),
             pipeline: context.pipeline.clone(),
             epoch,
         };
@@ -331,6 +378,22 @@ impl DestinationConnector for Vault {
             epoch: reported,
             state,
         })
+    }
+}
+
+impl VaultSession {
+    /// The segments `meta` commits, or with `publish_all` every segment the pipeline staged.
+    fn segments_to_publish(&self, store: &VaultStore, meta: &CommitMeta) -> Vec<SegmentId> {
+        if self.config.publish_all {
+            store
+                .staged
+                .keys()
+                .filter(|(staged, _)| *staged == self.pipeline)
+                .map(|(_, segment)| *segment)
+                .collect()
+        } else {
+            meta.segments.iter().collect()
+        }
     }
 }
 
@@ -344,15 +407,17 @@ impl Session for VaultSession {
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
         Ok(VaultWriter {
             config: Arc::clone(&self.config),
-            store: Arc::clone(&self.store),
+            stores: self.stores.clone(),
             pipeline: self.pipeline.clone(),
+            epoch: self.epoch,
             table: table.name.to_string(),
         })
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
         if !self.config.keep_staging {
-            self.store
+            self.stores
+                .shared
                 .lock()
                 .unwrap()
                 .staged
@@ -362,8 +427,9 @@ impl Session for VaultSession {
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
-        let mut store = self.store.lock().unwrap();
-        if !self.config.no_fence && store.epochs[&self.pipeline] != self.epoch {
+        let mut store = self.stores.shared.lock().unwrap();
+        let current = self.config.epoch(&store, &self.stores, &self.pipeline);
+        if !self.config.no_fence && current != self.epoch {
             let error = if self.config.wrong_fence_kind {
                 ConnectorError::data("stale")
             } else {
@@ -372,11 +438,12 @@ impl Session for VaultSession {
             return Err(error);
         }
         let key = (meta.load_id, meta.commit_seq);
-        if let Some(receipt) = store.receipts.get(&key).filter(|_| !self.config.republish) {
+        let recall = !self.config.republish && !self.config.forget_receipts;
+        if let Some(receipt) = store.receipts.get(&key).filter(|_| recall) {
             return Ok(receipt.clone());
         }
         let mut rows = 0;
-        for segment in meta.segments.iter() {
+        for segment in self.segments_to_publish(&store, meta) {
             let key = (self.pipeline.clone(), segment);
             let batches = if self.config.republish {
                 store.staged.get(&key).cloned().unwrap_or_default()
@@ -389,7 +456,13 @@ impl Session for VaultSession {
             }
         }
         if !self.config.forget_state {
-            let state = store.state.entry(self.pipeline.clone()).or_default();
+            let mut local = self.stores.local.lock().unwrap();
+            let states = if self.config.local_state {
+                &mut local.state
+            } else {
+                &mut store.state
+            };
+            let state = states.entry(self.pipeline.clone()).or_default();
             for change in &meta.state_delta {
                 match change {
                     StateChange::Put(record) => state.insert(record.key.clone(), record.clone()),
@@ -417,7 +490,11 @@ impl Session for VaultSession {
 
 impl TableWriter for VaultWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.stores.shared.lock().unwrap();
+        let current = self.config.epoch(&store, &self.stores, &self.pipeline);
+        if !self.config.stale_writes && current != self.epoch {
+            return Err(ConnectorError::fenced("stale"));
+        }
         if self.config.publish_on_write {
             store
                 .published
@@ -478,11 +555,31 @@ async fn each_broken_destination_behavior_fails_exactly_its_clause() {
         ("keep_staging", "D-DISCARD"),
         ("no_fence", "D-FENCE"),
         ("wrong_fence_kind", "D-FENCE"),
+        ("forget_receipts", "D-IDEMPOTENT"),
+        ("publish_all", "D-COMMIT"),
+        ("local_state", "D-STATE"),
+        ("stale_writes", "D-DISCARD"),
     ];
     for (flag, clause) in cases {
         let report = certify_vault(flag, Some(flag)).await;
         assert_eq!(failed(&report), [clause], "{flag}: {report}");
     }
+}
+
+#[tokio::test]
+async fn epochs_kept_by_one_connection_fail_the_clauses_that_span_two() {
+    let report = certify_vault("local_epoch", Some("local_epoch")).await;
+    assert_eq!(
+        failed(&report),
+        ["D-EPOCH", "D-DISCARD", "D-FENCE"],
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn certification_passes_again_against_the_same_store() {
+    certify_vault("rerun", None).await.assert_passed();
+    certify_vault("rerun", None).await.assert_passed();
 }
 
 #[tokio::test]

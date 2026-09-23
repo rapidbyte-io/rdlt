@@ -141,9 +141,28 @@ impl PartitionId {
 
 /// A source-side stream name, with an optional namespace such as a database schema.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawStreamName")]
 pub struct StreamName {
     namespace: Option<Arc<str>>,
     name: Arc<str>,
+}
+
+/// A [`StreamName`] as serialized, validated before it becomes one.
+#[derive(Deserialize)]
+struct RawStreamName {
+    namespace: Option<String>,
+    name: String,
+}
+
+impl TryFrom<RawStreamName> for StreamName {
+    type Error = IdError;
+
+    fn try_from(raw: RawStreamName) -> Result<Self, IdError> {
+        match raw.namespace {
+            Some(namespace) => Self::with_namespace(namespace, raw.name),
+            None => Self::new(raw.name),
+        }
+    }
 }
 
 impl StreamName {

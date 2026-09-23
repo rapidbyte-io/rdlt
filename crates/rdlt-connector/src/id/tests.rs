@@ -87,6 +87,23 @@ fn ids_deserialize_only_when_valid() {
 }
 
 #[test]
+fn stream_names_deserialize_only_when_valid() {
+    let valid = StreamName::with_namespace("public", "orders").unwrap();
+    let json = serde_json::to_string(&valid).unwrap();
+    assert_eq!(serde_json::from_str::<StreamName>(&json).unwrap(), valid);
+    for invalid in [
+        r#"{"namespace":null,"name":""}"#,
+        r#"{"namespace":"","name":"orders"}"#,
+        r#"{"namespace":null,"name":"\u001b[31m"}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<StreamName>(invalid).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn stream_names_display_with_their_namespace() {
     assert_eq!(StreamName::new("orders").unwrap().to_string(), "orders");
     let qualified = StreamName::with_namespace("public", "orders").unwrap();

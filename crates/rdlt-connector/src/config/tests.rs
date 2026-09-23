@@ -17,6 +17,20 @@ struct Tls {
     verify: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct Token {
+    #[expect(dead_code, reason = "only parsing is under test")]
+    token: crate::Secret<u64>,
+}
+
+#[test]
+fn invalid_secret_values_are_not_quoted_in_errors() {
+    let error = parse::<Token>(json!({"token": "hunter2"})).unwrap_err();
+    assert_eq!(error.code(), Some("config_invalid"));
+    assert!(error.to_string().contains("token"), "{error}");
+    assert!(!error.to_string().contains("hunter2"), "{error}");
+}
+
 #[test]
 fn valid_configuration_parses() {
     let config: Config = parse(json!({"host": "db", "tls": {"verify": true}})).unwrap();
