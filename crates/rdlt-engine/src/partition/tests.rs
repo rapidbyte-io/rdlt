@@ -72,11 +72,15 @@ fn a_partition_ends_at_its_last_cursor_unless_rows_follow_it() {
     let cursor = Cursor::encode(1, &5u64).unwrap();
     assert_eq!(
         end_state(&ingested(0, Some(5))),
-        PartitionState::Cursor(cursor)
+        Some(PartitionState::Cursor(cursor))
     );
-    assert_eq!(end_state(&ingested(3, Some(5))), PartitionState::Done);
-    assert_eq!(end_state(&ingested(0, None)), PartitionState::Done);
-    assert_eq!(end_state(&ingested(3, None)), PartitionState::Done);
+    assert_eq!(end_state(&ingested(3, Some(5))), Some(PartitionState::Done));
+    assert_eq!(end_state(&ingested(3, None)), Some(PartitionState::Done));
+}
+
+#[test]
+fn a_partition_that_read_nothing_and_never_checkpointed_records_no_position() {
+    assert_eq!(end_state(&ingested(0, None)), None);
 }
 
 #[test]
