@@ -33,16 +33,26 @@ fn idle(name: &str, rows: u64) -> ScriptStream {
 /// D5: staging left by a crashed run is discarded when the next run opens.
 #[tokio::test(start_paused = true)]
 async fn redelivered_segments_are_never_published_twice() {
-    let (script, source) = Script::new(vec![idle("events", 20)]).connect("d5").await;
+    // The partition never checkpoints, so its rows stay in one unsealed segment. The first
+    // interval commit records the table's schema, which flushes that segment into staging.
+    let mut unsealed = idle("events", 20);
+    unsealed.checkpoint_every = u64::MAX;
+    unsealed.final_checkpoint = false;
+    let (script, source) = Script::new(vec![unsealed]).connect("d5").await;
     let plan = pipeline("d5", [stream("events").read(ReadMode::Incremental)]);
-    let never = CommitPolicy::new(None, Some(1_000_000), None).unwrap();
-    let engine = engine(EngineConfig::builder().commit(never).lanes(1));
+    let interval = CommitPolicy::new(Some(Duration::from_secs(1)), None, None).unwrap();
+    let engine = engine(EngineConfig::builder().commit(interval).lanes(1));
     let crashed = engine.run(plan.clone(), source, memory("d5").await);
     tokio::select! {
         biased;
         _ = crashed => panic!("the idle run never ends by itself"),
         () = tokio::time::sleep(Duration::from_secs(5)) => {}
     }
+    assert_eq!(
+        published_rows("d5", "events"),
+        0,
+        "the crashed run left its rows staged"
+    );
     script.streams[0].idle_off();
     let outcome = engine
         .run(plan, reconnect("d5").await, memory("d5").await)
