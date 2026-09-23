@@ -107,6 +107,8 @@ pub(crate) struct Script {
     /// Whether any read was ever asked for a checkpoint.
     pub(crate) asked: AtomicBool,
     reading: AtomicUsize,
+    /// Reads started.
+    pub(crate) reads: AtomicUsize,
     /// The most partitions ever read at once.
     pub(crate) peak_reading: AtomicUsize,
 }
@@ -252,6 +254,7 @@ impl ReadStream<ScriptSource> for Scripted {
         out: &mut Emitter<Offset>,
     ) -> Result<()> {
         let script = &source.script;
+        script.reads.fetch_add(1, Ordering::SeqCst);
         let reading = script.reading.fetch_add(1, Ordering::SeqCst) + 1;
         script.peak_reading.fetch_max(reading, Ordering::SeqCst);
         let result = self.read_rows(script, partition, cursor, out).await;
