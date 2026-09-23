@@ -1,2 +1,6 @@
 /target
 /mutants.out*
+/fuzz/artifacts
+/fuzz/corpus
+/fuzz/coverage
+/fuzz/target
