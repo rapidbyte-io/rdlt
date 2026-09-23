@@ -14,12 +14,9 @@
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the attempt wires these stages together in Task 11"
-    )
+#![expect(
+    dead_code,
+    reason = "the attempt wires these stages together in Task 11"
 )]
 
 mod budget;
@@ -28,6 +25,7 @@ mod config;
 mod env;
 mod error;
 mod lane;
+mod partition;
 mod plan;
 mod scope;
 
