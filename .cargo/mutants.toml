@@ -1,0 +1,2 @@
+test_tool = "nextest"
+exclude_globs = ["xtask/**", "crates/rdlt-sim/**"]
