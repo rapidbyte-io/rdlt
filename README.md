@@ -16,6 +16,7 @@ The toolchain is pinned in `rust-toolchain.toml`; every other tool is pinned in 
 mise install        # install the pinned tools
 just --list         # see every recipe
 just ci             # what the pull-request gate runs: lint, test, coverage, simulation
+just ready          # before pushing: `just ci` plus mutation testing of your change
 just sim 42         # replay simulation seed 42
 ```
 

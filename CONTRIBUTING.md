@@ -12,7 +12,8 @@ wins and the code is fixed.
   `fix(engine): release reservations on lane errors`. Subjects are imperative, lowercase, at most
   72 characters. Details go in the body.
 - Keep commits small and focused. Every fixed defect gets a regression test in the same change.
-- Run `just ci` before pushing.
+- Run `just ready` before pushing: the pull-request gate plus mutation testing of your change,
+  which CI does not repeat.
 
 ## Vocabulary
 
@@ -129,7 +130,7 @@ and durations are `Duration`, never integer milliseconds.
 
 A change is done when:
 
-1. `just ci` passes, with no lint allowance lacking a reason (use `#[expect(.., reason = "..")]`).
+1. `just ready` passes, with no lint allowance lacking a reason (use `#[expect(.., reason = "..")]`).
 2. Every public item is documented and no comment breaks the rules above.
 3. Its tests are behavioral, cover every defect it fixes, and include property tests where the
    code is law-like.
