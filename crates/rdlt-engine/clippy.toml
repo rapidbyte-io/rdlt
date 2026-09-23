@@ -1,0 +1,24 @@
+# The workspace clippy.toml settings, repeated because clippy reads only the nearest file,
+# plus the rules that keep the engine deterministic under simulation.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
+too-many-lines-threshold = 60
+
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "use Env::now so simulation controls time" },
+  { path = "std::time::Instant::now", reason = "use Env::instant so simulation controls time" },
+  { path = "tokio::time::Instant::now", reason = "use Env::instant so simulation controls time" },
+  { path = "tokio::time::sleep", reason = "use Env::sleep so simulation controls time" },
+  { path = "tokio::time::sleep_until", reason = "use Env::sleep so simulation controls time" },
+  { path = "tokio::spawn", reason = "spawn through TaskScope so every task has an owner" },
+  { path = "tokio::task::spawn", reason = "spawn through TaskScope so every task has an owner" },
+  { path = "tokio::task::spawn_blocking", reason = "run CPU work on Env::compute" },
+  { path = "rayon::spawn", reason = "run CPU work on Env::compute" },
+  { path = "getrandom::u64", reason = "use Env::random so simulation controls randomness" },
+  { path = "getrandom::fill", reason = "use Env::random so simulation controls randomness" },
+]
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "iteration order breaks deterministic simulation; use BTreeMap" },
+  { path = "std::collections::HashSet", reason = "iteration order breaks deterministic simulation; use BTreeSet" },
+]
