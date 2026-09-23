@@ -1,10 +1,12 @@
 //! The rdlt connector contract: the vocabulary, the traits connectors implement, and the SDK.
 
+mod capabilities;
 mod catalog;
 mod change;
 mod commit;
 mod config;
 mod cursor;
+mod destination;
 mod emitter;
 mod error;
 mod id;
@@ -17,10 +19,19 @@ mod spec;
 mod state;
 mod types;
 
+pub use capabilities::{
+    Capabilities, CommitKind, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules,
+    NestedSupport, SchemaChanges, WriteModes,
+};
 pub use catalog::{Catalog, Checkpointing, DuplicateStream, Partitioning, ReadMode, StreamSpec};
 pub use change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, validate_change_batch};
 pub use commit::{CommitMeta, Receipt, SegmentRange, SegmentSet, UnorderedRanges};
 pub use cursor::Cursor;
+pub use destination::{
+    Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
+    OpenContext, Opened, OpenedSession, Session, TableChange, TableRef, TableWriter, WriteStats,
+    destination_factory,
+};
 pub use emitter::Emitter;
 pub use error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result, ResultExt};
 pub use id::{
