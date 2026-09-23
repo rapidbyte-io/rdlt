@@ -243,7 +243,8 @@ async fn a_stopped_read_ends_cleanly() {
 async fn unknown_streams_are_config_errors() {
     let source = connect(1).await;
     let other = StreamName::new("other").unwrap();
-    let (sink, _feed) = partition_channel(NonZeroUsize::MIN);
+    // Nothing reads the feed, so a read that wrongly reached a stream ends instead of blocking.
+    let (sink, _) = partition_channel(NonZeroUsize::MIN);
     let request = ReadRequest {
         stream: other.clone(),
         partition: Partition::single(),

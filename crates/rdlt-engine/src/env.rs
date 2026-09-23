@@ -39,7 +39,7 @@ pub trait Env: Send + Sync + 'static {
 
     /// A new load id from the current wall-clock time and 128 random bits.
     fn load_id(&self) -> LoadId {
-        let random = (u128::from(self.random()) << 64) | u128::from(self.random());
+        let random = (u128::from(self.random()) << 64) + u128::from(self.random());
         LoadId::from_parts(self.now(), random)
     }
 }

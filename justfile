@@ -38,12 +38,17 @@ sim seed="" seeds="1000":
 # Measure line and branch coverage and apply the CI gate
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    cargo +{{ nightly }} llvm-cov nextest --branch --package rdlt-engine --all-features --json --summary-only --output-path target/coverage.json
+    cargo +{{ nightly }} llvm-cov nextest --branch --package rdlt-engine --package rdlt-connector --all-features --json --summary-only --output-path target/coverage.json
     cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
 
 # Mutation testing; extra arguments go to cargo-mutants, for example --in-diff pr.diff
 mutants *args:
-    cargo mutants --package rdlt-engine {{ args }}
+    cargo mutants --package rdlt-engine --package rdlt-connector {{ args }}
+
+# Fuzz one target for a number of seconds, for example `just fuzz state_record 60`
+fuzz target seconds="60":
+    rustup toolchain install {{ nightly }} --profile minimal
+    cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" -- -max_total_time={{ seconds }}
 
 # Everything the pull-request gate runs
 ci: lint test coverage (sim "" "10000")

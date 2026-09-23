@@ -7,6 +7,15 @@ use super::{
 };
 
 #[test]
+fn text_ids_accept_values_at_their_length_limit() {
+    let longest = "x".repeat(128);
+    assert_eq!(
+        PipelineId::parse(longest.clone()).unwrap().as_str(),
+        longest
+    );
+}
+
+#[test]
 fn text_ids_accept_their_alphabets() {
     assert_eq!(
         PipelineId::parse("orders-prod_2.v1").unwrap().as_str(),
