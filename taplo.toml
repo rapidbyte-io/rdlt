@@ -1,0 +1,4 @@
+[formatting]
+column_width = 100
+array_auto_collapse = true
+reorder_keys = false
