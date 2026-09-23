@@ -18,3 +18,9 @@ slow-timeout = { period = "60s" }
 [[profile.ci.overrides]]
 filter = "package(rdlt-sim)"
 slow-timeout = { period = "60s" }
+
+# Mutation testing: every engine and contract test takes well under a second, so one still running
+# after ten seconds is hung on the mutant. Terminating it fails the test, which catches the mutant.
+[profile.mutants]
+slow-timeout = { period = "5s", terminate-after = 2 }
+leak-timeout = "500ms"

@@ -33,7 +33,7 @@ test *args:
 
 # Run the simulation suite; pass a seed to replay one run, or an empty seed and a count
 sim seed="" seeds="1000":
-    RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" cargo nextest run --package rdlt-sim --all-features
+    RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim
 
 # Measure line and branch coverage and apply the CI gate
 coverage:
