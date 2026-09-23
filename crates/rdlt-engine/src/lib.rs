@@ -27,6 +27,7 @@ mod compute;
 mod config;
 mod env;
 mod error;
+mod lane;
 mod plan;
 mod scope;
 
