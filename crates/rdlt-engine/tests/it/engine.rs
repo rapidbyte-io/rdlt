@@ -680,3 +680,24 @@ async fn an_incremental_partition_that_starts_empty_reads_rows_added_later() {
     assert_eq!(second.report.rows, 7);
     assert_eq!(published_ids("starts_empty", "events"), ids(1, 7));
 }
+
+#[tokio::test(start_paused = true)]
+async fn stopping_does_not_start_partitions_still_waiting_for_a_read_slot() {
+    let mut queued = ScriptStream::new("events", 8, 10, 5);
+    queued.idle = true;
+    let (script, source) = Script::new(vec![queued]).connect("queued").await;
+    let plan = pipeline("queued", [stream("events").read(ReadMode::Incremental)]);
+    let run = engine(commit_every(10).partitions(1)).run(plan, source, memory("queued").await);
+    let control = run.control();
+    let stop = async {
+        until(|| !script.acks.lock().is_empty()).await;
+        control.stop(StopMode::AfterCommit);
+    };
+    let (outcome, ()) = tokio::join!(run, stop);
+    assert_eq!(outcome.report.status, RunStatus::Stopped);
+    assert_eq!(
+        script.reads.load(Ordering::SeqCst),
+        1,
+        "queued partitions never start"
+    );
+}

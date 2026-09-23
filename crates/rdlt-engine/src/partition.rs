@@ -119,8 +119,16 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
         biased;
         // Cancellation wins: a partition that has not started never needs to.
         () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
-        slot = context.slots.acquire() => slot.map_err(|_| Error::internal("partition slots closed"))?,
+        // A stop request comes next: a partition still waiting for a slot ends without reading.
+        () = context.stop.cancelled() => None,
+        slot = context.slots.acquire() => Some(slot.map_err(|_| Error::internal("partition slots closed"))?),
     };
+    if context.stop.is_cancelled() {
+        return context.report(Progress::Ended {
+            partition: job.index,
+            stopped: true,
+        });
+    }
     context.report(Progress::Started {
         partition: job.index,
     })?;
