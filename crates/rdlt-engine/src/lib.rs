@@ -27,6 +27,7 @@ mod error;
 mod lane;
 mod partition;
 mod plan;
+mod report;
 mod scope;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
@@ -34,3 +35,4 @@ pub use config::{CommitPolicy, EngineConfig, EngineConfigBuilder, RetryPolicy};
 pub use env::{Env, Sleep, SystemEnv};
 pub use error::{Error, ErrorKind, ErrorReport};
 pub use plan::{PipelinePlan, StreamPlan, WriteMode};
+pub use report::{AttemptReport, Report, RunStatus, StreamReport};
