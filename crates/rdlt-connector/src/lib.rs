@@ -1,6 +1,7 @@
 //! The rdlt connector contract: the vocabulary, the traits connectors implement, and the SDK.
 
 mod id;
+mod types;
 
 pub use id::{
     CommitSeq, ConnectorId, Epoch, GenerationId, IdError, LoadId, PartitionId, PipelineId,
@@ -8,3 +9,7 @@ pub use id::{
 };
 #[cfg(feature = "macros")]
 pub use rdlt_connector_macros::{destination, source};
+pub use types::{
+    DecimalType, Field, Fields, LogicalType, MAX_DECIMAL_PRECISION, TimeUnit, TypeError, TypeKind,
+    UnsupportedType,
+};
