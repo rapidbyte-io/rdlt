@@ -6,11 +6,10 @@ mod tests;
 use std::num::NonZeroUsize;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{DestinationWriter, PartitionId, SegmentId};
+use rdlt_connector::{DestinationWriter, PartitionId, Permit, SegmentId};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::budget::Reservation;
 use crate::error::{Error, Side};
 
 /// A batch for one table, tagged with its segment; the reservation drops once it is staged.
@@ -18,7 +17,7 @@ pub(crate) struct Write {
     pub(crate) table: usize,
     pub(crate) segment: SegmentId,
     pub(crate) batch: RecordBatch,
-    pub(crate) reservation: Reservation,
+    pub(crate) reservation: Permit,
 }
 
 enum Message {

@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use rdlt_connector::{
-    Cursor, Partition, PartitionFeed, PartitionState, Push, ReadRequest, SegmentId, Source,
-    SourceEvent, StreamName, partition_channel,
+    Cursor, Partition, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId, Source,
+    SourceEvent, StreamName, admitted_partition_channel,
 };
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -132,7 +132,10 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
     context.report(Progress::Started {
         partition: job.index,
     })?;
-    let (sink, feed) = partition_channel(context.buffer);
+    // Each push reserves its bytes before it enters the channel, so a source buffers nothing
+    // outside the budget (spec §7.5).
+    let admission = Arc::new(context.budget.clone());
+    let (sink, feed) = admitted_partition_channel(context.buffer, admission);
     let request = ReadRequest {
         stream: job.stream.clone(),
         partition: job.partition.clone(),
@@ -278,12 +281,12 @@ async fn ingest(
                 }
                 continue;
             }
-            event = feed.recv() => event,
+            event = feed.recv_admitted() => event,
         };
-        let Some(event) = event else {
+        let Some((event, permit)) = event else {
             return Ok(ingested);
         };
-        ingested.handle(job, context, event).await?;
+        ingested.handle(job, context, event, permit).await?;
     }
 }
 
@@ -293,10 +296,11 @@ impl Ingested {
         job: &PartitionJob,
         context: &PartitionContext,
         event: SourceEvent,
+        permit: Option<Permit>,
     ) -> Result<(), Error> {
         match event {
             SourceEvent::Push(Push::Arrow(batch)) => {
-                write(job, context, &mut self.open, &batch).await
+                write(job, context, &mut self.open, &batch, permit).await
             }
             SourceEvent::Push(Push::Json(_) | Push::Changes(_)) => Err(Error::new(
                 crate::ErrorKind::Source,
@@ -319,12 +323,14 @@ impl Ingested {
     }
 }
 
-/// Checks `batch` against the table, reserves its bytes and queues it on its lane.
+/// Checks `batch` against the table and queues it on its lane with the permit that holds its
+/// bytes, reserving them here when the push arrived without one.
 async fn write(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
     batch: &RecordBatch,
+    permit: Option<Permit>,
 ) -> Result<(), Error> {
     let rows = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
     if rows == 0 {
@@ -332,7 +338,10 @@ async fn write(
     }
     let batch = conform(&job.stream, &job.schema, batch)?;
     let bytes = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    let reservation = context.budget.acquire(bytes).await;
+    let reservation = match permit {
+        Some(permit) => permit,
+        None => Box::new(context.budget.acquire(bytes).await),
+    };
     let lane = context.lanes.route(job.table, job.partition.id());
     context
         .lanes
