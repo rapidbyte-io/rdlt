@@ -67,6 +67,11 @@ pub(crate) async fn run(
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
     let mut opened = open(context, load_id).await?;
+    log.lock().opened = opened
+        .state
+        .last_receipt
+        .as_ref()
+        .map(|receipt| (receipt.load_id, receipt.commit_seq));
     let catalog = context
         .source
         .discover()

@@ -6,7 +6,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use rdlt_connector::{LoadId, PipelineId, Receipt, StreamName};
+use rdlt_connector::{CommitSeq, LoadId, PipelineId, Receipt, StreamName};
 use serde::Serialize;
 
 use crate::error::ErrorReport;
@@ -104,6 +104,10 @@ pub(crate) struct CommitRecord {
 pub(crate) struct AttemptLog {
     pub(crate) commits: Vec<CommitRecord>,
     pub(crate) end: Option<AttemptEnd>,
+    /// The commit in flight, whose response has not arrived.
+    pub(crate) pending: Option<CommitRecord>,
+    /// The receipt state recorded when the attempt opened, naming the last commit that landed.
+    pub(crate) opened: Option<(LoadId, CommitSeq)>,
 }
 
 /// A finished attempt.

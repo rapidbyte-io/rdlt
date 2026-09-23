@@ -272,11 +272,22 @@ impl Coordinator {
         let completing: Vec<usize> = (0..self.parts.streams.len())
             .filter(|index| self.parts.streams[*index].completes())
             .collect();
-        let delta = self.state_delta(&positions, &completing);
+        let mut delta = self.state_delta(&positions, &completing);
         let finish_generations = self.finish_generations(&completing);
         if segments.is_empty() && delta.is_empty() {
             return Ok(());
         }
+        let streams = self.stream_reports(streams, &completing);
+        // The commit records its own receipt, so an attempt that loses the response can still be
+        // credited with it once a later attempt reads it back.
+        let marker = self.marker(&streams);
+        delta.push(StateChange::Put(
+            StateEntry::Receipt(marker.clone()).to_record(),
+        ));
+        self.parts.log.lock().pending = Some(CommitRecord {
+            receipt: marker,
+            streams: streams.clone(),
+        });
         self.parts.lanes.flush().await?;
         let meta = CommitMeta {
             load_id: self.parts.load_id,
@@ -317,11 +328,39 @@ impl Coordinator {
         collected
     }
 
+    /// What each stream contributes to a commit that ends the cycles of `completing`, by name.
+    fn stream_reports(
+        &self,
+        mut streams: BTreeMap<usize, StreamReport>,
+        completing: &[usize],
+    ) -> BTreeMap<StreamName, StreamReport> {
+        for index in completing {
+            if self.parts.streams[*index].write == WriteMode::Replace {
+                streams.entry(*index).or_default().generations_swapped = 1;
+            }
+        }
+        streams
+            .into_iter()
+            .map(|(index, counts)| (self.parts.streams[index].name.clone(), counts))
+            .collect()
+    }
+
+    /// The receipt the next commit records in state, from the engine's own counts.
+    fn marker(&self, streams: &BTreeMap<StreamName, StreamReport>) -> rdlt_connector::Receipt {
+        rdlt_connector::Receipt {
+            load_id: self.parts.load_id,
+            commit_seq: self.seq,
+            committed_at: self.parts.env.now(),
+            rows: streams.values().map(|counts| counts.rows).sum(),
+            bytes: streams.values().map(|counts| counts.bytes).sum(),
+        }
+    }
+
     /// Advances past a landed commit: what state now records, and the commit in the log.
     fn record(
         &mut self,
         receipt: rdlt_connector::Receipt,
-        mut streams: BTreeMap<usize, StreamReport>,
+        streams: BTreeMap<StreamName, StreamReport>,
         completing: &[usize],
     ) {
         self.seq = self.seq.next();
@@ -338,23 +377,13 @@ impl Coordinator {
             }
         }
         for index in completing {
-            let stream = &mut self.parts.streams[*index];
-            if let Some(cycle) = &mut stream.cycle {
+            if let Some(cycle) = &mut self.parts.streams[*index].cycle {
                 cycle.finished = true;
             }
-            if stream.write == WriteMode::Replace {
-                streams.entry(*index).or_default().generations_swapped = 1;
-            }
         }
-        let streams = streams
-            .into_iter()
-            .map(|(index, counts)| (self.parts.streams[index].name.clone(), counts))
-            .collect();
-        self.parts
-            .log
-            .lock()
-            .commits
-            .push(CommitRecord { receipt, streams });
+        let mut log = self.parts.log.lock();
+        log.pending = None;
+        log.commits.push(CommitRecord { receipt, streams });
     }
 
     /// The state changes of a commit that publishes `positions` and ends the cycles of

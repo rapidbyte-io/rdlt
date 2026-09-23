@@ -743,3 +743,23 @@ async fn a_retry_never_reads_again_a_stream_its_run_completed() {
         "one copy per run"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_whose_response_was_lost_still_counts_in_the_report() {
+    use crate::support::destinations::{Step, failing};
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 40, 5)])
+        .connect("lost_count")
+        .await;
+    let destination = failing(memory("lost_count").await, Step::LoseResponse);
+    let plan = pipeline("lost-count", [stream("events").read(ReadMode::Incremental)]);
+    let outcome = engine(retrying(3)).run(plan, source, destination).await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!(outcome.report.attempts.len(), 2);
+    assert!(
+        outcome.report.attempts[0].rows > 0,
+        "the lost commit belongs to the first attempt"
+    );
+    let published = u64::try_from(published_rows("lost_count", "events")).unwrap();
+    assert_eq!((outcome.report.rows, published), (40, 40));
+    assert_eq!(outcome.report.streams["events"].rows, 40);
+}

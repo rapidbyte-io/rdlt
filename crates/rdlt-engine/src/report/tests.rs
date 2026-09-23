@@ -35,7 +35,10 @@ fn attempt(load: LoadId, commits: Vec<CommitRecord>, error: Option<&Error>) -> A
         load_id: load,
         started_at: UNIX_EPOCH,
         ended_at: UNIX_EPOCH + Duration::from_secs(1),
-        log: AttemptLog { commits, end: None },
+        log: AttemptLog {
+            commits,
+            ..AttemptLog::default()
+        },
         error: error.map(Error::report),
     }
 }

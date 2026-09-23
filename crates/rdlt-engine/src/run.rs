@@ -10,6 +10,7 @@ use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{Destination, Source};
@@ -17,11 +18,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{self, RunContext};
 use crate::budget::MemoryBudget;
-use crate::config::EngineConfig;
+use crate::config::{EngineConfig, RetryPolicy};
 use crate::env::Env;
 use crate::error::Error;
 use crate::plan::PipelinePlan;
-use crate::report::{AttemptEnd, AttemptLog, AttemptRecord, Report, RunStatus};
+use crate::report::{AttemptEnd, AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus};
 
 /// Moves data from sources to destinations, exactly once.
 ///
@@ -156,11 +157,41 @@ impl Future for RunHandle {
     }
 }
 
+/// How long to wait before the next attempt: as long as the failure asked, or the policy's backoff
+/// after `failures` consecutive failures.
+fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> Duration {
+    let failed = NonZeroU32::new(failures).unwrap_or(NonZeroU32::MIN);
+    error
+        .retry_after()
+        .unwrap_or_else(|| retry.delay(failed, env.random()))
+}
+
+/// Credits a failed attempt's commit in flight to it once `log`'s attempt opened and found it landed,
+/// and keeps `log`'s own commit in flight when its attempt `failed`.
+fn credit(
+    attempts: &mut [AttemptRecord],
+    unresolved: &mut Option<(usize, CommitRecord)>,
+    log: &mut AttemptLog,
+    failed: bool,
+) {
+    if let Some((index, pending)) = unresolved.take() {
+        let landed = (pending.receipt.load_id, pending.receipt.commit_seq);
+        if log.opened == Some(landed) {
+            attempts[index].log.commits.push(pending);
+        }
+    }
+    if failed && let Some(pending) = log.pending.take() {
+        *unresolved = Some((attempts.len(), pending));
+    }
+}
+
 /// Runs attempts until one finishes, the retry policy gives up, or the run is stopped.
 async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
     let started = context.env.instant();
     let retry = *context.config.retry();
-    let mut attempts = Vec::new();
+    let mut attempts: Vec<AttemptRecord> = Vec::new();
+    // A failed attempt's commit in flight, credited to it once a later attempt reads it back.
+    let mut unresolved: Option<(usize, CommitRecord)> = None;
     let mut failures = 0;
     let (status, error) = loop {
         let load_id = context.env.load_id();
@@ -172,7 +203,8 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
             () = control.now.cancelled() => Err(Error::cancelled("the run was stopped")),
             result = attempt::run(&context, load_id, Arc::clone(&log)) => result,
         };
-        let log = std::mem::take(&mut *log.lock());
+        let mut log = std::mem::take(&mut *log.lock());
+        credit(&mut attempts, &mut unresolved, &mut log, result.is_err());
         let progressed = !log.commits.is_empty();
         attempts.push(AttemptRecord {
             load_id,
@@ -196,10 +228,7 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
         if !error.is_retryable() || failures >= retry.attempts().get() {
             break (RunStatus::Failed, Some(error));
         }
-        let failed = NonZeroU32::new(failures).unwrap_or(NonZeroU32::MIN);
-        let delay = error
-            .retry_after()
-            .unwrap_or_else(|| retry.delay(failed, context.env.random()));
+        let delay = backoff(&retry, &error, failures, context.env.as_ref());
         tokio::select! {
             biased;
             () = control.now.cancelled() => break (RunStatus::Cancelled, Some(error)),
