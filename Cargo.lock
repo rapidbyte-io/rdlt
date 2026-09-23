@@ -813,6 +813,7 @@ version = "0.0.0"
 dependencies = [
  "getrandom 0.4.3",
  "rayon",
+ "rdlt-connector",
  "thiserror",
  "tokio",
  "tokio-util",

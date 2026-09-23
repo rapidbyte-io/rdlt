@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 getrandom.workspace = true
+rdlt-connector.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
