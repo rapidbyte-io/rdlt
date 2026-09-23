@@ -178,6 +178,7 @@ fn table() -> TableRef {
         path: TablePath::new(["orders"]).unwrap(),
         name: "orders".into(),
         version: SchemaVersion(1),
+        generation: None,
     }
 }
 

@@ -8,7 +8,8 @@ use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitSeq, Epoch, LoadId, PipelineId, SegmentId, StateChange, StateRecord, TypeKind,
+    CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StateChange, StateRecord,
+    TablePath, TypeKind,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -23,7 +24,8 @@ pub struct MemoryDestinationConfig {
 
 /// Keeps published tables, staging and pipeline state in a named in-process store.
 ///
-/// Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
+/// A replace generation's rows stay hidden until the commit that finishes the generation swaps
+/// them in for the table's rows. Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
 /// fenced by the pipeline's epoch; so are flushes, so a fenced worker cannot stage rows that the
 /// latest session would publish.
 #[derive(Debug)]
@@ -52,6 +54,47 @@ fn named(name: &str) -> Arc<Mutex<Store>> {
 struct Store {
     pipelines: BTreeMap<PipelineId, PipelineStore>,
     tables: BTreeMap<String, Table>,
+    /// The name of each table the engine has referred to, by logical path.
+    names: BTreeMap<TablePath, String>,
+}
+
+impl Store {
+    /// Publishes the segments of `meta` staged by `pipeline` and swaps in the generations it
+    /// finishes; returns the rows and bytes published.
+    fn publish(&mut self, pipeline: &PipelineId, meta: &CommitMeta) -> (u64, u64) {
+        let (mut rows, mut bytes) = (0, 0);
+        for table in self.tables.values_mut() {
+            for segment in meta.segments.iter() {
+                let staged = table.staged.remove(&(pipeline.clone(), segment));
+                for (generation, batch) in staged.unwrap_or_default() {
+                    rows += batch.num_rows() as u64;
+                    bytes += batch.get_array_memory_size() as u64;
+                    match generation {
+                        Some(generation) => {
+                            table.generations.entry(generation).or_default().push(batch);
+                        }
+                        None => table.published.push(batch),
+                    }
+                }
+            }
+        }
+        for (path, generation) in &meta.finish_generations {
+            let Some(name) = self.names.get(path).cloned() else {
+                continue;
+            };
+            let table = self.tables.entry(name).or_default();
+            table.published = table.generations.remove(generation).unwrap_or_default();
+            table.generations.clear();
+        }
+        (rows, bytes)
+    }
+
+    /// The table `table` refers to, recording its name for its path.
+    fn table(&mut self, table: &TableRef) -> &mut Table {
+        self.names
+            .insert(table.path.clone(), table.name.to_string());
+        self.tables.entry(table.name.to_string()).or_default()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -65,8 +108,13 @@ struct PipelineStore {
 struct Table {
     schema: Option<TableSchema>,
     published: Vec<RecordBatch>,
-    staged: BTreeMap<(PipelineId, SegmentId), Vec<RecordBatch>>,
+    /// Committed rows of replace generations not yet swapped in.
+    generations: BTreeMap<GenerationId, Vec<RecordBatch>>,
+    staged: BTreeMap<(PipelineId, SegmentId), Staged>,
 }
+
+/// Batches staged under one segment, each for the table itself or for a replace generation.
+type Staged = Vec<(Option<GenerationId>, RecordBatch)>;
 
 #[destination(id = "io.rapidbyte.memory")]
 impl DestinationConnector for MemoryDestination {
@@ -75,6 +123,7 @@ impl DestinationConnector for MemoryDestination {
 
     fn capabilities(&self) -> Capabilities {
         let mut capabilities = Capabilities::minimal();
+        capabilities.write_modes.replace = true;
         capabilities.nested.structs = true;
         capabilities.nested.lists = true;
         capabilities.nested.json = true;
@@ -132,9 +181,7 @@ impl Session for MemorySession {
         match change {
             TableChange::Create { table, schema } => {
                 store
-                    .tables
-                    .entry(table.name.to_string())
-                    .or_default()
+                    .table(table)
                     .schema
                     .get_or_insert_with(|| schema.clone());
                 Ok(())
@@ -153,11 +200,13 @@ impl Session for MemorySession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
+        self.store.lock().table(table);
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),
             pipeline: self.pipeline.clone(),
             epoch: self.epoch,
             table: table.name.to_string(),
+            generation: table.generation,
             buffered: Vec::new(),
         })
     }
@@ -190,20 +239,7 @@ impl Session for MemorySession {
         if let Some(receipt) = store.pipelines[&self.pipeline].receipts.get(&key) {
             return Ok(receipt.clone());
         }
-        let (mut rows, mut bytes) = (0, 0);
-        for table in store.tables.values_mut() {
-            for segment in meta.segments.iter() {
-                for batch in table
-                    .staged
-                    .remove(&(self.pipeline.clone(), segment))
-                    .unwrap_or_default()
-                {
-                    rows += batch.num_rows() as u64;
-                    bytes += batch.get_array_memory_size() as u64;
-                    table.published.push(batch);
-                }
-            }
-        }
+        let (rows, bytes) = store.publish(&self.pipeline, meta);
         let pipeline = store
             .pipelines
             .get_mut(&self.pipeline)
@@ -241,6 +277,7 @@ pub struct MemoryWriter {
     pipeline: PipelineId,
     epoch: Epoch,
     table: String,
+    generation: Option<GenerationId>,
     buffered: Vec<(SegmentId, RecordBatch)>,
 }
 
@@ -272,7 +309,7 @@ impl TableWriter for MemoryWriter {
                 .staged
                 .entry((self.pipeline.clone(), segment))
                 .or_default()
-                .push(batch);
+                .push((self.generation, batch));
         }
         Ok(stats)
     }

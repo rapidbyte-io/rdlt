@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use crate::capabilities::Capabilities;
 use crate::commit::{CommitMeta, Receipt};
 use crate::error::Result;
-use crate::id::{Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
+use crate::id::{Epoch, GenerationId, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 use crate::state::StateRecord;
@@ -50,6 +50,9 @@ pub struct TableRef {
     pub name: Arc<str>,
     /// The schema version writes follow.
     pub version: SchemaVersion,
+    /// The replace generation writes fill, hidden from readers until a commit finishes it; `None`
+    /// writes the table itself.
+    pub generation: Option<GenerationId>,
 }
 
 /// A schema change to apply before writing under a new schema version.

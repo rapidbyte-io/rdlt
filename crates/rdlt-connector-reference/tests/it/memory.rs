@@ -4,9 +4,10 @@ use std::time::UNIX_EPOCH;
 
 use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Cursor, LoadId, OpenContext,
-    Partition, PipelineId, ReadRequest, SchemaVersion, SegmentId, SegmentSet, SourceEvent,
-    StreamName, TablePath, TableRef, destination_factory, partition_channel, source_factory,
+    CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Cursor, GenerationId, LoadId,
+    OpenContext, OpenedSession, Partition, PipelineId, ReadRequest, SchemaVersion, SegmentId,
+    SegmentSet, SourceEvent, StreamName, TablePath, TableRef, destination_factory,
+    partition_channel, source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource, published};
 use serde_json::json;
@@ -74,6 +75,7 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
         path: TablePath::new(["t"]).unwrap(),
         name: "t".into(),
         version: SchemaVersion(1),
+        generation: None,
     };
     let mut first = destination.open(&open_context("first", 1)).await.unwrap();
     let mut writer = first.session.writer(&table).await.unwrap();
@@ -98,4 +100,83 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
             .sum::<usize>(),
         2
     );
+}
+
+fn ids(batches: &[RecordBatch]) -> Vec<i64> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("id columns are Int64");
+            column.values().to_vec()
+        })
+        .collect()
+}
+
+async fn stage(session: &mut OpenedSession, table: &TableRef, segment: u64, ids: Vec<i64>) {
+    let mut writer = session
+        .session
+        .writer(table)
+        .await
+        .expect("the memory destination creates writers");
+    let batch = RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as _)])
+        .expect("one column makes a batch");
+    writer
+        .write(SegmentId(segment), batch)
+        .await
+        .expect("staging succeeds");
+    writer.flush().await.expect("flushing succeeds");
+}
+
+fn commit_meta(session: &OpenedSession, seq: CommitSeq, segments: &[u64]) -> CommitMeta {
+    CommitMeta {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 7),
+        commit_seq: seq,
+        epoch: session.epoch,
+        segments: segments.iter().copied().map(SegmentId).collect(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn a_replace_generation_stays_hidden_until_its_finishing_commit_swaps_it_in() {
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": "replace" }), ConnectContext::new())
+        .await
+        .unwrap();
+    assert!(destination.capabilities().write_modes.replace);
+    let path = TablePath::new(["t"]).unwrap();
+    let base = TableRef {
+        path: path.clone(),
+        name: "t".into(),
+        version: SchemaVersion(1),
+        generation: None,
+    };
+    let generation = TableRef {
+        generation: Some(GenerationId(9)),
+        ..base.clone()
+    };
+    let mut opened = destination.open(&open_context("replace", 1)).await.unwrap();
+    stage(&mut opened, &base, 1, vec![1, 2]).await;
+    let first = commit_meta(&opened, CommitSeq::FIRST, &[1]);
+    opened.session.commit(&first).await.unwrap();
+    stage(&mut opened, &generation, 2, vec![3]).await;
+    let second = commit_meta(&opened, CommitSeq::FIRST.next(), &[2]);
+    assert_eq!(opened.session.commit(&second).await.unwrap().rows, 1);
+    assert_eq!(
+        ids(&published("replace", "t")),
+        [1, 2],
+        "the generation is hidden"
+    );
+    stage(&mut opened, &generation, 3, vec![4]).await;
+    let finish = CommitMeta {
+        finish_generations: vec![(path, GenerationId(9))],
+        ..commit_meta(&opened, CommitSeq::FIRST.next().next(), &[3])
+    };
+    opened.session.commit(&finish).await.unwrap();
+    assert_eq!(ids(&published("replace", "t")), [3, 4]);
 }
