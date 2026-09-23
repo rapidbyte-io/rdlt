@@ -285,6 +285,16 @@ fn position(id: &str, state: PartitionState) -> StateChange {
     StateChange::Put(entry.to_record())
 }
 
+/// `delta` without the receipt entry every commit ends with.
+fn without_receipt(delta: &[StateChange]) -> Vec<StateChange> {
+    let receipt = StateKey::Receipt.encode();
+    delta
+        .iter()
+        .filter(|change| !matches!(change, StateChange::Put(record) if record.key == receipt))
+        .cloned()
+        .collect()
+}
+
 /// Waits until `condition` holds, failing the test after ten minutes of paused time.
 async fn until(condition: impl Fn() -> bool) {
     let waiting = async {
@@ -316,7 +326,7 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
         [SegmentId(1)]
     );
     assert_eq!(
-        commits[0].state_delta,
+        without_receipt(&commits[0].state_delta),
         [position("p0", PartitionState::Cursor(cursor(5)))]
     );
     assert_eq!(commits[0].epoch, Epoch(3));
@@ -476,7 +486,7 @@ async fn empty_segments_record_their_position_without_publishing() {
     let commits = harness.commits.lock();
     assert!(commits[0].segments.is_empty());
     assert_eq!(
-        commits[0].state_delta,
+        without_receipt(&commits[0].state_delta),
         [position("p0", PartitionState::Done)]
     );
     assert!(
@@ -523,7 +533,7 @@ async fn a_new_table_schema_is_recorded_by_the_first_commit_only() {
             .contains(&StateChange::Put(schema_entry.to_record()))
     );
     assert_eq!(
-        commits[1].state_delta,
+        without_receipt(&commits[1].state_delta),
         [position("p0", PartitionState::Cursor(cursor(2)))]
     );
 }
@@ -562,7 +572,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
         generation: GenerationId(7),
     };
     assert_eq!(
-        commits[0].state_delta,
+        without_receipt(&commits[0].state_delta),
         [
             StateChange::Delete(stale),
             StateChange::Put(generation.to_record()),
@@ -575,7 +585,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
         generations: vec![GenerationId(7)],
     };
     assert_eq!(
-        commits[1].state_delta,
+        without_receipt(&commits[1].state_delta),
         [
             position("p0", PartitionState::Done),
             StateChange::Delete(StateKey::Generation(name()).encode()),
@@ -746,5 +756,55 @@ async fn a_completed_read_joins_the_most_recent_sixteen() {
         harness.commits.lock()[0]
             .state_delta
             .contains(&StateChange::Put(completed.to_record()))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_commit_records_its_receipt_in_state() {
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .start();
+    harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
+    harness.end(0, false);
+    task.await.unwrap().unwrap();
+    let commits = harness.commits.lock();
+    let Some(StateChange::Put(record)) = commits[0].state_delta.last() else {
+        panic!("the commit ends with a put");
+    };
+    let Ok(StateEntry::Receipt(receipt)) = StateEntry::from_record(record) else {
+        panic!("the last put is the receipt");
+    };
+    assert_eq!(
+        (receipt.load_id, receipt.commit_seq),
+        (commits[0].load_id, commits[0].commit_seq)
+    );
+    assert_eq!((receipt.rows, receipt.bytes), (5, 40));
+    assert!(
+        harness.log.lock().pending.is_none(),
+        "the landed commit is no longer pending"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_commit_stays_pending_in_the_log() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    setup.fail_commit = true;
+    let (task, harness) = setup.start();
+    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
+    harness.end(0, false);
+    task.await.unwrap().unwrap_err();
+    let log = harness.log.lock();
+    let pending = log
+        .pending
+        .as_ref()
+        .expect("the commit in flight is pending");
+    assert_eq!(
+        (pending.receipt.rows, pending.streams[&name()].rows),
+        (3, 3)
     );
 }
