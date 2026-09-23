@@ -1,3 +1,4 @@
 test_tool = "nextest"
 exclude_globs = ["xtask/**", "crates/rdlt-sim/**"]
 all_features = true
+additional_cargo_test_args = ["--profile", "mutants"]
