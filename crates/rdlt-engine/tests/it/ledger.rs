@@ -291,18 +291,18 @@ async fn retry_budget_resets_after_commit() {
 }
 
 /// L8: the engine's memory stays within its budget plus a fixed overhead, even when the destination
-/// is far slower than the source.
+/// is far slower than the source and every partition reads at once with the default buffers.
 #[tokio::test(start_paused = true)]
 async fn memory_stays_within_the_budget() {
     const BUDGET: u64 = 4 << 20;
-    const PARTITIONS: u64 = 4;
+    const PARTITIONS: u64 = 16;
     const ROWS: u64 = 2_000_000;
     let source = generator(&[("orders", ROWS, PARTITIONS, 20_000)]).await;
     let destination = null().await;
     // A deep lane queue, so the budget alone holds the source back.
     let config = commit_every(500_000)
         .memory(BUDGET)
-        .partition_buffer(1)
+        .partitions(16)
         .lanes(1)
         .lane_window(1_000);
     let engine = engine(config);

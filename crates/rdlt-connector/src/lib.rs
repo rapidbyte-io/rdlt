@@ -100,7 +100,10 @@ pub use id::{
 pub use rdlt_connector_macros::{destination, source};
 pub use schema::{ColumnPath, EmptyColumnPath, SchemaError, TableSchema};
 pub use secret::Secret;
-pub use sink::{LogLevel, PartitionFeed, PartitionSink, Push, SourceEvent, partition_channel};
+pub use sink::{
+    Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, SourceEvent,
+    admitted_partition_channel, partition_channel,
+};
 pub use source::{
     Partition, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory, Streams,
     source_factory,

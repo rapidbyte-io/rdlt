@@ -90,7 +90,7 @@ async fn write(
         table,
         segment: SegmentId(segment),
         batch: rows(count),
-        reservation: budget.acquire(10).await,
+        reservation: Box::new(budget.acquire(10).await),
     };
     lanes.write(lane, write).await
 }
