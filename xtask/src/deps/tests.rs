@@ -17,9 +17,15 @@ fn allowed_edges_pass() {
     let edges = [
         edge("rdlt-sim", "rdlt-engine", false),
         edge("rdlt-engine", "rdlt-connector", false),
-        edge("rdlt-engine", "rdlt-sim", true),
+        edge("rdlt-host", "rdlt-connector-reference", true),
     ];
-    let names = crates(&["rdlt-engine", "rdlt-sim", "rdlt-connector"]);
+    let names = crates(&[
+        "rdlt-engine",
+        "rdlt-sim",
+        "rdlt-connector",
+        "rdlt-host",
+        "rdlt-connector-reference",
+    ]);
     assert_eq!(check(&names, &edges), Vec::new());
 }
 
@@ -30,6 +36,7 @@ fn forbidden_edges_are_reported() {
         edge("rdlt-connector", "rdlt-engine", false),
         edge("rdlt-engine", "rdlt-cli", true),
         edge("rdlt-sim", "xtask", true),
+        edge("rdlt-engine", "rdlt-sim", true),
     ];
     for case in cases {
         let names = crates(&[&case.from, &case.to]);
