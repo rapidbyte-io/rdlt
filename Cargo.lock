@@ -491,6 +491,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "rdlt-engine"
 version = "0.0.0"
 dependencies = [

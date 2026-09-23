@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"
@@ -11,26 +12,43 @@ repository = "https://github.com/rapidbyte-io/rdlt"
 
 [workspace.dependencies]
 # Workspace crates
-rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" } # the engine, for rdlt-sim
+rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }               # the connector contract
+rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.0" } # #[source] and #[destination]
+rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                     # the engine, for rdlt-sim
 
 # Libraries
-getrandom = "0.4.3"                                           # the operating system random source behind SystemEnv
-parking_lot = "0.12.5"                                        # locks without poisoning
-rayon = "1.12.0"                                              # the compute pool for CPU-bound stages
-thiserror = "2.0.20"                                          # typed error derives
-tokio = { version = "1.53.1", default-features = false }      # async runtime, timers and task sets
+arrow-array = "59.2" # record batches; one arrow major across the workspace, matching DataFusion
+arrow-schema = "59.2" # arrow data types and schemas
+base64 = "0.22" # cursor bytes inside JSON state values
+bytes = { version = "1.12.1", features = [
+  "serde",
+] } # zero-copy byte buffers for pushes, cursors and state
+proc-macro2 = "1.0.107" # token streams for rdlt-connector-macros
+quote = "1.0.47" # code generation for rdlt-connector-macros
+schemars = "1.2.2" # JSON Schema for connector configuration
+serde = { version = "1.0.229", features = [
+  "derive",
+  "rc",
+] } # serialization of state, specs and configuration
+serde_json = "1.0.151" # JSON rows, cursors, state values and configuration
+serde_path_to_error = "0.1.20" # field paths in configuration errors
+syn = { version = "2", features = ["full"] } # parsing impl blocks in rdlt-connector-macros
+uuid = { version = "1.26.1", features = ["serde"] } # load ids (UUIDv7)
+getrandom = "0.4.3" # the operating system random source behind SystemEnv
+parking_lot = "0.12.5" # locks without poisoning
+rayon = "1.12.0" # the compute pool for CPU-bound stages
+thiserror = "2.0.20" # typed error derives
+tokio = { version = "1.53.1", default-features = false } # async runtime, timers and task sets
 tokio-util = { version = "0.7.19", default-features = false } # CancellationToken
 
 # Tooling and tests
-anyhow = "1.0.104"                                     # error reporting at xtask's command-line entry point
-cargo_metadata = "0.23.1"                              # xtask reads the workspace graph for the dependency rule
-clap = { version = "4.6.7", features = ["derive"] }    # command-line parsing for xtask
-proptest = "1.11.0"                                    # property tests
-regex = "1.13.1"                                       # xtask lint patterns
-serde = { version = "1.0.229", features = ["derive"] } # parsing llvm-cov's JSON export
-serde_json = "1.0.151"                                 # parsing llvm-cov's JSON export
-tempfile = "3.27.0"                                    # temporary directories in tests
-walkdir = "2.5.0"                                      # xtask walks the source tree
+anyhow = "1.0.104"                                  # error reporting at xtask's command-line entry point
+cargo_metadata = "0.23.1"                           # xtask reads the workspace graph for the dependency rule
+clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask
+proptest = "1.11.0"                                 # property tests
+regex = "1.13.1"                                    # xtask lint patterns
+tempfile = "3.27.0"                                 # temporary directories in tests
+walkdir = "2.5.0"                                   # xtask walks the source tree
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -59,3 +77,4 @@ print_stderr = "warn"
 large_futures = "warn"
 dbg_macro = "warn"
 todo = "warn"
+unused_async_trait_impl = "allow"            # connectors implement async trait methods with `async fn`, awaiting or not
