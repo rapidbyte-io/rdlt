@@ -175,6 +175,7 @@ impl Bench<'_> {
             path: TablePath::new([name.as_str()]).expect("table paths are valid"),
             name: name.into(),
             version: SchemaVersion(1),
+            generation: None,
         }
     }
 
