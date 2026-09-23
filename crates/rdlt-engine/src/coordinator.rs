@@ -57,7 +57,13 @@ pub(crate) struct Cycle {
     pub(crate) stale: Vec<PartitionId>,
     /// Whether a commit has already ended the cycle.
     pub(crate) finished: bool,
+    /// The stream's recently completed reads, which this one joins when it completes.
+    pub(crate) completed: Vec<GenerationId>,
 }
+
+/// How many completed reads state keeps per stream: enough that a run's retry still finds its own
+/// read among them after other runs of the pipeline completed theirs.
+const KEPT_COMPLETIONS: usize = 16;
 
 impl StreamRun {
     /// Whether the next commit ends the stream's cycle: every partition read to its end.
@@ -396,9 +402,13 @@ impl Coordinator {
             };
             let key = StateKey::Generation(stream.name.clone());
             delta.push(StateChange::Delete(key.encode()));
+            let mut generations = cycle.completed.clone();
+            generations.push(cycle.generation);
+            let excess = generations.len().saturating_sub(KEPT_COMPLETIONS);
+            generations.drain(..excess);
             let completed = StateEntry::Completed {
                 stream: stream.name.clone(),
-                generation: cycle.generation,
+                generations,
             };
             delta.push(StateChange::Put(completed.to_record()));
         }

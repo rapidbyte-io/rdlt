@@ -50,7 +50,7 @@ fn sample_state() -> PipelineState {
         .partitions
         .insert(partition("p1"), PartitionState::Done);
     orders.generation = Some(GenerationId(2));
-    orders.completed = Some(GenerationId(1));
+    orders.completed = vec![GenerationId(0), GenerationId(1)];
     let mut names = NameMap::default();
     names.insert(ColumnPath::from("id"), "id").unwrap();
     let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)]).unwrap();
@@ -82,7 +82,7 @@ fn deleting_a_completed_marker_clears_it() {
     let mut state = sample_state();
     let key = StateKey::Completed(stream("orders"));
     state.apply(&StateChange::Delete(key.encode())).unwrap();
-    assert_eq!(state.streams[&stream("orders")].completed, None);
+    assert!(state.streams[&stream("orders")].completed.is_empty());
     assert_eq!(
         state.streams[&stream("orders")].generation,
         Some(GenerationId(2))
@@ -239,7 +239,7 @@ fn states() -> impl Strategy<Value = PipelineState> {
             any::<u16>(),
             proptest::collection::btree_map("[a-z0-9]{1,4}", partition_states(), 0..3),
             any::<Option<u64>>(),
-            any::<Option<u64>>(),
+            proptest::collection::vec(any::<u64>(), 0..3),
         ),
         0..3,
     );
@@ -259,7 +259,7 @@ fn states() -> impl Strategy<Value = PipelineState> {
                             phase,
                             partitions,
                             generation: generation.map(GenerationId),
-                            completed: completed.map(GenerationId),
+                            completed: completed.into_iter().map(GenerationId).collect(),
                         },
                     )
                 })

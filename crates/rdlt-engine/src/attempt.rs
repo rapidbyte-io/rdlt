@@ -378,13 +378,14 @@ fn read(context: &RunContext, plan: &StreamPlan, committed: Option<&StreamState>
             recorded: true,
             stale: Vec::new(),
             finished: false,
+            completed: committed.completed.clone(),
         };
         return Read::Cycle(cycle, committed);
     }
     let generation = *cycles
         .entry(plan.name().clone())
         .or_insert_with(|| GenerationId(context.env.random()));
-    if committed.completed == Some(generation) {
+    if committed.completed.contains(&generation) {
         return Read::Completed;
     }
     let cycle = Cycle {
@@ -392,6 +393,7 @@ fn read(context: &RunContext, plan: &StreamPlan, committed: Option<&StreamState>
         recorded: false,
         stale: committed.partitions.keys().cloned().collect(),
         finished: false,
+        completed: committed.completed.clone(),
     };
     Read::Cycle(cycle, StreamState::default())
 }

@@ -1,7 +1,7 @@
 //! The simulated destination: transactional commits, receipts, fencing and staging, checking the
 //! engine's invariants as it commits.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -28,8 +28,10 @@ pub(crate) struct Store {
     staged: BTreeMap<SegmentId, Vec<Staged>>,
     names: BTreeMap<TablePath, String>,
     tables: BTreeMap<String, Table>,
-    /// Full reads completed, by stream and the phase they completed in.
-    completions: BTreeMap<(String, usize), usize>,
+    /// The generations of full reads completed, by stream and the phase they completed in.
+    ///
+    /// A run that read a stream twice would complete the same generation twice, and count once.
+    completions: BTreeMap<(String, usize), BTreeSet<GenerationId>>,
 }
 
 #[derive(Debug)]
@@ -64,14 +66,13 @@ pub(crate) fn reads_in_progress(world: &World) -> bool {
         .any(|key| matches!(StateKey::parse(key), Ok(StateKey::Generation(_))))
 }
 
-/// Full reads of `stream` completed in `phase`.
+/// Distinct full reads of `stream` completed in `phase`.
 pub fn completions(world: &World, stream: &str, phase: usize) -> usize {
     let store = world.store.lock();
     store
         .completions
         .get(&(stream.to_owned(), phase))
-        .copied()
-        .unwrap_or(0)
+        .map_or(0, BTreeSet::len)
 }
 
 /// The committed resume offset of a partition: `u64::MAX` once it is done.
@@ -289,9 +290,14 @@ impl Store {
                             }
                             continue;
                         }
-                        Ok(StateEntry::Completed { stream, .. }) => {
+                        Ok(StateEntry::Completed {
+                            stream,
+                            generations,
+                        }) => {
+                            // The read that just completed is the newest in the list.
                             let key = (stream.to_string(), world.phase());
-                            *self.completions.entry(key).or_default() += 1;
+                            let newest = generations.last().copied();
+                            self.completions.entry(key).or_default().extend(newest);
                         }
                         Ok(_) => {}
                         Err(error) => world.violation(format!("unreadable state record: {error}")),

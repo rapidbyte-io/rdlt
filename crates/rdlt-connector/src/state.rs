@@ -136,7 +136,7 @@ pub enum StateKey {
     Partition(StreamName, PartitionId),
     /// A stream's full read in progress.
     Generation(StreamName),
-    /// A stream's last completed full read.
+    /// A stream's recently completed full reads.
     Completed(StreamName),
     /// A table's schema.
     Schema(TablePath),
@@ -200,12 +200,12 @@ pub enum StateEntry {
         /// The generation.
         generation: GenerationId,
     },
-    /// A stream's last completed full read.
+    /// A stream's recently completed full reads.
     Completed {
         /// The stream.
         stream: StreamName,
-        /// The generation of the completed read.
-        generation: GenerationId,
+        /// The generations of the completed reads, oldest first.
+        generations: Vec<GenerationId>,
     },
     /// A table's schema.
     Schema {
@@ -340,9 +340,9 @@ pub struct StreamState {
     pub partitions: BTreeMap<PartitionId, PartitionState>,
     /// The full read in progress; a replace stream fills its generation.
     pub generation: Option<GenerationId>,
-    /// The last full read that completed, so a retry of the run that completed it does not read
-    /// the stream again.
-    pub completed: Option<GenerationId>,
+    /// The generations of recently completed full reads, oldest first, so a retry of a run that
+    /// completed one does not read the stream again, even after a newer run completed another.
+    pub completed: Vec<GenerationId>,
 }
 
 /// A table's committed schema and names.
@@ -401,10 +401,10 @@ impl PipelineState {
                     generation,
                 });
             }
-            if let Some(generation) = stream.completed {
+            if !stream.completed.is_empty() {
                 entries.push(StateEntry::Completed {
                     stream: name.clone(),
-                    generation,
+                    generations: stream.completed.clone(),
                 });
             }
         }
@@ -456,8 +456,11 @@ impl PipelineState {
             StateEntry::Generation { stream, generation } => {
                 self.streams.entry(stream).or_default().generation = Some(generation);
             }
-            StateEntry::Completed { stream, generation } => {
-                self.streams.entry(stream).or_default().completed = Some(generation);
+            StateEntry::Completed {
+                stream,
+                generations,
+            } => {
+                self.streams.entry(stream).or_default().completed = generations;
             }
             StateEntry::Schema {
                 table,
@@ -493,7 +496,7 @@ impl PipelineState {
             }
             StateKey::Completed(stream) => {
                 if let Some(state) = self.streams.get_mut(stream) {
-                    state.completed = None;
+                    state.completed.clear();
                 }
             }
             StateKey::Schema(table) => {

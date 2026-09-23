@@ -537,6 +537,7 @@ fn new_cycle(generation: u64, stale: &[&str]) -> Cycle {
             .map(|id| PartitionId::parse(*id).unwrap())
             .collect(),
         finished: false,
+        completed: Vec::new(),
     }
 }
 
@@ -571,7 +572,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
     assert!(commits[0].finish_generations.is_empty());
     let completed = StateEntry::Completed {
         stream: name(),
-        generation: GenerationId(7),
+        generations: vec![GenerationId(7)],
     };
     assert_eq!(
         commits[1].state_delta,
@@ -603,7 +604,7 @@ async fn a_full_append_completes_without_swapping_a_generation() {
     assert!(commits[0].finish_generations.is_empty());
     let completed = StateEntry::Completed {
         stream: name(),
-        generation: GenerationId(4),
+        generations: vec![GenerationId(4)],
     };
     assert!(
         commits[0]
@@ -631,7 +632,7 @@ async fn a_stopped_partition_leaves_its_full_read_unfinished() {
     assert!(commits[0].finish_generations.is_empty());
     let completed = StateEntry::Completed {
         stream: name(),
-        generation: GenerationId(4),
+        generations: vec![GenerationId(4)],
     };
     assert!(
         !commits[0]
@@ -722,4 +723,28 @@ async fn the_byte_threshold_commits_as_bytes_arrive() {
     until(|| harness.commit_count() == 1).await;
     harness.end(0, false);
     task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_completed_read_joins_the_most_recent_sixteen() {
+    let mut cycle = new_cycle(99, &[]);
+    cycle.completed = (0..16).map(GenerationId).collect();
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, Some(cycle), 1)],
+        vec![partition("p0", false)],
+    )
+    .start();
+    harness.seal(0, 1, 1, PartitionState::Done, None);
+    harness.end(0, false);
+    task.await.unwrap().unwrap();
+    let kept: Vec<GenerationId> = (1..16).chain([99]).map(GenerationId).collect();
+    let completed = StateEntry::Completed {
+        stream: name(),
+        generations: kept,
+    };
+    assert!(
+        harness.commits.lock()[0]
+            .state_delta
+            .contains(&StateChange::Put(completed.to_record()))
+    );
 }
