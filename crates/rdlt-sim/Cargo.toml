@@ -1,0 +1,18 @@
+[package]
+name = "rdlt-sim"
+description = "Deterministic simulation harness for the rdlt engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+parking_lot.workspace = true
+rdlt-engine.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "test-util", "time"] }
+
+[lints]
+workspace = true
