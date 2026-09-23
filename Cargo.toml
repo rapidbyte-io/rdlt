@@ -10,6 +10,9 @@ license = "Apache-2.0"
 repository = "https://github.com/rapidbyte-io/rdlt"
 
 [workspace.dependencies]
+# Workspace crates
+rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" } # the engine, for rdlt-sim
+
 # Libraries
 getrandom = "0.4.3"                                           # the operating system random source behind SystemEnv
 parking_lot = "0.12.5"                                        # locks without poisoning
