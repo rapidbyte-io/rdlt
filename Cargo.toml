@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+repository = "https://github.com/rapidbyte-io/rdlt"
+
+[workspace.dependencies]
+# Tooling and tests
+anyhow = "1.0.104"                                     # error reporting at xtask's command-line entry point
+cargo_metadata = "0.23.1"                              # xtask reads the workspace graph for the dependency rule
+clap = { version = "4.6.7", features = ["derive"] }    # command-line parsing for xtask
+proptest = "1.11.0"                                    # property tests
+regex = "1.13.1"                                       # xtask lint patterns
+serde = { version = "1.0.229", features = ["derive"] } # parsing llvm-cov's JSON export
+serde_json = "1.0.151"                                 # parsing llvm-cov's JSON export
+tempfile = "3.27.0"                                    # temporary directories in tests
+walkdir = "2.5.0"                                      # xtask walks the source tree
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_qualifications = "warn"
+let_underscore_drop = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+large_futures = "warn"
+dbg_macro = "warn"
+todo = "warn"
