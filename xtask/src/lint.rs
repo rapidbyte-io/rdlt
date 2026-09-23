@@ -14,7 +14,7 @@ use crate::lexer::scan;
 use crate::rules::{self, FileRole, Finding, Severity};
 
 /// Directories scanned for Rust sources, relative to the repository root.
-const SOURCE_ROOTS: &[&str] = &["crates", "xtask"];
+const SOURCE_ROOTS: &[&str] = &["crates", "fuzz", "xtask"];
 
 /// Every finding in the tree under `root`, with paths relative to `root`.
 pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> {

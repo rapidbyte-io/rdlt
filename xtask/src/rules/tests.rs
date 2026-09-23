@@ -55,6 +55,7 @@ fn each_rule_fires_on_its_violation() {
 #[test]
 fn allowed_forms_pass() {
     let clean = [
+        "/// Example.\n///\n/// ```\n/// const VERSION: &str = \"the one\";\n/// ```\nfn f() {}\n",
         "// SAFETY: the buffer outlives the view\n",
         "// TODO(#12): widen once upstream lands\n",
         "// `Pin<T>` keeps the future in place\n",
@@ -97,6 +98,11 @@ fn file_roles_come_from_the_path() {
 fn heavy_commenting_and_long_files_only_warn() {
     let noisy = "// c\nfn a() {}\n".repeat(30);
     assert!(rules(&noisy).contains(&Rule::CommentRatio));
+    let documented = "/// Docs.\nfn a() {}\n".repeat(30);
+    assert!(
+        !rules(&documented).contains(&Rule::CommentRatio),
+        "rustdoc is required, so it does not count"
+    );
     assert!(rules(&"fn a() {}\n".repeat(401)).contains(&Rule::FileLength));
     assert_eq!(Rule::CommentRatio.severity(), Severity::Warning);
     assert_eq!(Rule::FileLength.severity(), Severity::Warning);
