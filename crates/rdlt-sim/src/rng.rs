@@ -23,4 +23,14 @@ impl SplitMix64 {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
     }
+
+    /// A value in `0..bound`; `bound` must be more than zero.
+    pub fn below(&mut self, bound: u64) -> u64 {
+        self.next_u64() % bound
+    }
+
+    /// `true` with probability `per_mille / 1000`.
+    pub fn chance(&mut self, per_mille: u64) -> bool {
+        self.below(1000) < per_mille
+    }
 }

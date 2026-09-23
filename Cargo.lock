@@ -837,8 +837,13 @@ dependencies = [
 name = "rdlt-sim"
 version = "0.0.0"
 dependencies = [
+ "arrow-array",
  "parking_lot",
+ "rdlt-connector",
  "rdlt-engine",
+ "schemars",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]
