@@ -5,7 +5,8 @@ delivery, persistent schema management and throughput that scales with cores. It
 the Rapidbyte data platform.
 
 **Status:** pre-release. The foundation (tooling, deterministic simulation harness, runtime
-primitives) is in place; the connector contract and the engine follow.
+primitives) and the connector contract (`rdlt-connector`, with in-process certification and the
+reference connectors in `rdlt-connector-reference`) are in place; the engine follows.
 
 ## Development
 

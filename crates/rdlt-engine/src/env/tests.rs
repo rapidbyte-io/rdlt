@@ -1,8 +1,11 @@
 use std::num::NonZeroUsize;
-use std::time::{Duration, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{Env, SystemEnv};
-use crate::compute::RayonPool;
+use rdlt_connector::LoadId;
+
+use super::{Env, Sleep, SystemEnv};
+use crate::compute::{ComputePool, RayonPool};
 
 fn system_env() -> SystemEnv {
     SystemEnv::new(RayonPool::new(NonZeroUsize::MIN).unwrap())
@@ -26,6 +29,46 @@ fn system_env_reads_the_real_wall_clock() {
 fn system_env_load_ids_are_distinct() {
     let env = system_env();
     assert_ne!(env.load_id(), env.load_id());
+}
+
+/// A clock fixed at `now` and a random source that replays `random` in order.
+struct Fixed {
+    now: SystemTime,
+    random: Mutex<Vec<u64>>,
+    inner: SystemEnv,
+}
+
+impl Env for Fixed {
+    fn now(&self) -> SystemTime {
+        self.now
+    }
+
+    fn instant(&self) -> Instant {
+        self.inner.instant()
+    }
+
+    fn sleep(&self, duration: Duration) -> Sleep {
+        self.inner.sleep(duration)
+    }
+
+    fn random(&self) -> u64 {
+        self.random.lock().unwrap().remove(0)
+    }
+
+    fn compute(&self) -> &dyn ComputePool {
+        self.inner.compute()
+    }
+}
+
+#[test]
+fn load_ids_take_the_first_random_value_as_the_high_word() {
+    let now = UNIX_EPOCH + Duration::from_hours(490_896);
+    let env = Fixed {
+        now,
+        random: Mutex::new(vec![3, 5]),
+        inner: system_env(),
+    };
+    assert_eq!(env.load_id(), LoadId::from_parts(now, (3 << 64) + 5));
 }
 
 #[test]
