@@ -43,6 +43,8 @@ fn joins_follow_the_lattice_table() {
         ),
         (T::Json, structure(&[("a", T::Bool, true)]), T::Json),
         (T::Int32, T::Float32, T::Float64),
+        (T::Int64, T::Float32, T::Json),
+        (T::Float64, T::Int64, T::Json),
         (T::Float32, T::Float64, T::Float64),
         (T::Int32, decimal(10, 2), decimal(12, 2)),
         (decimal(10, 2), decimal(5, 4), decimal(12, 4)),

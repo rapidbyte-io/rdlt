@@ -60,7 +60,7 @@ impl<S: SourceConnector, R: ReadStream<S>> ErasedStream<S> for R {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let cursor = match cursor {
-                Some(cursor) => cursor.decode(R::CURSOR_VERSION)?,
+                Some(cursor) => decode::<S, R>(self, &cursor)?,
                 None => R::Cursor::default(),
             };
             let mut out = Emitter::new(sink, R::CURSOR_VERSION);
@@ -79,11 +79,18 @@ impl<S: SourceConnector, R: ReadStream<S>> ErasedStream<S> for R {
         Box::pin(async move {
             let decoded = cursors
                 .iter()
-                .map(|(id, cursor)| Ok((id.clone(), cursor.decode(R::CURSOR_VERSION)?)))
+                .map(|(id, cursor)| Ok((id.clone(), decode::<S, R>(self, cursor)?)))
                 .collect::<Result<Vec<_>>>()?;
             ReadStream::committed(self, source, &decoded).await
         })
     }
+}
+
+/// Decodes `cursor` in the stream's format; a mismatch names the stream.
+fn decode<S: SourceConnector, R: ReadStream<S>>(stream: &R, cursor: &Cursor) -> Result<R::Cursor> {
+    cursor
+        .decode(R::CURSOR_VERSION)
+        .map_err(|error| error.in_stream(ReadStream::spec(stream).name()))
 }
 
 struct SourceAdapter<C: SourceConnector> {
