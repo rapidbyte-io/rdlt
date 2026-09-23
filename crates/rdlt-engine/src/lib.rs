@@ -1,7 +1,10 @@
 //! The rdlt data-movement engine.
 //!
-//! Every source of nondeterminism the engine uses (clocks, randomness, CPU scheduling) comes
-//! from an [`Env`], so the whole engine can run under deterministic simulation.
+//! An [`Engine`] runs a [`PipelinePlan`] from a source to a destination exactly once: every row
+//! the source emits before a committed checkpoint is published exactly once, whatever fails,
+//! retries or runs concurrently. Every source of nondeterminism the engine uses (clocks,
+//! randomness, CPU scheduling) comes from an [`Env`], so the whole engine runs under
+//! deterministic simulation.
 //!
 //! ```
 //! use std::num::NonZeroUsize;
@@ -14,11 +17,7 @@
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```
 
-#![expect(
-    dead_code,
-    reason = "the attempt wires these stages together in Task 11"
-)]
-
+mod attempt;
 mod budget;
 mod compute;
 mod config;
@@ -29,6 +28,7 @@ mod lane;
 mod partition;
 mod plan;
 mod report;
+mod run;
 mod scope;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
@@ -37,3 +37,4 @@ pub use env::{Env, Sleep, SystemEnv};
 pub use error::{Error, ErrorKind, ErrorReport};
 pub use plan::{PipelinePlan, StreamPlan, WriteMode};
 pub use report::{AttemptReport, Report, RunStatus, StreamReport};
+pub use run::{Engine, RunControl, RunHandle, RunOutcome, StopMode};
