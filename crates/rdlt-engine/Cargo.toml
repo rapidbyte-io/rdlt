@@ -12,6 +12,7 @@ getrandom.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-util.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }

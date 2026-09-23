@@ -16,6 +16,7 @@
 
 mod compute;
 mod env;
+mod scope;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
 pub use env::{Env, Sleep, SystemEnv};
