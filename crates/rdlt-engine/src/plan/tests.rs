@@ -57,3 +57,12 @@ fn unsupported_plans_are_configuration_errors() {
     let duplicate = PipelinePlan::new(pipeline(), [stream("a"), stream("a")]).unwrap_err();
     assert_eq!(duplicate.stream(), Some(&StreamName::new("a").unwrap()));
 }
+
+#[test]
+fn streams_that_would_share_a_table_are_refused() {
+    let dotted = StreamPlan::new(StreamName::new("public.orders").unwrap());
+    let namespaced = StreamPlan::new(StreamName::with_namespace("public", "orders").unwrap());
+    let error = PipelinePlan::new(pipeline(), [dotted, namespaced]).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert_eq!(error.code(), Some("plan_table_collision"));
+}
