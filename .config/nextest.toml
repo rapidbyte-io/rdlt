@@ -9,3 +9,12 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# Simulation suites scale with RDLT_SIM_SEEDS; report them as slow, never terminate them.
+[[profile.default.overrides]]
+filter = "package(rdlt-sim)"
+slow-timeout = { period = "60s" }
+
+[[profile.ci.overrides]]
+filter = "package(rdlt-sim)"
+slow-timeout = { period = "60s" }
