@@ -134,6 +134,31 @@ fn unreadable_records_are_typed_errors() {
 }
 
 #[test]
+fn keys_in_a_non_canonical_form_are_malformed() {
+    let entry = StateEntry::Partition {
+        stream: stream("s"),
+        partition: partition("p"),
+        state: cursor(5),
+    };
+    let canonical = entry.to_record();
+    let rewritten = r#"{"partition":[{"name":"s"},"p"]}"#;
+    assert_eq!(
+        serde_json::from_str::<StateKey>(rewritten).unwrap(),
+        entry.key()
+    );
+    let record = StateRecord {
+        key: rewritten.to_owned(),
+        value: canonical.value,
+    };
+    assert_eq!(
+        StateEntry::from_record(&record).unwrap_err(),
+        StateError::MalformedKey {
+            key: rewritten.to_owned()
+        }
+    );
+}
+
+#[test]
 fn applying_changes_puts_and_deletes_entries() {
     let mut state = PipelineState::default();
     let put = StateEntry::Partition {

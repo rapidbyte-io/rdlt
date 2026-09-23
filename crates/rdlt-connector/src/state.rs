@@ -154,11 +154,18 @@ impl StateKey {
         serde_json::to_string(self).expect("state keys serialize to JSON")
     }
 
-    /// The key a record key names.
+    /// The key a record key names; only the exact text [`StateKey::encode`] writes is accepted, so
+    /// one key cannot hide under two record keys.
     pub fn parse(key: &str) -> Result<Self, StateError> {
-        serde_json::from_str(key).map_err(|_| StateError::MalformedKey {
+        let malformed = || StateError::MalformedKey {
             key: key.to_owned(),
-        })
+        };
+        let parsed: Self = serde_json::from_str(key).map_err(|_| malformed())?;
+        if parsed.encode() == key {
+            Ok(parsed)
+        } else {
+            Err(malformed())
+        }
     }
 }
 

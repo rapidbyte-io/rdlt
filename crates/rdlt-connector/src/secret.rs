@@ -6,10 +6,11 @@ mod tests;
 use std::fmt;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A value that is redacted wherever it is displayed or serialized; read it with [`Secret::expose`].
-#[derive(Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, JsonSchema)]
 #[serde(transparent)]
 pub struct Secret<T>(T);
 
@@ -42,5 +43,14 @@ impl<T> fmt::Display for Secret<T> {
 impl<T> Serialize for Secret<T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(REDACTED)
+    }
+}
+
+/// Deserializes the inner value, replacing its error: serde's messages quote the rejected input.
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Secret<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer)
+            .map(Self)
+            .map_err(|_| D::Error::custom("the secret value is invalid (redacted)"))
     }
 }

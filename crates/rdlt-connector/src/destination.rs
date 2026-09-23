@@ -148,6 +148,10 @@ pub trait Session: Send + 'static {
 }
 
 /// Stages batches into one table; staged data is invisible until a commit publishes it.
+///
+/// A writer can outlive its session's epoch: once a newer session opens, anything this writer
+/// stages must never be published. Refuse the write with a fenced error, or keep it apart from the
+/// newer session's staging.
 pub trait TableWriter: Send + 'static {
     /// Stages `batch` as part of `segment`.
     fn write(
