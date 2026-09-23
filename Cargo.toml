@@ -12,9 +12,10 @@ repository = "https://github.com/rapidbyte-io/rdlt"
 
 [workspace.dependencies]
 # Workspace crates
-rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }               # the connector contract
-rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.0" } # #[source] and #[destination]
-rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                     # the engine, for rdlt-sim
+rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }                     # the connector contract
+rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.0" }       # #[source] and #[destination]
+rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
+rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
 
 # Libraries
 arrow-array = "59.2" # record batches; one arrow major across the workspace, matching DataFusion

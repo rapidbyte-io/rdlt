@@ -795,6 +795,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-connector-reference"
+version = "0.0.0"
+dependencies = [
+ "arrow-array",
+ "parking_lot",
+ "rdlt-connector",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rdlt-engine"
 version = "0.0.0"
 dependencies = [
