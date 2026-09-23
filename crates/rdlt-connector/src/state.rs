@@ -134,8 +134,10 @@ pub enum StateKey {
     Phase(StreamName),
     /// A partition's position.
     Partition(StreamName, PartitionId),
-    /// A replace stream's generation in progress.
+    /// A stream's full read in progress.
     Generation(StreamName),
+    /// A stream's last completed full read.
+    Completed(StreamName),
     /// A table's schema.
     Schema(TablePath),
     /// A table's name map.
@@ -191,11 +193,18 @@ pub enum StateEntry {
         /// Where it stands.
         state: PartitionState,
     },
-    /// A replace stream's generation in progress.
+    /// A stream's full read in progress; a replace stream fills the read's generation.
     Generation {
         /// The stream.
         stream: StreamName,
         /// The generation.
+        generation: GenerationId,
+    },
+    /// A stream's last completed full read.
+    Completed {
+        /// The stream.
+        stream: StreamName,
+        /// The generation of the completed read.
         generation: GenerationId,
     },
     /// A table's schema.
@@ -267,6 +276,7 @@ impl StateEntry {
                 stream, partition, ..
             } => StateKey::Partition(stream.clone(), partition.clone()),
             Self::Generation { stream, .. } => StateKey::Generation(stream.clone()),
+            Self::Completed { stream, .. } => StateKey::Completed(stream.clone()),
             Self::Schema { table, .. } => StateKey::Schema(table.clone()),
             Self::Names { table, .. } => StateKey::Names(table.clone()),
             Self::Receipt(_) => StateKey::Receipt,
@@ -328,8 +338,11 @@ pub struct StreamState {
     pub phase: u16,
     /// Each partition's position.
     pub partitions: BTreeMap<PartitionId, PartitionState>,
-    /// The replace generation in progress.
+    /// The full read in progress; a replace stream fills its generation.
     pub generation: Option<GenerationId>,
+    /// The last full read that completed, so a retry of the run that completed it does not read
+    /// the stream again.
+    pub completed: Option<GenerationId>,
 }
 
 /// A table's committed schema and names.
@@ -344,7 +357,10 @@ pub struct TableState {
 /// Everything a pipeline has committed: epoch, cursors, schemas, names and the last receipt.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PipelineState {
-    /// The fencing epoch.
+    /// The fencing epoch recorded in state.
+    ///
+    /// Destinations keep their live epoch outside the records, so the engine fences with
+    /// [`OpenedSession::epoch`](crate::OpenedSession::epoch) instead.
     pub epoch: Epoch,
     /// Each stream's position.
     pub streams: BTreeMap<StreamName, StreamState>,
@@ -381,6 +397,12 @@ impl PipelineState {
             }
             if let Some(generation) = stream.generation {
                 entries.push(StateEntry::Generation {
+                    stream: name.clone(),
+                    generation,
+                });
+            }
+            if let Some(generation) = stream.completed {
+                entries.push(StateEntry::Completed {
                     stream: name.clone(),
                     generation,
                 });
@@ -434,6 +456,9 @@ impl PipelineState {
             StateEntry::Generation { stream, generation } => {
                 self.streams.entry(stream).or_default().generation = Some(generation);
             }
+            StateEntry::Completed { stream, generation } => {
+                self.streams.entry(stream).or_default().completed = Some(generation);
+            }
             StateEntry::Schema {
                 table,
                 version,
@@ -464,6 +489,11 @@ impl PipelineState {
             StateKey::Generation(stream) => {
                 if let Some(state) = self.streams.get_mut(stream) {
                     state.generation = None;
+                }
+            }
+            StateKey::Completed(stream) => {
+                if let Some(state) = self.streams.get_mut(stream) {
+                    state.completed = None;
                 }
             }
             StateKey::Schema(table) => {
