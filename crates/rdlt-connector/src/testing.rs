@@ -150,3 +150,13 @@ async fn bounded<T>(what: &str, future: impl Future<Output = T>) -> Result<T, Vi
         .await
         .map_err(|_| format!("{what} took longer than {CALL_TIMEOUT:?}").into())
 }
+
+/// Awaits a connector call for at most [`CALL_TIMEOUT`]; its error becomes the violation.
+async fn bounded_call<T>(
+    what: &str,
+    call: impl Future<Output = crate::error::Result<T>>,
+) -> Result<T, Violation> {
+    bounded(what, call)
+        .await?
+        .map_err(|error| Violation::from(error.to_string()))
+}

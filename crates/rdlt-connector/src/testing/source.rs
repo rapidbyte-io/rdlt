@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use bytes::Bytes;
 
-use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, outcome};
+use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::cursor::Cursor;
 use crate::id::StreamName;
@@ -58,32 +58,28 @@ pub async fn certify_source_factory(
     config: serde_json::Value,
 ) -> Report {
     let connector = factory.spec().id.to_string();
-    let results = match factory.connect(config, ConnectContext::new()).await {
-        Ok(source) => check_all(source.as_ref()).await,
-        Err(error) => SOURCE_CLAUSES
-            .iter()
-            .map(|clause| ClauseResult {
-                clause: *clause,
-                outcome: Outcome::Failed(format!("connect failed: {error}")),
-            })
-            .collect(),
-    };
+    let results =
+        match bounded_call("connect", factory.connect(config, ConnectContext::new())).await {
+            Ok(source) => check_all(source.as_ref()).await,
+            Err(Violation(reason)) => SOURCE_CLAUSES
+                .iter()
+                .map(|clause| ClauseResult {
+                    clause: *clause,
+                    outcome: Outcome::Failed(format!("connect failed: {reason}")),
+                })
+                .collect(),
+        };
     Report { connector, results }
 }
 
 async fn check_all(source: &dyn Source) -> Vec<ClauseResult> {
-    let catalog = source.discover().await;
+    let catalog = bounded_call("discover", source.discover()).await;
     let mut results = Vec::new();
     for clause in SOURCE_CLAUSES {
         let outcome = match (&catalog, clause.id) {
-            (_, "S-CHECK") => outcome(
-                source
-                    .check()
-                    .await
-                    .map_err(|error| Violation::from(error.to_string())),
-            ),
+            (_, "S-CHECK") => outcome(bounded_call("check", source.check()).await),
             (_, "S-DISCOVER") => outcome(discover_is_stable(source, catalog.as_ref().ok()).await),
-            (Err(error), _) => Outcome::Failed(format!("discover failed: {error}")),
+            (Err(Violation(reason)), _) => Outcome::Failed(format!("discover failed: {reason}")),
             (Ok(catalog), "S-PLAN") => outcome(plans_are_valid(source, catalog).await),
             (Ok(catalog), "S-RESUME") => outcome(resumes_are_exact(source, catalog).await),
             (Ok(catalog), "S-STOP") => outcome(stops_are_prompt(source, catalog).await),
@@ -102,10 +98,7 @@ async fn discover_is_stable(source: &dyn Source, first: Option<&Catalog>) -> Res
     if first.is_empty() {
         return Err("the catalog is empty".into());
     }
-    let second = source
-        .discover()
-        .await
-        .map_err(|error| Violation::from(error.to_string()))?;
+    let second = bounded_call("discover", source.discover()).await?;
     if &second != first {
         return Err("two discovers returned different catalogs".into());
     }
@@ -113,10 +106,9 @@ async fn discover_is_stable(source: &dyn Source, first: Option<&Catalog>) -> Res
 }
 
 async fn plan(source: &dyn Source, stream: &StreamName) -> Result<Vec<Partition>, Violation> {
-    source
-        .plan(stream, &StreamState::default())
+    bounded_call("plan", source.plan(stream, &StreamState::default()))
         .await
-        .map_err(|error| Violation::from(format!("plan {stream}: {error}")))
+        .map_err(|Violation(reason)| Violation::from(format!("plan {stream}: {reason}")))
 }
 
 async fn plans_are_valid(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {

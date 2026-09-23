@@ -43,10 +43,13 @@ impl<C: DestinationConnector> Destination for DestinationAdapter<C> {
                 .find(|record| !keys.insert(record.key.as_str()))
             {
                 let message = format!("the destination returned state key {} twice", repeated.key);
-                return Err(ConnectorError::data(message).with_code("state_duplicate_key"));
+                let error = ConnectorError::data(message).with_code("state_duplicate_key");
+                return Err(close_after(session, error).await);
             }
             // Unpublished staging from any earlier load must never reach a later commit.
-            session.discard_staged().await?;
+            if let Err(error) = session.discard_staged().await {
+                return Err(close_after(session, error).await);
+            }
             Ok(OpenedSession {
                 session: Box::new(SessionAdapter(session)),
                 epoch,
@@ -54,6 +57,13 @@ impl<C: DestinationConnector> Destination for DestinationAdapter<C> {
             })
         })
     }
+}
+
+/// Closes a session whose open failed, so it releases what it holds, and returns the failure:
+/// it matters more than any error from closing.
+async fn close_after<S: Session>(session: S, error: ConnectorError) -> ConnectorError {
+    drop(session.close().await);
+    error
 }
 
 struct SessionAdapter<S>(S);

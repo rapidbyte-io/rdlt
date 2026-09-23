@@ -9,7 +9,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{DESTINATION_CLAUSES, Outcome, Probe, Report, certify_destination, certify_source};
+use super::{
+    DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, certify_destination,
+    certify_source,
+};
 use crate::capabilities::Capabilities;
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::commit::{CommitMeta, Receipt};
@@ -46,6 +49,8 @@ struct PagesConfig {
     repeat_partitions: bool,
     fail_on_stop: bool,
     refuse_connect: bool,
+    /// The call that never returns: `connect`, `check`, `discover` or `plan`.
+    hang: String,
 }
 
 impl Default for PagesConfig {
@@ -60,6 +65,7 @@ impl Default for PagesConfig {
             repeat_partitions: false,
             fail_on_stop: false,
             refuse_connect: false,
+            hang: String::new(),
         }
     }
 }
@@ -69,12 +75,22 @@ struct Pages {
     discovered: AtomicBool,
 }
 
+impl PagesConfig {
+    /// Never returns when this configuration hangs in `call`.
+    async fn hang_in(&self, call: &str) {
+        if self.hang == call {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 impl SourceConnector for Pages {
     const ID: &'static str = "io.test.pages";
     const VERSION: &'static str = "0.0.1";
     type Config = PagesConfig;
 
     async fn connect(config: PagesConfig, _context: &ConnectContext) -> Result<Self> {
+        config.hang_in("connect").await;
         if config.refuse_connect {
             return Err(ConnectorError::config("refused"));
         }
@@ -85,6 +101,7 @@ impl SourceConnector for Pages {
     }
 
     async fn check(&self) -> Result<()> {
+        self.config.hang_in("check").await;
         Ok(())
     }
 
@@ -99,6 +116,7 @@ impl SourceConnector for Pages {
     }
 
     async fn discover(&self) -> Result<Catalog> {
+        self.config.hang_in("discover").await;
         let mut streams: Vec<StreamSpec> =
             self.streams().catalog().map(Vec::from).unwrap_or_default();
         if self.config.unstable_discover && self.discovered.swap(true, Ordering::SeqCst) {
@@ -125,6 +143,7 @@ impl ReadStream<Pages> for Page {
     }
 
     async fn partitions(&self, source: &Pages, _state: &StreamState) -> Result<Vec<Partition>> {
+        source.config.hang_in("plan").await;
         let copies = if source.config.repeat_partitions {
             2
         } else {
@@ -199,6 +218,39 @@ async fn each_broken_source_behavior_fails_exactly_its_clause() {
     }
 }
 
+/// Certification must end even when a connector never answers; a day of paused time passes
+/// instantly, so a call without a timeout fails this bound instead of hanging the test.
+async fn within_a_day<T>(certification: impl Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_hours(24), certification)
+        .await
+        .expect("certification ended")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_call_that_never_returns_fails_instead_of_hanging() {
+    let cases = [
+        ("connect", SOURCE_CLAUSES.len()),
+        ("check", 1),
+        ("discover", SOURCE_CLAUSES.len() - 1),
+        ("plan", 4),
+    ];
+    for (call, failures) in cases {
+        let report = within_a_day(certify_source::<Pages>(json!({ "hang": call }))).await;
+        assert_eq!(failed(&report).len(), failures, "{call}: {report}");
+        assert!(
+            report.to_string().contains("took longer"),
+            "{call}: {report}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_connect_that_never_returns_fails_instead_of_hanging() {
+    let report = within_a_day(certify_vault("hang_connect", Some("hang_connect"))).await;
+    assert_eq!(failed(&report).len(), DESTINATION_CLAUSES.len(), "{report}");
+    assert!(report.to_string().contains("took longer"), "{report}");
+}
+
 #[tokio::test]
 async fn a_source_that_cannot_connect_fails_every_clause() {
     let report = certify_source::<Pages>(json!({ "refuse_connect": true })).await;
@@ -247,6 +299,8 @@ struct VaultConfig {
     local_epoch: bool,
     local_state: bool,
     stale_writes: bool,
+    refuse_unstaged: bool,
+    hang_connect: bool,
 }
 
 #[derive(Default)]
@@ -324,6 +378,9 @@ impl DestinationConnector for Vault {
     }
 
     async fn connect(config: VaultConfig, _context: &ConnectContext) -> Result<Self> {
+        if config.hang_connect {
+            std::future::pending::<()>().await;
+        }
         if config.refuse_connect {
             return Err(ConnectorError::config("refused"));
         }
@@ -382,6 +439,37 @@ impl DestinationConnector for Vault {
 }
 
 impl VaultSession {
+    /// Applies the state changes of `meta`, to this connection's store with `local_state`.
+    fn apply_state(&self, shared: &mut VaultStore, meta: &CommitMeta) {
+        let mut local = self.stores.local.lock().unwrap();
+        let states = if self.config.local_state {
+            &mut local.state
+        } else {
+            &mut shared.state
+        };
+        let state = states.entry(self.pipeline.clone()).or_default();
+        for change in &meta.state_delta {
+            match change {
+                StateChange::Put(record) => state.insert(record.key.clone(), record.clone()),
+                StateChange::Delete(_) if self.config.ignore_deletes => None,
+                StateChange::Delete(key) => state.remove(key),
+            };
+        }
+    }
+
+    /// With `refuse_unstaged`, the first segment of `meta` this pipeline never staged.
+    fn refused_segment(&self, store: &VaultStore, meta: &CommitMeta) -> Option<SegmentId> {
+        let staged = |segment: &SegmentId| {
+            store
+                .staged
+                .contains_key(&(self.pipeline.clone(), *segment))
+        };
+        self.config
+            .refuse_unstaged
+            .then(|| meta.segments.iter().find(|segment| !staged(segment)))
+            .flatten()
+    }
+
     /// The segments `meta` commits, or with `publish_all` every segment the pipeline staged.
     fn segments_to_publish(&self, store: &VaultStore, meta: &CommitMeta) -> Vec<SegmentId> {
         if self.config.publish_all {
@@ -442,6 +530,11 @@ impl Session for VaultSession {
         if let Some(receipt) = store.receipts.get(&key).filter(|_| recall) {
             return Ok(receipt.clone());
         }
+        if let Some(segment) = self.refused_segment(&store, meta) {
+            return Err(ConnectorError::data(format!(
+                "segment {segment} is not staged"
+            )));
+        }
         let mut rows = 0;
         for segment in self.segments_to_publish(&store, meta) {
             let key = (self.pipeline.clone(), segment);
@@ -456,20 +549,7 @@ impl Session for VaultSession {
             }
         }
         if !self.config.forget_state {
-            let mut local = self.stores.local.lock().unwrap();
-            let states = if self.config.local_state {
-                &mut local.state
-            } else {
-                &mut store.state
-            };
-            let state = states.entry(self.pipeline.clone()).or_default();
-            for change in &meta.state_delta {
-                match change {
-                    StateChange::Put(record) => state.insert(record.key.clone(), record.clone()),
-                    StateChange::Delete(_) if self.config.ignore_deletes => None,
-                    StateChange::Delete(key) => state.remove(key),
-                };
-            }
+            self.apply_state(&mut store, meta);
         }
         let rows = if self.config.miscount { rows + 1 } else { rows };
         let receipt = Receipt {
@@ -574,6 +654,13 @@ async fn epochs_kept_by_one_connection_fail_the_clauses_that_span_two() {
         ["D-EPOCH", "D-DISCARD", "D-FENCE"],
         "{report}"
     );
+}
+
+#[tokio::test]
+async fn a_destination_may_refuse_to_commit_segments_it_never_staged() {
+    certify_vault("refuse_unstaged", Some("refuse_unstaged"))
+        .await
+        .assert_passed();
 }
 
 #[tokio::test]

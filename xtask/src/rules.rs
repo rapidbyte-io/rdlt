@@ -127,8 +127,16 @@ pub(crate) fn check(role: FileRole, scan: &Scan) -> Vec<Finding> {
         ));
     }
     let mut in_code_block = false;
+    let mut previous_doc = None;
     for comment in &scan.comments {
         let is_doc = matches!(comment.kind, CommentKind::OuterDoc | CommentKind::InnerDoc);
+        if is_doc {
+            // A fence left open in one item's Rustdoc must not hide the next item's.
+            if previous_doc != Some((comment.line - 1, comment.kind)) {
+                in_code_block = false;
+            }
+            previous_doc = Some((comment.line, comment.kind));
+        }
         if is_doc && comment.text[3..].trim_start().starts_with("```") {
             in_code_block = !in_code_block;
             continue;

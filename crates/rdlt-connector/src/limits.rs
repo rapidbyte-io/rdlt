@@ -1,4 +1,4 @@
-//! Limits on what a connector may send; each is checked where data enters the SDK.
+//! Limits on what a connector may send or receive; each is checked where the data enters rdlt.
 
 #[cfg(test)]
 mod tests;
@@ -16,4 +16,7 @@ pub const MAX_COLUMNS: u64 = 10_000;
 pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Bytes: bounds one connector configuration document.
+///
+/// Factories receive configuration already parsed, so the code that reads it as bytes checks this
+/// before parsing.
 pub const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
