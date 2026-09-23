@@ -34,14 +34,20 @@ struct RecorderConfig {
     journal: String,
     #[serde(default)]
     duplicate_state: bool,
+    #[serde(default)]
+    fail_discard: bool,
 }
 
 struct Recorder {
     journal: Journal,
     duplicate_state: bool,
+    fail_discard: bool,
 }
 
-struct RecorderSession(Journal);
+struct RecorderSession {
+    journal: Journal,
+    fail_discard: bool,
+}
 
 struct RecorderWriter(Journal);
 
@@ -59,6 +65,7 @@ impl DestinationConnector for Recorder {
         Ok(Self {
             journal: journal(&config.journal),
             duplicate_state: config.duplicate_state,
+            fail_discard: config.fail_discard,
         })
     }
 
@@ -82,7 +89,10 @@ impl DestinationConnector for Recorder {
             vec![record]
         };
         Ok(Opened {
-            session: RecorderSession(Arc::clone(&self.journal)),
+            session: RecorderSession {
+                journal: Arc::clone(&self.journal),
+                fail_discard: self.fail_discard,
+            },
             epoch: Epoch(3),
             state,
         })
@@ -96,7 +106,7 @@ impl Session for RecorderSession {
         let TableChange::Create { table, .. } = change else {
             return Err(ConnectorError::internal("only creates are expected"));
         };
-        self.0
+        self.journal
             .lock()
             .unwrap()
             .push(format!("create {}", table.name));
@@ -104,20 +114,25 @@ impl Session for RecorderSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<RecorderWriter> {
-        self.0
+        self.journal
             .lock()
             .unwrap()
             .push(format!("writer {}", table.name));
-        Ok(RecorderWriter(Arc::clone(&self.0)))
+        Ok(RecorderWriter(Arc::clone(&self.journal)))
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
-        self.0.lock().unwrap().push("discard".to_owned());
+        self.journal.lock().unwrap().push("discard".to_owned());
+        if self.fail_discard {
+            return Err(
+                ConnectorError::internal("staging is unreachable").with_code("discard_failed")
+            );
+        }
         Ok(())
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
-        self.0
+        self.journal
             .lock()
             .unwrap()
             .push(format!("commit {}", meta.commit_seq.get()));
@@ -131,7 +146,7 @@ impl Session for RecorderSession {
     }
 
     async fn close(self) -> Result<()> {
-        self.0.lock().unwrap().push("close".to_owned());
+        self.journal.lock().unwrap().push("close".to_owned());
         Ok(())
     }
 }
@@ -245,8 +260,25 @@ async fn repeated_state_keys_are_refused_at_open() {
     assert_eq!(error.code(), Some("state_duplicate_key"));
     assert_eq!(
         *journal("duplicate").lock().unwrap(),
-        ["open orders"],
-        "no discard for a refused open"
+        ["open orders", "close"],
+        "no discard for a refused open, and the session is closed"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_discard_closes_the_session_and_reports_the_discard_error() {
+    let destination = destination_factory::<Recorder>()
+        .connect(
+            json!({ "journal": "discard_fails", "fail_discard": true }),
+            ConnectContext::new(),
+        )
+        .await
+        .unwrap();
+    let error = destination.open(&context()).await.unwrap_err();
+    assert_eq!(error.code(), Some("discard_failed"));
+    assert_eq!(
+        *journal("discard_fails").lock().unwrap(),
+        ["open orders", "discard", "close"]
     );
 }
 

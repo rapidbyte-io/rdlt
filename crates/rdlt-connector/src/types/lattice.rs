@@ -11,7 +11,8 @@ impl LogicalType {
     /// The narrowest type that holds every value of `self` and of `other`.
     ///
     /// The join is associative, commutative and idempotent, `Null` is its identity and `Json`
-    /// absorbs every type. Values are never rounded: floats and decimals join to `Json`.
+    /// absorbs every type. Floats and decimals never mix: they join to `Json` rather than round. An
+    /// integer joined with a float becomes `Float64`, which holds integers exactly only up to 2^53.
     #[must_use]
     pub fn join(&self, other: &Self) -> Self {
         use LogicalType as T;

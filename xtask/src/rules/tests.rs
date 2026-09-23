@@ -53,6 +53,12 @@ fn each_rule_fires_on_its_violation() {
 }
 
 #[test]
+fn an_unclosed_fence_does_not_hide_later_items_from_the_word_checks() {
+    let source = "/// Example.\n///\n/// ```\nfn f() {}\n\n/// Holds the seat.\nfn g() {}\n";
+    assert_eq!(rules(source), vec![Rule::Jargon]);
+}
+
+#[test]
 fn allowed_forms_pass() {
     let clean = [
         "/// Example.\n///\n/// ```\n/// const VERSION: &str = \"the one\";\n/// ```\nfn f() {}\n",

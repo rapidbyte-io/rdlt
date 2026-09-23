@@ -141,6 +141,7 @@ pub trait Session: Send + 'static {
     ///
     /// Re-committing the same `(load_id, commit_seq)` returns the stored receipt without
     /// publishing. A commit whose epoch is older than the pipeline's fails with a fenced error.
+    /// A segment this session never staged publishes nothing; the commit may instead fail.
     fn commit(&mut self, meta: &CommitMeta) -> impl Future<Output = Result<Receipt>> + Send;
 
     /// Ends the session.

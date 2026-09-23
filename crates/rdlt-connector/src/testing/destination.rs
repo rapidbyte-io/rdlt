@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use bytes::Bytes;
 
-use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, outcome};
+use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
 use crate::commit::{CommitMeta, SegmentSet};
 use crate::destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
@@ -81,11 +81,13 @@ pub async fn certify_destination_factory(
 ) -> Report {
     let connector = factory.spec().id.to_string();
     let connections = async {
-        let destination = factory
-            .connect(config.clone(), ConnectContext::new())
-            .await?;
-        let peer = factory.connect(config, ConnectContext::new()).await?;
-        Ok::<_, crate::error::ConnectorError>((destination, peer))
+        let destination = bounded_call(
+            "connect",
+            factory.connect(config.clone(), ConnectContext::new()),
+        )
+        .await?;
+        let peer = bounded_call("connect", factory.connect(config, ConnectContext::new())).await?;
+        Ok::<_, Violation>((destination, peer))
     };
     let results = match connections.await {
         Ok((destination, peer)) => {
@@ -107,11 +109,11 @@ pub async fn certify_destination_factory(
             }
             results
         }
-        Err(error) => DESTINATION_CLAUSES
+        Err(Violation(reason)) => DESTINATION_CLAUSES
             .iter()
             .map(|clause| ClauseResult {
                 clause: *clause,
-                outcome: Outcome::Failed(format!("connect failed: {error}")),
+                outcome: Outcome::Failed(format!("connect failed: {reason}")),
             })
             .collect(),
     };
@@ -137,9 +139,7 @@ struct Bench<'a> {
 impl Bench<'_> {
     async fn check(&self, id: &str) -> Result<(), Violation> {
         match id {
-            "D-CHECK" => bounded("check", self.destination.check())
-                .await?
-                .map_err(|error| Violation::from(error.to_string())),
+            "D-CHECK" => bounded_call("check", self.destination.check()).await,
             "D-EPOCH" => self.epochs_increase().await,
             "D-STAGING" => self.staging_is_invisible().await,
             "D-COMMIT" => self.commits_publish().await,
@@ -378,9 +378,15 @@ impl Bench<'_> {
             .map_err(|error| Violation::from(format!("flush: {error}")))?;
         commit(
             &mut latest.session,
-            &meta(self.load_id(3), latest.epoch, &[1, 2], Vec::new()),
+            &meta(self.load_id(3), latest.epoch, &[1], Vec::new()),
         )
         .await?;
+        // Committing the abandoned session's segment may fail or succeed, but publishes nothing.
+        let orphan = CommitMeta {
+            commit_seq: CommitSeq::FIRST.next(),
+            ..meta(self.load_id(3), latest.epoch, &[2], Vec::new())
+        };
+        drop(bounded("commit", latest.session.commit(&orphan)).await?);
         expect_rows(self.published_rows().await?, 3)
     }
 
