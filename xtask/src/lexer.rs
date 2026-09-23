@@ -41,10 +41,12 @@ impl Scan {
             .count()
     }
 
-    /// Distinct lines that contain a comment.
+    /// Distinct lines holding `//` or `/* */` comments; rustdoc does not count.
     pub(crate) fn comment_lines(&self) -> usize {
         let mut lines: Vec<usize> = Vec::new();
-        for comment in &self.comments {
+        let prose =
+            |comment: &&Comment| matches!(comment.kind, CommentKind::Line | CommentKind::Block);
+        for comment in self.comments.iter().filter(prose) {
             let extra = comment.text.matches('\n').count();
             lines.extend(comment.line..=comment.line + extra);
         }

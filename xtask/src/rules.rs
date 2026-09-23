@@ -126,8 +126,16 @@ pub(crate) fn check(role: FileRole, scan: &Scan) -> Vec<Finding> {
             "use `foo.rs` with a `foo/` directory, not `mod.rs`",
         ));
     }
+    let mut in_code_block = false;
     for comment in &scan.comments {
-        check_comment_words(comment, &mut findings);
+        let is_doc = matches!(comment.kind, CommentKind::OuterDoc | CommentKind::InnerDoc);
+        if is_doc && comment.text[3..].trim_start().starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if !(is_doc && in_code_block) {
+            check_comment_words(comment, &mut findings);
+        }
     }
     check_line_comment_runs(&scan.comments, &mut findings);
     check_doc_summaries(&scan.comments, &mut findings);
