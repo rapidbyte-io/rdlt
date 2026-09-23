@@ -43,6 +43,10 @@ impl<E: ScopeError> TaskScope<E> {
     }
 
     /// Starts `task` inside the scope.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "TaskScope is the owner every task needs"
+    )]
     pub(crate) fn spawn<F>(&mut self, task: F)
     where
         F: Future<Output = Result<(), E>> + Send + 'static,

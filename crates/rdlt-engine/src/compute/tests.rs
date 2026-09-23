@@ -20,6 +20,10 @@ async fn run_returns_the_value_computed_on_a_pool_thread() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the panic must reach a task outside any scope"
+)]
 async fn a_panicking_job_panics_its_caller_and_the_pool_keeps_working() {
     let pool = pool();
     let mut tasks = JoinSet::new();
