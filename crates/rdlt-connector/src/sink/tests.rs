@@ -163,3 +163,18 @@ async fn a_plain_feed_drops_permits_as_it_receives() {
         "a channel without admission carries no permits"
     );
 }
+
+#[test]
+fn a_sink_debugs_its_answered_barrier_and_whether_it_admits() {
+    let (plain, _feed) = partition_channel(NonZeroUsize::new(4).unwrap());
+    assert_eq!(
+        format!("{plain:?}"),
+        "PartitionSink { answered: 0, admitted: false, .. }"
+    );
+    let (admitted, _feed) =
+        admitted_partition_channel(NonZeroUsize::new(4).unwrap(), Arc::new(Gate::default()));
+    assert_eq!(
+        format!("{admitted:?}"),
+        "PartitionSink { answered: 0, admitted: true, .. }"
+    );
+}
