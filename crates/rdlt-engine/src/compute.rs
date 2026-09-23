@@ -51,7 +51,10 @@ impl ComputePool for RayonPool {
 /// A panic inside `work` resumes in the caller, so it surfaces in the task that asked for the work.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "the engine stages call this from M2 on")
+    expect(
+        dead_code,
+        reason = "the shred and transform stages call this from M3 on"
+    )
 )]
 pub(crate) async fn run<T, F>(pool: &dyn ComputePool, work: F) -> T
 where

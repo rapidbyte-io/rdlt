@@ -1,0 +1,168 @@
+//! Connectors and helpers the engine tests share.
+
+pub(crate) mod destinations;
+pub(crate) mod script;
+
+use std::future::Future;
+use std::num::NonZeroUsize;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use arrow_array::{Array, Int64Array, RecordBatch};
+use rdlt_connector::{
+    ConnectContext, Destination, PipelineId, Source, StreamName, destination_factory,
+    source_factory,
+};
+use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
+use rdlt_engine::{
+    CommitPolicy, Engine, EngineConfig, EngineConfigBuilder, PipelinePlan, RayonPool, RunControl,
+    RunOutcome, StreamPlan, SystemEnv,
+};
+use serde_json::{Value, json};
+
+/// An engine on the system environment with `config`.
+pub(crate) fn engine(config: EngineConfigBuilder) -> TestEngine {
+    let pool = RayonPool::new(NonZeroUsize::MIN).expect("a one-thread pool starts");
+    let config = config.build().expect("the test configuration is valid");
+    TestEngine(Engine::new(config, Arc::new(SystemEnv::new(pool))))
+}
+
+/// How long a test waits, in the runtime's paused time, before it calls something hung; the
+/// longest wait any test needs is a 90-second rate limit.
+const LIMIT: Duration = Duration::from_secs(600);
+
+/// An engine whose runs fail the test instead of hanging it.
+pub(crate) struct TestEngine(Engine);
+
+impl TestEngine {
+    /// Starts a run that panics if it has not ended within [`LIMIT`].
+    pub(crate) fn run(
+        &self,
+        plan: PipelinePlan,
+        source: Arc<dyn Source>,
+        destination: Arc<dyn Destination>,
+    ) -> Guarded {
+        let handle = self.0.run(plan, source, destination);
+        let control = handle.control();
+        let future = async move {
+            tokio::time::timeout(LIMIT, handle)
+                .await
+                .expect("the run ends within the test's limit")
+        };
+        Guarded {
+            control,
+            future: Box::pin(future),
+        }
+    }
+}
+
+/// A run awaited under a time limit.
+pub(crate) struct Guarded {
+    control: RunControl,
+    future: Pin<Box<dyn Future<Output = RunOutcome> + Send>>,
+}
+
+impl Guarded {
+    pub(crate) fn control(&self) -> RunControl {
+        self.control.clone()
+    }
+}
+
+impl Future for Guarded {
+    type Output = RunOutcome;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<RunOutcome> {
+        self.future.as_mut().poll(context)
+    }
+}
+
+/// A configuration that commits every `rows` rows and never waits for barriers long.
+pub(crate) fn commit_every(rows: u64) -> EngineConfigBuilder {
+    let policy = CommitPolicy::new(None, Some(rows), None).expect("a row threshold is valid");
+    EngineConfig::builder()
+        .commit(policy)
+        .lanes(2)
+        .barrier_wait(Duration::from_millis(100))
+}
+
+pub(crate) fn pipeline(name: &str, streams: impl IntoIterator<Item = StreamPlan>) -> PipelinePlan {
+    let pipeline = PipelineId::parse(name).expect("valid pipeline id");
+    PipelinePlan::new(pipeline, streams).expect("the test plan is valid")
+}
+
+pub(crate) fn stream(name: &str) -> StreamPlan {
+    StreamPlan::new(StreamName::new(name).expect("valid stream name"))
+}
+
+/// A generator source of `streams`, each `(name, rows, partitions, batch_rows)`.
+pub(crate) async fn generator(streams: &[(&str, u64, u64, u64)]) -> Arc<dyn Source> {
+    let streams: Vec<Value> = streams
+        .iter()
+        .map(|(name, rows, partitions, batch_rows)| {
+            json!({ "name": name, "rows": rows, "partitions": partitions, "batch_rows": batch_rows })
+        })
+        .collect();
+    let source = source_factory::<GeneratorSource>()
+        .connect(
+            json!({ "seed": 7, "streams": streams }),
+            ConnectContext::new(),
+        )
+        .await
+        .expect("the generator connects");
+    Arc::from(source)
+}
+
+/// A memory destination writing to `store`.
+pub(crate) async fn memory(store: &str) -> Arc<dyn Destination> {
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": store }), ConnectContext::new())
+        .await
+        .expect("the memory destination connects");
+    Arc::from(destination)
+}
+
+/// The sorted ids published to `table` in `store`.
+pub(crate) fn published_ids(store: &str, table: &str) -> Vec<i64> {
+    let mut ids: Vec<i64> = published(store, table)
+        .iter()
+        .flat_map(|batch: &RecordBatch| {
+            let column = batch
+                .column_by_name("id")
+                .expect("tables have an id column");
+            let ids = column
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("ids are Int64");
+            (0..ids.len()).map(|row| ids.value(row)).collect::<Vec<_>>()
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// `0..rows` as ids.
+pub(crate) fn every_id(rows: i64) -> Vec<i64> {
+    (0..rows).collect()
+}
+
+/// Waits, in the runtime's time, until `condition` holds.
+pub(crate) async fn until(condition: impl Fn() -> bool) {
+    let waiting = async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(LIMIT, waiting)
+        .await
+        .expect("the condition holds within the test's limit");
+}
+
+/// The number of rows published to `table` in `store`.
+pub(crate) fn published_rows(store: &str, table: &str) -> usize {
+    published(store, table)
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum()
+}

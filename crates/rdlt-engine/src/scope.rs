@@ -1,10 +1,5 @@
 //! Structured concurrency: tasks owned by a scope that cancels and aborts them together.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the run orchestrator uses scopes from M2 on")
-)]
-
 #[cfg(test)]
 mod tests;
 
