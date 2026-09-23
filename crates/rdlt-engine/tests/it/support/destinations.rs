@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
@@ -153,16 +154,24 @@ pub(crate) enum Step {
     CreateTable,
     Writer,
     Commit,
+    /// The first commit lands, but its response is lost.
+    LoseResponse,
 }
 
 /// `inner`, failing with a transient error at `step`.
 pub(crate) fn failing(inner: Arc<dyn Destination>, step: Step) -> Arc<dyn Destination> {
-    Arc::new(Failing { inner, step })
+    Arc::new(Failing {
+        inner,
+        step,
+        lost: Arc::new(AtomicBool::new(false)),
+    })
 }
 
 struct Failing {
     inner: Arc<dyn Destination>,
     step: Step,
+    /// Whether a response was already lost, for [`Step::LoseResponse`].
+    lost: Arc<AtomicBool>,
 }
 
 fn injected() -> ConnectorError {
@@ -188,6 +197,7 @@ impl Destination for Failing {
                 session: Box::new(FailingSession {
                     inner: opened.session,
                     step: self.step,
+                    lost: Arc::clone(&self.lost),
                 }),
                 ..opened
             })
@@ -198,6 +208,7 @@ impl Destination for Failing {
 struct FailingSession {
     inner: Box<dyn DestinationSession>,
     step: Step,
+    lost: Arc<AtomicBool>,
 }
 
 impl DestinationSession for FailingSession {
@@ -222,7 +233,13 @@ impl DestinationSession for FailingSession {
         if self.step == Step::Commit {
             return Box::pin(async { Err(injected()) });
         }
-        self.inner.commit(meta)
+        Box::pin(async move {
+            let receipt = self.inner.commit(meta).await?;
+            if self.step == Step::LoseResponse && !self.lost.swap(true, Ordering::SeqCst) {
+                return Err(injected());
+            }
+            Ok(receipt)
+        })
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {

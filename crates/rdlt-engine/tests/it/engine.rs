@@ -701,3 +701,45 @@ async fn stopping_does_not_start_partitions_still_waiting_for_a_read_slot() {
         "queued partitions never start"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_final_commit_response_never_loads_a_full_read_twice() {
+    use crate::support::destinations::{Step, failing};
+    let source = generator(&[("orders", 300, 3, 25)]).await;
+    let destination = failing(memory("lost_response").await, Step::LoseResponse);
+    let plan = pipeline("lost-response", [stream("orders")]);
+    let config = retrying(3).commit(CommitPolicy::new(None, Some(1_000_000), None).unwrap());
+    let outcome = engine(config).run(plan, source, destination).await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!(outcome.report.attempts.len(), 2);
+    assert_eq!(published_ids("lost_response", "orders"), every_id(300));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_never_reads_again_a_stream_its_run_completed() {
+    let script = Script::new(vec![ScriptStream::new("orders", 2, 20, 5)]);
+    script.limited_acks.store(1, Ordering::SeqCst);
+    let (_, source) = script.connect("completed_once").await;
+    let plan = pipeline("completed-once", [stream("orders")]);
+    let engine =
+        engine(retrying(3).commit(CommitPolicy::new(None, Some(1_000_000), None).unwrap()));
+    let first = engine.run(plan.clone(), source, memory("completed_once").await);
+    let second = async {
+        // The first run's only commit has landed, and its acknowledgement is rate limited for a
+        // minute; meanwhile a second run reads the stream in full, as its own copy.
+        until(|| published_rows("completed_once", "orders") == 40).await;
+        let source = reconnect("completed_once").await;
+        engine
+            .run(plan.clone(), source, memory("completed_once").await)
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(second.report.status, RunStatus::Succeeded);
+    assert_eq!(first.report.status, RunStatus::Succeeded);
+    assert_eq!(first.report.attempts.len(), 2);
+    assert_eq!(
+        published_rows("completed_once", "orders"),
+        80,
+        "one copy per run"
+    );
+}
