@@ -23,6 +23,12 @@ fn system_env_reads_the_real_wall_clock() {
 }
 
 #[test]
+fn system_env_load_ids_are_distinct() {
+    let env = system_env();
+    assert_ne!(env.load_id(), env.load_id());
+}
+
+#[test]
 fn system_env_random_values_differ() {
     let env = system_env();
     assert_ne!(env.random(), env.random());

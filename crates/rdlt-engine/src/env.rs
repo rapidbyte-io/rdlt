@@ -8,6 +8,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime};
 
+use rdlt_connector::LoadId;
+
 use crate::compute::ComputePool;
 
 pub use system::SystemEnv;
@@ -34,4 +36,10 @@ pub trait Env: Send + Sync + 'static {
 
     /// The pool that runs CPU-bound work.
     fn compute(&self) -> &dyn ComputePool;
+
+    /// A new load id from the current wall-clock time and 128 random bits.
+    fn load_id(&self) -> LoadId {
+        let random = (u128::from(self.random()) << 64) | u128::from(self.random());
+        LoadId::from_parts(self.now(), random)
+    }
 }

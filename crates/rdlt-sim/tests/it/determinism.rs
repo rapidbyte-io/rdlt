@@ -42,6 +42,14 @@ fn the_same_seed_replays_identically() {
 }
 
 #[test]
+fn load_ids_replay_with_the_seed() {
+    let ids = |seed| run(seed, |env| async move { (env.load_id(), env.load_id()) });
+    assert_eq!(ids(Seed::new(9)), ids(Seed::new(9)));
+    assert_ne!(ids(Seed::new(9)).0, ids(Seed::new(9)).1);
+    assert_ne!(ids(Seed::new(9)), ids(Seed::new(10)));
+}
+
+#[test]
 fn different_seeds_diverge() {
     assert_ne!(trace(Seed::new(1)), trace(Seed::new(2)));
 }
