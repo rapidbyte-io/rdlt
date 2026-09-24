@@ -12,7 +12,8 @@ simulation oracle in `rdlt-sim`) are in place. The reference connectors in
 `rdlt-connector-reference` are an in-memory source and destination, a data generator, a SQLite
 destination and a source and destination of JSON lines and Arrow IPC files; the engine's
 integration suite runs against every destination. JSON pushes are coalesced and shredded in
-parallel on the compute pool; `normalize` and the lowering plan follow.
+parallel on the compute pool, and every batch is lowered there through a plan made once per table
+schema; `normalize` and child tables follow.
 
 ## Development
 
