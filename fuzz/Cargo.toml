@@ -12,10 +12,18 @@ cargo-fuzz = true
 bytes = "1.12.1"
 libfuzzer-sys = "0.4.13"
 rdlt-connector = { path = "../crates/rdlt-connector", default-features = false }
+rdlt-engine = { path = "../crates/rdlt-engine", features = ["bench"] }
 
 [[bin]]
 name = "state_record"
 path = "fuzz_targets/state_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shred"
+path = "fuzz_targets/shred.rs"
 test = false
 doc = false
 bench = false

@@ -5,7 +5,7 @@ mod tests;
 
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 use std::task::{Context, Poll, Waker};
 
 use tokio::sync::oneshot;
@@ -49,10 +49,10 @@ impl ComputePool for RayonPool {
 }
 
 /// A [`ComputePool`] that runs each job at once, on the calling thread.
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 pub(crate) struct Inline;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 impl ComputePool for Inline {
     fn execute(&self, job: Job) {
         job();
@@ -61,7 +61,7 @@ impl ComputePool for Inline {
 
 /// The output of `future`, whose compute jobs all run on an [`Inline`] pool, so it is ready at
 /// its first poll.
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 pub(crate) fn ready<F: Future>(future: F) -> F::Output {
     match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(output) => output,
