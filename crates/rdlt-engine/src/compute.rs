@@ -39,7 +39,7 @@ impl RayonPool {
     pub fn new(threads: NonZeroUsize) -> Result<Self, ComputePoolError> {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads.get())
-            .stack_size(8 * 1024 * 1024)
+            .stack_size(8_388_608)
             .thread_name(|index| format!("rdlt-compute-{index}"))
             .build()
             .map(|pool| Self { pool })
