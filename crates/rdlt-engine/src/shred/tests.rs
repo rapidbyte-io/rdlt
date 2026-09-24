@@ -573,7 +573,7 @@ fn fitted_chunks_hold_the_values_the_reference_does() {
 #[test]
 fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
     let secret = "hunter2-card-4111111111111111";
-    let push = format!("{{\"a\":1}}\n{{\"password\":\"{secret}\",\"b\":tru}}");
+    let push = format!("{{\"a\":1}}\n{{\"password\":\"{secret}\",\"b\":}}");
     let error = crate::compute::ready(shred(
         &crate::compute::Inline,
         &[Bytes::from(push)],
