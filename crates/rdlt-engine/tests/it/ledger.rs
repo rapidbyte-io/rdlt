@@ -10,7 +10,7 @@ use rdlt_engine::{
 
 use crate::HEAP;
 use crate::support::destinations::null;
-use crate::support::script::{Fault, Script, ScriptStream, id, reconnect};
+use crate::support::script::{Fault, Hang, Script, ScriptStream, id, reconnect};
 use crate::support::{
     commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_rows,
     stream, until,
@@ -135,7 +135,7 @@ async fn two_partitions_with_half_budget_frames_make_progress() {
 #[tokio::test(start_paused = true)]
 async fn failed_partition_fails_attempt_promptly() {
     let mut hanging = ScriptStream::new("events", 2, 20, 5);
-    hanging.hang = Some(1);
+    hanging.hang = Hang::Partition(1);
     let fault = Fault {
         batch: 1,
         kind: ConnectorErrorKind::Data,

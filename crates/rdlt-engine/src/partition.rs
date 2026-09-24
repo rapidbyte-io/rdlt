@@ -132,37 +132,7 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
     context.report(Progress::Started {
         partition: job.index,
     })?;
-    // Each push reserves its bytes before it enters the channel, so a source buffers nothing
-    // outside the budget (spec §7.5).
-    let admission = Arc::new(context.budget.clone());
-    let (sink, feed) = admitted_partition_channel(context.buffer, admission);
-    let request = ReadRequest {
-        stream: job.stream.clone(),
-        partition: job.partition.clone(),
-        cursor: job.cursor.clone(),
-    };
-    let both = async {
-        tokio::join!(
-            context.source.read(request, sink),
-            ingest(&job, &context, feed)
-        )
-    };
-    let (read, ingested) = tokio::select! {
-        biased;
-        // Cancellation wins: dropping the read and ingest futures ends both.
-        () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
-        both = both => both,
-    };
-    // An ingest failure stops the read, so it is the cause when both fail.
-    let ingested = ingested?;
-    read.map_err(|error| {
-        Error::connector(
-            Side::Source,
-            format!("reading stream {}", job.stream),
-            error,
-        )
-        .with_stream(&job.stream)
-    })?;
+    let ingested = read_and_ingest(&job, &context).await?;
     if !ingested.stopped
         && let Some(state) = end_state(&ingested)
     {
@@ -172,6 +142,57 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
         partition: job.index,
         stopped: ingested.stopped,
     })
+}
+
+/// Reads `job` while ingesting what the read emits, until both end or the attempt is cancelled.
+async fn read_and_ingest(
+    job: &PartitionJob,
+    context: &PartitionContext,
+) -> Result<Ingested, Error> {
+    // Each push reserves its bytes before it enters the channel, so a source buffers nothing
+    // outside the budget (spec §7.5).
+    let admission = Arc::new(context.budget.clone());
+    let (sink, feed) = admitted_partition_channel(context.buffer, admission);
+    let request = ReadRequest {
+        stream: job.stream.clone(),
+        partition: job.partition.clone(),
+        cursor: job.cursor.clone(),
+    };
+    // An ingest failure ends the read rather than waiting for a source that may not emit again
+    // for a long time. A read failure lets ingest drain what the source already sent.
+    let ingest_failed = CancellationToken::new();
+    let read = async {
+        tokio::select! {
+            biased;
+            () = ingest_failed.cancelled() => Ok(()),
+            read = context.source.read(request, sink) => read,
+        }
+    };
+    let ingest = async {
+        let ingested = ingest(job, context, feed).await;
+        if ingested.is_err() {
+            ingest_failed.cancel();
+        }
+        ingested
+    };
+    let both = async { tokio::join!(read, ingest) };
+    let (read, ingested) = tokio::select! {
+        biased;
+        // Cancellation wins: dropping the read and ingest futures ends both.
+        () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
+        both = both => both,
+    };
+    // An ingest failure ends the read, so it is the cause when both fail.
+    let ingested = ingested?;
+    read.map_err(|error| {
+        Error::connector(
+            Side::Source,
+            format!("reading stream {}", job.stream),
+            error,
+        )
+        .with_stream(&job.stream)
+    })?;
+    Ok(ingested)
 }
 
 /// Where a partition that read to its end resumes, if anywhere new.
