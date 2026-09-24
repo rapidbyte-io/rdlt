@@ -5,11 +5,13 @@ delivery, persistent schema management and throughput that scales with cores. It
 the Rapidbyte data platform.
 
 **Status:** pre-release. The foundation (tooling, deterministic simulation harness, runtime
-primitives), the connector contract (`rdlt-connector`, with in-process certification and the
-reference connectors in `rdlt-connector-reference`) and the exactly-once engine core
-(`rdlt-engine`: `append`, `replace` and `merge`, with schema evolution, name maps and nested data,
-checked by the simulation oracle in `rdlt-sim`) are in place; the SQL and file reference
-connectors follow.
+primitives), the connector contract (`rdlt-connector`, with in-process certification and
+`sqlgen`, the planner SQL destinations share) and the exactly-once engine core (`rdlt-engine`:
+`append`, `replace` and `merge`, with schema evolution, name maps and nested data, checked by the
+simulation oracle in `rdlt-sim`) are in place. The reference connectors in
+`rdlt-connector-reference` are an in-memory source and destination, a data generator, a SQLite
+destination and a source and destination of JSON lines and Arrow IPC files; the engine's
+integration suite runs against every destination. The shredder and lowering plan follow.
 
 ## Development
 
