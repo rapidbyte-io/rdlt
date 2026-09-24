@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
-use rdlt_connector::sqlgen::{CATALOG_TABLES, SqlPlanner, Sqlite};
+use rdlt_connector::sqlgen::{STAGING_COLUMNS, SqlPlanner, Sqlite, TABLE_PREFIX};
 use rdlt_connector::{
     IdentifierCase, IdentifierChars, IdentifierRules, SchemaChanges, TypeKind, WriteModes,
 };
@@ -77,7 +77,8 @@ impl DestinationConnector for SqliteDestination {
 }
 
 /// What the SQLite destination stores: SQLite's storage classes, widened in place within the
-/// integer and float families.
+/// integer and float families; tables never take `sqlgen`'s prefix or SQLite's, and columns never
+/// take the staging columns' names.
 fn capabilities() -> Capabilities {
     use TypeKind as K;
     let integers = [K::Int8, K::Int16, K::Int32, K::Int64];
@@ -111,7 +112,11 @@ fn capabilities() -> Capabilities {
         case: IdentifierCase::Lower,
         max_len: NonZeroU16::new(128).expect("128 is non-zero"),
         chars: IdentifierChars::Any,
-        reserved: CATALOG_TABLES.iter().map(|&name| name.to_owned()).collect(),
+        reserved: STAGING_COLUMNS
+            .iter()
+            .map(|&name| name.to_owned())
+            .collect(),
+        reserved_table_prefixes: [TABLE_PREFIX, "sqlite_"].map(str::to_owned).into(),
     };
     capabilities
 }

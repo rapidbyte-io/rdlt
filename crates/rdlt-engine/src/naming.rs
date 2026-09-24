@@ -73,6 +73,9 @@ impl Naming {
     }
 
     /// A free identifier for the table at `path`, never one of `taken`.
+    ///
+    /// A name that starts with a prefix the destination reserves for its own tables is prefixed
+    /// with `_` until it no longer does.
     pub(crate) fn table(
         &self,
         path: &TablePath,
@@ -83,7 +86,23 @@ impl Naming {
         for segment in &segments {
             push_segment(&mut bytes, segment);
         }
-        self.identifier(&join(&segments), &bytes, |name| taken.contains(name))
+        let mut candidate = join(&segments);
+        let prefixes = &self.rules.reserved_table_prefixes;
+        for _ in 0..=prefixes.iter().map(String::len).max().unwrap_or(0) {
+            let cleaned = self.clean(&candidate);
+            if !prefixes
+                .iter()
+                .any(|prefix| cleaned.starts_with(&self.fold(prefix)))
+            {
+                return self.identifier(&candidate, &bytes, |name| taken.contains(name));
+            }
+            candidate.insert(0, '_');
+        }
+        Err(Error::new(
+            ErrorKind::Destination,
+            format!("no identifier for table {path} avoids the destination's reserved prefixes"),
+        )
+        .with_code("identifier_exhausted"))
     }
 
     /// The identifier of the metadata column `name`, never one of `taken`.

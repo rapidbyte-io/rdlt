@@ -15,6 +15,7 @@ fn rules(case: IdentifierCase, chars: IdentifierChars, max_len: u16) -> Identifi
         max_len: NonZeroU16::new(max_len).unwrap(),
         chars,
         reserved: BTreeSet::from(["select".to_owned()]),
+        reserved_table_prefixes: BTreeSet::new(),
     }
 }
 
@@ -167,6 +168,37 @@ fn table_names_follow_the_same_rules() {
         naming.table(&nested, &BTreeSet::new()).unwrap(),
         "orders__items"
     );
+}
+
+#[test]
+fn table_identifiers_never_start_with_a_reserved_prefix() {
+    let mut reserving = rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 63);
+    reserving.reserved_table_prefixes = BTreeSet::from(["sqlite_".to_owned(), "_rdlt_".to_owned()]);
+    let naming = Naming::new(reserving.clone());
+    let table = |name: &str| naming.table(&TablePath::new([name]).unwrap(), &BTreeSet::new());
+    assert_eq!(table("SQLite_Stat").unwrap(), "_sqlite_stat");
+    assert_eq!(
+        table("_rdlt_staging__orders").unwrap(),
+        "__rdlt_staging__orders"
+    );
+    assert_eq!(table("orders").unwrap(), "orders");
+    let taken = BTreeSet::from(["_sqlite_stat".to_owned()]);
+    let path = TablePath::new(["sqlite_stat"]).unwrap();
+    assert!(hashed(
+        &naming.table(&path, &taken).unwrap(),
+        "_sqlite_stat"
+    ));
+    let columns = assign(&naming, &[source(&["sqlite_x"])]);
+    assert_eq!(
+        columns[&source(&["sqlite_x"])],
+        "sqlite_x",
+        "columns keep the prefix"
+    );
+    reserving.reserved_table_prefixes = BTreeSet::from(["_".to_owned()]);
+    let error = Naming::new(reserving)
+        .table(&TablePath::new(["_x"]).unwrap(), &BTreeSet::new())
+        .unwrap_err();
+    assert_eq!(error.code(), Some("identifier_exhausted"));
 }
 
 fn any_rules() -> impl Strategy<Value = IdentifierRules> {
