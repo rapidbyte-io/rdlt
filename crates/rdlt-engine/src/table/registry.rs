@@ -4,18 +4,23 @@
 #[cfg(test)]
 mod tests;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, ConnectorError, DestinationSession, DestinationWriter, Receipt, SchemaVersion, StateChange,
-    StateEntry, TableChange, TableRef, TableSchema,
+    CommitMeta, ConnectorError, DestinationSession, DestinationWriter, Receipt, SchemaVersion,
+    StateChange, StateEntry, TableChange, TableRef, TableSchema,
 };
 
 use super::TableView;
 use super::model::Model;
 use super::resolve::{Change, Resolution, Resolver, Route};
 use crate::error::{Error, Side};
+
+/// How many times a table's change is named around columns that attempts which never committed
+/// left behind before the conflict fails the run.
+pub(crate) const CONFLICT_RETRIES: usize = 4;
 
 /// The destination session, shared by the coordinator's commits and the partitions' schema
 /// changes until the coordinator closes it.
@@ -161,14 +166,17 @@ impl Tables {
         if resolution.changes.is_empty() {
             return Ok((view, resolution.routes));
         }
-        let next = match self.evolve(table, &view, resolution, &slot.resolver).await? {
-            Ok(next) => next,
-            Err(_conflict) => {
-                let hashing = slot.resolver.hashing();
-                let resolution = hashing.resolve(&view.model, incoming)?;
-                self.evolve(table, &view, resolution, &hashing)
-                    .await?
-                    .map_err(|error| self.refused(table, error))?
+        let (mut resolver, mut resolution, mut retries) =
+            (Cow::Borrowed(&slot.resolver), resolution, 0);
+        let next = loop {
+            match self.evolve(table, &view, resolution, &resolver).await? {
+                Ok(next) => break next,
+                Err(error) if retries == CONFLICT_RETRIES => return Err(self.refused(table, error)),
+                Err(_conflict) => {
+                    resolver = Cow::Owned(slot.resolver.hashing(retries as u64));
+                    resolution = resolver.resolve(&view.model, incoming)?;
+                    retries += 1;
+                }
             }
         };
         *slot.current.lock() = Arc::clone(&next.0);

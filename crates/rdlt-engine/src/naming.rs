@@ -27,24 +27,24 @@ const HASH_DIGITS: usize = 6;
 #[derive(Clone, Debug)]
 pub(crate) struct Naming {
     rules: IdentifierRules,
-    /// Whether every identifier carries its hash, even one that is free without it.
-    hashed: bool,
+    /// When set, every identifier carries its hash, seeded with this salt, even one that is free
+    /// without it.
+    salt: Option<u64>,
 }
 
 impl Naming {
     pub(crate) fn new(rules: IdentifierRules) -> Self {
-        Self {
-            rules,
-            hashed: false,
-        }
+        Self { rules, salt: None }
     }
 
-    /// The same rules, appending the hash to every identifier: what a table falls back to when
-    /// the destination already holds a column an attempt that never committed left behind.
-    pub(crate) fn hashing(&self) -> Self {
+    /// The same rules, appending a hash seeded with `salt` to every identifier.
+    ///
+    /// A table falls back to it when the destination already holds a column that an attempt which
+    /// never committed left behind. Each salt names around the columns the ones before it left.
+    pub(crate) fn hashing(&self, salt: u64) -> Self {
         Self {
             rules: self.rules.clone(),
-            hashed: true,
+            salt: Some(salt),
         }
     }
 
@@ -104,10 +104,11 @@ impl Naming {
         let base = self.clean(candidate);
         let max = usize::from(self.rules.max_len.get());
         let first = truncate(&base, max);
-        if !self.hashed && !self.unusable(&first, &taken) {
+        if self.salt.is_none() && !self.unusable(&first, &taken) {
             return Ok(first);
         }
-        let hash = self.fold(&base32(xxhash_rust::xxh3::xxh3_64(source)));
+        let seed = self.salt.unwrap_or(0);
+        let hash = self.fold(&base32(xxhash_rust::xxh3::xxh3_64_with_seed(source, seed)));
         for digits in HASH_DIGITS..=hash.len() {
             let suffix = format!("_{}", &hash[..digits]);
             let room = max.saturating_sub(suffix.len());

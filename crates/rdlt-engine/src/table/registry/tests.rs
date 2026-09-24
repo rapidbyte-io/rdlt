@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Capabilities, ColumnKey, ColumnPath, CommitMeta, ConnectorError,
-    DestinationSession, DestinationWriter, Field, GenerationId, IdentifierCase, LogicalType,
-    Receipt, Result, SchemaChanges, SchemaVersion, StateChange, StateEntry, StreamName,
-    TableChange, TablePath, TableRef, TableSchema,
+    BoxFuture, Capabilities, ColumnKey, ColumnPath, CommitMeta, ConnectorError, DestinationSession,
+    DestinationWriter, Field, GenerationId, IdentifierCase, LogicalType, Receipt, Result,
+    SchemaChanges, SchemaVersion, StateChange, StateEntry, StreamName, TableChange, TablePath,
+    TableRef, TableSchema,
 };
 
-use super::{SharedSession, Tables};
+use super::{CONFLICT_RETRIES, SharedSession, Tables};
 use crate::error::ErrorKind;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
@@ -126,14 +126,21 @@ async fn concurrent_changes_to_one_table_each_apply_on_top_of_the_other() {
     let (one, two) = tokio::join!(tables.fit(0, &first), tables.fit(0, &second));
     let (one, two) = (one.unwrap().0, two.unwrap().0);
     assert_eq!(
-        (one.model.version.min(two.model.version), tables.view(0).model.version),
+        (
+            one.model.version.min(two.model.version),
+            tables.view(0).model.version
+        ),
         (2, 3)
     );
     let view = tables.view(0);
     let names: Vec<&str> = view.model.columns.iter().map(Field::name).collect();
     assert!(names.contains(&"a") && names.contains(&"b"), "{names:?}");
     let applied = changes.lock();
-    assert_eq!(applied.len(), 3, "the create and one added column each: {applied:?}");
+    assert_eq!(
+        applied.len(),
+        3,
+        "the create and one added column each: {applied:?}"
+    );
 }
 
 #[tokio::test]
@@ -263,7 +270,8 @@ impl Physical {
         };
         for (name, to, from) in declared {
             match columns.get(&name) {
-                Some(held) if *held != to && Some(held) != from.as_ref() => {
+                Some(held) if held.join(&to) == *held => {}
+                Some(held) if Some(held) != from.as_ref() => {
                     return Err(ConnectorError::data(format!("{name} is {held:?}"))
                         .with_code("schema_conflict"));
                 }
@@ -336,7 +344,11 @@ async fn an_attempt_names_columns_around_those_a_crashed_attempt_left_behind() {
         assert_ne!(before.model.names.get(&key), None);
     }
     let names: Vec<&str> = after.model.names.iter().map(|(_, name)| name).collect();
-    assert_eq!(physical.len(), names.len() + 2, "no column besides these and metadata");
+    assert_eq!(
+        physical.len(),
+        names.len() + 2,
+        "no column besides these and metadata"
+    );
 }
 
 /// Refuses every change with `code`, counting the calls.
@@ -373,8 +385,30 @@ impl DestinationSession for Refusing {
 }
 
 #[tokio::test]
-async fn only_a_first_conflict_is_named_around() {
-    for (code, calls) in [(None, 1), (Some("schema_conflict"), 2)] {
+async fn each_attempt_names_around_every_attempt_before_it() {
+    let columns = Columns::default();
+    for (attempt_number, logical) in [LogicalType::Int64, LogicalType::Utf8, LogicalType::Bool]
+        .into_iter()
+        .enumerate()
+    {
+        let tables = attempt(&columns);
+        let (view, _) = tables
+            .fit(0, &schema(&[("x", logical.clone())]))
+            .await
+            .unwrap();
+        let name = view.model.names.get(&source("x")).unwrap().to_owned();
+        let physical = columns.lock().clone();
+        assert_eq!(
+            physical.get(&name),
+            Some(&logical),
+            "attempt {attempt_number}: {physical:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn conflicts_are_named_around_a_bounded_number_of_times() {
+    for (code, calls) in [(None, 1), (Some("schema_conflict"), 1 + CONFLICT_RETRIES)] {
         let counted = Arc::new(Mutex::new(0));
         let session = Refusing {
             code,
@@ -388,6 +422,10 @@ async fn only_a_first_conflict_is_named_around() {
             .unwrap_err();
         assert_eq!((error.kind(), error.code()), (ErrorKind::Destination, code));
         assert_eq!(*counted.lock(), calls, "{code:?}");
-        assert_eq!(tables.view(0).model.version, 0, "a refused change changes nothing");
+        assert_eq!(
+            tables.view(0).model.version,
+            0,
+            "a refused change changes nothing"
+        );
     }
 }
