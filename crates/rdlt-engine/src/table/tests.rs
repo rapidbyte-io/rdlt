@@ -984,3 +984,62 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
         later.load_id.as_bytes()
     );
 }
+
+/// `batch` with its metadata columns decoded to the values they encode.
+fn decoded(batch: &RecordBatch) -> RecordBatch {
+    let fields: Vec<_> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Dictionary(_, values) => {
+                field.as_ref().clone().with_data_type(*values.clone())
+            }
+            _ => field.as_ref().clone(),
+        })
+        .collect();
+    let columns = batch
+        .columns()
+        .iter()
+        .zip(&fields)
+        .map(|(column, field)| arrow_cast::cast(column, field.data_type()).unwrap())
+        .collect();
+    RecordBatch::try_new(Arc::new(arrow_schema::Schema::new(fields)), columns).unwrap()
+}
+
+proptest! {
+    #[test]
+    fn a_plan_reused_across_batches_lowers_each_as_a_fresh_plan_does(
+        batches in proptest::collection::vec((1_i64..300, 0_u128..3, 0_u64..3), 1..12),
+    ) {
+        let mut uuids = capabilities();
+        uuids.types.insert(TypeKind::Uuid);
+        let resolver = resolver(uuids, plan(), &[]);
+        let ids = |rows: i64| {
+            batch(vec![("id", Arc::new(Int64Array::from_iter_values(0..rows)) as _)])
+        };
+        let incoming = TableSchema::from_arrow(&ids(1).schema()).unwrap();
+        let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
+        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+        let fresh = || {
+            LoweringPlan::new(resolver.stream.clone(), Arc::clone(&view), incoming.clone(), resolution.routes.clone())
+        };
+        let reused = fresh();
+        // The load id and load start vary apart, so each is checked on its own.
+        for (rows, load, start) in batches {
+            let stamp = Stamp {
+                load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(1_000), load),
+                loaded_at: UNIX_EPOCH + Duration::from_secs(1_000 + start),
+                ..stamp()
+            };
+            let batch = ids(rows);
+            let lowered = decoded(&reused.prepare(&batch, &stamp).unwrap().batch);
+            prop_assert_eq!(&lowered, &decoded(&fresh().prepare(&batch, &stamp).unwrap().batch));
+            let load_ids = lowered.column(1).as_fixed_size_binary();
+            prop_assert!(load_ids.iter().all(|id| id == Some(stamp.load_id.as_bytes().as_slice())));
+            let loaded_at = lowered.column(2).as_primitive::<TimestampMicrosecondType>();
+            let micros = i64::try_from(stamp.loaded_at.duration_since(UNIX_EPOCH).unwrap().as_micros()).unwrap();
+            prop_assert!(loaded_at.iter().all(|at| at == Some(micros)));
+        }
+    }
+}
