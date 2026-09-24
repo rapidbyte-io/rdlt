@@ -21,9 +21,12 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   float after integers exact as floats, a large unsigned integer after integers). Any other value
   makes the column `Json`, which it cannot build from the values it already took, so it stops
   building and only checks its later values' nesting. The chunks' shapes are joined in push
-  order, and a chunk whose own shape is the joined shape keeps its columns; any other is parsed
-  again and built against the joined shape. Batches are therefore always built against the
-  joined shape, as the spec requires, and the second parse is paid only where the shape changed.
+  order. A chunk whose columns fit the joined shape keeps them, fitted without its values:
+  columns are matched by name, columns it lacks or held only nulls in become nulls of the joined
+  type, and integers are cast to the floats or decimals the join widened them to. Only a chunk
+  holding a column that stopped building, or one the join made `Json` or another kind, is parsed
+  again and built against the joined shape. Batches therefore always have the joined shape, as
+  the spec requires, and optional keys cost no second parse.
 - **Pushes are split into records on the pool.** Each push's records are found on the compute
   pool before chunking: JSON lines by their line ends, a JSON array by its top-level commas,
   scanned without recursion however deep its values nest. Each record is then parsed on its own,

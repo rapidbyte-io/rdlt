@@ -78,6 +78,17 @@ fn nested(index: u64, mix: &mut Mix) -> String {
     )
 }
 
+/// Nested rows of which a quarter carry an optional key, so most chunks lack a column others have
+/// or meet it late.
+fn sparse(index: u64, mix: &mut Mix) -> String {
+    let row = nested(index, mix);
+    if mix.below(4) == 0 {
+        format!(r#"{},"tag":"t{}"}}"#, &row[..row.len() - 1], mix.below(100))
+    } else {
+        row
+    }
+}
+
 /// Flat rows of three narrow columns.
 fn flat_narrow(index: u64, mix: &mut Mix) -> String {
     format!(
@@ -113,6 +124,7 @@ fn string_heavy(index: u64, mix: &mut Mix) -> String {
 fn single_core(c: &mut Criterion) {
     let mut corpora = vec![
         ("nested", corpus(nested)),
+        ("sparse", corpus(sparse)),
         ("flat_narrow", corpus(flat_narrow)),
         ("flat_wide", corpus(flat_wide)),
         ("string_heavy", corpus(string_heavy)),
