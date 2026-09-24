@@ -11,6 +11,7 @@ repository.workspace = true
 default = ["macros"]
 macros = ["dep:rdlt-connector-macros"]
 testing = ["dep:arrow-cast"]
+sqlgen = []
 
 [dependencies]
 arrow-array.workspace = true
@@ -30,6 +31,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+rusqlite.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 
 [lints]

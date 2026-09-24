@@ -52,14 +52,18 @@ xxhash-rust = { version = "0.8.18", features = [
 ] } # hashes that tell colliding identifiers apart
 
 # Tooling and tests
-anyhow = "1.0.104"                                  # error reporting at xtask's command-line entry point
-cargo_metadata = "0.23.1"                           # xtask reads the workspace graph for the dependency rule
+anyhow = "1.0.104" # error reporting at xtask's command-line entry point
+cargo_metadata = "0.23.1" # xtask reads the workspace graph for the dependency rule
 clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask
-peak_alloc = "0.3.0"                                # the heap's peak size, for the engine's memory bound
-proptest = "1.11.0"                                 # property tests
-regex = "1.13.1"                                    # xtask lint patterns
-tempfile = "3.27.0"                                 # temporary directories in tests
-walkdir = "2.5.0"                                   # xtask walks the source tree
+peak_alloc = "0.3.0" # the heap's peak size, for the engine's memory bound
+proptest = "1.11.0" # property tests
+regex = "1.13.1" # xtask lint patterns
+rusqlite = { version = "0.40.2", default-features = false, features = [
+  "bundled",
+  "cache",
+] } # the reference SQL destination, and running sqlgen's statements in its tests
+tempfile = "3.27.0" # temporary directories in tests
+walkdir = "2.5.0" # xtask walks the source tree
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
