@@ -102,6 +102,8 @@ impl Records {
 struct Chunk {
     parts: Vec<(Bytes, Vec<Range<usize>>)>,
     rows: usize,
+    /// How many records of the pushes come before the chunk's first.
+    before: usize,
 }
 
 impl Chunk {
@@ -119,6 +121,7 @@ fn chunks(pushes: &[Records], chunk_bytes: usize) -> Vec<Chunk> {
     let mut chunk = Chunk {
         parts: Vec::new(),
         rows: 0,
+        before: 0,
     };
     let mut size = 0;
     for push in pushes {
@@ -131,11 +134,13 @@ fn chunks(pushes: &[Records], chunk_bytes: usize) -> Vec<Chunk> {
                 chunk
                     .parts
                     .push((push.push.clone(), std::mem::take(&mut records)));
+                let before = chunk.before + chunk.rows;
                 chunks.push(std::mem::replace(
                     &mut chunk,
                     Chunk {
                         parts: Vec::new(),
                         rows: 0,
+                        before,
                     },
                 ));
                 size = 0;
@@ -260,7 +265,7 @@ fn parse(chunk: Chunk) -> Result<Parsed, ShredError> {
 /// Appends the records of `chunk` to `record`; returns whether a column stopped building.
 fn append(chunk: &Chunk, record: &mut Record) -> Result<bool, ShredError> {
     let context = Context::default();
-    for bytes in chunk.records() {
+    for (index, bytes) in chunk.records().enumerate() {
         let mut deserializer = sonic_rs::Deserializer::from_slice(bytes);
         Row {
             record: &mut *record,
@@ -271,10 +276,18 @@ fn append(chunk: &Chunk, record: &mut Record) -> Result<bool, ShredError> {
         .map_err(|error| {
             context
                 .fault()
-                .unwrap_or_else(|| ShredError::Invalid(error.to_string()))
+                .unwrap_or_else(|| invalid(chunk.before + index, &error))
         })?;
     }
     Ok(context.spoiled())
+}
+
+/// The error for record `index` of the pushes, which sonic-rs refused with `error`: what broke and
+/// where, without the excerpt of the record sonic-rs quotes after it.
+fn invalid(index: usize, error: &sonic_rs::Error) -> ShredError {
+    let message = error.to_string();
+    let what = message.lines().next().unwrap_or_default();
+    ShredError::Invalid(format!("record {}: {what}", index + 1))
 }
 
 /// The shape every chunk's records fit: the join of each chunk's, in push order.
