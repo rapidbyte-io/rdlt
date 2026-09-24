@@ -46,6 +46,10 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
                     greatest sequence's",
     },
     Clause {
+        id: "D-ENCODING",
+        statement: "dictionary-encoded columns publish the values they encode",
+    },
+    Clause {
         id: "D-FENCE",
         statement: "a session opened before the latest one cannot commit",
     },

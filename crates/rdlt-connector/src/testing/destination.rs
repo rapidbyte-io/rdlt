@@ -1,6 +1,7 @@
 //! Destination clauses.
 
 mod clauses;
+mod encoding;
 mod evolving;
 
 use std::sync::Arc;
@@ -121,6 +122,7 @@ impl Bench<'_> {
             "D-REPLACE" => self.generations_swap_in_atomically().await,
             "D-SCHEMA" => self.schema_changes_apply().await,
             "D-MERGE" => self.merges_keep_the_newest_row().await,
+            "D-ENCODING" => self.dictionaries_publish_their_values().await,
             _ => self.stale_sessions_are_fenced().await,
         }
     }

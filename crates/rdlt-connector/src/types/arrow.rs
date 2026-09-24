@@ -51,12 +51,18 @@ impl Field {
     /// to lists of key/value structs, and unsigned integers map to the next wider signed type.
     pub fn from_arrow(field: &ArrowField) -> Result<Self, UnsupportedType> {
         let extension = field.metadata().get(EXTENSION_NAME).map(String::as_str);
-        let logical_type = match (extension, field.data_type()) {
+        // An encoded column keeps its extension type: the encoding holds the storage type.
+        let storage = match field.data_type() {
+            DataType::Dictionary(_, values) => values.as_ref(),
+            DataType::RunEndEncoded(_, values) => values.data_type(),
+            other => other,
+        };
+        let logical_type = match (extension, storage) {
             (Some(UUID_EXTENSION), DataType::FixedSizeBinary(16)) => LogicalType::Uuid,
             (Some(JSON_EXTENSION), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) => {
                 LogicalType::Json
             }
-            (_, data_type) => from_data_type(field.name(), data_type)?,
+            _ => from_data_type(field.name(), field.data_type())?,
         };
         Ok(Self::new(
             field.name().as_str(),

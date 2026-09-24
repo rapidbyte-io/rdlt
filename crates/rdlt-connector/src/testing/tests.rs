@@ -5,6 +5,7 @@ use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
+use arrow_schema::DataType;
 use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -320,6 +321,8 @@ struct VaultConfig {
     refuse_narrower: bool,
     /// Reports a conflict as a plain data error, without the `schema_conflict` code.
     uncoded_conflicts: bool,
+    /// Refuses a batch holding a dictionary-encoded column.
+    refuse_dictionaries: bool,
 }
 
 #[derive(Default)]
@@ -689,6 +692,37 @@ impl Session for VaultSession {
     }
 }
 
+impl VaultConfig {
+    /// Why a vault with this configuration refuses `batch` for a table of `columns`, if it does.
+    fn refusal(
+        &self,
+        columns: Option<&BTreeMap<String, LogicalType>>,
+        batch: &RecordBatch,
+    ) -> Option<&'static str> {
+        let schema = batch.schema();
+        if self.refuse_dictionaries
+            && schema
+                .fields()
+                .iter()
+                .any(|field| matches!(field.data_type(), DataType::Dictionary(..)))
+        {
+            return Some("the batch holds a dictionary");
+        }
+        let narrower = columns.is_some_and(|columns| {
+            schema.fields().iter().any(|field| {
+                let stored = match field.data_type() {
+                    DataType::Dictionary(_, value) => value.as_ref(),
+                    other => other,
+                };
+                columns
+                    .get(field.name())
+                    .is_some_and(|column| column.to_arrow() != *stored)
+            })
+        });
+        (self.refuse_narrower && narrower).then_some("the batch does not match the table")
+    }
+}
+
 impl TableWriter for VaultWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
         let mut store = self.stores.shared.lock().unwrap();
@@ -696,15 +730,8 @@ impl TableWriter for VaultWriter {
         if !self.config.stale_writes && current != self.epoch {
             return Err(ConnectorError::fenced("stale"));
         }
-        if self.config.refuse_narrower
-            && let Some(columns) = store.columns.get(&self.table)
-            && batch.schema().fields().iter().any(|field| {
-                columns
-                    .get(field.name())
-                    .is_some_and(|column| column.to_arrow() != *field.data_type())
-            })
-        {
-            return Err(ConnectorError::data("the batch does not match the table"));
+        if let Some(refusal) = self.config.refusal(store.columns.get(&self.table), &batch) {
+            return Err(ConnectorError::data(refusal));
         }
         let dropped: Vec<usize> = batch
             .schema()
@@ -894,6 +921,7 @@ async fn each_broken_destination_behavior_fails_exactly_its_clause() {
         ("refuse_narrower", "D-SCHEMA"),
         ("uncoded_conflicts", "D-SCHEMA"),
         ("refuse_widening", "D-SCHEMA"),
+        ("refuse_dictionaries", "D-ENCODING"),
     ];
     for (flag, clause) in cases {
         let report = certify_vault(flag, Some(flag)).await;
@@ -936,6 +964,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-DISCARD",
             "D-REPLACE",
             "D-SCHEMA",
+            "D-ENCODING",
             "D-FENCE"
         ],
         "{report}"
