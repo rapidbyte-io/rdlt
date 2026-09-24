@@ -37,6 +37,7 @@ mod policy;
 mod report;
 mod run;
 mod scope;
+mod table;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
 pub use config::{CommitPolicy, EngineConfig, EngineConfigBuilder, RetryPolicy};
