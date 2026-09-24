@@ -910,10 +910,20 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
     let batch = batch(vec![("at", Arc::new(year_3000) as _)]);
     let incoming = TableSchema::from_arrow(&batch.schema()).unwrap();
     let resolution = resolver.resolve(&model, &incoming).unwrap();
-    assert!(resolution.changes.is_empty(), "the column's type holds the batch's");
+    assert!(
+        resolution.changes.is_empty(),
+        "the column's type holds the batch's"
+    );
     let view = TableView::new(&table("t"), resolution.model, &resolver);
-    let error = prepare(&resolver.stream, &view, &incoming, &batch, &resolution.routes, &stamp())
-        .unwrap_err();
+    let error = prepare(
+        &resolver.stream,
+        &view,
+        &incoming,
+        &batch,
+        &resolution.routes,
+        &stamp(),
+    )
+    .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
         (ErrorKind::Schema, Some("value_unrepresentable"))

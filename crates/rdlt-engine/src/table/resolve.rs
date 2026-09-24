@@ -94,10 +94,10 @@ struct Incoming<'a> {
 }
 
 impl Resolver {
-    /// The same resolver, appending the hash to every identifier it assigns.
-    pub(crate) fn hashing(&self) -> Self {
+    /// The same resolver, appending a hash seeded with `salt` to every identifier it assigns.
+    pub(crate) fn hashing(&self, salt: u64) -> Self {
         Self {
-            naming: self.naming.hashing(),
+            naming: self.naming.hashing(salt),
             ..self.clone()
         }
     }
