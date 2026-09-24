@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
+use arrow_array::cast::AsArray;
 use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -13,16 +14,18 @@ use super::{
     DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, certify_destination,
     certify_source,
 };
-use crate::capabilities::Capabilities;
+use crate::capabilities::{Capabilities, SchemaChanges};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::commit::{CommitMeta, Receipt};
 use crate::destination::{
-    DestinationConnector, OpenContext, Opened, Session, TableChange, TableRef, TableWriter,
-    WriteStats,
+    DestinationConnector, MergeKey, OpenContext, Opened, Session, TableChange, TableRef,
+    TableWriter, WriteStats,
 };
 use crate::emitter::Emitter;
 use crate::error::{ConnectorError, Result};
-use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SegmentId, StreamName};
+use crate::id::{
+    CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StreamName, TablePath,
+};
 use crate::sink::Push;
 use crate::source::{Partition, ReadStream, SourceConnector, Streams};
 use crate::spec::{BoxFuture, ConnectContext};
@@ -301,6 +304,15 @@ struct VaultConfig {
     stale_writes: bool,
     refuse_unstaged: bool,
     hang_connect: bool,
+    replace_early: bool,
+    merge_appends: bool,
+    refuse_repeated_changes: bool,
+    ignore_added_columns: bool,
+    refuse_widening: bool,
+    /// Declares only the minimal capabilities.
+    minimal: bool,
+    /// Declares no schema change at all.
+    fixed_schema: bool,
 }
 
 #[derive(Default)]
@@ -308,8 +320,25 @@ struct VaultStore {
     epochs: BTreeMap<PipelineId, u64>,
     state: BTreeMap<PipelineId, BTreeMap<String, StateRecord>>,
     receipts: BTreeMap<(LoadId, CommitSeq), Receipt>,
-    staged: BTreeMap<(PipelineId, SegmentId), Vec<(String, RecordBatch)>>,
+    staged: BTreeMap<(PipelineId, SegmentId), Vec<Staged>>,
     published: BTreeMap<String, Vec<RecordBatch>>,
+    /// Committed rows of replace generations, by table and generation.
+    generations: BTreeMap<(String, GenerationId), Vec<RecordBatch>>,
+    /// Each table's name, by path, as writers named it.
+    tables: BTreeMap<TablePath, String>,
+    /// Every schema change applied, rendered.
+    changes: BTreeSet<String>,
+    /// Columns added while `ignore_added_columns` was set, by table; writes drop them.
+    ignored: BTreeSet<(String, String)>,
+}
+
+/// A batch staged for a table, a replace generation of it, or a merge into it.
+#[derive(Clone)]
+struct Staged {
+    table: String,
+    generation: Option<GenerationId>,
+    merge: Option<MergeKey>,
+    batch: RecordBatch,
 }
 
 type SharedVault = Arc<Mutex<VaultStore>>;
@@ -365,6 +394,8 @@ struct VaultWriter {
     pipeline: PipelineId,
     epoch: u64,
     table: String,
+    generation: Option<GenerationId>,
+    merge: Option<MergeKey>,
 }
 
 impl DestinationConnector for Vault {
@@ -374,7 +405,16 @@ impl DestinationConnector for Vault {
     type Session = VaultSession;
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities::minimal()
+        let mut capabilities = Capabilities::minimal();
+        if !self.config.minimal {
+            capabilities.write_modes.replace = true;
+            capabilities.write_modes.merge = true;
+            capabilities.schema_changes = SchemaChanges::all();
+        }
+        if self.config.fixed_schema {
+            capabilities.schema_changes = SchemaChanges::default();
+        }
+        capabilities
     }
 
     async fn connect(config: VaultConfig, _context: &ConnectContext) -> Result<Self> {
@@ -457,6 +497,55 @@ impl VaultSession {
         }
     }
 
+    /// Publishes the segments of `meta` into tables, generations and merges, and swaps in the
+    /// generations it finishes; returns the rows published.
+    fn publish(&self, store: &mut VaultStore, meta: &CommitMeta) -> u64 {
+        let mut rows = 0;
+        let mut merging: BTreeMap<String, Vec<(MergeKey, RecordBatch)>> = BTreeMap::new();
+        for segment in self.segments_to_publish(store, meta) {
+            let key = (self.pipeline.clone(), segment);
+            let batches = if self.config.republish {
+                store.staged.get(&key).cloned().unwrap_or_default()
+            } else {
+                store.staged.remove(&key).unwrap_or_default()
+            };
+            for staged in batches {
+                rows += staged.batch.num_rows() as u64;
+                match (staged.generation, staged.merge) {
+                    (Some(generation), _) if !self.config.replace_early => store
+                        .generations
+                        .entry((staged.table, generation))
+                        .or_default()
+                        .push(staged.batch),
+                    (_, Some(key)) if !self.config.merge_appends => merging
+                        .entry(staged.table)
+                        .or_default()
+                        .push((key, staged.batch)),
+                    _ => store
+                        .published
+                        .entry(staged.table)
+                        .or_default()
+                        .push(staged.batch),
+                }
+            }
+        }
+        for (table, incoming) in merging {
+            merge(store.published.entry(table).or_default(), incoming);
+        }
+        for (path, generation) in &meta.finish_generations {
+            let Some(table) = store.tables.get(path).cloned() else {
+                continue;
+            };
+            let rows = store
+                .generations
+                .remove(&(table.clone(), *generation))
+                .unwrap_or_default();
+            store.generations.retain(|(name, _), _| *name != table);
+            store.published.insert(table, rows);
+        }
+        rows
+    }
+
     /// With `refuse_unstaged`, the first segment of `meta` this pipeline never staged.
     fn refused_segment(&self, store: &VaultStore, meta: &CommitMeta) -> Option<SegmentId> {
         let staged = |segment: &SegmentId| {
@@ -488,17 +577,42 @@ impl VaultSession {
 impl Session for VaultSession {
     type Writer = VaultWriter;
 
-    async fn apply_schema(&mut self, _change: &TableChange) -> Result<()> {
+    async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
+        let mut store = self.stores.shared.lock().unwrap();
+        let first = store.changes.insert(format!("{change:?}"));
+        let alters = !matches!(change, TableChange::Create { .. });
+        if self.config.refuse_repeated_changes && alters && !first {
+            return Err(ConnectorError::data("the change was already applied"));
+        }
+        match change {
+            TableChange::AddColumn { table, field } if self.config.ignore_added_columns => {
+                store
+                    .ignored
+                    .insert((table.name.to_string(), field.name().to_owned()));
+            }
+            TableChange::Widen { .. } if self.config.refuse_widening => {
+                return Err(ConnectorError::data("columns never widen here"));
+            }
+            _ => {}
+        }
         Ok(())
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
+        self.stores
+            .shared
+            .lock()
+            .unwrap()
+            .tables
+            .insert(table.path.clone(), table.name.to_string());
         Ok(VaultWriter {
             config: Arc::clone(&self.config),
             stores: self.stores.clone(),
             pipeline: self.pipeline.clone(),
             epoch: self.epoch,
             table: table.name.to_string(),
+            generation: table.generation,
+            merge: table.merge.clone(),
         })
     }
 
@@ -535,19 +649,7 @@ impl Session for VaultSession {
                 "segment {segment} is not staged"
             )));
         }
-        let mut rows = 0;
-        for segment in self.segments_to_publish(&store, meta) {
-            let key = (self.pipeline.clone(), segment);
-            let batches = if self.config.republish {
-                store.staged.get(&key).cloned().unwrap_or_default()
-            } else {
-                store.staged.remove(&key).unwrap_or_default()
-            };
-            for (table, batch) in batches {
-                rows += batch.num_rows() as u64;
-                store.published.entry(table).or_default().push(batch);
-            }
-        }
+        let rows = self.publish(&mut store, meta);
         if !self.config.forget_state {
             self.apply_state(&mut store, meta);
         }
@@ -575,6 +677,22 @@ impl TableWriter for VaultWriter {
         if !self.config.stale_writes && current != self.epoch {
             return Err(ConnectorError::fenced("stale"));
         }
+        let dropped: Vec<usize> = batch
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| {
+                store
+                    .ignored
+                    .contains(&(self.table.clone(), field.name().clone()))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let kept: Vec<usize> = (0..batch.num_columns())
+            .filter(|index| !dropped.contains(index))
+            .collect();
+        let batch = batch.project(&kept).expect("kept columns exist");
         if self.config.publish_on_write {
             store
                 .published
@@ -586,13 +704,65 @@ impl TableWriter for VaultWriter {
             .staged
             .entry((self.pipeline.clone(), segment))
             .or_default()
-            .push((self.table.clone(), batch));
+            .push(Staged {
+                table: self.table.clone(),
+                generation: self.generation,
+                merge: self.merge.clone(),
+                batch,
+            });
         Ok(())
     }
 
     async fn flush(&mut self) -> Result<WriteStats> {
         Ok(WriteStats::default())
     }
+}
+
+/// Merges `incoming` into `published` a row at a time: an incoming row replaces the published
+/// row with its key, and among incoming rows of one key the greatest sequence wins.
+fn merge(published: &mut Vec<RecordBatch>, incoming: Vec<(MergeKey, RecordBatch)>) {
+    let Some(key) = incoming.first().map(|(key, _)| key.clone()) else {
+        return;
+    };
+    let key_of = |row: &RecordBatch| -> Vec<String> {
+        key.columns
+            .iter()
+            .map(|column| {
+                let values = row
+                    .column_by_name(column)
+                    .expect("merge rows carry their key");
+                arrow_cast::display::array_value_to_string(values, 0).unwrap()
+            })
+            .collect()
+    };
+    let seq_of = |row: &RecordBatch| -> Vec<u8> {
+        let seq = row
+            .column_by_name(&key.seq)
+            .expect("merge rows carry a sequence");
+        seq.as_binary::<i32>().value(0).to_vec()
+    };
+    let rows = |batches: &[RecordBatch]| -> Vec<RecordBatch> {
+        batches
+            .iter()
+            .flat_map(|batch| (0..batch.num_rows()).map(|row| batch.slice(row, 1)))
+            .collect()
+    };
+    let mut winners: BTreeMap<Vec<String>, RecordBatch> = BTreeMap::new();
+    let batches: Vec<RecordBatch> = incoming.into_iter().map(|(_, batch)| batch).collect();
+    for row in rows(&batches) {
+        match winners.get(&key_of(&row)) {
+            Some(best) if seq_of(best) >= seq_of(&row) => {}
+            _ => {
+                winners.insert(key_of(&row), row);
+            }
+        }
+    }
+    let mut kept: Vec<RecordBatch> = rows(published)
+        .into_iter()
+        .filter(|row| !winners.contains_key(&key_of(row)))
+        .collect();
+    kept.extend(winners.into_values());
+    *published = kept;
 }
 
 struct VaultProbe(SharedVault);
@@ -639,6 +809,11 @@ async fn each_broken_destination_behavior_fails_exactly_its_clause() {
         ("publish_all", "D-COMMIT"),
         ("local_state", "D-STATE"),
         ("stale_writes", "D-DISCARD"),
+        ("replace_early", "D-REPLACE"),
+        ("merge_appends", "D-MERGE"),
+        ("refuse_repeated_changes", "D-SCHEMA"),
+        ("ignore_added_columns", "D-SCHEMA"),
+        ("refuse_widening", "D-SCHEMA"),
     ];
     for (flag, clause) in cases {
         let report = certify_vault(flag, Some(flag)).await;
@@ -679,6 +854,8 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-COMMIT",
             "D-IDEMPOTENT",
             "D-DISCARD",
+            "D-REPLACE",
+            "D-SCHEMA",
             "D-FENCE"
         ],
         "{report}"
@@ -689,4 +866,31 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
 async fn a_destination_that_cannot_connect_fails_every_clause() {
     let report = certify_vault("refused", Some("refuse_connect")).await;
     assert_eq!(failed(&report).len(), DESTINATION_CLAUSES.len());
+}
+
+#[tokio::test]
+async fn clauses_for_capabilities_a_destination_lacks_are_skipped() {
+    let report = certify_vault("minimal", Some("minimal")).await;
+    report.assert_passed();
+    for clause in ["D-REPLACE", "D-MERGE"] {
+        assert!(
+            matches!(report.outcome(clause), Some(Outcome::Skipped(_))),
+            "{clause}: {report}"
+        );
+    }
+    assert_eq!(
+        report.outcome("D-SCHEMA"),
+        Some(&Outcome::Passed),
+        "minimal destinations add columns"
+    );
+}
+
+#[tokio::test]
+async fn the_schema_clause_is_skipped_for_a_destination_that_changes_no_schema() {
+    let report = certify_vault("fixed_schema", Some("fixed_schema")).await;
+    report.assert_passed();
+    assert!(
+        matches!(report.outcome("D-SCHEMA"), Some(Outcome::Skipped(_))),
+        "{report}"
+    );
 }

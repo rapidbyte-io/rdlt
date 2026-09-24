@@ -18,5 +18,5 @@ mod memory;
 
 pub use generator::{GeneratedStream, GeneratorConfig, GeneratorSource};
 pub use memory::{
-    MemoryDestination, MemoryDestinationConfig, MemorySource, MemorySourceConfig, published,
+    MemoryDestination, MemoryDestinationConfig, MemorySource, MemorySourceConfig, published, schema,
 };
