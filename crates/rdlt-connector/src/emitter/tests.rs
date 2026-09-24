@@ -48,6 +48,24 @@ async fn rows_become_one_json_array_push() {
 }
 
 #[tokio::test]
+async fn rows_holding_raw_json_push_it_as_json() {
+    #[derive(Serialize)]
+    struct Document<'a> {
+        id: u8,
+        doc: &'a serde_json::value::RawValue,
+    }
+    let raw = serde_json::value::RawValue::from_string(r#"{"a":[1,2]}"#.to_owned()).unwrap();
+    let (mut out, feed) = emitter();
+    out.rows(&[Document { id: 1, doc: &raw }]).await.unwrap();
+    assert_eq!(
+        drain(out, feed).await,
+        vec![SourceEvent::Push(Push::Json(Bytes::from_static(
+            br#"[{"id":1,"doc":{"a":[1,2]}}]"#
+        )))]
+    );
+}
+
+#[tokio::test]
 async fn empty_batches_push_nothing() {
     let (mut out, feed) = emitter();
     out.batch(ids(vec![])).await.unwrap();

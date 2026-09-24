@@ -1228,7 +1228,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
- "sonic-rs",
  "thiserror",
  "tokio",
  "tokio-util",
