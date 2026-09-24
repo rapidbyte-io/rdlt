@@ -159,7 +159,7 @@ fn chunks(pushes: &[Records], chunk_bytes: usize) -> Vec<Chunk> {
 
 /// Where each record of `push` lies in it.
 fn records(push: &[u8]) -> Result<Vec<Range<usize>>, ShredError> {
-    let Some(first) = push.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+    let Some(first) = push.iter().position(|byte| !json_whitespace(*byte)) else {
         return Ok(Vec::new());
     };
     if push[first] == b'[' {
@@ -170,7 +170,7 @@ fn records(push: &[u8]) -> Result<Vec<Range<usize>>, ShredError> {
     let mut start = 0;
     // Each line but the first starts with the line end before it, which trimming drops.
     for end in memchr::memchr_iter(b'\n', push).chain(std::iter::once(push.len())) {
-        let trimmed = push[start..end].trim_ascii();
+        let trimmed = trim(&push[start..end]);
         if !trimmed.is_empty() {
             let offset = trimmed.as_ptr() as usize - base;
             records.push(offset..offset + trimmed.len());
@@ -226,7 +226,7 @@ fn elements(push: &[u8], open: usize) -> Result<Vec<Range<usize>>, ShredError> {
         None if !elements.is_empty() => return Err(invalid("an empty element")),
         None => {}
     }
-    if !push[close + 1..].trim_ascii().is_empty() {
+    if !trim(&push[close + 1..]).is_empty() {
         return Err(invalid("more follows it"));
     }
     Ok(elements)
@@ -235,9 +235,27 @@ fn elements(push: &[u8], open: usize) -> Result<Vec<Range<usize>>, ShredError> {
 /// The range `range` of `push` without its surrounding whitespace, unless nothing is left.
 fn element(push: &[u8], range: Range<usize>) -> Option<Range<usize>> {
     let bytes = &push[range.clone()];
-    let trimmed = bytes.trim_ascii();
+    let trimmed = trim(bytes);
     let start = range.start + (trimmed.as_ptr() as usize - bytes.as_ptr() as usize);
     (!trimmed.is_empty()).then(|| start..start + trimmed.len())
+}
+
+/// Whether `byte` is whitespace in JSON: a space, tab, line feed or carriage return.
+fn json_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+/// `bytes` without the JSON whitespace around them.
+fn trim(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !json_whitespace(*byte))
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !json_whitespace(*byte))
+        .map_or(start, |last| last + 1);
+    &bytes[start..end]
 }
 
 /// One chunk, parsed, with the columns built from it and the shape its values were observed to

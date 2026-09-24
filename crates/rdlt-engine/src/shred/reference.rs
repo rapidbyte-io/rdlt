@@ -134,12 +134,15 @@ impl Json {
     }
 }
 
+/// The whitespace JSON allows between values.
+const JSON_WHITESPACE: [char; 4] = [' ', '\t', '\n', '\r'];
+
 /// The records of `pushes`, each a JSON array of objects or objects on their own lines.
 fn records(pushes: &[Bytes]) -> Result<Vec<Json>, Code> {
     let mut records = Vec::new();
     for push in pushes {
         let text = std::str::from_utf8(push).map_err(|_| Code("json_invalid"))?;
-        if text.trim_start().starts_with('[') {
+        if text.trim_start_matches(JSON_WHITESPACE).starts_with('[') {
             let Json::Array(items) =
                 serde_json::from_str(text).map_err(|_| Code("json_invalid"))?
             else {
@@ -149,7 +152,7 @@ fn records(pushes: &[Bytes]) -> Result<Vec<Json>, Code> {
         } else {
             for line in text
                 .split('\n')
-                .map(str::trim)
+                .map(|line| line.trim_matches(JSON_WHITESPACE))
                 .filter(|line| !line.is_empty())
             {
                 records.push(serde_json::from_str(line).map_err(|_| Code("json_invalid"))?);
