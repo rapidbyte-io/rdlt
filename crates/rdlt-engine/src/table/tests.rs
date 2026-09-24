@@ -899,3 +899,23 @@ fn values_a_variant_holds_go_there_and_only_to_their_own_columns_variants() {
     assert_eq!(b_wide.routes, [Route::Column(3)], "never a's variant");
     assert_eq!(columns(&b_wide.model)[3].0, "b__int64");
 }
+
+#[test]
+fn a_value_its_column_cannot_represent_fails_the_batch() {
+    use arrow_array::TimestampSecondArray;
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let nanos = LogicalType::Timestamp(rdlt_connector::TimeUnit::Nanosecond, None);
+    let model = created(&resolver, &[("at", nanos)]);
+    let year_3000 = TimestampSecondArray::from(vec![32_503_680_000]);
+    let batch = batch(vec![("at", Arc::new(year_3000) as _)]);
+    let incoming = TableSchema::from_arrow(&batch.schema()).unwrap();
+    let resolution = resolver.resolve(&model, &incoming).unwrap();
+    assert!(resolution.changes.is_empty(), "the column's type holds the batch's");
+    let view = TableView::new(&table("t"), resolution.model, &resolver);
+    let error = prepare(&resolver.stream, &view, &incoming, &batch, &resolution.routes, &stamp())
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("value_unrepresentable"))
+    );
+}
