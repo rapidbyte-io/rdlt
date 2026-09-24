@@ -596,3 +596,24 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
     let later = crate::compute::ready(shred(&crate::compute::Inline, &pushes, 1)).unwrap_err();
     assert!(later.to_string().contains("record 4:"), "{later}");
 }
+
+#[test]
+fn only_json_whitespace_surrounds_records() {
+    let form_feed = '\x0C';
+    let no_break_space = char::from_u32(0xA0).unwrap();
+    for push in [
+        format!("{form_feed}{{\"a\":1}}\n"),
+        format!("{{\"a\":1}}{form_feed}"),
+        format!("[{form_feed}{{\"a\":1}}]"),
+        format!("[{{\"a\":1}}]{form_feed}"),
+        format!("{no_break_space}{{\"a\":1}}"),
+    ] {
+        assert_eq!(refused(&push), "json_invalid", "{push:?}");
+        let reference = super::reference::shred(&[Bytes::from(push.clone())]);
+        assert_eq!(reference.unwrap_err(), Code("json_invalid"), "{push:?}");
+    }
+    assert_eq!(
+        batch_of(&[" \t\r\n{\"a\":1} \t\r\n"], 1 << 20).num_rows(),
+        1
+    );
+}
