@@ -233,3 +233,38 @@ async fn rows_shredded_into_several_batches_keep_their_order_for_merges() {
         [json!({"id": 1, "v": 2}), json!({"id": 2, "v": 1})]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_small_budget_never_holds_gathered_pushes_until_their_latency() {
+    // Twenty pushes of about 900 bytes against an 8 KiB budget: the gathered pushes' permits fill
+    // the budget, so the next push's admission waits for them.
+    let pushes: Vec<String> = (0..20)
+        .map(|push| {
+            let rows: Vec<String> = (0..10)
+                .map(|row| format!(r#"{{"id":{},"pad":"{}"}}"#, push * 10 + row, "x".repeat(70)))
+                .collect();
+            rows.join("\n")
+        })
+        .collect();
+    let pushes: Vec<&str> = pushes.iter().map(String::as_str).collect();
+    let source = batches(
+        "small_budget",
+        vec![BatchStream::json("events", &pushes).one_segment()],
+    )
+    .await;
+    let run = engine(commit_every(1000).memory(8192)).run(
+        pipeline("small_budget", [stream("events")]),
+        source,
+        memory("small_budget").await,
+    );
+    let outcome = tokio::time::timeout(Duration::from_millis(900), run)
+        .await
+        .expect("the run ends before a gathered push's latency passes");
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(published_rows("small_budget", "events"), 200);
+}

@@ -317,6 +317,8 @@ async fn ingest(
     };
     loop {
         let deadline = ingested.coalescer.deadline();
+        let pending = deadline.is_some();
+        let pressed = context.budget.pressed();
         let due = async {
             match deadline {
                 Some(deadline) => {
@@ -338,6 +340,12 @@ async fn ingest(
                 if let Some(barrier) = raised {
                     feed.request_checkpoint(barrier);
                 }
+                continue;
+            }
+            // A request waiting for the budget may be waiting for the gathered pushes' bytes, so
+            // they are written at once rather than after their latency.
+            () = pressed, if pending => {
+                ingested.flush(job, context).await?;
                 continue;
             }
             // Pushes that waited long enough are written even while more keep arriving.

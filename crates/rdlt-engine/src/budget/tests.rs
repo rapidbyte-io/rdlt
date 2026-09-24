@@ -146,3 +146,30 @@ async fn growth_is_charged_at_once_and_later_requests_wait_for_it() {
     assert_eq!(late.bytes(), 30);
     assert_eq!(budget.reserved(), 30);
 }
+
+/// Whether `budget` signals pressure within a second.
+async fn felt(budget: &MemoryBudget) -> bool {
+    tokio::select! {
+        biased;
+        () = budget.pressed() => true,
+        () = tokio::time::sleep(Duration::from_secs(1)) => false,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn pressure_is_felt_while_a_request_waits_and_eases_once_it_is_admitted() {
+    let budget = MemoryBudget::new(100);
+    let held = budget.acquire(70).await;
+    assert!(!felt(&budget).await, "nothing waits");
+    let waiting = budget.acquire(50);
+    tokio::pin!(waiting);
+    tokio::select! {
+        biased;
+        _ = &mut waiting => panic!("50 bytes do not fit beside 70 of 100"),
+        pressed = felt(&budget) => assert!(pressed, "a request waits"),
+    }
+    drop(held);
+    let admitted = waiting.await;
+    assert!(!felt(&budget).await, "the request was admitted");
+    drop(admitted);
+}
