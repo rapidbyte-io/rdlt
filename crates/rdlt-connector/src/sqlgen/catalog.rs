@@ -34,10 +34,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                  rows {integer} NOT NULL, bytes {integer} NOT NULL, \
                  PRIMARY KEY (pipeline, load_id, commit_seq))"
             ),
-            format!(
-                "{TABLES} (path {text} PRIMARY KEY, name {text} NOT NULL, merge_key {text}, \
-                 merge_seq {text})"
-            ),
+            format!("{TABLES} (path {text} PRIMARY KEY, name {text} NOT NULL)"),
             format!(
                 "{GENERATIONS} (name {text} PRIMARY KEY, base {text} NOT NULL, \
                  generation {integer} NOT NULL)"
@@ -45,7 +42,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
             format!(
                 "{SEGMENTS} (pipeline {text} NOT NULL, epoch {integer} NOT NULL, \
                  segment {integer} NOT NULL, name {text} NOT NULL, generation {integer}, \
-                 rows {integer} NOT NULL, bytes {integer} NOT NULL)"
+                 merge_key {text}, merge_seq {text}, rows {integer} NOT NULL, \
+                 bytes {integer} NOT NULL)"
             ),
         ]
         .into_iter()
@@ -172,31 +170,18 @@ impl<D: SqlDialect> SqlPlanner<D> {
         sql.finish()
     }
 
-    /// The statements recording that `table` exists, with how it merges, and for a generation
-    /// the base table it replaces.
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "arrays of strings always serialize to JSON"
-    )]
+    /// The statements recording that `table` exists, and for a generation the base table it
+    /// replaces.
     pub fn register(&self, table: &TableRef) -> Vec<Statement> {
         let mut register = self.sql();
         let values = [
             SqlValue::Text(path_key(&table.path)),
             SqlValue::Text(table.name.to_string()),
-            table.merge.as_ref().map_or(SqlValue::Null, |key| {
-                let columns: Vec<&str> = key.columns.iter().map(AsRef::as_ref).collect();
-                SqlValue::Text(serde_json::to_string(&columns).expect("strings serialize"))
-            }),
-            table
-                .merge
-                .as_ref()
-                .map_or(SqlValue::Null, |key| SqlValue::Text(key.seq.to_string())),
         ]
         .map(|value| register.bind(value));
         register.push(&format!(
-            "INSERT INTO {TABLES} (path, name, merge_key, merge_seq) VALUES ({}) \
-             ON CONFLICT (path) DO UPDATE SET name = excluded.name, \
-             merge_key = excluded.merge_key, merge_seq = excluded.merge_seq",
+            "INSERT INTO {TABLES} (path, name) VALUES ({}) \
+             ON CONFLICT (path) DO UPDATE SET name = excluded.name",
             values.join(", ")
         ));
         let mut statements = vec![register.finish()];
@@ -218,11 +203,10 @@ impl<D: SqlDialect> SqlPlanner<D> {
         statements
     }
 
-    /// The query returning every registered table as rows of identifier, merge key columns (a
-    /// JSON array, or null) and sequence column.
+    /// The query returning the identifier of every registered table.
     pub fn tables(&self) -> Statement {
         Statement {
-            sql: format!("SELECT name, merge_key, merge_seq FROM {TABLES} ORDER BY name"),
+            sql: format!("SELECT name FROM {TABLES} ORDER BY name"),
             params: Vec::new(),
         }
     }

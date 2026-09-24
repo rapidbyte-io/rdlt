@@ -6,3 +6,4 @@ mod files;
 mod generator;
 mod memory;
 mod sqlite;
+mod switch;

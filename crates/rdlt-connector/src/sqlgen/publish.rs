@@ -64,7 +64,11 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// The statement recording that `rows` rows of `bytes` bytes were staged for `table` in
-    /// `segment`.
+    /// `segment`, with how the writer's table merges.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "arrays of strings always serialize to JSON"
+    )]
     pub fn record_segment(
         &self,
         table: &TableRef,
@@ -83,27 +87,40 @@ impl<D: SqlDialect> SqlPlanner<D> {
             integer(segment.0),
             SqlValue::Text(table.name.to_string()),
             generation,
+            table.merge.as_ref().map_or(SqlValue::Null, |key| {
+                let columns: Vec<&str> = key.columns.iter().map(AsRef::as_ref).collect();
+                SqlValue::Text(serde_json::to_string(&columns).expect("strings serialize"))
+            }),
+            table
+                .merge
+                .as_ref()
+                .map_or(SqlValue::Null, |key| SqlValue::Text(key.seq.to_string())),
             integer(rows),
             integer(bytes),
         ]
         .map(|value| sql.bind(value));
         sql.push(&format!(
-            "INSERT INTO {SEGMENTS} (pipeline, epoch, segment, name, generation, rows, bytes) \
-             VALUES ({})",
+            "INSERT INTO {SEGMENTS} (pipeline, epoch, segment, name, generation, merge_key, \
+             merge_seq, rows, bytes) VALUES ({})",
             values.join(", ")
         ));
         sql.finish()
     }
 
     /// The query returning what `pipeline` staged at `epoch` in `segments`, as rows of table,
-    /// generation (or null), rows and bytes.
+    /// generation (or null), merge key columns and sequence column (or nulls; read them with
+    /// [`merge_key`]), rows and bytes.
     pub fn staged(&self, pipeline: &PipelineId, epoch: Epoch, segments: &SegmentSet) -> Statement {
         let mut sql = self.sql();
         sql.push(&format!(
-            "SELECT name, generation, SUM(rows), SUM(bytes) FROM {SEGMENTS} WHERE "
+            "SELECT name, generation, merge_key, merge_seq, SUM(rows), SUM(bytes) FROM {SEGMENTS} \
+             WHERE "
         ));
         self.staged_by(&mut sql, pipeline, epoch, segments, SEGMENT_COLUMNS);
-        sql.push(" GROUP BY name, generation ORDER BY name, generation");
+        sql.push(
+            " GROUP BY name, generation, merge_key, merge_seq \
+             ORDER BY name, generation, merge_key, merge_seq",
+        );
         sql.finish()
     }
 
@@ -111,8 +128,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// `segments` into its target, whose columns are `columns`, then removing them from staging;
     /// a target without columns does not exist, which is a `Data` error.
     ///
-    /// A merge table keeps one row per key: a staged row replaces the published row with its key,
-    /// and among staged rows of one key the greatest sequence wins.
+    /// A merge keeps one row per key: a staged row replaces the published rows with its key, and
+    /// among staged rows of one key the greatest sequence wins. It needs no key index, so a table
+    /// that merged before, or never did, merges alike.
     pub fn publish(
         &self,
         staged: &Staged,
@@ -136,47 +154,42 @@ impl<D: SqlDialect> SqlPlanner<D> {
             .collect();
         let names = names.join(", ");
         let staging = self.quote(&staging_table(&staged.name));
+        let target = self.quote(&target);
+        let mut plan = Vec::new();
         let mut insert = self.sql();
         match &staged.merge {
             None => {
                 insert.push(&format!(
-                    "INSERT INTO {} ({names}) SELECT {names} FROM {staging} WHERE ",
-                    self.quote(&target)
+                    "INSERT INTO {target} ({names}) SELECT {names} FROM {staging} WHERE "
                 ));
                 self.rows_of(&mut insert, staged, pipeline, epoch, segments);
             }
             Some(key) => {
                 let keys: Vec<String> = key.columns.iter().map(|c| self.quote(c)).collect();
                 let keys = keys.join(", ");
+                let mut replaced = self.sql();
+                replaced.push(&format!(
+                    "DELETE FROM {target} WHERE ({keys}) IN (SELECT {keys} FROM {staging} WHERE "
+                ));
+                self.rows_of(&mut replaced, staged, pipeline, epoch, segments);
+                replaced.push(")");
+                plan.push(replaced.finish());
                 insert.push(&format!(
-                    "INSERT INTO {} ({names}) SELECT {names} FROM (SELECT {names}, ROW_NUMBER() \
-                     OVER (PARTITION BY {keys} ORDER BY {} DESC) AS _rdlt_rank FROM {staging} WHERE ",
-                    self.quote(&target),
+                    "INSERT INTO {target} ({names}) SELECT {names} FROM (SELECT {names}, \
+                     ROW_NUMBER() OVER (PARTITION BY {keys} ORDER BY {} DESC) AS _rdlt_rank \
+                     FROM {staging} WHERE ",
                     self.quote(&key.seq)
                 ));
                 self.rows_of(&mut insert, staged, pipeline, epoch, segments);
-                let updates: Vec<String> = columns
-                    .iter()
-                    .filter(|column| !key.columns.iter().any(|k| **k == column.name))
-                    .map(|column| {
-                        let name = self.quote(&column.name);
-                        format!("{name} = excluded.{name}")
-                    })
-                    .collect();
-                let action = if updates.is_empty() {
-                    "NOTHING".to_owned()
-                } else {
-                    format!("UPDATE SET {}", updates.join(", "))
-                };
-                insert.push(&format!(
-                    ") AS _rdlt_ranked WHERE _rdlt_rank = 1 ON CONFLICT ({keys}) DO {action}"
-                ));
+                insert.push(") AS _rdlt_ranked WHERE _rdlt_rank = 1");
             }
         }
+        plan.push(insert.finish());
         let mut delete = self.sql();
         delete.push(&format!("DELETE FROM {staging} WHERE "));
         self.rows_of(&mut delete, staged, pipeline, epoch, segments);
-        Ok(vec![insert.finish(), delete.finish()])
+        plan.push(delete.finish());
+        Ok(plan)
     }
 
     /// The statement forgetting what `pipeline` staged at `epoch` in `segments`, once published.
@@ -288,6 +301,18 @@ impl<D: SqlDialect> SqlPlanner<D> {
             None => sql.push(&format!(" AND {generation} IS NULL")),
         }
     }
+}
+
+/// The merge key a [`SqlPlanner::staged`] row records: its key columns, a JSON array, and its
+/// sequence column.
+pub fn merge_key(columns: &str, seq: &str) -> Result<MergeKey> {
+    let columns: Vec<String> = serde_json::from_str(columns).map_err(|error| {
+        ConnectorError::internal(format!("a staged merge key is not a JSON array: {error}"))
+    })?;
+    Ok(MergeKey {
+        columns: columns.into_iter().map(Into::into).collect(),
+        seq: seq.into(),
+    })
 }
 
 /// The columns of the segments catalog that say who staged a segment.

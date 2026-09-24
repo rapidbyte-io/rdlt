@@ -66,7 +66,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         match change {
             TableChange::Create { schema, .. } => {
                 let fields: Vec<&Field> = schema.fields().iter().collect();
-                self.fields(table, &names, [target, staging], &fields, true)
+                self.fields(&names, [target, staging], &fields)
             }
             TableChange::AddColumn { field, .. } => {
                 if target.is_empty() {
@@ -75,7 +75,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                         names[0]
                     )));
                 }
-                self.fields(table, &names, [target, staging], &[field], false)
+                self.fields(&names, [target, staging], &[field])
             }
             TableChange::Widen { column, to, .. } => {
                 if !target
@@ -111,14 +111,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// Creates the tables of `names` that are missing with `fields`, and adds the fields an
-    /// existing one lacks; `create` also creates the key index of a new merge table.
+    /// existing one lacks.
     fn fields(
         &self,
-        table: &TableRef,
         [target_name, staging_name]: &[String; 2],
         [target, staging]: [&[Column]; 2],
         fields: &[&Field],
-        create: bool,
     ) -> Result<Vec<Statement>> {
         let declared = fields
             .iter()
@@ -135,7 +133,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         }
         let mut plan = Vec::new();
         if target.is_empty() {
-            plan.extend(self.create_target(table, target_name, fields, &declared, create));
+            plan.push(self.create_target(target_name, fields, &declared));
         } else {
             plan.extend(self.add_missing(target_name, target, &declared));
         }
@@ -147,16 +145,13 @@ impl<D: SqlDialect> SqlPlanner<D> {
         Ok(plan)
     }
 
-    /// Creates the table `name` with `fields`, declared as `declared`, and the key index of a
-    /// merge table when `create` asks for it.
+    /// Creates the table `name` with `fields`, declared as `declared`.
     fn create_target(
         &self,
-        table: &TableRef,
         name: &str,
         fields: &[&Field],
         declared: &[(&str, String)],
-        create: bool,
-    ) -> Vec<Statement> {
+    ) -> Statement {
         let columns = fields
             .iter()
             .zip(declared)
@@ -164,20 +159,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 let null = if field.is_nullable() { "" } else { " NOT NULL" };
                 format!("{} {declared}{null}", self.quote(column))
             });
-        let mut plan = vec![self.create(name, columns)];
-        if let Some(key) = table.merge.as_ref().filter(|_| create) {
-            let columns: Vec<String> = key.columns.iter().map(|c| self.quote(c)).collect();
-            plan.push(Statement {
-                sql: format!(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} ({})",
-                    self.quote(&format!("_rdlt_key__{name}")),
-                    self.quote(name),
-                    columns.join(", ")
-                ),
-                params: Vec::new(),
-            });
-        }
-        plan
+        self.create(name, columns)
     }
 
     /// Creates the staging table `name` with the staging columns, the columns `target` has and

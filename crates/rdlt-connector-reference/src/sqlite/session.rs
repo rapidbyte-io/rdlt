@@ -6,9 +6,7 @@ use std::time::SystemTime;
 use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite, Staged, staging_table};
-use rdlt_connector::{
-    CommitSeq, Epoch, GenerationId, LoadId, MergeKey, PipelineId, SegmentId, StateRecord,
-};
+use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StateRecord};
 use rusqlite::Transaction;
 use rusqlite::types::Value;
 
@@ -216,13 +214,12 @@ fn publish(
     epoch: Epoch,
     meta: &CommitMeta,
 ) -> Result<(i64, i64)> {
-    let merges = merge_keys(transaction, planner)?;
     let (mut rows, mut bytes) = (0, 0);
     for row in query(
         transaction,
         &planner.staged(pipeline, epoch, &meta.segments),
     )? {
-        let [name, generation, count, size] = &row[..] else {
+        let [name, generation, key, seq, count, size] = &row[..] else {
             return Err(ConnectorError::internal(
                 "a staged segment has missing fields",
             ));
@@ -232,11 +229,10 @@ fn publish(
             Value::Null => None,
             other => Some(GenerationId(sqlgen::unsigned(integer(other)?))),
         };
-        let merge = generation
-            .is_none()
-            .then(|| merges.iter().find(|(table, _)| *table == name))
-            .flatten()
-            .and_then(|(_, key)| key.clone());
+        let merge = match (key, seq) {
+            (Value::Text(key), Value::Text(seq)) => Some(sqlgen::merge_key(key, seq)?),
+            _ => None,
+        };
         let staged = Staged {
             name,
             generation,
@@ -259,36 +255,6 @@ fn publish(
         &planner.forget(pipeline, epoch, &meta.segments),
     )?;
     Ok((rows, bytes))
-}
-
-/// Every registered table and how it merges.
-fn merge_keys(
-    transaction: &Transaction<'_>,
-    planner: &SqlPlanner<Sqlite>,
-) -> Result<Vec<(String, Option<MergeKey>)>> {
-    query(transaction, &planner.tables())?
-        .iter()
-        .map(|row| {
-            let [name, key, seq] = &row[..] else {
-                return Err(ConnectorError::internal(
-                    "a registered table has missing fields",
-                ));
-            };
-            let merge = match (key, seq) {
-                (Value::Text(key), Value::Text(seq)) => {
-                    let columns: Vec<String> = serde_json::from_str(key).map_err(|error| {
-                        ConnectorError::internal(format!("a merge key is not JSON: {error}"))
-                    })?;
-                    Some(MergeKey {
-                        columns: columns.into_iter().map(Into::into).collect(),
-                        seq: seq.as_str().into(),
-                    })
-                }
-                _ => None,
-            };
-            Ok((text(name)?, merge))
-        })
-        .collect()
 }
 
 /// Swaps `generation` in as the table `name`.
