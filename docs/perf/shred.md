@@ -66,24 +66,26 @@ fn main() {
 
 ## Results
 
-Intel Core Ultra X7 358H (4 performance, 8 efficient and 4 low-power cores), 2026-09-24.
+Intel Core Ultra X7 358H (4 performance, 8 efficient and 4 low-power cores), on mains power,
+2026-09-24; the old engine was measured right after this engine. On battery in power-saving
+mode every figure falls to about a third, so compare only runs taken back to back.
 
 | Measure | Old engine | This engine | Ratio | Gate |
 |---|---|---|---|---|
-| Nested corpus, one core | 137.5 MB/s (best of several runs of 130.6–137.5) | 736.7 MB/s | 5.36× | ≥ 4× |
+| Nested corpus, one core | 120.3 MB/s (137.5 MB/s at best on other runs) | 703.6 MB/s | 5.85× (5.1× against 137.5) | ≥ 4× |
 
 | Corpus (one core) | Throughput |
 |---|---|
-| `nested` | 721 MiB/s |
-| `sparse` (`nested`, a quarter of rows with an optional key) | about 6 % below `nested` (711 against 760 MiB/s, back to back) |
-| `flat_narrow` | 510 MiB/s |
-| `flat_wide` (200 columns) | 517 MiB/s |
-| `string_heavy` | 589 MiB/s |
+| `nested` | 692 MiB/s |
+| `sparse` (`nested`, a quarter of rows with an optional key) | 650 MiB/s |
+| `flat_narrow` | 490 MiB/s |
+| `flat_wide` (200 columns) | 506 MiB/s |
+| `string_heavy` | 557 MiB/s |
 
 | Cores | One core | N cores | Scaling | Gate |
 |---|---|---|---|---|
-| 8 efficient cores (`taskset -c 4-11`) | 515.7 MiB/s | 3144 MiB/s | 6.10× | ≥ 5.6× |
-| 4 performance cores (`taskset -c 0-3`) | 725.2 MiB/s | 2184 MiB/s | 3.01× | ≥ 2.8× |
+| 8 efficient cores (`taskset -c 4-11`) | 524.2 MiB/s | 3104 MiB/s | 5.92× | ≥ 5.6× |
+| 4 performance cores (`taskset -c 0-3`) | 684.9 MiB/s | 2194 MiB/s | 3.20× | ≥ 2.8× |
 
 Unpinned, the pool's eighth thread lands on slower cores than the first, so eight threads reach
-3.97× the fastest core: the mix of cores, not the shredder, sets that figure.
+about 4.1× the fastest core: the mix of cores, not the shredder, sets that figure.
