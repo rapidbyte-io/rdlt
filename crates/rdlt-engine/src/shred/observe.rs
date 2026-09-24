@@ -47,6 +47,16 @@ impl Shape {
         &self.fields
     }
 
+    /// What the field `name` held, if the shape has it.
+    pub(crate) fn get(&self, name: &str) -> Option<&Observed> {
+        self.position(name).map(|position| &self.fields[position].1)
+    }
+
+    /// The position of the field `name`, if the shape has it.
+    pub(crate) fn position(&self, name: &str) -> Option<usize> {
+        self.index.get(name).copied()
+    }
+
     /// Adds the field `name`, new to the shape, observed as `observed`.
     pub(crate) fn push(&mut self, name: Arc<str>, observed: Observed) {
         self.index.insert(Arc::clone(&name), self.fields.len());

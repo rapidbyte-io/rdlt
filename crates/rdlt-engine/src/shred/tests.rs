@@ -530,3 +530,42 @@ fn only_columns_holding_values_count_toward_the_cells() {
         3
     );
 }
+
+#[test]
+fn chunks_that_lack_columns_or_hold_them_in_another_order_are_fitted_without_parsing_again() {
+    let parsed = |text: &str| {
+        let records = Records::of(Bytes::from(text.to_owned())).unwrap();
+        parse(chunks(&[records], 1 << 20).remove(0)).unwrap()
+    };
+    let chunks = [
+        parsed(r#"{"a":1,"o":{"x":1}}"#),
+        parsed(r#"{"b":"t","a":2.5,"l":[]}"#),
+        parsed(r#"{"a":null,"o":{"y":true,"x":2},"l":[1]}"#),
+        parsed(r#"{"a":"x"}"#),
+    ];
+    let joined = super::join(&chunks[..3]).unwrap();
+    for chunk in &chunks[..3] {
+        assert!(!chunk.spoiled && super::conform::shape_fits(&chunk.shape, &joined));
+    }
+    let with_text = super::join(&chunks).unwrap();
+    assert!(!super::conform::shape_fits(&chunks[0].shape, &with_text));
+}
+
+#[test]
+fn fitted_chunks_hold_the_values_the_reference_does() {
+    let pushes: Vec<Bytes> = [
+        r#"{"a":1,"o":{"x":1},"w":1}"#,
+        r#"{"b":"t","a":2.5,"l":[],"w":18446744073709551615}"#,
+        r#"{"a":null,"o":{"y":true,"x":2},"l":[1],"n":null}"#,
+        r#"{"o":null,"l":[[]],"e":{}}"#,
+    ]
+    .into_iter()
+    .map(Bytes::from)
+    .collect();
+    let expected = super::reference::shred(&pushes).unwrap();
+    let actual = shredded(&pushes, 1).unwrap().unwrap();
+    assert_eq!(
+        super::differential::normalized(&actual),
+        super::differential::normalized(&expected)
+    );
+}

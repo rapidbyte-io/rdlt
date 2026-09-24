@@ -7,6 +7,7 @@
 //! pool. The join is the same whatever the order chunks finish in, so the batches are too.
 
 mod build;
+mod conform;
 #[cfg(test)]
 mod differential;
 mod observe;
@@ -311,23 +312,22 @@ fn within_cells(rows: u64, leaves: u64) -> bool {
         .is_some_and(|cells| cells <= MAX_CELLS)
 }
 
-/// The batch of `parsed`'s records, built against `shape`: the columns built as it was parsed
-/// when they have that shape, else built again.
+/// The batch of `parsed`'s records against `shape`: the columns built as it was parsed, fitted to
+/// `shape`, when they fit it, else built again.
 fn build(parsed: Parsed, shape: &Shape) -> Result<RecordBatch, ShredError> {
-    let fields = shape.logical_fields();
-    let record = if !parsed.spoiled && parsed.shape.logical_fields() == fields {
-        parsed.record
+    let rows = parsed.chunk.rows;
+    let columns = if !parsed.spoiled && conform::shape_fits(&parsed.shape, shape) {
+        conform::columns(&parsed.record.finish_columns()?, &parsed.shape, shape, rows)?
     } else {
         // Every value fits the joined shape, so no column stops building this time; a bug that
         // broke that would fail to finish the column or to make the batch.
-        let mut record = Record::new(shape, parsed.chunk.rows);
+        let mut record = Record::new(shape, rows);
         append(&parsed.chunk, &mut record)?;
-        record
+        record.finish_columns()?
     };
-    let schema = TableSchema::new(fields)
+    let schema = TableSchema::new(shape.logical_fields())
         .map_err(|error| ShredError::Internal(format!("naming the columns: {error}")))?;
-    let columns = record.finish_columns()?;
-    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(parsed.chunk.rows));
+    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(rows));
     RecordBatch::try_new_with_options(Arc::new(schema.to_arrow()), columns, &options)
         .map_err(|error| ShredError::Internal(format!("building a batch: {error}")))
 }

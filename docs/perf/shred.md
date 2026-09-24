@@ -75,6 +75,7 @@ Intel Core Ultra X7 358H (4 performance, 8 efficient and 4 low-power cores), 202
 | Corpus (one core) | Throughput |
 |---|---|
 | `nested` | 721 MiB/s |
+| `sparse` (`nested`, a quarter of rows with an optional key) | about 6 % below `nested` (711 against 760 MiB/s, back to back) |
 | `flat_narrow` | 510 MiB/s |
 | `flat_wide` (200 columns) | 517 MiB/s |
 | `string_heavy` | 589 MiB/s |
