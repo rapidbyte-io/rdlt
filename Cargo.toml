@@ -22,7 +22,8 @@ arrow-array = { version = "59.2", features = [
   "chrono-tz",
 ] } # record batches, with named time zones; one arrow major across the workspace, matching DataFusion
 arrow-cast = "59.2" # exact casts into a table's column types, and text renderings for lowering
-arrow-json = "59.2" # JSON renderings of values stored as Json
+arrow-ipc = "59.2" # Arrow IPC files, for the files connectors
+arrow-json = "59.2" # JSON renderings of values stored as Json, and JSON lines files
 arrow-row = "59.2" # comparable row encodings of merge keys
 arrow-schema = "59.2" # arrow data types and schemas
 arrow-select = "59.2" # take, filter and concat for discards, compaction and merges

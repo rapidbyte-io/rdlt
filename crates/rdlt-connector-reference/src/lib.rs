@@ -4,6 +4,7 @@
 //! - [`MemoryDestination`] keeps published tables and pipeline state in process memory.
 //! - [`GeneratorSource`] produces seeded, partitioned Arrow data of any size.
 //! - [`SqliteDestination`] loads into a SQLite database, through `sqlgen`.
+//! - [`FilesDestination`] writes JSON lines or Arrow IPC files and publishes them with manifests.
 //!
 //! They serve as examples for connector authors and as the engine's test connectors.
 //!
@@ -15,10 +16,14 @@
 //! ```
 
 mod blocking;
+mod columns;
+pub mod files;
 mod generator;
 mod memory;
+mod merge;
 pub mod sqlite;
 
+pub use files::{FileFormat, FilesDestination, FilesDestinationConfig};
 pub use generator::{GeneratedStream, GeneratorConfig, GeneratorSource};
 pub use memory::{
     MemoryDestination, MemoryDestinationConfig, MemorySource, MemorySourceConfig, published, schema,
