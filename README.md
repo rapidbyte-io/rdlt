@@ -7,9 +7,9 @@ the Rapidbyte data platform.
 **Status:** pre-release. The foundation (tooling, deterministic simulation harness, runtime
 primitives), the connector contract (`rdlt-connector`, with in-process certification and the
 reference connectors in `rdlt-connector-reference`) and the exactly-once engine core
-(`rdlt-engine`: `append` and `replace` over streams with declared schemas, checked by the
-simulation oracle in `rdlt-sim`) are in place; merge, schema evolution and the SQL destination
-follow.
+(`rdlt-engine`: `append`, `replace` and `merge`, with schema evolution, name maps and nested data,
+checked by the simulation oracle in `rdlt-sim`) are in place; the SQL and file reference
+connectors follow.
 
 ## Development
 
