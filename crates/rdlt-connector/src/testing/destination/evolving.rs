@@ -36,7 +36,7 @@ impl Bench<'_> {
     pub(super) async fn generations_swap_in_atomically(&self) -> Result<(), Violation> {
         let base = self.table();
         let generation = TableRef {
-            generation: Some(GenerationId(1)),
+            generation: Some(GENERATION),
             ..base.clone()
         };
         let mut opened = self.staged(self.destination, 1, &[1]).await?;
@@ -51,7 +51,7 @@ impl Bench<'_> {
         expect_rows(self.published_rows().await?, 3)?;
         let finish = CommitMeta {
             commit_seq: CommitSeq::FIRST.next(),
-            finish_generations: vec![(base.path.clone(), GenerationId(1))],
+            finish_generations: vec![(base.path.clone(), GENERATION)],
             ..meta(self.load_id(1), opened.epoch, &[3], Vec::new())
         };
         commit(&mut opened.session, &finish).await?;
@@ -300,6 +300,10 @@ pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'stati
         _ => None,
     }
 }
+
+/// The generation the replace clause fills: beyond the signed range, as the engine's often are,
+/// so a destination that narrows ids is caught.
+const GENERATION: GenerationId = GenerationId(18_000_000_000_000_000_000);
 
 /// The sequence column of the merge clause's table.
 const SEQ: &str = "_rdlt_seq";

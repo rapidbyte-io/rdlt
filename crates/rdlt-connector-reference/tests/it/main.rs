@@ -3,3 +3,4 @@
 mod certify;
 mod generator;
 mod memory;
+mod sqlite;
