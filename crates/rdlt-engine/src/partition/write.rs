@@ -89,16 +89,15 @@ struct Held {
 /// Lowers `units`, each some batches of one schema and the memory they hold, into the partition's
 /// table and queues them on its lane, in order.
 ///
-/// Each unit's plan is found in order, since finding it may change the table. Then every unit is
-/// concatenated and lowered on the compute pool at once, and queued as its turn comes.
+/// Each unit's plan is found in order, since finding it may change the table. Then the units are
+/// concatenated and lowered on the compute pool a window at a time, and queued in order.
 async fn write(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
     units: Vec<(Vec<RecordBatch>, Held)>,
 ) -> Result<(), Error> {
-    let mut jobs = Vec::with_capacity(units.len());
-    let mut reservations = Vec::with_capacity(units.len());
+    let mut planned = Vec::with_capacity(units.len());
     for (parts, held) in units {
         let received = parts
             .iter()
@@ -123,26 +122,43 @@ async fn write(
             first_row: open.received,
         };
         open.received += received;
-        jobs.push(move || lower(&parts, &plan, &stamp));
-        reservations.push(held);
+        planned.push((move || lower(&parts, &plan, &stamp), held));
     }
-    // Every lowered batch is charged before the first waits on its lane, so none sits uncharged.
-    let lowered: Vec<_> = run_all(context.env.compute(), jobs)
-        .await
-        .into_iter()
-        .zip(reservations)
-        .map(|(prepared, held)| {
-            prepared.map(|prepared| {
-                let held = charge_growth(&context.budget, &prepared, held);
-                (prepared, held)
+    for window in windows(planned) {
+        let (jobs, reservations): (Vec<_>, Vec<_>) = window.into_iter().unzip();
+        // A window's lowered batches are charged before the first waits on its lane, so at most
+        // one window's growth is ever uncharged.
+        let lowered: Vec<_> = run_all(context.env.compute(), jobs)
+            .await
+            .into_iter()
+            .zip(reservations)
+            .map(|(prepared, held)| {
+                prepared.map(|prepared| {
+                    let held = charge_growth(&context.budget, &prepared, held);
+                    (prepared, held)
+                })
             })
-        })
-        .collect();
-    for lowered in lowered {
-        let (prepared, held) = lowered?;
-        queue(job, context, open, prepared, held).await?;
+            .collect();
+        for lowered in lowered {
+            let (prepared, held) = lowered?;
+            queue(job, context, open, prepared, held).await?;
+        }
     }
     Ok(())
+}
+
+/// Units lowered on the pool at once: a flush of the default size fits in one window, and a
+/// larger one never holds more than this many lowered batches uncharged.
+const LOWERING_WINDOW: usize = 8;
+
+/// `items` in order, in windows of at most [`LOWERING_WINDOW`].
+fn windows<T>(items: Vec<T>) -> Vec<Vec<T>> {
+    let mut windows = Vec::with_capacity(items.len().div_ceil(LOWERING_WINDOW));
+    let mut items = items.into_iter().peekable();
+    while items.peek().is_some() {
+        windows.push(items.by_ref().take(LOWERING_WINDOW).collect());
+    }
+    windows
 }
 
 /// `held` with the growth of `prepared` beyond it charged: the permits then hold the lowered

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{Partition, Permit, StreamName};
 
-use super::{charge_growth, hold, shred_failed};
+use super::{LOWERING_WINDOW, charge_growth, hold, shred_failed, windows};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
@@ -93,4 +93,18 @@ fn lowered_batches_are_charged_in_full_before_any_is_queued() {
     assert_eq!(budget.reserved(), sizes[0] + sizes[1]);
     drop(charged);
     assert_eq!(budget.reserved(), 0);
+}
+
+#[test]
+fn units_are_lowered_in_order_in_windows_of_a_bounded_size() {
+    let units: Vec<usize> = (0..20).collect();
+    let windows = windows(units);
+    assert!(
+        windows
+            .iter()
+            .all(|window| (1..=LOWERING_WINDOW).contains(&window.len()))
+    );
+    assert_eq!(windows.concat(), (0..20).collect::<Vec<_>>());
+    assert_eq!(windows.len(), 20_usize.div_ceil(LOWERING_WINDOW));
+    assert!(super::windows(Vec::<usize>::new()).is_empty());
 }
