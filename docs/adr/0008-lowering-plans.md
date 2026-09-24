@@ -18,8 +18,10 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
   resolution; a schema change makes a new view and drops the old view's plans. Per batch, a plan
   discards, converts and lowers columns and adds the metadata columns.
 - **Lowering runs on the compute pool.** A partition finds each batch's plan in order, since
-  finding it may change the table, then lowers every batch of a flush on the pool at once, Arrow
-  batches concatenated there too, and queues them on their lane in order.
+  finding it may change the table, then lowers the flush's batches on the pool eight at a time,
+  Arrow batches concatenated there too. Each window's lowered batches are charged to the memory
+  budget as soon as it returns, then queued on their lane in order: a flush of the default size
+  is one window, and a larger one never holds more than eight lowered batches uncharged.
 - **Constant metadata columns are dictionaries.** `_rdlt_load_id` and `_rdlt_loaded_at` hold one
   value per load, so each is a dictionary of one value with an `Int8` key per row (spec §8.5
   names the load id; the load start is constant alike). A plan builds them once and slices them
