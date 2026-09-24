@@ -318,6 +318,8 @@ struct VaultConfig {
     accept_conflicts: bool,
     /// Refuses a batch whose column is narrower than the table's.
     refuse_narrower: bool,
+    /// Reports a conflict as a plain data error, without the `schema_conflict` code.
+    uncoded_conflicts: bool,
 }
 
 #[derive(Default)]
@@ -594,7 +596,11 @@ impl Session for VaultSession {
         if !self.config.accept_conflicts
             && let Some(conflict) = conflict(&store, change)
         {
-            return Err(ConnectorError::data(conflict).with_code("schema_conflict"));
+            let error = ConnectorError::data(conflict);
+            if self.config.uncoded_conflicts {
+                return Err(error);
+            }
+            return Err(error.with_code("schema_conflict"));
         }
         record(&mut store, change);
         match change {
@@ -886,6 +892,7 @@ async fn each_broken_destination_behavior_fails_exactly_its_clause() {
         ("ignore_added_columns", "D-SCHEMA"),
         ("accept_conflicts", "D-SCHEMA"),
         ("refuse_narrower", "D-SCHEMA"),
+        ("uncoded_conflicts", "D-SCHEMA"),
         ("refuse_widening", "D-SCHEMA"),
     ];
     for (flag, clause) in cases {
