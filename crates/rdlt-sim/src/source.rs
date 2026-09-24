@@ -7,6 +7,7 @@ use arrow_array::{
     ArrayRef, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::{DataType, Field as ArrowField};
+use bytes::Bytes;
 use rdlt_connector::{
     Checkpointing, ConnectContext, ConnectorError, Emitter, Field, LogicalType, Partition,
     PartitionId, Partitioning, ReadMode, ReadStream, Result, SourceConnector, StreamName,
@@ -14,6 +15,7 @@ use rdlt_connector::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
 use crate::destination::committed_next;
 use crate::workload::{Extra, Row, Shape, SimStream};
@@ -147,7 +149,12 @@ impl ReadStream<SimSource> for SimStreamReader {
                 return Err(fault);
             }
             let end = (next + usize::try_from(stream.batch_rows).unwrap_or(1)).min(rows.len());
-            out.batch(batch(stream, &rows[next..end])).await?;
+            if stream.json {
+                out.json(json_push(stream, &rows[next..end], batches % 2 == 1))
+                    .await?;
+            } else {
+                out.batch(batch(stream, &rows[next..end])).await?;
+            }
             next = end;
             batches += 1;
             let due = match stream.checkpointing {
@@ -224,12 +231,63 @@ fn batch(stream: &SimStream, rows: &[Row]) -> RecordBatch {
     RecordBatch::try_from_iter(columns).expect("equal-length columns make a batch")
 }
 
-/// `values` as an array of `shape`.
-fn array(shape: Shape, values: &[Option<&Extra>]) -> ArrayRef {
-    let int = |extra: &Extra| match extra {
+/// `rows` of `stream` as a JSON push with the columns a batch of them has: a JSON array when
+/// `array`, else JSON lines.
+fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
+    let (partition, delivered) = rows.first().map_or((0, 0), |row| {
+        (usize::try_from(row.partition).unwrap_or(0), row.delivered)
+    });
+    let objects = rows.iter().map(|row| {
+        let mut object = Map::new();
+        object.insert("id".to_owned(), json!(row.id));
+        object.insert("partition".to_owned(), json!(row.partition));
+        object.insert("offset".to_owned(), json!(row.offset));
+        object.insert("value".to_owned(), json!(row.value));
+        if stream.keys > 0 {
+            object.insert("key".to_owned(), json!(row.key.unwrap_or_default()));
+        }
+        for (index, drift) in stream.drift.iter().enumerate() {
+            if let Some(shape) = drift.shapes[partition][delivered] {
+                let value = row.extras[index]
+                    .as_ref()
+                    .map_or(Value::Null, |extra| rendered(shape, extra));
+                object.insert(drift.name.clone(), value);
+            }
+        }
+        Value::Object(object).to_string()
+    });
+    let objects: Vec<String> = objects.collect();
+    Bytes::from(if array {
+        format!("[{}]", objects.join(","))
+    } else {
+        objects.join("\n")
+    })
+}
+
+/// `extra` as JSON, as a column of `shape` holds it.
+fn rendered(shape: Shape, extra: &Extra) -> Value {
+    match (shape, extra) {
+        (Shape::Int32, _) => json!(i32::try_from(integer(extra)).unwrap_or(0)),
+        (Shape::Int64, _) => json!(integer(extra)),
+        (Shape::Float, _) => json!(f64::from(i32::try_from(integer(extra)).unwrap_or(0)) / 4.0),
+        (Shape::Text, Extra::Text(text)) => json!(text),
+        (Shape::Object, _) => json!({ "n": integer(extra) }),
+        (Shape::List, Extra::List(items)) => json!(items),
+        (Shape::Text | Shape::List, _) => Value::Null,
+    }
+}
+
+/// The integer a numeric column of any shape holds for `extra`.
+fn integer(extra: &Extra) -> i64 {
+    match extra {
         Extra::Int(value) | Extra::Quarters(value) | Extra::Object(value) => *value,
         Extra::Text(_) | Extra::List(_) => 0,
-    };
+    }
+}
+
+/// `values` as an array of `shape`.
+fn array(shape: Shape, values: &[Option<&Extra>]) -> ArrayRef {
+    let int = integer;
     match shape {
         Shape::Int32 => {
             Arc::new(Int32Array::from_iter(values.iter().map(|value| {

@@ -55,6 +55,8 @@ pub struct SimStream {
     pub policy: SchemaPolicy,
     /// How the pipeline stores nested values.
     pub nested: Nested,
+    /// Whether the source pushes its rows as JSON rather than Arrow.
+    pub json: bool,
 }
 
 /// A column that comes and goes and changes type.
@@ -187,6 +189,7 @@ impl SimStream {
             } else {
                 Nested::Native
             },
+            json: rng.chance(333),
             drift,
             partitions,
         }
