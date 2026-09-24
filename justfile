@@ -48,7 +48,7 @@ mutants *args:
 # Mutation testing over this branch's changes, including uncommitted ones, against `base`
 mutants-diff base="origin/main":
     mkdir -p target
-    git diff "$(git merge-base {{ base }} HEAD)" > target/mutants.diff
+    git diff --src-prefix=a/ --dst-prefix=b/ "$(git merge-base {{ base }} HEAD)" > target/mutants.diff
     cargo mutants --package rdlt-engine --package rdlt-connector --in-diff target/mutants.diff -j 2
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`
