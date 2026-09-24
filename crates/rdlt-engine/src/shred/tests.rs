@@ -117,15 +117,20 @@ fn records_that_are_not_objects_are_refused() {
 
 #[test]
 fn a_repeated_key_is_refused_at_any_depth_and_however_it_is_escaped() {
+    // `a` as the unicode escape of code point 0x61, built with an explicit backslash so no
+    // tool decodes it on the way in.
+    let escaped = format!("{}u0061", '\\');
     for push in [
-        r#"{"a":1,"a":2}"#,
-        r#"{"a":1,"a":2}"#,
-        r#"{"o":{"b":1,"b":1}}"#,
-        r#"{"l":[{"b":1,"b":1}]}"#,
-        r#"{"j":1}
-{"j":{"b":1,"b":1}}"#,
+        r#"{"a":1,"a":2}"#.to_owned(),
+        format!(r#"{{"a":1,"{escaped}":2}}"#),
+        r#"{"o":{"b":1,"b":1}}"#.to_owned(),
+        format!(r#"{{"o":{{"a":1,"{escaped}":1}}}}"#),
+        r#"{"l":[{"b":1,"b":1}]}"#.to_owned(),
+        "{\"j\":1}\n{\"j\":{\"b\":1,\"b\":1}}".to_owned(),
+        format!("{{\"j\":1}}\n{{\"j\":{{\"a\":1,\"{escaped}\":1}}}}"),
     ] {
-        assert_eq!(refused(push), "json_duplicate_key", "{push:?}");
+        assert!(push.is_ascii(), "{push}");
+        assert_eq!(refused(&push), "json_duplicate_key", "{push:?}");
     }
 }
 
@@ -367,8 +372,13 @@ fn strings_with_lone_surrogates_or_bad_escapes_are_invalid_json() {
     ] {
         assert_eq!(refused(push), "json_invalid", "{push:?}");
     }
-    let pair = batch_of(&[r#"{"a":"😀"}"#], 1 << 20);
-    assert_eq!(texts(&pair, 0), [Some("😀".to_owned())]);
+    // The escapes are built with an explicit backslash so no tool decodes them on the way in.
+    let pair = format!(r#"{{"a":"{0}ud83d{0}ude00"}}"#, '\\');
+    assert!(pair.is_ascii(), "{pair}");
+    assert_eq!(
+        texts(&batch_of(&[&pair], 1 << 20), 0),
+        [Some("\u{1f600}".to_owned())]
+    );
 }
 
 #[test]
