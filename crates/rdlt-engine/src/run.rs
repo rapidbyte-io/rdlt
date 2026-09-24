@@ -122,7 +122,10 @@ impl RunControl {
 pub struct RunOutcome {
     /// What the run committed, attempt by attempt.
     pub report: Report,
-    /// The error that ended the run; `None` when it succeeded or stopped on request.
+    /// The error that ended the run; `None` when it succeeded.
+    ///
+    /// A run stopped on request carries the error of the attempt that failed just before the
+    /// stop, if one did.
     pub error: Option<Error>,
 }
 

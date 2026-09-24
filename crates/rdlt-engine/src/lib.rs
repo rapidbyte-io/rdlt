@@ -17,6 +17,11 @@
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```
 
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the partition pipeline uses these from Task 7 on")
+)]
+
 mod attempt;
 mod budget;
 mod compute;
