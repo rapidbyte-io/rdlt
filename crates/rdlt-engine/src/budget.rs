@@ -15,8 +15,10 @@ use tokio::sync::oneshot;
 ///
 /// A request is admitted when it fits beside the bytes already reserved, or when nothing is
 /// reserved at all, so a single request larger than the whole budget still makes progress.
-/// Requests are admitted in arrival order. Acquiring is the only operation that waits, and
-/// reservations are released by dropping them, so every wait ends once earlier reservations drop.
+/// Requests are admitted in arrival order. Acquiring is the only operation that waits: growth of a
+/// batch already admitted is charged at once, beyond the budget if need be, and later requests
+/// wait until it is released. Reservations are released by dropping them, so every wait ends once
+/// earlier reservations drop.
 #[derive(Clone)]
 pub(crate) struct MemoryBudget {
     shared: Arc<Mutex<Ledger>>,
@@ -68,6 +70,13 @@ impl MemoryBudget {
         receiver
             .await
             .expect("the ledger answers every waiter it keeps")
+    }
+
+    /// Charges `bytes` at once, without waiting and beyond the budget if need be: the growth of a
+    /// batch already admitted, which later requests pay back by waiting.
+    pub(crate) fn charge(&self, bytes: u64) -> Reservation {
+        self.shared.lock().reserve(bytes);
+        self.reservation(bytes)
     }
 
     /// Bytes reserved now.
@@ -147,15 +156,19 @@ fn admit_waiting(shared: &Arc<Mutex<Ledger>>, ledger: &mut Ledger) {
             .waiting
             .pop_front()
             .expect("the front request was just read");
-        ledger.reserve(bytes);
+        ledger.reserved = ledger.reserved.saturating_add(bytes);
         let reservation = Reservation {
             budget: Some(Arc::clone(shared)),
             bytes,
         };
-        if let Err(mut abandoned) = sender.send(reservation) {
-            // The waiter stopped waiting; release its bytes here, under the lock already held.
-            abandoned.budget = None;
-            ledger.reserved = ledger.reserved.saturating_sub(bytes);
+        match sender.send(reservation) {
+            // Only bytes a waiter receives count toward the peak.
+            Ok(()) => ledger.peak = ledger.peak.max(ledger.reserved),
+            Err(mut abandoned) => {
+                // The waiter stopped waiting; release its bytes here, under the lock already held.
+                abandoned.budget = None;
+                ledger.reserved = ledger.reserved.saturating_sub(bytes);
+            }
         }
     }
 }

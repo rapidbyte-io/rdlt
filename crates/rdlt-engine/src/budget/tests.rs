@@ -107,3 +107,42 @@ async fn debug_output_shows_capacity_and_use() {
     assert!(format!("{budget:?}").contains("reserved: 3"));
     assert_eq!(format!("{reservation:?}"), "Reservation(3)");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_waiter_that_gave_up_never_counts_toward_the_peak() {
+    let budget = MemoryBudget::new(100);
+    let held = budget.acquire(40).await;
+    {
+        let abandoned = budget.acquire(70);
+        tokio::pin!(abandoned);
+        tokio::select! {
+            biased;
+            _ = &mut abandoned => panic!("70 bytes do not fit beside 40 of 100"),
+            () = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+    }
+    drop(held);
+    assert_eq!(budget.reserved(), 0);
+    assert_eq!(budget.peak(), 40);
+}
+
+#[tokio::test(start_paused = true)]
+async fn growth_is_charged_at_once_and_later_requests_wait_for_it() {
+    let budget = MemoryBudget::new(100);
+    let admitted = budget.acquire(80).await;
+    let growth = budget.charge(50);
+    assert_eq!((growth.bytes(), budget.reserved()), (50, 130));
+    assert_eq!(budget.peak(), 130);
+    let waiting = budget.acquire(30);
+    tokio::pin!(waiting);
+    tokio::select! {
+        biased;
+        _ = &mut waiting => panic!("30 bytes do not fit beside 130 of 100"),
+        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+    }
+    drop(growth);
+    drop(admitted);
+    let late = waiting.await;
+    assert_eq!(late.bytes(), 30);
+    assert_eq!(budget.reserved(), 30);
+}
