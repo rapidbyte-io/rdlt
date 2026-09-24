@@ -61,7 +61,6 @@ fn fit(array: &ArrayRef, local: &Observed, joined: &Observed) -> Result<ArrayRef
         ShredError::Internal(format!("fitting a column to the joined shape: {error}"))
     };
     match (local, joined) {
-        (Observed::Null, Observed::Null) => Ok(Arc::clone(array)),
         (Observed::Null, _) => Ok(new_null_array(
             &joined.logical_type().to_arrow(),
             array.len(),

@@ -484,9 +484,17 @@ fn wide_object(first: usize, count: usize) -> String {
 #[test]
 fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
     let columns = usize::try_from(MAX_COLUMNS).unwrap();
-    // The invalid record after it is never reached.
-    let push = format!("{}\n{{\"a\":", wide_object(0, columns + 1));
-    assert_eq!(refused(&push), "limit_exceeded");
+    // The invalid record after it, which adds no field, is never reached.
+    let push = format!("{}\n{{\"c0\":", wide_object(0, columns + 1));
+    let error = crate::compute::ready(shred(
+        &crate::compute::Inline,
+        &[Bytes::from(push)],
+        1 << 20,
+    ));
+    assert_eq!(
+        error.unwrap_err(),
+        super::ShredError::TooManyColumns(columns + 1)
+    );
 }
 
 #[test]
@@ -499,6 +507,10 @@ fn nested_objects_are_bound_by_the_column_limit_too() {
     let second = format!("{{\"o\":{}}}", wide_object(half, half));
     let pushes = [Bytes::from(first), Bytes::from(second)];
     assert_eq!(shredded(&pushes, 1).unwrap_err(), Code("limit_exceeded"));
+    let first = format!("{{\"l\":[{}]}}", wide_object(0, half));
+    let second = format!("{{\"l\":[{}]}}", wide_object(half, half));
+    let in_lists = [Bytes::from(first), Bytes::from(second)];
+    assert_eq!(shredded(&in_lists, 1).unwrap_err(), Code("limit_exceeded"));
     let fits = format!("{{\"o\":{}}}", wide_object(0, columns));
     assert_eq!(batch_of(&[&fits], 1 << 20).num_rows(), 1);
 }
@@ -527,6 +539,10 @@ fn only_columns_holding_values_count_toward_the_cells() {
     };
     assert_eq!(
         shape(r#"{"a":1,"b":null,"c":{"d":"x","e":null},"l":[true],"x":{}}"#).leaves(),
+        3
+    );
+    assert_eq!(
+        shape(r#"{"l":[{"p":1,"q":"x","r":true}],"m":[null]}"#).leaves(),
         3
     );
 }
