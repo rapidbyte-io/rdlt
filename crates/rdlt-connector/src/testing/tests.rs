@@ -323,6 +323,8 @@ struct VaultConfig {
     uncoded_conflicts: bool,
     /// Refuses a batch holding a dictionary-encoded column.
     refuse_dictionaries: bool,
+    /// Refuses a batch holding a dictionary whose values are not strings.
+    decode_only_strings: bool,
 }
 
 #[derive(Default)]
@@ -708,6 +710,13 @@ impl VaultConfig {
         {
             return Some("the batch holds a dictionary");
         }
+        if self.decode_only_strings
+            && schema.fields().iter().any(|field| {
+                matches!(field.data_type(), DataType::Dictionary(_, value) if **value != DataType::Utf8)
+            })
+        {
+            return Some("the batch holds a dictionary of other values than strings");
+        }
         let narrower = columns.is_some_and(|columns| {
             schema.fields().iter().any(|field| {
                 let stored = match field.data_type() {
@@ -922,6 +931,7 @@ async fn each_broken_destination_behavior_fails_exactly_its_clause() {
         ("uncoded_conflicts", "D-SCHEMA"),
         ("refuse_widening", "D-SCHEMA"),
         ("refuse_dictionaries", "D-ENCODING"),
+        ("decode_only_strings", "D-ENCODING"),
     ];
     for (flag, clause) in cases {
         let report = certify_vault(flag, Some(flag)).await;
