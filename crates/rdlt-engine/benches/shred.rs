@@ -84,7 +84,12 @@ fn sparse(index: u64, mix: &mut Mix) -> String {
     let row = nested(index, mix);
     if mix.below(10_000) == 0 {
         let name = row.find(r#","score""#).unwrap_or(row.len() - 1);
-        format!(r#"{},"tag":"t{}"{}"#, &row[..name], mix.below(100), &row[name..])
+        format!(
+            r#"{},"tag":"t{}"{}"#,
+            &row[..name],
+            mix.below(100),
+            &row[name..]
+        )
     } else {
         row
     }
