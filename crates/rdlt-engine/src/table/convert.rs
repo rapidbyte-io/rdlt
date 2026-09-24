@@ -68,7 +68,7 @@ pub(crate) fn convert(
             let source = normalize(array, from)?;
             list(source.as_list::<i32>(), from_item, to_item)
         }
-        _ => arrow_cast::cast(array, &to.to_arrow()),
+        _ => cast(array, &to.to_arrow()),
     }
 }
 
@@ -79,8 +79,17 @@ fn normalize(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, ArrowE
     if *array.data_type() == target {
         Ok(Arc::clone(array))
     } else {
-        arrow_cast::cast(array, &target)
+        cast(array, &target)
     }
+}
+
+/// `array` as `target`, failing on any value `target` cannot represent instead of nulling it.
+fn cast(array: &ArrayRef, target: &DataType) -> Result<ArrayRef, ArrowError> {
+    let options = arrow_cast::CastOptions {
+        safe: false,
+        ..arrow_cast::CastOptions::default()
+    };
+    arrow_cast::cast_with_options(array, target, &options)
 }
 
 fn list<O: OffsetSizeTrait>(

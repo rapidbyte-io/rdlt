@@ -94,7 +94,15 @@ pub(crate) fn prepare(
                 let converted = convert(batch.column(*index), from, column.logical_type());
                 converted
                     .and_then(|array| lower_array(&array, column.logical_type(), lowered))
-                    .map_err(failed)?
+                    .map_err(|error| {
+                        let detail = format!(
+                            "stream {stream}: column {} cannot hold a value of the batch: {error}",
+                            column.name()
+                        );
+                        Error::schema(detail)
+                            .with_code("value_unrepresentable")
+                            .with_stream(stream)
+                    })?
             }
             None => new_null_array(&lowered.to_arrow(), rows),
         };
