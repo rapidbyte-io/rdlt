@@ -21,7 +21,19 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   gives the types the destination stores, metadata columns included. Applying a change the table
   already reflects succeeds and changes nothing, since an attempt that fails after applying a
   change and before committing it makes the next attempt apply it again. Writers created before a
-  change receive batches with the new columns after it.
+  change receive batches with the new columns after it, and a batch may carry a column at a type
+  narrower than the column's, since a partition resolved before a widen writes it after.
+- **Crashed attempts' columns are named around.** An attempt that applied changes and never
+  committed leaves columns that the next attempt, starting from the committed names, may assign
+  to other source columns at other types. `Create` on an existing table adds the columns it
+  lacks; a column already holding the declared type (the lattice joins the two to its own type)
+  reflects the change; any other clash is a `Data` error coded `schema_conflict` that changes
+  nothing. The engine then resolves the change again with every new identifier hash-suffixed,
+  the hash seeded with a fresh salt on each of up to four retries, and a further conflict fails
+  the run. Recording names in state before applying changes was rejected: it needs a commit per
+  schema change, against one commit per barrier. A committed column that a crashed attempt
+  widened along another branch of the lattice than the next attempt needs cannot be renamed and
+  fails the stream until destinations report their columns.
 - **The first batch, or the declared schema, creates the table.** A stream no longer needs a
   declared schema; a declared one is resolved like a batch before anything is read. After the
   table exists, a new column or a value its column cannot hold is a change, which the column's
@@ -82,6 +94,8 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
 The simulation oracle draws destination capabilities (widenings, nested support, identifier rules,
 writer counts) and workloads with merge streams and drifting columns, and compares what the
 destination holds with the reference model by source column, whichever of a column's variants a
-value landed in. Destinations implementing the contract must apply schema changes idempotently
-and merge by `TableRef::merge`; the certification suite checks both (`D-SCHEMA`, `D-MERGE`),
-along with replace generations (`D-REPLACE`).
+value landed in. The simulated destination keeps each table's physical columns, answers conflicts as the contract
+says, and flags a write naming a column the table lacks or at a type its column does not hold.
+Destinations implementing the contract must apply schema changes idempotently, report conflicts,
+accept narrower batches and merge by `TableRef::merge`; the certification suite checks all of it
+(`D-SCHEMA`, `D-MERGE`), along with replace generations (`D-REPLACE`).
