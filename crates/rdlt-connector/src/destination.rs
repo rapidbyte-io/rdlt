@@ -209,7 +209,9 @@ pub trait TableWriter: Send + 'static {
     ///
     /// The batch's columns are some of the table's, each at the column's type or a type the
     /// column holds: a batch written after a widen can still carry the narrower type, since a
-    /// partition resolved before the widen writes it.
+    /// partition resolved before the widen writes it. A column may be dictionary-encoded, as the
+    /// engine sends columns holding one value per batch; its values are what the column stores
+    /// (clause `D-ENCODING`).
     fn write(
         &mut self,
         segment: SegmentId,

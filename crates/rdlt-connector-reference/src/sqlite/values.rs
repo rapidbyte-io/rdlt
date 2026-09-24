@@ -83,6 +83,12 @@ fn cells(array: &ArrayRef) -> std::result::Result<Vec<Value>, Unstorable> {
             .collect()
     };
     let values = match array.data_type() {
+        // A column the engine sends as a dictionary is stored as the values it encodes.
+        DataType::Dictionary(_, value) => {
+            let decoded = arrow_cast::cast(array, value)
+                .map_err(|_| Unstorable(array.data_type().clone()))?;
+            return cells(&decoded);
+        }
         DataType::Null => vec![Value::Null; array.len()],
         DataType::Boolean => integers(
             array

@@ -210,6 +210,33 @@ fn uuid_and_json_carry_extension_names_in_arrow() {
 }
 
 #[test]
+fn encoded_uuid_and_json_columns_keep_their_extension_types() {
+    let encoded = |field: ArrowField, key: DataType| {
+        let value = field.data_type().clone();
+        field.with_data_type(DataType::Dictionary(Box::new(key), Box::new(value)))
+    };
+    let uuid = Field::new("id", LogicalType::Uuid, false).to_arrow();
+    let json = Field::new("doc", LogicalType::Json, true).to_arrow();
+    let run_ends = |field: ArrowField| {
+        let value = Arc::new(ArrowField::new("values", field.data_type().clone(), true));
+        let ends = Arc::new(ArrowField::new("run_ends", DataType::Int32, false));
+        field.with_data_type(DataType::RunEndEncoded(ends, value))
+    };
+    for (field, logical) in [
+        (encoded(uuid.clone(), DataType::Int8), LogicalType::Uuid),
+        (encoded(json.clone(), DataType::Int32), LogicalType::Json),
+        (run_ends(uuid), LogicalType::Uuid),
+        (run_ends(json), LogicalType::Json),
+    ] {
+        assert_eq!(
+            Field::from_arrow(&field).unwrap().logical_type(),
+            &logical,
+            "{field:?}"
+        );
+    }
+}
+
+#[test]
 fn decimals_use_the_narrowest_arrow_decimal() {
     assert_eq!(decimal(38, 2).to_arrow(), DataType::Decimal128(38, 2));
     assert_eq!(decimal(39, 2).to_arrow(), DataType::Decimal256(39, 2));
