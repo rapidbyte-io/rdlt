@@ -1,12 +1,17 @@
 //! Destination clauses.
 
+mod clauses;
+mod evolving;
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use bytes::Bytes;
 
-use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
+pub use clauses::DESTINATION_CLAUSES;
+
+use super::{ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
 use crate::commit::{CommitMeta, SegmentSet};
 use crate::destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
@@ -24,42 +29,6 @@ pub trait Probe: Send + Sync {
     /// Every published batch of `table`.
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>>;
 }
-
-/// The clauses [`certify_destination`] checks, in order.
-pub const DESTINATION_CLAUSES: &[Clause] = &[
-    Clause {
-        id: "D-CHECK",
-        statement: "check succeeds for a valid configuration",
-    },
-    Clause {
-        id: "D-EPOCH",
-        statement: "each open returns a higher epoch than the last",
-    },
-    Clause {
-        id: "D-STAGING",
-        statement: "staged segments are invisible until committed",
-    },
-    Clause {
-        id: "D-COMMIT",
-        statement: "a commit publishes exactly its segments and reports their rows",
-    },
-    Clause {
-        id: "D-IDEMPOTENT",
-        statement: "re-committing a commit returns its receipt and publishes nothing",
-    },
-    Clause {
-        id: "D-STATE",
-        statement: "committed state records are returned by the next open",
-    },
-    Clause {
-        id: "D-DISCARD",
-        statement: "segments staged by an earlier session are never published",
-    },
-    Clause {
-        id: "D-FENCE",
-        statement: "a session opened before the latest one cannot commit",
-    },
-];
 
 /// Certifies destination connector `C` with `config`, reading published data through `probe`.
 pub async fn certify_destination<C: DestinationConnector>(
@@ -101,7 +70,10 @@ pub async fn certify_destination_factory(
                     started,
                     index,
                 };
-                let outcome = outcome(bench.check(clause.id).await);
+                let outcome = match evolving::skipped(destination.as_ref(), clause.id) {
+                    Some(reason) => Outcome::Skipped(reason.to_owned()),
+                    None => outcome(bench.check(clause.id).await),
+                };
                 results.push(ClauseResult {
                     clause: *clause,
                     outcome,
@@ -146,6 +118,9 @@ impl Bench<'_> {
             "D-IDEMPOTENT" => self.recommits_are_idempotent().await,
             "D-STATE" => self.state_round_trips().await,
             "D-DISCARD" => self.earlier_staging_is_discarded().await,
+            "D-REPLACE" => self.generations_swap_in_atomically().await,
+            "D-SCHEMA" => self.schema_changes_apply().await,
+            "D-MERGE" => self.merges_keep_the_newest_row().await,
             _ => self.stale_sessions_are_fenced().await,
         }
     }

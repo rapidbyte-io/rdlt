@@ -9,6 +9,10 @@ repository.workspace = true
 
 [dependencies]
 arrow-array.workspace = true
+arrow-cast.workspace = true
+arrow-row.workspace = true
+arrow-schema.workspace = true
+arrow-select.workspace = true
 parking_lot.workspace = true
 rdlt-connector.workspace = true
 schemars.workspace = true

@@ -8,9 +8,11 @@ use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StateChange, StateRecord,
-    TablePath, TypeKind,
+    CommitSeq, Epoch, Field, GenerationId, LoadId, MergeKey, PipelineId, SchemaChanges, SegmentId,
+    StateChange, StateRecord, TablePath, TypeKind,
 };
+
+use super::merge::merge;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -25,7 +27,8 @@ pub struct MemoryDestinationConfig {
 /// Keeps published tables, staging and pipeline state in a named in-process store.
 ///
 /// A replace generation's rows stay hidden until the commit that finishes the generation swaps
-/// them in for the table's rows. Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
+/// them in for the table's rows. A merge table keeps one row per key: the newest commit's, and
+/// within a commit the row with the greatest sequence. Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
 /// fenced by the pipeline's epoch; so are flushes, so a fenced worker cannot stage rows that the
 /// latest session would publish.
 #[derive(Debug)]
@@ -42,6 +45,16 @@ pub fn published(store: &str, table: &str) -> Vec<RecordBatch> {
         .get(table)
         .map(|table| table.published.clone())
         .unwrap_or_default()
+}
+
+/// The columns of `table` in `store`, once it exists.
+pub fn schema(store: &str, table: &str) -> Option<TableSchema> {
+    let store = named(store);
+    let store = store.lock();
+    store
+        .tables
+        .get(table)
+        .and_then(|table| table.schema.clone())
 }
 
 static STORES: LazyLock<Mutex<BTreeMap<String, Arc<Mutex<Store>>>>> = LazyLock::new(Mutex::default);
@@ -61,14 +74,40 @@ struct Store {
 impl Store {
     /// Publishes the segments of `meta` staged by `pipeline` and swaps in the generations it
     /// finishes; returns the rows and bytes published.
-    fn publish(&mut self, pipeline: &PipelineId, meta: &CommitMeta) -> (u64, u64) {
+    ///
+    /// Every table's publish is worked out before anything changes, so a failure leaves the store
+    /// as it was.
+    fn publish(&mut self, pipeline: &PipelineId, meta: &CommitMeta) -> Result<(u64, u64)> {
+        let mut plans = Vec::new();
+        for (name, table) in &self.tables {
+            let staged: Staged = meta
+                .segments
+                .iter()
+                .filter_map(|segment| table.staged.get(&(pipeline.clone(), segment)))
+                .flatten()
+                .cloned()
+                .collect();
+            if staged.is_empty() {
+                continue;
+            }
+            let merged = match &table.merge {
+                Some(key) => Some(table.merged(&staged, key)?),
+                None => None,
+            };
+            plans.push((name.clone(), staged, merged));
+        }
         let (mut rows, mut bytes) = (0, 0);
         for table in self.tables.values_mut() {
             for segment in meta.segments.iter() {
-                let staged = table.staged.remove(&(pipeline.clone(), segment));
-                for (generation, batch) in staged.unwrap_or_default() {
-                    rows += batch.num_rows() as u64;
-                    bytes += batch.get_array_memory_size() as u64;
+                table.staged.remove(&(pipeline.clone(), segment));
+            }
+        }
+        for (name, staged, merged) in plans {
+            let table = self.tables.entry(name).or_default();
+            for (generation, batch) in staged {
+                rows += batch.num_rows() as u64;
+                bytes += batch.get_array_memory_size() as u64;
+                if merged.is_none() {
                     match generation {
                         Some(generation) => {
                             table.generations.entry(generation).or_default().push(batch);
@@ -76,6 +115,9 @@ impl Store {
                         None => table.published.push(batch),
                     }
                 }
+            }
+            if let Some(merged) = merged {
+                table.published = merged;
             }
         }
         for (path, generation) in &meta.finish_generations {
@@ -86,14 +128,24 @@ impl Store {
             table.published = table.generations.remove(generation).unwrap_or_default();
             table.generations.clear();
         }
-        (rows, bytes)
+        Ok((rows, bytes))
     }
 
-    /// The table `table` refers to, recording its name for its path.
+    /// The table `table` refers to, recording its name for its path and how it merges.
     fn table(&mut self, table: &TableRef) -> &mut Table {
         self.names
             .insert(table.path.clone(), table.name.to_string());
-        self.tables.entry(table.name.to_string()).or_default()
+        let entry = self.tables.entry(table.name.to_string()).or_default();
+        entry.merge.clone_from(&table.merge);
+        entry
+    }
+
+    /// The table `table` refers to, which must exist.
+    fn existing(&mut self, table: &TableRef) -> Result<&mut Table> {
+        self.tables
+            .get_mut(table.name.as_ref())
+            .filter(|existing| existing.schema.is_some())
+            .ok_or_else(|| ConnectorError::data(format!("table {} does not exist", table.name)))
     }
 }
 
@@ -107,6 +159,8 @@ struct PipelineStore {
 #[derive(Debug, Default)]
 struct Table {
     schema: Option<TableSchema>,
+    /// How the table merges; `None` appends.
+    merge: Option<MergeKey>,
     published: Vec<RecordBatch>,
     /// Committed rows of replace generations not yet swapped in.
     generations: BTreeMap<GenerationId, Vec<RecordBatch>>,
@@ -116,6 +170,67 @@ struct Table {
 /// Batches staged under one segment, each for the table itself or for a replace generation.
 type Staged = Vec<(Option<GenerationId>, RecordBatch)>;
 
+impl Table {
+    /// The table's rows once `staged` is merged in by `key`.
+    fn merged(&self, staged: &Staged, key: &MergeKey) -> Result<Vec<RecordBatch>> {
+        let schema = match &self.schema {
+            Some(schema) => Arc::new(schema.to_arrow()),
+            None => staged
+                .first()
+                .map(|(_, batch)| batch.schema())
+                .ok_or_else(|| ConnectorError::internal("merging nothing"))?,
+        };
+        let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
+        merge(&schema, &self.published, &incoming, key)
+            .map_err(|error| ConnectorError::data(format!("merging rows: {error}")))
+    }
+
+    /// Applies `change` to the table's columns; a change they already reflect changes nothing.
+    fn apply(&mut self, change: &TableChange) -> Result<()> {
+        let schema = self.schema.as_ref().ok_or_else(|| {
+            ConnectorError::data(format!("table {} does not exist", change.table().name))
+        })?;
+        let fields: Vec<Field> = match change {
+            TableChange::Create { .. } => return Ok(()),
+            TableChange::AddColumn { field, .. } => {
+                if schema.field(field.name()).is_some() {
+                    return Ok(());
+                }
+                schema
+                    .fields()
+                    .iter()
+                    .cloned()
+                    .chain([Field::new(field.name(), field.logical_type().clone(), true)])
+                    .collect()
+            }
+            TableChange::Widen { column, to, .. } => {
+                if schema.field(column).is_none() {
+                    return Err(ConnectorError::data(format!(
+                        "table {} has no column {column}",
+                        change.table().name
+                    )));
+                }
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        if field.name() == column.as_ref() {
+                            Field::new(field.name(), to.clone(), field.is_nullable())
+                        } else {
+                            field.clone()
+                        }
+                    })
+                    .collect()
+            }
+        };
+        self.schema = Some(
+            TableSchema::new(fields)
+                .map_err(|error| ConnectorError::internal(format!("changing a table: {error}")))?,
+        );
+        Ok(())
+    }
+}
+
 #[destination(id = "io.rapidbyte.memory")]
 impl DestinationConnector for MemoryDestination {
     type Config = MemoryDestinationConfig;
@@ -124,6 +239,8 @@ impl DestinationConnector for MemoryDestination {
     fn capabilities(&self) -> Capabilities {
         let mut capabilities = Capabilities::minimal();
         capabilities.write_modes.replace = true;
+        capabilities.write_modes.merge = true;
+        capabilities.schema_changes = SchemaChanges::all();
         capabilities.nested.structs = true;
         capabilities.nested.lists = true;
         capabilities.nested.json = true;
@@ -187,14 +304,7 @@ impl Session for MemorySession {
                 Ok(())
             }
             TableChange::AddColumn { table, .. } | TableChange::Widen { table, .. } => {
-                if store.tables.contains_key(table.name.as_ref()) {
-                    Ok(())
-                } else {
-                    Err(ConnectorError::data(format!(
-                        "table {} does not exist",
-                        table.name
-                    )))
-                }
+                store.existing(table)?.apply(change)
             }
         }
     }
@@ -239,7 +349,7 @@ impl Session for MemorySession {
         if let Some(receipt) = store.pipelines[&self.pipeline].receipts.get(&key) {
             return Ok(receipt.clone());
         }
-        let (rows, bytes) = store.publish(&self.pipeline, meta);
+        let (rows, bytes) = store.publish(&self.pipeline, meta)?;
         let pipeline = store
             .pipelines
             .get_mut(&self.pipeline)

@@ -2,14 +2,16 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::cast::AsArray;
+use arrow_array::types::Int64Type;
+use arrow_array::{BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Cursor, GenerationId, LoadId,
-    OpenContext, OpenedSession, Partition, PipelineId, ReadRequest, SchemaVersion, SegmentId,
-    SegmentSet, SourceEvent, StreamName, TablePath, TableRef, destination_factory,
-    partition_channel, source_factory,
+    CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Cursor, Field, GenerationId, LoadId,
+    LogicalType, MergeKey, OpenContext, OpenedSession, Partition, PipelineId, ReadRequest,
+    SchemaVersion, SegmentId, SegmentSet, SourceEvent, StreamName, TableChange, TablePath,
+    TableRef, TableSchema, destination_factory, partition_channel, source_factory,
 };
-use rdlt_connector_reference::{MemoryDestination, MemorySource, published};
+use rdlt_connector_reference::{MemoryDestination, MemorySource, published, schema};
 use serde_json::json;
 
 #[tokio::test]
@@ -181,4 +183,187 @@ async fn a_replace_generation_stays_hidden_until_its_finishing_commit_swaps_it_i
     };
     opened.session.commit(&finish).await.unwrap();
     assert_eq!(ids(&published("replace", "t")), [3, 4]);
+}
+
+fn table_ref(name: &str) -> TableRef {
+    TableRef {
+        path: TablePath::new([name]).expect("valid table path"),
+        name: name.into(),
+        version: SchemaVersion(1),
+        generation: None,
+        merge: None,
+    }
+}
+
+#[tokio::test]
+async fn schema_changes_follow_the_table_and_applying_them_again_changes_nothing() {
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": "schemas" }), ConnectContext::new())
+        .await
+        .unwrap();
+    let mut opened = destination.open(&open_context("schemas", 1)).await.unwrap();
+    let table = table_ref("t");
+    let add = TableChange::AddColumn {
+        table: table.clone(),
+        field: Field::new("extra", LogicalType::Utf8, true),
+    };
+    let error = opened.session.apply_schema(&add).await.unwrap_err();
+    assert_eq!(
+        error.kind(),
+        ConnectorErrorKind::Data,
+        "the table does not exist yet"
+    );
+    for id in [LogicalType::Int32, LogicalType::Utf8] {
+        let create = TableChange::Create {
+            table: table.clone(),
+            schema: TableSchema::new(vec![Field::new("id", id, false)]).unwrap(),
+        };
+        opened.session.apply_schema(&create).await.unwrap();
+    }
+    let widen = TableChange::Widen {
+        table: table.clone(),
+        column: "id".into(),
+        from: LogicalType::Int32,
+        to: LogicalType::Int64,
+    };
+    for change in [&add, &add, &widen, &widen] {
+        opened.session.apply_schema(change).await.unwrap();
+    }
+    let expected = TableSchema::new(vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("extra", LogicalType::Utf8, true),
+    ])
+    .unwrap();
+    assert_eq!(schema("schemas", "t"), Some(expected));
+    let missing = TableChange::Widen {
+        table,
+        column: "missing".into(),
+        from: LogicalType::Int32,
+        to: LogicalType::Int64,
+    };
+    let error = opened.session.apply_schema(&missing).await.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+}
+
+fn seq(value: u8) -> Vec<u8> {
+    let mut seq = vec![0; 16];
+    seq[15] = value;
+    seq
+}
+
+fn merge_table() -> TableRef {
+    TableRef {
+        merge: Some(MergeKey {
+            columns: vec!["id".into()],
+            seq: "_rdlt_seq".into(),
+        }),
+        ..table_ref("m")
+    }
+}
+
+/// Stages `batch` as `segment` of the merge table and commits it as `commit_seq`.
+async fn merge_commit(
+    opened: &mut OpenedSession,
+    segment: u64,
+    batch: RecordBatch,
+    commit_seq: CommitSeq,
+) {
+    let mut writer = opened
+        .session
+        .writer(&merge_table())
+        .await
+        .expect("the memory destination creates writers");
+    writer
+        .write(SegmentId(segment), batch)
+        .await
+        .expect("staging succeeds");
+    writer.flush().await.expect("flushing succeeds");
+    let meta = commit_meta(opened, commit_seq, &[segment]);
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+}
+
+/// The merge table's `(id, note)` rows, sorted.
+fn merged_rows() -> Vec<(i64, Option<String>)> {
+    let mut rows: Vec<(i64, Option<String>)> = published("merge", "m")
+        .iter()
+        .flat_map(|batch| {
+            let ids = batch
+                .column_by_name("id")
+                .expect("merged rows have ids")
+                .as_primitive::<Int64Type>()
+                .clone();
+            let notes = batch
+                .column_by_name("note")
+                .expect("merged rows have notes")
+                .as_string::<i32>()
+                .clone();
+            (0..batch.num_rows())
+                .map(|row| {
+                    (
+                        ids.value(row),
+                        notes.iter().nth(row).flatten().map(str::to_owned),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    rows.sort_unstable();
+    rows
+}
+
+#[tokio::test]
+async fn a_merge_matches_rows_published_before_the_table_changed() {
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": "merge" }), ConnectContext::new())
+        .await
+        .unwrap();
+    let table = merge_table();
+    let mut opened = destination.open(&open_context("merge", 1)).await.unwrap();
+    let create = TableChange::Create {
+        table: table.clone(),
+        schema: TableSchema::new(vec![
+            Field::new("id", LogicalType::Int32, false),
+            Field::new("_rdlt_seq", LogicalType::Binary, false),
+        ])
+        .unwrap(),
+    };
+    opened.session.apply_schema(&create).await.unwrap();
+    let first = RecordBatch::try_from_iter([
+        ("id", Arc::new(Int32Array::from(vec![1, 2])) as _),
+        (
+            "_rdlt_seq",
+            Arc::new(BinaryArray::from_iter_values([seq(1), seq(2)])) as _,
+        ),
+    ])
+    .unwrap();
+    merge_commit(&mut opened, 1, first, CommitSeq::FIRST).await;
+    for change in [
+        TableChange::Widen {
+            table: table.clone(),
+            column: "id".into(),
+            from: LogicalType::Int32,
+            to: LogicalType::Int64,
+        },
+        TableChange::AddColumn {
+            table,
+            field: Field::new("note", LogicalType::Utf8, true),
+        },
+    ] {
+        opened.session.apply_schema(&change).await.unwrap();
+    }
+    let second = RecordBatch::try_from_iter([
+        ("id", Arc::new(Int64Array::from(vec![2])) as _),
+        (
+            "_rdlt_seq",
+            Arc::new(BinaryArray::from_iter_values([seq(1)])) as _,
+        ),
+        ("note", Arc::new(StringArray::from(vec!["new"])) as _),
+    ])
+    .unwrap();
+    merge_commit(&mut opened, 2, second, CommitSeq::FIRST.next()).await;
+    assert_eq!(merged_rows(), [(1, None), (2, Some("new".to_owned()))]);
 }

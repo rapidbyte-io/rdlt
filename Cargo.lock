@@ -169,6 +169,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-row"
+version = "59.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4c6425032e28266e3fc4ff680805e57e670d6ea92473043f3e65b7ed6ac79f2"
+dependencies = [
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-data",
+ "arrow-schema",
+ "half",
+]
+
+[[package]]
 name = "arrow-schema"
 version = "59.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -955,6 +968,10 @@ name = "rdlt-connector-reference"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-cast",
+ "arrow-row",
+ "arrow-schema",
+ "arrow-select",
  "parking_lot",
  "rdlt-connector",
  "schemars",
