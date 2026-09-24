@@ -30,6 +30,7 @@ mod coordinator;
 mod env;
 mod error;
 mod lane;
+mod naming;
 mod partition;
 mod plan;
 mod report;
