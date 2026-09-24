@@ -18,6 +18,9 @@
 //! ```
 
 mod attempt;
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench;
 mod budget;
 mod compute;
 mod config;

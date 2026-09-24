@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Internals for the benchmarks and fuzz targets (spec §21.2); not a public API.
+bench = []
+
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
@@ -29,6 +33,7 @@ tokio-util.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-connector-reference.workspace = true
@@ -46,3 +51,8 @@ tokio = { workspace = true, features = [
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "shred"
+harness = false
+required-features = ["bench"]
