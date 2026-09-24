@@ -9,12 +9,13 @@ repository.workspace = true
 
 [features]
 # Internals for the benchmarks and fuzz targets (spec §21.2); not a public API.
-bench = []
+bench = ["dep:arrow-ipc", "dep:schemars", "dep:serde_json"]
 
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
+arrow-ipc = { workspace = true, optional = true }
 arrow-json.workspace = true
 arrow-row.workspace = true
 arrow-schema.workspace = true
@@ -25,7 +26,9 @@ memchr.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
 rdlt-connector.workspace = true
+schemars = { workspace = true, optional = true }
 serde.workspace = true
+serde_json = { workspace = true, optional = true }
 sonic-rs.workspace = true
 stacker.workspace = true
 thiserror.workspace = true
@@ -37,6 +40,7 @@ xxhash-rust.workspace = true
 criterion.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
+rdlt-connector = { workspace = true, features = ["testing"] }
 rdlt-connector-reference.workspace = true
 schemars.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
@@ -55,5 +59,10 @@ workspace = true
 
 [[bench]]
 name = "shred"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "passthrough"
 harness = false
 required-features = ["bench"]
