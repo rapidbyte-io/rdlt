@@ -5,11 +5,12 @@ mod tests;
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rdlt_connector::{Admission, BoxFuture, Permit};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 /// Bytes the engine may hold in flight, shared by everything that reserves them.
 ///
@@ -29,6 +30,8 @@ struct Ledger {
     reserved: u64,
     peak: u64,
     waiting: VecDeque<(u64, oneshot::Sender<Reservation>)>,
+    /// Whether any request is waiting.
+    pressed: watch::Sender<bool>,
 }
 
 impl Ledger {
@@ -51,6 +54,7 @@ impl MemoryBudget {
                 reserved: 0,
                 peak: 0,
                 waiting: VecDeque::new(),
+                pressed: watch::Sender::new(false),
             })),
         }
     }
@@ -65,6 +69,7 @@ impl MemoryBudget {
             }
             let (sender, receiver) = oneshot::channel();
             ledger.waiting.push_back((bytes, sender));
+            ledger.pressed.send_replace(true);
             receiver
         };
         receiver
@@ -77,6 +82,18 @@ impl MemoryBudget {
     pub(crate) fn charge(&self, bytes: u64) -> Reservation {
         self.shared.lock().reserve(bytes);
         self.reservation(bytes)
+    }
+
+    /// Completes once a request is waiting for bytes: whoever holds bytes it could release early
+    /// should.
+    pub(crate) fn pressed(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mut pressed = self.shared.lock().pressed.subscribe();
+        async move {
+            // The ledger keeps the sender as long as the budget lives.
+            if pressed.wait_for(|pressed| *pressed).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
     }
 
     /// Bytes reserved now.
@@ -170,5 +187,8 @@ fn admit_waiting(shared: &Arc<Mutex<Ledger>>, ledger: &mut Ledger) {
                 ledger.reserved = ledger.reserved.saturating_sub(bytes);
             }
         }
+    }
+    if ledger.waiting.is_empty() {
+        ledger.pressed.send_replace(false);
     }
 }
