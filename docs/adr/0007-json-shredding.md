@@ -48,9 +48,10 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   in every column, so without the bound a small push of sparse, wide records builds gigabytes of
   nulls. Only JSON's whitespace may surround a record, and an error names what broke and the
   record's place among the pushes without quoting the record.
-  Parsing recurses once per level and stops at the depth limit, so no input exhausts the stack:
-  a value at the limit needs about 128 KiB in release builds, within a compute thread's 2 MiB, and
-  nearly all of it unoptimized.
+  Parsing recurses once per level and stops at the depth limit, so no input exhausts the stack.
+  Unoptimized builds use far more stack per level than release ones, so each level grows the
+  stack on demand (with `stacker`), every shredding job is sure of 4 MiB before it starts, and
+  compute threads have 8 MiB: values at the limit shred in every build, on any thread.
 - **Partitions coalesce pushes.** Pushes gather until `BatchPolicy::target_bytes` or `max_rows`,
   or until the first has waited `max_latency` on the environment's clock. A checkpoint, a push
   of the other kind or an Arrow schema that differs, and the end of the read flush them first, so

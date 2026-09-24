@@ -633,3 +633,34 @@ fn only_json_whitespace_surrounds_records() {
         1
     );
 }
+
+#[test]
+fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
+    let shred_here = |push: String| {
+        crate::compute::ready(shred(
+            &crate::compute::Inline,
+            &[Bytes::from(push)],
+            1 << 20,
+        ))
+    };
+    let shredded = std::thread::Builder::new()
+        .stack_size(256 << 10)
+        .spawn(move || {
+            for before in ["", "{\"a\":1}\n"] {
+                for (open, close) in [("[", "]"), ("{\"b\":", "}"), ("[{\"b\":", "}]")] {
+                    let levels = if open.len() > 5 {
+                        MAX_NESTING_DEPTH / 2
+                    } else {
+                        MAX_NESTING_DEPTH
+                    };
+                    let deepest = format!("{before}{}", nested(levels, open, close));
+                    assert!(shred_here(deepest).is_ok());
+                    let deeper = format!("{before}{}", nested(MAX_NESTING_DEPTH + 1, open, close));
+                    assert_eq!(shred_here(deeper).unwrap_err().code(), "limit_exceeded");
+                }
+            }
+        })
+        .unwrap()
+        .join();
+    assert!(shredded.is_ok());
+}

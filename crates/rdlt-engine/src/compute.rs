@@ -31,10 +31,15 @@ pub struct RayonPool {
 pub struct ComputePoolError(#[source] rayon::ThreadPoolBuildError);
 
 impl RayonPool {
-    /// Starts a pool of `threads` worker threads named `rdlt-compute-<n>`.
+    /// Starts a pool of `threads` worker threads named `rdlt-compute-<n>`, each with 8 MiB of
+    /// stack.
+    ///
+    /// Shredding a JSON value at the nesting limit walks it once per level; the stack lets every
+    /// job run without growing it, in every build.
     pub fn new(threads: NonZeroUsize) -> Result<Self, ComputePoolError> {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads.get())
+            .stack_size(8 * 1024 * 1024)
             .thread_name(|index| format!("rdlt-compute-{index}"))
             .build()
             .map(|pool| Self { pool })
