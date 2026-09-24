@@ -12,9 +12,9 @@ use crate::OpenedSession;
 use crate::commit::CommitMeta;
 use crate::destination::Destination;
 use crate::destination::{DestinationSession, DestinationWriter, MergeKey, TableChange, TableRef};
+use crate::error::ConnectorErrorKind;
 use crate::id::{CommitSeq, GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
-use crate::error::ConnectorErrorKind;
 use crate::testing::{Violation, bounded, bounded_call};
 use crate::types::{Field, LogicalType, TypeKind};
 
@@ -157,6 +157,19 @@ impl Bench<'_> {
             to: LogicalType::Int64,
         };
         apply_twice(&mut opened.session, &widen).await?;
+        let narrower = TableChange::Widen {
+            table: table.clone(),
+            column: "small".into(),
+            from: LogicalType::Int16,
+            to: LogicalType::Int32,
+        };
+        for held in [&create, &narrower] {
+            bounded_call(
+                "apply_schema of a type the column holds",
+                opened.session.apply_schema(held),
+            )
+            .await?;
+        }
         let wide = RecordBatch::try_from_iter([(
             "small",
             Arc::new(Int64Array::from(vec![1_i64 << 40])) as _,

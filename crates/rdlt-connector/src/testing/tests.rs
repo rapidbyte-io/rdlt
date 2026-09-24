@@ -792,21 +792,21 @@ fn merge(published: &mut Vec<RecordBatch>, incoming: Vec<(MergeKey, RecordBatch)
 /// another type.
 fn conflict(store: &VaultStore, change: &TableChange) -> Option<String> {
     let columns = store.columns.get(change.table().name.as_ref())?;
-    let clash = |name: &str, types: &[&LogicalType]| {
+    let clash = |name: &str, declared: &LogicalType, from: Option<&LogicalType>| {
         columns
             .get(name)
-            .filter(|existing| !types.contains(existing))
+            .filter(|existing| existing.join(declared) != **existing && Some(*existing) != from)
             .map(|existing| format!("column {name} is {existing}"))
     };
     match change {
         TableChange::Create { schema, .. } => schema
             .fields()
             .iter()
-            .find_map(|field| clash(field.name(), &[field.logical_type()])),
-        TableChange::AddColumn { field, .. } => clash(field.name(), &[field.logical_type()]),
+            .find_map(|field| clash(field.name(), field.logical_type(), None)),
+        TableChange::AddColumn { field, .. } => clash(field.name(), field.logical_type(), None),
         TableChange::Widen {
             column, from, to, ..
-        } => clash(column, &[from, to]),
+        } => clash(column, to, Some(from)),
     }
 }
 
@@ -830,7 +830,10 @@ fn record(store: &mut VaultStore, change: &TableChange) {
                 .or_insert_with(|| field.logical_type().clone());
         }
         TableChange::Widen { column, to, .. } => {
-            columns.insert(column.to_string(), to.clone());
+            let held = columns
+                .entry(column.to_string())
+                .or_insert_with(|| to.clone());
+            *held = held.join(to);
         }
     }
 }

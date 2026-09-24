@@ -195,7 +195,9 @@ impl Table {
         })?;
         let mut fields: Vec<Field> = schema.fields().iter().cloned().collect();
         match change {
-            TableChange::Create { schema: declared, .. } => {
+            TableChange::Create {
+                schema: declared, ..
+            } => {
                 for field in declared.fields().iter() {
                     add(&mut fields, field, change)?;
                 }
@@ -204,14 +206,19 @@ impl Table {
             TableChange::Widen {
                 column, from, to, ..
             } => {
-                let Some(field) = fields.iter_mut().find(|field| field.name() == column.as_ref())
+                let Some(field) = fields
+                    .iter_mut()
+                    .find(|field| field.name() == column.as_ref())
                 else {
                     return Err(ConnectorError::data(format!(
                         "table {} has no column {column}",
                         change.table().name
                     )));
                 };
-                if field.logical_type() != from && field.logical_type() != to {
+                if holds(field, to) {
+                    return Ok(());
+                }
+                if field.logical_type() != from {
                     return Err(conflict(change, field));
                 }
                 *field = Field::new(field.name(), to.clone(), field.is_nullable());
@@ -225,16 +232,25 @@ impl Table {
     }
 }
 
-/// Adds `field` to `fields` as a nullable column unless a column of its name and type is there.
+/// Adds `field` to `fields` as a nullable column unless a column of its name holding its type is
+/// there.
 fn add(fields: &mut Vec<Field>, field: &Field, change: &TableChange) -> Result<()> {
-    match fields.iter().find(|existing| existing.name() == field.name()) {
-        Some(existing) if existing.logical_type() == field.logical_type() => Ok(()),
+    match fields
+        .iter()
+        .find(|existing| existing.name() == field.name())
+    {
+        Some(existing) if holds(existing, field.logical_type()) => Ok(()),
         Some(existing) => Err(conflict(change, existing)),
         None => {
             fields.push(Field::new(field.name(), field.logical_type().clone(), true));
             Ok(())
         }
     }
+}
+
+/// Whether `column` holds every value of `logical`.
+fn holds(column: &Field, logical: &LogicalType) -> bool {
+    column.logical_type().join(logical) == *column.logical_type()
 }
 
 /// The error for `change` declaring `existing` at another type.

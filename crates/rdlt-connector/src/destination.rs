@@ -77,10 +77,12 @@ pub struct MergeKey {
 /// and change nothing: when an attempt fails between applying a change and committing, the next
 /// attempt applies it again.
 ///
-/// A change that declares a column at a type the table's column neither has nor, for
-/// [`TableChange::Widen`], widens from fails with a `Data` error coded `schema_conflict` and
-/// changes nothing. An attempt that failed before committing can leave columns behind that the
-/// next attempt names differently; the engine answers the conflict by choosing other identifiers.
+/// A column already holding the declared type — the type lattice joins the two to the column's
+/// own type — reflects the change. A change that declares a column at a type the table's column
+/// neither holds nor, for [`TableChange::Widen`], widens from fails with a `Data` error coded
+/// `schema_conflict` and changes nothing. An attempt that failed before committing can leave
+/// columns behind that the next attempt names differently; the engine answers the conflict by
+/// choosing other identifiers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableChange {
     /// Create the table; on a table that exists, add the columns it lacks as nullable.
