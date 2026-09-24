@@ -77,7 +77,7 @@ mode every figure falls to about a third, so compare only runs taken back to bac
 | Corpus (one core) | Throughput |
 |---|---|
 | `nested` | 692 MiB/s |
-| `sparse` (`nested`, a quarter of rows with an optional key) | 650 MiB/s |
+| `sparse` (`nested`, one row in ten thousand with an optional key after its name) | 697 MiB/s, 3 % below `nested` measured with it (718 MiB/s); rebuilding every chunk whose shape differs, as the first draft did, ran it at 407 MiB/s |
 | `flat_narrow` | 490 MiB/s |
 | `flat_wide` (200 columns) | 506 MiB/s |
 | `string_heavy` | 557 MiB/s |

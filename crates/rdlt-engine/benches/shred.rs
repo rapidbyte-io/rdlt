@@ -78,12 +78,13 @@ fn nested(index: u64, mix: &mut Mix) -> String {
     )
 }
 
-/// Nested rows of which a quarter carry an optional key, so most chunks lack a column others have
-/// or meet it late.
+/// Nested rows of which about one in ten thousand carries an optional key after its name, so most
+/// chunks lack a column the others have, and those that hold it meet it before most columns.
 fn sparse(index: u64, mix: &mut Mix) -> String {
     let row = nested(index, mix);
-    if mix.below(4) == 0 {
-        format!(r#"{},"tag":"t{}"}}"#, &row[..row.len() - 1], mix.below(100))
+    if mix.below(10_000) == 0 {
+        let name = row.find(r#","score""#).unwrap_or(row.len() - 1);
+        format!(r#"{},"tag":"t{}"{}"#, &row[..name], mix.below(100), &row[name..])
     } else {
         row
     }
