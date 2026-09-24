@@ -12,6 +12,7 @@ publish = false
 arrow-array.workspace = true
 arrow-json.workspace = true
 arrow-schema.workspace = true
+bytes.workspace = true
 parking_lot.workspace = true
 rdlt-connector.workspace = true
 rdlt-engine.workspace = true

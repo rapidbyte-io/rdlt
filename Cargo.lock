@@ -1199,6 +1199,7 @@ dependencies = [
  "arrow-array",
  "arrow-json",
  "arrow-schema",
+ "bytes",
  "parking_lot",
  "rdlt-connector",
  "rdlt-engine",

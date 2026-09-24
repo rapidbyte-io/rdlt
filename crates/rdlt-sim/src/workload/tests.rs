@@ -75,7 +75,7 @@ fn row_ids_are_unique_within_a_stream() {
 }
 
 #[test]
-fn workloads_cover_merges_drift_and_every_policy() {
+fn workloads_cover_merges_drift_json_and_every_policy() {
     let streams: Vec<_> = (0..300)
         .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed)).streams)
         .collect();
@@ -105,6 +105,16 @@ fn workloads_cover_merges_drift_and_every_policy() {
         );
     }
     assert!(streams.iter().any(|stream| stream.nested == Nested::Json));
+    assert!(
+        streams.iter().any(|stream| stream.json),
+        "some stream pushes JSON"
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.json && stream.drift.len() > 1),
+        "some JSON stream drifts"
+    );
     let changing = streams
         .iter()
         .flat_map(|stream| &stream.drift)
