@@ -502,3 +502,31 @@ fn nested_objects_are_bound_by_the_column_limit_too() {
     let fits = format!("{{\"o\":{}}}", wide_object(0, columns));
     assert_eq!(batch_of(&[&fits], 1 << 20).num_rows(), 1);
 }
+
+#[test]
+fn sparse_wide_records_are_refused_before_they_are_built() {
+    // Over five thousand rows under almost ten thousand columns: fifty million cells, from 114 KB.
+    let push = format!("{}{}", "{}\n".repeat(5000), wide_object(0, 9999));
+    assert_eq!(refused(&push), "limit_exceeded");
+}
+
+#[test]
+fn cells_are_bounded_at_the_limit() {
+    assert!(super::within_cells(1 << 12, 1 << 13));
+    assert!(!super::within_cells(1 << 12, (1 << 13) + 1));
+    assert!(!super::within_cells((1 << 12) + 1, 1 << 13));
+    assert!(super::within_cells(u64::MAX, 0));
+    assert!(!super::within_cells(u64::MAX, 2));
+}
+
+#[test]
+fn only_columns_holding_values_count_toward_the_cells() {
+    let shape = |text: &str| {
+        let records = Records::of(Bytes::from(text.to_owned())).unwrap();
+        parse(chunks(&[records], 1 << 20).remove(0)).unwrap().shape
+    };
+    assert_eq!(
+        shape(r#"{"a":1,"b":null,"c":{"d":"x","e":null},"l":[true],"x":{}}"#).leaves(),
+        3
+    );
+}

@@ -53,6 +53,9 @@ pub(crate) enum ShredError {
     /// The records have more columns than the limit.
     #[error("the records have {0} columns, over the limit of {MAX_COLUMNS}")]
     TooManyColumns(usize),
+    /// The records would shred into more cells than the limit.
+    #[error("{0} rows under {1} columns are more cells than one shred builds, {MAX_CELLS}")]
+    TooManyCells(u64, u64),
     /// A list holds more items than a column can.
     #[error("a list column holds more items than one batch can")]
     TooLarge,
@@ -67,7 +70,9 @@ impl ShredError {
         match self {
             Self::Invalid(_) => "json_invalid",
             Self::NotObject => "json_not_object",
-            Self::TooDeep | Self::TooManyColumns(_) | Self::TooLarge => "limit_exceeded",
+            Self::TooDeep | Self::TooManyColumns(_) | Self::TooManyCells(..) | Self::TooLarge => {
+                "limit_exceeded"
+            }
             Self::DuplicateKey(_) => "json_duplicate_key",
             Self::Internal(_) => "shred_internal",
         }
@@ -283,7 +288,27 @@ fn join(parsed: &[Parsed]) -> Result<Shape, ShredError> {
     if !build::within_columns(widest) {
         return Err(ShredError::TooManyColumns(widest));
     }
+    let rows = parsed
+        .iter()
+        .map(|chunk| u64::try_from(chunk.chunk.rows).unwrap_or(u64::MAX))
+        .fold(0, u64::saturating_add);
+    let leaves = joined.leaves();
+    if !within_cells(rows, leaves) {
+        return Err(ShredError::TooManyCells(rows, leaves));
+    }
     Ok(joined)
+}
+
+/// Cells one shred may build: rows times the columns holding values.
+///
+/// Every row takes a cell in every column, so sparse, wide records would otherwise build gigabytes
+/// of nulls from a small push.
+const MAX_CELLS: u64 = 1 << 25;
+
+/// Whether `rows` rows under `leaves` columns holding values are within [`MAX_CELLS`].
+fn within_cells(rows: u64, leaves: u64) -> bool {
+    rows.checked_mul(leaves)
+        .is_some_and(|cells| cells <= MAX_CELLS)
 }
 
 /// The batch of `parsed`'s records, built against `shape`: the columns built as it was parsed
