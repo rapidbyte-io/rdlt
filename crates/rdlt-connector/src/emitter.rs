@@ -40,7 +40,9 @@ impl<C: Serialize> Emitter<C> {
         if rows.is_empty() {
             return Ok(());
         }
-        let json = sonic_rs::to_vec(rows).data("serializing rows")?;
+        // serde_json, not sonic-rs: rows holding serde_json's raw values or arbitrary-precision
+        // numbers serialize through its private tokens, which sonic-rs writes out as objects.
+        let json = serde_json::to_vec(rows).data("serializing rows")?;
         self.json(Bytes::from(json)).await
     }
 
