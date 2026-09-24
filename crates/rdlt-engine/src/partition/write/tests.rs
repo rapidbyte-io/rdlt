@@ -1,6 +1,10 @@
-use rdlt_connector::{Partition, StreamName};
+use std::sync::Arc;
 
-use super::shred_failed;
+use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use rdlt_connector::{Partition, Permit, StreamName};
+
+use super::{hold, shred_failed};
+use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
 use crate::shred::ShredError;
@@ -33,4 +37,30 @@ fn a_refused_push_is_a_source_error_and_a_shredder_bug_an_internal_one() {
         (bug.kind(), bug.code()),
         (ErrorKind::Internal, Some("shred_internal"))
     );
+}
+
+#[tokio::test]
+async fn shredded_batches_are_charged_before_the_pushes_they_came_from_are_released() {
+    let budget = MemoryBudget::new(1 << 20);
+    let pushed: Permit = Box::new(budget.acquire(400).await);
+    let batches: Vec<RecordBatch> = [10, 1000]
+        .into_iter()
+        .map(|rows| {
+            let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
+            RecordBatch::try_from_iter([("id", ids)]).unwrap()
+        })
+        .collect();
+    let sizes: Vec<u64> = batches
+        .iter()
+        .map(|batch| u64::try_from(batch.get_array_memory_size()).unwrap())
+        .collect();
+    let held = hold(&budget, &batches, vec![pushed]);
+    assert_eq!(budget.peak(), 400 + sizes[0] + sizes[1]);
+    assert_eq!(budget.reserved(), sizes[0] + sizes[1]);
+    assert_eq!(
+        held.iter().map(|held| held.bytes).collect::<Vec<_>>(),
+        sizes
+    );
+    drop(held);
+    assert_eq!(budget.reserved(), 0);
 }
