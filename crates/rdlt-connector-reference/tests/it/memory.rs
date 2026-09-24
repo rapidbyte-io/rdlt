@@ -237,12 +237,41 @@ async fn schema_changes_follow_the_table_and_applying_them_again_changes_nothing
         Field::new("extra", LogicalType::Utf8, true),
     ])
     .unwrap();
-    assert_eq!(schema("schemas", "t"), Some(expected.clone()));
+    assert_eq!(schema("schemas", "t"), Some(expected));
+    let missing = TableChange::Widen {
+        table,
+        column: "missing".into(),
+        from: LogicalType::Int32,
+        to: LogicalType::Int64,
+    };
+    let error = opened.session.apply_schema(&missing).await.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+}
+
+#[tokio::test]
+async fn a_change_declaring_a_column_at_another_type_fails_and_changes_nothing() {
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": "conflicts" }), ConnectContext::new())
+        .await
+        .unwrap();
+    let mut opened = destination.open(&open_context("conflicts", 1)).await.unwrap();
+    let table = table_ref("t");
+    let create = |fields| TableChange::Create {
+        table: table.clone(),
+        schema: TableSchema::new(fields).unwrap(),
+    };
+    let expected = TableSchema::new(vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("name", LogicalType::Utf8, true),
+    ])
+    .unwrap();
+    let setup = create(expected.fields().iter().cloned().collect());
+    opened.session.apply_schema(&setup).await.unwrap();
     let conflicts = [
         create(vec![Field::new("id", LogicalType::Utf8, false)]),
         TableChange::AddColumn {
             table: table.clone(),
-            field: Field::new("extra", LogicalType::Int64, true),
+            field: Field::new("name", LogicalType::Int64, true),
         },
         TableChange::Widen {
             table: table.clone(),
@@ -259,15 +288,7 @@ async fn schema_changes_follow_the_table_and_applying_them_again_changes_nothing
             "{change:?}"
         );
     }
-    assert_eq!(schema("schemas", "t"), Some(expected), "a conflict changes nothing");
-    let missing = TableChange::Widen {
-        table,
-        column: "missing".into(),
-        from: LogicalType::Int32,
-        to: LogicalType::Int64,
-    };
-    let error = opened.session.apply_schema(&missing).await.unwrap_err();
-    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert_eq!(schema("conflicts", "t"), Some(expected), "a conflict changes nothing");
 }
 
 fn seq(value: u8) -> Vec<u8> {
