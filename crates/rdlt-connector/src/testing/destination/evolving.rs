@@ -14,7 +14,8 @@ use crate::destination::Destination;
 use crate::destination::{DestinationSession, DestinationWriter, MergeKey, TableChange, TableRef};
 use crate::id::{CommitSeq, GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
-use crate::testing::{Violation, bounded_call};
+use crate::error::ConnectorErrorKind;
+use crate::testing::{Violation, bounded, bounded_call};
 use crate::types::{Field, LogicalType, TypeKind};
 
 impl Bench<'_> {
@@ -97,10 +98,37 @@ impl Bench<'_> {
         };
         commit(&mut opened.session, &second).await?;
         let values = self.values(&table, "extra").await?;
-        if values.iter().flatten().count() == 3 && values.len() == 6 {
-            Ok(())
-        } else {
-            Err(format!("after adding a column, published {values:?}").into())
+        if values.iter().flatten().count() != 3 || values.len() != 6 {
+            return Err(format!("after adding a column, published {values:?}").into());
+        }
+        let create = TableChange::Create {
+            table: table.clone(),
+            schema: TableSchema::new(vec![
+                Field::new("id", LogicalType::Int64, false),
+                Field::new("name", LogicalType::Utf8, true),
+                Field::new("extra", LogicalType::Int64, true),
+            ])
+            .expect("the certification schema is valid"),
+        };
+        bounded_call("apply_schema again", opened.session.apply_schema(&create)).await?;
+        let conflicting = TableChange::AddColumn {
+            table,
+            field: Field::new("extra", LogicalType::Utf8, true),
+        };
+        match bounded("apply_schema", opened.session.apply_schema(&conflicting)).await? {
+            Err(error)
+                if error.kind() == ConnectorErrorKind::Data
+                    && error.code() == Some("schema_conflict") =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(format!(
+                "a conflicting change failed with {:?} {:?}, not Data schema_conflict: {error}",
+                error.kind(),
+                error.code()
+            )
+            .into()),
+            Ok(()) => Err("adding a column of another type over an existing one succeeded".into()),
         }
     }
 
@@ -135,6 +163,10 @@ impl Bench<'_> {
         )])
         .expect("the certification batch is valid");
         write(&mut writer, 4, wide).await?;
+        let narrow =
+            RecordBatch::try_from_iter([("small", Arc::new(Int32Array::from(vec![3])) as _)])
+                .expect("the certification batch is valid");
+        write(&mut writer, 4, narrow).await?;
         let widened = CommitMeta {
             commit_seq: seq,
             ..meta(self.load_id(1), opened.epoch, &[3, 4], Vec::new())
@@ -142,7 +174,7 @@ impl Bench<'_> {
         commit(&mut opened.session, &widened).await?;
         let mut values = self.values(&table, "small").await?;
         values.sort_unstable();
-        if values == [Some(7), Some(1 << 40)] {
+        if values == [Some(3), Some(7), Some(1 << 40)] {
             Ok(())
         } else {
             Err(format!("after widening a column, published {values:?}").into())

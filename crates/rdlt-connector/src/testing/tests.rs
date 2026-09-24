@@ -30,6 +30,7 @@ use crate::sink::Push;
 use crate::source::{Partition, ReadStream, SourceConnector, Streams};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord, StreamState};
+use crate::types::LogicalType;
 
 fn failed(report: &Report) -> Vec<&'static str> {
     report.failures().map(|result| result.clause.id).collect()
@@ -313,6 +314,10 @@ struct VaultConfig {
     minimal: bool,
     /// Declares no schema change at all.
     fixed_schema: bool,
+    /// Applies a change that conflicts with a column's type instead of refusing it.
+    accept_conflicts: bool,
+    /// Refuses a batch whose column is narrower than the table's.
+    refuse_narrower: bool,
 }
 
 #[derive(Default)]
@@ -330,6 +335,8 @@ struct VaultStore {
     changes: BTreeSet<String>,
     /// Columns added while `ignore_added_columns` was set, by table; writes drop them.
     ignored: BTreeSet<(String, String)>,
+    /// Each table's columns and their types, as schema changes left them.
+    columns: BTreeMap<String, BTreeMap<String, LogicalType>>,
 }
 
 /// A batch staged for a table, a replace generation of it, or a merge into it.
@@ -584,6 +591,12 @@ impl Session for VaultSession {
         if self.config.refuse_repeated_changes && alters && !first {
             return Err(ConnectorError::data("the change was already applied"));
         }
+        if !self.config.accept_conflicts
+            && let Some(conflict) = conflict(&store, change)
+        {
+            return Err(ConnectorError::data(conflict).with_code("schema_conflict"));
+        }
+        record(&mut store, change);
         match change {
             TableChange::AddColumn { table, field } if self.config.ignore_added_columns => {
                 store
@@ -677,6 +690,16 @@ impl TableWriter for VaultWriter {
         if !self.config.stale_writes && current != self.epoch {
             return Err(ConnectorError::fenced("stale"));
         }
+        if self.config.refuse_narrower
+            && let Some(columns) = store.columns.get(&self.table)
+            && batch.schema().fields().iter().any(|field| {
+                columns
+                    .get(field.name())
+                    .is_some_and(|column| column.to_arrow() != *field.data_type())
+            })
+        {
+            return Err(ConnectorError::data("the batch does not match the table"));
+        }
         let dropped: Vec<usize> = batch
             .schema()
             .fields()
@@ -765,6 +788,53 @@ fn merge(published: &mut Vec<RecordBatch>, incoming: Vec<(MergeKey, RecordBatch)
     *published = kept;
 }
 
+/// Why `change` conflicts with the table's columns, if it does: a column it names already has
+/// another type.
+fn conflict(store: &VaultStore, change: &TableChange) -> Option<String> {
+    let columns = store.columns.get(change.table().name.as_ref())?;
+    let clash = |name: &str, types: &[&LogicalType]| {
+        columns
+            .get(name)
+            .filter(|existing| !types.contains(existing))
+            .map(|existing| format!("column {name} is {existing}"))
+    };
+    match change {
+        TableChange::Create { schema, .. } => schema
+            .fields()
+            .iter()
+            .find_map(|field| clash(field.name(), &[field.logical_type()])),
+        TableChange::AddColumn { field, .. } => clash(field.name(), &[field.logical_type()]),
+        TableChange::Widen {
+            column, from, to, ..
+        } => clash(column, &[from, to]),
+    }
+}
+
+/// Records what `change` leaves the table's columns as.
+fn record(store: &mut VaultStore, change: &TableChange) {
+    let columns = store
+        .columns
+        .entry(change.table().name.to_string())
+        .or_default();
+    match change {
+        TableChange::Create { schema, .. } => {
+            for field in schema.fields().iter() {
+                columns
+                    .entry(field.name().to_owned())
+                    .or_insert_with(|| field.logical_type().clone());
+            }
+        }
+        TableChange::AddColumn { field, .. } => {
+            columns
+                .entry(field.name().to_owned())
+                .or_insert_with(|| field.logical_type().clone());
+        }
+        TableChange::Widen { column, to, .. } => {
+            columns.insert(column.to_string(), to.clone());
+        }
+    }
+}
+
 struct VaultProbe(SharedVault);
 
 impl Probe for VaultProbe {
@@ -813,6 +883,8 @@ async fn each_broken_destination_behavior_fails_exactly_its_clause() {
         ("merge_appends", "D-MERGE"),
         ("refuse_repeated_changes", "D-SCHEMA"),
         ("ignore_added_columns", "D-SCHEMA"),
+        ("accept_conflicts", "D-SCHEMA"),
+        ("refuse_narrower", "D-SCHEMA"),
         ("refuse_widening", "D-SCHEMA"),
     ];
     for (flag, clause) in cases {
