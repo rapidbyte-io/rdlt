@@ -7,6 +7,8 @@
 
 mod engine;
 mod ledger;
+mod merge;
+mod schema;
 mod support;
 
 /// Tracks the heap's peak, for the memory bound.

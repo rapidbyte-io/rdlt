@@ -1,19 +1,27 @@
-//! Regression tests for the defects of the previous engine that M2 fixes by design.
+//! Regression tests for the defects of the previous engine that the new design fixes.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{ConnectorErrorKind, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{
-    CommitPolicy, EngineConfig, ErrorKind, PipelinePlan, RetryPolicy, RunStatus, StopMode,
-    StreamPlan, WriteMode,
+use arrow_array::Int16Array;
+use rdlt_connector::{
+    ConnectorErrorKind, IdentifierCase, LogicalType, PipelineId, ReadMode, StreamName,
 };
+use rdlt_connector_reference::schema;
+use rdlt_engine::{
+    CommitPolicy, EngineConfig, ErrorKind, PipelinePlan, RetryPolicy, RunStatus, SchemaPolicy,
+    SchemaSettings, StopMode, StreamPlan, WriteMode,
+};
+use serde_json::json;
 
 use crate::HEAP;
-use crate::support::destinations::null;
+use crate::schema::{batch, ints, text};
+use crate::support::batches::{BatchStream, batches};
+use crate::support::destinations::{limited, null};
 use crate::support::script::{Fault, Hang, Script, ScriptStream, id, reconnect};
 use crate::support::{
-    commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_rows,
-    stream, until,
+    commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_json,
+    published_rows, stream, until,
 };
 
 fn ids(partitions: usize, rows: u64) -> Vec<i64> {
@@ -317,4 +325,128 @@ async fn memory_stays_within_the_budget() {
         u64::try_from(peak).unwrap() <= bound,
         "peak {peak} bytes; bound {bound}"
     );
+}
+
+fn column_names(store: &str, table: &str) -> Vec<(String, LogicalType)> {
+    schema(store, table)
+        .expect("the table exists")
+        .fields()
+        .iter()
+        .filter(|field| !field.name().starts_with("_rdlt_"))
+        .map(|field| (field.name().to_owned(), field.logical_type().clone()))
+        .collect()
+}
+
+/// D2: a frozen schema holds against what earlier runs committed, not only within one run.
+#[tokio::test(start_paused = true)]
+async fn freeze_holds_across_runs() {
+    let frozen = || stream("events").schema(SchemaSettings::new().policy(SchemaPolicy::Freeze));
+    let engine = engine(commit_every(10));
+    let first = vec![batch(vec![("id", ints(&[1]))])];
+    let created = engine
+        .run(
+            pipeline("d2-freeze", [frozen()]),
+            batches("d2_freeze", vec![BatchStream::new("events", first)]).await,
+            memory("d2_freeze").await,
+        )
+        .await;
+    assert_eq!(created.report.status, RunStatus::Succeeded);
+    let changed = vec![batch(vec![("id", ints(&[2])), ("extra", text(&["e"]))])];
+    let refused = engine
+        .run(
+            pipeline("d2-freeze", [frozen()]),
+            batches("d2_freeze", vec![BatchStream::new("events", changed)]).await,
+            memory("d2_freeze").await,
+        )
+        .await;
+    let error = refused
+        .error
+        .expect("the second run changes a frozen table");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("schema_frozen"))
+    );
+    assert_eq!(
+        column_names("d2_freeze", "events"),
+        [("id".to_owned(), LogicalType::Int64)]
+    );
+}
+
+/// D2: a column never narrows; a later run's narrower values load into the wider column.
+#[tokio::test(start_paused = true)]
+async fn types_never_narrow_across_runs() {
+    let engine = engine(commit_every(10));
+    for (run, values) in [
+        (1, ints(&[1 << 40])),
+        (2, Arc::new(Int16Array::from(vec![7])) as _),
+    ] {
+        let rows = vec![batch(vec![("id", values)])];
+        let outcome = engine
+            .run(
+                pipeline("d2-narrow", [stream("events")]),
+                batches("d2_narrow", vec![BatchStream::new("events", rows)]).await,
+                memory("d2_narrow").await,
+            )
+            .await;
+        assert_eq!(outcome.report.status, RunStatus::Succeeded, "run {run}");
+        assert_eq!(
+            column_names("d2_narrow", "events"),
+            [("id".to_owned(), LogicalType::Int64)]
+        );
+    }
+    assert_eq!(
+        published_json("d2_narrow", "events"),
+        [json!({"id": 1_i64 << 40}), json!({"id": 7})]
+    );
+}
+
+/// D3: a column's identifier does not depend on the order columns arrive in, within a run or
+/// across runs.
+#[tokio::test(start_paused = true)]
+async fn column_names_are_stable_across_runs_and_batches() {
+    let destination = || async {
+        limited(memory("d3").await, |capabilities| {
+            capabilities.identifiers.case = IdentifierCase::Lower;
+        })
+    };
+    let engine = engine(commit_every(10));
+    let first = vec![
+        batch(vec![("b", ints(&[1])), ("A", ints(&[2]))]),
+        batch(vec![("a", ints(&[3]))]),
+    ];
+    let outcome = engine
+        .run(
+            pipeline("d3", [stream("events")]),
+            batches("d3", vec![BatchStream::new("events", first)]).await,
+            destination().await,
+        )
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    let names = column_names("d3", "events");
+    let assigned: Vec<&str> = names.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(assigned[..2], ["b", "a"], "A arrived first and took a");
+    assert!(assigned[2].starts_with("a_"), "{assigned:?}");
+    let second = vec![batch(vec![
+        ("a", ints(&[4])),
+        ("B", ints(&[5])),
+        ("A", ints(&[6])),
+        ("b", ints(&[7])),
+    ])];
+    let outcome = engine
+        .run(
+            pipeline("d3", [stream("events")]),
+            batches("d3", vec![BatchStream::new("events", second)]).await,
+            destination().await,
+        )
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    let after = column_names("d3", "events");
+    assert_eq!(after[..3], names[..], "committed identifiers never move");
+    let rows = published_json("d3", "events");
+    let last = rows
+        .iter()
+        .find(|row| row["b"] == json!(7))
+        .expect("the second run's row is published");
+    assert_eq!(last["a"], json!(6), "A keeps the identifier it took first");
+    assert_eq!(last[assigned[2]], json!(4));
 }

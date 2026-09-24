@@ -1,4 +1,4 @@
-//! One partition's pipeline: read, check each batch against its table, and hand it to a lane.
+//! One partition's pipeline: read, fit each batch to its table, prepare it, and hand it to a lane.
 
 #[cfg(test)]
 mod tests;
@@ -6,12 +6,12 @@ mod tests;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
 use rdlt_connector::{
-    Cursor, Partition, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId, Source,
-    SourceEvent, StreamName, admitted_partition_channel,
+    Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId,
+    Source, SourceEvent, StreamName, TableSchema, admitted_partition_channel,
 };
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::budget::MemoryBudget;
 use crate::error::{Error, Side};
 use crate::lane::{Lanes, Write};
+use crate::table::{Stamp, Tables, prepare};
 
 /// What a partition tells the commit coordinator.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +62,10 @@ pub(crate) struct Seal {
     pub(crate) state: PartitionState,
     /// The barrier this seal answers.
     pub(crate) answers: Option<u64>,
+    /// Rows the schema policy dropped from the segment.
+    pub(crate) discarded_rows: u64,
+    /// Values the schema policy nulled in the segment.
+    pub(crate) discarded_values: u64,
 }
 
 /// One partition to read.
@@ -72,8 +77,6 @@ pub(crate) struct PartitionJob {
     pub(crate) stream: StreamName,
     /// The stream's table index.
     pub(crate) table: usize,
-    /// The table's Arrow schema, which every batch must match.
-    pub(crate) schema: SchemaRef,
     /// The partition.
     pub(crate) partition: Partition,
     /// Where to resume.
@@ -87,6 +90,7 @@ pub(crate) struct PartitionJob {
 pub(crate) struct PartitionContext {
     pub(crate) source: Arc<dyn Source>,
     pub(crate) lanes: Lanes,
+    pub(crate) tables: Arc<Tables>,
     pub(crate) budget: MemoryBudget,
     pub(crate) progress: mpsc::UnboundedSender<Progress>,
     pub(crate) barrier: watch::Receiver<u64>,
@@ -99,6 +103,9 @@ pub(crate) struct PartitionContext {
     /// The next segment id of the load.
     pub(crate) segments: Arc<AtomicU64>,
     pub(crate) buffer: NonZeroUsize,
+    pub(crate) load_id: LoadId,
+    /// When the attempt started, which every row it loads carries.
+    pub(crate) loaded_at: SystemTime,
 }
 
 impl PartitionContext {
@@ -217,18 +224,23 @@ struct Ingested {
 }
 
 /// The segment rows are written to until the next checkpoint seals it.
+#[derive(Debug, Default)]
 struct OpenSegment {
     id: SegmentId,
+    /// Rows written.
     rows: u64,
     bytes: u64,
+    /// Rows received, before discards and compaction, which number each row's sequence.
+    received: u64,
+    discarded_rows: u64,
+    discarded_values: u64,
 }
 
 impl OpenSegment {
     fn new(id: SegmentId) -> Self {
         Self {
             id,
-            rows: 0,
-            bytes: 0,
+            ..Self::default()
         }
     }
 
@@ -240,6 +252,8 @@ impl OpenSegment {
             bytes: self.bytes,
             state,
             answers,
+            discarded_rows: self.discarded_rows,
+            discarded_values: self.discarded_values,
         }
     }
 }
@@ -344,8 +358,11 @@ impl Ingested {
     }
 }
 
-/// Checks `batch` against the table and queues it on its lane with the permit that holds its
-/// bytes, reserving them here when the push arrived without one.
+/// Fits `batch` to its table, prepares it, and queues it on its lane.
+///
+/// The permit holding the push's bytes travels with the batch, reserved here when the push
+/// arrived without one. Growth from preparing is charged at once; later pushes pay it back by
+/// waiting.
 async fn write(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -353,16 +370,40 @@ async fn write(
     batch: &RecordBatch,
     permit: Option<Permit>,
 ) -> Result<(), Error> {
-    let rows = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
+    let received = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
+    if received == 0 {
+        return Ok(());
+    }
+    let incoming = TableSchema::from_arrow(&batch.schema()).map_err(|error| {
+        Error::schema(format!(
+            "stream {}: a batch has no table schema: {error}",
+            job.stream
+        ))
+        .with_code("batch_schema_invalid")
+        .with_stream(&job.stream)
+    })?;
+    let (view, routes) = context.tables.fit(job.table, &incoming).await?;
+    let stamp = Stamp {
+        load_id: context.load_id,
+        loaded_at: context.loaded_at,
+        segment: open.id,
+        first_row: open.received,
+    };
+    let prepared = prepare(&job.stream, &view, &incoming, batch, &routes, &stamp)?;
+    open.received += received;
+    open.discarded_rows += prepared.discarded_rows;
+    open.discarded_values += prepared.discarded_values;
+    let rows = u64::try_from(prepared.batch.num_rows()).unwrap_or(u64::MAX);
     if rows == 0 {
         return Ok(());
     }
-    let batch = conform(&job.stream, &job.schema, batch)?;
-    let bytes = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    let reservation = match permit {
+    let pushed = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
+    let bytes = u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX);
+    let permit = match permit {
         Some(permit) => permit,
-        None => Box::new(context.budget.acquire(bytes).await),
+        None => Box::new(context.budget.acquire(pushed).await),
     };
+    let growth = context.budget.charge(bytes.saturating_sub(pushed));
     let lane = context.lanes.route(job.table, job.partition.id());
     context
         .lanes
@@ -371,58 +412,12 @@ async fn write(
             Write {
                 table: job.table,
                 segment: open.id,
-                batch,
-                reservation,
+                batch: prepared.batch,
+                reservation: Box::new((permit, growth)),
             },
         )
         .await?;
     open.rows += rows;
     open.bytes += bytes;
     context.report(Progress::Written { rows, bytes })
-}
-
-/// `batch` under the table's schema, when its columns have the table's names and types and no
-/// column the table declares non-nullable holds a null.
-pub(crate) fn conform(
-    stream: &StreamName,
-    schema: &SchemaRef,
-    batch: &RecordBatch,
-) -> Result<RecordBatch, Error> {
-    let mismatch = |detail: String| {
-        Err(Error::schema(format!("stream {stream}: {detail}"))
-            .with_code("batch_schema_mismatch")
-            .with_stream(stream))
-    };
-    let actual = batch.schema();
-    if actual.fields().len() != schema.fields().len() {
-        return mismatch(format!(
-            "a batch has {} columns; the table has {}",
-            actual.fields().len(),
-            schema.fields().len()
-        ));
-    }
-    for ((expected, found), column) in schema
-        .fields()
-        .iter()
-        .zip(actual.fields())
-        .zip(batch.columns())
-    {
-        if expected.name() != found.name() || expected.data_type() != found.data_type() {
-            return mismatch(format!(
-                "column {} is {} in the batch; the table has {} {}",
-                found.name(),
-                found.data_type(),
-                expected.name(),
-                expected.data_type()
-            ));
-        }
-        if !expected.is_nullable() && column.null_count() > 0 {
-            return mismatch(format!(
-                "column {} is not nullable but holds nulls",
-                expected.name()
-            ));
-        }
-    }
-    RecordBatch::try_new(Arc::clone(schema), batch.columns().to_vec())
-        .map_err(|error| Error::internal(format!("stream {stream}: rebuilding a batch: {error}")))
 }

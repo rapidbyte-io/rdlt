@@ -5,6 +5,7 @@
 //! state, and acknowledges the committed cursors to the source. At most one commit is in flight;
 //! partitions keep reading while it runs.
 
+mod delta;
 #[cfg(test)]
 mod tests;
 
@@ -14,9 +15,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Cursor, DestinationSession, Epoch, GenerationId, LoadId, PartitionId,
-    PartitionState, SchemaVersion, SegmentSet, Source, StateChange, StateEntry, StateKey,
-    StreamName, TableRef, TableSchema,
+    CommitMeta, CommitSeq, Cursor, Epoch, GenerationId, LoadId, PartitionId, PartitionState,
+    Source, StateChange, StateEntry, StreamName, TablePath,
 };
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -27,17 +27,16 @@ use crate::error::{Error, Side};
 use crate::lane::Lanes;
 use crate::partition::{Progress, Seal};
 use crate::plan::WriteMode;
-use crate::report::{AttemptEnd, AttemptLog, CommitRecord, StreamReport};
+use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
+use crate::table::Tables;
 
 /// A stream as one attempt loads it.
 #[derive(Debug)]
 pub(crate) struct StreamRun {
     pub(crate) name: StreamName,
     pub(crate) write: WriteMode,
-    pub(crate) table: TableRef,
-    pub(crate) schema: TableSchema,
-    /// Whether the next commit records the table's schema in state.
-    pub(crate) record_schema: bool,
+    /// The stream's table.
+    pub(crate) path: TablePath,
     /// The full read in progress; `None` for incremental reads.
     pub(crate) cycle: Option<Cycle>,
     /// Partitions still reading.
@@ -109,7 +108,8 @@ pub(crate) struct CoordinatorParts {
     pub(crate) env: Arc<dyn Env>,
     pub(crate) policy: CommitPolicy,
     pub(crate) barrier_wait: Duration,
-    pub(crate) session: Box<dyn DestinationSession>,
+    /// The tables, and through them the destination session.
+    pub(crate) tables: Arc<Tables>,
     pub(crate) source: Arc<dyn Source>,
     pub(crate) lanes: Lanes,
     pub(crate) load_id: LoadId,
@@ -188,11 +188,7 @@ impl Coordinator {
         } else {
             AttemptEnd::Exhausted
         };
-        self.parts
-            .session
-            .close()
-            .await
-            .map_err(|error| Error::connector(Side::Destination, "closing the session", error))?;
+        self.parts.tables.session().close().await?;
         self.parts.log.lock().end = Some(end);
         Ok(())
     }
@@ -264,20 +260,18 @@ impl Coordinator {
     ///
     /// Commits nothing when there is nothing to publish or record.
     async fn commit(&mut self) -> Result<(), Error> {
-        let Collected {
-            segments,
-            positions,
-            streams,
-        } = self.collect();
+        let collected = self.collect();
         let completing: Vec<usize> = (0..self.parts.streams.len())
             .filter(|index| self.parts.streams[*index].completes())
             .collect();
-        let mut delta = self.state_delta(&positions, &completing);
+        let tables = self.parts.tables.delta();
+        let mut delta = self.state_delta(&collected.positions, &completing);
+        delta.extend(tables.changes);
         let finish_generations = self.finish_generations(&completing);
-        if segments.is_empty() && delta.is_empty() {
+        if collected.segments.is_empty() && delta.is_empty() {
             return Ok(());
         }
-        let streams = self.stream_reports(streams, &completing);
+        let streams = self.stream_reports(collected.streams, &completing);
         // The commit records its own receipt, so an attempt that loses the response can still be
         // credited with it once a later attempt reads it back.
         let marker = self.marker(&streams);
@@ -293,74 +287,27 @@ impl Coordinator {
             load_id: self.parts.load_id,
             commit_seq: self.seq,
             epoch: self.parts.epoch,
-            segments,
+            segments: collected.segments,
             state_delta: delta,
             finish_generations,
         };
         let receipt = self
             .parts
-            .session
+            .tables
+            .session()
             .commit(&meta)
-            .await
+            .await?
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
+        self.parts.tables.recorded(&tables.versions);
         self.record(receipt, streams, &completing);
-        self.acknowledge(positions).await
-    }
-
-    /// The sealed segments with rows, each partition's newest position, and each stream's counts.
-    fn collect(&mut self) -> Collected {
-        let mut collected = Collected {
-            segments: SegmentSet::new(),
-            positions: BTreeMap::new(),
-            streams: BTreeMap::new(),
-        };
-        for seal in std::mem::take(&mut self.sealed) {
-            let stream = self.parts.partitions[seal.partition].stream;
-            if seal.rows > 0 {
-                collected.segments.insert(seal.segment);
-                let counts = collected.streams.entry(stream).or_default();
-                counts.rows += seal.rows;
-                counts.bytes += seal.bytes;
-                counts.commits = 1;
-            }
-            collected.positions.insert(seal.partition, seal.state);
-        }
-        collected
-    }
-
-    /// What each stream contributes to a commit that ends the cycles of `completing`, by name.
-    fn stream_reports(
-        &self,
-        mut streams: BTreeMap<usize, StreamReport>,
-        completing: &[usize],
-    ) -> BTreeMap<StreamName, StreamReport> {
-        for index in completing {
-            if self.parts.streams[*index].write == WriteMode::Replace {
-                streams.entry(*index).or_default().generations_swapped = 1;
-            }
-        }
-        streams
-            .into_iter()
-            .map(|(index, counts)| (self.parts.streams[index].name.clone(), counts))
-            .collect()
-    }
-
-    /// The receipt the next commit records in state, from the engine's own counts.
-    fn marker(&self, streams: &BTreeMap<StreamName, StreamReport>) -> rdlt_connector::Receipt {
-        rdlt_connector::Receipt {
-            load_id: self.parts.load_id,
-            commit_seq: self.seq,
-            committed_at: self.parts.env.now(),
-            rows: streams.values().map(|counts| counts.rows).sum(),
-            bytes: streams.values().map(|counts| counts.bytes).sum(),
-        }
+        self.acknowledge(collected.positions).await
     }
 
     /// Advances past a landed commit: what state now records, and the commit in the log.
     fn record(
         &mut self,
         receipt: rdlt_connector::Receipt,
-        streams: BTreeMap<StreamName, StreamReport>,
+        streams: BTreeMap<StreamName, crate::report::StreamReport>,
         completing: &[usize],
     ) {
         self.seq = self.seq.next();
@@ -370,7 +317,6 @@ impl Coordinator {
             self.pending_bytes = self.pending_bytes.saturating_sub(counts.bytes);
         }
         for stream in &mut self.parts.streams {
-            stream.record_schema = false;
             if let Some(cycle) = &mut stream.cycle {
                 cycle.recorded = true;
                 cycle.stale.clear();
@@ -384,79 +330,6 @@ impl Coordinator {
         let mut log = self.parts.log.lock();
         log.pending = None;
         log.commits.push(CommitRecord { receipt, streams });
-    }
-
-    /// The state changes of a commit that publishes `positions` and ends the cycles of
-    /// `completing`.
-    fn state_delta(
-        &self,
-        positions: &BTreeMap<usize, PartitionState>,
-        completing: &[usize],
-    ) -> Vec<StateChange> {
-        let mut delta = Vec::new();
-        for stream in &self.parts.streams {
-            if let Some(cycle) = stream.cycle.as_ref().filter(|cycle| !cycle.recorded) {
-                for partition in &cycle.stale {
-                    let key = StateKey::Partition(stream.name.clone(), partition.clone());
-                    delta.push(StateChange::Delete(key.encode()));
-                }
-                let entry = StateEntry::Generation {
-                    stream: stream.name.clone(),
-                    generation: cycle.generation,
-                };
-                delta.push(StateChange::Put(entry.to_record()));
-            }
-            if stream.record_schema {
-                let entry = StateEntry::Schema {
-                    table: stream.table.path.clone(),
-                    version: SchemaVersion(1),
-                    schema: stream.schema.clone(),
-                };
-                delta.push(StateChange::Put(entry.to_record()));
-            }
-        }
-        for (partition, state) in positions {
-            let partition = &self.parts.partitions[*partition];
-            let entry = StateEntry::Partition {
-                stream: self.parts.streams[partition.stream].name.clone(),
-                partition: partition.id.clone(),
-                state: state.clone(),
-            };
-            delta.push(StateChange::Put(entry.to_record()));
-        }
-        for index in completing {
-            let stream = &self.parts.streams[*index];
-            let Some(cycle) = &stream.cycle else {
-                continue;
-            };
-            let key = StateKey::Generation(stream.name.clone());
-            delta.push(StateChange::Delete(key.encode()));
-            let mut generations = cycle.completed.clone();
-            generations.push(cycle.generation);
-            let excess = generations.len().saturating_sub(KEPT_COMPLETIONS);
-            generations.drain(..excess);
-            let completed = StateEntry::Completed {
-                stream: stream.name.clone(),
-                generations,
-            };
-            delta.push(StateChange::Put(completed.to_record()));
-        }
-        delta
-    }
-
-    fn finish_generations(
-        &self,
-        completing: &[usize],
-    ) -> Vec<(rdlt_connector::TablePath, GenerationId)> {
-        completing
-            .iter()
-            .map(|index| &self.parts.streams[*index])
-            .filter(|stream| stream.write == WriteMode::Replace)
-            .filter_map(|stream| {
-                let cycle = stream.cycle.as_ref()?;
-                Some((stream.table.path.clone(), cycle.generation))
-            })
-            .collect()
     }
 
     /// Tells the source which cursors are committed, per stream.
@@ -487,13 +360,6 @@ impl Coordinator {
         }
         Ok(())
     }
-}
-
-/// What the sealed segments of a commit add up to.
-struct Collected {
-    segments: SegmentSet,
-    positions: BTreeMap<usize, PartitionState>,
-    streams: BTreeMap<usize, StreamReport>,
 }
 
 fn cancelled() -> Error {

@@ -81,6 +81,10 @@ pub struct StreamReport {
     pub commits: u64,
     /// Replace generations swapped in.
     pub generations_swapped: u64,
+    /// Rows the schema policy dropped from committed segments.
+    pub discarded_rows: u64,
+    /// Values the schema policy nulled in committed segments.
+    pub discarded_values: u64,
 }
 
 /// How an attempt that did not fail ended.
@@ -160,6 +164,8 @@ impl Report {
                     total.bytes += counts.bytes;
                     total.commits += counts.commits;
                     total.generations_swapped += counts.generations_swapped;
+                    total.discarded_rows += counts.discarded_rows;
+                    total.discarded_values += counts.discarded_values;
                 }
             }
             report.rows += summary.rows;

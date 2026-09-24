@@ -5,6 +5,7 @@ mod convert;
 mod lower;
 mod model;
 mod prepare;
+mod registry;
 mod resolve;
 #[cfg(test)]
 mod tests;
@@ -14,9 +15,11 @@ use rdlt_connector::{
     ColumnKey, Field, LogicalType, MergeKey, SchemaVersion, TableRef, TableSchema,
 };
 
-use lower::MetaNames;
-use model::Model;
-use resolve::Resolver;
+pub(crate) use lower::MetaNames;
+pub(crate) use model::Model;
+pub(crate) use prepare::{Stamp, prepare};
+pub(crate) use registry::{SharedSession, Tables};
+pub(crate) use resolve::{Resolver, Settings};
 
 /// A table at one schema version: everything needed to prepare batches for it.
 #[derive(Clone, Debug, PartialEq)]
