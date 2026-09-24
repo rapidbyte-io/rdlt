@@ -40,7 +40,7 @@ impl<C: Serialize> Emitter<C> {
         if rows.is_empty() {
             return Ok(());
         }
-        let json = serde_json::to_vec(rows).data("serializing rows")?;
+        let json = sonic_rs::to_vec(rows).data("serializing rows")?;
         self.json(Bytes::from(json)).await
     }
 

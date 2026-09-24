@@ -164,3 +164,20 @@ async fn batches_over_the_row_or_column_limit_are_refused() {
     );
     assert!(drain(out, feed).await.is_empty());
 }
+
+/// A row whose serialization fails.
+struct Unserializable;
+
+impl Serialize for Unserializable {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("this row cannot be serialized"))
+    }
+}
+
+#[tokio::test]
+async fn rows_that_fail_to_serialize_are_a_data_error() {
+    let (mut out, _feed) = emitter();
+    let error = out.rows(&[Unserializable]).await.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert!(error.to_string().contains("serializing rows"), "{error}");
+}
