@@ -325,6 +325,7 @@ fn check_stream(
     let writable = match plan.write_mode() {
         WriteMode::Append => modes.append,
         WriteMode::Replace => modes.replace,
+        WriteMode::Merge => modes.merge,
     };
     if !writable {
         let detail = format!("the destination cannot write {:?}", plan.write_mode());

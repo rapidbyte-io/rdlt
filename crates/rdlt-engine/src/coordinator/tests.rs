@@ -255,7 +255,7 @@ fn schema() -> TableSchema {
 fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRun {
     let generation = match write {
         WriteMode::Replace => cycle.as_ref().map(|cycle| cycle.generation),
-        WriteMode::Append => None,
+        WriteMode::Append | WriteMode::Merge => None,
     };
     StreamRun {
         name: name(),

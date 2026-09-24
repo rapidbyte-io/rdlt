@@ -3,11 +3,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use rdlt_connector::{PipelineId, ReadMode, StreamName};
+use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 
 use crate::error::Error;
+use crate::policy::SchemaSettings;
 
 /// How a stream's rows reach its table.
 #[non_exhaustive]
@@ -17,6 +18,8 @@ pub enum WriteMode {
     Append,
     /// Fill a hidden generation of the table and swap it in once the stream is fully read.
     Replace,
+    /// Upsert by key: a row replaces the table's row with the same key.
+    Merge,
 }
 
 /// One stream of a [`PipelinePlan`].
@@ -25,6 +28,10 @@ pub struct StreamPlan {
     name: StreamName,
     read: ReadMode,
     write: WriteMode,
+    key: Option<Vec<ColumnPath>>,
+    schema: SchemaSettings,
+    columns: BTreeMap<ColumnPath, SchemaSettings>,
+    hints: BTreeMap<ColumnPath, LogicalType>,
 }
 
 impl StreamPlan {
@@ -34,6 +41,10 @@ impl StreamPlan {
             name,
             read: ReadMode::Full,
             write: WriteMode::Append,
+            key: None,
+            schema: SchemaSettings::default(),
+            columns: BTreeMap::new(),
+            hints: BTreeMap::new(),
         }
     }
 
@@ -51,9 +62,58 @@ impl StreamPlan {
         self
     }
 
+    /// Sets the key a merge matches rows by, instead of the stream's primary key.
+    #[must_use]
+    pub fn key<C: Into<ColumnPath>>(mut self, columns: impl IntoIterator<Item = C>) -> Self {
+        self.key = Some(columns.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Sets the stream's schema settings, which its tables and columns inherit.
+    #[must_use]
+    pub fn schema(mut self, settings: SchemaSettings) -> Self {
+        self.schema = settings;
+        self
+    }
+
+    /// Sets one column's schema settings.
+    #[must_use]
+    pub fn column(mut self, column: impl Into<ColumnPath>, settings: SchemaSettings) -> Self {
+        self.columns.insert(column.into(), settings);
+        self
+    }
+
+    /// Fixes a column's type: values that do not fit it are incompatible changes, which the schema
+    /// policy handles.
+    #[must_use]
+    pub fn hint(mut self, column: impl Into<ColumnPath>, logical_type: LogicalType) -> Self {
+        self.hints.insert(column.into(), logical_type);
+        self
+    }
+
     /// The stream.
     pub fn name(&self) -> &StreamName {
         &self.name
+    }
+
+    /// The merge key the plan sets, if any.
+    pub fn merge_key(&self) -> Option<&[ColumnPath]> {
+        self.key.as_deref()
+    }
+
+    /// The stream's schema settings.
+    pub fn schema_settings(&self) -> &SchemaSettings {
+        &self.schema
+    }
+
+    /// The schema settings of `column`, if the plan sets any.
+    pub fn column_settings(&self, column: &ColumnPath) -> Option<&SchemaSettings> {
+        self.columns.get(column)
+    }
+
+    /// The type hinted for `column`, if any.
+    pub fn hinted(&self, column: &ColumnPath) -> Option<&LogicalType> {
+        self.hints.get(column)
     }
 
     /// How the stream is read.
@@ -72,12 +132,14 @@ impl StreamPlan {
 pub struct PipelinePlan {
     pipeline: PipelineId,
     streams: Vec<StreamPlan>,
+    schema: SchemaSettings,
 }
 
 impl PipelinePlan {
-    /// Validates `streams` of `pipeline`: at least one stream, distinct names and tables, and supported
-    /// combinations of read and write modes (`full` with `append` or `replace`, `incremental`
-    /// with `append`).
+    /// Validates `streams` of `pipeline`: at least one stream, distinct names and tables, supported
+    /// combinations of read and write modes (`full` with `append`, `replace` or `merge`,
+    /// `incremental` with `append` or `merge`), a key only on merge streams, and settings, hints
+    /// and keys naming top-level columns.
     pub fn new(
         pipeline: PipelineId,
         streams: impl IntoIterator<Item = StreamPlan>,
@@ -110,8 +172,25 @@ impl PipelinePlan {
                 .with_stream(&stream.name));
             }
             check_modes(stream)?;
+            check_columns(stream)?;
         }
-        Ok(Self { pipeline, streams })
+        Ok(Self {
+            pipeline,
+            streams,
+            schema: SchemaSettings::default(),
+        })
+    }
+
+    /// Sets the pipeline's schema settings, which every stream inherits.
+    #[must_use]
+    pub fn schema(mut self, settings: SchemaSettings) -> Self {
+        self.schema = settings;
+        self
+    }
+
+    /// The pipeline's schema settings.
+    pub fn schema_settings(&self) -> &SchemaSettings {
+        &self.schema
     }
 
     /// The pipeline.
@@ -131,9 +210,15 @@ fn check_modes(stream: &StreamPlan) -> Result<(), Error> {
             .with_code(code)
             .with_stream(&stream.name))
     };
+    if stream.key.is_some() && stream.write != WriteMode::Merge {
+        return refuse(
+            "plan_key_unused",
+            "a key is set, but only merge streams match rows by key",
+        );
+    }
     match (stream.read, stream.write) {
-        (ReadMode::Full, WriteMode::Append | WriteMode::Replace)
-        | (ReadMode::Incremental, WriteMode::Append) => Ok(()),
+        (ReadMode::Full, WriteMode::Append | WriteMode::Replace | WriteMode::Merge)
+        | (ReadMode::Incremental, WriteMode::Append | WriteMode::Merge) => Ok(()),
         (ReadMode::Incremental, WriteMode::Replace) => refuse(
             "plan_mode_invalid",
             "replace needs a full read, since the new generation replaces every row",
@@ -143,4 +228,43 @@ fn check_modes(stream: &StreamPlan) -> Result<(), Error> {
             "change data capture is not supported yet",
         ),
     }
+}
+
+/// Refuses column settings, hints and keys that name nested columns, which only top-level
+/// columns may have until nested columns can be normalized, and null hints.
+fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
+    let refuse = |code: &str, reason: String| {
+        Err(Error::config(format!("stream {}: {reason}", stream.name))
+            .with_code(code)
+            .with_stream(&stream.name))
+    };
+    let named = stream
+        .columns
+        .keys()
+        .chain(stream.hints.keys())
+        .chain(stream.key.iter().flatten());
+    for column in named {
+        if column.segments().count() > 1 {
+            return refuse(
+                "plan_column_nested",
+                format!(
+                    "column {column} is nested; settings, hints and keys name top-level columns"
+                ),
+            );
+        }
+    }
+    if let Some((column, _)) = stream
+        .hints
+        .iter()
+        .find(|(_, hint)| **hint == LogicalType::Null)
+    {
+        return refuse(
+            "plan_hint_invalid",
+            format!("column {column} is hinted as null"),
+        );
+    }
+    if stream.key.as_ref().is_some_and(Vec::is_empty) {
+        return refuse("plan_key_empty", "the merge key names no column".to_owned());
+    }
+    Ok(())
 }
