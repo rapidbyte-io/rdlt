@@ -7,7 +7,7 @@ use rdlt_engine::{
 };
 
 use crate::support::destinations::limited;
-use crate::support::script::{Fault, PushKind, Script, ScriptStream, id, reconnect};
+use crate::support::script::{Fault, Hang, PushKind, Script, ScriptStream, id, reconnect};
 use crate::support::{
     commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_rows,
     stream, until,
@@ -403,6 +403,25 @@ async fn batches_that_do_not_match_the_table_are_schema_errors() {
         assert_eq!(error.code(), Some("batch_schema_mismatch"));
         assert_eq!(published_rows(name, "events"), 0);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_schema_error_ends_the_run_while_the_source_waits_without_emitting() {
+    let mut bad = ScriptStream::new("events", 1, 5, 5);
+    bad.push = PushKind::WrongType;
+    bad.checkpoint_every = 1000;
+    bad.final_checkpoint = false;
+    bad.hang = Hang::AtEnd;
+    let (_, source) = Script::new(vec![bad]).connect("waiting_bad").await;
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline("waiting-bad", [stream("events")]),
+            source,
+            memory("waiting_bad").await,
+        )
+        .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(error.code(), Some("batch_schema_mismatch"));
 }
 
 #[tokio::test(start_paused = true)]

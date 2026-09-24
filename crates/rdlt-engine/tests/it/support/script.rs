@@ -54,8 +54,18 @@ pub(crate) struct ScriptStream {
     /// Whether reads wait for more rows at their end until the engine stops them.
     pub(crate) idle: bool,
     idle_flag: AtomicBool,
-    /// A partition whose read never returns and ignores stop requests.
-    pub(crate) hang: Option<usize>,
+    /// Where reads wait forever without emitting anything, ignoring stop requests.
+    pub(crate) hang: Hang,
+}
+
+/// Where a scripted read waits forever.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hang {
+    Never,
+    /// The read of this partition index hangs before its first row.
+    Partition(usize),
+    /// Every read hangs after its last row, before its final checkpoint.
+    AtEnd,
 }
 
 impl ScriptStream {
@@ -73,7 +83,7 @@ impl ScriptStream {
             declares_schema: true,
             idle: false,
             idle_flag: AtomicBool::new(true),
-            hang: None,
+            hang: Hang::Never,
         }
     }
 
@@ -305,7 +315,7 @@ impl Scripted {
         let index: usize = partition.id().as_str()[1..]
             .parse()
             .expect("partition ids are p<n>");
-        if stream.hang == Some(index) {
+        if stream.hang == Hang::Partition(index) {
             std::future::pending::<()>().await;
         }
         let mut next = cursor.next;
@@ -347,6 +357,9 @@ impl Scripted {
                     self.checkpoint_if_asked(script, stream, next, out).await?;
                 }
             }
+        }
+        if stream.hang == Hang::AtEnd {
+            std::future::pending::<()>().await;
         }
         if stream.final_checkpoint {
             out.checkpoint(&Offset { next }).await?;
