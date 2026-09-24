@@ -569,3 +569,30 @@ fn fitted_chunks_hold_the_values_the_reference_does() {
         super::differential::normalized(&expected)
     );
 }
+
+#[test]
+fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
+    let secret = "hunter2-card-4111111111111111";
+    let push = format!("{{\"a\":1}}\n{{\"password\":\"{secret}\",\"b\":tru}}");
+    let error = crate::compute::ready(shred(
+        &crate::compute::Inline,
+        &[Bytes::from(push)],
+        1 << 20,
+    ))
+    .unwrap_err();
+    let message = error.to_string();
+    assert_eq!(error.code(), "json_invalid");
+    assert!(!message.contains(secret), "{message}");
+    assert!(
+        !message.contains('\n') && !message.contains('\t'),
+        "{message:?}"
+    );
+    assert!(message.contains("record 2"), "{message}");
+    // Numbered across chunks and pushes alike.
+    let pushes = [
+        Bytes::from("{\"a\":1}\n{\"a\":2}"),
+        Bytes::from("{\"a\":3}\n{\"a\":}"),
+    ];
+    let later = crate::compute::ready(shred(&crate::compute::Inline, &pushes, 1)).unwrap_err();
+    assert!(later.to_string().contains("record 4:"), "{later}");
+}
