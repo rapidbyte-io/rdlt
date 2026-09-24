@@ -1,6 +1,8 @@
 use rdlt_connector::{Cursor, PartitionState, SegmentId};
 
+use super::coalesce::Coalescer;
 use super::{Ingested, OpenSegment, end_state};
+use crate::config::BatchPolicy;
 
 fn ingested(rows: u64, cursor: Option<u64>) -> Ingested {
     Ingested {
@@ -11,6 +13,7 @@ fn ingested(rows: u64, cursor: Option<u64>) -> Ingested {
         },
         last_cursor: cursor.map(|next| Cursor::encode(1, &next).unwrap()),
         stopped: false,
+        coalescer: Coalescer::new(BatchPolicy::default()),
     }
 }
 

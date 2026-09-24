@@ -32,18 +32,11 @@ mod policy;
 mod report;
 mod run;
 mod scope;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "partitions shred JSON pushes from the next task on"
-    )
-)]
 mod shred;
 mod table;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
-pub use config::{CommitPolicy, EngineConfig, EngineConfigBuilder, RetryPolicy};
+pub use config::{BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, RetryPolicy};
 pub use env::{Env, Sleep, SystemEnv};
 pub use error::{Error, ErrorKind, ErrorReport};
 pub use plan::{PipelinePlan, StreamPlan, WriteMode};

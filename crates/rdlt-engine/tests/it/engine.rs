@@ -437,8 +437,8 @@ async fn a_schema_error_ends_the_run_while_the_source_waits_without_emitting() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn json_pushes_are_refused_until_the_shredder_exists() {
-    let mut json = ScriptStream::new("events", 1, 5, 5);
+async fn json_pushes_load_the_same_rows_as_arrow() {
+    let mut json = ScriptStream::new("events", 2, 23, 5);
     json.push = PushKind::Json;
     let (_, source) = Script::new(vec![json]).connect("json").await;
     let outcome = engine(commit_every(10))
@@ -448,9 +448,48 @@ async fn json_pushes_are_refused_until_the_shredder_exists() {
             memory("json").await,
         )
         .await;
-    let error = outcome.error.expect("the run fails");
-    assert_eq!(error.kind(), ErrorKind::Source);
-    assert_eq!(error.code(), Some("push_unsupported"));
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(published_ids("json", "events"), ids(2, 23));
+}
+
+#[tokio::test(start_paused = true)]
+async fn json_pushes_waiting_past_the_latency_are_written_without_a_checkpoint() {
+    let mut idle = ScriptStream::new("events", 1, 5, 5);
+    idle.push = PushKind::Json;
+    idle.idle = true;
+    idle.checkpointing = Checkpointing::OnDemand;
+    let (_, source) = Script::new(vec![idle]).connect("latency").await;
+    let engine = engine(commit_every(5));
+    let run = engine.run(
+        pipeline("latency", [stream("events")]),
+        source,
+        memory("latency").await,
+    );
+    let control = run.control();
+    // Stopping raises a barrier that would write the rows too, so they must commit before it.
+    let stop = async {
+        let committed = tokio::time::timeout(
+            Duration::from_secs(3),
+            until(|| published_rows("latency", "events") == 5),
+        )
+        .await;
+        control.stop(StopMode::AfterCommit);
+        committed.is_ok()
+    };
+    let (outcome, committed) = tokio::join!(run, stop);
+    assert!(committed, "the rows committed before the stop");
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Stopped,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(published_ids("latency", "events"), ids(1, 5));
 }
 
 #[tokio::test(start_paused = true)]

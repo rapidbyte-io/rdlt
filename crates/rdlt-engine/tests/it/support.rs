@@ -19,16 +19,54 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, EngineConfigBuilder, PipelinePlan, RayonPool, RunControl,
-    RunOutcome, StreamPlan, SystemEnv,
+    CommitPolicy, ComputePool, Engine, EngineConfig, EngineConfigBuilder, Env, Job, PipelinePlan,
+    RayonPool, RunControl, RunOutcome, Sleep, StreamPlan, SystemEnv,
 };
 use serde_json::{Value, json};
 
-/// An engine on the system environment with `config`.
+/// An engine on the system environment with `config`, running compute jobs inline.
 pub(crate) fn engine(config: EngineConfigBuilder) -> TestEngine {
     let pool = RayonPool::new(NonZeroUsize::MIN).expect("a one-thread pool starts");
     let config = config.build().expect("the test configuration is valid");
-    TestEngine(Engine::new(config, Arc::new(SystemEnv::new(pool))))
+    TestEngine(Engine::new(
+        config,
+        Arc::new(InlineEnv(SystemEnv::new(pool))),
+    ))
+}
+
+/// The system's clock and randomness, with compute jobs run on the calling thread: the paused
+/// test runtime would otherwise advance its clock while a job runs on another thread.
+struct InlineEnv(SystemEnv);
+
+impl Env for InlineEnv {
+    fn now(&self) -> std::time::SystemTime {
+        self.0.now()
+    }
+
+    fn instant(&self) -> std::time::Instant {
+        self.0.instant()
+    }
+
+    fn sleep(&self, duration: Duration) -> Sleep {
+        self.0.sleep(duration)
+    }
+
+    fn random(&self) -> u64 {
+        self.0.random()
+    }
+
+    fn compute(&self) -> &dyn ComputePool {
+        &Inline
+    }
+}
+
+/// A [`ComputePool`] that runs each job at once, on the calling thread.
+struct Inline;
+
+impl ComputePool for Inline {
+    fn execute(&self, job: Job) {
+        job();
+    }
 }
 
 /// How long a test waits, in the runtime's paused time, before it calls something hung; the

@@ -1,25 +1,32 @@
-//! One partition's pipeline: read, fit each batch to its table, prepare it, and hand it to a lane.
+//! One partition's pipeline: read, coalesce pushes, shred JSON, fit each batch to its table,
+//! prepare it, and hand it to a lane.
 
+mod coalesce;
 #[cfg(test)]
 mod tests;
+mod write;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
-use arrow_array::RecordBatch;
 use rdlt_connector::{
     Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId,
-    Source, SourceEvent, StreamName, TableSchema, admitted_partition_channel,
+    Source, SourceEvent, StreamName, admitted_partition_channel,
 };
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
-use crate::error::{Error, Side};
-use crate::lane::{Lanes, Write};
-use crate::table::{Stamp, Tables, prepare};
+use crate::config::BatchPolicy;
+use crate::env::Env;
+use crate::error::{Error, ErrorKind, Side};
+use crate::lane::Lanes;
+use crate::table::Tables;
+
+use coalesce::{Coalescer, Pushed};
+use write::write_flushed;
 
 /// What a partition tells the commit coordinator.
 #[derive(Clone, Debug, PartialEq)]
@@ -106,6 +113,10 @@ pub(crate) struct PartitionContext {
     pub(crate) load_id: LoadId,
     /// When the attempt started, which every row it loads carries.
     pub(crate) loaded_at: SystemTime,
+    /// The clock the coalescer's deadlines follow, and the pool JSON is shredded on.
+    pub(crate) env: Arc<dyn Env>,
+    /// How pushes are coalesced and JSON is shredded.
+    pub(crate) batch: BatchPolicy,
 }
 
 impl PartitionContext {
@@ -221,6 +232,8 @@ struct Ingested {
     open: OpenSegment,
     last_cursor: Option<Cursor>,
     stopped: bool,
+    /// Pushes gathered and not yet written.
+    coalescer: Coalescer,
 }
 
 /// The segment rows are written to until the next checkpoint seals it.
@@ -300,8 +313,19 @@ async fn ingest(
         open: OpenSegment::new(context.next_segment()),
         last_cursor: job.cursor.clone(),
         stopped: false,
+        coalescer: Coalescer::new(context.batch),
     };
     loop {
+        let deadline = ingested.coalescer.deadline();
+        let due = async {
+            match deadline {
+                Some(deadline) => {
+                    let wait = deadline.saturating_duration_since(context.env.instant());
+                    context.env.sleep(wait).await;
+                }
+                None => std::future::pending().await,
+            }
+        };
         let event = tokio::select! {
             biased;
             // A stop request goes to the read first, even while events keep arriving.
@@ -316,9 +340,15 @@ async fn ingest(
                 }
                 continue;
             }
+            // Pushes that waited long enough are written even while more keep arriving.
+            () = due => {
+                ingested.flush(job, context).await?;
+                continue;
+            }
             event = feed.recv_admitted() => event,
         };
         let Some((event, permit)) = event else {
+            ingested.flush(job, context).await?;
             return Ok(ingested);
         };
         ingested.handle(job, context, event, permit).await?;
@@ -333,91 +363,44 @@ impl Ingested {
         event: SourceEvent,
         permit: Option<Permit>,
     ) -> Result<(), Error> {
-        match event {
-            SourceEvent::Push(Push::Arrow(batch)) => {
-                write(job, context, &mut self.open, &batch, permit).await
+        let pushed = match event {
+            SourceEvent::Push(Push::Arrow(batch)) => Pushed::Arrow(batch),
+            SourceEvent::Push(Push::Json(json)) => Pushed::Json(json),
+            SourceEvent::Push(Push::Changes(_)) => {
+                return Err(Error::new(
+                    ErrorKind::Source,
+                    format!(
+                        "stream {} pushed changes, which the engine does not load yet",
+                        job.stream
+                    ),
+                )
+                .with_code("push_unsupported")
+                .with_stream(&job.stream));
             }
-            SourceEvent::Push(Push::Json(_) | Push::Changes(_)) => Err(Error::new(
-                crate::ErrorKind::Source,
-                format!(
-                    "stream {} pushed JSON or changes, which the engine does not load yet",
-                    job.stream
-                ),
-            )
-            .with_code("push_unsupported")
-            .with_stream(&job.stream)),
             SourceEvent::Checkpoint { cursor, answers } => {
+                // Coalescing never carries rows past a checkpoint, so segments are never split.
+                self.flush(job, context).await?;
                 let next = OpenSegment::new(context.next_segment());
                 let sealed = std::mem::replace(&mut self.open, next);
                 let state = PartitionState::Cursor(cursor.clone());
                 self.last_cursor = Some(cursor);
-                context.report(Progress::Sealed(sealed.seal(job.index, state, answers)))
+                return context.report(Progress::Sealed(sealed.seal(job.index, state, answers)));
             }
-            SourceEvent::Log { .. } | SourceEvent::Metric { .. } => Ok(()),
+            SourceEvent::Log { .. } | SourceEvent::Metric { .. } => return Ok(()),
+        };
+        // Every push on an admitted channel carries the permit that reserved its bytes.
+        let permit = permit.ok_or_else(|| Error::internal("a push arrived without its permit"))?;
+        for flushed in self.coalescer.add(pushed, permit, context.env.instant()) {
+            write_flushed(job, context, &mut self.open, flushed).await?;
+        }
+        Ok(())
+    }
+
+    /// Writes every push gathered.
+    async fn flush(&mut self, job: &PartitionJob, context: &PartitionContext) -> Result<(), Error> {
+        match self.coalescer.flush() {
+            Some(flushed) => write_flushed(job, context, &mut self.open, flushed).await,
+            None => Ok(()),
         }
     }
-}
-
-/// Fits `batch` to its table, prepares it, and queues it on its lane.
-///
-/// The permit holding the push's bytes travels with the batch, reserved here when the push
-/// arrived without one. Growth from preparing is charged at once; later pushes pay it back by
-/// waiting.
-async fn write(
-    job: &PartitionJob,
-    context: &PartitionContext,
-    open: &mut OpenSegment,
-    batch: &RecordBatch,
-    permit: Option<Permit>,
-) -> Result<(), Error> {
-    let received = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
-    if received == 0 {
-        return Ok(());
-    }
-    let incoming = TableSchema::from_arrow(&batch.schema()).map_err(|error| {
-        Error::schema(format!(
-            "stream {}: a batch has no table schema: {error}",
-            job.stream
-        ))
-        .with_code("batch_schema_invalid")
-        .with_stream(&job.stream)
-    })?;
-    let (view, routes) = context.tables.fit(job.table, &incoming).await?;
-    let stamp = Stamp {
-        load_id: context.load_id,
-        loaded_at: context.loaded_at,
-        segment: open.id,
-        first_row: open.received,
-    };
-    let prepared = prepare(&job.stream, &view, &incoming, batch, &routes, &stamp)?;
-    open.received += received;
-    open.discarded_rows += prepared.discarded_rows;
-    open.discarded_values += prepared.discarded_values;
-    let rows = u64::try_from(prepared.batch.num_rows()).unwrap_or(u64::MAX);
-    if rows == 0 {
-        return Ok(());
-    }
-    let pushed = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    let bytes = u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    let permit = match permit {
-        Some(permit) => permit,
-        None => Box::new(context.budget.acquire(pushed).await),
-    };
-    let growth = context.budget.charge(bytes.saturating_sub(pushed));
-    let lane = context.lanes.route(job.table, job.partition.id());
-    context
-        .lanes
-        .write(
-            lane,
-            Write {
-                table: job.table,
-                segment: open.id,
-                batch: prepared.batch,
-                reservation: Box::new((permit, growth)),
-            },
-        )
-        .await?;
-    open.rows += rows;
-    open.bytes += bytes;
-    context.report(Progress::Written { rows, bytes })
 }

@@ -1,5 +1,6 @@
-//! Engine configuration: resources, the commit policy and the retry policy, validated at build.
+//! Engine configuration: resources, the batch, commit and retry policies, validated at build.
 
+mod batch;
 #[cfg(test)]
 mod tests;
 
@@ -7,6 +8,8 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use crate::error::Error;
+
+pub use batch::BatchPolicy;
 
 /// When the engine commits: whichever threshold is reached first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +164,7 @@ pub struct EngineConfig {
     partitions: NonZeroUsize,
     partition_buffer: NonZeroUsize,
     barrier_wait: Duration,
+    batch: BatchPolicy,
     commit: CommitPolicy,
     retry: RetryPolicy,
 }
@@ -175,6 +179,7 @@ impl EngineConfig {
             partitions: None,
             partition_buffer: None,
             barrier_wait: None,
+            batch: None,
             commit: None,
             retry: None,
         }
@@ -210,6 +215,11 @@ impl EngineConfig {
         self.barrier_wait
     }
 
+    /// How pushes are coalesced and JSON is shredded.
+    pub fn batch(&self) -> &BatchPolicy {
+        &self.batch
+    }
+
     /// When the engine commits.
     pub fn commit(&self) -> &CommitPolicy {
         &self.commit
@@ -230,6 +240,7 @@ impl Default for EngineConfig {
             partitions: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             partition_buffer: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             barrier_wait: Duration::from_secs(5),
+            batch: BatchPolicy::default(),
             commit: CommitPolicy::default(),
             retry: RetryPolicy::default(),
         }
@@ -245,6 +256,7 @@ pub struct EngineConfigBuilder {
     partitions: Option<usize>,
     partition_buffer: Option<usize>,
     barrier_wait: Option<Duration>,
+    batch: Option<BatchPolicy>,
     commit: Option<CommitPolicy>,
     retry: Option<RetryPolicy>,
 }
@@ -289,6 +301,13 @@ impl EngineConfigBuilder {
     #[must_use]
     pub fn barrier_wait(mut self, wait: Duration) -> Self {
         self.barrier_wait = Some(wait);
+        self
+    }
+
+    /// How to coalesce pushes and shred JSON (default: [`BatchPolicy::default`]).
+    #[must_use]
+    pub fn batch(mut self, policy: BatchPolicy) -> Self {
+        self.batch = Some(policy);
         self
     }
 
@@ -337,6 +356,7 @@ impl EngineConfigBuilder {
             )
             .ok_or_else(|| invalid("partition_buffer"))?,
             barrier_wait: self.barrier_wait.unwrap_or(defaults.barrier_wait),
+            batch: self.batch.unwrap_or(defaults.batch),
             commit: self.commit.unwrap_or(defaults.commit),
             retry,
         })

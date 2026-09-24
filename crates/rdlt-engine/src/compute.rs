@@ -72,13 +72,6 @@ pub(crate) fn ready<F: Future>(future: F) -> F::Output {
 /// Runs every job of `work` on `pool`, all at once, and returns their results in `work`'s order.
 ///
 /// A panic inside a job resumes in the caller once the jobs before it have finished.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the shredder calls this once partitions shred JSON pushes"
-    )
-)]
 pub(crate) async fn run_all<T, F>(
     pool: &dyn ComputePool,
     work: impl IntoIterator<Item = F>,
