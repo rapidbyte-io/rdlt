@@ -53,16 +53,36 @@ pub struct TableRef {
     /// The replace generation writes fill, hidden from readers until a commit finishes it; `None`
     /// writes the table itself.
     pub generation: Option<GenerationId>,
+    /// For a merge table, how published rows are matched; `None` appends every row.
+    pub merge: Option<MergeKey>,
+}
+
+/// How a merge table matches rows.
+///
+/// A published row replaces the published row with the same key. Among the rows one commit
+/// publishes for one key, the row with the greatest `seq` wins.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MergeKey {
+    /// The key columns' identifiers.
+    pub columns: Vec<Arc<str>>,
+    /// The identifier of the column that orders rows within a commit: 16 bytes of `Binary`,
+    /// compared bytewise.
+    pub seq: Arc<str>,
 }
 
 /// A schema change to apply before writing under a new schema version.
+///
+/// Changes name columns by their identifiers and give the types the destination stores, the
+/// engine's metadata columns included. Applying a change the table already reflects must succeed
+/// and change nothing: when an attempt fails between applying a change and committing, the next
+/// attempt applies it again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableChange {
     /// Create the table.
     Create {
         /// The table.
         table: TableRef,
-        /// Its schema.
+        /// Its columns.
         schema: TableSchema,
     },
     /// Add a nullable column.
@@ -76,13 +96,24 @@ pub enum TableChange {
     Widen {
         /// The table.
         table: TableRef,
-        /// The column.
+        /// The column's identifier.
         column: Arc<str>,
         /// The current type.
         from: LogicalType,
         /// The new type.
         to: LogicalType,
     },
+}
+
+impl TableChange {
+    /// The table the change applies to.
+    pub fn table(&self) -> &TableRef {
+        match self {
+            Self::Create { table, .. }
+            | Self::AddColumn { table, .. }
+            | Self::Widen { table, .. } => table,
+        }
+    }
 }
 
 /// What a writer staged.
@@ -131,7 +162,11 @@ pub trait Session: Send + 'static {
     /// A writer staging batches into one table.
     type Writer: TableWriter;
 
-    /// Applies a schema change before any write under the new version.
+    /// Applies a schema change before any write under the new version; staging follows the
+    /// table.
+    ///
+    /// A change the table already reflects succeeds and changes nothing. Writers created before a
+    /// change receive batches with the new columns after it.
     fn apply_schema(&mut self, change: &TableChange) -> impl Future<Output = Result<()>> + Send;
 
     /// A writer for `table`.

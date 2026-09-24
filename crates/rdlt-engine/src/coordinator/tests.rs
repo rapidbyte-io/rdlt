@@ -239,6 +239,7 @@ fn table(generation: Option<GenerationId>) -> TableRef {
         name: "orders".into(),
         version: SchemaVersion(1),
         generation,
+        merge: None,
     }
 }
 

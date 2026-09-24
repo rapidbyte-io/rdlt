@@ -76,6 +76,7 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
         name: "t".into(),
         version: SchemaVersion(1),
         generation: None,
+        merge: None,
     };
     let mut first = destination.open(&open_context("first", 1)).await.unwrap();
     let mut writer = first.session.writer(&table).await.unwrap();
@@ -155,6 +156,7 @@ async fn a_replace_generation_stays_hidden_until_its_finishing_commit_swaps_it_i
         name: "t".into(),
         version: SchemaVersion(1),
         generation: None,
+        merge: None,
     };
     let generation = TableRef {
         generation: Some(GenerationId(9)),

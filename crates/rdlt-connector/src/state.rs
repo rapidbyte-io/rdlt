@@ -1,5 +1,6 @@
 //! Pipeline state and how it is stored: as keyed records the destination keeps opaque.
 
+mod names;
 #[cfg(test)]
 mod tests;
 
@@ -12,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::commit::Receipt;
 use crate::cursor::Cursor;
 use crate::id::{Epoch, GenerationId, PartitionId, SchemaVersion, StreamName, TablePath};
-use crate::schema::{ColumnPath, TableSchema};
+use crate::schema::TableSchema;
+
+pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
 const STATE_VERSION: u16 = 1;
@@ -44,84 +47,6 @@ pub enum PartitionState {
     Cursor(Cursor),
     /// The partition is fully read.
     Done,
-}
-
-/// Source paths mapped to destination identifiers; a mapping, once added, never changes.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "Vec<(ColumnPath, String)>", into = "Vec<(ColumnPath, String)>")]
-pub struct NameMap(BTreeMap<ColumnPath, Arc<str>>);
-
-/// An attempt to remap a source path that already has a destination identifier.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{path} is already mapped to {existing:?}")]
-pub struct NameConflict {
-    /// The source path.
-    pub path: ColumnPath,
-    /// Its existing identifier.
-    pub existing: String,
-}
-
-impl NameMap {
-    /// The identifier for `path`.
-    pub fn get(&self, path: &ColumnPath) -> Option<&str> {
-        self.0.get(path).map(AsRef::as_ref)
-    }
-
-    /// Maps `path` to `name`; mapping a path again to the same name is a no-op.
-    pub fn insert(
-        &mut self,
-        path: ColumnPath,
-        name: impl Into<Arc<str>>,
-    ) -> Result<(), NameConflict> {
-        let name = name.into();
-        match self.0.get(&path) {
-            Some(existing) if *existing != name => Err(NameConflict {
-                path,
-                existing: existing.to_string(),
-            }),
-            Some(_) => Ok(()),
-            None => {
-                self.0.insert(path, name);
-                Ok(())
-            }
-        }
-    }
-
-    /// The mappings, ordered by path.
-    pub fn iter(&self) -> impl Iterator<Item = (&ColumnPath, &str)> {
-        self.0.iter().map(|(path, name)| (path, name.as_ref()))
-    }
-
-    /// The number of mappings.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Whether there are no mappings.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl From<Vec<(ColumnPath, String)>> for NameMap {
-    fn from(pairs: Vec<(ColumnPath, String)>) -> Self {
-        Self(
-            pairs
-                .into_iter()
-                .map(|(path, name)| (path, Arc::from(name)))
-                .collect(),
-        )
-    }
-}
-
-impl From<NameMap> for Vec<(ColumnPath, String)> {
-    fn from(names: NameMap) -> Self {
-        names
-            .0
-            .into_iter()
-            .map(|(path, name)| (path, name.to_string()))
-            .collect()
-    }
 }
 
 /// Which state record an entry is.
@@ -216,11 +141,13 @@ pub enum StateEntry {
         /// The schema.
         schema: TableSchema,
     },
-    /// A table's name map.
+    /// A table's destination identifier and its columns' identifiers.
     Names {
         /// The table.
         table: TablePath,
-        /// The mappings.
+        /// The table's identifier.
+        physical: Arc<str>,
+        /// The columns' identifiers.
         names: NameMap,
     },
     /// The last commit's receipt.
@@ -348,9 +275,12 @@ pub struct StreamState {
 /// A table's committed schema and names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TableState {
-    /// The versioned schema, once one is committed.
+    /// The versioned schema, once one is committed: columns by identifier, with their logical
+    /// types.
     pub schema: Option<(SchemaVersion, TableSchema)>,
-    /// Source paths mapped to destination identifiers.
+    /// The table's identifier, once one is committed.
+    pub physical: Option<Arc<str>>,
+    /// The columns' identifiers.
     pub names: NameMap,
 }
 
@@ -416,10 +346,13 @@ impl PipelineState {
                     schema: schema.clone(),
                 });
             }
-            entries.push(StateEntry::Names {
-                table: path.clone(),
-                names: table.names.clone(),
-            });
+            if let Some(physical) = &table.physical {
+                entries.push(StateEntry::Names {
+                    table: path.clone(),
+                    physical: Arc::clone(physical),
+                    names: table.names.clone(),
+                });
+            }
         }
         if let Some(receipt) = &self.last_receipt {
             entries.push(StateEntry::Receipt(receipt.clone()));
@@ -469,8 +402,14 @@ impl PipelineState {
             } => {
                 self.tables.entry(table).or_default().schema = Some((version, schema));
             }
-            StateEntry::Names { table, names } => {
-                self.tables.entry(table).or_default().names = names;
+            StateEntry::Names {
+                table,
+                physical,
+                names,
+            } => {
+                let state = self.tables.entry(table).or_default();
+                state.physical = Some(physical);
+                state.names = names;
             }
             StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
         }
@@ -506,6 +445,7 @@ impl PipelineState {
             }
             StateKey::Names(table) => {
                 if let Some(state) = self.tables.get_mut(table) {
+                    state.physical = None;
                     state.names = NameMap::default();
                 }
             }

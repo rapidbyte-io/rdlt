@@ -179,6 +179,7 @@ fn table() -> TableRef {
         name: "orders".into(),
         version: SchemaVersion(1),
         generation: None,
+        merge: None,
     }
 }
 

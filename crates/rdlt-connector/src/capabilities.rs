@@ -69,6 +69,44 @@ pub struct SchemaChanges {
     pub widenings: BTreeSet<(TypeKind, TypeKind)>,
 }
 
+impl SchemaChanges {
+    /// Adding columns and every widening the type lattice makes, for a destination that stores
+    /// any column type and can change it in place.
+    pub fn all() -> Self {
+        use TypeKind as K;
+        let integers = [K::Int8, K::Int16, K::Int32, K::Int64];
+        let mut widenings = BTreeSet::new();
+        for (index, from) in integers.iter().enumerate() {
+            for to in &integers[index + 1..] {
+                widenings.insert((*from, *to));
+            }
+            widenings.insert((*from, K::Decimal));
+            if *from != K::Int64 {
+                widenings.insert((*from, K::Float64));
+            }
+        }
+        widenings.extend([
+            (K::Float32, K::Float64),
+            (K::Decimal, K::Decimal),
+            (K::Date, K::Timestamp),
+            (K::Timestamp, K::Timestamp),
+            (K::Time, K::Time),
+            (K::Duration, K::Duration),
+            (K::Struct, K::Struct),
+            (K::List, K::List),
+        ]);
+        Self {
+            add_column: true,
+            widenings,
+        }
+    }
+
+    /// Whether a column of kind `from` can become kind `to` in place.
+    pub fn widens(&self, from: TypeKind, to: TypeKind) -> bool {
+        self.widenings.contains(&(from, to))
+    }
+}
+
 /// How a destination folds the case of identifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
