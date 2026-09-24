@@ -13,14 +13,18 @@ use rdlt_connector::{
     StateChange, StateEntry, TableChange, TableRef, TableSchema,
 };
 
-use super::TableView;
 use super::model::Model;
 use super::resolve::{Change, Resolution, Resolver, Route};
+use super::{LoweringPlan, TableView};
 use crate::error::{Error, Side};
 
 /// How many times a table's change is named around columns that attempts which never committed
 /// left behind before the conflict fails the run.
 pub(crate) const CONFLICT_RETRIES: usize = 4;
+
+/// Lowering plans kept per table: one per incoming schema its partitions send, for its current
+/// view.
+const PLANS: usize = 8;
 
 /// The destination session, shared by the coordinator's commits and the partitions' schema
 /// changes until the coordinator closes it.
@@ -97,6 +101,8 @@ struct Slot {
     evolving: tokio::sync::Mutex<()>,
     /// The schema version state records.
     recorded: Mutex<u32>,
+    /// Plans for the current view, the newest last.
+    plans: Mutex<Vec<Arc<LoweringPlan>>>,
 }
 
 /// Every table of an attempt.
@@ -135,6 +141,7 @@ impl Tables {
             current: Mutex::new(Arc::new(view)),
             evolving: tokio::sync::Mutex::new(()),
             recorded: Mutex::new(recorded),
+            plans: Mutex::new(Vec::new()),
         });
         self.slots.len() - 1
     }
@@ -142,6 +149,44 @@ impl Tables {
     /// The current view of `table`.
     pub(crate) fn view(&self, table: usize) -> Arc<TableView> {
         Arc::clone(&self.slots[table].current.lock())
+    }
+
+    /// The plan lowering batches of `incoming` into `table`: the plan made for the table's current
+    /// view and `incoming`, or a new one once the schema changes `incoming` needs are applied.
+    pub(crate) async fn plan(
+        &self,
+        table: usize,
+        incoming: TableSchema,
+    ) -> Result<Arc<LoweringPlan>, Error> {
+        let slot = &self.slots[table];
+        let view = self.view(table);
+        let planned = |plans: &[Arc<LoweringPlan>], view: &Arc<TableView>| {
+            plans
+                .iter()
+                .find(|plan| Arc::ptr_eq(plan.view(), view) && *plan.incoming() == incoming)
+                .cloned()
+        };
+        if let Some(plan) = planned(&slot.plans.lock(), &view) {
+            return Ok(plan);
+        }
+        let (view, routes) = self.fit(table, &incoming).await?;
+        let mut plans = slot.plans.lock();
+        if let Some(plan) = planned(&plans, &view) {
+            return Ok(plan);
+        }
+        let stream = slot.resolver.stream.clone();
+        let plan = Arc::new(LoweringPlan::new(
+            stream,
+            Arc::clone(&view),
+            incoming,
+            routes,
+        ));
+        plans.retain(|plan| Arc::ptr_eq(plan.view(), &view));
+        if plans.len() == PLANS {
+            plans.remove(0);
+        }
+        plans.push(Arc::clone(&plan));
+        Ok(plan)
     }
 
     /// How columns of `incoming` fit `table`, after applying the schema changes they need.

@@ -10,10 +10,11 @@ use rdlt_connector::{Permit, TableSchema};
 use super::coalesce::{Flushed, Unit};
 use super::{OpenSegment, PartitionContext, PartitionJob, Progress};
 use crate::budget::MemoryBudget;
+use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Write;
 use crate::shred::{self, ShredError};
-use crate::table::{Stamp, prepare};
+use crate::table::{LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -23,18 +24,13 @@ pub(super) async fn write_flushed(
     flushed: Flushed,
 ) -> Result<(), Error> {
     let permits = flushed.permits;
-    match flushed.unit {
+    let units = match flushed.unit {
         Unit::Arrow(batches) => {
-            // A lone batch concatenates to itself without a copy.
-            let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches)
-                .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
-            // The pushes' permits now hold the copy.
-            drop(batches);
             let held = Held {
                 permits,
                 bytes: flushed.bytes,
             };
-            write(job, context, open, &batch, held).await
+            vec![(batches, held)]
         }
         Unit::Json(pushes) => {
             let chunk_bytes = context.batch.chunk_bytes().get();
@@ -42,12 +38,15 @@ pub(super) async fn write_flushed(
                 .await
                 .map_err(|error| shred_failed(job, &error))?;
             drop(pushes);
-            for (batch, held) in batches.iter().zip(hold(&context.budget, &batches, permits)) {
-                write(job, context, open, batch, held).await?;
-            }
-            Ok(())
+            let held = hold(&context.budget, &batches, permits);
+            batches
+                .into_iter()
+                .zip(held)
+                .map(|(batch, held)| (vec![batch], held))
+                .collect()
         }
-    }
+    };
+    write(job, context, open, units).await
 }
 
 /// The error for a JSON push the shredder refused.
@@ -87,38 +86,72 @@ struct Held {
     bytes: u64,
 }
 
-/// Fits `batch` to its table, prepares it, and queues it on its lane.
+/// Lowers `units`, each some batches of one schema and the memory they hold, into the partition's
+/// table and queues them on its lane, in order.
 ///
-/// The permits holding the batch's bytes travel with it. Growth beyond what they hold is charged
-/// at once; later pushes pay it back by waiting.
+/// Each unit's plan is found in order, since finding it may change the table. Then every unit is
+/// concatenated and lowered on the compute pool at once, and queued as its turn comes.
 async fn write(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
-    batch: &RecordBatch,
+    units: Vec<(Vec<RecordBatch>, Held)>,
+) -> Result<(), Error> {
+    let mut jobs = Vec::with_capacity(units.len());
+    let mut reservations = Vec::with_capacity(units.len());
+    for (parts, held) in units {
+        let received = parts
+            .iter()
+            .map(|batch| u64::try_from(batch.num_rows()).unwrap_or(u64::MAX))
+            .sum::<u64>();
+        if received == 0 {
+            continue;
+        }
+        let incoming = TableSchema::from_arrow(&parts[0].schema()).map_err(|error| {
+            Error::schema(format!(
+                "stream {}: a batch has no table schema: {error}",
+                job.stream
+            ))
+            .with_code("batch_schema_invalid")
+            .with_stream(&job.stream)
+        })?;
+        let plan = context.tables.plan(job.table, incoming).await?;
+        let stamp = Stamp {
+            load_id: context.load_id,
+            loaded_at: context.loaded_at,
+            segment: open.id,
+            first_row: open.received,
+        };
+        open.received += received;
+        jobs.push(move || lower(&parts, &plan, &stamp));
+        reservations.push(held);
+    }
+    let prepared = run_all(context.env.compute(), jobs).await;
+    for (prepared, held) in prepared.into_iter().zip(reservations) {
+        queue(job, context, open, prepared?, held).await?;
+    }
+    Ok(())
+}
+
+/// `parts`, one batch once concatenated, as `plan` lowers it.
+fn lower(parts: &[RecordBatch], plan: &LoweringPlan, stamp: &Stamp) -> Result<Prepared, Error> {
+    // A lone batch concatenates to itself without a copy.
+    let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts)
+        .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
+    plan.prepare(&batch, stamp)
+}
+
+/// Queues `prepared` on its lane, with `held` and the growth beyond it.
+///
+/// The permits holding the batch's bytes travel with it. Growth beyond what they hold is charged
+/// at once; later pushes pay it back by waiting.
+async fn queue(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    open: &mut OpenSegment,
+    prepared: Prepared,
     held: Held,
 ) -> Result<(), Error> {
-    let received = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
-    if received == 0 {
-        return Ok(());
-    }
-    let incoming = TableSchema::from_arrow(&batch.schema()).map_err(|error| {
-        Error::schema(format!(
-            "stream {}: a batch has no table schema: {error}",
-            job.stream
-        ))
-        .with_code("batch_schema_invalid")
-        .with_stream(&job.stream)
-    })?;
-    let (view, routes) = context.tables.fit(job.table, &incoming).await?;
-    let stamp = Stamp {
-        load_id: context.load_id,
-        loaded_at: context.loaded_at,
-        segment: open.id,
-        first_row: open.received,
-    };
-    let prepared = prepare(&job.stream, &view, &incoming, batch, &routes, &stamp)?;
-    open.received += received;
     open.discarded_rows += prepared.discarded_rows;
     open.discarded_values += prepared.discarded_values;
     let rows = u64::try_from(prepared.batch.num_rows()).unwrap_or(u64::MAX);

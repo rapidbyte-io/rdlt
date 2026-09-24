@@ -10,8 +10,8 @@ use rdlt_engine::{
 use crate::support::destinations::limited;
 use crate::support::script::{Fault, Hang, PushKind, Script, ScriptStream, id, reconnect};
 use crate::support::{
-    commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_rows,
-    retrying, stream, until,
+    COMPUTE_JOBS, commit_every, engine, every_id, generator, memory, pipeline, published_ids,
+    published_rows, retrying, stream, until,
 };
 
 fn ids(partitions: usize, rows: u64) -> Vec<i64> {
@@ -820,4 +820,28 @@ async fn a_commit_whose_response_was_lost_still_counts_in_the_report() {
     let published = u64::try_from(published_rows("lost_count", "events")).unwrap();
     assert_eq!((outcome.report.rows, published), (40, 40));
     assert_eq!(outcome.report.streams["events"].rows, 40);
+}
+
+#[tokio::test(start_paused = true)]
+async fn arrow_batches_are_lowered_on_the_compute_pool() {
+    // Five batches of Arrow, each checkpointed on its own, so each is lowered on its own.
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 25, 5)])
+        .connect("lowered_on_the_pool")
+        .await;
+    let before = COMPUTE_JOBS.load(Ordering::SeqCst);
+    let outcome = engine(commit_every(1000))
+        .run(
+            pipeline("lowered-on-the-pool", [stream("events")]),
+            source,
+            memory("lowered_on_the_pool").await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let jobs = COMPUTE_JOBS.load(Ordering::SeqCst) - before;
+    assert!(jobs >= 5, "{jobs} compute jobs for five batches");
 }

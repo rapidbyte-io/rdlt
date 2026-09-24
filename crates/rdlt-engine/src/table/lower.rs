@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use arrow_schema::{Schema, SchemaRef};
+use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use rdlt_connector::{Capabilities, Field, LogicalType, TimeUnit, TypeKind};
 
 use super::model::Model;
@@ -126,9 +126,25 @@ pub(crate) fn physical_fields(
     fields
 }
 
-/// The Arrow schema of `fields`.
-pub(crate) fn arrow_schema(fields: &[Field]) -> SchemaRef {
-    Arc::new(Schema::new(
-        fields.iter().map(Field::to_arrow).collect::<Vec<_>>(),
-    ))
+/// The Arrow schema of prepared batches of a table whose columns are `fields`, the model's
+/// `columns` first: the load id and load start, which hold one value per batch, are dictionaries
+/// of it (spec §8.5).
+pub(crate) fn prepared_schema(fields: &[Field], columns: usize) -> SchemaRef {
+    let fields: Vec<ArrowField> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let arrow = field.to_arrow();
+            if index == columns || index == columns + 1 {
+                let encoded = DataType::Dictionary(
+                    Box::new(DataType::Int8),
+                    Box::new(arrow.data_type().clone()),
+                );
+                arrow.with_data_type(encoded)
+            } else {
+                arrow
+            }
+        })
+        .collect();
+    Arc::new(Schema::new(fields))
 }

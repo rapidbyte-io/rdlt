@@ -9,6 +9,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -63,8 +64,12 @@ impl Env for InlineEnv {
 /// A [`ComputePool`] that runs each job at once, on the calling thread.
 struct Inline;
 
+/// How many jobs the engines of this test process ran on their compute pool.
+pub(crate) static COMPUTE_JOBS: AtomicUsize = AtomicUsize::new(0);
+
 impl ComputePool for Inline {
     fn execute(&self, job: Job) {
+        COMPUTE_JOBS.fetch_add(1, Ordering::SeqCst);
         job();
     }
 }
