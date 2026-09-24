@@ -12,6 +12,9 @@ pub const MAX_BATCH_ROWS: u64 = 1024 * 1024;
 /// Columns: bounds the width of one batch.
 pub const MAX_COLUMNS: u64 = 10_000;
 
+/// Levels: bounds how deep a JSON value nests, counting the record itself as the first.
+pub const MAX_NESTING_DEPTH: u64 = 64;
+
 /// Bytes: bounds one encoded cursor.
 pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 

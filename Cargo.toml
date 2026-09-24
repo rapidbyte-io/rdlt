@@ -45,6 +45,7 @@ uuid = { version = "1.26.1", features = ["serde"] } # load ids (UUIDv7)
 getrandom = "0.4.3" # the operating system random source behind SystemEnv
 parking_lot = "0.12.5" # locks without poisoning
 rayon = "1.12.0" # the compute pool for CPU-bound stages
+sonic-rs = "0.5.10" # SIMD JSON parsing for the shredder, and serializing JSON pushes
 thiserror = "2.0.20" # typed error derives
 tokio = { version = "1.53.1", default-features = false } # async runtime, timers and task sets
 tokio-util = { version = "0.7.19", default-features = false } # CancellationToken
