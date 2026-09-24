@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -9,10 +10,11 @@ use arrow_array::{
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::{
     CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Destination, Field, LoadId,
-    LogicalType, OpenContext, OpenedSession, PipelineId, SchemaVersion, SegmentId, SegmentSet,
-    TableChange, TablePath, TableRef, TableSchema, destination_factory,
+    LogicalType, OpenContext, OpenedSession, Partition, PartitionId, PipelineId, ReadRequest,
+    SchemaVersion, SegmentId, SegmentSet, StreamName, TableChange, TablePath, TableRef,
+    TableSchema, destination_factory, partition_channel, source_factory,
 };
-use rdlt_connector_reference::{FilesDestination, files};
+use rdlt_connector_reference::{FilesDestination, FilesSource, files};
 use serde_json::json;
 
 async fn connect(root: &Path, format: &str) -> Box<dyn Destination> {
@@ -216,4 +218,38 @@ async fn a_root_that_cannot_be_written_is_a_configuration_error() {
     let destination = connect(&file.join("below"), "jsonl").await;
     let error = destination.check().await.unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Config);
+}
+
+#[tokio::test]
+async fn a_source_root_that_cannot_be_listed_is_a_configuration_error() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = json!({ "root": root.path().join("missing") });
+    let error = source_factory::<FilesSource>()
+        .connect(missing, ConnectContext::new())
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), ConnectorErrorKind::Config);
+}
+
+#[tokio::test]
+async fn a_partition_the_source_does_not_list_is_never_opened() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("users.jsonl"), "{\"id\": 1}\n").unwrap();
+    let outside = root.path().join("outside.jsonl");
+    std::fs::write(&outside, "{\"id\": 2}\n").unwrap();
+    std::fs::create_dir(root.path().join("inner")).unwrap();
+    std::fs::write(root.path().join("inner").join("a.jsonl"), "{\"id\": 3}\n").unwrap();
+    let source = source_factory::<FilesSource>()
+        .connect(json!({ "root": root.path() }), ConnectContext::new())
+        .await
+        .unwrap();
+    let (sink, _feed) = partition_channel(NonZeroUsize::MIN);
+    let request = ReadRequest {
+        stream: StreamName::new("inner").unwrap(),
+        partition: Partition::new(PartitionId::parse("../outside.jsonl").unwrap()),
+        cursor: None,
+    };
+    let error = source.read(request, sink).await.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
 }
