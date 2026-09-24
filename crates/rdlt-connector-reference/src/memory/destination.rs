@@ -203,9 +203,7 @@ impl Table {
                 }
             }
             TableChange::AddColumn { field, .. } => add(&mut fields, field, change)?,
-            TableChange::Widen {
-                column, from, to, ..
-            } => {
+            TableChange::Widen { column, to, .. } => {
                 let Some(field) = fields
                     .iter_mut()
                     .find(|field| field.name() == column.as_ref())
@@ -218,10 +216,8 @@ impl Table {
                 if holds(field, to) {
                     return Ok(());
                 }
-                if field.logical_type() != from {
-                    return Err(conflict(change, field));
-                }
-                *field = Field::new(field.name(), to.clone(), field.is_nullable());
+                let joined = field.logical_type().join(to);
+                *field = Field::new(field.name(), joined, field.is_nullable());
             }
         }
         self.schema = Some(

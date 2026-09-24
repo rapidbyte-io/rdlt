@@ -276,12 +276,6 @@ async fn a_change_declaring_a_column_at_another_type_fails_and_changes_nothing()
             table: table.clone(),
             field: Field::new("name", LogicalType::Int64, true),
         },
-        TableChange::Widen {
-            table: table.clone(),
-            column: "name".into(),
-            from: LogicalType::Int32,
-            to: LogicalType::Int64,
-        },
     ];
     for change in &conflicts {
         let error = opened.session.apply_schema(change).await.unwrap_err();
@@ -295,6 +289,38 @@ async fn a_change_declaring_a_column_at_another_type_fails_and_changes_nothing()
         schema("conflicts", "t"),
         Some(expected),
         "a conflict changes nothing"
+    );
+}
+
+#[tokio::test]
+async fn widening_a_column_a_crashed_attempt_widened_otherwise_joins_the_two() {
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": "joins" }), ConnectContext::new())
+        .await
+        .unwrap();
+    let mut opened = destination.open(&open_context("joins", 1)).await.unwrap();
+    let table = table_ref("t");
+    let widen = |to| TableChange::Widen {
+        table: table.clone(),
+        column: "n".into(),
+        from: LogicalType::Int32,
+        to,
+    };
+    let changes = [
+        TableChange::Create {
+            table: table.clone(),
+            schema: TableSchema::new(vec![Field::new("n", LogicalType::Int32, true)]).unwrap(),
+        },
+        widen(LogicalType::Int64),
+        widen(LogicalType::Float64),
+    ];
+    for change in &changes {
+        opened.session.apply_schema(change).await.unwrap();
+    }
+    let joined = LogicalType::Int64.join(&LogicalType::Float64);
+    assert_eq!(
+        schema("joins", "t"),
+        Some(TableSchema::new(vec![Field::new("n", joined, true)]).unwrap())
     );
 }
 

@@ -27,13 +27,14 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   committed leaves columns that the next attempt, starting from the committed names, may assign
   to other source columns at other types. `Create` on an existing table adds the columns it
   lacks; a column already holding the declared type (the lattice joins the two to its own type)
-  reflects the change; any other clash is a `Data` error coded `schema_conflict` that changes
-  nothing. The engine then resolves the change again with every new identifier hash-suffixed,
+  reflects the change; a widen makes the column the join of its type and the new one, so a
+  committed column a crashed attempt widened along another branch still ends up holding both;
+  a new column clashing with a leftover, or a join the destination cannot store, is a `Data`
+  error coded `schema_conflict` that changes nothing. The engine then resolves the change again with every new identifier hash-suffixed,
   the hash seeded with a fresh salt on each of up to four retries, and a further conflict fails
   the run. Recording names in state before applying changes was rejected: it needs a commit per
-  schema change, against one commit per barrier. A committed column that a crashed attempt
-  widened along another branch of the lattice than the next attempt needs cannot be renamed and
-  fails the stream until destinations report their columns.
+  schema change, against one commit per barrier. A widen whose join the destination cannot
+  store fails the stream until destinations report their columns.
 - **The first batch, or the declared schema, creates the table.** A stream no longer needs a
   declared schema; a declared one is resolved like a batch before anything is read. After the
   table exists, a new column or a value its column cannot hold is a change, which the column's
