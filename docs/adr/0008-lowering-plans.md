@@ -41,7 +41,12 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
 ## Consequences
 
 Per batch, the engine spends about 13 µs on a batch of 80 000 rows; the metadata columns cost the
-destination 2 bytes a row instead of 24. Arrow passthrough runs within the spec's 10 % on
-efficient cores and at 13.4 % on performance cores, where the rest is the destination encoding
-the metadata columns and the hand-offs between the partition, the pool and the lane. Destinations
-must decode dictionary-encoded columns they cannot store as such.
+destination 2 bytes a row instead of 24. Arrow passthrough measured 5–13 % over the bare loop
+across two runs on cores of each type, against the spec's 10 %: the rest is the destination
+encoding the metadata columns and the hand-offs between the partition, the pool and the lane.
+Destinations must decode dictionary-encoded columns they cannot store as such.
+
+The spec's lowering differential (§20.4) checks here that a plan reused across batches of any
+size and load lowers each as a fresh plan does, value by value for the metadata columns. A
+reference lowering each value on its own, independent of the conversions plans share, is left to
+M3c, whose `normalize` changes what lowering produces.

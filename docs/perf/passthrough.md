@@ -20,10 +20,15 @@ measured on one machine.
 
 Intel Core Ultra X7 358H, on mains power, 2026-09-24.
 
-| Cores | Bare loop | Engine | Overhead | Gate |
-|---|---|---|---|---|
-| 4 performance cores (`taskset -c 0-3`) | 25.1 ms | 28.4 ms | 13.4 % | ≤ 10 % |
-| 8 efficient cores (`taskset -c 4-11`) | 36.5 ms | 38.4 ms | 5.3 % | ≤ 10 % |
+| Cores | Run | Bare loop | Engine | Overhead | Gate |
+|---|---|---|---|---|---|
+| 4 performance cores (`taskset -c 0-3`) | first | 25.1 ms | 28.4 ms | 13.4 % | ≤ 10 % |
+| | second | 24.3 ms | 27.0 ms | 11.0 % | ≤ 10 % |
+| 8 efficient cores (`taskset -c 4-11`) | first | 36.5 ms | 38.4 ms | 5.3 % | ≤ 10 % |
+| | second | 36.1 ms | 39.9 ms | 10.5 % | ≤ 10 % |
+
+Two runs of the same build, hours apart, moved each overhead by several points, so the overhead
+is 5–13 % on this machine: at or above the gate, not within it.
 
 Where the difference goes, on the performance cores:
 
