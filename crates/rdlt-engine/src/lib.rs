@@ -32,6 +32,14 @@ mod policy;
 mod report;
 mod run;
 mod scope;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "partitions shred JSON pushes from the next task on"
+    )
+)]
+mod shred;
 mod table;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
