@@ -56,8 +56,9 @@ and building them surfaced decisions the spec leaves open.
   manifest does not list. A merge table's commit rewrites the table as one file. The manifest
   keeps the receipts of the 16 most recent loads and the last 8 versions stay on disk.
 - **Formats decide types.** Arrow IPC files keep every type; JSON lines keep scalars, structs and
-  lists, and the engine stores the rest as text. A table's columns live in a catalog under the
-  root, which schema changes update with the rules the memory destination follows.
+  lists, and the engine stores the rest as text. A table's columns live in a catalog under the root, which schema changes update with the rules
+  the memory destination follows; each change creates the table's next catalog version
+  exclusively and works itself out again when another change lands first, so none is lost.
 - **The files source discovers streams from names.** `<stream>.jsonl` or `<stream>.arrow` is a
   stream of one partition and a directory is a stream of its files; a partition is read only if
   it is listed, never by joining its id to a path. JSON lines are read with a schema inferred from

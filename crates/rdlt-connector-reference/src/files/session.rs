@@ -77,13 +77,10 @@ impl Session for FilesSession {
         self.learn(change.table());
         let (root, change) = (Arc::clone(&self.location.root), change.clone());
         blocking(move || {
-            let name = &change.table().name;
-            let current = tables::read(&root, name)?;
-            let next = changed(current.as_ref(), &change)?;
-            if current.as_ref() == Some(&next) {
-                return Ok(());
-            }
-            tables::write(&root, name, &next)
+            tables::update(&root, &change.table().name, |current| {
+                let next = changed(current, &change)?;
+                Ok((current != Some(&next)).then_some(next))
+            })
         })
         .await
     }
