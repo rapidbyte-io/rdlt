@@ -12,8 +12,8 @@ use crate::cursor::Cursor;
 use crate::id::{
     CommitSeq, Epoch, GenerationId, LoadId, PartitionId, SchemaVersion, StreamName, TablePath,
 };
-use crate::schema::{ColumnPath, TableSchema};
-use crate::types::{Field, LogicalType};
+use crate::schema::{ColumnKey, ColumnPath, TableSchema};
+use crate::types::{Field, LogicalType, TypeKind};
 
 fn stream(name: &str) -> StreamName {
     StreamName::new(name).unwrap()
@@ -53,11 +53,21 @@ fn sample_state() -> PipelineState {
     orders.completed = vec![GenerationId(0), GenerationId(1)];
     let mut names = NameMap::default();
     names.insert(ColumnPath::from("id"), "id").unwrap();
-    let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)]).unwrap();
+    let variant = ColumnKey::Variant {
+        column: ColumnPath::from("id"),
+        kind: TypeKind::Json,
+    };
+    names.insert(variant, "id__json").unwrap();
+    let schema = TableSchema::new(vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("id__json", LogicalType::Json, true),
+    ])
+    .unwrap();
     state.tables.insert(
         TablePath::new(["orders"]).unwrap(),
         TableState {
-            schema: Some((SchemaVersion(1), schema)),
+            schema: Some((SchemaVersion(2), schema)),
+            physical: Some("orders".into()),
             names,
         },
     );
@@ -210,22 +220,56 @@ fn name_maps_are_append_only() {
     names.insert(ColumnPath::from("c"), "c").unwrap();
     assert_eq!(
         names.insert(ColumnPath::from("a-b"), "a_b_2"),
-        Err(NameConflict {
-            path: ColumnPath::from("a-b"),
+        Err(NameConflict::Remapped {
+            key: ColumnKey::Source(ColumnPath::from("a-b")),
             existing: "a_b".to_owned()
         })
     );
-    assert_eq!(names.get(&ColumnPath::from("a-b")), Some("a_b"));
+    assert_eq!(names.get(&ColumnPath::from("a-b").into()), Some("a_b"));
     assert_eq!(names.len(), 2);
     assert!(!names.is_empty());
     let pairs: Vec<_> = names.iter().collect();
     assert_eq!(
         pairs,
         [
-            (&ColumnPath::from("a-b"), "a_b"),
-            (&ColumnPath::from("c"), "c")
+            (&ColumnKey::Source(ColumnPath::from("a-b")), "a_b"),
+            (&ColumnKey::Source(ColumnPath::from("c")), "c")
         ]
     );
+}
+
+#[test]
+fn name_maps_never_give_two_columns_one_identifier() {
+    let mut names = NameMap::default();
+    names.insert(ColumnPath::from("a"), "x").unwrap();
+    let variant = ColumnKey::Variant {
+        column: ColumnPath::from("b"),
+        kind: TypeKind::Json,
+    };
+    assert_eq!(
+        names.insert(variant.clone(), "x"),
+        Err(NameConflict::Taken {
+            name: "x".to_owned(),
+            owner: ColumnKey::Source(ColumnPath::from("a"))
+        })
+    );
+    assert_eq!(
+        names.owner("x"),
+        Some(&ColumnKey::Source(ColumnPath::from("a")))
+    );
+    assert_eq!(names.owner("y"), None);
+    assert!(names.get(&variant).is_none());
+}
+
+#[test]
+fn column_keys_name_their_source_column() {
+    let variant = ColumnKey::Variant {
+        column: ColumnPath::new(["a", "b"]).unwrap(),
+        kind: TypeKind::Json,
+    };
+    assert_eq!(variant.column(), &ColumnPath::new(["a", "b"]).unwrap());
+    assert_eq!(variant.to_string(), "a.b (Json variant)");
+    assert_eq!(ColumnKey::from(ColumnPath::from("a")).to_string(), "a");
 }
 
 fn partition_states() -> impl Strategy<Value = PartitionState> {
@@ -243,8 +287,8 @@ fn states() -> impl Strategy<Value = PipelineState> {
         ),
         0..3,
     );
-    (any::<u64>(), streams, any::<bool>()).prop_map(|(epoch, streams, with_receipt)| {
-        PipelineState {
+    (any::<u64>(), streams, any::<bool>())
+        .prop_map(|(epoch, streams, with_receipt)| PipelineState {
             epoch: Epoch(epoch),
             streams: streams
                 .into_iter()
@@ -266,7 +310,49 @@ fn states() -> impl Strategy<Value = PipelineState> {
                 .collect(),
             tables: std::collections::BTreeMap::default(),
             last_receipt: with_receipt.then(receipt),
-        }
+        })
+        .prop_flat_map(|state| (Just(state), tables()))
+        .prop_map(|(mut state, tables)| {
+            state.tables = tables;
+            state
+        })
+}
+
+fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, TableState>> {
+    let columns = proptest::collection::btree_set("[a-z]{1,3}", 1..4);
+    proptest::collection::btree_map(
+        prop_oneof![Just("a"), Just("b.c")],
+        (1..9_u32, columns, any::<bool>()),
+        0..3,
+    )
+    .prop_map(|tables| {
+        tables
+            .into_iter()
+            .map(|(path, (version, columns, variant))| {
+                let mut names = NameMap::default();
+                let mut fields = Vec::new();
+                for column in &columns {
+                    names
+                        .insert(ColumnPath::from(column.as_str()), column.as_str())
+                        .unwrap();
+                    fields.push(Field::new(column.as_str(), LogicalType::Int64, true));
+                }
+                if variant {
+                    let key = ColumnKey::Variant {
+                        column: ColumnPath::from(columns.first().unwrap().as_str()),
+                        kind: TypeKind::Json,
+                    };
+                    names.insert(key, "v__json").unwrap();
+                    fields.push(Field::new("v__json", LogicalType::Json, true));
+                }
+                let state = TableState {
+                    schema: Some((SchemaVersion(version), TableSchema::new(fields).unwrap())),
+                    physical: Some(path.replace('.', "_").into()),
+                    names,
+                };
+                (TablePath::new([path]).unwrap(), state)
+            })
+            .collect()
     })
 }
 

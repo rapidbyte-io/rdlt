@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arrow_schema::Schema;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Field, Fields, TypeError, UnsupportedType};
+use crate::types::{Field, Fields, TypeError, TypeKind, UnsupportedType};
 
 /// The ordered, uniquely named fields of a table.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -114,5 +114,45 @@ impl TryFrom<Vec<String>> for ColumnPath {
 impl From<ColumnPath> for Vec<String> {
     fn from(path: ColumnPath) -> Self {
         path.0.iter().map(ToString::to_string).collect()
+    }
+}
+
+/// A table column, as a name map knows it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnKey {
+    /// A source column, by its path from the table's root.
+    Source(ColumnPath),
+    /// A variant column: a sibling of a source column that holds its values of another type, for
+    /// a destination that cannot change the source column's type.
+    Variant {
+        /// The source column.
+        column: ColumnPath,
+        /// The kind of values the variant holds.
+        kind: TypeKind,
+    },
+}
+
+impl ColumnKey {
+    /// The source column this key belongs to.
+    pub fn column(&self) -> &ColumnPath {
+        match self {
+            Self::Source(column) | Self::Variant { column, .. } => column,
+        }
+    }
+}
+
+impl From<ColumnPath> for ColumnKey {
+    fn from(column: ColumnPath) -> Self {
+        Self::Source(column)
+    }
+}
+
+impl fmt::Display for ColumnKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source(column) => write!(f, "{column}"),
+            Self::Variant { column, kind } => write!(f, "{column} ({kind:?} variant)"),
+        }
     }
 }

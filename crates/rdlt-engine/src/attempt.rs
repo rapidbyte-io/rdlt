@@ -260,6 +260,7 @@ async fn plan_stream(
         name: Arc::from(name.to_string()),
         version: SchemaVersion(1),
         generation,
+        merge: None,
     };
     if record_schema {
         let create = TableChange::Create {

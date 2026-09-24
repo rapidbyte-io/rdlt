@@ -176,6 +176,7 @@ impl Bench<'_> {
             name: name.into(),
             version: SchemaVersion(1),
             generation: None,
+            merge: None,
         }
     }
 

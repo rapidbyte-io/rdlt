@@ -18,8 +18,14 @@ rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version =
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
 
 # Libraries
-arrow-array = "59.2" # record batches; one arrow major across the workspace, matching DataFusion
+arrow-array = { version = "59.2", features = [
+  "chrono-tz",
+] } # record batches, with named time zones; one arrow major across the workspace, matching DataFusion
+arrow-cast = "59.2" # exact casts into a table's column types, and text renderings for lowering
+arrow-json = "59.2" # JSON renderings of values stored as Json
+arrow-row = "59.2" # comparable row encodings of merge keys
 arrow-schema = "59.2" # arrow data types and schemas
+arrow-select = "59.2" # take, filter and concat for discards, compaction and merges
 base64 = "0.22" # cursor bytes inside JSON state values
 bytes = { version = "1.12.1", features = [
   "serde",
@@ -41,6 +47,9 @@ rayon = "1.12.0" # the compute pool for CPU-bound stages
 thiserror = "2.0.20" # typed error derives
 tokio = { version = "1.53.1", default-features = false } # async runtime, timers and task sets
 tokio-util = { version = "0.7.19", default-features = false } # CancellationToken
+xxhash-rust = { version = "0.8.18", features = [
+  "xxh3",
+] } # hashes that tell colliding identifiers apart
 
 # Tooling and tests
 anyhow = "1.0.104"                                  # error reporting at xtask's command-line entry point

@@ -67,6 +67,7 @@ mod emitter;
 mod error;
 mod id;
 pub mod limits;
+mod meta;
 mod schema;
 mod secret;
 mod sink;
@@ -87,8 +88,8 @@ pub use commit::{CommitMeta, Receipt, SegmentRange, SegmentSet, UnorderedRanges}
 pub use cursor::Cursor;
 pub use destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
-    OpenContext, Opened, OpenedSession, Session, TableChange, TableRef, TableWriter, WriteStats,
-    destination_factory,
+    MergeKey, OpenContext, Opened, OpenedSession, Session, TableChange, TableRef, TableWriter,
+    WriteStats, destination_factory,
 };
 pub use emitter::Emitter;
 pub use error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result, ResultExt};
@@ -96,9 +97,10 @@ pub use id::{
     CommitSeq, ConnectorId, Epoch, GenerationId, IdError, LoadId, PartitionId, PipelineId,
     SchemaVersion, SegmentId, StreamName, TablePath,
 };
+pub use meta::{LOAD_ID_COLUMN, LOADED_AT_COLUMN, META_PREFIX};
 #[cfg(feature = "macros")]
 pub use rdlt_connector_macros::{destination, source};
-pub use schema::{ColumnPath, EmptyColumnPath, SchemaError, TableSchema};
+pub use schema::{ColumnKey, ColumnPath, EmptyColumnPath, SchemaError, TableSchema};
 pub use secret::Secret;
 pub use sink::{
     Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, SourceEvent,
