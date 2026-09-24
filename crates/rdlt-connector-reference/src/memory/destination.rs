@@ -73,18 +73,23 @@ struct Store {
 }
 
 impl Store {
-    /// Publishes the segments of `meta` staged by `pipeline` and swaps in the generations it
-    /// finishes; returns the rows and bytes published.
+    /// Publishes the segments of `meta` that `pipeline`'s session at `epoch` staged and swaps in
+    /// the generations it finishes; returns the rows and bytes published.
     ///
     /// Every table's publish is worked out before anything changes, so a failure leaves the store
     /// as it was.
-    fn publish(&mut self, pipeline: &PipelineId, meta: &CommitMeta) -> Result<(u64, u64)> {
+    fn publish(
+        &mut self,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        meta: &CommitMeta,
+    ) -> Result<(u64, u64)> {
         let mut plans = Vec::new();
         for (name, table) in &self.tables {
             let staged: Staged = meta
                 .segments
                 .iter()
-                .filter_map(|segment| table.staged.get(&(pipeline.clone(), segment)))
+                .filter_map(|segment| table.staged.get(&(pipeline.clone(), epoch, segment)))
                 .flatten()
                 .cloned()
                 .collect();
@@ -100,7 +105,7 @@ impl Store {
         let (mut rows, mut bytes) = (0, 0);
         for table in self.tables.values_mut() {
             for segment in meta.segments.iter() {
-                table.staged.remove(&(pipeline.clone(), segment));
+                table.staged.remove(&(pipeline.clone(), epoch, segment));
             }
         }
         for (name, staged, merged) in plans {
@@ -157,7 +162,8 @@ struct Table {
     published: Vec<RecordBatch>,
     /// Committed rows of replace generations not yet swapped in.
     generations: BTreeMap<GenerationId, Vec<RecordBatch>>,
-    staged: BTreeMap<(PipelineId, SegmentId), Staged>,
+    /// Staged batches by the pipeline and epoch of the session that staged them, and segment.
+    staged: BTreeMap<(PipelineId, Epoch, SegmentId), Staged>,
 }
 
 /// Batches staged under one segment, each for the table itself or for a replace generation.
@@ -263,9 +269,9 @@ impl Session for MemorySession {
     async fn discard_staged(&mut self) -> Result<()> {
         let mut store = self.store.lock();
         for table in store.tables.values_mut() {
-            table
-                .staged
-                .retain(|(pipeline, _), _| *pipeline != self.pipeline);
+            table.staged.retain(|(pipeline, epoch, _), _| {
+                *pipeline != self.pipeline || *epoch >= self.epoch
+            });
         }
         Ok(())
     }
@@ -288,7 +294,7 @@ impl Session for MemorySession {
         if let Some(receipt) = store.pipelines[&self.pipeline].receipts.get(&key) {
             return Ok(receipt.clone());
         }
-        let (rows, bytes) = store.publish(&self.pipeline, meta)?;
+        let (rows, bytes) = store.publish(&self.pipeline, self.epoch, meta)?;
         let pipeline = store
             .pipelines
             .get_mut(&self.pipeline)
@@ -356,7 +362,7 @@ impl TableWriter for MemoryWriter {
             stats.bytes += batch.get_array_memory_size() as u64;
             table
                 .staged
-                .entry((self.pipeline.clone(), segment))
+                .entry((self.pipeline.clone(), self.epoch, segment))
                 .or_default()
                 .push((self.generation, batch));
         }

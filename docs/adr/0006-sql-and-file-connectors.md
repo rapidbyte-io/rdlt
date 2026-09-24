@@ -20,8 +20,10 @@ and building them surfaced decisions the spec leaves open.
   development dependency on `rusqlite`; Postgres brings its own dialect in `rdlt-connectors`.
 - **Staged rows carry who staged them.** Every table has a staging table beside it whose rows
   record the pipeline, epoch, segment and generation. A commit publishes only its own epoch's
-  rows, so a fenced writer's late rows are never published, and `discard_staged` removes the
-  pipeline's rows. A catalog of staged segments gives each commit its tables, rows and bytes
+  rows, so a fenced writer's late rows are never published, and `discard_staged` removes only
+  what older sessions staged, so a discard that waits behind a newer session and lands late
+  never removes its staging (the memory destination keys its staging by epoch for the same
+  reason). A catalog of staged segments gives each commit its tables, rows and bytes
   without scanning staging.
 - **Merges use `ON CONFLICT`.** A merge table has a unique index on its key; a commit ranks its
   staged rows per key by sequence and upserts the first. SQLite and Postgres share the form, so

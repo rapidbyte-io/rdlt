@@ -181,7 +181,11 @@ pub trait Session: Send + 'static {
     /// A writer for `table`.
     fn writer(&mut self, table: &TableRef) -> impl Future<Output = Result<Self::Writer>> + Send;
 
-    /// Removes every staged, unpublished segment; the SDK calls it at open.
+    /// Removes the unpublished segments that sessions of the pipeline older than this one staged;
+    /// the SDK calls it at open.
+    ///
+    /// A newer session's staging must stay: this call can run after a newer session opened and
+    /// staged, when it waited behind that session.
     fn discard_staged(&mut self) -> impl Future<Output = Result<()>> + Send;
 
     /// Publishes the staged segments in `meta` with its state changes, atomically.

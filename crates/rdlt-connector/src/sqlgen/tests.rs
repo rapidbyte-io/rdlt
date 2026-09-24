@@ -994,7 +994,7 @@ fn a_swap_of_a_generation_without_a_table_empties_the_table() {
 }
 
 #[test]
-fn discarding_removes_only_the_pipelines_staging() {
+fn discarding_removes_only_what_older_sessions_of_the_pipeline_staged() {
     let (connection, planner) = database();
     let fields = [
         ("id", LogicalType::Int64, false),
@@ -1004,7 +1004,20 @@ fn discarding_removes_only_the_pipelines_staging() {
     for name in ["orders", "users"] {
         let table = table(name);
         apply(&connection, &planner, &create(&table, &fields)).unwrap();
-        stage(&connection, &planner, &table, (&mine, 1, 1), &[(1, "mine")]);
+        stage(
+            &connection,
+            &planner,
+            &table,
+            (&mine, 1, 1),
+            &[(1, "older")],
+        );
+        stage(
+            &connection,
+            &planner,
+            &table,
+            (&mine, 3, 1),
+            &[(3, "newer")],
+        );
         stage(
             &connection,
             &planner,
@@ -1013,31 +1026,28 @@ fn discarding_removes_only_the_pipelines_staging() {
             &[(2, "theirs")],
         );
     }
-    run_all(
-        &connection,
-        &planner.discard(&mine, &["orders".to_owned(), "users".to_owned()]),
-    );
+    let names = ["orders".to_owned(), "users".to_owned()];
+    run_all(&connection, &planner.discard(&mine, Epoch(2), &names));
     for name in ["orders", "users"] {
-        assert_eq!(
-            rows_of(&connection, &staging_table(name)),
-            [(2, "theirs".to_owned())]
-        );
+        let left: Vec<i64> = rows_of(&connection, &staging_table(name))
+            .iter()
+            .map(|row| row.0)
+            .collect();
+        assert_eq!(left, [2, 3], "{name}");
     }
-    assert!(
+    let staged = |pipeline, epoch| {
         query(
             &connection,
-            &planner.staged(&mine, Epoch(1), &segments(&[1]))
+            &planner.staged(pipeline, Epoch(epoch), &segments(&[1])),
         )
-        .is_empty()
-    );
+    };
+    assert!(staged(&mine, 1).is_empty());
     assert_eq!(
-        query(
-            &connection,
-            &planner.staged(&theirs, Epoch(1), &segments(&[1]))
-        )
-        .len(),
-        2
+        staged(&mine, 3).len(),
+        2,
+        "a newer session's segments stay recorded"
     );
+    assert_eq!(staged(&theirs, 1).len(), 2);
 }
 
 #[test]
