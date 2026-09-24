@@ -1063,9 +1063,11 @@ dependencies = [
  "arrow-select",
  "parking_lot",
  "rdlt-connector",
+ "rusqlite",
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

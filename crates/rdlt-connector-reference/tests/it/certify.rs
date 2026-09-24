@@ -1,7 +1,9 @@
 use arrow_array::RecordBatch;
 use rdlt_connector::testing::{Outcome, Probe, certify_destination, certify_source};
 use rdlt_connector::{BoxFuture, Result, TableRef};
-use rdlt_connector_reference::{GeneratorSource, MemoryDestination, MemorySource, published};
+use rdlt_connector_reference::{
+    GeneratorSource, MemoryDestination, MemorySource, SqliteDestination, published, sqlite,
+};
 use serde_json::json;
 
 struct MemoryProbe(&'static str);
@@ -10,6 +12,15 @@ impl Probe for MemoryProbe {
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
         let batches = published(self.0, &table.name);
         Box::pin(async move { Ok(batches) })
+    }
+}
+
+struct SqliteProbe(std::path::PathBuf);
+
+impl Probe for SqliteProbe {
+    fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
+        let batches = sqlite::published(&self.0, &table.name);
+        Box::pin(async move { batches })
     }
 }
 
@@ -46,4 +57,18 @@ async fn the_memory_destination_is_certified() {
     )
     .await
     .assert_passed();
+}
+
+#[tokio::test]
+async fn the_sqlite_destination_is_certified() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("certify.db");
+    let config = json!({ "path": path });
+    let probe = SqliteProbe(path.clone());
+    certify_destination::<SqliteDestination>(config.clone(), &probe)
+        .await
+        .assert_passed();
+    certify_destination::<SqliteDestination>(config, &probe)
+        .await
+        .assert_passed();
 }
