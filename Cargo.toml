@@ -48,6 +48,7 @@ memchr = "2.8.3" # finding the lines of JSON pushes
 parking_lot = "0.12.5" # locks without poisoning
 rayon = "1.12.0" # the compute pool for CPU-bound stages
 sonic-rs = "0.5.10" # SIMD JSON parsing and rendering for the shredder
+stacker = "0.1.25" # stack grown on demand, so JSON at the nesting limit parses in every build
 thiserror = "2.0.20" # typed error derives
 tokio = { version = "1.53.1", default-features = false } # async runtime, timers and task sets
 tokio-util = { version = "0.7.19", default-features = false } # CancellationToken

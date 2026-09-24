@@ -363,6 +363,15 @@ fn build(parsed: Parsed, shape: &Shape) -> Result<RecordBatch, ShredError> {
         .map_err(|error| ShredError::Internal(format!("building a batch: {error}")))
 }
 
+/// Stack a shredding job is sure of before it starts: building and checking the columns of values
+/// at the nesting limit walks their types once per level.
+const JOB_STACK: usize = 4 * 1024 * 1024;
+
+/// Runs `work`, one shredding job, with at least [`JOB_STACK`] of stack, whatever thread runs it.
+fn job<T>(work: impl FnOnce() -> T) -> T {
+    stacker::maybe_grow(JOB_STACK, 2 * JOB_STACK, work)
+}
+
 /// Shreds the JSON `pushes`, in order, into one batch per chunk of about `chunk_bytes`, on `pool`.
 ///
 /// A push is a JSON array of objects, or objects on their own lines; blank lines are skipped.
@@ -379,16 +388,19 @@ pub(crate) async fn shred(
     .into_iter()
     .collect::<Result<_, _>>()?;
     let chunks = chunks(&records, chunk_bytes);
-    let parsed: Vec<Parsed> = run_all(pool, chunks.into_iter().map(|chunk| move || parse(chunk)))
-        .await
-        .into_iter()
-        .collect::<Result<_, _>>()?;
+    let parsed: Vec<Parsed> = run_all(
+        pool,
+        chunks.into_iter().map(|chunk| move || job(|| parse(chunk))),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<_, _>>()?;
     let shape = Arc::new(join(&parsed)?);
     run_all(
         pool,
         parsed.into_iter().map(|chunk| {
             let shape = Arc::clone(&shape);
-            move || build(chunk, &shape)
+            move || job(|| build(chunk, &shape))
         }),
     )
     .await

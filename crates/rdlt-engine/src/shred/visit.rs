@@ -17,6 +17,19 @@ use super::render::Render;
 /// The deepest a value may nest, counting the record itself as depth 1.
 pub(crate) const MAX_DEPTH: u64 = rdlt_connector::limits::MAX_NESTING_DEPTH;
 
+/// Stack a nesting level may use before [`nest`] grows the stack: more than any one level of the
+/// parse uses, in every build.
+const RED_ZONE: usize = 128 * 1024;
+
+/// Stack [`nest`] adds when it grows it.
+const SEGMENT: usize = 1024 * 1024;
+
+/// Runs `parse`, one nesting level of a value, on more stack when little is left: a value at the
+/// nesting limit needs more than a thread's stack in unoptimized builds.
+pub(crate) fn nest<T>(parse: impl FnOnce() -> T) -> T {
+    stacker::maybe_grow(RED_ZONE, SEGMENT, parse)
+}
+
 /// What a parse carries besides its columns: why it stopped, and whether any column stopped
 /// building.
 #[derive(Default)]
@@ -134,26 +147,28 @@ fn object<'de, A: MapAccess<'de>>(
     context: &Context,
     depth: u64,
 ) -> Result<(), A::Error> {
-    let capacity = record.capacity();
-    let mut fields = 0;
-    while let Some(position) = map.next_key_seed(Field {
-        record: &mut *record,
-        hint: fields,
-        context,
-    })? {
-        let column = record
-            .field(position)
-            .map_err(|error| context.fail(error))?;
-        map.next_value_seed(Value {
-            column,
+    nest(move || {
+        let capacity = record.capacity();
+        let mut fields = 0;
+        while let Some(position) = map.next_key_seed(Field {
+            record: &mut *record,
+            hint: fields,
             context,
-            depth: depth + 1,
-            capacity,
-        })?;
-        fields += 1;
-    }
-    record.end_row(fields);
-    Ok(())
+        })? {
+            let column = record
+                .field(position)
+                .map_err(|error| context.fail(error))?;
+            map.next_value_seed(Value {
+                column,
+                context,
+                depth: depth + 1,
+                capacity,
+            })?;
+            fields += 1;
+        }
+        record.end_row(fields);
+        Ok(())
+    })
 }
 
 /// One value, `depth` levels deep, appended to `column`.
@@ -257,30 +272,32 @@ impl<'de> Visitor<'de> for Value<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        if let Column::Null(nulls) = *self.column {
-            *self.column = Column::new(
-                &Observed::Array(Box::new(Observed::Null)),
-                nulls,
-                self.capacity,
-            );
-        }
-        let Column::List(list) = self.column else {
-            return self.spoil().visit_seq(seq);
-        };
-        let mut items = 0;
-        while seq
-            .next_element_seed(Value {
-                column: list.item(),
-                context: self.context,
-                depth: self.depth + 1,
-                capacity: self.capacity,
-            })?
-            .is_some()
-        {
-            items += 1;
-        }
-        list.end_row(items)
-            .map_err(|error| self.context.fail(error))
+        nest(move || {
+            if let Column::Null(nulls) = *self.column {
+                *self.column = Column::new(
+                    &Observed::Array(Box::new(Observed::Null)),
+                    nulls,
+                    self.capacity,
+                );
+            }
+            let Column::List(list) = self.column else {
+                return self.spoil().visit_seq(seq);
+            };
+            let mut items = 0;
+            while seq
+                .next_element_seed(Value {
+                    column: list.item(),
+                    context: self.context,
+                    depth: self.depth + 1,
+                    capacity: self.capacity,
+                })?
+                .is_some()
+            {
+                items += 1;
+            }
+            list.end_row(items)
+                .map_err(|error| self.context.fail(error))
+        })
     }
 }
 
@@ -334,24 +351,28 @@ impl<'de> Visitor<'de> for Skip<'_> {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        while map.next_key::<IgnoredAny>()?.is_some() {
-            map.next_value_seed(Skip {
-                context: self.context,
-                depth: self.depth + 1,
-            })?;
-        }
-        Ok(())
+        nest(move || {
+            while map.next_key::<IgnoredAny>()?.is_some() {
+                map.next_value_seed(Skip {
+                    context: self.context,
+                    depth: self.depth + 1,
+                })?;
+            }
+            Ok(())
+        })
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        let depth = self.depth + 1;
-        while seq
-            .next_element_seed(Skip {
-                context: self.context,
-                depth,
-            })?
-            .is_some()
-        {}
-        Ok(())
+        nest(move || {
+            let depth = self.depth + 1;
+            while seq
+                .next_element_seed(Skip {
+                    context: self.context,
+                    depth,
+                })?
+                .is_some()
+            {}
+            Ok(())
+        })
     }
 }

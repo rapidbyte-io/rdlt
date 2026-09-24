@@ -9,7 +9,7 @@ use std::fmt;
 use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
-use super::visit::Context;
+use super::visit::{Context, nest};
 
 /// One value rendered onto `text`; an object repeating a key fails.
 pub(crate) struct Render<'a> {
@@ -86,40 +86,44 @@ impl<'de> Visitor<'de> for Render<'_> {
     }
 
     fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<(), A::Error> {
-        let mut keys = BTreeSet::new();
-        self.text.push('{');
-        while let Some(key) = map.next_key::<String>()? {
-            if keys.contains(&key) {
-                return Err(self.context.fail(ShredError::DuplicateKey(key)));
+        nest(move || {
+            let mut keys = BTreeSet::new();
+            self.text.push('{');
+            while let Some(key) = map.next_key::<String>()? {
+                if keys.contains(&key) {
+                    return Err(self.context.fail(ShredError::DuplicateKey(key)));
+                }
+                if !keys.is_empty() {
+                    self.text.push(',');
+                }
+                self.serialized(key.as_str())?;
+                self.text.push(':');
+                keys.insert(key);
+                map.next_value_seed(self.inner())?;
             }
-            if !keys.is_empty() {
-                self.text.push(',');
-            }
-            self.serialized(key.as_str())?;
-            self.text.push(':');
-            keys.insert(key);
-            map.next_value_seed(self.inner())?;
-        }
-        self.text.push('}');
-        Ok(())
+            self.text.push('}');
+            Ok(())
+        })
     }
 
     fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
-        self.text.push('[');
-        let mut first = true;
-        loop {
-            // The separator goes before each item, and comes off again when none follows.
-            let before = self.text.len();
-            if !first {
-                self.text.push(',');
+        nest(move || {
+            self.text.push('[');
+            let mut first = true;
+            loop {
+                // The separator goes before each item, and comes off again when none follows.
+                let before = self.text.len();
+                if !first {
+                    self.text.push(',');
+                }
+                if seq.next_element_seed(self.inner())?.is_none() {
+                    self.text.truncate(before);
+                    break;
+                }
+                first = false;
             }
-            if seq.next_element_seed(self.inner())?.is_none() {
-                self.text.truncate(before);
-                break;
-            }
-            first = false;
-        }
-        self.text.push(']');
-        Ok(())
+            self.text.push(']');
+            Ok(())
+        })
     }
 }

@@ -58,3 +58,13 @@ async fn a_panicking_job_panics_its_caller_and_the_pool_keeps_working() {
     assert!(joined.unwrap_err().is_panic());
     assert_eq!(run_all(pool.as_ref(), [|| 7]).await, [7]);
 }
+
+#[tokio::test]
+async fn pool_threads_have_the_stack_a_shredding_job_asks_for() {
+    let pool = pool();
+    let remaining = run_all(pool.as_ref(), [stacker::remaining_stack]).await;
+    assert!(
+        remaining[0].is_some_and(|bytes| bytes >= 6 * 1024 * 1024),
+        "{remaining:?}"
+    );
+}

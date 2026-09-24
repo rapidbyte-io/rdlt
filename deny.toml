@@ -18,6 +18,11 @@ allow = [
 ]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
+exceptions = [
+  # Built only: psm, under stacker, archives its assembly with it. LLVM's exception to Apache-2.0
+  # only relaxes it.
+  { crate = "ar_archive_writer", allow = ["Apache-2.0 WITH LLVM-exception"] },
+]
 
 [bans]
 multiple-versions = "warn"
