@@ -48,6 +48,7 @@ impl Context {
 struct Field<'a> {
     record: &'a mut Record,
     hint: usize,
+    context: &'a Context,
 }
 
 impl<'de> DeserializeSeed<'de> for Field<'_> {
@@ -65,8 +66,10 @@ impl Visitor<'_> for Field<'_> {
         formatter.write_str("an object key")
     }
 
-    fn visit_str<E>(self, name: &str) -> Result<usize, E> {
-        Ok(self.record.position(name, self.hint))
+    fn visit_str<E: de::Error>(self, name: &str) -> Result<usize, E> {
+        self.record
+            .position(name, self.hint)
+            .map_err(|error| self.context.fail(error))
     }
 }
 
@@ -136,6 +139,7 @@ fn object<'de, A: MapAccess<'de>>(
     while let Some(position) = map.next_key_seed(Field {
         record: &mut *record,
         hint: fields,
+        context,
     })? {
         let column = record
             .field(position)

@@ -16,6 +16,7 @@ fn every_visitor_says_what_it_expects() {
         expected(&Field {
             record: &mut record,
             hint: 0,
+            context: &context,
         }),
         "an object key"
     );

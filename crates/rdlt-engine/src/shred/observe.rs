@@ -47,11 +47,6 @@ impl Shape {
         &self.fields
     }
 
-    /// How many fields the shape has.
-    pub(crate) fn len(&self) -> usize {
-        self.fields.len()
-    }
-
     /// Adds the field `name`, new to the shape, observed as `observed`.
     pub(crate) fn push(&mut self, name: Arc<str>, observed: Observed) {
         self.index.insert(Arc::clone(&name), self.fields.len());
@@ -66,6 +61,14 @@ impl Shape {
                 None => self.push(Arc::clone(name), observed.clone()),
             }
         }
+    }
+
+    /// The most fields any object of the shape has, itself or nested at any depth.
+    pub(crate) fn widest(&self) -> usize {
+        self.fields
+            .iter()
+            .map(|(_, observed)| observed.widest())
+            .fold(self.fields.len(), usize::max)
     }
 
     /// The shape's fields as logical fields, every one nullable.
@@ -108,6 +111,15 @@ impl Observed {
             _ => Self::Json,
         };
         *self = joined;
+    }
+
+    /// The most fields any object among the values has, at any depth.
+    fn widest(&self) -> usize {
+        match self {
+            Self::Object(shape) => shape.widest(),
+            Self::Array(item) => item.widest(),
+            _ => 0,
+        }
     }
 
     /// The logical type naming the values observed.

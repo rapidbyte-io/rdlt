@@ -18,6 +18,7 @@ use arrow_array::builder::{
 use arrow_array::{ArrayRef, ListArray, NullArray, StructArray};
 use arrow_buffer::{NullBufferBuilder, OffsetBuffer};
 use arrow_schema::Fields;
+use rdlt_connector::limits::MAX_COLUMNS;
 
 use super::ShredError;
 use super::observe::{Observed, Shape};
@@ -237,6 +238,11 @@ impl Column {
     }
 }
 
+/// Whether an object of `fields` fields is within the column limit.
+pub(crate) fn within_columns(fields: usize) -> bool {
+    u64::try_from(fields).is_ok_and(|fields| fields <= MAX_COLUMNS)
+}
+
 /// A builder of 20-digit integers, the unsigned 64-bit range.
 fn wide(capacity: usize) -> Decimal128Builder {
     Decimal128Builder::with_capacity(capacity)
@@ -285,27 +291,32 @@ impl Record {
 
     /// The position of the field `name`, trying `hint` first, adding the field when new: objects
     /// usually repeat their keys' order, so the field after the last one found is most often next.
-    pub(crate) fn position(&mut self, name: &str, hint: usize) -> usize {
+    ///
+    /// A field beyond `MAX_COLUMNS` is refused at once, before the rest of the chunk is read.
+    pub(crate) fn position(&mut self, name: &str, hint: usize) -> Result<usize, ShredError> {
         if self
             .names
             .get(hint)
             .is_some_and(|field| field.as_ref() == name)
         {
-            return hint;
+            return Ok(hint);
         }
         #[cfg(test)]
         {
             self.searches += 1;
         }
         if let Some(&position) = self.index.get(name) {
-            return position;
+            return Ok(position);
+        }
+        if !within_columns(self.names.len() + 1) {
+            return Err(ShredError::TooManyColumns(self.names.len() + 1));
         }
         let name: Arc<str> = name.into();
         self.index.insert(Arc::clone(&name), self.names.len());
         self.names.push(name);
         self.columns.push(Column::Null(self.rows));
         self.written.push(usize::MAX);
-        self.names.len() - 1
+        Ok(self.names.len() - 1)
     }
 
     /// The column of the field at `position`, for the row being appended; a field the row already
