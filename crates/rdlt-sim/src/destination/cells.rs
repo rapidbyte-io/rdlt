@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{ConnectorError, MergeKey, NameMap, Result};
+use rdlt_connector::{ConnectorError, LogicalType, MergeKey, NameMap, Result};
 use serde_json::{Map, Value};
 
 /// One stored row: each column's value, nulls left out.
@@ -110,17 +110,48 @@ pub(crate) fn merge(published: &mut Vec<Cells>, incoming: Vec<Cells>, key: &Merg
     published.extend(winners.into_values());
 }
 
-/// A source column whose value one row holds in two of its columns.
+/// A finding about a stored row.
 #[derive(Debug, thiserror::Error)]
-#[error("column {0} holds a value in two columns")]
-pub(crate) struct Doubled(String);
+pub(crate) enum Finding {
+    /// A source column whose value one row holds in two of its columns.
+    #[error("column {0} holds a value in two columns")]
+    Doubled(String),
+    /// A column the table models as JSON or nested holds text that is not JSON.
+    #[error("column {0} holds text that is not JSON: {1}")]
+    NotJson(String, serde_json::Error),
+}
+
+/// `row` with the value of each column `types` models as JSON, a struct or a list but the
+/// destination stores as text, per `stored`, parsed back from that text.
+pub(crate) fn unlowered(
+    row: &Cells,
+    types: &BTreeMap<String, LogicalType>,
+    stored: &BTreeMap<String, LogicalType>,
+) -> std::result::Result<Cells, Finding> {
+    row.iter()
+        .map(|(column, value)| {
+            let nested = matches!(
+                types.get(column),
+                Some(LogicalType::Json | LogicalType::Struct(_) | LogicalType::List(_))
+            ) && stored.get(column) == Some(&LogicalType::Utf8);
+            let value = match value {
+                Value::String(text) if nested => canonical(
+                    serde_json::from_str(text)
+                        .map_err(|error| Finding::NotJson(column.clone(), error))?,
+                ),
+                other => other.clone(),
+            };
+            Ok((column.clone(), value))
+        })
+        .collect()
+}
 
 /// `row` by source column: each source column's value from whichever of its column and variant
 /// columns holds it, through `names`.
 pub(crate) fn source_row(
     row: &Cells,
     names: &NameMap,
-) -> std::result::Result<Map<String, Value>, Doubled> {
+) -> std::result::Result<Map<String, Value>, Finding> {
     let mut source = Map::new();
     for (key, physical) in names.iter() {
         let Some(value) = row.get(physical) else {
@@ -129,7 +160,7 @@ pub(crate) fn source_row(
         let column: Vec<&str> = key.column().segments().collect();
         let column = column.join(".");
         if source.insert(column.clone(), value.clone()).is_some() {
-            return Err(Doubled(column));
+            return Err(Finding::Doubled(column));
         }
     }
     Ok(source)

@@ -138,14 +138,16 @@ impl World {
     }
 }
 
-/// Destination capabilities drawn from `rng`: which widenings and nested types it stores, and the
-/// identifier rules it names columns under.
+/// Destination capabilities drawn from `rng`: whether it stores JSON, which widenings and nested
+/// types it stores, and the identifier rules it names columns under.
 fn capabilities(rng: &mut SplitMix64) -> Capabilities {
     let mut capabilities = Capabilities::minimal();
     capabilities.write_modes.replace = true;
     capabilities.write_modes.merge = true;
-    capabilities.nested.json = true;
-    capabilities.types.insert(TypeKind::Json);
+    if rng.chance(700) {
+        capabilities.nested.json = true;
+        capabilities.types.insert(TypeKind::Json);
+    }
     if rng.chance(500) {
         capabilities.nested.structs = true;
         capabilities.types.insert(TypeKind::Struct);
