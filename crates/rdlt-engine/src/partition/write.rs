@@ -9,6 +9,7 @@ use rdlt_connector::{Permit, TableSchema};
 
 use super::coalesce::{Flushed, Unit};
 use super::{OpenSegment, PartitionContext, PartitionJob, Progress};
+use crate::budget::MemoryBudget;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Write;
 use crate::shred::{self, ShredError};
@@ -27,6 +28,8 @@ pub(super) async fn write_flushed(
             // A lone batch concatenates to itself without a copy.
             let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches)
                 .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
+            // The pushes' permits now hold the copy.
+            drop(batches);
             let held = Held {
                 permits,
                 bytes: flushed.bytes,
@@ -38,10 +41,9 @@ pub(super) async fn write_flushed(
             let batches = shred::shred(context.env.compute(), &pushes, chunk_bytes)
                 .await
                 .map_err(|error| shred_failed(job, &error))?;
-            // The pushes are gone once shredded; each batch is charged as it is written instead.
-            drop((pushes, permits));
-            for batch in &batches {
-                write(job, context, open, batch, Held::default()).await?;
+            drop(pushes);
+            for (batch, held) in batches.iter().zip(hold(&context.budget, &batches, permits)) {
+                write(job, context, open, batch, held).await?;
             }
             Ok(())
         }
@@ -61,8 +63,25 @@ fn shred_failed(job: &PartitionJob, error: &ShredError) -> Error {
     failed.with_code(error.code()).with_stream(&job.stream)
 }
 
+/// Reservations holding each of `batches`' bytes, charged before `permits`, which held the pushes
+/// they were shredded from, are released: the budget always accounts for one or the other.
+fn hold(budget: &MemoryBudget, batches: &[RecordBatch], permits: Vec<Permit>) -> Vec<Held> {
+    let held = batches
+        .iter()
+        .map(|batch| {
+            let bytes = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
+            let permit: Permit = Box::new(budget.charge(bytes));
+            Held {
+                permits: vec![permit],
+                bytes,
+            }
+        })
+        .collect();
+    drop(permits);
+    held
+}
+
 /// Permits holding `bytes` of a batch's memory.
-#[derive(Default)]
 struct Held {
     permits: Vec<Permit>,
     bytes: u64,
