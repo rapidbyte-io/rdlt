@@ -5,6 +5,7 @@
     reason = "tests drive tokio's paused clock directly"
 )]
 
+mod destinations;
 mod engine;
 mod ledger;
 mod merge;
