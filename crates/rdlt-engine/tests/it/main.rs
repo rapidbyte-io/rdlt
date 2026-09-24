@@ -7,6 +7,7 @@
 
 mod destinations;
 mod engine;
+mod json;
 mod ledger;
 mod merge;
 mod schema;

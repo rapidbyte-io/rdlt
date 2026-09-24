@@ -1,13 +1,14 @@
-//! A source that pushes the Arrow batches a test hands it, one partition per stream, with a
-//! checkpoint after each batch.
+//! A source that pushes the Arrow batches or JSON a test hands it, one partition per stream,
+//! with a checkpoint after each push.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::RecordBatch;
+use bytes::Bytes;
 use parking_lot::Mutex;
 use rdlt_connector::{
-    ConnectContext, ConnectorError, Emitter, Partition, ReadMode, ReadStream, Result, Source,
+    ConnectContext, ConnectorError, Emitter, Partition, Push, ReadMode, ReadStream, Result, Source,
     SourceConnector, StreamName, StreamSpec, StreamState, Streams, TableSchema, source_factory,
 };
 use schemars::JsonSchema;
@@ -18,10 +19,10 @@ use serde_json::json;
 #[derive(Clone, Debug)]
 pub(crate) struct BatchStream {
     pub(crate) name: String,
-    pub(crate) batches: Vec<RecordBatch>,
+    pub(crate) pushes: Vec<Push>,
     pub(crate) primary_key: Option<Vec<String>>,
     pub(crate) schema: Option<TableSchema>,
-    /// Whether the stream checkpoints only after its last batch, so its batches share a segment.
+    /// Whether the stream checkpoints only after its last push, so its pushes share a segment.
     pub(crate) one_segment: bool,
 }
 
@@ -30,10 +31,21 @@ impl BatchStream {
     pub(crate) fn new(name: &str, batches: Vec<RecordBatch>) -> Self {
         Self {
             name: name.to_owned(),
-            batches,
+            pushes: batches.into_iter().map(Push::Arrow).collect(),
             primary_key: None,
             schema: None,
             one_segment: false,
+        }
+    }
+
+    /// A stream pushing each of `pushes` as JSON, with no primary key and no declared schema.
+    pub(crate) fn json(name: &str, pushes: &[&str]) -> Self {
+        Self {
+            pushes: pushes
+                .iter()
+                .map(|push| Push::Json(Bytes::from(push.to_string())))
+                .collect(),
+            ..Self::new(name, Vec::new())
         }
     }
 
@@ -43,7 +55,7 @@ impl BatchStream {
         self
     }
 
-    /// Checkpoints only after the last batch.
+    /// Checkpoints only after the last push.
     pub(crate) fn one_segment(mut self) -> Self {
         self.one_segment = true;
         self
@@ -143,9 +155,12 @@ impl ReadStream<BatchSource> for Pushing {
         out: &mut Emitter<usize>,
     ) -> Result<()> {
         let stream = &source.streams[self.index];
-        for (index, batch) in stream.batches.iter().enumerate().skip(next) {
-            out.batch(batch.clone()).await?;
-            if !stream.one_segment || index + 1 == stream.batches.len() {
+        for (index, push) in stream.pushes.iter().enumerate().skip(next) {
+            match push {
+                Push::Json(json) => out.json(json.clone()).await?,
+                Push::Arrow(batch) | Push::Changes(batch) => out.batch(batch.clone()).await?,
+            }
+            if !stream.one_segment || index + 1 == stream.pushes.len() {
                 out.checkpoint(&(index + 1)).await?;
             }
         }

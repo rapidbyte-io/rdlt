@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use super::{CommitPolicy, EngineConfig, RetryPolicy};
+use super::{BatchPolicy, CommitPolicy, EngineConfig, RetryPolicy};
 use crate::error::ErrorKind;
 
 #[test]
@@ -84,6 +84,7 @@ fn the_builder_applies_defaults_and_settings() {
     assert_eq!(defaults.barrier_wait(), Duration::from_secs(5));
     let policy = CommitPolicy::new(None, Some(5), None).unwrap();
     let retry = RetryPolicy::default().max_attempts(2);
+    let batch = BatchPolicy::new(10, 20, Duration::from_millis(30), 40).unwrap();
     let config = EngineConfig::builder()
         .memory(1024)
         .lanes(3)
@@ -91,6 +92,7 @@ fn the_builder_applies_defaults_and_settings() {
         .partitions(5)
         .partition_buffer(6)
         .barrier_wait(Duration::from_millis(7))
+        .batch(batch)
         .commit(policy)
         .retry(retry)
         .build()
@@ -101,6 +103,7 @@ fn the_builder_applies_defaults_and_settings() {
     assert_eq!(config.partitions().get(), 5);
     assert_eq!(config.partition_buffer().get(), 6);
     assert_eq!(config.barrier_wait(), Duration::from_millis(7));
+    assert_eq!(config.batch(), &batch);
     assert_eq!(config.commit(), &policy);
     assert_eq!(config.retry(), &retry);
 }
@@ -111,4 +114,40 @@ fn a_retry_policy_whose_first_delay_is_its_longest_is_valid() {
         .initial(Duration::from_secs(5))
         .max_delay(Duration::from_secs(5));
     assert!(EngineConfig::builder().retry(equal).build().is_ok());
+}
+
+#[test]
+fn a_batch_policy_needs_every_threshold_above_zero() {
+    let second = Duration::from_secs(1);
+    for (bytes, rows, latency, chunk, name) in [
+        (0, 1, second, 1, "target_bytes"),
+        (1, 0, second, 1, "max_rows"),
+        (1, 1, Duration::ZERO, 1, "max_latency"),
+        (1, 1, second, 0, "chunk_bytes"),
+    ] {
+        let error = BatchPolicy::new(bytes, rows, latency, chunk).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Config);
+        assert_eq!(error.code(), Some("batch_policy_invalid"));
+        assert!(error.to_string().contains(name), "{error}");
+    }
+    let policy = BatchPolicy::new(1, 2, second, 3).unwrap();
+    assert_eq!(
+        (
+            policy.target_bytes().get(),
+            policy.max_rows().get(),
+            policy.max_latency(),
+            policy.chunk_bytes().get()
+        ),
+        (1, 2, second, 3)
+    );
+}
+
+#[test]
+fn the_default_batch_policy_is_eight_mebibytes_a_mebirow_or_a_second() {
+    let policy = BatchPolicy::default();
+    assert_eq!(policy.target_bytes().get(), 8 << 20);
+    assert_eq!(policy.max_rows().get(), 1 << 20);
+    assert_eq!(policy.max_latency(), Duration::from_secs(1));
+    assert_eq!(policy.chunk_bytes().get(), 1 << 20);
+    assert_eq!(EngineConfig::default().batch(), &policy);
 }

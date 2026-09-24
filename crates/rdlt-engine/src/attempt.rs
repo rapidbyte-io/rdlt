@@ -204,6 +204,8 @@ async fn launch(
         buffer: context.config.partition_buffer(),
         load_id,
         loaded_at: context.env.now(),
+        env: Arc::clone(&context.env),
+        batch: *context.config.batch(),
     };
     // Only the partitions may keep the progress channel open, so the coordinator sees them end.
     let (streams, partitions) = spawn_partitions(&mut scope, planned, partition_context);
