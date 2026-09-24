@@ -3,6 +3,7 @@
 pub(crate) mod batches;
 pub(crate) mod destinations;
 pub(crate) mod script;
+pub(crate) mod targets;
 
 use std::future::Future;
 use std::num::NonZeroUsize;
