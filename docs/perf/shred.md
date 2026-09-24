@@ -89,3 +89,16 @@ mode every figure falls to about a third, so compare only runs taken back to bac
 
 Unpinned, the pool's eighth thread lands on slower cores than the first, so eight threads reach
 about 4.1× the fastest core: the mix of cores, not the shredder, sets that figure.
+
+## The `arrow-json` fast path
+
+The spec lets flat JSON of a known schema go through `arrow-json`'s decoder where that is faster
+(§7.4). `cargo bench -p rdlt-engine --features bench --bench shred -- fast_path` measures both on
+the flat corpora, the decoder given the schema:
+
+| Corpus | Shredder | `arrow-json` |
+|---|---|---|
+| `flat_narrow` | 513 MiB/s | 429 MiB/s |
+| `flat_wide` (200 columns) | 527 MiB/s | 279 MiB/s |
+
+The shredder is faster on both, and needs no schema, so the engine has no fast path (ADR 0008).

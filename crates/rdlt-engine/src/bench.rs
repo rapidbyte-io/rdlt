@@ -1,5 +1,6 @@
 //! Internals the benchmarks and fuzz targets drive (spec §21.2); not part of the engine's API.
 
+mod connectors;
 #[cfg(test)]
 mod tests;
 
@@ -8,6 +9,8 @@ use bytes::Bytes;
 
 use crate::compute::{ComputePool, Inline, ready};
 use crate::shred::{self, ShredError};
+
+pub use connectors::{SinkSession, SinkWriter, ipc_sink, replay};
 
 /// Why the shredder refused pushes.
 #[derive(Clone, Debug, PartialEq, Eq)]

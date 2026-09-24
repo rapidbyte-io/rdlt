@@ -8,6 +8,9 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 
+use std::sync::Arc;
+
+use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::RayonPool;
@@ -183,5 +186,72 @@ fn many_cores(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, single_core, many_cores);
+/// The arrow-json decoder against the shredder on flat JSON of a known schema: the fast path spec
+/// §7.4 allows where it is faster (ADR 0008 records the evaluation).
+fn arrow_json_fast_path(c: &mut Criterion) {
+    let narrow = Schema::new(vec![
+        ArrowField::new("id", DataType::Int64, true),
+        ArrowField::new("value", DataType::Int64, true),
+        ArrowField::new("flag", DataType::Boolean, true),
+    ]);
+    let wide = Schema::new(
+        (0..200)
+            .map(|column| {
+                let kind = if column % 2 == 0 {
+                    DataType::Int64
+                } else {
+                    DataType::Utf8
+                };
+                ArrowField::new(format!("c{column}"), kind, true)
+            })
+            .collect::<Vec<_>>(),
+    );
+    let mut group = c.benchmark_group("fast_path");
+    group.sample_size(10);
+    for (name, pushes, schema) in [
+        ("flat_narrow", corpus(flat_narrow), narrow),
+        ("flat_wide", corpus(flat_wide), wide),
+    ] {
+        let bytes: usize = pushes.iter().map(Bytes::len).sum();
+        group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
+        group.bench_function(BenchmarkId::new("shredder", name), |b| {
+            b.iter(|| black_box(shred(&pushes, CHUNK_BYTES).expect("the corpus shreds")));
+        });
+        let schema = Arc::new(schema);
+        group.bench_function(BenchmarkId::new("arrow_json", name), |b| {
+            b.iter(|| black_box(decode(&pushes, &schema)));
+        });
+    }
+    group.finish();
+}
+
+/// The rows of `pushes` as arrow-json decodes them against `schema`.
+fn decode(pushes: &[Bytes], schema: &SchemaRef) -> usize {
+    let mut rows = 0;
+    for push in pushes {
+        let mut decoder = arrow_json::ReaderBuilder::new(Arc::clone(schema))
+            .with_batch_size(1 << 16)
+            .build_decoder()
+            .expect("the schema decodes");
+        let mut offset = 0;
+        while offset < push.len() {
+            let read = decoder.decode(&push[offset..]).expect("the corpus decodes");
+            offset += read;
+            rows += decoder
+                .flush()
+                .expect("rows decode")
+                .map_or(0, |batch| batch.num_rows());
+            if read == 0 {
+                break;
+            }
+        }
+        rows += decoder
+            .flush()
+            .expect("rows decode")
+            .map_or(0, |batch| batch.num_rows());
+    }
+    rows
+}
+
+criterion_group!(benches, single_core, many_cores, arrow_json_fast_path);
 criterion_main!(benches);
