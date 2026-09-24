@@ -2,7 +2,11 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::builder::{Int64Builder, ListBuilder};
+use arrow_array::{
+    ArrayRef, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray,
+};
+use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::{
     Checkpointing, ConnectContext, ConnectorError, Emitter, Field, LogicalType, Partition,
     PartitionId, Partitioning, ReadMode, ReadStream, Result, SourceConnector, StreamName,
@@ -12,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::destination::committed_next;
-use crate::workload::{Row, SimStream};
+use crate::workload::{Extra, Row, Shape, SimStream};
 use crate::world::{FaultPoint, World};
 
 /// Configuration of [`SimSource`]: the world to serve.
@@ -56,30 +60,39 @@ impl SourceConnector for SimSource {
             streams.with(SimStreamReader {
                 index,
                 checkpointing: stream.checkpointing,
+                merge: stream.keys > 0,
+                plan_key: stream.plan_key,
             })
         })
     }
 }
 
-/// The schema every simulated stream declares.
+/// The schema a simulated stream declares: its base columns, and the key of a merge stream.
+///
+/// Drift columns are left out, so they are schema changes the pipeline's policy handles.
 #[expect(
     clippy::missing_panics_doc,
-    reason = "four distinct column names always make a schema"
+    reason = "distinct column names always make a schema"
 )]
-pub fn schema() -> TableSchema {
+pub fn schema(merge: bool) -> TableSchema {
     let column = |name| Field::new(name, LogicalType::Int64, false);
-    TableSchema::new(vec![
+    let mut columns = vec![
         column("id"),
         column("partition"),
         column("offset"),
         column("value"),
-    ])
-    .expect("the simulated schema has distinct names")
+    ];
+    if merge {
+        columns.push(column("key"));
+    }
+    TableSchema::new(columns).expect("the simulated schema has distinct names")
 }
 
 struct SimStreamReader {
     index: usize,
     checkpointing: Checkpointing,
+    merge: bool,
+    plan_key: bool,
 }
 
 impl SimStreamReader {
@@ -93,11 +106,17 @@ impl ReadStream<SimSource> for SimStreamReader {
 
     fn spec(&self) -> StreamSpec {
         let name = format!("s{}", self.index);
-        StreamSpec::new(StreamName::new(name).expect("simulated stream names are valid"))
-            .with_schema(schema())
-            .with_read_modes([ReadMode::Full, ReadMode::Incremental])
-            .with_partitioning(Partitioning::Planned)
-            .with_checkpointing(self.checkpointing)
+        let spec =
+            StreamSpec::new(StreamName::new(name).expect("simulated stream names are valid"))
+                .with_schema(schema(self.merge))
+                .with_read_modes([ReadMode::Full, ReadMode::Incremental])
+                .with_partitioning(Partitioning::Planned)
+                .with_checkpointing(self.checkpointing);
+        if self.merge && !self.plan_key {
+            spec.with_primary_key(["key"])
+        } else {
+            spec
+        }
     }
 
     async fn partitions(&self, source: &SimSource, _state: &StreamState) -> Result<Vec<Partition>> {
@@ -128,7 +147,7 @@ impl ReadStream<SimSource> for SimStreamReader {
                 return Err(fault);
             }
             let end = (next + usize::try_from(stream.batch_rows).unwrap_or(1)).min(rows.len());
-            out.batch(batch(&rows[next..end])).await?;
+            out.batch(batch(stream, &rows[next..end])).await?;
             next = end;
             batches += 1;
             let due = match stream.checkpointing {
@@ -178,14 +197,84 @@ fn partition_index(partition: &Partition) -> Result<usize> {
         .ok_or_else(|| ConnectorError::data(format!("no partition {}", partition.id())))
 }
 
-fn batch(rows: &[Row]) -> RecordBatch {
+/// `rows` of `stream` as one batch: the base columns, the key of a merge stream, and every drift
+/// column present where the rows were delivered.
+fn batch(stream: &SimStream, rows: &[Row]) -> RecordBatch {
     let column =
         |value: fn(&Row) -> i64| Arc::new(Int64Array::from_iter_values(rows.iter().map(value)));
-    RecordBatch::try_from_iter([
-        ("id", column(|row| row.id) as _),
-        ("partition", column(|row| row.partition) as _),
-        ("offset", column(|row| row.offset) as _),
-        ("value", column(|row| row.value) as _),
-    ])
-    .expect("four equal-length columns make a batch")
+    let mut columns: Vec<(String, ArrayRef)> = vec![
+        ("id".to_owned(), column(|row| row.id)),
+        ("partition".to_owned(), column(|row| row.partition)),
+        ("offset".to_owned(), column(|row| row.offset)),
+        ("value".to_owned(), column(|row| row.value)),
+    ];
+    if stream.keys > 0 {
+        columns.push(("key".to_owned(), column(|row| row.key.unwrap_or_default())));
+    }
+    let (partition, delivered) = rows.first().map_or((0, 0), |row| {
+        (usize::try_from(row.partition).unwrap_or(0), row.delivered)
+    });
+    for (index, drift) in stream.drift.iter().enumerate() {
+        if let Some(shape) = drift.shapes[partition][delivered] {
+            let values: Vec<Option<&Extra>> =
+                rows.iter().map(|row| row.extras[index].as_ref()).collect();
+            columns.push((drift.name.clone(), array(shape, &values)));
+        }
+    }
+    RecordBatch::try_from_iter(columns).expect("equal-length columns make a batch")
+}
+
+/// `values` as an array of `shape`.
+fn array(shape: Shape, values: &[Option<&Extra>]) -> ArrayRef {
+    let int = |extra: &Extra| match extra {
+        Extra::Int(value) | Extra::Quarters(value) | Extra::Object(value) => *value,
+        Extra::Text(_) | Extra::List(_) => 0,
+    };
+    match shape {
+        Shape::Int32 => {
+            Arc::new(Int32Array::from_iter(values.iter().map(|value| {
+                value.map(|extra| i32::try_from(int(extra)).unwrap_or(0))
+            })))
+        }
+        Shape::Int64 => Arc::new(Int64Array::from_iter(
+            values.iter().map(|value| value.map(int)),
+        )),
+        Shape::Float => Arc::new(Float64Array::from_iter(values.iter().map(|value| {
+            value.map(|extra| {
+                let quarters = i32::try_from(int(extra)).unwrap_or(0);
+                f64::from(quarters) / 4.0
+            })
+        }))),
+        Shape::Text => Arc::new(StringArray::from_iter(values.iter().map(|value| {
+            value.and_then(|extra| match extra {
+                Extra::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+        }))),
+        Shape::Object => {
+            let n: ArrayRef = Arc::new(Int64Array::from_iter(
+                values.iter().map(|value| value.map(int)),
+            ));
+            let field = Arc::new(ArrowField::new("n", DataType::Int64, true));
+            let nulls = values.iter().map(Option::is_some).collect::<Vec<_>>();
+            Arc::new(StructArray::new(
+                vec![field].into(),
+                vec![n],
+                Some(nulls.into()),
+            ))
+        }
+        Shape::List => {
+            let mut builder = ListBuilder::new(Int64Builder::new());
+            for value in values {
+                match value {
+                    Some(Extra::List(items)) => {
+                        builder.values().append_slice(items);
+                        builder.append(true);
+                    }
+                    _ => builder.append(false),
+                }
+            }
+            Arc::new(builder.finish())
+        }
+    }
 }

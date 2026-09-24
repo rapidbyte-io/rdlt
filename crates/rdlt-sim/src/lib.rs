@@ -27,12 +27,12 @@ mod workload;
 mod world;
 
 pub use destination::{
-    SimDestination, SimDestinationConfig, SimSession, SimWriter, completions, published,
+    Cells, SimDestination, SimDestinationConfig, SimSession, SimWriter, completions, published,
 };
 pub use env::{InlinePool, SimEnv};
 pub use oracle::check_exactly_once;
 pub use rng::SplitMix64;
 pub use seed::{SEED_VAR, SEEDS_VAR, Seed, SeedVarError, run, seeds};
 pub use source::{SimCursor, SimSource, SimSourceConfig, schema};
-pub use workload::{PHASES, Row, SimStream, Workload};
+pub use workload::{Drift, Extra, PHASES, Row, Shape, SimStream, Workload};
 pub use world::World;

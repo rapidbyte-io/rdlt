@@ -1,23 +1,28 @@
-//! The simulated destination: transactional commits, receipts, fencing and staging, checking the
-//! engine's invariants as it commits.
+//! The simulated destination: transactional commits, receipts, fencing, staging and merges,
+//! checking the engine's invariants as it commits.
+
+mod cells;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::RecordBatch;
 use rdlt_connector::{
     Capabilities, CommitMeta, CommitSeq, ConnectContext, ConnectorError, DestinationConnector,
-    Epoch, GenerationId, LoadId, OpenContext, Opened, PartitionId, PartitionState, Receipt, Result,
-    SegmentId, Session, StateChange, StateEntry, StateKey, StateRecord, StreamName, TableChange,
-    TablePath, TableRef, TableWriter, WriteStats,
+    Epoch, GenerationId, LoadId, MergeKey, NameMap, OpenContext, Opened, PartitionId,
+    PartitionState, Receipt, Result, SegmentId, Session, StateChange, StateEntry, StateKey,
+    StateRecord, StreamName, TableChange, TablePath, TableRef, TableWriter, WriteStats,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde_json::{Map, Value};
 
 use crate::source::SimCursor;
-use crate::workload::Row;
 use crate::world::{FaultPoint, World};
+
+pub use cells::Cells;
+pub(crate) use cells::canonical;
 
 /// The destination's contents, kept in its world.
 #[derive(Debug, Default)]
@@ -38,23 +43,52 @@ pub(crate) struct Store {
 struct Staged {
     table: String,
     generation: Option<GenerationId>,
-    rows: Vec<Row>,
+    merge: Option<MergeKey>,
+    rows: Vec<Cells>,
 }
 
 #[derive(Debug, Default)]
 struct Table {
-    published: Vec<Row>,
-    generations: BTreeMap<GenerationId, Vec<Row>>,
+    published: Vec<Cells>,
+    generations: BTreeMap<GenerationId, Vec<Cells>>,
 }
 
-/// Every row published to `table`.
-pub fn published(world: &World, table: &str) -> Vec<Row> {
+/// Every row published for `stream`, with each source column's value gathered from its column
+/// and variant columns through the committed name map: the rows as the source sent them.
+///
+/// A value found in two columns of one source column is a violation.
+pub fn published(world: &World, stream: &str) -> Vec<Map<String, Value>> {
     let store = world.store.lock();
-    store
-        .tables
-        .get(table)
-        .map(|table| table.published.clone())
-        .unwrap_or_default()
+    let Ok(path) = TablePath::new([stream]) else {
+        return Vec::new();
+    };
+    let Some((physical, names)) = names(&store.state, &path) else {
+        return Vec::new();
+    };
+    let Some(table) = store.tables.get(physical.as_str()) else {
+        return Vec::new();
+    };
+    table
+        .published
+        .iter()
+        .map(|row| {
+            cells::source_row(row, &names).unwrap_or_else(|finding| {
+                world.violation(format!("stream {stream}: {finding}"));
+                Map::new()
+            })
+        })
+        .collect()
+}
+
+/// The identifier and name map state records for the table at `path`.
+fn names(state: &BTreeMap<String, StateRecord>, path: &TablePath) -> Option<(String, NameMap)> {
+    let record = state.get(&StateKey::Names(path.clone()).encode())?;
+    match StateEntry::from_record(record).ok()? {
+        StateEntry::Names {
+            physical, names, ..
+        } => Some((physical.to_string(), names)),
+        _ => None,
+    }
 }
 
 /// Whether state records a full read in progress.
@@ -112,7 +146,7 @@ pub struct SimDestinationConfig {
     pub world: String,
 }
 
-/// Writes to a world's store.
+/// Writes to a world's store, with the capabilities the world drew.
 #[derive(Debug)]
 pub struct SimDestination {
     world: Arc<World>,
@@ -125,9 +159,7 @@ impl DestinationConnector for SimDestination {
     type Session = SimSession;
 
     fn capabilities(&self) -> Capabilities {
-        let mut capabilities = Capabilities::minimal();
-        capabilities.write_modes.replace = true;
-        capabilities
+        self.world.capabilities.clone()
     }
 
     async fn connect(config: SimDestinationConfig, _context: &ConnectContext) -> Result<Self> {
@@ -169,13 +201,12 @@ impl Session for SimSession {
     type Writer = SimWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
-        if let TableChange::Create { table, .. } = change {
-            let mut store = self.world.store.lock();
-            store
-                .names
-                .insert(table.path.clone(), table.name.to_string());
-            store.tables.entry(table.name.to_string()).or_default();
-        }
+        let table = change.table();
+        let mut store = self.world.store.lock();
+        store
+            .names
+            .insert(table.path.clone(), table.name.to_string());
+        store.tables.entry(table.name.to_string()).or_default();
         Ok(())
     }
 
@@ -189,6 +220,7 @@ impl Session for SimSession {
             epoch: self.epoch,
             table: table.name.to_string(),
             generation: table.generation,
+            merge: table.merge.clone(),
             buffered: Vec::new(),
         })
     }
@@ -242,21 +274,37 @@ impl Session for SimSession {
 impl Store {
     /// Publishes the staged segments of `meta` and swaps in the generations it finishes; returns
     /// the rows published, by table.
-    fn publish(&mut self, meta: &CommitMeta) -> Vec<(String, Vec<Row>)> {
+    fn publish(&mut self, meta: &CommitMeta) -> Vec<(String, Vec<Cells>)> {
         let mut published = Vec::new();
+        let mut merging: BTreeMap<String, (MergeKey, Vec<Cells>)> = BTreeMap::new();
         for segment in meta.segments.iter() {
             for staged in self.staged.remove(&segment).unwrap_or_default() {
-                let table = self.tables.entry(staged.table.clone()).or_default();
+                published.push((staged.table.clone(), staged.rows.clone()));
+                if let Some(key) = staged.merge {
+                    merging
+                        .entry(staged.table)
+                        .or_insert_with(|| (key, Vec::new()))
+                        .1
+                        .extend(staged.rows);
+                    continue;
+                }
+                let table = self.tables.entry(staged.table).or_default();
                 match staged.generation {
                     Some(generation) => table
                         .generations
                         .entry(generation)
                         .or_default()
-                        .extend_from_slice(&staged.rows),
-                    None => table.published.extend_from_slice(&staged.rows),
+                        .extend(staged.rows),
+                    None => table.published.extend(staged.rows),
                 }
-                published.push((staged.table, staged.rows));
             }
+        }
+        for (name, (key, rows)) in merging {
+            cells::merge(
+                &mut self.tables.entry(name).or_default().published,
+                rows,
+                &key,
+            );
         }
         for (path, generation) in &meta.finish_generations {
             let Some(name) = self.names.get(path).cloned() else {
@@ -312,16 +360,35 @@ impl Store {
     }
 
     /// Checks that every row just published lies before its partition's committed cursor.
-    fn check_cursors(&self, world: &World, published: &[(String, Vec<Row>)]) {
+    fn check_cursors(&self, world: &World, published: &[(String, Vec<Cells>)]) {
         for (table, rows) in published {
-            let Ok(stream) = StreamName::new(table) else {
+            let Some((path, _)) = self.names.iter().find(|(_, name)| *name == table) else {
+                continue;
+            };
+            let Some(stream) = path
+                .segments()
+                .next()
+                .and_then(|name| StreamName::new(name).ok())
+            else {
+                continue;
+            };
+            let Some((_, names)) = names(&self.state, path) else {
+                world.violation(format!("stream {stream}: rows published without names"));
                 continue;
             };
             for row in rows {
+                let Ok(row) = cells::source_row(row, &names) else {
+                    continue;
+                };
+                let number = |column: &str| row.get(column).and_then(Value::as_u64);
+                let (Some(partition), Some(offset)) = (number("partition"), number("offset"))
+                else {
+                    world.violation(format!("stream {stream}: a row lacks its position"));
+                    continue;
+                };
                 let partition =
-                    PartitionId::parse(format!("p{}", row.partition)).expect("valid partition id");
+                    PartitionId::parse(format!("p{partition}")).expect("valid partition id");
                 let next = next_offset(&self.state, &stream, &partition);
-                let offset = u64::try_from(row.offset).unwrap_or(u64::MAX);
                 if next.is_none_or(|next| offset >= next) {
                     world.violation(format!(
                         "stream {stream} partition {partition}: row {offset} published past the \
@@ -340,7 +407,8 @@ pub struct SimWriter {
     epoch: Epoch,
     table: String,
     generation: Option<GenerationId>,
-    buffered: Vec<(SegmentId, Vec<Row>)>,
+    merge: Option<MergeKey>,
+    buffered: Vec<(SegmentId, Vec<Cells>)>,
 }
 
 impl TableWriter for SimWriter {
@@ -348,7 +416,7 @@ impl TableWriter for SimWriter {
         if let Some(fault) = self.world.fault(FaultPoint::Write) {
             return Err(fault);
         }
-        self.buffered.push((segment, rows(&batch)?));
+        self.buffered.push((segment, cells::rows(&batch)?));
         Ok(())
     }
 
@@ -367,32 +435,10 @@ impl TableWriter for SimWriter {
             store.staged.entry(segment).or_default().push(Staged {
                 table: self.table.clone(),
                 generation: self.generation,
+                merge: self.merge.clone(),
                 rows,
             });
         }
         Ok(stats)
     }
-}
-
-fn rows(batch: &RecordBatch) -> Result<Vec<Row>> {
-    let column = |name: &str| {
-        batch
-            .column_by_name(name)
-            .and_then(|column| column.as_any().downcast_ref::<Int64Array>())
-            .ok_or_else(|| ConnectorError::data(format!("the batch has no Int64 column {name}")))
-    };
-    let (id, partition, offset, value) = (
-        column("id")?,
-        column("partition")?,
-        column("offset")?,
-        column("value")?,
-    );
-    Ok((0..batch.num_rows())
-        .map(|row| Row {
-            id: id.value(row),
-            partition: partition.value(row),
-            offset: offset.value(row),
-            value: value.value(row),
-        })
-        .collect())
 }

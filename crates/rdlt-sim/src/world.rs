@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rdlt_connector::ConnectorError;
+use rdlt_connector::{Capabilities, ConnectorError, IdentifierCase, SchemaChanges, TypeKind};
 
 use crate::destination::Store;
 use crate::rng::SplitMix64;
@@ -42,6 +42,8 @@ impl FaultPoint {
 pub struct World {
     /// What the source serves.
     pub workload: Workload,
+    /// What the destination can store.
+    pub capabilities: Capabilities,
     phase: AtomicUsize,
     faulty: AtomicBool,
     rng: Mutex<SplitMix64>,
@@ -56,6 +58,7 @@ impl World {
     pub fn register(name: &str, rng: &mut SplitMix64) -> Arc<Self> {
         let world = Arc::new(Self {
             workload: Workload::generate(rng),
+            capabilities: capabilities(rng),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
@@ -133,4 +136,50 @@ impl World {
     pub fn violations(&self) -> Vec<String> {
         self.violations.lock().clone()
     }
+}
+
+/// Destination capabilities drawn from `rng`: which widenings and nested types it stores, and the
+/// identifier rules it names columns under.
+fn capabilities(rng: &mut SplitMix64) -> Capabilities {
+    let mut capabilities = Capabilities::minimal();
+    capabilities.write_modes.replace = true;
+    capabilities.write_modes.merge = true;
+    capabilities.nested.json = true;
+    capabilities.types.insert(TypeKind::Json);
+    if rng.chance(500) {
+        capabilities.nested.structs = true;
+        capabilities.types.insert(TypeKind::Struct);
+    }
+    if rng.chance(500) {
+        capabilities.nested.lists = true;
+        capabilities.types.insert(TypeKind::List);
+    }
+    if rng.chance(500) {
+        capabilities.types.insert(TypeKind::Uuid);
+    }
+    let all = SchemaChanges::all();
+    capabilities.schema_changes.widenings = match rng.below(3) {
+        0 => all.widenings,
+        1 => std::collections::BTreeSet::new(),
+        _ => all
+            .widenings
+            .into_iter()
+            .filter(|_| rng.chance(500))
+            .collect(),
+    };
+    capabilities.identifiers.case = match rng.below(3) {
+        0 => IdentifierCase::Preserve,
+        1 => IdentifierCase::Lower,
+        _ => IdentifierCase::Upper,
+    };
+    let max_len = [63, 16, 12][usize::try_from(rng.below(3)).unwrap_or(0)];
+    capabilities.identifiers.max_len =
+        std::num::NonZeroU16::new(max_len).expect("identifier lengths are positive");
+    if rng.chance(300) {
+        capabilities.identifiers.reserved.insert("value".to_owned());
+    }
+    capabilities.max_parallel_writers =
+        std::num::NonZeroU16::new(u16::try_from(1 + rng.below(4)).unwrap_or(1))
+            .expect("writer counts are positive");
+    capabilities
 }
