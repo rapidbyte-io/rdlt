@@ -76,9 +76,14 @@ pub struct MergeKey {
 /// engine's metadata columns included. Applying a change the table already reflects must succeed
 /// and change nothing: when an attempt fails between applying a change and committing, the next
 /// attempt applies it again.
+///
+/// A change that declares a column at a type the table's column neither has nor, for
+/// [`TableChange::Widen`], widens from fails with a `Data` error coded `schema_conflict` and
+/// changes nothing. An attempt that failed before committing can leave columns behind that the
+/// next attempt names differently; the engine answers the conflict by choosing other identifiers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableChange {
-    /// Create the table.
+    /// Create the table; on a table that exists, add the columns it lacks as nullable.
     Create {
         /// The table.
         table: TableRef,
@@ -165,7 +170,8 @@ pub trait Session: Send + 'static {
     /// Applies a schema change before any write under the new version; staging follows the
     /// table.
     ///
-    /// A change the table already reflects succeeds and changes nothing. Writers created before a
+    /// A change the table already reflects succeeds and changes nothing; a change that conflicts
+    /// with the table's columns fails as [`TableChange`] describes. Writers created before a
     /// change receive batches with the new columns after it.
     fn apply_schema(&mut self, change: &TableChange) -> impl Future<Output = Result<()>> + Send;
 
@@ -193,6 +199,10 @@ pub trait Session: Send + 'static {
 /// newer session's staging.
 pub trait TableWriter: Send + 'static {
     /// Stages `batch` as part of `segment`.
+    ///
+    /// The batch's columns are some of the table's, each at the column's type or a type the
+    /// column holds: a batch written after a widen can still carry the narrower type, since a
+    /// partition resolved before the widen writes it.
     fn write(
         &mut self,
         segment: SegmentId,

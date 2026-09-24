@@ -213,12 +213,14 @@ async fn schema_changes_follow_the_table_and_applying_them_again_changes_nothing
         ConnectorErrorKind::Data,
         "the table does not exist yet"
     );
-    for id in [LogicalType::Int32, LogicalType::Utf8] {
-        let create = TableChange::Create {
-            table: table.clone(),
-            schema: TableSchema::new(vec![Field::new("id", id, false)]).unwrap(),
-        };
-        opened.session.apply_schema(&create).await.unwrap();
+    let create = |fields| TableChange::Create {
+        table: table.clone(),
+        schema: TableSchema::new(fields).unwrap(),
+    };
+    let id = Field::new("id", LogicalType::Int32, false);
+    let name = Field::new("name", LogicalType::Utf8, false);
+    for change in [create(vec![id.clone()]), create(vec![id, name])] {
+        opened.session.apply_schema(&change).await.unwrap();
     }
     let widen = TableChange::Widen {
         table: table.clone(),
@@ -231,10 +233,33 @@ async fn schema_changes_follow_the_table_and_applying_them_again_changes_nothing
     }
     let expected = TableSchema::new(vec![
         Field::new("id", LogicalType::Int64, false),
+        Field::new("name", LogicalType::Utf8, true),
         Field::new("extra", LogicalType::Utf8, true),
     ])
     .unwrap();
-    assert_eq!(schema("schemas", "t"), Some(expected));
+    assert_eq!(schema("schemas", "t"), Some(expected.clone()));
+    let conflicts = [
+        create(vec![Field::new("id", LogicalType::Utf8, false)]),
+        TableChange::AddColumn {
+            table: table.clone(),
+            field: Field::new("extra", LogicalType::Int64, true),
+        },
+        TableChange::Widen {
+            table: table.clone(),
+            column: "name".into(),
+            from: LogicalType::Int32,
+            to: LogicalType::Int64,
+        },
+    ];
+    for change in &conflicts {
+        let error = opened.session.apply_schema(change).await.unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Data, Some("schema_conflict")),
+            "{change:?}"
+        );
+    }
+    assert_eq!(schema("schemas", "t"), Some(expected), "a conflict changes nothing");
     let missing = TableChange::Widen {
         table,
         column: "missing".into(),

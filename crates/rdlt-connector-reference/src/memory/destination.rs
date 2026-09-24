@@ -186,49 +186,66 @@ impl Table {
     }
 
     /// Applies `change` to the table's columns; a change they already reflect changes nothing.
+    ///
+    /// A column the change declares at a type the table's column neither has nor widens to is a
+    /// `schema_conflict`.
     fn apply(&mut self, change: &TableChange) -> Result<()> {
         let schema = self.schema.as_ref().ok_or_else(|| {
             ConnectorError::data(format!("table {} does not exist", change.table().name))
         })?;
-        let fields: Vec<Field> = match change {
-            TableChange::Create { .. } => return Ok(()),
-            TableChange::AddColumn { field, .. } => {
-                if schema.field(field.name()).is_some() {
-                    return Ok(());
+        let mut fields: Vec<Field> = schema.fields().iter().cloned().collect();
+        match change {
+            TableChange::Create { schema: declared, .. } => {
+                for field in declared.fields().iter() {
+                    add(&mut fields, field, change)?;
                 }
-                schema
-                    .fields()
-                    .iter()
-                    .cloned()
-                    .chain([Field::new(field.name(), field.logical_type().clone(), true)])
-                    .collect()
             }
-            TableChange::Widen { column, to, .. } => {
-                if schema.field(column).is_none() {
+            TableChange::AddColumn { field, .. } => add(&mut fields, field, change)?,
+            TableChange::Widen {
+                column, from, to, ..
+            } => {
+                let Some(field) = fields.iter_mut().find(|field| field.name() == column.as_ref())
+                else {
                     return Err(ConnectorError::data(format!(
                         "table {} has no column {column}",
                         change.table().name
                     )));
+                };
+                if field.logical_type() != from && field.logical_type() != to {
+                    return Err(conflict(change, field));
                 }
-                schema
-                    .fields()
-                    .iter()
-                    .map(|field| {
-                        if field.name() == column.as_ref() {
-                            Field::new(field.name(), to.clone(), field.is_nullable())
-                        } else {
-                            field.clone()
-                        }
-                    })
-                    .collect()
+                *field = Field::new(field.name(), to.clone(), field.is_nullable());
             }
-        };
+        }
         self.schema = Some(
             TableSchema::new(fields)
                 .map_err(|error| ConnectorError::internal(format!("changing a table: {error}")))?,
         );
         Ok(())
     }
+}
+
+/// Adds `field` to `fields` as a nullable column unless a column of its name and type is there.
+fn add(fields: &mut Vec<Field>, field: &Field, change: &TableChange) -> Result<()> {
+    match fields.iter().find(|existing| existing.name() == field.name()) {
+        Some(existing) if existing.logical_type() == field.logical_type() => Ok(()),
+        Some(existing) => Err(conflict(change, existing)),
+        None => {
+            fields.push(Field::new(field.name(), field.logical_type().clone(), true));
+            Ok(())
+        }
+    }
+}
+
+/// The error for `change` declaring `existing` at another type.
+fn conflict(change: &TableChange, existing: &Field) -> ConnectorError {
+    ConnectorError::data(format!(
+        "table {} already has column {} as {:?}",
+        change.table().name,
+        existing.name(),
+        existing.logical_type()
+    ))
+    .with_code("schema_conflict")
 }
 
 #[destination(id = "io.rapidbyte.memory")]
@@ -297,11 +314,12 @@ impl Session for MemorySession {
         let mut store = self.store.lock();
         match change {
             TableChange::Create { table, schema } => {
-                store
-                    .table(table)
-                    .schema
-                    .get_or_insert_with(|| schema.clone());
-                Ok(())
+                let entry = store.table(table);
+                if entry.schema.is_none() {
+                    entry.schema = Some(schema.clone());
+                    return Ok(());
+                }
+                entry.apply(change)
             }
             TableChange::AddColumn { table, .. } | TableChange::Widen { table, .. } => {
                 store.existing(table)?.apply(change)
