@@ -363,13 +363,16 @@ fn build(parsed: Parsed, shape: &Shape) -> Result<RecordBatch, ShredError> {
         .map_err(|error| ShredError::Internal(format!("building a batch: {error}")))
 }
 
-/// Stack a shredding job is sure of before it starts: building and checking the columns of values
-/// at the nesting limit walks their types once per level.
-const JOB_STACK: usize = 4 * 1024 * 1024;
+/// Stack a shredding job is sure of before it starts, 4 MiB: building and checking the columns of
+/// values at the nesting limit walks their types once per level.
+const JOB_STACK: usize = 4_194_304;
+
+/// Stack added when a job must grow it, 8 MiB.
+const JOB_SEGMENT: usize = 8_388_608;
 
 /// Runs `work`, one shredding job, with at least [`JOB_STACK`] of stack, whatever thread runs it.
 fn job<T>(work: impl FnOnce() -> T) -> T {
-    stacker::maybe_grow(JOB_STACK, 2 * JOB_STACK, work)
+    stacker::maybe_grow(JOB_STACK, JOB_SEGMENT, work)
 }
 
 /// Shreds the JSON `pushes`, in order, into one batch per chunk of about `chunk_bytes`, on `pool`.

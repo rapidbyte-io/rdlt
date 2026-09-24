@@ -17,12 +17,12 @@ use super::render::Render;
 /// The deepest a value may nest, counting the record itself as depth 1.
 pub(crate) const MAX_DEPTH: u64 = rdlt_connector::limits::MAX_NESTING_DEPTH;
 
-/// Stack a nesting level may use before [`nest`] grows the stack: more than any one level of the
-/// parse uses, in every build.
-const RED_ZONE: usize = 128 * 1024;
+/// Stack a nesting level may use before [`nest`] grows the stack, 128 KiB: more than any one level
+/// of the parse uses, in every build.
+const RED_ZONE: usize = 131_072;
 
-/// Stack [`nest`] adds when it grows it.
-const SEGMENT: usize = 1024 * 1024;
+/// Stack [`nest`] adds when it grows it, 1 MiB.
+const SEGMENT: usize = 1_048_576;
 
 /// Runs `parse`, one nesting level of a value, on more stack when little is left: a value at the
 /// nesting limit needs more than a thread's stack in unoptimized builds.
