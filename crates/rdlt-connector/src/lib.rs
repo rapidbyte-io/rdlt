@@ -73,6 +73,8 @@ mod secret;
 mod sink;
 mod source;
 mod spec;
+#[cfg(feature = "sqlgen")]
+pub mod sqlgen;
 mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
