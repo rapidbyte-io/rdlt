@@ -27,11 +27,25 @@ const HASH_DIGITS: usize = 6;
 #[derive(Clone, Debug)]
 pub(crate) struct Naming {
     rules: IdentifierRules,
+    /// Whether every identifier carries its hash, even one that is free without it.
+    hashed: bool,
 }
 
 impl Naming {
     pub(crate) fn new(rules: IdentifierRules) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            hashed: false,
+        }
+    }
+
+    /// The same rules, appending the hash to every identifier: what a table falls back to when
+    /// the destination already holds a column an attempt that never committed left behind.
+    pub(crate) fn hashing(&self) -> Self {
+        Self {
+            rules: self.rules.clone(),
+            hashed: true,
+        }
     }
 
     /// Maps every key of `keys` that `names` lacks to a free identifier, never one in
@@ -90,7 +104,7 @@ impl Naming {
         let base = self.clean(candidate);
         let max = usize::from(self.rules.max_len.get());
         let first = truncate(&base, max);
-        if !self.unusable(&first, &taken) {
+        if !self.hashed && !self.unusable(&first, &taken) {
             return Ok(first);
         }
         let hash = self.fold(&base32(xxhash_rust::xxh3::xxh3_64(source)));

@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, DestinationSession, DestinationWriter, Receipt, SchemaVersion, StateChange,
+    CommitMeta, ConnectorError, DestinationSession, DestinationWriter, Receipt, SchemaVersion, StateChange,
     StateEntry, TableChange, TableRef, TableSchema,
 };
 
 use super::TableView;
 use super::model::Model;
-use super::resolve::{Change, Resolver, Route};
+use super::resolve::{Change, Resolution, Resolver, Route};
 use crate::error::{Error, Side};
 
 /// The destination session, shared by the coordinator's commits and the partitions' schema
@@ -161,24 +161,52 @@ impl Tables {
         if resolution.changes.is_empty() {
             return Ok((view, resolution.routes));
         }
-        let next = Arc::new(TableView::new(
-            &view.table,
-            resolution.model,
-            &slot.resolver,
-        ));
-        let changes = table_changes(&view, &next, &resolution.changes);
-        self.apply(table, &changes).await?;
-        *slot.current.lock() = Arc::clone(&next);
-        Ok((next, resolution.routes))
+        let next = match self.evolve(table, &view, resolution, &slot.resolver).await? {
+            Ok(next) => next,
+            Err(_conflict) => {
+                let hashing = slot.resolver.hashing();
+                let resolution = hashing.resolve(&view.model, incoming)?;
+                self.evolve(table, &view, resolution, &hashing)
+                    .await?
+                    .map_err(|error| self.refused(table, error))?
+            }
+        };
+        *slot.current.lock() = Arc::clone(&next.0);
+        Ok(next)
+    }
+
+    /// Applies what `resolution` changes in `view`; the destination's `schema_conflict`, from
+    /// columns an attempt that never committed left behind, is returned for the caller to name
+    /// around.
+    async fn evolve(
+        &self,
+        table: usize,
+        view: &TableView,
+        resolution: Resolution,
+        resolver: &Resolver,
+    ) -> Result<Result<(Arc<TableView>, Vec<Route>), ConnectorError>, Error> {
+        let next = Arc::new(TableView::new(&view.table, resolution.model, resolver));
+        let changes = table_changes(view, &next, &resolution.changes);
+        match self.session.apply_schema(&changes).await? {
+            Ok(()) => Ok(Ok((next, resolution.routes))),
+            Err(error) if error.code() == Some("schema_conflict") => Ok(Err(error)),
+            Err(error) => Err(self.refused(table, error)),
+        }
     }
 
     /// Applies `changes` to `table` through the session.
     async fn apply(&self, table: usize, changes: &[TableChange]) -> Result<(), Error> {
+        self.session
+            .apply_schema(changes)
+            .await?
+            .map_err(|error| self.refused(table, error))
+    }
+
+    /// The error for the destination refusing a change to `table`.
+    fn refused(&self, table: usize, error: ConnectorError) -> Error {
         let stream = &self.slots[table].resolver.stream;
-        self.session.apply_schema(changes).await?.map_err(|error| {
-            let context = format!("changing the table of stream {stream}");
-            Error::connector(Side::Destination, context, error).with_stream(stream)
-        })
+        let context = format!("changing the table of stream {stream}");
+        Error::connector(Side::Destination, context, error).with_stream(stream)
     }
 
     /// Creates `table`'s generation, a replace stream's hidden copy, with the table's columns.
