@@ -24,9 +24,12 @@ use crate::config::CommitPolicy;
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Lanes;
+use crate::naming::Naming;
 use crate::partition::{Progress, Seal};
+use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog};
+use crate::table::{MetaNames, Model, Resolver, Settings, SharedSession, Tables};
 
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
 type Acks = Arc<Mutex<Vec<(StreamName, Vec<(PartitionId, Cursor)>)>>>;
@@ -136,6 +139,8 @@ struct Setup {
     policy: CommitPolicy,
     barrier_wait: Duration,
     fail_commit: bool,
+    /// A schema the first stream's table is created with before the coordinator starts.
+    schema: Option<TableSchema>,
 }
 
 impl Setup {
@@ -146,10 +151,39 @@ impl Setup {
             policy: CommitPolicy::new(None, Some(1_000), None).unwrap(),
             barrier_wait: Duration::from_secs(60),
             fail_commit: false,
+            schema: None,
         }
     }
 
-    fn start(self) -> (tokio::task::JoinHandle<Result<(), Error>>, Harness) {
+    /// The tables of the setup's streams, over `session`.
+    async fn tables(&self, session: Arc<SharedSession>) -> Arc<Tables> {
+        let mut tables = Tables::new(session);
+        let capabilities = rdlt_connector::Capabilities::minimal();
+        for stream in &self.streams {
+            let resolver = Resolver {
+                stream: stream.name.clone(),
+                settings: Settings {
+                    pipeline: crate::policy::SchemaSettings::default(),
+                    stream: StreamPlan::new(stream.name.clone()),
+                    key: Vec::new(),
+                },
+                naming: Naming::new(capabilities.identifiers.clone()),
+                capabilities: Arc::new(capabilities.clone()),
+                meta: MetaNames {
+                    load_id: "_rdlt_load_id".into(),
+                    loaded_at: "_rdlt_loaded_at".into(),
+                    seq: None,
+                },
+            };
+            let index = tables.add(resolver, &table(None), Model::default());
+            if let (0, Some(schema)) = (index, &self.schema) {
+                tables.fit(index, schema).await.unwrap();
+            }
+        }
+        Arc::new(tables)
+    }
+
+    async fn start(self) -> (tokio::task::JoinHandle<Result<(), Error>>, Harness) {
         let commits = Commits::default();
         let acks = Acks::default();
         let closed = Arc::new(AtomicBool::new(false));
@@ -171,15 +205,17 @@ impl Setup {
             closed: Arc::clone(&closed),
         };
         let pool = RayonPool::new(NonZeroUsize::MIN).unwrap();
+        let session = SharedSession::new(Box::new(Recorder {
+            commits: Arc::clone(&commits),
+            closed,
+            fail: self.fail_commit,
+        }));
+        let tables = self.tables(session).await;
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::new(SystemEnv::new(pool)),
             policy: self.policy,
             barrier_wait: self.barrier_wait,
-            session: Box::new(Recorder {
-                commits: Arc::clone(&commits),
-                closed,
-                fail: self.fail_commit,
-            }),
+            tables,
             source: Arc::new(Listener { acks, commits }),
             lanes,
             load_id: LoadId::from_parts(UNIX_EPOCH, 1),
@@ -217,6 +253,8 @@ impl Harness {
             bytes: rows * 8,
             state,
             answers,
+            discarded_rows: 0,
+            discarded_values: 0,
         }));
     }
 
@@ -260,9 +298,7 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
     StreamRun {
         name: name(),
         write,
-        table: table(generation),
-        schema: schema(),
-        record_schema: false,
+        path: table(generation).path,
         cycle,
         remaining: partitions,
         stopped: false,
@@ -314,7 +350,8 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Written { rows: 5, bytes: 40 });
     harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
@@ -351,7 +388,7 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
         vec![partition("p0", false)],
     );
     setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     for segment in 1..=3 {
         harness.send(Progress::Written {
             rows: 10,
@@ -390,7 +427,7 @@ async fn rows_that_miss_a_commit_stay_due_until_they_seal() {
     );
     setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
     setup.barrier_wait = Duration::from_secs(1);
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Written {
         rows: 10,
@@ -412,7 +449,7 @@ async fn the_interval_commits_a_quiet_partition() {
         vec![partition("p0", false)],
     );
     setup.policy = CommitPolicy::new(Some(Duration::from_secs(10)), None, None).unwrap();
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     let started = tokio::time::Instant::now();
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
     until(|| harness.commit_count() == 1).await;
@@ -429,7 +466,7 @@ async fn a_commit_waits_for_on_demand_partitions_to_answer_its_barrier() {
     );
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
     setup.barrier_wait = Duration::from_secs(3600);
-    let (task, mut harness) = setup.start();
+    let (task, mut harness) = setup.start().await;
     let started = tokio::time::Instant::now();
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Started { partition: 1 });
@@ -461,7 +498,7 @@ async fn an_unanswered_barrier_gives_up_after_its_wait() {
     );
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
     setup.barrier_wait = Duration::from_secs(30);
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     let started = tokio::time::Instant::now();
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Started { partition: 1 });
@@ -480,7 +517,8 @@ async fn empty_segments_record_their_position_without_publishing() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.seal(0, 1, 0, PartitionState::Done, None);
     harness.end(0, false);
     task.await.unwrap().unwrap();
@@ -502,7 +540,8 @@ async fn nothing_to_publish_or_record_commits_nothing() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.end(0, true);
     task.await.unwrap().unwrap();
     assert_eq!(harness.commit_count(), 0);
@@ -511,11 +550,13 @@ async fn nothing_to_publish_or_record_commits_nothing() {
 
 #[tokio::test(start_paused = true)]
 async fn a_new_table_schema_is_recorded_by_the_first_commit_only() {
-    let mut orders = stream(WriteMode::Append, None, 1);
-    orders.record_schema = true;
-    let mut setup = Setup::new(vec![orders], vec![partition("p0", false)]);
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
-    let (task, harness) = setup.start();
+    setup.schema = Some(schema());
+    let (task, harness) = setup.start().await;
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
     harness.send(Progress::Written { rows: 1, bytes: 8 });
     until(|| harness.commit_count() == 1).await;
@@ -523,19 +564,50 @@ async fn a_new_table_schema_is_recorded_by_the_first_commit_only() {
     harness.end(0, false);
     task.await.unwrap().unwrap();
     let commits = harness.commits.lock();
-    let schema_entry = StateEntry::Schema {
-        table: TablePath::new(["orders"]).unwrap(),
-        version: SchemaVersion(1),
-        schema: schema(),
-    };
-    assert!(
-        commits[0]
+    let path = TablePath::new(["orders"]).unwrap();
+    let keys = |index: usize| -> Vec<String> {
+        commits[index]
             .state_delta
-            .contains(&StateChange::Put(schema_entry.to_record()))
-    );
+            .iter()
+            .filter_map(|change| match change {
+                StateChange::Put(record) => Some(record.key.clone()),
+                StateChange::Delete(_) => None,
+            })
+            .collect()
+    };
+    assert!(keys(0).contains(&StateKey::Schema(path.clone()).encode()));
+    assert!(keys(0).contains(&StateKey::Names(path).encode()));
     assert_eq!(
         without_receipt(&commits[1].state_delta),
         [position("p0", PartitionState::Cursor(cursor(2)))]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .start()
+    .await;
+    harness.send(Progress::Sealed(Seal {
+        partition: 0,
+        segment: SegmentId(1),
+        rows: 2,
+        bytes: 16,
+        state: PartitionState::Cursor(cursor(4)),
+        answers: None,
+        discarded_rows: 2,
+        discarded_values: 3,
+    }));
+    harness.end(0, false);
+    task.await.unwrap().unwrap();
+    let log = harness.log.lock();
+    let report = &log.commits[0].streams[&name()];
+    assert_eq!(
+        (report.rows, report.discarded_rows, report.discarded_values),
+        (2, 2, 3)
     );
 }
 
@@ -559,7 +631,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
         vec![partition("p0", false)],
     );
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
     harness.send(Progress::Written { rows: 1, bytes: 8 });
     until(|| harness.commit_count() == 1).await;
@@ -607,7 +679,8 @@ async fn a_full_append_completes_without_swapping_a_generation() {
         vec![stream(WriteMode::Append, Some(new_cycle(4, &[])), 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.seal(0, 1, 2, PartitionState::Done, None);
     harness.end(0, false);
     task.await.unwrap().unwrap();
@@ -634,7 +707,8 @@ async fn a_stopped_partition_leaves_its_full_read_unfinished() {
         vec![stream(WriteMode::Replace, Some(new_cycle(4, &[])), 2)],
         vec![partition("p0", false), partition("p1", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.seal(0, 1, 1, PartitionState::Done, None);
     harness.end(0, false);
     harness.end(1, true);
@@ -658,7 +732,8 @@ async fn stopping_raises_a_barrier_stops_reads_and_commits_what_is_sealed() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", true)],
     )
-    .start();
+    .start()
+    .await;
     harness.send(Progress::Started { partition: 0 });
     harness.stop.cancel();
     harness.barrier.changed().await.unwrap();
@@ -676,7 +751,8 @@ async fn cancelling_ends_the_coordinator_without_committing() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.cancel.cancel();
     assert_eq!(
@@ -692,7 +768,8 @@ async fn partitions_that_vanish_without_ending_cancel_the_coordinator() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     drop(harness.progress);
     assert_eq!(
         task.await.unwrap().unwrap_err().kind(),
@@ -707,7 +784,7 @@ async fn a_failed_commit_ends_the_coordinator_and_acknowledges_nothing() {
         vec![partition("p0", false)],
     );
     setup.fail_commit = true;
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
     assert_eq!(
@@ -725,7 +802,7 @@ async fn the_byte_threshold_commits_as_bytes_arrive() {
         vec![partition("p0", false)],
     );
     setup.policy = CommitPolicy::new(None, None, Some(100)).unwrap();
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
     harness.send(Progress::Written { rows: 1, bytes: 60 });
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -744,7 +821,8 @@ async fn a_completed_read_joins_the_most_recent_sixteen() {
         vec![stream(WriteMode::Append, Some(cycle), 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.seal(0, 1, 1, PartitionState::Done, None);
     harness.end(0, false);
     task.await.unwrap().unwrap();
@@ -766,7 +844,8 @@ async fn every_commit_records_its_receipt_in_state() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     )
-    .start();
+    .start()
+    .await;
     harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
     harness.end(0, false);
     task.await.unwrap().unwrap();
@@ -795,7 +874,7 @@ async fn a_failed_commit_stays_pending_in_the_log() {
         vec![partition("p0", false)],
     );
     setup.fail_commit = true;
-    let (task, harness) = setup.start();
+    let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
     task.await.unwrap().unwrap_err();
@@ -807,5 +886,25 @@ async fn a_failed_commit_stays_pending_in_the_log() {
     assert_eq!(
         (pending.receipt.rows, pending.streams[&name()].rows),
         (3, 3)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_seal_without_rows_or_discards_reports_no_stream() {
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .start()
+    .await;
+    harness.seal(0, 1, 0, PartitionState::Cursor(cursor(3)), None);
+    harness.end(0, false);
+    task.await.unwrap().unwrap();
+    let log = harness.log.lock();
+    assert_eq!(log.commits.len(), 1, "the position still commits");
+    assert!(
+        log.commits[0].streams.is_empty(),
+        "{:?}",
+        log.commits[0].streams
     );
 }

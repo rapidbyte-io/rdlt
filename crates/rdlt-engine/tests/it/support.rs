@@ -1,5 +1,6 @@
 //! Connectors and helpers the engine tests share.
 
+pub(crate) mod batches;
 pub(crate) mod destinations;
 pub(crate) mod script;
 
@@ -165,4 +166,36 @@ pub(crate) fn published_rows(store: &str, table: &str) -> usize {
         .iter()
         .map(RecordBatch::num_rows)
         .sum()
+}
+
+/// An engine configuration that commits every 10 rows and makes `attempts` attempts, quickly.
+pub(crate) fn retrying(attempts: u32) -> EngineConfigBuilder {
+    let retry = rdlt_engine::RetryPolicy::default()
+        .max_attempts(attempts)
+        .initial(Duration::from_millis(10))
+        .max_delay(Duration::from_millis(100));
+    commit_every(10).retry(retry)
+}
+
+/// Every published row of `table` in `store` as a JSON object, without the metadata columns,
+/// sorted by their rendering.
+pub(crate) fn published_json(store: &str, table: &str) -> Vec<Value> {
+    let mut rows = Vec::new();
+    for batch in published(store, table) {
+        let mut writer = arrow_json::ArrayWriter::new(Vec::new());
+        writer
+            .write(&batch)
+            .expect("published batches render as JSON");
+        writer.finish().expect("the JSON array closes");
+        let rendered: Vec<Value> =
+            serde_json::from_slice(&writer.into_inner()).expect("arrow writes valid JSON");
+        for mut row in rendered {
+            if let Value::Object(columns) = &mut row {
+                columns.retain(|name, _| !name.starts_with("_rdlt_"));
+            }
+            rows.push(row);
+        }
+    }
+    rows.sort_by_key(ToString::to_string);
+    rows
 }

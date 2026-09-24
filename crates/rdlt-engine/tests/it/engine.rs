@@ -3,14 +3,15 @@ use std::time::Duration;
 
 use rdlt_connector::{Checkpointing, ConnectorErrorKind, ReadMode};
 use rdlt_engine::{
-    CommitPolicy, EngineConfig, ErrorKind, RetryPolicy, RunStatus, StopMode, WriteMode,
+    CommitPolicy, EngineConfig, ErrorKind, RetryPolicy, RunStatus, SchemaPolicy, SchemaSettings,
+    StopMode, WriteMode,
 };
 
 use crate::support::destinations::limited;
 use crate::support::script::{Fault, Hang, PushKind, Script, ScriptStream, id, reconnect};
 use crate::support::{
     commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_rows,
-    stream, until,
+    retrying, stream, until,
 };
 
 fn ids(partitions: usize, rows: u64) -> Vec<i64> {
@@ -336,14 +337,14 @@ async fn streams_the_run_cannot_load_are_configuration_errors() {
             memory("unknown").await,
         )
         .await;
-    let mut undeclared = ScriptStream::new("events", 1, 5, 5);
-    undeclared.declares_schema = false;
-    let (_, source) = Script::new(vec![undeclared]).connect("undeclared").await;
-    let schemaless = engine
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 5, 5)])
+        .connect("keyless")
+        .await;
+    let keyless = engine
         .run(
-            pipeline("undeclared", [stream("events")]),
+            pipeline("keyless", [stream("events").write(WriteMode::Merge)]),
             source,
-            memory("undeclared").await,
+            memory("keyless").await,
         )
         .await;
     let generator_source = generator(&[("orders", 5, 1, 5)]).await;
@@ -366,7 +367,7 @@ async fn streams_the_run_cannot_load_are_configuration_errors() {
         .await;
     for (outcome, code) in [
         (unknown, "stream_not_found"),
-        (schemaless, "schema_required"),
+        (keyless, "merge_key_missing"),
         (incremental, "read_mode_unsupported"),
         (unwritable, "write_mode_unsupported"),
     ] {
@@ -383,26 +384,37 @@ async fn streams_the_run_cannot_load_are_configuration_errors() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn batches_that_do_not_match_the_table_are_schema_errors() {
-    for (kind, name) in [
-        (PushKind::WrongType, "wrong_type"),
-        (PushKind::Nulls, "nulls"),
+async fn a_frozen_table_refuses_other_types_and_takes_nulls() {
+    for (kind, name, code) in [
+        (PushKind::WrongType, "wrong_type", Some("schema_frozen")),
+        (PushKind::Nulls, "nulls", None),
     ] {
         let mut bad = ScriptStream::new("events", 1, 5, 5);
         bad.push = kind;
         let (_, source) = Script::new(vec![bad]).connect(name).await;
         let outcome = engine(commit_every(10))
             .run(
-                pipeline(name.replace('_', "-").as_str(), [stream("events")]),
+                pipeline(name.replace('_', "-").as_str(), [frozen("events")]),
                 source,
                 memory(name).await,
             )
             .await;
-        let error = outcome.error.expect("the run fails");
-        assert_eq!(error.kind(), ErrorKind::Schema, "{name}");
-        assert_eq!(error.code(), Some("batch_schema_mismatch"));
-        assert_eq!(published_rows(name, "events"), 0);
+        assert_eq!(
+            outcome
+                .error
+                .and_then(|error| error.code().map(str::to_owned))
+                .as_deref(),
+            code,
+            "{name}"
+        );
+        let loaded = if code.is_some() { 0 } else { 5 };
+        assert_eq!(published_rows(name, "events"), loaded, "{name}");
     }
+}
+
+/// `name` under the freeze policy.
+fn frozen(name: &str) -> rdlt_engine::StreamPlan {
+    stream(name).schema(SchemaSettings::new().policy(SchemaPolicy::Freeze))
 }
 
 #[tokio::test(start_paused = true)]
@@ -415,39 +427,13 @@ async fn a_schema_error_ends_the_run_while_the_source_waits_without_emitting() {
     let (_, source) = Script::new(vec![bad]).connect("waiting_bad").await;
     let outcome = engine(commit_every(10))
         .run(
-            pipeline("waiting-bad", [stream("events")]),
+            pipeline("waiting-bad", [frozen("events")]),
             source,
             memory("waiting_bad").await,
         )
         .await;
     let error = outcome.error.expect("the run fails");
-    assert_eq!(error.code(), Some("batch_schema_mismatch"));
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_changed_schema_is_refused_until_schema_evolution_exists() {
-    let engine = engine(commit_every(10));
-    let first = engine
-        .run(
-            pipeline("changed", [stream("orders")]),
-            generator(&[("orders", 5, 1, 5)]).await,
-            memory("changed").await,
-        )
-        .await;
-    assert_eq!(first.report.status, RunStatus::Succeeded);
-    let (_, source) = Script::new(vec![ScriptStream::new("orders", 1, 5, 5)])
-        .connect("changed")
-        .await;
-    let second = engine
-        .run(
-            pipeline("changed", [stream("orders")]),
-            source,
-            memory("changed").await,
-        )
-        .await;
-    let error = second.error.expect("the run fails");
-    assert_eq!(error.kind(), ErrorKind::Schema);
-    assert_eq!(error.code(), Some("schema_changed"));
+    assert_eq!(error.code(), Some("schema_frozen"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -465,14 +451,6 @@ async fn json_pushes_are_refused_until_the_shredder_exists() {
     let error = outcome.error.expect("the run fails");
     assert_eq!(error.kind(), ErrorKind::Source);
     assert_eq!(error.code(), Some("push_unsupported"));
-}
-
-fn retrying(attempts: u32) -> rdlt_engine::EngineConfigBuilder {
-    let retry = RetryPolicy::default()
-        .max_attempts(attempts)
-        .initial(Duration::from_millis(10))
-        .max_delay(Duration::from_millis(100));
-    commit_every(10).retry(retry)
 }
 
 #[tokio::test(start_paused = true)]
