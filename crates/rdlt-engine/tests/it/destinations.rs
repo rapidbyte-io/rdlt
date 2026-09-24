@@ -319,3 +319,43 @@ async fn every_destination_stores_nested_values_natively_or_as_json_text() {
         );
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn every_destination_loads_streams_named_like_its_own_tables() {
+    for target in Target::ALL {
+        let source = generator(&[
+            ("orders", 20, 1, 10),
+            ("sqlite_stat", 20, 1, 10),
+            ("_rdlt_staging__orders", 20, 1, 10),
+        ])
+        .await;
+        let plan = pipeline(
+            "hostile",
+            [
+                stream("orders"),
+                stream("sqlite_stat"),
+                stream("_rdlt_staging__orders"),
+            ],
+        );
+        let outcome = engine(commit_every(10))
+            .run(plan, source, target.destination("hostile").await)
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{target:?}: {:?}",
+            outcome.error
+        );
+        let escaped = |name: &str| match target {
+            Target::Sqlite if name != "orders" => format!("_{name}"),
+            _ => name.to_owned(),
+        };
+        for name in ["orders", "sqlite_stat", "_rdlt_staging__orders"] {
+            assert_eq!(
+                target.ids("hostile", &escaped(name)),
+                every_id(20),
+                "{target:?} {name}"
+            );
+        }
+    }
+}

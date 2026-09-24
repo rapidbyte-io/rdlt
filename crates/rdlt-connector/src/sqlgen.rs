@@ -30,7 +30,7 @@ use crate::types::LogicalType;
 pub use catalog::{CATALOG_TABLES, micros, receipt};
 pub use publish::{Staged, merge_key};
 pub use sqlite::Sqlite;
-pub use tables::{STAGING_COLUMNS, generation_table, staging_table};
+pub use tables::{STAGING_COLUMNS, TABLE_PREFIX, generation_table, staging_table};
 
 /// A value a statement binds to one of its placeholders.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -16,6 +16,9 @@ pub const STAGING_COLUMNS: [&str; 4] = [
     "_rdlt_generation",
 ];
 
+/// The prefix of every table `sqlgen` keeps: the catalog, staging and generation tables.
+pub const TABLE_PREFIX: &str = "_rdlt_";
+
 /// The staging table of the table `name`.
 pub fn staging_table(name: &str) -> String {
     format!("_rdlt_staging__{name}")

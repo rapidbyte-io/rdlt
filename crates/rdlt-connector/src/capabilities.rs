@@ -140,6 +140,10 @@ pub struct IdentifierRules {
     pub chars: IdentifierChars,
     /// Words that may not be identifiers, compared after case folding.
     pub reserved: BTreeSet<String>,
+    /// Prefixes a table identifier may not start with, compared after case folding: names the
+    /// destination keeps for its own tables.
+    #[serde(default)]
+    pub reserved_table_prefixes: BTreeSet<String>,
 }
 
 /// Everything the engine needs to know about a destination before writing to it.
@@ -206,6 +210,7 @@ impl Capabilities {
                 max_len: MINIMAL_IDENTIFIER_LEN,
                 chars: IdentifierChars::AsciiWord,
                 reserved: BTreeSet::new(),
+                reserved_table_prefixes: BTreeSet::new(),
             },
             max_parallel_writers: NonZeroU16::MIN,
             preferred_batch_bytes: None,

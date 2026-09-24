@@ -176,6 +176,7 @@ fn capabilities(format: FileFormat) -> Capabilities {
         max_len: NonZeroU16::new(128).expect("128 is non-zero"),
         chars: IdentifierChars::AsciiWord,
         reserved: BTreeSet::new(),
+        reserved_table_prefixes: BTreeSet::new(),
     };
     capabilities.max_parallel_writers = NonZeroU16::new(4).expect("4 is non-zero");
     capabilities

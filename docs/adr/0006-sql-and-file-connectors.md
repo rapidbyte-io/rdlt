@@ -41,7 +41,10 @@ and building them surfaced decisions the spec leaves open.
 - **SQLite stores storage classes.** Columns are declared `BOOLEAN`, `INTEGER`, `REAL`, `TEXT` or
   `BLOB`, so widening within the integer or float family changes nothing, and the engine lowers
   every other type to text. Identifiers fold to lower case, since SQLite compares them without
-  case, and the catalog tables are reserved. Calls run on the blocking pool, each in an
+  case. `IdentifierRules` gains `reserved_table_prefixes`, and the engine prefixes a table
+  identifier with `_` until it starts with none of them: SQLite reserves `_rdlt_`, which every
+  `sqlgen` table starts with, and `sqlite_`, which SQLite keeps for itself, and reserves the
+  staging columns' names as words. Calls run on the blocking pool, each in an
   immediate transaction.
 - **Manifests are created exclusively.** The files destination publishes a commit by creating
   the pipeline's next manifest version with a hard link, which fails if another session created
