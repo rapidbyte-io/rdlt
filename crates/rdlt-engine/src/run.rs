@@ -168,17 +168,19 @@ fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> 
 
 /// Credits a failed attempt's commit in flight to it once `log`'s attempt opened and found it landed,
 /// and keeps `log`'s own commit in flight when its attempt `failed`.
+///
+/// An attempt that never opened read nothing back, so the commit stays in flight for the next one.
 fn credit(
     attempts: &mut [AttemptRecord],
     unresolved: &mut Option<(usize, CommitRecord)>,
     log: &mut AttemptLog,
     failed: bool,
 ) {
-    if let Some((index, pending)) = unresolved.take() {
-        let landed = (pending.receipt.load_id, pending.receipt.commit_seq);
-        if log.opened == Some(landed) {
-            attempts[index].log.commits.push(pending);
-        }
+    if let Some(opened) = log.opened
+        && let Some((index, pending)) = unresolved.take()
+        && opened == (pending.receipt.load_id, pending.receipt.commit_seq)
+    {
+        attempts[index].log.commits.push(pending);
     }
     if failed && let Some(pending) = log.pending.take() {
         *unresolved = Some((attempts.len(), pending));
