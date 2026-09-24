@@ -94,6 +94,14 @@ struct Incoming<'a> {
 }
 
 impl Resolver {
+    /// The same resolver, appending the hash to every identifier it assigns.
+    pub(crate) fn hashing(&self) -> Self {
+        Self {
+            naming: self.naming.hashing(),
+            ..self.clone()
+        }
+    }
+
     /// How `incoming` fits `model`: the changes the table needs and where each column goes.
     ///
     /// A table not yet created takes every column of its first batch. After that, a column the

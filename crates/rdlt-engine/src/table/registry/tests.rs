@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Capabilities, CommitMeta, ConnectorError, DestinationSession, DestinationWriter,
-    Field, GenerationId, LogicalType, Receipt, Result, SchemaChanges, SchemaVersion, StateChange,
-    StateEntry, StreamName, TableChange, TablePath, TableRef, TableSchema,
+    BoxFuture, Capabilities, ColumnKey, ColumnPath, CommitMeta, ConnectorError,
+    DestinationSession, DestinationWriter, Field, GenerationId, IdentifierCase, LogicalType,
+    Receipt, Result, SchemaChanges, SchemaVersion, StateChange, StateEntry, StreamName,
+    TableChange, TablePath, TableRef, TableSchema,
 };
 
 use super::{SharedSession, Tables};
@@ -16,13 +18,17 @@ use crate::table::{MetaNames, Model, Resolver, Settings};
 
 type Changes = Arc<Mutex<Vec<TableChange>>>;
 
-/// Records the schema changes applied to it.
+/// Records the schema changes applied to it, yielding once for each so concurrent callers
+/// interleave.
 struct Recorder(Changes);
 
 impl DestinationSession for Recorder {
     fn apply_schema<'a>(&'a mut self, change: &'a TableChange) -> BoxFuture<'a, Result<()>> {
         self.0.lock().push(change.clone());
-        Box::pin(async { Ok(()) })
+        Box::pin(async {
+            tokio::task::yield_now().await;
+            Ok(())
+        })
     }
 
     fn writer<'a>(
@@ -106,6 +112,28 @@ async fn a_change_is_applied_once_and_later_batches_fit_without_one() {
     assert_eq!(applied.len(), 2, "{applied:?}");
     assert!(matches!(&applied[1], TableChange::AddColumn { field, .. } if field.name() == "note"));
     assert_eq!(tables.view(0).model.version, 2);
+}
+
+#[tokio::test]
+async fn concurrent_changes_to_one_table_each_apply_on_top_of_the_other() {
+    let (tables, changes) = tables(None, Model::default());
+    tables
+        .fit(0, &schema(&[("id", LogicalType::Int64)]))
+        .await
+        .unwrap();
+    let first = schema(&[("id", LogicalType::Int64), ("a", LogicalType::Utf8)]);
+    let second = schema(&[("id", LogicalType::Int64), ("b", LogicalType::Int32)]);
+    let (one, two) = tokio::join!(tables.fit(0, &first), tables.fit(0, &second));
+    let (one, two) = (one.unwrap().0, two.unwrap().0);
+    assert_eq!(
+        (one.model.version.min(two.model.version), tables.view(0).model.version),
+        (2, 3)
+    );
+    let view = tables.view(0);
+    let names: Vec<&str> = view.model.columns.iter().map(Field::name).collect();
+    assert!(names.contains(&"a") && names.contains(&"b"), "{names:?}");
+    let applied = changes.lock();
+    assert_eq!(applied.len(), 3, "the create and one added column each: {applied:?}");
 }
 
 #[tokio::test]
@@ -209,4 +237,157 @@ async fn a_closed_session_refuses_further_calls() {
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Internal);
+}
+
+type Columns = Arc<Mutex<BTreeMap<String, LogicalType>>>;
+
+/// Keeps one table's columns and refuses a change that declares one at another type, as the
+/// destination contract says; a crashed attempt's columns stay behind.
+struct Physical(Columns);
+
+impl Physical {
+    fn change(&self, change: &TableChange) -> Result<()> {
+        let mut columns = self.0.lock();
+        let declared: Vec<(String, LogicalType, Option<LogicalType>)> = match change {
+            TableChange::Create { schema, .. } => schema
+                .fields()
+                .iter()
+                .map(|field| (field.name().to_owned(), field.logical_type().clone(), None))
+                .collect(),
+            TableChange::AddColumn { field, .. } => {
+                vec![(field.name().to_owned(), field.logical_type().clone(), None)]
+            }
+            TableChange::Widen {
+                column, from, to, ..
+            } => vec![(column.to_string(), to.clone(), Some(from.clone()))],
+        };
+        for (name, to, from) in declared {
+            match columns.get(&name) {
+                Some(held) if *held != to && Some(held) != from.as_ref() => {
+                    return Err(ConnectorError::data(format!("{name} is {held:?}"))
+                        .with_code("schema_conflict"));
+                }
+                _ => {
+                    columns.insert(name, to);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl DestinationSession for Physical {
+    fn apply_schema<'a>(&'a mut self, change: &'a TableChange) -> BoxFuture<'a, Result<()>> {
+        let result = self.change(change);
+        Box::pin(async { result })
+    }
+
+    fn writer<'a>(
+        &'a mut self,
+        _table: &'a TableRef,
+    ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        Box::pin(async { Err(ConnectorError::internal("no writers here")) })
+    }
+
+    fn commit<'a>(&'a mut self, _meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
+        Box::pin(async { Err(ConnectorError::internal("no commits here")) })
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// One attempt's tables over the destination columns `columns`, folding identifiers to lower
+/// case; nothing is committed, so each attempt starts from no table.
+fn attempt(columns: &Columns) -> Tables {
+    let mut resolver = resolver();
+    let mut capabilities = (*resolver.capabilities).clone();
+    capabilities.identifiers.case = IdentifierCase::Lower;
+    resolver.naming = Naming::new(capabilities.identifiers.clone());
+    resolver.capabilities = Arc::new(capabilities);
+    let mut tables = Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns)))));
+    tables.add(resolver, &table(None), Model::default());
+    tables
+}
+
+fn source(name: &str) -> ColumnKey {
+    ColumnKey::Source(ColumnPath::from(name))
+}
+
+#[tokio::test]
+async fn an_attempt_names_columns_around_those_a_crashed_attempt_left_behind() {
+    let columns = Columns::default();
+    let upper = schema(&[("X", LogicalType::Int64)]);
+    let lower = schema(&[("x", LogicalType::Utf8)]);
+    let crashed = attempt(&columns);
+    crashed.fit(0, &upper).await.unwrap();
+    let (before, _) = crashed.fit(0, &lower).await.unwrap();
+    let retried = attempt(&columns);
+    retried.fit(0, &lower).await.unwrap();
+    let (after, _) = retried.fit(0, &upper).await.unwrap();
+    let physical = columns.lock().clone();
+    for (key, logical) in [
+        (source("X"), LogicalType::Int64),
+        (source("x"), LogicalType::Utf8),
+    ] {
+        let name = after.model.names.get(&key).unwrap();
+        assert_eq!(physical.get(name), Some(&logical), "{name} in {physical:?}");
+        assert_ne!(before.model.names.get(&key), None);
+    }
+    let names: Vec<&str> = after.model.names.iter().map(|(_, name)| name).collect();
+    assert_eq!(physical.len(), names.len() + 2, "no column besides these and metadata");
+}
+
+/// Refuses every change with `code`, counting the calls.
+struct Refusing {
+    code: Option<&'static str>,
+    calls: Arc<Mutex<usize>>,
+}
+
+impl DestinationSession for Refusing {
+    fn apply_schema<'a>(&'a mut self, _change: &'a TableChange) -> BoxFuture<'a, Result<()>> {
+        *self.calls.lock() += 1;
+        let error = ConnectorError::data("refused");
+        let error = match self.code {
+            Some(code) => error.with_code(code),
+            None => error,
+        };
+        Box::pin(async { Err(error) })
+    }
+
+    fn writer<'a>(
+        &'a mut self,
+        _table: &'a TableRef,
+    ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        Box::pin(async { Err(ConnectorError::internal("no writers here")) })
+    }
+
+    fn commit<'a>(&'a mut self, _meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
+        Box::pin(async { Err(ConnectorError::internal("no commits here")) })
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn only_a_first_conflict_is_named_around() {
+    for (code, calls) in [(None, 1), (Some("schema_conflict"), 2)] {
+        let counted = Arc::new(Mutex::new(0));
+        let session = Refusing {
+            code,
+            calls: Arc::clone(&counted),
+        };
+        let mut tables = Tables::new(SharedSession::new(Box::new(session)));
+        tables.add(resolver(), &table(None), Model::default());
+        let error = tables
+            .fit(0, &schema(&[("id", LogicalType::Int64)]))
+            .await
+            .unwrap_err();
+        assert_eq!((error.kind(), error.code()), (ErrorKind::Destination, code));
+        assert_eq!(*counted.lock(), calls, "{code:?}");
+        assert_eq!(tables.view(0).model.version, 0, "a refused change changes nothing");
+    }
 }
