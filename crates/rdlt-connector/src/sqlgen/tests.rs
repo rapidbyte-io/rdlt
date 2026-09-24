@@ -591,38 +591,73 @@ fn types_the_database_does_not_store_are_unsupported() {
 }
 
 #[test]
-fn a_merge_table_keeps_its_key_unique() {
+fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
     let (connection, planner) = database();
+    let fields = [
+        ("id", LogicalType::Int64, false),
+        ("name", LogicalType::Utf8, true),
+        ("seq", LogicalType::Binary, true),
+    ];
+    apply(&connection, &planner, &create(&table("orders"), &fields)).unwrap();
+    connection
+        .execute(
+            "INSERT INTO orders VALUES (1, 'a', NULL), (1, 'b', NULL), (2, 'kept', NULL)",
+            [],
+        )
+        .unwrap();
     let orders = keyed("orders");
-    let change = create(
+    let mine = pipeline("mine");
+    let statement = planner.stage(
         &orders,
-        &[
-            ("id", LogicalType::Int64, false),
-            ("seq", LogicalType::Binary, false),
-        ],
+        &mine,
+        Epoch(1),
+        SegmentId(1),
+        &["id", "name", "seq"],
     );
-    apply(&connection, &planner, &change).unwrap();
+    let mut values: Vec<Value> = statement.params.iter().map(value).collect();
+    values.extend([Value::Integer(1), text("c"), Value::Blob(vec![0; 16])]);
     connection
-        .execute("INSERT INTO orders VALUES (1, x'01')", [])
+        .execute(&statement.sql, rusqlite::params_from_iter(values))
         .unwrap();
-    assert!(
-        connection
-            .execute("INSERT INTO orders VALUES (1, x'02')", [])
-            .is_err()
-    );
-    let plain = table("plain");
-    apply(
+    run(
         &connection,
-        &planner,
-        &create(&plain, &[("id", LogicalType::Int64, false)]),
-    )
-    .unwrap();
-    connection
-        .execute("INSERT INTO plain VALUES (1)", [])
+        &planner.record_segment(&orders, &mine, Epoch(1), SegmentId(1), [1, 10]),
+    );
+    let rows = query(
+        &connection,
+        &planner.staged(&mine, Epoch(1), &segments(&[1])),
+    );
+    let [row] = &rows[..] else { panic!("{rows:?}") };
+    let [_, _, Value::Text(key), Value::Text(seq), ..] = &row[..] else {
+        panic!("{row:?}")
+    };
+    let merge = super::merge_key(key, seq).unwrap();
+    assert_eq!(
+        Some(&merge),
+        orders.merge.as_ref(),
+        "the writer's key is recorded"
+    );
+    let columns = columns(&connection, &planner, "orders");
+    let plan = planner
+        .publish(
+            &staged("orders", None, Some(merge)),
+            &columns,
+            &mine,
+            Epoch(1),
+            &segments(&[1]),
+        )
         .unwrap();
-    connection
-        .execute("INSERT INTO plain VALUES (1)", [])
-        .expect("an append table allows repeated values");
+    run_all(&connection, &plan);
+    assert_eq!(
+        rows_of(&connection, "orders"),
+        [(1, "c".to_owned()), (2, "kept".to_owned())]
+    );
+}
+
+#[test]
+fn a_recorded_merge_key_that_is_not_json_is_a_bug() {
+    let error = super::merge_key("not json", "seq").unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Internal);
 }
 
 fn staged(name: &str, generation: Option<GenerationId>, merge: Option<MergeKey>) -> Staged {
@@ -693,6 +728,8 @@ fn staged_rows_are_counted_by_table_and_generation_until_forgotten() {
         vec![
             text("orders"),
             generation,
+            Value::Null,
+            Value::Null,
             Value::Integer(rows),
             Value::Integer(bytes),
         ]
@@ -877,7 +914,7 @@ fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
 }
 
 #[test]
-fn registered_tables_are_found_by_path_with_how_they_merge_and_their_generations() {
+fn registered_tables_are_found_by_path_with_their_generations() {
     let (connection, planner) = database();
     let orders = keyed("orders");
     run_all(&connection, &planner.register(&orders));
@@ -889,10 +926,7 @@ fn registered_tables_are_found_by_path_with_how_they_merge_and_their_generations
     run_all(&connection, &planner.register(&generation));
     assert_eq!(
         query(&connection, &planner.tables()),
-        [
-            vec![text("events"), Value::Null, Value::Null],
-            vec![text("orders"), text("[\"id\"]"), text("seq")],
-        ]
+        [[text("events")], [text("orders")]]
     );
     let found = query(
         &connection,

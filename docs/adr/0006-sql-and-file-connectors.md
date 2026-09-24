@@ -25,9 +25,12 @@ and building them surfaced decisions the spec leaves open.
   never removes its staging (the memory destination keys its staging by epoch for the same
   reason). A catalog of staged segments gives each commit its tables, rows and bytes
   without scanning staging.
-- **Merges use `ON CONFLICT`.** A merge table has a unique index on its key; a commit ranks its
-  staged rows per key by sequence and upserts the first. SQLite and Postgres share the form, so
-  the spec's other upsert styles wait for a dialect that needs them.
+- **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
+  published rows of those keys and inserts the first of each. The writer's `TableRef` decides:
+  each staged segment records its merge key, so a table that switches between append and merge
+  follows its writer, and no key index is needed, which a table that appended repeated keys
+  could not take. SQLite and Postgres share the form; the spec's `MERGE` style waits for a
+  dialect that needs it.
 - **Generations are tables.** Rows of a replace generation fill their own table, created with the
   table's columns if the generation was never declared; the finishing commit drops the table and
   renames the generation over it, and drops older generations. A generation with no table leaves
