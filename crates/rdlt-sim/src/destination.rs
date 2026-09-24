@@ -2,6 +2,9 @@
 //! checking the engine's invariants as it commits.
 
 mod cells;
+mod columns;
+#[cfg(test)]
+mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -49,6 +52,7 @@ struct Staged {
 
 #[derive(Debug, Default)]
 struct Table {
+    columns: columns::Columns,
     published: Vec<Cells>,
     generations: BTreeMap<GenerationId, Vec<Cells>>,
 }
@@ -206,8 +210,8 @@ impl Session for SimSession {
         store
             .names
             .insert(table.path.clone(), table.name.to_string());
-        store.tables.entry(table.name.to_string()).or_default();
-        Ok(())
+        let entry = store.tables.entry(table.name.to_string()).or_default();
+        columns::apply(&mut entry.columns, change)
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<SimWriter> {
@@ -415,6 +419,15 @@ impl TableWriter for SimWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
         if let Some(fault) = self.world.fault(FaultPoint::Write) {
             return Err(fault);
+        }
+        let unfit = {
+            let store = self.world.store.lock();
+            let held = store.tables.get(&self.table).map(|table| &table.columns);
+            columns::unfit(held.unwrap_or(&columns::Columns::new()), &batch)
+        };
+        for finding in unfit {
+            self.world
+                .violation(format!("table {}: {finding}", self.table));
         }
         self.buffered.push((segment, cells::rows(&batch)?));
         Ok(())
