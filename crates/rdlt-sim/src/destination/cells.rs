@@ -1,0 +1,136 @@
+//! Stored rows as JSON cells, and how they read back as the rows the source sent.
+
+use std::collections::BTreeMap;
+
+use arrow_array::RecordBatch;
+use rdlt_connector::{ConnectorError, MergeKey, NameMap, Result};
+use serde_json::{Map, Value};
+
+/// One stored row: each column's value, nulls left out.
+///
+/// A JSON column's value is the JSON it holds, and numbers with no fraction are integers, so a
+/// value reads the same whichever column type stored it.
+pub type Cells = BTreeMap<String, Value>;
+
+/// The Arrow field metadata key naming an extension type.
+const EXTENSION_NAME: &str = "ARROW:extension:name";
+
+/// The rows of `batch` as cells.
+pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Cells>> {
+    let failed =
+        |error: &dyn std::fmt::Display| ConnectorError::data(format!("reading a batch: {error}"));
+    let mut writer = arrow_json::ArrayWriter::new(Vec::new());
+    writer.write(batch).map_err(|error| failed(&error))?;
+    writer.finish().map_err(|error| failed(&error))?;
+    let rendered: Vec<Map<String, Value>> =
+        serde_json::from_slice(&writer.into_inner()).map_err(|error| failed(&error))?;
+    let schema = batch.schema();
+    let json: Vec<&str> = schema
+        .fields()
+        .iter()
+        .filter(|field| {
+            field.metadata().get(EXTENSION_NAME).map(String::as_str) == Some("arrow.json")
+        })
+        .map(|field| field.name().as_str())
+        .collect();
+    rendered
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|(column, value)| {
+                    let value = match (&value, json.contains(&column.as_str())) {
+                        (Value::String(text), true) => {
+                            serde_json::from_str(text).map_err(|error| failed(&error))?
+                        }
+                        _ => value,
+                    };
+                    Ok((column, canonical(value)))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `value` with integral numbers as integers and null object members left out.
+pub(crate) fn canonical(value: Value) -> Value {
+    match value {
+        Value::Number(number) if number.as_i64().is_none() && number.as_u64().is_none() => {
+            match number.as_f64() {
+                Some(float) if float.fract() == 0.0 && float.abs() < 9e15 => {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "the float is integral and small"
+                    )]
+                    let integer = float as i64;
+                    Value::from(integer)
+                }
+                _ => Value::Number(number),
+            }
+        }
+        Value::Object(members) => Value::Object(
+            members
+                .into_iter()
+                .filter(|(_, member)| !member.is_null())
+                .map(|(name, member)| (name, canonical(member)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(canonical).collect()),
+        other => other,
+    }
+}
+
+/// Merges `incoming` into `published` by `key`: an incoming row replaces the published row with
+/// its key, and among incoming rows of one key the greatest sequence wins.
+pub(crate) fn merge(published: &mut Vec<Cells>, incoming: Vec<Cells>, key: &MergeKey) {
+    let key_of = |row: &Cells| {
+        let values: Vec<Value> = key
+            .columns
+            .iter()
+            .map(|column| row.get(column.as_ref()).cloned().unwrap_or(Value::Null))
+            .collect();
+        Value::Array(values).to_string()
+    };
+    let seq_of = |row: &Cells| {
+        row.get(key.seq.as_ref())
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let mut winners: BTreeMap<String, Cells> = BTreeMap::new();
+    for row in incoming {
+        let row_key = key_of(&row);
+        match winners.get(&row_key) {
+            Some(best) if seq_of(best) >= seq_of(&row) => {}
+            _ => {
+                winners.insert(row_key, row);
+            }
+        }
+    }
+    published.retain(|row| !winners.contains_key(&key_of(row)));
+    published.extend(winners.into_values());
+}
+
+/// A source column whose value one row holds in two of its columns.
+#[derive(Debug, thiserror::Error)]
+#[error("column {0} holds a value in two columns")]
+pub(crate) struct Doubled(String);
+
+/// `row` by source column: each source column's value from whichever of its column and variant
+/// columns holds it, through `names`.
+pub(crate) fn source_row(
+    row: &Cells,
+    names: &NameMap,
+) -> std::result::Result<Map<String, Value>, Doubled> {
+    let mut source = Map::new();
+    for (key, physical) in names.iter() {
+        let Some(value) = row.get(physical) else {
+            continue;
+        };
+        let column: Vec<&str> = key.column().segments().collect();
+        let column = column.join(".");
+        if source.insert(column.clone(), value.clone()).is_some() {
+            return Err(Doubled(column));
+        }
+    }
+    Ok(source)
+}

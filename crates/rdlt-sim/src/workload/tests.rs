@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 use rdlt_connector::ReadMode;
+use rdlt_engine::{Nested, SchemaPolicy, WriteMode};
 
 use super::{PHASES, Workload};
 use crate::rng::SplitMix64;
@@ -65,8 +68,74 @@ fn row_ids_are_unique_within_a_stream() {
         let workload = Workload::generate(&mut SplitMix64::new(seed));
         for stream in &workload.streams {
             let rows = stream.all_rows(workload.salt, 1);
-            let ids: std::collections::BTreeSet<i64> = rows.iter().map(|row| row.id).collect();
+            let ids: BTreeSet<i64> = rows.iter().map(|row| row.id).collect();
             assert_eq!(ids.len(), rows.len(), "seed {seed}");
         }
     }
+}
+
+#[test]
+fn workloads_cover_merges_drift_and_every_policy() {
+    let streams: Vec<_> = (0..300)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed)).streams)
+        .collect();
+    let writes: BTreeSet<_> = streams
+        .iter()
+        .map(|stream| format!("{:?}", stream.write))
+        .collect();
+    assert_eq!(writes.len(), 3, "append, replace and merge: {writes:?}");
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.write == WriteMode::Merge && stream.plan_key)
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.write == WriteMode::Merge && !stream.plan_key)
+    );
+    for policy in [
+        SchemaPolicy::Evolve,
+        SchemaPolicy::DiscardRow,
+        SchemaPolicy::DiscardValue,
+    ] {
+        assert!(
+            streams.iter().any(|stream| stream.policy == policy),
+            "{policy:?}"
+        );
+    }
+    assert!(streams.iter().any(|stream| stream.nested == Nested::Json));
+    let changing = streams
+        .iter()
+        .flat_map(|stream| &stream.drift)
+        .any(|drift| {
+            let shapes: BTreeSet<_> = drift.shapes.iter().flatten().flatten().collect();
+            shapes.len() > 1
+        });
+    assert!(changing, "some drift column changes type");
+}
+
+#[test]
+fn merge_rows_share_keys_within_their_partition() {
+    let workload = (0..200)
+        .map(|seed| Workload::generate(&mut SplitMix64::new(seed)))
+        .find(|workload| {
+            workload
+                .streams
+                .iter()
+                .any(|stream| stream.keys > 0 && stream.partitions[0][0] > stream.keys)
+        })
+        .expect("some merge stream holds more rows than keys");
+    let stream = workload
+        .streams
+        .iter()
+        .find(|stream| stream.keys > 0 && stream.partitions[0][0] > stream.keys)
+        .expect("found above");
+    let rows = stream.rows(workload.salt, 0, 0);
+    let keys: BTreeSet<_> = rows.iter().map(|row| row.key).collect();
+    assert_eq!(keys.len() as u64, stream.keys);
+    assert!(
+        rows.iter()
+            .all(|row| row.key.is_some_and(|key| key < 1_000_000))
+    );
 }

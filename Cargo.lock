@@ -1052,6 +1052,8 @@ name = "rdlt-sim"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-json",
+ "arrow-schema",
  "parking_lot",
  "rdlt-connector",
  "rdlt-engine",

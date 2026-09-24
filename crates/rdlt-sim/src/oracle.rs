@@ -8,17 +8,17 @@ use rdlt_connector::{
     ConnectContext, PipelineId, ReadMode, StreamName, destination_factory, source_factory,
 };
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunHandle, RunStatus, StopMode,
-    StreamPlan, WriteMode,
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunHandle, RunStatus,
+    SchemaPolicy, SchemaSettings, StopMode, StreamPlan, WriteMode,
 };
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
-use crate::destination::{SimDestination, completions, published, reads_in_progress};
+use crate::destination::{SimDestination, canonical, completions, published, reads_in_progress};
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::source::SimSource;
-use crate::workload::{PHASES, Row, SimStream};
+use crate::workload::{Extra, PHASES, Row, SimStream};
 use crate::world::World;
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
@@ -60,6 +60,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) {
         world.set_phase(phase);
         let mut runs = 0;
         let mut succeeded = false;
+        let mut failure = None;
         // A phase ends once a run has succeeded and no full read is left half done, so each full
         // read the model counts is complete.
         while !succeeded || reads_in_progress(&world) {
@@ -71,8 +72,13 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) {
                 Scenario::Plain
             };
             runs += 1;
-            succeeded |= execute(&engine, &plan, &name, scenario).await;
-            assert!(runs < 32, "seed {seed}: phase {phase} did not converge");
+            let (success, error) = execute(&engine, &plan, &name, scenario).await;
+            succeeded |= success;
+            failure = error.or(failure);
+            assert!(
+                runs < 32,
+                "seed {seed}: phase {phase} did not converge; the last error was {failure:?}"
+            );
         }
         settle(seed).await;
         check_contents(&world, phase, seed);
@@ -114,7 +120,18 @@ fn plan(streams: &[SimStream]) -> PipelinePlan {
     let pipeline = PipelineId::parse("sim").expect("valid pipeline id");
     let streams = streams.iter().map(|stream| {
         let name = StreamName::new(&stream.name).expect("valid stream name");
-        StreamPlan::new(name).read(stream.read).write(stream.write)
+        let settings = SchemaSettings::new()
+            .policy(stream.policy)
+            .nested(stream.nested);
+        let plan = StreamPlan::new(name)
+            .read(stream.read)
+            .write(stream.write)
+            .schema(settings);
+        if stream.keys > 0 && stream.plan_key {
+            plan.key(["key"])
+        } else {
+            plan
+        }
     });
     PipelinePlan::new(pipeline, streams).expect("the simulated plan is valid")
 }
@@ -142,18 +159,22 @@ async fn start(engine: &Engine, plan: &PipelinePlan, world: &str) -> RunHandle {
     engine.run(plan.clone(), Arc::from(source), Arc::from(destination))
 }
 
-/// Runs `scenario`; whether some run succeeded.
-async fn execute(engine: &Engine, plan: &PipelinePlan, world: &str, scenario: Scenario) -> bool {
-    let succeeded = |status: RunStatus| status == RunStatus::Succeeded;
+/// Runs `scenario`; whether some run succeeded, and the error of a run that failed.
+async fn execute(
+    engine: &Engine,
+    plan: &PipelinePlan,
+    world: &str,
+    scenario: Scenario,
+) -> (bool, Option<String>) {
     match scenario {
-        Scenario::Plain => succeeded(bounded(start(engine, plan, world).await).await),
+        Scenario::Plain => bounded(start(engine, plan, world).await).await,
         Scenario::Crash(after) => {
             let run = bounded(start(engine, plan, world).await);
             tokio::select! {
                 biased;
-                status = run => succeeded(status),
+                ended = run => ended,
                 // Dropping the run is the crash.
-                () = tokio::time::sleep(after) => false,
+                () = tokio::time::sleep(after) => (false, None),
             }
         }
         Scenario::Stop(after) => {
@@ -163,8 +184,8 @@ async fn execute(engine: &Engine, plan: &PipelinePlan, world: &str, scenario: Sc
                 tokio::time::sleep(after).await;
                 control.stop(StopMode::AfterCommit);
             };
-            let (status, ()) = tokio::join!(bounded(handle), stop);
-            succeeded(status)
+            let (ended, ()) = tokio::join!(bounded(handle), stop);
+            ended
         }
         Scenario::Concurrent(delay) => {
             let first = bounded(start(engine, plan, world).await);
@@ -173,17 +194,19 @@ async fn execute(engine: &Engine, plan: &PipelinePlan, world: &str, scenario: Sc
                 bounded(start(engine, plan, world).await).await
             };
             let (first, second) = tokio::join!(first, second);
-            succeeded(first) || succeeded(second)
+            (first.0 || second.0, first.1.or(second.1))
         }
     }
 }
 
-/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`].
-async fn bounded(run: RunHandle) -> RunStatus {
+/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`]; whether it succeeded, and its
+/// error.
+async fn bounded(run: RunHandle) -> (bool, Option<String>) {
     let outcome = tokio::time::timeout(RUN_LIMIT, run)
         .await
         .expect("every run ends within the limit of virtual time");
-    outcome.report.status
+    let error = outcome.error.map(|error| format!("{error:?}"));
+    (outcome.report.status == RunStatus::Succeeded, error)
 }
 
 /// Lets aborted tasks finish, then checks that no task outlived its run.
@@ -200,34 +223,108 @@ async fn settle(seed: Seed) {
 
 /// Checks every stream's table against the reference model after `phase`.
 fn check_contents(world: &World, phase: usize, seed: Seed) {
-    let salt = world.workload.salt;
     for stream in &world.workload.streams {
-        let mut expected: Vec<Row> = match (stream.read, stream.write) {
-            (ReadMode::Full, WriteMode::Append) => (0..=phase)
-                .flat_map(|done| {
-                    let copies = completions(world, &stream.name, done);
-                    assert!(
-                        copies > 0 || done < phase,
-                        "seed {seed}: stream {} never completed",
-                        stream.name
-                    );
-                    std::iter::repeat_n(stream.all_rows(salt, done), copies).flatten()
-                })
-                .collect(),
-            _ => stream.all_rows(salt, phase),
-        };
+        let mut expected = expected(world, stream, phase, seed);
         let mut actual = published(world, &stream.name);
-        expected.sort_unstable();
-        actual.sort_unstable();
-        assert!(
-            actual == expected,
-            "seed {seed}: stream {} ({:?}, {:?}) after phase {phase} holds {} rows; the model \
-             expects {}",
-            stream.name,
-            stream.read,
-            stream.write,
-            actual.len(),
-            expected.len()
-        );
+        let order = |row: &Map<String, Value>| Value::Object(row.clone()).to_string();
+        expected.sort_by_key(order);
+        actual.sort_by_key(order);
+        if actual != expected {
+            let first = actual
+                .iter()
+                .zip(&expected)
+                .find(|(actual, expected)| actual != expected);
+            panic!(
+                "seed {seed}: stream {} ({:?}, {:?}, {:?}) after phase {phase} holds {} rows; the \
+                 model expects {}; first difference {first:?}",
+                stream.name,
+                stream.read,
+                stream.write,
+                stream.policy,
+                actual.len(),
+                expected.len()
+            );
+        }
     }
+}
+
+/// What the reference model says `stream`'s table holds after `phase`, as source rows.
+fn expected(
+    world: &World,
+    stream: &SimStream,
+    phase: usize,
+    seed: Seed,
+) -> Vec<Map<String, Value>> {
+    let salt = world.workload.salt;
+    let rows: Vec<Row> = match (stream.read, stream.write) {
+        (ReadMode::Full, WriteMode::Append) => (0..=phase)
+            .flat_map(|done| {
+                let copies = completions(world, &stream.name, done);
+                assert!(
+                    copies > 0 || done < phase,
+                    "seed {seed}: stream {} never completed",
+                    stream.name
+                );
+                std::iter::repeat_n(stream.all_rows(salt, done), copies).flatten()
+            })
+            .collect(),
+        (_, WriteMode::Merge) => return merged(stream, salt, phase),
+        _ => stream.all_rows(salt, phase),
+    };
+    rows.iter()
+        .filter_map(|row| source_row(stream, row))
+        .collect()
+}
+
+/// The rows a merge stream's table holds after `phase`: for each key, the last row delivered.
+fn merged(stream: &SimStream, salt: u64, phase: usize) -> Vec<Map<String, Value>> {
+    let mut rows: std::collections::BTreeMap<i64, Map<String, Value>> =
+        std::collections::BTreeMap::new();
+    for delivered in 0..=phase {
+        for row in stream.all_rows(salt, delivered) {
+            if row.delivered != delivered {
+                continue;
+            }
+            if let (Some(key), Some(source)) = (row.key, source_row(stream, &row)) {
+                rows.insert(key, source);
+            }
+        }
+    }
+    rows.into_values().collect()
+}
+
+/// `row` as the source sent it, once the stream's policy has discarded what it discards; `None`
+/// when the policy drops the row.
+fn source_row(stream: &SimStream, row: &Row) -> Option<Map<String, Value>> {
+    let mut source = Map::new();
+    source.insert("id".to_owned(), json!(row.id));
+    source.insert("partition".to_owned(), json!(row.partition));
+    source.insert("offset".to_owned(), json!(row.offset));
+    source.insert("value".to_owned(), json!(row.value));
+    if let Some(key) = row.key {
+        source.insert("key".to_owned(), json!(key));
+    }
+    let extras = stream
+        .drift
+        .iter()
+        .zip(&row.extras)
+        .filter_map(|(drift, extra)| Some((drift.name.clone(), extra.as_ref()?)));
+    for (name, extra) in extras {
+        match stream.policy {
+            SchemaPolicy::DiscardRow => return None,
+            SchemaPolicy::DiscardValue => continue,
+            _ => {}
+        }
+        let value = match extra {
+            Extra::Int(value) => json!(value),
+            Extra::Quarters(quarters) => {
+                json!(f64::from(i32::try_from(*quarters).unwrap_or(0)) / 4.0)
+            }
+            Extra::Text(text) => json!(text),
+            Extra::Object(n) => json!({ "n": n }),
+            Extra::List(items) => json!(items),
+        };
+        source.insert(name, canonical(value));
+    }
+    Some(source)
 }
