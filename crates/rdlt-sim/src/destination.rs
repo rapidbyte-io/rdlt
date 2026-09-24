@@ -3,6 +3,7 @@
 
 mod cells;
 mod columns;
+mod read;
 #[cfg(test)]
 mod tests;
 
@@ -13,19 +14,21 @@ use std::time::UNIX_EPOCH;
 use arrow_array::RecordBatch;
 use rdlt_connector::{
     Capabilities, CommitMeta, CommitSeq, ConnectContext, ConnectorError, DestinationConnector,
-    Epoch, GenerationId, LoadId, MergeKey, NameMap, OpenContext, Opened, PartitionId,
-    PartitionState, Receipt, Result, SegmentId, Session, StateChange, StateEntry, StateKey,
-    StateRecord, StreamName, TableChange, TablePath, TableRef, TableWriter, WriteStats,
+    Epoch, GenerationId, LoadId, MergeKey, OpenContext, Opened, PartitionId, Receipt, Result,
+    SegmentId, Session, StateChange, StateEntry, StateRecord, StreamName, TableChange, TablePath,
+    TableRef, TableWriter, WriteStats,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use crate::source::SimCursor;
 use crate::world::{FaultPoint, World};
 
 pub use cells::Cells;
 pub(crate) use cells::canonical;
+pub(crate) use read::{committed_next, reads_in_progress};
+pub use read::{completions, published};
+use read::{names, next_offset};
 
 /// The destination's contents, kept in its world.
 #[derive(Debug, Default)]
@@ -55,92 +58,6 @@ struct Table {
     columns: columns::Columns,
     published: Vec<Cells>,
     generations: BTreeMap<GenerationId, Vec<Cells>>,
-}
-
-/// Every row published for `stream`, with each source column's value gathered from its column
-/// and variant columns through the committed name map: the rows as the source sent them.
-///
-/// A value found in two columns of one source column is a violation.
-pub fn published(world: &World, stream: &str) -> Vec<Map<String, Value>> {
-    let store = world.store.lock();
-    let Ok(path) = TablePath::new([stream]) else {
-        return Vec::new();
-    };
-    let Some((physical, names)) = names(&store.state, &path) else {
-        return Vec::new();
-    };
-    let Some(table) = store.tables.get(physical.as_str()) else {
-        return Vec::new();
-    };
-    table
-        .published
-        .iter()
-        .map(|row| {
-            cells::source_row(row, &names).unwrap_or_else(|finding| {
-                world.violation(format!("stream {stream}: {finding}"));
-                Map::new()
-            })
-        })
-        .collect()
-}
-
-/// The identifier and name map state records for the table at `path`.
-fn names(state: &BTreeMap<String, StateRecord>, path: &TablePath) -> Option<(String, NameMap)> {
-    let record = state.get(&StateKey::Names(path.clone()).encode())?;
-    match StateEntry::from_record(record).ok()? {
-        StateEntry::Names {
-            physical, names, ..
-        } => Some((physical.to_string(), names)),
-        _ => None,
-    }
-}
-
-/// Whether state records a full read in progress.
-pub(crate) fn reads_in_progress(world: &World) -> bool {
-    let store = world.store.lock();
-    store
-        .state
-        .keys()
-        .any(|key| matches!(StateKey::parse(key), Ok(StateKey::Generation(_))))
-}
-
-/// Distinct full reads of `stream` completed in `phase`.
-pub fn completions(world: &World, stream: &str, phase: usize) -> usize {
-    let store = world.store.lock();
-    store
-        .completions
-        .get(&(stream.to_owned(), phase))
-        .map_or(0, BTreeSet::len)
-}
-
-/// The committed resume offset of a partition: `u64::MAX` once it is done.
-pub(crate) fn committed_next(
-    world: &World,
-    stream: &StreamName,
-    partition: &PartitionId,
-) -> Option<u64> {
-    let store = world.store.lock();
-    next_offset(&store.state, stream, partition)
-}
-
-fn next_offset(
-    state: &BTreeMap<String, StateRecord>,
-    stream: &StreamName,
-    partition: &PartitionId,
-) -> Option<u64> {
-    let key = StateKey::Partition(stream.clone(), partition.clone()).encode();
-    let entry = StateEntry::from_record(state.get(&key)?).ok()?;
-    match entry {
-        StateEntry::Partition {
-            state: PartitionState::Cursor(cursor),
-            ..
-        } => cursor.decode::<SimCursor>(1).ok().map(|cursor| cursor.next),
-        StateEntry::Partition {
-            state: PartitionState::Done,
-            ..
-        } => Some(u64::MAX),
-        _ => None,
-    }
 }
 
 /// Configuration of [`SimDestination`]: the world to write to.
