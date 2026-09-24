@@ -792,21 +792,19 @@ fn merge(published: &mut Vec<RecordBatch>, incoming: Vec<(MergeKey, RecordBatch)
 /// another type.
 fn conflict(store: &VaultStore, change: &TableChange) -> Option<String> {
     let columns = store.columns.get(change.table().name.as_ref())?;
-    let clash = |name: &str, declared: &LogicalType, from: Option<&LogicalType>| {
+    let clash = |name: &str, declared: &LogicalType| {
         columns
             .get(name)
-            .filter(|existing| existing.join(declared) != **existing && Some(*existing) != from)
+            .filter(|existing| existing.join(declared) != **existing)
             .map(|existing| format!("column {name} is {existing}"))
     };
     match change {
         TableChange::Create { schema, .. } => schema
             .fields()
             .iter()
-            .find_map(|field| clash(field.name(), field.logical_type(), None)),
-        TableChange::AddColumn { field, .. } => clash(field.name(), field.logical_type(), None),
-        TableChange::Widen {
-            column, from, to, ..
-        } => clash(column, to, Some(from)),
+            .find_map(|field| clash(field.name(), field.logical_type())),
+        TableChange::AddColumn { field, .. } => clash(field.name(), field.logical_type()),
+        TableChange::Widen { .. } => None,
     }
 }
 

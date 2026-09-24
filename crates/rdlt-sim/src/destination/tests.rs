@@ -95,3 +95,29 @@ fn writes_to_missing_columns_or_at_types_they_cannot_hold_are_violations() {
     assert!(violations[1].contains("id"), "{violations:?}");
     assert_eq!(conflict, Some(ConnectorErrorKind::Data));
 }
+
+#[test]
+fn a_column_widened_along_two_branches_holds_their_join() {
+    let mut columns = super::columns::Columns::new();
+    let widen = |to| TableChange::Widen {
+        table: table(),
+        column: "n".into(),
+        from: LogicalType::Int32,
+        to,
+    };
+    let create = TableChange::Create {
+        table: table(),
+        schema: TableSchema::new(vec![Field::new("n", LogicalType::Int32, true)]).unwrap(),
+    };
+    for change in [
+        create,
+        widen(LogicalType::Int64),
+        widen(LogicalType::Float64),
+    ] {
+        super::columns::apply(&mut columns, &change).unwrap();
+    }
+    assert_eq!(
+        columns.get("n"),
+        Some(&LogicalType::Int64.join(&LogicalType::Float64))
+    );
+}
