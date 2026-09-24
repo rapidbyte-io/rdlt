@@ -277,8 +277,11 @@ fn join(parsed: &[Parsed]) -> Result<Shape, ShredError> {
     for chunk in parsed {
         joined.join(&chunk.shape);
     }
-    if joined.len() > usize::try_from(MAX_COLUMNS).unwrap_or(usize::MAX) {
-        return Err(ShredError::TooManyColumns(joined.len()));
+    // Each chunk refuses an object over the limit as it is read; objects that each fit may still
+    // join into one that does not.
+    let widest = joined.widest();
+    if !build::within_columns(widest) {
+        return Err(ShredError::TooManyColumns(widest));
     }
     Ok(joined)
 }

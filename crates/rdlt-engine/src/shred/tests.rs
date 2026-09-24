@@ -472,3 +472,33 @@ fn each_pair_of_kinds_joins_as_the_lattice_says_within_and_across_chunks() {
         );
     }
 }
+
+/// An object of `count` distinct keys from `first` on, each holding 1.
+fn wide_object(first: usize, count: usize) -> String {
+    let fields: Vec<String> = (first..first + count)
+        .map(|index| format!("\"c{index}\":1"))
+        .collect();
+    format!("{{{}}}", fields.join(","))
+}
+
+#[test]
+fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
+    let columns = usize::try_from(MAX_COLUMNS).unwrap();
+    // The invalid record after it is never reached.
+    let push = format!("{}\n{{\"a\":", wide_object(0, columns + 1));
+    assert_eq!(refused(&push), "limit_exceeded");
+}
+
+#[test]
+fn nested_objects_are_bound_by_the_column_limit_too() {
+    let columns = usize::try_from(MAX_COLUMNS).unwrap();
+    let nested = format!("{{\"o\":{}}}", wide_object(0, columns + 1));
+    assert_eq!(refused(&nested), "limit_exceeded");
+    let half = columns / 2 + 1;
+    let first = format!("{{\"o\":{}}}", wide_object(0, half));
+    let second = format!("{{\"o\":{}}}", wide_object(half, half));
+    let pushes = [Bytes::from(first), Bytes::from(second)];
+    assert_eq!(shredded(&pushes, 1).unwrap_err(), Code("limit_exceeded"));
+    let fits = format!("{{\"o\":{}}}", wide_object(0, columns));
+    assert_eq!(batch_of(&[&fits], 1 << 20).num_rows(), 1);
+}
