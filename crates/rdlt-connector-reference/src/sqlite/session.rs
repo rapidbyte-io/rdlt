@@ -114,14 +114,15 @@ impl Session for SqliteSession {
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
-        let (planner, pipeline) = (Arc::clone(&self.planner), self.pipeline.clone());
+        let (planner, pipeline, epoch) =
+            (Arc::clone(&self.planner), self.pipeline.clone(), self.epoch);
         self.database
             .transaction(move |transaction| {
                 let names = query(transaction, &planner.tables())?
                     .iter()
                     .map(|row| row.first().map_or(Ok(String::new()), text))
                     .collect::<Result<Vec<_>>>()?;
-                run_all(transaction, &planner.discard(&pipeline, &names))
+                run_all(transaction, &planner.discard(&pipeline, epoch, &names))
             })
             .await
     }

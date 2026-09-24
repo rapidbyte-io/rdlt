@@ -235,27 +235,30 @@ impl<D: SqlDialect> SqlPlanner<D> {
         plan
     }
 
-    /// The statements removing everything `pipeline` staged in the tables `names`.
-    pub fn discard(&self, pipeline: &PipelineId, names: &[String]) -> Vec<Statement> {
+    /// The statements removing what sessions of `pipeline` older than `epoch` staged in the
+    /// tables `names`.
+    ///
+    /// A newer session's staging stays: a discard can run after a newer session opened and
+    /// staged, when it waited behind that session for the database.
+    pub fn discard(&self, pipeline: &PipelineId, epoch: Epoch, names: &[String]) -> Vec<Statement> {
+        let older = |table: String, [pipeline_column, epoch_column]: [String; 2]| {
+            let mut sql = self.sql();
+            let pipeline = sql.bind(SqlValue::Text(pipeline.to_string()));
+            let epoch = sql.bind(integer(epoch.0));
+            sql.push(&format!(
+                "DELETE FROM {table} WHERE {pipeline_column} = {pipeline} AND {epoch_column} < {epoch}"
+            ));
+            sql.finish()
+        };
+        let staging = [STAGING_COLUMNS[0], STAGING_COLUMNS[1]].map(|column| self.quote(column));
         let mut plan: Vec<Statement> = names
             .iter()
-            .map(|name| {
-                let mut sql = self.sql();
-                let pipeline = sql.bind(SqlValue::Text(pipeline.to_string()));
-                sql.push(&format!(
-                    "DELETE FROM {} WHERE {} = {pipeline}",
-                    self.quote(&staging_table(name)),
-                    self.quote(STAGING_COLUMNS[0])
-                ));
-                sql.finish()
-            })
+            .map(|name| older(self.quote(&staging_table(name)), staging.clone()))
             .collect();
-        let mut sql = self.sql();
-        let pipeline = sql.bind(SqlValue::Text(pipeline.to_string()));
-        sql.push(&format!(
-            "DELETE FROM {SEGMENTS} WHERE pipeline = {pipeline}"
+        plan.push(older(
+            SEGMENTS.to_owned(),
+            ["pipeline".to_owned(), "epoch".to_owned()],
         ));
-        plan.push(sql.finish());
         plan
     }
 
