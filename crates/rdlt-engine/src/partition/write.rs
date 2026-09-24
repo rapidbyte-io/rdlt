@@ -126,11 +126,33 @@ async fn write(
         jobs.push(move || lower(&parts, &plan, &stamp));
         reservations.push(held);
     }
-    let prepared = run_all(context.env.compute(), jobs).await;
-    for (prepared, held) in prepared.into_iter().zip(reservations) {
-        queue(job, context, open, prepared?, held).await?;
+    // Every lowered batch is charged before the first waits on its lane, so none sits uncharged.
+    let lowered: Vec<_> = run_all(context.env.compute(), jobs)
+        .await
+        .into_iter()
+        .zip(reservations)
+        .map(|(prepared, held)| {
+            prepared.map(|prepared| {
+                let held = charge_growth(&context.budget, &prepared, held);
+                (prepared, held)
+            })
+        })
+        .collect();
+    for lowered in lowered {
+        let (prepared, held) = lowered?;
+        queue(job, context, open, prepared, held).await?;
     }
     Ok(())
+}
+
+/// `held` with the growth of `prepared` beyond it charged: the permits then hold the lowered
+/// batch's bytes, or the shredded batch's where lowering shrank it.
+fn charge_growth(budget: &MemoryBudget, prepared: &Prepared, mut held: Held) -> Held {
+    let bytes = u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX);
+    held.permits
+        .push(Box::new(budget.charge(bytes.saturating_sub(held.bytes))));
+    held.bytes = held.bytes.max(bytes);
+    held
 }
 
 /// `parts`, one batch once concatenated, as `plan` lowers it.
@@ -141,10 +163,9 @@ fn lower(parts: &[RecordBatch], plan: &LoweringPlan, stamp: &Stamp) -> Result<Pr
     plan.prepare(&batch, stamp)
 }
 
-/// Queues `prepared` on its lane, with `held` and the growth beyond it.
+/// Queues `prepared` on its lane with `held`, the permits holding its bytes, which travel with it.
 ///
-/// The permits holding the batch's bytes travel with it. Growth beyond what they hold is charged
-/// at once; later pushes pay it back by waiting.
+/// Growth beyond what a push held was charged at once; later pushes pay it back by waiting.
 async fn queue(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -159,7 +180,6 @@ async fn queue(
         return Ok(());
     }
     let bytes = u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    let growth = context.budget.charge(bytes.saturating_sub(held.bytes));
     let lane = context.lanes.route(job.table, job.partition.id());
     context
         .lanes
@@ -169,7 +189,7 @@ async fn queue(
                 table: job.table,
                 segment: open.id,
                 batch: prepared.batch,
-                reservation: Box::new((held.permits, growth)),
+                reservation: Box::new(held.permits),
             },
         )
         .await?;

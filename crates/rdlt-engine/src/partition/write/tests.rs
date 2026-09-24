@@ -3,11 +3,12 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{Partition, Permit, StreamName};
 
-use super::{hold, shred_failed};
+use super::{charge_growth, hold, shred_failed};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
 use crate::shred::ShredError;
+use crate::table::Prepared;
 
 fn job() -> PartitionJob {
     PartitionJob {
@@ -62,5 +63,34 @@ async fn shredded_batches_are_charged_before_the_pushes_they_came_from_are_relea
         sizes
     );
     drop(held);
+    assert_eq!(budget.reserved(), 0);
+}
+
+fn ids(rows: i64) -> RecordBatch {
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
+    RecordBatch::try_from_iter([("id", ids)]).unwrap()
+}
+
+#[test]
+fn lowered_batches_are_charged_in_full_before_any_is_queued() {
+    let budget = MemoryBudget::new(1 << 20);
+    let shredded = [ids(10), ids(1000)];
+    let held = hold(&budget, &shredded, Vec::new());
+    let lowered = [ids(100), ids(10)].map(|batch| Prepared {
+        batch,
+        discarded_rows: 0,
+        discarded_values: 0,
+    });
+    let sizes = [
+        u64::try_from(lowered[0].batch.get_array_memory_size()).unwrap(),
+        u64::try_from(shredded[1].get_array_memory_size()).unwrap(),
+    ];
+    let charged: Vec<_> = lowered
+        .iter()
+        .zip(held)
+        .map(|(prepared, held)| charge_growth(&budget, prepared, held))
+        .collect();
+    assert_eq!(budget.reserved(), sizes[0] + sizes[1]);
+    drop(charged);
     assert_eq!(budget.reserved(), 0);
 }
