@@ -1,4 +1,4 @@
-//! Merging published rows by key, as the memory destination publishes a merge table.
+//! Merging published rows by key, as the memory and files destinations publish a merge table.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use rdlt_connector::MergeKey;
 
 /// `batch` under `schema`: columns found by name and cast to the schema's types, missing columns
 /// null.
-pub(super) fn align(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
+pub(crate) fn align(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
     let columns = schema
         .fields()
         .iter()
@@ -36,7 +36,7 @@ fn concat(batches: &[RecordBatch], schema: &SchemaRef) -> Result<RecordBatch, Ar
 /// The published rows once `incoming` is merged into `published` by `key`: an incoming row
 /// replaces the published row with its key, and among incoming rows of one key the greatest
 /// sequence wins.
-pub(super) fn merge(
+pub(crate) fn merge(
     schema: &SchemaRef,
     published: &[RecordBatch],
     incoming: &[RecordBatch],

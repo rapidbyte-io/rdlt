@@ -8,11 +8,12 @@ use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitSeq, Epoch, Field, GenerationId, LoadId, MergeKey, PipelineId, SchemaChanges, SegmentId,
+    CommitSeq, Epoch, GenerationId, LoadId, MergeKey, PipelineId, SchemaChanges, SegmentId,
     StateChange, StateRecord, TablePath, TypeKind,
 };
 
-use super::merge::merge;
+use crate::columns::changed;
+use crate::merge::merge;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -139,14 +140,6 @@ impl Store {
         entry.merge.clone_from(&table.merge);
         entry
     }
-
-    /// The table `table` refers to, which must exist.
-    fn existing(&mut self, table: &TableRef) -> Result<&mut Table> {
-        self.tables
-            .get_mut(table.name.as_ref())
-            .filter(|existing| existing.schema.is_some())
-            .ok_or_else(|| ConnectorError::data(format!("table {} does not exist", table.name)))
-    }
 }
 
 #[derive(Debug, Default)]
@@ -184,80 +177,6 @@ impl Table {
         merge(&schema, &self.published, &incoming, key)
             .map_err(|error| ConnectorError::data(format!("merging rows: {error}")))
     }
-
-    /// Applies `change` to the table's columns; a change they already reflect changes nothing.
-    ///
-    /// A column the change declares at a type the table's column neither has nor widens to is a
-    /// `schema_conflict`.
-    fn apply(&mut self, change: &TableChange) -> Result<()> {
-        let schema = self.schema.as_ref().ok_or_else(|| {
-            ConnectorError::data(format!("table {} does not exist", change.table().name))
-        })?;
-        let mut fields: Vec<Field> = schema.fields().iter().cloned().collect();
-        match change {
-            TableChange::Create {
-                schema: declared, ..
-            } => {
-                for field in declared.fields().iter() {
-                    add(&mut fields, field, change)?;
-                }
-            }
-            TableChange::AddColumn { field, .. } => add(&mut fields, field, change)?,
-            TableChange::Widen { column, to, .. } => {
-                let Some(field) = fields
-                    .iter_mut()
-                    .find(|field| field.name() == column.as_ref())
-                else {
-                    return Err(ConnectorError::data(format!(
-                        "table {} has no column {column}",
-                        change.table().name
-                    )));
-                };
-                if holds(field, to) {
-                    return Ok(());
-                }
-                let joined = field.logical_type().join(to);
-                *field = Field::new(field.name(), joined, field.is_nullable());
-            }
-        }
-        self.schema = Some(
-            TableSchema::new(fields)
-                .map_err(|error| ConnectorError::internal(format!("changing a table: {error}")))?,
-        );
-        Ok(())
-    }
-}
-
-/// Adds `field` to `fields` as a nullable column unless a column of its name holding its type is
-/// there.
-fn add(fields: &mut Vec<Field>, field: &Field, change: &TableChange) -> Result<()> {
-    match fields
-        .iter()
-        .find(|existing| existing.name() == field.name())
-    {
-        Some(existing) if holds(existing, field.logical_type()) => Ok(()),
-        Some(existing) => Err(conflict(change, existing)),
-        None => {
-            fields.push(Field::new(field.name(), field.logical_type().clone(), true));
-            Ok(())
-        }
-    }
-}
-
-/// Whether `column` holds every value of `logical`.
-fn holds(column: &Field, logical: &LogicalType) -> bool {
-    column.logical_type().join(logical) == *column.logical_type()
-}
-
-/// The error for `change` declaring `existing` at another type.
-fn conflict(change: &TableChange, existing: &Field) -> ConnectorError {
-    ConnectorError::data(format!(
-        "table {} already has column {} as {:?}",
-        change.table().name,
-        existing.name(),
-        existing.logical_type()
-    ))
-    .with_code("schema_conflict")
 }
 
 #[destination(id = "io.rapidbyte.memory")]
@@ -324,19 +243,9 @@ impl Session for MemorySession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let mut store = self.store.lock();
-        match change {
-            TableChange::Create { table, schema } => {
-                let entry = store.table(table);
-                if entry.schema.is_none() {
-                    entry.schema = Some(schema.clone());
-                    return Ok(());
-                }
-                entry.apply(change)
-            }
-            TableChange::AddColumn { table, .. } | TableChange::Widen { table, .. } => {
-                store.existing(table)?.apply(change)
-            }
-        }
+        let entry = store.table(change.table());
+        entry.schema = Some(changed(entry.schema.as_ref(), change)?);
+        Ok(())
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
