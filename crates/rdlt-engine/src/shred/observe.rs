@@ -71,6 +71,15 @@ impl Shape {
             .fold(self.fields.len(), usize::max)
     }
 
+    /// How many columns holding values the shape has, counting nested fields and list items and
+    /// leaving out columns of nulls only.
+    pub(crate) fn leaves(&self) -> u64 {
+        self.fields
+            .iter()
+            .map(|(_, observed)| observed.leaves())
+            .sum()
+    }
+
     /// The shape's fields as logical fields, every one nullable.
     pub(crate) fn logical_fields(&self) -> Vec<Field> {
         self.fields
@@ -111,6 +120,16 @@ impl Observed {
             _ => Self::Json,
         };
         *self = joined;
+    }
+
+    /// How many columns holding values the values fill.
+    fn leaves(&self) -> u64 {
+        match self {
+            Self::Null => 0,
+            Self::Object(shape) => shape.leaves(),
+            Self::Array(item) => item.leaves(),
+            _ => 1,
+        }
     }
 
     /// The most fields any object among the values has, at any depth.
