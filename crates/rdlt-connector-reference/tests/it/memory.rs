@@ -254,7 +254,10 @@ async fn a_change_declaring_a_column_at_another_type_fails_and_changes_nothing()
         .connect(json!({ "store": "conflicts" }), ConnectContext::new())
         .await
         .unwrap();
-    let mut opened = destination.open(&open_context("conflicts", 1)).await.unwrap();
+    let mut opened = destination
+        .open(&open_context("conflicts", 1))
+        .await
+        .unwrap();
     let table = table_ref("t");
     let create = |fields| TableChange::Create {
         table: table.clone(),
@@ -288,7 +291,11 @@ async fn a_change_declaring_a_column_at_another_type_fails_and_changes_nothing()
             "{change:?}"
         );
     }
-    assert_eq!(schema("conflicts", "t"), Some(expected), "a conflict changes nothing");
+    assert_eq!(
+        schema("conflicts", "t"),
+        Some(expected),
+        "a conflict changes nothing"
+    );
 }
 
 fn seq(value: u8) -> Vec<u8> {
