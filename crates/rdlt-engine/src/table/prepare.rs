@@ -11,7 +11,7 @@ use arrow_array::{
     new_null_array,
 };
 use arrow_row::{RowConverter, SortField};
-use rdlt_connector::{LoadId, LogicalType, SegmentId, StreamName, TableSchema};
+use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName, TableSchema};
 
 use super::TableView;
 use super::convert::{convert, text};
@@ -91,18 +91,7 @@ pub(crate) fn prepare(
                     .nth(*index)
                     .expect("routes follow the incoming columns")
                     .logical_type();
-                let converted = convert(batch.column(*index), from, column.logical_type());
-                converted
-                    .and_then(|array| lower_array(&array, column.logical_type(), lowered))
-                    .map_err(|error| {
-                        let detail = format!(
-                            "stream {stream}: column {} cannot hold a value of the batch: {error}",
-                            column.name()
-                        );
-                        Error::schema(detail)
-                            .with_code("value_unrepresentable")
-                            .with_stream(stream)
-                    })?
+                store(stream, batch.column(*index), from, column, lowered)?
             }
             None => new_null_array(&lowered.to_arrow(), rows),
         };
@@ -120,6 +109,28 @@ pub(crate) fn prepare(
         discarded_rows,
         discarded_values,
     })
+}
+
+/// `array`, of type `from`, as `column` holds it and `lowered` stores it; a value the column
+/// cannot hold fails the batch.
+fn store(
+    stream: &StreamName,
+    array: &ArrayRef,
+    from: &LogicalType,
+    column: &Field,
+    lowered: &LogicalType,
+) -> Result<ArrayRef, Error> {
+    convert(array, from, column.logical_type())
+        .and_then(|array| lower_array(&array, column.logical_type(), lowered))
+        .map_err(|error| {
+            let detail = format!(
+                "stream {stream}: column {} cannot hold a value of the batch: {error}",
+                column.name()
+            );
+            Error::schema(detail)
+                .with_code("value_unrepresentable")
+                .with_stream(stream)
+        })
 }
 
 /// `batch` without the rows holding a value in a column routed to [`Route::DiscardRows`], and
