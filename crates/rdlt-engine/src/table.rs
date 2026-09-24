@@ -3,8 +3,8 @@
 
 mod convert;
 mod lower;
+mod lowering;
 mod model;
-mod prepare;
 mod registry;
 mod resolve;
 #[cfg(test)]
@@ -16,8 +16,8 @@ use rdlt_connector::{
 };
 
 pub(crate) use lower::MetaNames;
+pub(crate) use lowering::{LoweringPlan, Prepared, Stamp};
 pub(crate) use model::Model;
-pub(crate) use prepare::{Stamp, prepare};
 pub(crate) use registry::{SharedSession, Tables};
 pub(crate) use resolve::{Resolver, Settings};
 
@@ -31,7 +31,8 @@ pub(crate) struct TableView {
     pub(crate) lowered: Vec<LogicalType>,
     /// The destination's columns: the model's lowered, then the metadata columns.
     pub(crate) physical: Vec<Field>,
-    /// The Arrow schema of prepared batches.
+    /// The Arrow schema of prepared batches, whose load id and load start columns are
+    /// dictionaries of one value.
     pub(crate) schema: SchemaRef,
     pub(crate) meta: MetaNames,
     /// The positions of the merge key's columns, once the table has them; empty for tables that
@@ -87,7 +88,7 @@ impl TableView {
                 merge,
                 ..table.clone()
             },
-            schema: lower::arrow_schema(&physical),
+            schema: lower::prepared_schema(&physical, model.columns.len()),
             lowered,
             physical,
             meta: resolver.meta.clone(),

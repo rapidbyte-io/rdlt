@@ -4,12 +4,12 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use arrow_array::TimestampMicrosecondArray;
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Int64Type, TimestampMicrosecondType};
+use arrow_array::types::{Int8Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{
     Array, ArrayRef, FixedSizeBinaryArray, Float64Array, Int16Array, Int32Array, Int64Array,
     ListArray, RecordBatch, StringArray, StructArray,
 };
-use arrow_schema::{DataType, Field as ArrowField};
+use arrow_schema::{DataType, Field as ArrowField, TimeUnit};
 use proptest::prelude::*;
 use rdlt_connector::{
     Capabilities, ColumnKey, ColumnPath, DecimalType, Field, GenerationId, LoadId, LogicalType,
@@ -20,9 +20,8 @@ use rdlt_connector::{
 use super::TableView;
 use super::convert::{convert, json};
 use super::lower::MetaNames;
+use super::lowering::{LoweringPlan, Prepared, Stamp};
 use super::model::Model;
-use super::prepare::Prepared;
-use super::prepare::{Stamp, prepare};
 use super::resolve::{Change, Resolution, Resolver, Route, Settings};
 use crate::error::ErrorKind;
 use crate::naming::Naming;
@@ -350,6 +349,24 @@ fn stamp() -> Stamp {
     }
 }
 
+/// The values of `batch`'s column `index`, a dictionary of one value per batch encoding values of
+/// `values`: the load id and load start (spec §8.5).
+fn constant(batch: &RecordBatch, index: usize, values: &DataType) -> ArrayRef {
+    let column = batch.column(index);
+    assert_eq!(
+        column.data_type(),
+        &DataType::Dictionary(Box::new(DataType::Int8), Box::new(values.clone()))
+    );
+    let dictionary = column.as_dictionary::<Int8Type>();
+    assert_eq!(
+        dictionary.values().len(),
+        1,
+        "one value for the whole batch"
+    );
+    assert!(dictionary.keys().iter().all(|key| key == Some(0)));
+    arrow_cast::cast(column, values).unwrap()
+}
+
 fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     RecordBatch::try_from_iter(columns).unwrap()
 }
@@ -358,16 +375,10 @@ fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
 fn prepared(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> Prepared {
     let incoming = TableSchema::from_arrow(&batch.schema()).unwrap();
     let resolution = resolver.resolve(model, &incoming).unwrap();
-    let view = TableView::new(&table("t"), resolution.model, resolver);
-    prepare(
-        &resolver.stream,
-        &view,
-        &incoming,
-        batch,
-        &resolution.routes,
-        &stamp(),
-    )
-    .unwrap()
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver));
+    LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+        .prepare(batch, &stamp())
+        .unwrap()
 }
 
 #[test]
@@ -408,14 +419,23 @@ fn prepared_batches_convert_exactly_lower_to_the_destination_and_carry_metadata(
         "minimal destinations store lists as text"
     );
     assert!(tags.is_null(1));
-    let load_ids = out.column(3).as_string::<i32>();
+    let load_ids = constant(&out, 3, &DataType::Utf8);
     assert_eq!(
-        load_ids.value(0).len(),
+        load_ids.as_string::<i32>().value(0).len(),
         36,
         "UUIDs lower to hyphenated text"
     );
-    let loaded_at = out.column(4).as_primitive::<TimestampMicrosecondType>();
-    assert_eq!(loaded_at.value(1), 1_000_000_000);
+    let loaded_at = constant(
+        &out,
+        4,
+        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+    );
+    assert_eq!(
+        loaded_at
+            .as_primitive::<TimestampMicrosecondType>()
+            .values(),
+        &[1_000_000_000; 2]
+    );
     assert_eq!((prepared.discarded_rows, prepared.discarded_values), (0, 0));
 }
 
@@ -439,7 +459,8 @@ fn types_the_destination_lacks_land_as_text() {
         "1970-01-01T01:00:01.500+01:00"
     );
     assert_eq!(out.column(1).as_string::<i32>().value(0), "12.34");
-    let loaded_at = out.column(3).as_string::<i32>().value(0);
+    let loaded_at = constant(&out, 3, &DataType::Utf8);
+    let loaded_at = loaded_at.as_string::<i32>().value(0);
     assert!(loaded_at.starts_with("1970-01-01T00:16:40"), "{loaded_at}");
 }
 
@@ -460,7 +481,7 @@ fn nested_values_stay_native_where_the_destination_stores_them() {
     let natively = resolver(native.clone(), plan(), &[]);
     let out = prepared(&natively, &Model::default(), &batch).batch;
     assert!(matches!(out.column(0).data_type(), DataType::Struct(_)));
-    assert_eq!(out.column(1).data_type(), &DataType::FixedSizeBinary(16));
+    assert_eq!(constant(&out, 1, &DataType::FixedSizeBinary(16)).len(), 1);
     let as_json = plan().column("s", SchemaSettings::new().nested(Nested::Json));
     let as_json = resolver(native, as_json, &[]);
     let out = prepared(&as_json, &Model::default(), &batch).batch;
@@ -571,16 +592,10 @@ fn merge_batches_without_a_whole_key_are_refused() {
     for (batch, code) in cases {
         let incoming = TableSchema::from_arrow(&batch.schema()).unwrap();
         let resolution = resolver.resolve(&model, &incoming).unwrap();
-        let view = TableView::new(&table("t"), resolution.model, &resolver);
-        let error = prepare(
-            &resolver.stream,
-            &view,
-            &incoming,
-            &batch,
-            &resolution.routes,
-            &stamp(),
-        )
-        .unwrap_err();
+        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+        let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+            .prepare(&batch, &stamp())
+            .unwrap_err();
         assert_eq!(error.code(), Some(code));
     }
 }
@@ -781,17 +796,11 @@ fn a_merge_table_created_without_its_key_column_refuses_batches() {
     let batch = batch(vec![("v", Arc::new(StringArray::from(vec!["a"])) as _)]);
     let incoming = TableSchema::from_arrow(&batch.schema()).unwrap();
     let resolution = resolver.resolve(&model, &incoming).unwrap();
-    let view = TableView::new(&table("t"), resolution.model, &resolver);
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
     assert!(view.key.is_empty());
-    let error = prepare(
-        &resolver.stream,
-        &view,
-        &incoming,
-        &batch,
-        &resolution.routes,
-        &stamp(),
-    )
-    .unwrap_err();
+    let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+        .prepare(&batch, &stamp())
+        .unwrap_err();
     assert_eq!(error.code(), Some("merge_key_missing"));
 }
 
@@ -914,18 +923,64 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
         resolution.changes.is_empty(),
         "the column's type holds the batch's"
     );
-    let view = TableView::new(&table("t"), resolution.model, &resolver);
-    let error = prepare(
-        &resolver.stream,
-        &view,
-        &incoming,
-        &batch,
-        &resolution.routes,
-        &stamp(),
-    )
-    .unwrap_err();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+        .prepare(&batch, &stamp())
+        .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
         (ErrorKind::Schema, Some("value_unrepresentable"))
+    );
+}
+
+#[test]
+fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
+    let mut uuids = capabilities();
+    uuids.types.insert(TypeKind::Uuid);
+    let resolver = resolver(uuids, plan(), &[]);
+    let ids = |rows: i64| {
+        batch(vec![(
+            "id",
+            Arc::new(Int64Array::from_iter_values(0..rows)) as _,
+        )])
+    };
+    let incoming = TableSchema::from_arrow(&ids(1).schema()).unwrap();
+    let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
+    // The keys of the load id column, and the buffer they sit in.
+    let keys = |rows: i64, stamp: &Stamp| {
+        let prepared = lowering.prepare(&ids(rows), stamp).unwrap().batch;
+        let column = prepared.column(1).as_dictionary::<Int8Type>().clone();
+        assert_eq!(column.len(), usize::try_from(rows).unwrap());
+        assert!(column.keys().iter().all(|key| key == Some(0)));
+        column.keys().values().inner().as_ptr()
+    };
+    let stamp = stamp();
+    let hundred = keys(100, &stamp);
+    assert_eq!(keys(100, &stamp), hundred, "the same size reuses them");
+    assert_eq!(
+        keys(60, &stamp),
+        hundred,
+        "a batch over half their size reuses them"
+    );
+    assert_ne!(
+        keys(40, &stamp),
+        hundred,
+        "a much smaller batch gets its own"
+    );
+    let forty = keys(40, &stamp);
+    assert_ne!(keys(41, &stamp), forty, "a larger batch gets its own");
+    let later = Stamp {
+        load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(2_000), 6),
+        ..stamp
+    };
+    let forty_one = keys(41, &stamp);
+    assert_ne!(keys(41, &later), forty_one, "another load gets its own");
+    let prepared = lowering.prepare(&ids(3), &later).unwrap().batch;
+    let load_ids = constant(&prepared, 1, &DataType::FixedSizeBinary(16));
+    assert_eq!(
+        load_ids.as_fixed_size_binary().value(2),
+        later.load_id.as_bytes()
     );
 }

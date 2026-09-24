@@ -429,3 +429,71 @@ async fn conflicts_are_named_around_a_bounded_number_of_times() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_plan_is_made_once_per_view_and_incoming_schema() {
+    let (tables, changes) = tables(None, Model::default());
+    let narrow = schema(&[("id", LogicalType::Int64)]);
+    let first = tables.plan(0, narrow.clone()).await.unwrap();
+    let again = tables.plan(0, narrow.clone()).await.unwrap();
+    assert!(
+        Arc::ptr_eq(&first, &again),
+        "the same schema reuses the plan"
+    );
+    assert_eq!(changes.lock().len(), 1, "the table was created once");
+    let reordered = schema(&[("id", LogicalType::Int32)]);
+    let other = tables.plan(0, reordered).await.unwrap();
+    assert!(
+        !Arc::ptr_eq(&first, &other),
+        "another schema gets its own plan"
+    );
+    assert!(
+        Arc::ptr_eq(other.view(), first.view()),
+        "which fits the same view"
+    );
+    let wider = schema(&[("id", LogicalType::Int64), ("note", LogicalType::Utf8)]);
+    let widened = tables.plan(0, wider).await.unwrap();
+    assert!(
+        !Arc::ptr_eq(widened.view(), first.view()),
+        "a change makes a new view"
+    );
+    let after = tables.plan(0, narrow).await.unwrap();
+    assert!(
+        !Arc::ptr_eq(&after, &first),
+        "plans for an older view are dropped"
+    );
+    assert!(Arc::ptr_eq(after.view(), widened.view()));
+}
+
+#[tokio::test]
+async fn a_table_keeps_a_bounded_number_of_plans() {
+    let (tables, _) = tables(None, Model::default());
+    let id = schema(&[("id", LogicalType::Int64)]);
+    let oldest = tables.plan(0, id.clone()).await.unwrap();
+    // Eight other schemas, each with a column of only nulls, which changes nothing in the table.
+    for index in 0..8 {
+        let extra = format!("x{index}");
+        let incoming = schema(&[("id", LogicalType::Int64), (&extra, LogicalType::Null)]);
+        let plan = tables.plan(0, incoming).await.unwrap();
+        assert!(Arc::ptr_eq(plan.view(), oldest.view()));
+    }
+    let again = tables.plan(0, id).await.unwrap();
+    assert!(
+        !Arc::ptr_eq(&again, &oldest),
+        "the oldest plan made room for newer ones"
+    );
+}
+
+#[tokio::test]
+async fn partitions_making_one_plan_at_once_share_it() {
+    let (tables, changes) = tables(None, Model::default());
+    let incoming = schema(&[("id", LogicalType::Int64)]);
+    let (one, two) = tokio::join!(
+        tables.plan(0, incoming.clone()),
+        tables.plan(0, incoming.clone())
+    );
+    let (one, two) = (one.unwrap(), two.unwrap());
+    assert!(Arc::ptr_eq(&one, &two), "the second found the first's plan");
+    assert_eq!(changes.lock().len(), 1, "the table was created once");
+    assert!(Arc::ptr_eq(&tables.plan(0, incoming).await.unwrap(), &one));
+}
