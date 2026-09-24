@@ -156,6 +156,8 @@ pub(crate) enum Step {
     Commit,
     /// The first commit lands, but its response is lost.
     LoseResponse,
+    /// The first commit lands but its response is lost, and the open after it fails.
+    LoseResponseThenOpen,
 }
 
 /// `inner`, failing with a transient error at `step`.
@@ -164,6 +166,7 @@ pub(crate) fn failing(inner: Arc<dyn Destination>, step: Step) -> Arc<dyn Destin
         inner,
         step,
         lost: Arc::new(AtomicBool::new(false)),
+        refused: AtomicBool::new(false),
     })
 }
 
@@ -172,6 +175,9 @@ struct Failing {
     step: Step,
     /// Whether a response was already lost, for [`Step::LoseResponse`].
     lost: Arc<AtomicBool>,
+    /// Whether an open after the lost response was already refused, for
+    /// [`Step::LoseResponseThenOpen`].
+    refused: AtomicBool,
 }
 
 fn injected() -> ConnectorError {
@@ -189,7 +195,10 @@ impl Destination for Failing {
 
     fn open<'a>(&'a self, context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
         Box::pin(async move {
-            if self.step == Step::Open {
+            let refuse = self.step == Step::LoseResponseThenOpen
+                && self.lost.load(Ordering::SeqCst)
+                && !self.refused.swap(true, Ordering::SeqCst);
+            if self.step == Step::Open || refuse {
                 return Err(injected());
             }
             let opened = self.inner.open(context).await?;
@@ -235,7 +244,8 @@ impl DestinationSession for FailingSession {
         }
         Box::pin(async move {
             let receipt = self.inner.commit(meta).await?;
-            if self.step == Step::LoseResponse && !self.lost.swap(true, Ordering::SeqCst) {
+            let loses = matches!(self.step, Step::LoseResponse | Step::LoseResponseThenOpen);
+            if loses && !self.lost.swap(true, Ordering::SeqCst) {
                 return Err(injected());
             }
             Ok(receipt)
