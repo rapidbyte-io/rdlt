@@ -80,3 +80,28 @@ fn a_manifest_version_is_created_once() {
         "no temporary file is left: {leftovers:?}"
     );
 }
+
+#[test]
+fn a_version_older_than_the_latest_is_never_created_again() {
+    let dir = tempfile::tempdir().unwrap();
+    for version in 1..=20 {
+        let manifest = Manifest {
+            version,
+            ..Manifest::default()
+        };
+        assert!(put(dir.path(), &manifest).unwrap());
+    }
+    let stale = Manifest {
+        version: 6,
+        epoch: rdlt_connector::Epoch(1),
+        ..Manifest::default()
+    };
+    assert!(
+        !put(dir.path(), &stale).unwrap(),
+        "a session that read version 5 loses, though version 6 was removed"
+    );
+    assert_eq!(
+        latest(dir.path()).unwrap().map(|manifest| manifest.version),
+        Some(20)
+    );
+}

@@ -172,8 +172,11 @@ pub(super) fn latest(dir: &Path) -> Result<Option<Manifest>> {
         .map_err(|error| ConnectorError::internal(format!("manifest {}: {error}", path.display())))
 }
 
-/// Creates `manifest` as its version in `dir`, unless that version exists; returns whether it
-/// did, removing versions older than those kept.
+/// Creates `manifest` as its version in `dir`, unless that version or a newer one exists;
+/// returns whether it did, removing versions older than those kept.
+///
+/// A version older than the newest loses even where garbage collection removed it: its writer
+/// read a manifest others have moved past.
 pub(super) fn put(dir: &Path, manifest: &Manifest) -> Result<bool> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let manifests = dir.join("manifests");
@@ -200,7 +203,15 @@ pub(super) fn put(dir: &Path, manifest: &Manifest) -> Result<bool> {
         Err(error) => return Err(io::failed("publishing a manifest", &path)(error)),
     }
     io::sync_dir(&manifests)?;
-    for old in versions(&manifests)? {
+    let versions = versions(&manifests)?;
+    if versions
+        .last()
+        .is_some_and(|newest| *newest > manifest.version)
+    {
+        drop(fs::remove_file(&path));
+        return Ok(false);
+    }
+    for old in versions {
         if old + KEPT_VERSIONS < manifest.version {
             drop(fs::remove_file(manifest_path(dir, old)));
         }
