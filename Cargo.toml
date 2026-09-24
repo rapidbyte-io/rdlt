@@ -21,6 +21,7 @@ rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                
 arrow-array = { version = "59.2", features = [
   "chrono-tz",
 ] } # record batches, with named time zones; one arrow major across the workspace, matching DataFusion
+arrow-buffer = "59.2" # null and offset buffers the shredder builds columns from
 arrow-cast = "59.2" # exact casts into a table's column types, and text renderings for lowering
 arrow-ipc = "59.2" # Arrow IPC files, for the files connectors
 arrow-json = "59.2" # JSON renderings of values stored as Json, and JSON lines files
@@ -43,6 +44,7 @@ serde_path_to_error = "0.1.20" # field paths in configuration errors
 syn = { version = "2", features = ["full"] } # parsing impl blocks in rdlt-connector-macros
 uuid = { version = "1.26.1", features = ["serde"] } # load ids (UUIDv7)
 getrandom = "0.4.3" # the operating system random source behind SystemEnv
+memchr = "2.8.3" # finding the lines of JSON pushes
 parking_lot = "0.12.5" # locks without poisoning
 rayon = "1.12.0" # the compute pool for CPU-bound stages
 sonic-rs = "0.5.10" # SIMD JSON parsing for the shredder, and serializing JSON pushes

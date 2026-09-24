@@ -5,6 +5,8 @@ mod tests;
 
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};
+#[cfg(test)]
+use std::task::{Context, Poll, Waker};
 
 use tokio::sync::oneshot;
 
@@ -46,31 +48,65 @@ impl ComputePool for RayonPool {
     }
 }
 
-/// Runs `work` on `pool` and returns its result.
+/// A [`ComputePool`] that runs each job at once, on the calling thread.
+#[cfg(test)]
+pub(crate) struct Inline;
+
+#[cfg(test)]
+impl ComputePool for Inline {
+    fn execute(&self, job: Job) {
+        job();
+    }
+}
+
+/// The output of `future`, whose compute jobs all run on an [`Inline`] pool, so it is ready at
+/// its first poll.
+#[cfg(test)]
+pub(crate) fn ready<F: Future>(future: F) -> F::Output {
+    match std::pin::pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("work on an inline pool finishes at once"),
+    }
+}
+
+/// Runs every job of `work` on `pool`, all at once, and returns their results in `work`'s order.
 ///
-/// A panic inside `work` resumes in the caller, so it surfaces in the task that asked for the work.
+/// A panic inside a job resumes in the caller once the jobs before it have finished.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the shred and transform stages call this from M3 on"
+        reason = "the shredder calls this once partitions shred JSON pushes"
     )
 )]
-pub(crate) async fn run<T, F>(pool: &dyn ComputePool, work: F) -> T
+pub(crate) async fn run_all<T, F>(
+    pool: &dyn ComputePool,
+    work: impl IntoIterator<Item = F>,
+) -> Vec<T>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    let (sender, receiver) = oneshot::channel();
-    pool.execute(Box::new(move || {
-        // The caller may have stopped waiting; its result is then not needed.
-        drop(sender.send(panic::catch_unwind(AssertUnwindSafe(work))));
-    }));
-    match receiver
-        .await
-        .expect("compute pools run every job they accept")
-    {
-        Ok(value) => value,
-        Err(payload) => panic::resume_unwind(payload),
+    let receivers: Vec<_> = work
+        .into_iter()
+        .map(|job| {
+            let (sender, receiver) = oneshot::channel();
+            pool.execute(Box::new(move || {
+                // The caller may have stopped waiting; its result is then not needed.
+                drop(sender.send(panic::catch_unwind(AssertUnwindSafe(job))));
+            }));
+            receiver
+        })
+        .collect();
+    let mut values = Vec::with_capacity(receivers.len());
+    for receiver in receivers {
+        match receiver
+            .await
+            .expect("compute pools run every job they accept")
+        {
+            Ok(value) => values.push(value),
+            Err(payload) => panic::resume_unwind(payload),
+        }
     }
+    values
 }
