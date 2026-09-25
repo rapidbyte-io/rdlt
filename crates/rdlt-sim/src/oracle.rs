@@ -232,12 +232,7 @@ fn check_contents(world: &World, phase: usize, seed: Seed) {
         expected.sort_by_key(order);
         actual.sort_by_key(order);
         if stream.normalized() {
-            children::check(
-                world,
-                stream,
-                &expected_rows(world, stream, phase, seed),
-                seed,
-            );
+            children::check(world, stream, &kept_rows(world, stream, phase, seed), seed);
         }
         if actual != expected {
             let first = actual
@@ -294,17 +289,37 @@ fn expected_rows(world: &World, stream: &SimStream, phase: usize, seed: Seed) ->
     }
 }
 
+/// The rows `stream`'s table holds after `phase` as the model has them: for a merge stream, each
+/// key's last row the policy keeps; otherwise each row the policy keeps, as often as the table
+/// holds it.
+fn kept_rows(world: &World, stream: &SimStream, phase: usize, seed: Seed) -> Vec<Row> {
+    if stream.write == WriteMode::Merge {
+        return merged_rows(stream, world.workload.salt, phase);
+    }
+    expected_rows(world, stream, phase, seed)
+        .into_iter()
+        .filter(|row| source_row(stream, row).is_some())
+        .collect()
+}
+
 /// The rows a merge stream's table holds after `phase`: for each key, the last row delivered.
 fn merged(stream: &SimStream, salt: u64, phase: usize) -> Vec<Map<String, Value>> {
-    let mut rows: std::collections::BTreeMap<i64, Map<String, Value>> =
-        std::collections::BTreeMap::new();
+    merged_rows(stream, salt, phase)
+        .iter()
+        .filter_map(|row| source_row(stream, row))
+        .collect()
+}
+
+/// For each key of a merge stream, the last row delivered by `phase` that the policy keeps.
+fn merged_rows(stream: &SimStream, salt: u64, phase: usize) -> Vec<Row> {
+    let mut rows: std::collections::BTreeMap<i64, Row> = std::collections::BTreeMap::new();
     for delivered in 0..=phase {
         for row in stream.all_rows(salt, delivered) {
-            if row.delivered != delivered {
+            if row.delivered != delivered || source_row(stream, &row).is_none() {
                 continue;
             }
-            if let (Some(key), Some(source)) = (row.key, source_row(stream, &row)) {
-                rows.insert(key, source);
+            if let Some(key) = row.key {
+                rows.insert(key, row);
             }
         }
     }

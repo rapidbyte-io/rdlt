@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{ConnectorError, LogicalType, MergeKey, NameMap, Result};
+use rdlt_connector::{ConnectorError, LogicalType, MergeKey, NameMap, Result, RootKey};
 use serde_json::{Map, Value};
 
 /// One stored row: each column's value, nulls left out.
@@ -108,6 +108,34 @@ pub(crate) fn merge(published: &mut Vec<Cells>, incoming: Vec<Cells>, key: &Merg
     }
     published.retain(|row| !winners.contains_key(&key_of(row)));
     published.extend(winners.into_values());
+}
+
+/// Merges `incoming` into `published`, the rows of a child table merging by `key` below `root`,
+/// as the root table merges `roots`: every published row of a root among `roots` goes, and the
+/// incoming rows of each root's winning row, whose sequence is greatest, take their place.
+pub(crate) fn merge_children(
+    published: &mut Vec<Cells>,
+    incoming: Vec<Cells>,
+    key: &MergeKey,
+    root: &RootKey,
+    roots: &[Cells],
+) {
+    let text =
+        |row: &Cells, column: &str| row.get(column).map(Value::to_string).unwrap_or_default();
+    let mut winners: BTreeMap<String, String> = BTreeMap::new();
+    for row in roots {
+        let (id, seq) = (text(row, &root.id), text(row, &root.seq));
+        if winners.get(&id).is_none_or(|best| *best < seq) {
+            winners.insert(id, seq);
+        }
+    }
+    let owner = key.columns.first().map_or("", AsRef::as_ref);
+    published.retain(|row| !winners.contains_key(&text(row, owner)));
+    published.extend(
+        incoming
+            .into_iter()
+            .filter(|row| winners.get(&text(row, owner)) == Some(&text(row, &key.seq))),
+    );
 }
 
 /// A finding about a stored row.

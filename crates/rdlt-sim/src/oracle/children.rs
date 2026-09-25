@@ -1,6 +1,7 @@
 //! The child tables of normalized streams against the reference model.
 
 use rdlt_connector::{LogicalType, TablePath};
+use rdlt_engine::SchemaPolicy;
 use serde_json::Value;
 
 use crate::destination::{Meta, published_table};
@@ -11,10 +12,10 @@ use crate::world::World;
 /// One item of an array: the id of the row holding it, its position and its value.
 type Item = (i64, i64, Value);
 
-/// The values of a row's lineage ids.
+/// The values of a row's binary metadata: its lineage ids, and a merge table's sequence.
 ///
-/// Destinations rename metadata columns, so lineage is found by type: the ids are a row's only
-/// binary metadata, a child's position its only integer metadata.
+/// Destinations rename metadata columns, so lineage is found by type: the ids and the sequence
+/// are a row's only binary metadata, a child's position its only integer metadata.
 fn ids(meta: &Meta) -> Vec<&Value> {
     meta.iter()
         .filter(|(logical, _)| *logical == LogicalType::Binary)
@@ -22,28 +23,37 @@ fn ids(meta: &Meta) -> Vec<&Value> {
         .collect()
 }
 
-/// Checks that each array column of `stream` has a child table holding exactly the items of
-/// `rows`, which the stream's table holds, each naming the row it belongs to by that row's id.
-pub(super) fn check(world: &World, stream: &SimStream, rows: &[Row], seed: Seed) {
+/// Each published row of `stream`'s own table: its binary metadata, and its source row's id.
+fn roots(world: &World, stream: &SimStream) -> Vec<(Vec<Value>, i64)> {
     let root = TablePath::new([stream.name.as_str()]).expect("stream names are valid paths");
-    let roots: Vec<(Value, i64)> = published_table(world, &root)
+    published_table(world, &root)
         .into_iter()
         .filter_map(|(source, meta)| {
-            let [id] = ids(&meta).try_into().ok()?;
-            Some((id.clone(), source.get("id")?.as_i64()?))
+            let ids = ids(&meta).into_iter().cloned().collect();
+            Some((ids, source.get("id")?.as_i64()?))
         })
-        .collect();
+        .collect()
+}
+
+/// Checks that each array column of `stream` has a child table holding exactly the items of
+/// `rows`, the rows the stream's table holds, each naming the row it belongs to by that row's id.
+pub(super) fn check(world: &World, stream: &SimStream, rows: &[Row], seed: Seed) {
+    let roots = roots(world, stream);
     let row_of = |parent: &Value| {
         roots
             .iter()
-            .find(|(id, _)| id == parent)
+            .find(|(ids, _)| ids.contains(parent))
             .map(|(_, row)| *row)
     };
     for (column, drift) in stream.drift.iter().enumerate() {
         let mut expected: Vec<Item> = rows
             .iter()
             .filter_map(|row| match row.extras.get(column) {
-                Some(Some(Extra::List(items))) => Some((row.id, items)),
+                // Drift is never declared, so an array is always new: a stream that discards
+                // values discards its child table.
+                Some(Some(Extra::List(items))) if stream.policy != SchemaPolicy::DiscardValue => {
+                    Some((row.id, items))
+                }
                 _ => None,
             })
             .flat_map(|(id, items)| {

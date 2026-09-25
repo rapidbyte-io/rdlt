@@ -193,11 +193,7 @@ impl SimStream {
             drift,
             partitions,
         };
-        // Normalized streams neither merge nor discard yet (spec §8.7, M3c).
-        if stream.write != WriteMode::Merge
-            && stream.policy == SchemaPolicy::Evolve
-            && rng.chance(300)
-        {
+        if rng.chance(300) {
             stream.nested = Nested::normalize();
         }
         stream

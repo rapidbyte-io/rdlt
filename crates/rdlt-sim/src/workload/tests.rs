@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use rdlt_connector::ReadMode;
 use rdlt_engine::{Nested, SchemaPolicy, WriteMode};
 
-use super::{PHASES, Shape, Workload};
+use super::{PHASES, Shape, SimStream, Workload};
 use crate::rng::SplitMix64;
 
 #[test]
@@ -151,34 +151,43 @@ fn merge_rows_share_keys_within_their_partition() {
 }
 
 #[test]
-fn some_streams_normalize_arrays_but_none_that_merge_or_discard() {
+fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
     let streams: Vec<_> = (0..300)
         .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed)).streams)
         .collect();
+    let has_arrays = |stream: &SimStream| {
+        stream.normalized()
+            && stream.drift.iter().any(|drift| {
+                drift
+                    .shapes
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .any(|shape| *shape == Shape::List)
+            })
+    };
     for json in [false, true] {
         assert!(
-            streams.iter().any(|stream| {
-                stream.normalized()
-                    && stream.json == json
-                    && stream.drift.iter().any(|drift| {
-                        drift
-                            .shapes
-                            .iter()
-                            .flatten()
-                            .flatten()
-                            .any(|shape| *shape == Shape::List)
-                    })
-            }),
+            streams
+                .iter()
+                .any(|stream| has_arrays(stream) && stream.json == json),
             "some normalized stream pushing JSON={json} has arrays"
         );
     }
-    assert!(
-        streams
-            .iter()
-            .filter(|stream| stream.normalized())
-            .all(|stream| {
-                stream.write != WriteMode::Merge && stream.policy == SchemaPolicy::Evolve
-            }),
-        "normalized streams neither merge nor discard"
-    );
+    for write in [WriteMode::Append, WriteMode::Replace, WriteMode::Merge] {
+        assert!(
+            streams
+                .iter()
+                .any(|stream| has_arrays(stream) && stream.write == write),
+            "some normalized stream with arrays writes as {write:?}"
+        );
+    }
+    for policy in [SchemaPolicy::DiscardRow, SchemaPolicy::DiscardValue] {
+        assert!(
+            streams
+                .iter()
+                .any(|stream| has_arrays(stream) && stream.policy == policy),
+            "some normalized stream with arrays has policy {policy:?}"
+        );
+    }
 }
