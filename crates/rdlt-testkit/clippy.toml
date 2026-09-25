@@ -1,0 +1,11 @@
+# The workspace clippy.toml settings, repeated because clippy reads only the nearest file, plus
+# the rule that keeps what the simulation draws deterministic.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
+too-many-lines-threshold = 60
+
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "iteration order breaks deterministic simulation; use BTreeMap" },
+  { path = "std::collections::HashSet", reason = "iteration order breaks deterministic simulation; use BTreeSet" },
+]

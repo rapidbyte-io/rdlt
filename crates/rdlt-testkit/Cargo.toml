@@ -1,0 +1,22 @@
+[package]
+name = "rdlt-testkit"
+description = "Drawn Arrow data and an exact value model shared by rdlt's property tests and simulation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-cast.workspace = true
+arrow-schema.workspace = true
+chrono.workspace = true
+proptest.workspace = true
+rdlt-connector.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

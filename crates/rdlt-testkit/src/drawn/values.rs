@@ -122,7 +122,7 @@ fn scalar_shape() -> BoxedStrategy<Shape> {
 }
 
 /// Any type, nested up to `depth` levels.
-pub(crate) fn shape(depth: u32) -> BoxedStrategy<Shape> {
+pub fn shape(depth: u32) -> BoxedStrategy<Shape> {
     if depth == 0 {
         return scalar_shape();
     }
@@ -186,7 +186,7 @@ pub(crate) fn shape(depth: u32) -> BoxedStrategy<Shape> {
 }
 
 /// A value of `shape`, null one time in five where its field is nullable.
-pub(crate) fn value(shape: &Shape, nullable: bool) -> BoxedStrategy<Scalar> {
+pub fn value(shape: &Shape, nullable: bool) -> BoxedStrategy<Scalar> {
     let present = present(shape);
     if nullable && shape.logical != LogicalType::Null {
         prop_oneof![1 => Just(Scalar::Null), 4 => present].boxed()
@@ -406,8 +406,8 @@ fn json_value(depth: u32) -> BoxedStrategy<Value> {
     .boxed()
 }
 
-/// A batch of one to three of [`NAMES`], each of any shape, and up to six rows.
-pub(crate) fn drawn() -> impl Strategy<Value = Drawn> {
+/// A batch of one to three of the columns `a`, `b` and `c`, each of any shape, and up to six rows.
+pub fn drawn() -> impl Strategy<Value = Drawn> {
     proptest::sample::subsequence(NAMES.to_vec(), 1..=NAMES.len())
         .prop_flat_map(|names| {
             let count = names.len();

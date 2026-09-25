@@ -2,8 +2,6 @@
 //! source may send, lowered by plans into a table each batch evolves, for any destination's
 //! capabilities, against the reference lowering each value on its own.
 
-mod decode;
-
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -14,37 +12,17 @@ use rdlt_connector::{
     TablePath, TableRef, TableSchema, TypeKind,
 };
 
-use super::reference::{Canon, lower, storage};
+use rdlt_testkit::canon::{Canon, storage};
+use rdlt_testkit::decode;
+use rdlt_testkit::drawn::{Drawn, KINDS, Scalar, array, field, neighbors};
+
+use super::reference::lower;
 use super::{LoweringPlan, Stamp};
-use crate::drawn::{Drawn, Encoding, Scalar, Shape, array, field, neighbors, values};
 use crate::error::ErrorKind;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::{Nested, SchemaPolicy, SchemaSettings};
 use crate::table::{Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, TableView};
-
-/// Every kind of value a destination may store natively.
-const KINDS: [TypeKind; 19] = [
-    TypeKind::Null,
-    TypeKind::Bool,
-    TypeKind::Int8,
-    TypeKind::Int16,
-    TypeKind::Int32,
-    TypeKind::Int64,
-    TypeKind::Float32,
-    TypeKind::Float64,
-    TypeKind::Decimal,
-    TypeKind::Utf8,
-    TypeKind::Binary,
-    TypeKind::Date,
-    TypeKind::Time,
-    TypeKind::Timestamp,
-    TypeKind::Duration,
-    TypeKind::Uuid,
-    TypeKind::Json,
-    TypeKind::Struct,
-    TypeKind::List,
-];
 
 /// A destination's capabilities: any set of native types, text always among them, any nested
 /// support, and every schema change or only added columns.
@@ -180,6 +158,7 @@ fn check(
     batches: &[Drawn],
 ) -> Result<(), TestCaseError> {
     let resolver = resolver(capabilities.clone(), policy, nested);
+    let native = nested == Nested::Native;
     let table = TableRef {
         path: TablePath::new(["t"]).expect("a valid path"),
         name: "t".into(),
@@ -200,7 +179,7 @@ fn check(
         for (column, lowered) in view.model.columns.iter().zip(&view.lowered) {
             prop_assert_eq!(
                 lowered,
-                &storage(column.logical_type(), nested, capabilities)
+                &storage(column.logical_type(), native, capabilities)
             );
         }
         let plan = LoweringPlan::new(
@@ -241,7 +220,7 @@ fn check(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(crate::drawn::cases(1024)))]
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(1024)))]
 
     #[test]
     fn a_plan_lowers_each_value_as_the_reference_does(
@@ -252,60 +231,4 @@ proptest! {
     ) {
         check(&capabilities, policy, nested, &batches)?;
     }
-}
-
-/// Every type and encoding the shape of a column or anything inside it takes.
-fn seen(shape: &Shape, into: &mut std::collections::BTreeSet<(TypeKind, String)>) {
-    let encoding = match shape.encoding {
-        Encoding::FixedSize(_) => "FixedSize".to_owned(),
-        other => format!("{other:?}"),
-    };
-    into.insert((shape.logical.kind(), encoding));
-    for child in &shape.children {
-        seen(child, into);
-    }
-}
-
-#[test]
-fn the_drawn_shapes_hold_every_type_in_every_encoding() {
-    use proptest::strategy::ValueTree;
-    use proptest::test_runner::TestRunner;
-    let mut runner = TestRunner::deterministic();
-    let strategy = values::shape(2);
-    let mut drawn = std::collections::BTreeSet::new();
-    for _ in 0..20_000 {
-        let shape = strategy.new_tree(&mut runner).expect("a shape").current();
-        seen(&shape, &mut drawn);
-    }
-    let mut expected = std::collections::BTreeSet::new();
-    let every = |kind: TypeKind, encodings: &[&'static str]| -> Vec<(TypeKind, String)> {
-        ["Plain", "Dictionary", "RunEnd"]
-            .iter()
-            .chain(encodings)
-            .map(|encoding| (kind, (*encoding).to_owned()))
-            .collect()
-    };
-    for kind in KINDS {
-        let extra: &[&'static str] = match kind {
-            TypeKind::Int16 | TypeKind::Int32 | TypeKind::Int64 => &["Unsigned"],
-            TypeKind::Float32 => &["Half"],
-            TypeKind::Decimal => &["Unsigned", "Decimal32", "Decimal64", "Decimal256"],
-            TypeKind::Utf8 | TypeKind::Json => &["Large", "View"],
-            TypeKind::Binary => &["Large", "View", "FixedSize"],
-            TypeKind::Date => &["Date64"],
-            _ => &[],
-        };
-        match kind {
-            TypeKind::Struct => {
-                expected.insert((kind, "Plain".to_owned()));
-            }
-            TypeKind::List => expected.extend(
-                ["Plain", "Large", "View", "LargeView", "FixedSize", "Map"]
-                    .map(|encoding| (kind, encoding.to_owned())),
-            ),
-            _ => expected.extend(every(kind, extra)),
-        }
-    }
-    let missing: Vec<_> = expected.difference(&drawn).collect();
-    assert!(missing.is_empty(), "never drawn: {missing:?}");
 }
