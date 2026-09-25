@@ -50,6 +50,11 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
         statement: "dictionary-encoded columns publish the values they encode",
     },
     Clause {
+        id: "D-TABLES",
+        statement: "a segment may hold rows for several tables, and its commit publishes each \
+                    table's rows",
+    },
+    Clause {
         id: "D-FENCE",
         statement: "a session opened before the latest one cannot commit",
     },

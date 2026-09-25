@@ -3,6 +3,7 @@
 mod clauses;
 mod encoding;
 mod evolving;
+mod tables;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -123,6 +124,7 @@ impl Bench<'_> {
             "D-SCHEMA" => self.schema_changes_apply().await,
             "D-MERGE" => self.merges_keep_the_newest_row().await,
             "D-ENCODING" => self.dictionaries_publish_their_values().await,
+            "D-TABLES" => self.segments_span_tables().await,
             _ => self.stale_sessions_are_fenced().await,
         }
     }
@@ -208,7 +210,15 @@ impl Bench<'_> {
         &self,
         session: &mut Box<dyn DestinationSession>,
     ) -> Result<Box<dyn DestinationWriter>, Violation> {
-        let table = self.table();
+        self.writer_of(session, &self.table()).await
+    }
+
+    /// Creates `table`, of the certification schema, in `session` and returns a writer for it.
+    async fn writer_of(
+        &self,
+        session: &mut Box<dyn DestinationSession>,
+        table: &TableRef,
+    ) -> Result<Box<dyn DestinationWriter>, Violation> {
         let schema = TableSchema::new(vec![
             Field::new("id", LogicalType::Int64, false),
             Field::new("name", LogicalType::Utf8, true),
@@ -222,7 +232,7 @@ impl Bench<'_> {
             .await
             .map_err(|error| Violation::from(format!("apply_schema: {error}")))?;
         session
-            .writer(&table)
+            .writer(table)
             .await
             .map_err(|error| Violation::from(format!("writer: {error}")))
     }

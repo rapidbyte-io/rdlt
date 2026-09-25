@@ -325,6 +325,8 @@ struct VaultConfig {
     refuse_dictionaries: bool,
     /// Refuses a batch holding a dictionary whose values are not strings.
     decode_only_strings: bool,
+    /// Keeps only the last table's rows staged in a segment.
+    one_table_per_segment: bool,
 }
 
 #[derive(Default)]
@@ -765,16 +767,19 @@ impl TableWriter for VaultWriter {
                 .or_default()
                 .push(batch.clone());
         }
-        store
+        let staged = store
             .staged
             .entry((self.pipeline.clone(), segment))
-            .or_default()
-            .push(Staged {
-                table: self.table.clone(),
-                generation: self.generation,
-                merge: self.merge.clone(),
-                batch,
-            });
+            .or_default();
+        if self.config.one_table_per_segment {
+            staged.retain(|staged| staged.table == self.table);
+        }
+        staged.push(Staged {
+            table: self.table.clone(),
+            generation: self.generation,
+            merge: self.merge.clone(),
+            batch,
+        });
         Ok(())
     }
 
@@ -932,6 +937,7 @@ async fn each_broken_destination_behavior_fails_exactly_its_clause() {
         ("refuse_widening", "D-SCHEMA"),
         ("refuse_dictionaries", "D-ENCODING"),
         ("decode_only_strings", "D-ENCODING"),
+        ("one_table_per_segment", "D-TABLES"),
     ];
     for (flag, clause) in cases {
         let report = certify_vault(flag, Some(flag)).await;
@@ -975,6 +981,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-REPLACE",
             "D-SCHEMA",
             "D-ENCODING",
+            "D-TABLES",
             "D-FENCE"
         ],
         "{report}"
