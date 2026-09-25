@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
     ConnectorErrorKind, Epoch, Field, LogicalType, MergeKey, RootKey, SchemaVersion, SegmentId,
     Session, TableChange, TablePath, TableRef, TableSchema, TableWriter,
@@ -70,14 +70,16 @@ fn session_over(
 }
 
 #[test]
-fn writes_that_fit_the_tables_columns_pass() {
-    let fitting = vec![
-        batch(vec![("id", Arc::new(Int64Array::from(vec![1])) as _)]),
-        batch(vec![("id", Arc::new(Int32Array::from(vec![2])) as _)]),
+fn writes_of_the_writers_version_pass() {
+    let rows = |ids: Vec<i64>, extras: Vec<Option<&str>>| {
         batch(vec![
-            ("extra", Arc::new(StringArray::from(vec!["a"])) as _),
-            ("id", Arc::new(Int64Array::from(vec![3])) as _),
-        ]),
+            ("id", Arc::new(Int64Array::from(ids)) as _),
+            ("extra", Arc::new(StringArray::from(extras)) as _),
+        ])
+    };
+    let fitting = vec![
+        rows(vec![1, 2], vec![Some("a"), None]),
+        rows(vec![3], vec![None]),
     ];
     assert_eq!(
         session_over("fits", fitting, LogicalType::Utf8),
@@ -92,10 +94,61 @@ fn writes_to_missing_columns_or_at_types_they_cannot_hold_are_violations() {
         batch(vec![("id", Arc::new(StringArray::from(vec!["2"])) as _)]),
     ];
     let (violations, conflict) = session_over("unfit", unfit, LogicalType::Int64);
-    assert_eq!(violations.len(), 2, "{violations:?}");
-    assert!(violations[0].contains("missing"), "{violations:?}");
-    assert!(violations[1].contains("id"), "{violations:?}");
+    let found = |text: &str| violations.iter().any(|violation| violation.contains(text));
+    assert!(found("wrote column missing"), "{violations:?}");
+    assert!(found("to column id"), "{violations:?}");
     assert_eq!(conflict, Some(ConnectorErrorKind::Data));
+}
+
+#[test]
+fn a_writer_given_batches_of_two_schemas_is_a_violation() {
+    let name = "versions";
+    let world = World::register(name, &mut SplitMix64::new(1));
+    run(Seed::new(1), {
+        let world = Arc::clone(&world);
+        |_env| async move {
+            let mut session = SimSession {
+                world,
+                epoch: Epoch::default(),
+            };
+            let create = TableChange::Create {
+                table: table(),
+                schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+                    .unwrap(),
+            };
+            session.apply_schema(&create).await.unwrap();
+            let v2 = TableRef {
+                version: SchemaVersion(2),
+                ..table()
+            };
+            let add = TableChange::AddColumn {
+                table: v2.clone(),
+                field: Field::new("extra", LogicalType::Utf8, true),
+            };
+            session.apply_schema(&add).await.unwrap();
+            let both = || {
+                batch(vec![
+                    ("id", Arc::new(Int64Array::from(vec![1])) as _),
+                    ("extra", Arc::new(StringArray::from(vec!["a"])) as _),
+                ])
+            };
+            let id = || batch(vec![("id", Arc::new(Int64Array::from(vec![1])) as _)]);
+            // Version 1's batches through its writer, then a version 2 batch through it too.
+            let mut old = session.writer(&table()).await.unwrap();
+            old.write(SegmentId(1), id()).await.unwrap();
+            old.write(SegmentId(1), id()).await.unwrap();
+            old.write(SegmentId(1), both()).await.unwrap();
+            let mut new = session.writer(&v2).await.unwrap();
+            new.write(SegmentId(1), both()).await.unwrap();
+        }
+    });
+    World::unregister(name);
+    let violations = world.violations();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("version 1 wrote batches of two schemas"),
+        "{violations:?}"
+    );
 }
 
 #[test]
