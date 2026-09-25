@@ -21,6 +21,8 @@ use rdlt_connector::{
     ColumnKey, Field, LogicalType, MergeKey, SchemaVersion, TableRef, TableSchema,
 };
 
+#[cfg(test)]
+pub(crate) use convert::normalize as plain;
 pub(crate) use lower::{LineageColumns, MetaNames};
 pub(crate) use lowering::{LoweringPlan, Prepared, Stamp};
 pub(crate) use model::Model;

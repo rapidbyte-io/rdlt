@@ -7,8 +7,12 @@ use proptest::prelude::*;
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType, TimeUnit};
 use serde_json::{Value, json};
 
+use super::Drawn;
 use super::Scalar;
 use super::arrays::{Encoding, Shape};
+
+/// The source columns batches draw from.
+const NAMES: [&str; 3] = ["a", "b", "c"];
 
 /// Seconds since the epoch of the first and last days whose instants every destination renders:
 /// 0001-01-02 and 9999-12-30.
@@ -365,4 +369,22 @@ fn json_value(depth: u32) -> BoxedStrategy<Value> {
             .prop_map(|members| Value::Object(members.into_iter().collect())),
     ]
     .boxed()
+}
+
+/// A batch of one to three of [`NAMES`], each of any shape, and up to six rows.
+pub(crate) fn drawn() -> impl Strategy<Value = Drawn> {
+    proptest::sample::subsequence(NAMES.to_vec(), 1..=NAMES.len())
+        .prop_flat_map(|names| {
+            let count = names.len();
+            (Just(names), proptest::collection::vec(shape(2), count))
+        })
+        .prop_flat_map(|(names, shapes)| {
+            let row: Vec<_> = shapes.iter().map(|shape| value(shape, true)).collect();
+            let columns: Vec<(String, Shape)> = names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .zip(shapes)
+                .collect();
+            (Just(columns), proptest::collection::vec(row, 0..6))
+        })
 }

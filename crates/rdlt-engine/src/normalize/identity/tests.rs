@@ -135,9 +135,7 @@ fn text_and_bytes_encode_alike_whatever_their_arrow_type() {
 
 #[test]
 fn arrays_maps_and_other_types_encode_by_their_values() {
-    let timestamps: ArrayRef = Arc::new(TimestampSecondArray::from(vec![0]));
-    let kind = timestamps.data_type().to_string();
-    let text = arrow_cast::display::array_value_to_string(&timestamps, 0).unwrap();
+    let timestamps: ArrayRef = Arc::new(TimestampSecondArray::from(vec![-2]));
     let mut map = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
     map.keys().append_value("k");
     map.values().append_value(1);
@@ -156,14 +154,7 @@ fn arrays_maps_and_other_types_encode_by_their_values() {
     check(vec![
         (
             Arc::clone(&timestamps),
-            vec![
-                [
-                    vec![b'x'],
-                    prefixed(kind.as_bytes()),
-                    prefixed(text.as_bytes()),
-                ]
-                .concat(),
-            ],
+            vec![[vec![b'i'], prefixed(b"-2000000000")].concat()],
         ),
         (Arc::new(list), vec![b"[d1;d2;]".to_vec()]),
         (Arc::new(map.finish()), vec![entry]),
@@ -177,4 +168,17 @@ fn a_key_the_batch_lacks_encodes_as_null() {
             .unwrap();
     let ids = root_ids(&batch, &[Arc::from("k")]).unwrap();
     assert_eq!(ids.value(0), hashed(&[b"n".to_vec()])[0].as_slice());
+}
+
+#[test]
+fn times_and_durations_encode_as_their_kind_and_nanoseconds() {
+    let times: ArrayRef = Arc::new(arrow_array::Time32MillisecondArray::from(vec![1_500]));
+    let durations: ArrayRef = Arc::new(arrow_array::DurationSecondArray::from(vec![-2]));
+    check(vec![
+        (times, vec![[vec![b'c'], prefixed(b"1500000000")].concat()]),
+        (
+            durations,
+            vec![[vec![b'e'], prefixed(b"-2000000000")].concat()],
+        ),
+    ]);
 }
