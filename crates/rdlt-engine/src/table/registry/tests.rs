@@ -76,6 +76,7 @@ fn resolver() -> Resolver {
             id: None,
             parent: None,
         },
+        root: None,
     }
 }
 

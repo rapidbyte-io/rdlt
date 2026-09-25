@@ -240,13 +240,9 @@ async fn nested_arrow_batches_normalize_like_json() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_normalized_stream_cannot_merge_or_drop_rows_yet() {
+async fn a_normalized_stream_cannot_drop_rows_yet() {
     let discard = SchemaSettings::new().policy(SchemaPolicy::DiscardRow);
     let cases = [
-        (
-            "normalize_merge_unsupported",
-            normalized("events").write(WriteMode::Merge).key(["id"]),
-        ),
         (
             "normalize_discard_row_unsupported",
             stream("events").schema(discard.nested(Nested::normalize())),

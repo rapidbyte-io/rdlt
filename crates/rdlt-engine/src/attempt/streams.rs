@@ -127,6 +127,7 @@ impl Planning<'_> {
             capabilities: Arc::clone(&self.capabilities),
             naming: self.naming.clone(),
             meta,
+            root: None,
         };
         Ok((resolver, table, model))
     }
@@ -156,12 +157,6 @@ fn normalized(
             .with_code(code)
             .with_stream(name))
     };
-    if plan.write_mode() == WriteMode::Merge {
-        return refuse(
-            "normalize_merge_unsupported",
-            "a normalized stream cannot merge yet",
-        );
-    }
     let stream_policy = plan
         .schema_settings()
         .policy_setting()

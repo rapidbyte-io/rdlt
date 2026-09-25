@@ -290,7 +290,7 @@ impl Coordinator {
             segments: collected.segments,
             state_delta: delta,
             finish_generations,
-            child_tables: Vec::new(),
+            child_tables: self.parts.tables.child_tables(),
         };
         let receipt = self
             .parts

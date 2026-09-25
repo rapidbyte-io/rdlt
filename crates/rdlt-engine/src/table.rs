@@ -13,6 +13,8 @@ pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use arrow_schema::SchemaRef;
 use rdlt_connector::{
     ColumnKey, Field, LogicalType, MergeKey, SchemaVersion, TableRef, TableSchema,
@@ -73,11 +75,7 @@ impl TableView {
             .iter()
             .filter_map(|path| model.names.get(&ColumnKey::Source(path.clone())))
             .collect();
-        let merge = resolver.meta.seq.as_ref().map(|seq| MergeKey {
-            columns: key_names.iter().map(|name| (*name).into()).collect(),
-            seq: seq.clone(),
-            root: None,
-        });
+        let merge = merge_key(resolver, &key_names);
         let key = key_names
             .iter()
             .filter_map(|name| {
@@ -103,9 +101,36 @@ impl TableView {
         }
     }
 
+    /// Whether batches keep only the last row of each key: a merge table's do, but not a child
+    /// table's, which keeps every row of its roots' winning rows for the destination to pick.
+    pub(crate) fn compacts(&self) -> bool {
+        self.table
+            .merge
+            .as_ref()
+            .is_some_and(|key| key.root.is_none())
+    }
+
     /// The destination's columns as a schema, as a table is created.
     pub(crate) fn physical_schema(&self) -> TableSchema {
         TableSchema::new(self.physical.clone())
             .expect("identifiers are distinct, metadata ones included")
     }
+}
+
+/// How a table of `resolver`'s merges, if it does: by the columns `key_names`, or, for a child
+/// table of a merge stream, by its rows' root id, following its root.
+fn merge_key(resolver: &Resolver, key_names: &[&str]) -> Option<MergeKey> {
+    let seq = resolver.meta.seq.as_ref()?;
+    Some(match (&resolver.root, &resolver.meta.parent) {
+        (Some(root), Some([_, root_id, _])) => MergeKey {
+            columns: vec![Arc::clone(root_id)],
+            seq: Arc::clone(seq),
+            root: Some(root.clone()),
+        },
+        _ => MergeKey {
+            columns: key_names.iter().map(|name| (*name).into()).collect(),
+            seq: Arc::clone(seq),
+            root: None,
+        },
+    })
 }

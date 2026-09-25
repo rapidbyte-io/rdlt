@@ -2,17 +2,17 @@
 //! worked out once and applied to every batch — discards, exact conversions, lowering, metadata
 //! columns and, for merge tables, the sequence column and compaction.
 
-use std::collections::BTreeMap;
+mod merge;
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow_array::builder::{BinaryBuilder, FixedSizeBinaryBuilder};
+use arrow_array::builder::FixedSizeBinaryBuilder;
 use arrow_array::types::Int8Type;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, DictionaryArray, Int8Array, RecordBatch,
-    TimestampMicrosecondArray, UInt32Array, new_null_array,
+    TimestampMicrosecondArray, new_null_array,
 };
-use arrow_row::{RowConverter, SortField};
 use parking_lot::Mutex;
 use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName};
 
@@ -22,6 +22,7 @@ use super::lower::{ID_TYPE, IDX_TYPE, LOAD_ID_TYPE, loaded_at_type};
 use super::resolve::{Incoming, Route};
 use crate::error::Error;
 use crate::normalize::Lineage;
+use merge::{check_key, compact, sequence};
 
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
@@ -173,12 +174,12 @@ impl LoweringPlan {
         }
         columns.extend(self.constants(stamp, rows).map_err(failed)?);
         if view.meta.seq.is_some() {
-            columns.push(sequence(view, stamp, rows).map_err(failed)?);
+            columns.push(self.sequence(lineage, kept.as_ref(), stamp, rows)?);
         }
         let first = columns.len();
         columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
         let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
-        let prepared = if view.table.merge.is_some() {
+        let prepared = if view.compacts() {
             compact(&prepared, &view.key).map_err(failed)?
         } else {
             prepared
@@ -188,6 +189,27 @@ impl LoweringPlan {
             discarded_rows,
             discarded_values,
         })
+    }
+
+    /// The sequence column of `rows` rows of a merge table, which the rows `kept` keeps: a child
+    /// row's sequence is its root row's, from `lineage`, so it follows its root's merge.
+    fn sequence(
+        &self,
+        lineage: Option<&Lineage>,
+        kept: Option<&BooleanArray>,
+        stamp: &Stamp,
+        rows: usize,
+    ) -> Result<ArrayRef, Error> {
+        let stream = &self.stream;
+        let failed = |error: arrow_schema::ArrowError| {
+            Error::internal(format!("stream {stream}: sequencing a batch: {error}"))
+        };
+        let root_rows = lineage
+            .and_then(|lineage| lineage.parent.as_ref())
+            .map(|parent| kept_rows(&parent.root_row, kept))
+            .transpose()
+            .map_err(failed)?;
+        sequence(&self.view, stamp, rows, root_rows.as_ref()).map_err(failed)
     }
 
     /// The lineage columns of the plan's table, lowered, from `lineage` and the rows `kept`
@@ -349,43 +371,15 @@ fn lineage_columns(
         .collect()
 }
 
-/// Refuses a merge batch that lacks a key column or holds a null key.
-fn check_key(
-    stream: &StreamName,
-    view: &TableView,
-    batch: &RecordBatch,
-    sources: &[Source],
-) -> Result<(), Error> {
-    if view.table.merge.is_none() {
-        return Ok(());
+/// `array`, of the rows `kept` keeps where the schema policy dropped some.
+fn kept_rows(
+    array: &ArrayRef,
+    kept: Option<&BooleanArray>,
+) -> Result<ArrayRef, arrow_schema::ArrowError> {
+    match kept {
+        Some(kept) => arrow_select::filter::filter(array.as_ref(), kept),
+        None => Ok(Arc::clone(array)),
     }
-    let refuse = |code: &str, detail: String| {
-        Err(Error::schema(format!("stream {stream}: {detail}"))
-            .with_code(code)
-            .with_stream(stream))
-    };
-    if view.key.len() < view.key_len {
-        return refuse(
-            "merge_key_missing",
-            "the table has no column for part of the merge key".to_owned(),
-        );
-    }
-    for column in &view.key {
-        let name = view.model.columns[*column].name();
-        match &sources[*column] {
-            Source::Nulls => {
-                return refuse(
-                    "merge_key_missing",
-                    format!("a batch has no key column {name}"),
-                );
-            }
-            Source::Incoming(index, _) if batch.column(*index).null_count() > 0 => {
-                return refuse("merge_key_null", format!("key column {name} holds a null"));
-            }
-            Source::Incoming(..) => {}
-        }
-    }
-    Ok(())
 }
 
 /// `array` of `logical` as the destination stores it: as it is, or as its text, which for
@@ -400,45 +394,4 @@ fn lower_array(
     } else {
         text(array, logical)
     }
-}
-
-/// Each row's sequence in a merge table: its segment, then its position among the segment's rows.
-fn sequence(
-    view: &TableView,
-    stamp: &Stamp,
-    rows: usize,
-) -> Result<ArrayRef, arrow_schema::ArrowError> {
-    let lowered = view.physical[view.model.columns.len() + 2].logical_type();
-    let mut seq = BinaryBuilder::with_capacity(rows, rows * 16);
-    for row in 0..rows as u64 {
-        let mut bytes = [0_u8; 16];
-        bytes[..8].copy_from_slice(&stamp.segment.0.to_be_bytes());
-        bytes[8..].copy_from_slice(&(stamp.first_row + row).to_be_bytes());
-        seq.append_value(bytes);
-    }
-    let seq: ArrayRef = Arc::new(seq.finish());
-    lower_array(&seq, &LogicalType::Binary, lowered)
-}
-
-/// `batch` with only the last row of each key, in their order: the rows a merge keeps.
-fn compact(batch: &RecordBatch, key: &[usize]) -> Result<RecordBatch, arrow_schema::ArrowError> {
-    let columns: Vec<ArrayRef> = key
-        .iter()
-        .map(|index| Arc::clone(batch.column(*index)))
-        .collect();
-    let fields = columns
-        .iter()
-        .map(|column| SortField::new(column.data_type().clone()))
-        .collect();
-    let rows = RowConverter::new(fields)?.convert_columns(&columns)?;
-    let mut last: BTreeMap<&[u8], u32> = BTreeMap::new();
-    for row in 0..batch.num_rows() {
-        last.insert(rows.row(row).data(), u32::try_from(row).unwrap_or(u32::MAX));
-    }
-    if last.len() == batch.num_rows() {
-        return Ok(batch.clone());
-    }
-    let mut kept: Vec<u32> = last.into_values().collect();
-    kept.sort_unstable();
-    arrow_select::take::take_record_batch(batch, &UInt32Array::from(kept))
 }
