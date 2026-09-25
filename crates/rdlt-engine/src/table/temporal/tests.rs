@@ -174,3 +174,13 @@ fn a_time_a_zone_east_of_utc_skips_moves_forward_by_the_gap() {
     let placed = midnights(&dates(vec![Some(18_342)]), TimeUnit::Second, Some(&tehran)).unwrap();
     assert_eq!(timestamps(&placed), [Some(1_584_736_200)]);
 }
+
+#[test]
+fn an_instant_beyond_the_years_arrow_renders_at_midnight_shows_an_unsigned_clock() {
+    let midnight: ArrayRef = Arc::new(TimestampSecondArray::from(vec![1_000_000_000 * 86_400]));
+    let rendered = text(&midnight).unwrap();
+    assert_eq!(
+        rendered.as_string::<i32>().value(0),
+        "+2739877-01-03T00:00:00"
+    );
+}
