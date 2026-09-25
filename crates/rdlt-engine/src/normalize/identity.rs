@@ -3,9 +3,11 @@
 //!
 //! The encoding tags every value with its kind and renders every number one way, so a value hashes
 //! alike whichever batch, chunk or Arrow type carries it: integers as their digits, floats as
-//! their shortest round-trip text, which for an integral float is its digits too. Objects list
-//! their non-null fields in name order, so a field missing from a record and a null one encode
-//! alike. Lengths are LEB128, so no encoding is a prefix of another.
+//! their shortest round-trip text, which for an integral float is its digits too. JSON text, as
+//! a column whose values mix types holds it, encodes as the values it renders. Objects list their
+//! non-null fields in name order, so a field missing from a record and a null one encode alike.
+//! Every field starts with its own tag and every value with its kind's, and lengths are LEB128, so
+//! no encoding is a prefix of another.
 //!
 //! Rows encode one at a time into one buffer, through encoders worked out once per batch: other
 //! string, binary and array types are cast to the plain ones first, maps are arrays of their
@@ -24,7 +26,8 @@ use arrow_array::{
 };
 use arrow_buffer::NullBuffer;
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
-use arrow_schema::{ArrowError, DataType};
+use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
+use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
 use super::as_list;
 
@@ -33,18 +36,18 @@ use super::as_list;
 ///
 /// A key column the batch lacks encodes as null.
 pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryArray, ArrowError> {
+    let schema = batch.schema();
     let encoders: Vec<Option<Encoder>> = if key.is_empty() {
-        let fields = batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| field.name().clone())
-            .zip(batch.columns().iter().cloned())
-            .collect();
+        let fields = schema.fields().iter().zip(batch.columns());
         vec![Some(Encoder::object(None, fields)?)]
     } else {
         key.iter()
-            .map(|column| batch.column_by_name(column).map(Encoder::new).transpose())
+            .map(|column| {
+                let Ok(index) = schema.index_of(column) else {
+                    return Ok(None);
+                };
+                Encoder::new(schema.field(index), batch.column(index)).map(Some)
+            })
             .collect::<Result<_, _>>()?
     };
     let mut row = Vec::with_capacity(ROW_BYTES);
@@ -97,6 +100,11 @@ const OBJECT: u8 = b'{';
 const OBJECT_END: u8 = b'}';
 const ARRAY: u8 = b'[';
 const ARRAY_END: u8 = b']';
+const FIELD: u8 = b'k';
+
+/// The Arrow field metadata key naming an extension type, and the JSON extension's name.
+const EXTENSION_NAME: &str = "ARROW:extension:name";
+const JSON_EXTENSION: &str = "arrow.json";
 
 /// How one array's values encode, worked out once per batch.
 enum Encoder {
@@ -107,6 +115,8 @@ enum Encoder {
     Float32(Float32Array),
     Float(Float64Array),
     Text(StringArray),
+    /// JSON text, encoded as the values it renders.
+    Json(StringArray),
     Bytes(BinaryArray),
     /// Decimals, as their text without trailing zeros after the point.
     Decimal(ArrayRef),
@@ -119,9 +129,14 @@ enum Encoder {
 }
 
 impl Encoder {
-    fn new(array: &ArrayRef) -> Result<Self, ArrowError> {
+    /// The encoder of `array`, whose field is `field`.
+    fn new(field: &ArrowField, array: &ArrayRef) -> Result<Self, ArrowError> {
         let cast = |to: &DataType| arrow_cast::cast(array, to);
+        let json = field.metadata().get(EXTENSION_NAME).map(String::as_str) == Some(JSON_EXTENSION);
         Ok(match array.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View if json => {
+                Self::Json(cast(&DataType::Utf8)?.as_string::<i32>().clone())
+            }
             DataType::Null => Self::Null,
             DataType::Boolean => Self::Boolean(array.as_boolean().clone()),
             DataType::Int8
@@ -151,12 +166,7 @@ impl Encoder {
             | DataType::Decimal256(..) => Self::Decimal(Arc::clone(array)),
             DataType::Struct(_) => {
                 let object = array.as_struct();
-                let fields = object
-                    .fields()
-                    .iter()
-                    .map(|field| field.name().clone())
-                    .zip(object.columns().iter().cloned())
-                    .collect();
+                let fields = object.fields().iter().zip(object.columns());
                 Self::object(object.nulls().cloned(), fields)?
             }
             DataType::List(_)
@@ -164,22 +174,25 @@ impl Encoder {
             | DataType::FixedSizeList(..)
             | DataType::Map(..) => {
                 let list = as_list(array)?;
-                let items = Self::new(list.values())?;
+                let item = match list.data_type() {
+                    DataType::List(item) => Arc::clone(item),
+                    other => Arc::new(ArrowField::new("item", other.clone(), true)),
+                };
+                let items = Self::new(&item, list.values())?;
                 Self::Array(list, Box::new(items))
             }
-            DataType::Dictionary(_, values) => Self::new(&cast(values)?)?,
+            DataType::Dictionary(_, values) => Self::new(field, &cast(values)?)?,
             other => Self::Other(Arc::clone(array), other.to_string()),
         })
     }
 
     /// An object whose fields are `fields`, null where `nulls` says.
-    fn object(
+    fn object<'a>(
         nulls: Option<NullBuffer>,
-        fields: Vec<(String, ArrayRef)>,
+        fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
     ) -> Result<Self, ArrowError> {
         let mut fields = fields
-            .into_iter()
-            .map(|(name, values)| Ok((name, Self::new(&values)?)))
+            .map(|(field, values)| Ok((field.name().clone(), Self::new(field, values)?)))
             .collect::<Result<Vec<_>, ArrowError>>()?;
         fields.sort_by(|(left, _), (right, _)| left.cmp(right));
         Ok(Self::Object(nulls, fields))
@@ -193,7 +206,7 @@ impl Encoder {
             Self::Unsigned(values) => values.is_null(index),
             Self::Float32(values) => values.is_null(index),
             Self::Float(values) => values.is_null(index),
-            Self::Text(values) => values.is_null(index),
+            Self::Text(values) | Self::Json(values) => values.is_null(index),
             Self::Bytes(values) => values.is_null(index),
             Self::Decimal(values) | Self::Other(values, _) => values.is_null(index),
             Self::Object(nulls, _) => nulls.as_ref().is_some_and(|nulls| nulls.is_null(index)),
@@ -231,10 +244,12 @@ impl Encoder {
                 };
                 number(out, |row| row.write_all(text.as_bytes()));
             }
+            Self::Json(values) => json(values.value(index), out),
             Self::Object(_, fields) => {
                 out.push(OBJECT);
                 for (name, field) in fields {
                     if !field.is_null(index) {
+                        out.push(FIELD);
                         length(out, name.as_bytes());
                         field.write(index, out);
                     }
@@ -255,6 +270,54 @@ impl Encoder {
                 length(out, formatted(values, index).as_bytes());
             }
         }
+    }
+}
+
+/// Appends the encoding of the values the JSON `text` renders, or of the text where it is not
+/// JSON.
+fn json(text: &str, out: &mut Vec<u8>) {
+    if let Ok(value) = sonic_rs::from_str::<sonic_rs::Value>(text) {
+        json_value(&value, out);
+    } else {
+        out.push(STRING);
+        length(out, text.as_bytes());
+    }
+}
+
+/// Appends the encoding of `value`, as the encoding of the Arrow value holding it would be.
+fn json_value(value: &sonic_rs::Value, out: &mut Vec<u8>) {
+    if let Some(boolean) = value.as_bool() {
+        out.push(if boolean { TRUE } else { FALSE });
+    } else if let Some(integer) = value.as_i64() {
+        self::integer(out, integer.into());
+    } else if let Some(integer) = value.as_u64() {
+        self::integer(out, integer.into());
+    } else if let Some(float) = value.as_f64() {
+        float64(out, float);
+    } else if let Some(text) = value.as_str() {
+        out.push(STRING);
+        length(out, text.as_bytes());
+    } else if let Some(items) = value.as_array() {
+        out.push(ARRAY);
+        for item in items {
+            json_value(item, out);
+        }
+        out.push(ARRAY_END);
+    } else if let Some(object) = value.as_object() {
+        let mut fields: Vec<(&str, &sonic_rs::Value)> = object
+            .iter()
+            .filter(|(_, field)| !field.is_null())
+            .collect();
+        fields.sort_by_key(|(name, _)| *name);
+        out.push(OBJECT);
+        for (name, field) in fields {
+            out.push(FIELD);
+            length(out, name.as_bytes());
+            json_value(field, out);
+        }
+        out.push(OBJECT_END);
+    } else {
+        out.push(NULL);
     }
 }
 

@@ -19,7 +19,7 @@ use crate::error::{Error, ErrorKind};
 use crate::lane::Write;
 use crate::normalize::{self, Part, Shape};
 use crate::shred::{self, ShredError};
-use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
+use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -196,7 +196,8 @@ async fn write_normalized(
                 continue;
             }
             let stamp = stamp(context, open, received);
-            let unit = plan_parts(job, context, parts).await?;
+            let (unit, discarded) = plan_parts(job, context, parts).await?;
+            open.discarded_values += discarded;
             let lower_unit = move || {
                 unit.into_iter()
                     .map(|(table, part, plan)| {
@@ -230,19 +231,28 @@ async fn write_normalized(
     Ok(())
 }
 
-/// The table and plan of each of `parts`, a unit's, found in order: a part below the stream's
-/// table goes to its child table, added the first time.
+/// The table and plan of each of `parts`, a unit's, found in order, and the values dropped: a
+/// part below the stream's table goes to its child table, added the first time unless the
+/// stream's policy refuses or discards a new one.
 async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
     parts: Vec<Part>,
-) -> Result<Vec<(usize, Part, Arc<LoweringPlan>)>, Error> {
+) -> Result<(Vec<(usize, Part, Arc<LoweringPlan>)>, u64), Error> {
     let mut planned = Vec::with_capacity(parts.len());
+    let mut discarded = 0;
     for part in parts {
         let table = if part.path.is_empty() {
             job.table
         } else {
-            context.tables.child(job.table, &part.path).await?
+            match context.tables.admit_child(job.table, &part.path) {
+                Admission::Add => context.tables.child(job.table, &part.path).await?,
+                Admission::Discard => {
+                    discarded += part.batch.num_rows() as u64;
+                    continue;
+                }
+                Admission::Refuse => return Err(frozen(job, &part.path)),
+            }
         };
         let incoming = Incoming {
             schema: schema_of(job, &part.batch)?,
@@ -251,7 +261,18 @@ async fn plan_parts(
         let plan = context.tables.plan(table, incoming).await?;
         planned.push((table, part, plan));
     }
-    Ok(planned)
+    Ok((planned, discarded))
+}
+
+/// The error for rows of a new array in a stream whose schema is frozen.
+fn frozen(job: &PartitionJob, path: &[Arc<str>]) -> Error {
+    let array = path.join(".");
+    Error::schema(format!(
+        "stream {}: array {array}: a new array would add a child table to a frozen schema",
+        job.stream
+    ))
+    .with_code("schema_frozen")
+    .with_stream(&job.stream)
 }
 
 /// `parts`, one batch once concatenated, normalized as `shape`.

@@ -384,3 +384,80 @@ async fn a_declared_schema_creates_a_normalized_streams_columns_before_any_row()
         );
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn settings_on_a_streams_columns_stay_on_its_own_table() {
+    let plan = normalized("events").hint("sku", LogicalType::Int64);
+    let push = r#"{"sku":1,"items":[{"sku":"abc"}]}"#;
+    succeeded(
+        &load(
+            "scoped",
+            vec![BatchStream::json("events", &[push])],
+            vec![plan],
+        )
+        .await,
+    );
+    assert_eq!(published_json("scoped", "events"), [json!({"sku": 1})]);
+    assert_eq!(
+        published_json("scoped", "events__items"),
+        [json!({"sku": "abc"})],
+        "the hint on events.sku leaves events.items.sku alone"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_array_follows_the_streams_policy_once_its_table_exists() {
+    let with_policy = |policy| {
+        stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(policy),
+        )
+    };
+    let second = r#"{"id":2,"items":[{"sku":"x"},{"sku":"y"}]}"#;
+    for policy in [SchemaPolicy::Freeze, SchemaPolicy::DiscardValue] {
+        let store = format!("new_array_{policy:?}").to_lowercase();
+        let first = BatchStream::json("events", &[r#"{"id":1}"#]);
+        succeeded(&load(&store, vec![first], vec![with_policy(policy)]).await);
+        let outcome = load(
+            &store,
+            vec![BatchStream::json("events", &[second])],
+            vec![with_policy(policy)],
+        )
+        .await;
+        assert!(schema(&store, "events__items").is_none(), "{policy:?}");
+        if policy == SchemaPolicy::Freeze {
+            let error = outcome.error.expect("a frozen table refuses a new array");
+            assert_eq!(
+                (error.kind(), error.code()),
+                (ErrorKind::Schema, Some("schema_frozen"))
+            );
+        } else {
+            succeeded(&outcome);
+            assert_eq!(published_json(&store, "events").len(), 2);
+            assert_eq!(outcome.report.streams["events"].discarded_values, 2);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_evolves_may_normalize_in_a_pipeline_that_drops_rows() {
+    let source = batches(
+        "overridden",
+        vec![BatchStream::json("events", &[r#"{"id":1}"#])],
+    )
+    .await;
+    let plan = pipeline(
+        "overridden",
+        [stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(SchemaPolicy::Evolve),
+        )],
+    )
+    .schema(SchemaSettings::new().policy(SchemaPolicy::DiscardRow));
+    let outcome = engine(commit_every(1))
+        .run(plan, source, memory("overridden").await)
+        .await;
+    succeeded(&outcome);
+}

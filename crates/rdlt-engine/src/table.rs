@@ -21,7 +21,7 @@ use rdlt_connector::{
 pub(crate) use lower::{LineageColumns, MetaNames};
 pub(crate) use lowering::{LoweringPlan, Prepared, Stamp};
 pub(crate) use model::Model;
-pub(crate) use registry::Tables;
+pub(crate) use registry::{Admission, Tables};
 pub(crate) use resolve::{Incoming, Resolver, Settings};
 pub(crate) use session::SharedSession;
 

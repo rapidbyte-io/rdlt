@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ConnectorError, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange, TablePath,
-    TableRef, TableState,
+    ColumnPath, ConnectorError, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange,
+    TablePath, TableRef, TableState,
 };
 
 use super::model::Model;
@@ -21,6 +21,7 @@ use super::{LoweringPlan, TableView};
 use crate::error::{Error, Side};
 use crate::naming::Naming;
 use crate::normalize::Shape;
+use crate::policy::SchemaPolicy;
 
 /// How many times a table's change is named around columns that attempts which never committed
 /// left behind before the conflict fails the run.
@@ -43,6 +44,17 @@ struct Slot {
     plans: Mutex<Vec<Arc<LoweringPlan>>>,
     /// How the stream normalizes, for a normalized stream's own table.
     shape: Option<Arc<Shape>>,
+}
+
+/// What becomes of rows for a child table that may be new.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// The table is added, or exists, and takes them.
+    Add,
+    /// The stream's schema is frozen: the rows fail the stream.
+    Refuse,
+    /// The stream discards what would change its schema: the rows are dropped and counted.
+    Discard,
 }
 
 /// Child tables' indexes by their stream's table and their path below it.
@@ -197,6 +209,31 @@ impl Tables {
         Ok(index)
     }
 
+    /// What becomes of rows for the child table at `path` below `root`, which may be new.
+    ///
+    /// A child table that exists, or whose stream's table state does not record yet, is added as
+    /// its rows arrive. A new one below a recorded table is a change to the stream's schema, which
+    /// its policy for the array's column decides.
+    pub(crate) fn admit_child(&self, root: usize, path: &[Arc<str>]) -> Admission {
+        if self.children.lock().contains_key(&(root, path.to_vec())) {
+            return Admission::Add;
+        }
+        let base = self.view(root).table.path.clone();
+        let child = base.segments().chain(path.iter().map(AsRef::as_ref));
+        let recorded = TablePath::new(child).is_ok_and(|child| self.committed.contains_key(&child));
+        if recorded || !self.committed.contains_key(&base) {
+            return Admission::Add;
+        }
+        let Ok(column) = ColumnPath::new(path.to_vec()) else {
+            return Admission::Add;
+        };
+        match self.slot(root).resolver.settings.column(&column).policy {
+            SchemaPolicy::Freeze => Admission::Refuse,
+            SchemaPolicy::DiscardValue => Admission::Discard,
+            SchemaPolicy::Evolve | SchemaPolicy::DiscardRow => Admission::Add,
+        }
+    }
+
     /// The paths below `root` of the child tables state records for it.
     pub(crate) fn recorded_children(&self, root: usize) -> Vec<Vec<Arc<str>>> {
         let base = self.view(root).table.path.clone();
@@ -279,14 +316,17 @@ impl Tables {
     ) -> Result<(Arc<TableView>, Vec<Route>), Error> {
         let slot = self.slot(table);
         let view = self.view(table);
+        let unchanged = |resolution: &Resolution, view: &TableView| {
+            resolution.model.version == view.model.version
+        };
         let resolution = slot.resolver.resolve(&view.model, incoming)?;
-        if resolution.changes.is_empty() {
+        if unchanged(&resolution, &view) {
             return Ok((view, resolution.routes));
         }
         let _evolving = slot.evolving.lock().await;
         let view = self.view(table);
         let resolution = slot.resolver.resolve(&view.model, incoming)?;
-        if resolution.changes.is_empty() {
+        if unchanged(&resolution, &view) {
             return Ok((view, resolution.routes));
         }
         let (mut resolver, mut resolution, mut retries) =
@@ -339,6 +379,33 @@ impl Tables {
         let stream = &slot.resolver.stream;
         let context = format!("changing the table of stream {stream}");
         Error::connector(Side::Destination, context, error).with_stream(stream)
+    }
+
+    /// Adds `table`'s lineage columns where the table was created before its stream normalized;
+    /// a table that already has them changes nothing.
+    pub(crate) async fn add_lineage(&self, table: usize) -> Result<(), Error> {
+        let view = self.view(table);
+        if !view.model.created() || view.table.generation.is_some() || view.meta.id.is_none() {
+            return Ok(());
+        }
+        let changes: Vec<TableChange> = view.physical[view.model.columns.len()..]
+            .iter()
+            .filter(|field| {
+                let name = field.name();
+                view.meta.id.as_deref() == Some(name)
+                    || view
+                        .meta
+                        .parent
+                        .iter()
+                        .flatten()
+                        .any(|column| column.as_ref() == name)
+            })
+            .map(|field| TableChange::AddColumn {
+                table: view.table.clone(),
+                field: field.clone(),
+            })
+            .collect();
+        self.apply(table, &changes).await
     }
 
     /// Creates `table`'s generation, a replace stream's hidden copy, with the table's columns.

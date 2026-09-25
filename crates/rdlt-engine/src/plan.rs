@@ -111,6 +111,17 @@ impl StreamPlan {
         self.columns.get(column)
     }
 
+    /// The same stream without its column settings and hints, which name columns of its own
+    /// table: its child tables' settings.
+    pub(crate) fn without_columns(&self) -> Self {
+        Self {
+            columns: BTreeMap::new(),
+            hints: BTreeMap::new(),
+            key: None,
+            ..self.clone()
+        }
+    }
+
     /// Every column the plan sets schema settings for, with them.
     pub(crate) fn columns(&self) -> impl Iterator<Item = (&ColumnPath, &SchemaSettings)> {
         self.columns.iter()
