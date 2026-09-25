@@ -1,32 +1,39 @@
 use std::collections::BTreeSet;
 
-use rdlt_connector::ReadMode;
+use rdlt_connector::{LogicalType, ReadMode, TypeKind};
 use rdlt_engine::{Nested, SchemaPolicy, WriteMode};
 
-use super::{PHASES, Shape, SimStream, Workload};
+use super::{PHASES, SimStream, Workload};
 use crate::rng::SplitMix64;
+use crate::swarm::Features;
 
 #[test]
 fn the_same_seed_generates_the_same_workload() {
-    let a = Workload::generate(&mut SplitMix64::new(5));
-    let b = Workload::generate(&mut SplitMix64::new(5));
-    assert_eq!(a, b);
-    assert_ne!(a, Workload::generate(&mut SplitMix64::new(6)));
+    let a = Workload::generate(&mut SplitMix64::new(5), Features::ALL);
+    let b = Workload::generate(&mut SplitMix64::new(5), Features::ALL);
+    assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    assert_ne!(
+        a,
+        Workload::generate(&mut SplitMix64::new(6), Features::ALL)
+    );
 }
 
 #[test]
 fn incremental_streams_only_grow_and_keep_their_rows() {
     for seed in 0..200 {
-        let workload = Workload::generate(&mut SplitMix64::new(seed));
+        let workload = Workload::generate(&mut SplitMix64::new(seed), Features::ALL);
         for stream in workload
             .streams
             .iter()
             .filter(|s| s.read == ReadMode::Incremental)
         {
             for partition in 0..stream.partitions.len() {
-                let first = stream.rows(workload.salt, partition, 0);
-                let second = stream.rows(workload.salt, partition, 1);
-                assert!(second.starts_with(&first), "seed {seed}");
+                // Drawn floats may be NaN, which equals nothing, so rows compare as text.
+                let text = |phase| -> Vec<String> {
+                    let rows = stream.rows(partition, phase);
+                    rows.iter().map(|row| format!("{row:?}")).collect()
+                };
+                assert!(text(1).starts_with(&text(0)), "seed {seed}");
             }
         }
     }
@@ -35,7 +42,7 @@ fn incremental_streams_only_grow_and_keep_their_rows() {
 #[test]
 fn full_reads_see_new_values_in_each_phase() {
     let workload = (0..200)
-        .map(|seed| Workload::generate(&mut SplitMix64::new(seed)))
+        .map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL))
         .find(|workload| {
             workload
                 .streams
@@ -50,8 +57,8 @@ fn full_reads_see_new_values_in_each_phase() {
         .iter()
         .find(|stream| stream.read == ReadMode::Full && stream.partitions[0] == [5, 5])
         .expect("found above");
-    let first = stream.rows(workload.salt, 0, 0);
-    let second = stream.rows(workload.salt, 0, 1);
+    let first = stream.rows(0, 0).to_vec();
+    let second = stream.rows(0, 1).to_vec();
     assert_eq!(first.len(), 5);
     assert!(
         first
@@ -65,9 +72,9 @@ fn full_reads_see_new_values_in_each_phase() {
 #[test]
 fn row_ids_are_unique_within_a_stream() {
     for seed in 0..200 {
-        let workload = Workload::generate(&mut SplitMix64::new(seed));
+        let workload = Workload::generate(&mut SplitMix64::new(seed), Features::ALL);
         for stream in &workload.streams {
-            let rows = stream.all_rows(workload.salt, 1);
+            let rows = stream.all_rows(1);
             let ids: BTreeSet<i64> = rows.iter().map(|row| row.id).collect();
             assert_eq!(ids.len(), rows.len(), "seed {seed}");
         }
@@ -77,7 +84,7 @@ fn row_ids_are_unique_within_a_stream() {
 #[test]
 fn workloads_cover_merges_drift_json_and_every_policy() {
     let streams: Vec<_> = (0..300)
-        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed)).streams)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams)
         .collect();
     let writes: BTreeSet<_> = streams
         .iter()
@@ -119,8 +126,8 @@ fn workloads_cover_merges_drift_json_and_every_policy() {
         .iter()
         .flat_map(|stream| &stream.drift)
         .any(|drift| {
-            let shapes: BTreeSet<_> = drift.shapes.iter().flatten().flatten().collect();
-            shapes.len() > 1
+            let shapes: Vec<_> = drift.shapes.iter().flatten().flatten().collect();
+            shapes.iter().any(|shape| *shape != shapes[0])
         });
     assert!(changing, "some drift column changes type");
 }
@@ -128,7 +135,7 @@ fn workloads_cover_merges_drift_json_and_every_policy() {
 #[test]
 fn merge_rows_share_keys_within_their_partition() {
     let workload = (0..200)
-        .map(|seed| Workload::generate(&mut SplitMix64::new(seed)))
+        .map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL))
         .find(|workload| {
             workload
                 .streams
@@ -141,7 +148,7 @@ fn merge_rows_share_keys_within_their_partition() {
         .iter()
         .find(|stream| stream.keys > 0 && stream.partitions[0][0] > stream.keys)
         .expect("found above");
-    let rows = stream.rows(workload.salt, 0, 0);
+    let rows = stream.rows(0, 0).to_vec();
     let keys: BTreeSet<_> = rows.iter().map(|row| row.key).collect();
     assert_eq!(keys.len() as u64, stream.keys);
     assert!(
@@ -153,7 +160,7 @@ fn merge_rows_share_keys_within_their_partition() {
 #[test]
 fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
     let streams: Vec<_> = (0..300)
-        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed)).streams)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams)
         .collect();
     let has_arrays = |stream: &SimStream| {
         stream.normalized()
@@ -163,7 +170,7 @@ fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
                     .iter()
                     .flatten()
                     .flatten()
-                    .any(|shape| *shape == Shape::List)
+                    .any(|shape| matches!(shape.logical, LogicalType::List(_)))
             })
     };
     for json in [false, true] {
@@ -189,5 +196,122 @@ fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
                 .any(|stream| has_arrays(stream) && stream.policy == policy),
             "some normalized stream with arrays has policy {policy:?}"
         );
+    }
+}
+
+/// Every type and encoding the shape of a column or anything inside it takes.
+fn seen(shape: &rdlt_testkit::drawn::Shape, into: &mut BTreeSet<(TypeKind, String)>) {
+    let encoding = match shape.encoding {
+        rdlt_testkit::drawn::Encoding::FixedSize(_) => "FixedSize".to_owned(),
+        other => format!("{other:?}"),
+    };
+    into.insert((shape.logical.kind(), encoding));
+    for child in &shape.children {
+        seen(child, into);
+    }
+}
+
+#[test]
+fn drift_columns_take_every_type_in_every_encoding() {
+    let mut drawn = BTreeSet::new();
+    for seed in 0..400 {
+        for stream in Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams {
+            for shape in stream
+                .drift
+                .iter()
+                .flat_map(|drift| drift.shapes.iter().flatten().flatten())
+            {
+                seen(shape, &mut drawn);
+            }
+        }
+    }
+    let kinds: BTreeSet<TypeKind> = drawn.iter().map(|(kind, _)| *kind).collect();
+    let every: BTreeSet<TypeKind> = rdlt_testkit::drawn::KINDS.into_iter().collect();
+    assert_eq!(kinds, every);
+    for encoding in [
+        "Plain",
+        "Unsigned",
+        "Half",
+        "Decimal32",
+        "Decimal64",
+        "Decimal256",
+        "Large",
+        "View",
+        "LargeView",
+        "Dictionary",
+        "RunEnd",
+        "FixedSize",
+        "Date64",
+        "Map",
+    ] {
+        assert!(
+            drawn.iter().any(|(_, drawn)| drawn == encoding),
+            "no drift column is ever encoded as {encoding}"
+        );
+    }
+}
+
+#[test]
+fn drift_nests_objects_in_arrays_and_arrays_in_arrays() {
+    let nested = |shape: &rdlt_testkit::drawn::Shape, outer: TypeKind, inner: TypeKind| {
+        shape.logical.kind() == outer
+            && shape
+                .children
+                .iter()
+                .any(|child| child.logical.kind() == inner)
+    };
+    let shapes: Vec<rdlt_testkit::drawn::Shape> = (0..400)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams)
+        .flat_map(|stream| stream.drift)
+        .flat_map(|drift| drift.shapes.into_iter().flatten().flatten())
+        .collect();
+    for (outer, inner) in [
+        (TypeKind::List, TypeKind::Struct),
+        (TypeKind::List, TypeKind::List),
+        (TypeKind::Struct, TypeKind::Struct),
+        (TypeKind::Struct, TypeKind::List),
+    ] {
+        assert!(
+            shapes.iter().any(|shape| nested(shape, outer, inner)),
+            "no drift column is a {outer:?} of {inner:?}"
+        );
+    }
+}
+
+#[test]
+fn features_off_leave_their_parts_of_the_workload_out() {
+    let none = Features {
+        drift: false,
+        depth: 0,
+        encodings: false,
+        json: false,
+        normalize: false,
+        sliced: false,
+        faults: false,
+        disruptions: false,
+        narrow: false,
+    };
+    for seed in 0..100 {
+        for stream in Workload::generate(&mut SplitMix64::new(seed), none).streams {
+            assert!(
+                stream.drift.is_empty() && !stream.json && !stream.sliced && !stream.normalized()
+            );
+        }
+    }
+    let scalars = Features {
+        drift: true,
+        ..none
+    };
+    for seed in 0..100 {
+        for stream in Workload::generate(&mut SplitMix64::new(seed), scalars).streams {
+            for shape in stream
+                .drift
+                .iter()
+                .flat_map(|drift| drift.shapes.iter().flatten().flatten())
+            {
+                assert!(shape.children.is_empty(), "depth 0 draws scalars only");
+                assert_eq!(shape.encoding, rdlt_testkit::drawn::Encoding::Plain);
+            }
+        }
     }
 }

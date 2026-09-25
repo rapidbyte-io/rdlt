@@ -20,15 +20,13 @@ use rdlt_connector::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::world::{FaultPoint, World};
 
-pub use cells::Cells;
-pub(crate) use cells::canonical;
-pub(crate) use read::{Meta, published_table};
+pub use cells::{Cells, Stored};
+pub use read::completions;
+pub(crate) use read::{Published, published_table, table_paths};
 pub(crate) use read::{committed_next, reads_in_progress};
-pub use read::{completions, published};
 use read::{names, next_offset};
 
 /// The destination's contents, kept in its world.
@@ -51,14 +49,14 @@ struct Staged {
     table: String,
     generation: Option<GenerationId>,
     merge: Option<MergeKey>,
-    rows: Vec<Cells>,
+    rows: Vec<Stored>,
 }
 
 #[derive(Debug, Default)]
 struct Table {
     columns: columns::Columns,
-    published: Vec<Cells>,
-    generations: BTreeMap<GenerationId, Vec<Cells>>,
+    published: Vec<Stored>,
+    generations: BTreeMap<GenerationId, Vec<Stored>>,
 }
 
 /// Configuration of [`SimDestination`]: the world to write to.
@@ -196,9 +194,9 @@ impl Session for SimSession {
 impl Store {
     /// Publishes the staged segments of `meta` and swaps in the generations it finishes; returns
     /// the rows published, by table.
-    fn publish(&mut self, meta: &CommitMeta) -> Vec<(String, Vec<Cells>)> {
+    fn publish(&mut self, meta: &CommitMeta) -> Vec<(String, Vec<Stored>)> {
         let mut published = Vec::new();
-        let mut merging: BTreeMap<String, (MergeKey, Vec<Cells>)> = BTreeMap::new();
+        let mut merging: BTreeMap<String, (MergeKey, Vec<Stored>)> = BTreeMap::new();
         for segment in meta.segments.iter() {
             for staged in self.staged.remove(&segment).unwrap_or_default() {
                 published.push((staged.table.clone(), staged.rows.clone()));
@@ -226,7 +224,7 @@ impl Store {
                 .entry(child.table.to_string())
                 .or_insert_with(|| (child.merge.clone(), Vec::new()));
         }
-        let roots: BTreeMap<String, Vec<Cells>> = merging
+        let roots: BTreeMap<String, Vec<Stored>> = merging
             .iter()
             .filter(|(_, (key, _))| key.root.is_none())
             .map(|(name, (_, rows))| (name.clone(), rows.clone()))
@@ -298,7 +296,7 @@ impl Store {
 
     /// Checks that every row just published to a stream's table lies before its partition's
     /// committed cursor.
-    fn check_cursors(&self, world: &World, published: &[(String, Vec<Cells>)]) {
+    fn check_cursors(&self, world: &World, published: &[(String, Vec<Stored>)]) {
         for (table, rows) in published {
             let Some((path, _)) = self.names.iter().find(|(_, name)| *name == table) else {
                 continue;
@@ -319,10 +317,7 @@ impl Store {
                 continue;
             };
             for row in rows {
-                let Ok(row) = cells::source_row(row, &names) else {
-                    continue;
-                };
-                let number = |column: &str| row.get(column).and_then(Value::as_u64);
+                let number = |column: &str| cells::number(row, &names, column);
                 let (Some(partition), Some(offset)) = (number("partition"), number("offset"))
                 else {
                     world.violation(format!("stream {stream}: a row lacks its position"));
@@ -350,7 +345,7 @@ pub struct SimWriter {
     table: String,
     generation: Option<GenerationId>,
     merge: Option<MergeKey>,
-    buffered: Vec<(SegmentId, Vec<Cells>)>,
+    buffered: Vec<(SegmentId, Vec<Stored>)>,
 }
 
 impl TableWriter for SimWriter {

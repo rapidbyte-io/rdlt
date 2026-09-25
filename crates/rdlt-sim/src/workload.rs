@@ -2,11 +2,15 @@
 
 #[cfg(test)]
 mod tests;
+mod values;
 
 use rdlt_connector::{Checkpointing, ReadMode};
 use rdlt_engine::{Nested, SchemaPolicy, WriteMode};
+use rdlt_testkit::draw::{draw, mix};
+use rdlt_testkit::drawn::{Scalar, Shape, json, neighbors};
 
 use crate::rng::SplitMix64;
+use crate::swarm::Features;
 
 /// How many phases a simulation runs; the source changes between them.
 pub const PHASES: usize = 2;
@@ -15,16 +19,22 @@ pub const PHASES: usize = 2;
 const DRIFT_NAMES: [&str; 6] = ["d0", "D0", "extra", "Extra", "note", "a__b"];
 
 /// Everything a simulated source serves.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Workload {
     /// Mixed into every value, so different seeds produce different rows.
     pub salt: u64,
+    /// The features the seed exercises.
+    pub features: Features,
     /// The streams.
     pub streams: Vec<SimStream>,
 }
 
 /// One simulated stream.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a way the stream differs, drawn independently"
+)]
 pub struct SimStream {
     /// The stream's name.
     pub name: String,
@@ -57,10 +67,14 @@ pub struct SimStream {
     pub nested: Nested,
     /// Whether the source pushes its rows as JSON rather than Arrow.
     pub json: bool,
+    /// Whether the source sends each batch as a slice of a larger one.
+    pub sliced: bool,
+    /// Each partition's rows in each phase.
+    rows: Vec<[Vec<Row>; PHASES]>,
 }
 
 /// A column that comes and goes and changes type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Drift {
     /// The column's name.
     pub name: String,
@@ -68,51 +82,8 @@ pub struct Drift {
     pub shapes: Vec<[Option<Shape>; PHASES]>,
 }
 
-/// The type of a drift column in one partition and phase.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Shape {
-    /// 32-bit integers.
-    Int32,
-    /// 64-bit integers beyond 32 bits.
-    Int64,
-    /// Floats in quarters, which every rendering keeps exactly.
-    Float,
-    /// Text.
-    Text,
-    /// A struct with one 64-bit field `n`.
-    Object,
-    /// A list of 64-bit integers.
-    List,
-}
-
-impl Shape {
-    const ALL: [Self; 6] = [
-        Self::Int32,
-        Self::Int64,
-        Self::Float,
-        Self::Text,
-        Self::Object,
-        Self::List,
-    ];
-}
-
-/// A drift column's value.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Extra {
-    /// An integer of a 32- or 64-bit column.
-    Int(i64),
-    /// A float, in quarters.
-    Quarters(i64),
-    /// Text.
-    Text(String),
-    /// A struct `{ n }`.
-    Object(i64),
-    /// A list.
-    List(Vec<i64>),
-}
-
 /// One row as the simulation tracks it.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     /// Unique within the stream.
     pub id: i64,
@@ -124,32 +95,31 @@ pub struct Row {
     pub value: i64,
     /// The merge key, for merge streams.
     pub key: Option<i64>,
-    /// Each drift column's value, in the stream's drift order; `None` is null or absent.
-    pub extras: Vec<Option<Extra>>,
+    /// Each drift column's value, in the stream's drift order: `None` where the row's batch lacks
+    /// the column.
+    pub extras: Vec<Option<Scalar>>,
     /// The phase whose shapes the row's drift values take.
     pub delivered: usize,
 }
 
 impl Workload {
-    /// A workload of one to three streams drawn from `rng`.
-    pub fn generate(rng: &mut SplitMix64) -> Self {
+    /// A workload of one to three streams drawn from `rng`, exercising `features`.
+    pub fn generate(rng: &mut SplitMix64, features: Features) -> Self {
         let salt = rng.next_u64();
         let streams = (0..=rng.below(3))
-            .map(|index| SimStream::generate(index, rng))
+            .map(|index| SimStream::generate(index, rng, features, salt))
             .collect();
-        Self { salt, streams }
+        Self {
+            salt,
+            features,
+            streams,
+        }
     }
 }
 
 impl SimStream {
-    fn generate(index: u64, rng: &mut SplitMix64) -> Self {
-        let (read, write) = match rng.below(5) {
-            0 => (ReadMode::Incremental, WriteMode::Append),
-            1 => (ReadMode::Full, WriteMode::Append),
-            2 => (ReadMode::Full, WriteMode::Replace),
-            3 => (ReadMode::Incremental, WriteMode::Merge),
-            _ => (ReadMode::Full, WriteMode::Merge),
-        };
+    fn generate(index: u64, rng: &mut SplitMix64, features: Features, salt: u64) -> Self {
+        let (read, write) = modes(rng);
         let partitions: Vec<[u64; PHASES]> = (0..=rng.below(4))
             .map(|_| {
                 let first = rng.below(40);
@@ -160,7 +130,12 @@ impl SimStream {
                 [first, second]
             })
             .collect();
-        let drift = drift(rng, partitions.len());
+        let json = features.json && rng.chance(500);
+        let drift = if features.drift {
+            drift(rng, partitions.len(), features, json)
+        } else {
+            Vec::new()
+        };
         let mut stream = Self {
             name: format!("s{index}"),
             read,
@@ -189,13 +164,18 @@ impl SimStream {
             } else {
                 Nested::Native
             },
-            json: rng.chance(333),
+            json,
+            sliced: features.sliced && rng.chance(500),
             drift,
             partitions,
+            rows: Vec::new(),
         };
-        if rng.chance(300) {
-            stream.nested = Nested::normalize();
+        if features.normalize && rng.chance(500) {
+            stream.nested = normalized(rng);
         }
+        stream.rows = (0..stream.partitions.len())
+            .map(|partition| stream.draw_rows(salt, partition))
+            .collect();
         stream
     }
 
@@ -215,66 +195,124 @@ impl SimStream {
             .unwrap_or(phase)
     }
 
-    /// The rows `partition` holds in `phase`, in order.
-    pub fn rows(&self, salt: u64, partition: usize, phase: usize) -> Vec<Row> {
-        let count = self.partitions[partition][phase];
-        (0..count)
-            .map(|offset| {
-                let delivered = self.delivered(partition, offset, phase);
-                let index = i64::try_from(partition).unwrap_or(i64::MAX);
-                let position = i64::try_from(offset).unwrap_or(i64::MAX);
-                let id = index * 1_000_000 + position;
-                // Incremental rows never change; a full read sees new values in each phase.
-                let version = delivered as u64 + 1;
-                let value = mix(salt ^ mix(id.unsigned_abs() ^ (version << 48)));
-                let key = (self.keys > 0)
-                    .then(|| index * 1_000_000 + i64::try_from(offset % self.keys).unwrap_or(0));
-                let extras = self
-                    .drift
-                    .iter()
-                    .enumerate()
-                    .map(|(column, drift)| {
-                        let shape = drift.shapes[partition][delivered]?;
-                        extra(shape, mix(value ^ (column as u64 + 1)))
-                    })
-                    .collect();
-                Row {
-                    id,
-                    partition: index,
-                    offset: position,
-                    value: i64::from_ne_bytes(value.to_ne_bytes()),
-                    key,
-                    extras,
-                    delivered,
-                }
+    /// The rows `partition` holds in each phase; a row delivered in an earlier phase is that
+    /// phase's row again.
+    fn draw_rows(&self, salt: u64, partition: usize) -> [Vec<Row>; PHASES] {
+        let mut phases: [Vec<Row>; PHASES] = Default::default();
+        for phase in 0..PHASES {
+            let count = self.partitions[partition][phase];
+            let rows = (0..count)
+                .map(|offset| {
+                    let delivered = self.delivered(partition, offset, phase);
+                    let position = usize::try_from(offset).unwrap_or(usize::MAX);
+                    match phases[delivered].get(position) {
+                        Some(row) if delivered < phase => row.clone(),
+                        _ => self.row(salt, partition, offset, delivered),
+                    }
+                })
+                .collect();
+            phases[phase] = rows;
+        }
+        phases
+    }
+
+    /// Row `offset` of `partition` as `delivered` delivers it.
+    fn row(&self, salt: u64, partition: usize, offset: u64, delivered: usize) -> Row {
+        let index = i64::try_from(partition).unwrap_or(i64::MAX);
+        let position = i64::try_from(offset).unwrap_or(i64::MAX);
+        let id = index * 1_000_000 + position;
+        // Incremental rows never change; a full read sees new values in each phase.
+        let version = delivered as u64 + 1;
+        let value = mix(salt ^ mix(id.unsigned_abs() ^ (version << 48)));
+        let key = (self.keys > 0)
+            .then(|| index * 1_000_000 + i64::try_from(offset % self.keys).unwrap_or(0));
+        let extras = self
+            .drift
+            .iter()
+            .enumerate()
+            .map(|(column, drift)| {
+                let shape = drift.shapes[partition][delivered].as_ref()?;
+                let seed = mix(value ^ (column as u64 + 1));
+                Some(values::drawn(shape, !self.json, seed))
             })
-            .collect()
+            .collect();
+        Row {
+            id,
+            partition: index,
+            offset: position,
+            value: i64::from_ne_bytes(value.to_ne_bytes()),
+            key,
+            extras,
+            delivered,
+        }
+    }
+
+    /// The rows `partition` holds in `phase`, in order.
+    pub fn rows(&self, partition: usize, phase: usize) -> &[Row] {
+        &self.rows[partition][phase]
     }
 
     /// Every row of the stream in `phase`.
-    pub fn all_rows(&self, salt: u64, phase: usize) -> Vec<Row> {
+    pub fn all_rows(&self, phase: usize) -> Vec<Row> {
         (0..self.partitions.len())
-            .flat_map(|partition| self.rows(salt, partition, phase))
+            .flat_map(|partition| self.rows(partition, phase).iter().cloned())
             .collect()
     }
 }
 
-/// Zero to three drift columns, each present in some partitions and phases with a drawn shape.
-fn drift(rng: &mut SplitMix64, partitions: usize) -> Vec<Drift> {
+/// How a stream is read and written.
+fn modes(rng: &mut SplitMix64) -> (ReadMode, WriteMode) {
+    match rng.below(5) {
+        0 => (ReadMode::Incremental, WriteMode::Append),
+        1 => (ReadMode::Full, WriteMode::Append),
+        2 => (ReadMode::Full, WriteMode::Replace),
+        3 => (ReadMode::Incremental, WriteMode::Merge),
+        _ => (ReadMode::Full, WriteMode::Merge),
+    }
+}
+
+/// Normalizing, to the default depth or a shallow one that stores deeper containers whole, as
+/// JSON.
+fn normalized(rng: &mut SplitMix64) -> Nested {
+    let max_depth = if rng.chance(500) {
+        u8::try_from(1 + rng.below(3)).unwrap_or(1)
+    } else {
+        8
+    };
+    Nested::Normalize { max_depth }
+}
+
+/// Zero to three drift columns, each present in some partitions and phases with a drawn shape:
+/// its first shape, a type the lattice joins it with, or another; for a JSON stream, only types
+/// JSON holds.
+fn drift(rng: &mut SplitMix64, partitions: usize, features: Features, json: bool) -> Vec<Drift> {
     let mut names: Vec<&str> = DRIFT_NAMES.to_vec();
+    let fresh = |rng: &mut SplitMix64| -> Shape {
+        let seed = rng.next_u64();
+        if json {
+            draw(&json::shape(features.depth), seed)
+        } else {
+            let shape = draw(&rdlt_testkit::drawn::values::shape(features.depth), seed);
+            values::plain_unless(shape, features.encodings)
+        }
+    };
     (0..rng.below(4))
         .map(|_| {
             let name = names.remove(usize::try_from(rng.below(names.len() as u64)).unwrap_or(0));
-            let first = Shape::ALL[usize::try_from(rng.below(6)).unwrap_or(0)];
+            let first = fresh(rng);
             let shapes = (0..partitions)
                 .map(|_| {
                     std::array::from_fn(|_| {
                         if rng.chance(250) {
                             None
                         } else if rng.chance(600) {
-                            Some(first)
+                            Some(first.clone())
+                        } else if !json && rng.chance(500) {
+                            let seed = rng.next_u64();
+                            let neighbor = draw(&neighbors::neighbor(&first), seed);
+                            Some(values::plain_unless(neighbor, features.encodings))
                         } else {
-                            Some(Shape::ALL[usize::try_from(rng.below(6)).unwrap_or(0)])
+                            Some(fresh(rng))
                         }
                     })
                 })
@@ -285,25 +323,4 @@ fn drift(rng: &mut SplitMix64, partitions: usize) -> Vec<Drift> {
             }
         })
         .collect()
-}
-
-/// A value of `shape` drawn from `bits`, null one time in five.
-fn extra(shape: Shape, bits: u64) -> Option<Extra> {
-    if bits.is_multiple_of(5) {
-        return None;
-    }
-    let small = i64::try_from(bits % 1_000).unwrap_or(0) - 500;
-    Some(match shape {
-        Shape::Int32 => Extra::Int(small),
-        Shape::Int64 => Extra::Int((small << 36) + 7),
-        Shape::Float => Extra::Quarters(small),
-        Shape::Text => Extra::Text(format!("t{small}")),
-        Shape::Object => Extra::Object(small),
-        Shape::List => Extra::List(vec![small, small + 1]),
-    })
-}
-
-/// The `SplitMix64` output function.
-fn mix(x: u64) -> u64 {
-    SplitMix64::new(x).next_u64()
 }

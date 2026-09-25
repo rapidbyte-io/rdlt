@@ -1,85 +1,52 @@
-//! What the oracle reads from the store: published rows by source column, committed cursors and
-//! completed full reads.
+//! What the oracle reads from the store: published tables, committed cursors and completed full
+//! reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::{
-    LogicalType, NameMap, PartitionId, PartitionState, StateEntry, StateKey, StateRecord,
-    StreamName, TablePath,
+    NameMap, PartitionId, PartitionState, StateEntry, StateKey, StateRecord, StreamName, TablePath,
 };
-use serde_json::{Map, Value};
 
-use super::cells;
+use super::Stored;
 use crate::source::SimCursor;
 use crate::world::World;
 
-/// Every row published for `stream`, with each source column's value gathered from its column
-/// and variant columns through the committed name map: the rows as the source sent them.
-///
-/// JSON a destination stored as text, having no JSON type, is read back through the committed
-/// schema's types. A value found in two columns of one source column is a violation.
-pub fn published(world: &World, stream: &str) -> Vec<Map<String, Value>> {
-    let Ok(path) = TablePath::new([stream]) else {
-        return Vec::new();
-    };
-    published_table(world, &path)
-        .into_iter()
-        .map(|(source, _)| source)
-        .collect()
+/// What a table holds: its rows, and the name map naming its columns.
+#[derive(Debug)]
+pub(crate) struct Published {
+    /// The table's identifier.
+    pub(crate) physical: String,
+    /// Each source column's identifiers, and its variants'.
+    pub(crate) names: NameMap,
+    /// Its rows.
+    pub(crate) rows: Vec<Stored>,
 }
 
-/// Every row published to the table at `path`: as the source sent it, and its metadata columns,
-/// those no source column names, each with the type the table stores it as.
-pub(crate) fn published_table(world: &World, path: &TablePath) -> Vec<(Map<String, Value>, Meta)> {
+/// What the table at `path` holds, if the destination has it.
+pub(crate) fn published_table(world: &World, path: &TablePath) -> Option<Published> {
     let store = world.store.lock();
-    let Some((physical, names)) = names(&store.state, path) else {
-        return Vec::new();
-    };
-    let Some(table) = store.tables.get(physical.as_str()) else {
-        return Vec::new();
-    };
-    let types = logical_types(&store.state, path);
-    let sourced: BTreeSet<&str> = names.iter().map(|(_, name)| name).collect();
-    table
-        .published
-        .iter()
-        .map(|row| {
-            let source = cells::unlowered(row, &types, &table.columns)
-                .and_then(|row| cells::source_row(&row, &names))
-                .unwrap_or_else(|finding| {
-                    world.violation(format!("table {path}: {finding}"));
-                    Map::new()
-                });
-            let meta = row
-                .iter()
-                .filter(|(column, _)| !sourced.contains(column.as_str()))
-                .filter_map(|(column, value)| {
-                    let logical = table.columns.get(column)?.clone();
-                    Some((logical, value.clone()))
-                })
-                .collect();
-            (source, meta)
-        })
-        .collect()
+    let (physical, names) = names(&store.state, path)?;
+    let rows = store.tables.get(physical.as_str())?.published.clone();
+    Some(Published {
+        physical,
+        names,
+        rows,
+    })
 }
 
-/// A row's metadata values, each with the type its column stores.
-pub(crate) type Meta = Vec<(LogicalType, Value)>;
-
-/// The logical type of each column of the table at `path`, by identifier, as state records it.
-fn logical_types(
-    state: &BTreeMap<String, StateRecord>,
-    path: &TablePath,
-) -> BTreeMap<String, LogicalType> {
-    let record = state.get(&StateKey::Schema(path.clone()).encode());
-    match record.and_then(|record| StateEntry::from_record(record).ok()) {
-        Some(StateEntry::Schema { schema, .. }) => schema
-            .fields()
-            .iter()
-            .map(|field| (field.name().to_owned(), field.logical_type().clone()))
-            .collect(),
-        _ => BTreeMap::new(),
-    }
+/// The paths of every table the destination holds for `stream`: its own and its child tables.
+pub(crate) fn table_paths(world: &World, stream: &str) -> Vec<Vec<String>> {
+    let store = world.store.lock();
+    store
+        .names
+        .keys()
+        .map(|path| {
+            path.segments()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<String>>()
+        })
+        .filter(|segments| segments.first().map(String::as_str) == Some(stream))
+        .collect()
 }
 
 /// The identifier and name map state records for the table at `path`.

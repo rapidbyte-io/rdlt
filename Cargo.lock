@@ -1335,12 +1335,12 @@ name = "rdlt-sim"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
- "arrow-json",
  "arrow-schema",
  "bytes",
  "parking_lot",
  "rdlt-connector",
  "rdlt-engine",
+ "rdlt-testkit",
  "schemars",
  "serde",
  "serde_json",
