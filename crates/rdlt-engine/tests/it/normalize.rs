@@ -239,32 +239,110 @@ async fn nested_arrow_batches_normalize_like_json() {
     );
 }
 
+fn dropping(name: &str) -> StreamPlan {
+    stream(name).schema(
+        SchemaSettings::new()
+            .nested(Nested::normalize())
+            .policy(SchemaPolicy::DiscardRow),
+    )
+}
+
 #[tokio::test(start_paused = true)]
-async fn a_normalized_stream_cannot_drop_rows_yet() {
-    let discard = SchemaSettings::new().policy(SchemaPolicy::DiscardRow);
-    let cases = [
-        (
-            "normalize_discard_row_unsupported",
-            stream("events").schema(discard.nested(Nested::normalize())),
-        ),
-        (
-            "normalize_discard_row_unsupported",
-            normalized("events").column("id", discard),
-        ),
-    ];
-    for (index, (code, plan)) in cases.into_iter().enumerate() {
-        let outcome = load(
-            &format!("{code}_{index}"),
-            vec![BatchStream::json("events", &[r#"{"id":1}"#])],
-            vec![plan],
+async fn a_dropped_row_takes_its_children_with_it() {
+    let first = r#"{"id":1,"items":[{"sku":"a","tags":["t"]}]}"#;
+    let events = || vec![dropping("events")];
+    succeeded(
+        &load(
+            "dropped",
+            vec![BatchStream::json("events", &[first])],
+            events(),
         )
-        .await;
-        let error = outcome.error.expect("the run fails");
-        assert_eq!(
-            (error.kind(), error.code()),
-            (ErrorKind::Config, Some(code))
-        );
-    }
+        .await,
+    );
+    let second = [
+        r#"{"id":2,"extra":1,"items":[{"sku":"b","tags":["u"]}]}"#,
+        r#"{"id":3,"items":[{"sku":"c","n":1,"tags":["v"]},{"sku":"d"}]}"#,
+    ]
+    .join("\n");
+    let outcome = load(
+        "dropped",
+        vec![BatchStream::json("events", &[&second])],
+        events(),
+    )
+    .await;
+    succeeded(&outcome);
+    let ids: Vec<Value> = published_json("dropped", "events")
+        .iter()
+        .map(|row| row["id"].clone())
+        .collect();
+    assert_eq!(ids, [json!(1), json!(3)]);
+    let skus: Vec<Value> = published_json("dropped", "events__items")
+        .iter()
+        .map(|row| row["sku"].clone())
+        .collect();
+    assert_eq!(skus, [json!("a"), json!("d")], "c carried a new column");
+    assert_eq!(published_json("dropped", "events__items__tags").len(), 1);
+    assert_eq!(
+        outcome.report.streams["events"].discarded_rows, 5,
+        "row 2, its item and tag, item c and its tag"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_array_drops_the_rows_holding_it() {
+    let events = || vec![dropping("events")];
+    let first = r#"{"id":1,"items":[{"sku":"a"}]}"#;
+    succeeded(
+        &load(
+            "new_array_rows",
+            vec![BatchStream::json("events", &[first])],
+            events(),
+        )
+        .await,
+    );
+    let second = [
+        r#"{"id":2,"items":[{"sku":"b","tags":["t"]}]}"#,
+        r#"{"id":3,"items":[{"sku":"c"}]}"#,
+    ]
+    .join("\n");
+    let outcome = load(
+        "new_array_rows",
+        vec![BatchStream::json("events", &[&second])],
+        events(),
+    )
+    .await;
+    succeeded(&outcome);
+    assert!(schema("new_array_rows", "events__items__tags").is_none());
+    let skus: Vec<Value> = published_json("new_array_rows", "events__items")
+        .iter()
+        .map(|row| row["sku"].clone())
+        .collect();
+    assert_eq!(skus, [json!("a"), json!("c")], "item b held the new array");
+    assert_eq!(published_json("new_array_rows", "events").len(), 3);
+    assert_eq!(outcome.report.streams["events"].discarded_rows, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_array_follows_the_policy_once_the_streams_table_exists_in_the_load() {
+    let frozen = stream("events").schema(
+        SchemaSettings::new()
+            .nested(Nested::normalize())
+            .policy(SchemaPolicy::Freeze),
+    );
+    let pushes = [r#"{"id":1}"#, r#"{"id":2,"items":[{"sku":"x"}]}"#];
+    let outcome = load(
+        "created_in_load",
+        vec![BatchStream::json("events", &pushes)],
+        vec![frozen],
+    )
+    .await;
+    let error = outcome
+        .error
+        .expect("the table the first push created is frozen");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("schema_frozen"))
+    );
 }
 
 #[tokio::test(start_paused = true)]

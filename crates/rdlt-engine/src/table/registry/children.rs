@@ -17,8 +17,12 @@ pub(crate) enum Admission {
     Add,
     /// The stream's schema is frozen: the rows fail the stream.
     Refuse,
-    /// The stream discards what would change its schema: the rows are dropped and counted.
+    /// The stream discards values that would change its schema: the rows are dropped, and
+    /// counted as discarded values.
     Discard,
+    /// The stream discards rows that would change its schema: the rows are dropped with the
+    /// parent rows holding them, and those parents' other descendants.
+    DiscardParents,
 }
 
 impl Tables {
@@ -65,17 +69,17 @@ impl Tables {
 
     /// What becomes of rows for the child table at `path` below `root`, which may be new.
     ///
-    /// A child table that exists, or whose stream's table state does not record yet, is added as
-    /// its rows arrive. A new one below a recorded table is a change to the stream's schema, which
-    /// its policy for the array's column decides.
-    pub(crate) fn admit_child(&self, root: usize, path: &[Arc<str>]) -> Admission {
-        if self.children.lock().contains_key(&(root, path.to_vec())) {
+    /// A child table that exists, or that state records, takes its rows, as does a new one while
+    /// the stream's table is being created: before a unit that `existed` says found it created,
+    /// as a table being created takes every column. After that, a new child table is a change to
+    /// the stream's schema, which its policy for the array's column decides.
+    pub(crate) fn admit_child(&self, root: usize, path: &[Arc<str>], existed: bool) -> Admission {
+        if self.children.lock().contains_key(&(root, path.to_vec())) || !existed {
             return Admission::Add;
         }
         let base = self.view(root).table.path.clone();
         let child = base.segments().chain(path.iter().map(AsRef::as_ref));
-        let recorded = TablePath::new(child).is_ok_and(|child| self.committed.contains_key(&child));
-        if recorded || !self.committed.contains_key(&base) {
+        if TablePath::new(child).is_ok_and(|child| self.committed.contains_key(&child)) {
             return Admission::Add;
         }
         let Ok(column) = ColumnPath::new(path.to_vec()) else {
@@ -84,7 +88,8 @@ impl Tables {
         match self.slot(root).resolver.settings.column(&column).policy {
             SchemaPolicy::Freeze => Admission::Refuse,
             SchemaPolicy::DiscardValue => Admission::Discard,
-            SchemaPolicy::Evolve | SchemaPolicy::DiscardRow => Admission::Add,
+            SchemaPolicy::DiscardRow => Admission::DiscardParents,
+            SchemaPolicy::Evolve => Admission::Add,
         }
     }
 

@@ -1,6 +1,6 @@
 //! Normalized streams against every reference destination.
 
-use rdlt_engine::{Nested, RunStatus, SchemaSettings, StreamPlan, WriteMode};
+use rdlt_engine::{Nested, RunStatus, SchemaPolicy, SchemaSettings, StreamPlan, WriteMode};
 use serde_json::json;
 
 use crate::support::batches::{BatchStream, batches};
@@ -164,6 +164,91 @@ async fn every_destination_keeps_the_children_of_a_keys_last_row_in_a_commit() {
             target.json(store, "events__items"),
             [json!({"sku": "y"})],
             "{target:?}"
+        );
+    }
+}
+
+fn dropping_merge() -> StreamPlan {
+    stream("events")
+        .schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(SchemaPolicy::DiscardRow),
+        )
+        .write(WriteMode::Merge)
+        .key(["id"])
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_destination_keeps_the_children_of_rows_after_a_dropped_one() {
+    let plan = dropping_merge;
+    for target in Target::ALL {
+        let store = "after_dropped";
+        let first = r#"{"id":1,"items":[{"sku":"z"}]}"#;
+        load(
+            target,
+            store,
+            vec![BatchStream::json("events", &[first])],
+            vec![plan()],
+        )
+        .await;
+        let second = [
+            r#"{"id":1,"items":[{"sku":"a"}]}"#,
+            r#"{"id":2,"extra":1,"items":[{"sku":"b"}]}"#,
+            r#"{"id":3,"items":[{"sku":"c"}]}"#,
+        ]
+        .join("\n");
+        load(
+            target,
+            store,
+            vec![BatchStream::json("events", &[&second])],
+            vec![plan()],
+        )
+        .await;
+        assert_eq!(target.rows(store, "events"), 2, "{target:?}");
+        assert_eq!(
+            target.json(store, "events__items"),
+            [json!({"sku": "a"}), json!({"sku": "c"})],
+            "{target:?}: row 2 went with its item; row 3 kept its own"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_destination_drops_only_the_rows_carrying_a_change_among_rows_sharing_a_key() {
+    for target in Target::ALL {
+        let store = "shared_key";
+        let first = r#"{"id":1,"v":0,"items":[{"sku":"z"}]}"#;
+        let plan = || vec![dropping_merge()];
+        load(
+            target,
+            store,
+            vec![BatchStream::json("events", &[first])],
+            plan(),
+        )
+        .await;
+        let second = [
+            r#"{"id":1,"v":1,"extra":1,"items":[{"sku":"a"}]}"#,
+            r#"{"id":1,"v":2,"tags":["t"],"items":[{"sku":"b"}]}"#,
+            r#"{"id":1,"v":3,"items":[{"sku":"c"}]}"#,
+        ]
+        .join("\n");
+        load(
+            target,
+            store,
+            vec![BatchStream::json("events", &[&second])],
+            plan(),
+        )
+        .await;
+        assert_eq!(
+            target.json(store, "events"),
+            [json!({"id": 1, "v": 3})],
+            "{target:?}: rows 1 and 2 carried a new column and a new array"
+        );
+        assert_eq!(
+            target.json(store, "events__items"),
+            [json!({"sku": "c"})],
+            "{target:?}: the kept row keeps its children"
         );
     }
 }

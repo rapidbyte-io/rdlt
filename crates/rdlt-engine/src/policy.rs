@@ -97,11 +97,6 @@ impl SchemaSettings {
     pub(crate) fn nested_setting(self) -> Option<Nested> {
         self.nested
     }
-
-    /// The schema policy, if these settings set one.
-    pub(crate) fn policy_setting(self) -> Option<SchemaPolicy> {
-        self.policy
-    }
 }
 
 /// The settings that apply to one column once inheritance is resolved.

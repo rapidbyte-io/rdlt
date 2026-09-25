@@ -17,7 +17,7 @@ use crate::budget::MemoryBudget;
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Write;
-use crate::normalize::{self, Part, Shape};
+use crate::normalize::{self, Dropped, Part, Shape};
 use crate::shred::{self, ShredError};
 use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp};
 
@@ -197,15 +197,9 @@ async fn write_normalized(
             }
             let stamp = stamp(context, open, received);
             let (unit, discarded) = plan_parts(job, context, parts).await?;
-            open.discarded_values += discarded;
-            let lower_unit = move || {
-                unit.into_iter()
-                    .map(|(table, part, plan)| {
-                        let prepared = plan.prepare(&part.batch, Some(&part.lineage), &stamp)?;
-                        Ok((table, prepared))
-                    })
-                    .collect::<Result<Vec<_>, Error>>()
-            };
+            open.discarded_values += discarded.values;
+            let stream = job.stream.clone();
+            let lower_unit = move || lower_unit(&stream, unit, discarded.rows, &stamp);
             planned.push((lower_unit, held));
         }
         let (jobs, reservations): (Vec<_>, Vec<_>) = planned.into_iter().unzip();
@@ -231,24 +225,40 @@ async fn write_normalized(
     Ok(())
 }
 
-/// The table and plan of each of `parts`, a unit's, found in order, and the values dropped: a
+/// The parts of a unit, each with its table and plan.
+type PlannedParts = Vec<(usize, Part, Arc<LoweringPlan>)>;
+
+/// What admitting a unit's parts discarded: the values of new arrays, and the rows holding new
+/// arrays whose rows the policy drops.
+#[derive(Default)]
+struct Discarded {
+    values: u64,
+    rows: Dropped,
+}
+
+/// The table and plan of each of `parts`, a unit's, found in order, and what they discarded: a
 /// part below the stream's table goes to its child table, added the first time unless the
 /// stream's policy refuses or discards a new one.
 async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
     parts: Vec<Part>,
-) -> Result<(Vec<(usize, Part, Arc<LoweringPlan>)>, u64), Error> {
+) -> Result<(PlannedParts, Discarded), Error> {
+    let existed = context.tables.view(job.table).model.created();
     let mut planned = Vec::with_capacity(parts.len());
-    let mut discarded = 0;
+    let mut discarded = Discarded::default();
     for part in parts {
         let table = if part.path.is_empty() {
             job.table
         } else {
-            match context.tables.admit_child(job.table, &part.path) {
+            match context.tables.admit_child(job.table, &part.path, existed) {
                 Admission::Add => context.tables.child(job.table, &part.path).await?,
                 Admission::Discard => {
-                    discarded += part.batch.num_rows() as u64;
+                    discarded.values += part.batch.num_rows() as u64;
+                    continue;
+                }
+                Admission::DiscardParents => {
+                    discarded.rows.parents_of(&part);
                     continue;
                 }
                 Admission::Refuse => return Err(frozen(job, &part.path)),
@@ -262,6 +272,30 @@ async fn plan_parts(
         planned.push((table, part, plan));
     }
     Ok((planned, discarded))
+}
+
+/// `unit`'s parts, parents first, as their plans lower them: a row the schema policy drops, or
+/// that `dropped` holds, takes its descendants with it, and they count as discarded rows.
+fn lower_unit(
+    stream: &StreamName,
+    unit: PlannedParts,
+    mut dropped: Dropped,
+    stamp: &Stamp,
+) -> Result<Vec<(usize, Prepared)>, Error> {
+    let mut lowered = Vec::with_capacity(unit.len());
+    for (table, part, plan) in unit {
+        let pruned = dropped.prune(part).map_err(|error| {
+            Error::internal(format!("stream {stream}: dropping children: {error}"))
+        })?;
+        let part = &pruned.part;
+        let mut prepared = plan.prepare(&part.batch, Some(&part.lineage), stamp)?;
+        if let Some(kept) = &prepared.kept {
+            dropped.unkept(&pruned, kept);
+        }
+        prepared.discarded_rows += pruned.count;
+        lowered.push((table, prepared));
+    }
+    Ok(lowered)
 }
 
 /// The error for rows of a new array in a stream whose schema is frozen.
