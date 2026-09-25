@@ -29,13 +29,6 @@ mod env;
 mod error;
 mod lane;
 mod naming;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "partitions normalize batches once plans can ask for it"
-    )
-)]
 mod normalize;
 mod partition;
 mod plan;

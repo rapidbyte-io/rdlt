@@ -73,7 +73,7 @@ pub struct AttemptReport {
 /// What one stream committed during a run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct StreamReport {
-    /// Rows committed.
+    /// Rows committed, to the stream's table and, for a normalized stream, its child tables.
     pub rows: u64,
     /// Their bytes in memory.
     pub bytes: u64,

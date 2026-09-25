@@ -11,8 +11,8 @@ use std::sync::atomic::AtomicU64;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    Cursor, Destination, DestinationWriter, Epoch, GenerationId, LoadId, OpenContext,
-    OpenedSession, Partition, PipelineState, Source, StreamName,
+    Cursor, Destination, Epoch, GenerationId, LoadId, OpenContext, OpenedSession, Partition,
+    PipelineState, Source, StreamName,
 };
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -84,28 +84,19 @@ pub(crate) async fn run(
         catalog: &catalog,
         state: &opened.state,
         naming: Naming::new(capabilities.identifiers.clone()),
-        taken: opened
-            .state
-            .tables
-            .values()
-            .filter_map(|table| table.physical.as_deref().map(str::to_owned))
-            .collect(),
         capabilities,
     };
-    let mut tables = Tables::new(Arc::clone(&opened.session));
+    let tables = Tables::new(Arc::clone(&opened.session)).committed(&opened.state);
     let mut planned = Vec::with_capacity(context.plan.streams().len());
     for plan in context.plan.streams() {
-        planned.push(planning.stream(plan, &mut tables).await?);
+        planned.push(planning.stream(plan, &tables).await?);
     }
-    let tables = Arc::new(tables);
-    let writers = writers(context, &tables, planned.len()).await?;
     launch(
         context,
         load_id,
         opened,
         planned,
-        tables,
-        writers,
+        Arc::new(tables),
         Arc::clone(&log),
     )
     .await?;
@@ -144,33 +135,6 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
     })
 }
 
-/// One writer per table for each lane.
-async fn writers(
-    context: &RunContext,
-    tables: &Tables,
-    count: usize,
-) -> Result<Vec<Vec<Box<dyn DestinationWriter>>>, Error> {
-    let lanes = lane_count(&context.config, context.destination.as_ref());
-    let mut writers = Vec::with_capacity(lanes.get());
-    for _ in 0..lanes.get() {
-        let mut lane = Vec::with_capacity(count);
-        for table in 0..count {
-            let view = tables.view(table);
-            let writer = tables
-                .session()
-                .writer(&view.table)
-                .await?
-                .map_err(|error| {
-                    let context = format!("creating a writer for table {}", view.table.name);
-                    Error::connector(Side::Destination, context, error)
-                })?;
-            lane.push(writer);
-        }
-        writers.push(lane);
-    }
-    Ok(writers)
-}
-
 /// Runs the lanes, the partitions and the coordinator in one scope until all of them end.
 async fn launch(
     context: &RunContext,
@@ -178,10 +142,10 @@ async fn launch(
     opened: Opened,
     planned: Vec<Planned>,
     tables: Arc<Tables>,
-    writers: Vec<Vec<Box<dyn DestinationWriter>>>,
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<(), Error> {
-    let (lanes, lane_tasks) = Lanes::new(writers, context.config.lane_window());
+    let count = lane_count(&context.config, context.destination.as_ref());
+    let (lanes, lane_tasks) = Lanes::new(count, &tables, context.config.lane_window());
     let mut scope = TaskScope::new(&CancellationToken::new());
     let cancel = scope.token().clone();
     for lane in lane_tasks {
@@ -240,18 +204,18 @@ fn spawn_partitions(
 ) -> (Vec<StreamRun>, Vec<PartitionRun>) {
     let mut streams = Vec::with_capacity(planned.len());
     let mut partitions = Vec::new();
-    for (table, stream) in planned.into_iter().enumerate() {
+    for (index, stream) in planned.into_iter().enumerate() {
         for (partition, cursor) in stream.partitions {
             let id = partition.id().clone();
             let job = PartitionJob {
                 index: partitions.len(),
                 stream: stream.stream.name.clone(),
-                table,
+                table: stream.stream.table,
                 partition,
                 cursor,
                 on_demand: stream.on_demand,
             };
-            partitions.push(PartitionRun::new(table, id, stream.on_demand));
+            partitions.push(PartitionRun::new(index, id, stream.on_demand));
             scope.spawn(partition::run(job, context.clone()));
         }
         streams.push(stream.stream);

@@ -79,6 +79,10 @@ fn unsupported_plans_are_configuration_errors() {
             vec![stream("a").hint("n", LogicalType::Null)],
             "plan_hint_invalid",
         ),
+        (
+            vec![stream("a").column("n", SchemaSettings::new().nested(Nested::normalize()))],
+            "plan_nested_normalize_column",
+        ),
     ];
     for (streams, code) in cases {
         let error = PipelinePlan::new(pipeline(), streams).unwrap_err();
@@ -128,4 +132,9 @@ fn plans_carry_keys_hints_and_schema_settings() {
         .unwrap()
         .schema(settings);
     assert_eq!(pipeline.schema_settings(), &settings);
+}
+
+#[test]
+fn normalizing_goes_eight_levels_deep_unless_told_otherwise() {
+    assert_eq!(Nested::normalize(), Nested::Normalize { max_depth: 8 });
 }

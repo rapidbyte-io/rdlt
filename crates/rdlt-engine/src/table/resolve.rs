@@ -8,7 +8,7 @@ use rdlt_connector::{
     Capabilities, ColumnKey, ColumnPath, Field, LogicalType, StreamName, TableSchema, TypeKind,
 };
 
-use super::lower::{MetaNames, lower};
+use super::lower::{LineageColumns, MetaNames, lower};
 use super::model::Model;
 use crate::error::Error;
 use crate::naming::Naming;
@@ -84,8 +84,28 @@ pub(crate) struct Resolver {
     pub(crate) meta: MetaNames,
 }
 
+/// A batch's columns as they arrive: their types, and each column's path within its table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Incoming {
+    pub(crate) schema: TableSchema,
+    /// Each column's path, in the schema's order.
+    pub(crate) paths: Vec<ColumnPath>,
+}
+
+impl From<TableSchema> for Incoming {
+    /// A batch whose columns are top-level ones named as the schema names them.
+    fn from(schema: TableSchema) -> Self {
+        let paths = schema
+            .fields()
+            .iter()
+            .map(|field| ColumnPath::from(field.name()))
+            .collect();
+        Self { schema, paths }
+    }
+}
+
 /// One incoming column, with what applies to it.
-struct Incoming<'a> {
+struct Arriving<'a> {
     path: ColumnPath,
     logical: &'a LogicalType,
     settings: Resolved,
@@ -94,6 +114,15 @@ struct Incoming<'a> {
 }
 
 impl Resolver {
+    /// The resolver of a child table of the same stream, whose tables normalize and never merge:
+    /// with a child's lineage columns.
+    pub(crate) fn child(&self) -> Result<Self, Error> {
+        Ok(Self {
+            meta: MetaNames::assign(&self.naming, false, LineageColumns::Child)?,
+            ..self.clone()
+        })
+    }
+
     /// The same resolver, appending a hash seeded with `salt` to every identifier it assigns.
     pub(crate) fn hashing(&self, salt: u64) -> Self {
         Self {
@@ -108,16 +137,13 @@ impl Resolver {
     /// table lacks or a value its column cannot hold is a change, which the column's policy
     /// applies, refuses or discards. The identifiers of added columns are assigned together, so
     /// they do not depend on the batch's column order.
-    pub(crate) fn resolve(
-        &self,
-        model: &Model,
-        incoming: &TableSchema,
-    ) -> Result<Resolution, Error> {
+    pub(crate) fn resolve(&self, model: &Model, incoming: &Incoming) -> Result<Resolution, Error> {
         let mut draft = Draft::new(model);
-        let mut routes = Vec::with_capacity(incoming.fields().len());
-        for field in incoming.fields().iter() {
-            let path = ColumnPath::from(field.name());
-            let column = Incoming {
+        let fields = incoming.schema.fields();
+        let mut routes = Vec::with_capacity(fields.len());
+        for (field, path) in fields.iter().zip(&incoming.paths) {
+            let path = path.clone();
+            let column = Arriving {
                 settings: self.settings.column(&path),
                 is_key: self.settings.key.contains(&path),
                 hinted: self.settings.stream.hinted(&path).is_some(),
@@ -133,7 +159,7 @@ impl Resolver {
     fn route(
         &self,
         draft: &mut Draft,
-        column: &Incoming<'_>,
+        column: &Arriving<'_>,
         created: bool,
     ) -> Result<Route, Error> {
         let key = ColumnKey::Source(column.path.clone());
@@ -157,7 +183,7 @@ impl Resolver {
     /// Where a column the table lacks goes instead of a new column of its own, if anywhere.
     ///
     /// A table being created takes every column; an existing one follows the column's policy.
-    fn admit(&self, column: &Incoming<'_>, created: bool) -> Result<Option<Route>, Error> {
+    fn admit(&self, column: &Arriving<'_>, created: bool) -> Result<Option<Route>, Error> {
         if !created {
             return Ok(None);
         }
@@ -182,7 +208,7 @@ impl Resolver {
     fn place(
         &self,
         draft: &mut Draft,
-        column: &Incoming<'_>,
+        column: &Arriving<'_>,
         original: usize,
     ) -> Result<Route, Error> {
         let mut candidates = vec![original];
@@ -230,7 +256,7 @@ impl Resolver {
 
     /// The variant column that takes `column`'s values: the variant of the joined type's kind,
     /// widened or added, or else the `Json` variant, which holds anything.
-    fn variant(&self, draft: &mut Draft, column: &Incoming<'_>, joined: &LogicalType) -> usize {
+    fn variant(&self, draft: &mut Draft, column: &Arriving<'_>, joined: &LogicalType) -> usize {
         let key = |kind| ColumnKey::Variant {
             column: column.path.clone(),
             kind,
@@ -266,7 +292,7 @@ impl Resolver {
                 .widens(from.kind(), to.kind())
     }
 
-    fn refused(&self, column: &Incoming<'_>, code: &str, detail: &str) -> Error {
+    fn refused(&self, column: &Arriving<'_>, code: &str, detail: &str) -> Error {
         Error::schema(format!(
             "stream {}: column {}: {detail}",
             self.stream, column.path

@@ -99,7 +99,10 @@ pub use id::{
     CommitSeq, ConnectorId, Epoch, GenerationId, IdError, LoadId, PartitionId, PipelineId,
     SchemaVersion, SegmentId, StreamName, TablePath,
 };
-pub use meta::{LOAD_ID_COLUMN, LOADED_AT_COLUMN, META_PREFIX};
+pub use meta::{
+    ID_COLUMN, IDX_COLUMN, LOAD_ID_COLUMN, LOADED_AT_COLUMN, META_PREFIX, PARENT_ID_COLUMN,
+    ROOT_ID_COLUMN,
+};
 #[cfg(feature = "macros")]
 pub use rdlt_connector_macros::{destination, source};
 pub use schema::{ColumnKey, ColumnPath, EmptyColumnPath, SchemaError, TableSchema};

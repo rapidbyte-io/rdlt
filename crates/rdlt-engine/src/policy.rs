@@ -39,6 +39,22 @@ pub enum Nested {
     Native,
     /// As one `Json` value per nested column.
     Json,
+    /// Normalized (spec §8.7): arrays become child tables at any depth, objects flatten into one
+    /// column per field, and containers nested deeper than `max_depth` are stored as `Json`.
+    ///
+    /// Only pipelines and streams normalize; a column set to [`Nested::Native`] or
+    /// [`Nested::Json`] in a normalized stream is stored whole.
+    Normalize {
+        /// How deep objects and arrays normalize; deeper ones are stored as `Json`.
+        max_depth: u8,
+    },
+}
+
+impl Nested {
+    /// Normalized to the default depth of 8.
+    pub const fn normalize() -> Self {
+        Self::Normalize { max_depth: 8 }
+    }
 }
 
 /// Schema settings at one level of a pipeline; unset settings inherit from the level above:
@@ -75,6 +91,16 @@ impl SchemaSettings {
     pub fn nested(mut self, nested: Nested) -> Self {
         self.nested = Some(nested);
         self
+    }
+
+    /// How nested values are stored, if these settings say.
+    pub(crate) fn nested_setting(self) -> Option<Nested> {
+        self.nested
+    }
+
+    /// The schema policy, if these settings set one.
+    pub(crate) fn policy_setting(self) -> Option<SchemaPolicy> {
+        self.policy
     }
 }
 

@@ -16,7 +16,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use rdlt_connector::{
     CommitMeta, CommitSeq, Cursor, Epoch, GenerationId, LoadId, PartitionId, PartitionState,
-    Source, StateChange, StateEntry, StreamName, TablePath,
+    Source, StateChange, StateEntry, StreamName,
 };
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -35,8 +35,8 @@ use crate::table::Tables;
 pub(crate) struct StreamRun {
     pub(crate) name: StreamName,
     pub(crate) write: WriteMode,
-    /// The stream's table.
-    pub(crate) path: TablePath,
+    /// The index of the stream's table among the attempt's tables.
+    pub(crate) table: usize,
     /// The full read in progress; `None` for incremental reads.
     pub(crate) cycle: Option<Cycle>,
     /// Partitions still reading.

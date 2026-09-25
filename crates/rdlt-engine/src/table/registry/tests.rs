@@ -14,7 +14,7 @@ use crate::error::ErrorKind;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::SchemaSettings;
-use crate::table::{MetaNames, Model, Resolver, Settings};
+use crate::table::{Incoming, MetaNames, Model, Resolver, Settings};
 
 type Changes = Arc<Mutex<Vec<TableChange>>>;
 
@@ -73,25 +73,29 @@ fn resolver() -> Resolver {
             load_id: "_rdlt_load_id".into(),
             loaded_at: "_rdlt_loaded_at".into(),
             seq: None,
+            id: None,
+            parent: None,
         },
     }
 }
 
-fn schema(fields: &[(&str, LogicalType)]) -> TableSchema {
-    TableSchema::new(
-        fields
-            .iter()
-            .map(|(name, logical)| Field::new(*name, logical.clone(), true))
-            .collect(),
+fn schema(fields: &[(&str, LogicalType)]) -> Incoming {
+    Incoming::from(
+        TableSchema::new(
+            fields
+                .iter()
+                .map(|(name, logical)| Field::new(*name, logical.clone(), true))
+                .collect(),
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 
 /// Tables over a recording session, with one table added from `model`.
 fn tables(generation: Option<GenerationId>, model: Model) -> (Tables, Changes) {
     let changes = Changes::default();
     let session = SharedSession::new(Box::new(Recorder(Arc::clone(&changes))));
-    let mut tables = Tables::new(session);
+    let tables = Tables::new(session);
     tables.add(resolver(), &table(generation), model);
     (tables, changes)
 }
@@ -314,7 +318,7 @@ fn attempt(columns: &Columns) -> Tables {
     capabilities.identifiers.case = IdentifierCase::Lower;
     resolver.naming = Naming::new(capabilities.identifiers.clone());
     resolver.capabilities = Arc::new(capabilities);
-    let mut tables = Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns)))));
+    let tables = Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns)))));
     tables.add(resolver, &table(None), Model::default());
     tables
 }
@@ -414,7 +418,7 @@ async fn conflicts_are_named_around_a_bounded_number_of_times() {
             code,
             calls: Arc::clone(&counted),
         };
-        let mut tables = Tables::new(SharedSession::new(Box::new(session)));
+        let tables = Tables::new(SharedSession::new(Box::new(session)));
         tables.add(resolver(), &table(None), Model::default());
         let error = tables
             .fit(0, &schema(&[("id", LogicalType::Int64)]))

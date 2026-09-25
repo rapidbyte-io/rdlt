@@ -4,8 +4,12 @@
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use arrow_array::RecordBatch;
-use rdlt_connector::{Permit, TableSchema};
+use arrow_schema::ArrowError;
+use parking_lot::Mutex;
+use rdlt_connector::{Permit, StreamName, TableSchema};
 
 use super::coalesce::{Flushed, Unit};
 use super::{OpenSegment, PartitionContext, PartitionJob, Progress};
@@ -13,8 +17,9 @@ use crate::budget::MemoryBudget;
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Write;
+use crate::normalize::{self, Part, Shape};
 use crate::shred::{self, ShredError};
-use crate::table::{LoweringPlan, Prepared, Stamp};
+use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -97,6 +102,9 @@ async fn write(
     open: &mut OpenSegment,
     units: Vec<(Vec<RecordBatch>, Held)>,
 ) -> Result<(), Error> {
+    if let Some(shape) = context.tables.shape(job.table) {
+        return write_normalized(job, context, open, units, &shape).await;
+    }
     let mut planned = Vec::with_capacity(units.len());
     for (parts, held) in units {
         let received = parts
@@ -106,22 +114,9 @@ async fn write(
         if received == 0 {
             continue;
         }
-        let incoming = TableSchema::from_arrow(&parts[0].schema()).map_err(|error| {
-            Error::schema(format!(
-                "stream {}: a batch has no table schema: {error}",
-                job.stream
-            ))
-            .with_code("batch_schema_invalid")
-            .with_stream(&job.stream)
-        })?;
+        let incoming = schema_of(job, &parts[0])?;
         let plan = context.tables.plan(job.table, incoming).await?;
-        let stamp = Stamp {
-            load_id: context.load_id,
-            loaded_at: context.loaded_at,
-            segment: open.id,
-            first_row: open.received,
-        };
-        open.received += received;
+        let stamp = stamp(context, open, received);
         planned.push((move || lower(&parts, &plan, &stamp), held));
     }
     for window in windows(planned) {
@@ -141,10 +136,149 @@ async fn write(
             .collect();
         for lowered in lowered {
             let (prepared, held) = lowered?;
-            queue(job, context, open, prepared, held).await?;
+            let reservation: Permit = Box::new(held.permits);
+            queue(job, context, open, job.table, prepared, reservation).await?;
         }
     }
     Ok(())
+}
+
+/// The table schema of `batch`'s columns.
+fn schema_of(job: &PartitionJob, batch: &RecordBatch) -> Result<TableSchema, Error> {
+    TableSchema::from_arrow(&batch.schema()).map_err(|error| {
+        Error::schema(format!(
+            "stream {}: a batch has no table schema: {error}",
+            job.stream
+        ))
+        .with_code("batch_schema_invalid")
+        .with_stream(&job.stream)
+    })
+}
+
+/// The stamp of the next `received` rows written to `open`, which counts them.
+fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> Stamp {
+    let stamp = Stamp {
+        load_id: context.load_id,
+        loaded_at: context.loaded_at,
+        segment: open.id,
+        first_row: open.received,
+    };
+    open.received += received;
+    stamp
+}
+
+/// Lowers `units` of a stream that normalizes as `shape` into its table and child tables, and
+/// queues them on their lanes, a window of units at a time.
+///
+/// Each unit is concatenated and normalized on the compute pool. Its parts' tables and plans are
+/// then found in order, since finding them may add child tables or change tables, and the parts
+/// are lowered on the pool. A unit's parts share the permits holding its memory, charged with its
+/// growth before any part waits on its lane.
+async fn write_normalized(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    open: &mut OpenSegment,
+    units: Vec<(Vec<RecordBatch>, Held)>,
+    shape: &Arc<Shape>,
+) -> Result<(), Error> {
+    for window in windows(units) {
+        let (batches, reservations): (Vec<_>, Vec<_>) = window.into_iter().unzip();
+        let jobs = batches.into_iter().map(|parts| {
+            let (shape, stream) = (Arc::clone(shape), job.stream.clone());
+            move || split(&stream, &parts, &shape)
+        });
+        let split = run_all(context.env.compute(), jobs).await;
+        let mut planned = Vec::with_capacity(split.len());
+        for (parts, held) in split.into_iter().zip(reservations) {
+            let parts = parts?;
+            let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
+            if received == 0 {
+                continue;
+            }
+            let stamp = stamp(context, open, received);
+            let unit = plan_parts(job, context, parts).await?;
+            let lower_unit = move || {
+                unit.into_iter()
+                    .map(|(table, part, plan)| {
+                        let prepared = plan.prepare(&part.batch, Some(&part.lineage), &stamp)?;
+                        Ok((table, prepared))
+                    })
+                    .collect::<Result<Vec<_>, Error>>()
+            };
+            planned.push((lower_unit, held));
+        }
+        let (jobs, reservations): (Vec<_>, Vec<_>) = planned.into_iter().unzip();
+        let lowered: Vec<_> = run_all(context.env.compute(), jobs)
+            .await
+            .into_iter()
+            .zip(reservations)
+            .map(|(prepared, held)| {
+                prepared.map(|prepared| {
+                    let shared = share_growth(&context.budget, &prepared, held);
+                    (prepared, shared)
+                })
+            })
+            .collect();
+        for lowered in lowered {
+            let (prepared, shared) = lowered?;
+            for (table, prepared) in prepared {
+                let reservation: Permit = Box::new(Arc::clone(&shared));
+                queue(job, context, open, table, prepared, reservation).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The table and plan of each of `parts`, a unit's, found in order: a part below the stream's
+/// table goes to its child table, added the first time.
+async fn plan_parts(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    parts: Vec<Part>,
+) -> Result<Vec<(usize, Part, Arc<LoweringPlan>)>, Error> {
+    let mut planned = Vec::with_capacity(parts.len());
+    for part in parts {
+        let table = if part.path.is_empty() {
+            job.table
+        } else {
+            context.tables.child(job.table, &part.path).await?
+        };
+        let incoming = Incoming {
+            schema: schema_of(job, &part.batch)?,
+            paths: part.columns.clone(),
+        };
+        let plan = context.tables.plan(table, incoming).await?;
+        planned.push((table, part, plan));
+    }
+    Ok(planned)
+}
+
+/// `parts`, one batch once concatenated, normalized as `shape`.
+fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Vec<Part>, Error> {
+    let failed = |error: ArrowError| {
+        Error::internal(format!("stream {stream}: normalizing a batch: {error}"))
+    };
+    let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
+    normalize::normalize(&batch, shape).map_err(failed)
+}
+
+/// The permits of `held` with the growth of `prepared`, a unit's lowered parts, beyond them
+/// charged, shared by the parts: the unit's memory is held until the last part is staged.
+fn share_growth(
+    budget: &MemoryBudget,
+    prepared: &[(usize, Prepared)],
+    mut held: Held,
+) -> Arc<Mutex<Vec<Permit>>> {
+    let bytes: u64 = prepared
+        .iter()
+        .map(|(_, prepared)| {
+            u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX)
+        })
+        .sum();
+    held.permits
+        .push(Box::new(budget.charge(bytes.saturating_sub(held.bytes))));
+    Arc::new(Mutex::new(held.permits))
 }
 
 /// Units lowered on the pool at once: a flush of the default size fits in one window, and a
@@ -176,18 +310,20 @@ fn lower(parts: &[RecordBatch], plan: &LoweringPlan, stamp: &Stamp) -> Result<Pr
     // A lone batch concatenates to itself without a copy.
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts)
         .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
-    plan.prepare(&batch, stamp)
+    plan.prepare(&batch, None, stamp)
 }
 
-/// Queues `prepared` on its lane with `held`, the permits holding its bytes, which travel with it.
+/// Queues `prepared` on `table`'s lane with `reservation`, the permits holding its bytes, which
+/// travel with it.
 ///
 /// Growth beyond what a push held was charged at once; later pushes pay it back by waiting.
 async fn queue(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
+    table: usize,
     prepared: Prepared,
-    held: Held,
+    reservation: Permit,
 ) -> Result<(), Error> {
     open.discarded_rows += prepared.discarded_rows;
     open.discarded_values += prepared.discarded_values;
@@ -196,16 +332,16 @@ async fn queue(
         return Ok(());
     }
     let bytes = u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    let lane = context.lanes.route(job.table, job.partition.id());
+    let lane = context.lanes.route(table, job.partition.id());
     context
         .lanes
         .write(
             lane,
             Write {
-                table: job.table,
+                table,
                 segment: open.id,
                 batch: prepared.batch,
-                reservation: Box::new(held.permits),
+                reservation,
             },
         )
         .await?;

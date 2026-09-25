@@ -3,7 +3,10 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::{DestinationWriter, PartitionId, Permit, SegmentId};
@@ -11,6 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Side};
+use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment; the reservation drops once it is staged.
 pub(crate) struct Write {
@@ -31,23 +35,32 @@ pub(crate) struct Lanes {
     senders: Vec<mpsc::Sender<Message>>,
 }
 
-/// One lane's end: its queue and its writers, one per table.
+/// One lane's end: its queue, and a writer for each table it has written to.
 pub(crate) struct Lane {
     receiver: mpsc::Receiver<Message>,
-    writers: Vec<Box<dyn DestinationWriter>>,
+    tables: Arc<Tables>,
+    writers: BTreeMap<usize, Box<dyn DestinationWriter>>,
 }
 
 impl Lanes {
-    /// Lanes over `writers`, one writer per table in each, each queueing up to `window` writes.
+    /// `count` lanes writing into `tables`, each queueing up to `window` writes.
+    ///
+    /// A lane opens a table's writer when it first writes to the table, since normalized streams
+    /// add child tables as their rows arrive.
     pub(crate) fn new(
-        writers: Vec<Vec<Box<dyn DestinationWriter>>>,
+        count: NonZeroUsize,
+        tables: &Arc<Tables>,
         window: NonZeroUsize,
     ) -> (Self, Vec<Lane>) {
-        let (senders, lanes) = writers
-            .into_iter()
-            .map(|writers| {
+        let (senders, lanes) = (0..count.get())
+            .map(|_| {
                 let (sender, receiver) = mpsc::channel(window.get());
-                (sender, Lane { receiver, writers })
+                let lane = Lane {
+                    receiver,
+                    tables: Arc::clone(tables),
+                    writers: BTreeMap::new(),
+                };
+                (sender, lane)
             })
             .unzip();
         (Self { senders }, lanes)
@@ -104,7 +117,7 @@ impl Lane {
             };
             match message {
                 Some(Message::Write(write)) => {
-                    let writer = &mut self.writers[write.table];
+                    let writer = self.writer(write.table).await?;
                     writer
                         .write(write.segment, write.batch)
                         .await
@@ -114,7 +127,7 @@ impl Lane {
                     drop(write.reservation);
                 }
                 Some(Message::Flush(reply)) => {
-                    for writer in &mut self.writers {
+                    for writer in self.writers.values_mut() {
                         writer.flush().await.map_err(|error| {
                             Error::connector(Side::Destination, "flushing staged writes", error)
                         })?;
@@ -123,6 +136,28 @@ impl Lane {
                     reply.send(()).ok();
                 }
                 None => return Ok(()),
+            }
+        }
+    }
+}
+
+impl Lane {
+    /// The lane's writer for `table`, opened on its first write.
+    async fn writer(&mut self, table: usize) -> Result<&mut Box<dyn DestinationWriter>, Error> {
+        match self.writers.entry(table) {
+            Entry::Occupied(writer) => Ok(writer.into_mut()),
+            Entry::Vacant(vacant) => {
+                let view = self.tables.view(table);
+                let writer = self
+                    .tables
+                    .session()
+                    .writer(&view.table)
+                    .await?
+                    .map_err(|error| {
+                        let context = format!("creating a writer for table {}", view.table.name);
+                        Error::connector(Side::Destination, context, error)
+                    })?;
+                Ok(vacant.insert(writer))
             }
         }
     }
