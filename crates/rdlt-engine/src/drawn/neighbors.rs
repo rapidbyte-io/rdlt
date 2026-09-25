@@ -48,6 +48,9 @@ pub(crate) fn neighbor(shape: &Shape) -> BoxedStrategy<Shape> {
         Some("UTC"),
         Some("+05:30"),
         Some("America/Havana"),
+        Some("America/Sao_Paulo"),
+        Some("Europe/Berlin"),
+        Some("Asia/Tehran"),
     ]);
     match &shape.logical {
         T::Int8 => leaf(vec![

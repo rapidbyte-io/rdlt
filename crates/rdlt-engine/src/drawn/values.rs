@@ -19,6 +19,20 @@ const NAMES: [&str; 3] = ["a", "b", "c"];
 const FIRST_SECOND: i64 = -62_135_596_800 + 86_400;
 const LAST_SECOND: i64 = 253_402_300_799 - 86_400;
 
+/// Wall-clock seconds that drawn zones' clocks skipped or showed twice: Berlin's 2024 gap and
+/// overlap, São Paulo's 2018 gap, Tehran's 2020 gap, Havana's 2019 overlap, Kolkata's 1942 gap.
+const SHIFTED_CLOCKS: [i64; 6] = [
+    1_711_852_200,
+    1_729_996_200,
+    1_541_291_400,
+    1_584_750_600,
+    1_572_741_000,
+    -862_615_800,
+];
+
+/// Days whose midnight drawn zones skipped or showed twice: São Paulo's, Havana's and Tehran's.
+const SHIFTED_MIDNIGHTS: [i64; 3] = [17_839, 18_203, 18_342];
+
 const UNITS: [TimeUnit; 4] = [
     TimeUnit::Second,
     TimeUnit::Millisecond,
@@ -72,6 +86,8 @@ fn scalar_shape() -> BoxedStrategy<Shape> {
         Some("-03:30"),
         Some("America/Sao_Paulo"),
         Some("Asia/Kolkata"),
+        Some("Europe/Berlin"),
+        Some("Asia/Tehran"),
     ]);
     prop_oneof![
         leaf(T::Null, &[E::Plain]),
@@ -230,7 +246,7 @@ fn present(shape: &Shape) -> BoxedStrategy<Scalar> {
                 .prop_map(Scalar::Binary)
                 .boxed()
         }
-        T::Date | T::Time(_) | T::Timestamp(..) | T::Duration(_) => temporal(&shape.logical),
+        T::Date | T::Time(_) | T::Timestamp(..) | T::Duration(_) => temporal(shape),
         T::Uuid => any::<[u8; 16]>().prop_map(Scalar::Uuid).boxed(),
         T::Json => json_value(2).prop_map(Scalar::Json).boxed(),
         T::Struct(_) | T::List(_) => nested(shape),
@@ -264,26 +280,45 @@ fn integer(logical: &LogicalType, unsigned: bool) -> BoxedStrategy<Scalar> {
     }
 }
 
-/// A present date, time, timestamp or duration of `logical`, across its whole range and often
-/// within the years every destination renders.
-fn temporal(logical: &LogicalType) -> BoxedStrategy<Scalar> {
+/// A present date, time, timestamp or duration of `shape`: across the whole range its encoding
+/// stores, often within the years every destination renders, and now and then where a drawn
+/// zone's clocks shifted.
+fn temporal(shape: &Shape) -> BoxedStrategy<Scalar> {
     use LogicalType as T;
-    match logical {
-        T::Date => prop_oneof![
-            3 => ((FIRST_SECOND / 86_400)..=(LAST_SECOND / 86_400))
-                .prop_map(|days| i32::try_from(days).expect("a date in range")),
-            1 => any::<i32>(),
-        ]
-        .prop_map(Scalar::Date)
-        .boxed(),
-        T::Time(unit) => (0..86_400 * per_second(*unit))
-            .prop_map(Scalar::Temporal)
-            .boxed(),
+    match &shape.logical {
+        T::Date => {
+            // A `Date64` holds milliseconds, so many more days than a `Date32`.
+            let (first, last) = match shape.encoding {
+                Encoding::Date64 => (i64::MIN / 86_400_000, i64::MAX / 86_400_000),
+                _ => (i64::from(i32::MIN), i64::from(i32::MAX)),
+            };
+            prop_oneof![
+                3 => (FIRST_SECOND / 86_400)..=(LAST_SECOND / 86_400),
+                1 => first..=last,
+                1 => proptest::sample::select(SHIFTED_MIDNIGHTS.to_vec()),
+            ]
+            .prop_map(Scalar::Date)
+            .boxed()
+        }
+        // Times of day outside a day are values their types hold, and sources send them.
+        T::Time(unit) => {
+            let stored = match unit {
+                TimeUnit::Second | TimeUnit::Millisecond => {
+                    i64::from(i32::MIN)..=i64::from(i32::MAX)
+                }
+                _ => i64::MIN..=i64::MAX,
+            };
+            prop_oneof![3 => 0..86_400 * per_second(*unit), 1 => stored]
+                .prop_map(Scalar::Temporal)
+                .boxed()
+        }
         T::Timestamp(unit, _) => {
             let scale = per_second(*unit);
             let first = FIRST_SECOND.saturating_mul(scale);
             let last = LAST_SECOND.saturating_mul(scale);
-            prop_oneof![3 => first..=last, 1 => any::<i64>()]
+            let shifted = proptest::sample::select(SHIFTED_CLOCKS.to_vec())
+                .prop_map(move |seconds| seconds * scale);
+            prop_oneof![3 => first..=last, 1 => any::<i64>(), 1 => shifted]
                 .prop_map(Scalar::Temporal)
                 .boxed()
         }

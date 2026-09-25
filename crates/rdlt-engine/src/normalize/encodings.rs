@@ -52,6 +52,22 @@ fn plained(field: &arrow_schema::Field, array: &ArrayRef) -> ArrayRef {
     plain(array, logical.logical_type()).expect("the plain type holds the values")
 }
 
+/// `value` with its dates within the days a `Date32` holds: a `Date64` beyond them has no other
+/// encoding to normalize alike.
+fn within_date32(value: Scalar) -> Scalar {
+    match value {
+        Scalar::Date(days) => Scalar::Date(days.clamp(i32::MIN.into(), i32::MAX.into())),
+        Scalar::Struct(fields) => Scalar::Struct(
+            fields
+                .into_iter()
+                .map(|(name, inner)| (name, within_date32(inner)))
+                .collect(),
+        ),
+        Scalar::List(items) => Scalar::List(items.into_iter().map(within_date32).collect()),
+        other => other,
+    }
+}
+
 /// A part's path, its columns' paths, its values and its lineage.
 type Held = (Vec<Arc<str>>, Vec<String>, Vec<ArrayRef>, Vec<ArrayRef>);
 
@@ -90,7 +106,10 @@ proptest! {
 
     #[test]
     fn normalizing_a_batch_does_not_depend_on_its_encodings(
-        drawn in values::drawn(),
+        drawn in values::drawn().prop_map(|(columns, rows)| {
+            let rows = rows.into_iter().map(|row| row.into_iter().map(within_date32).collect());
+            (columns, rows.collect())
+        }),
         max_depth in 0_u8..4,
         keyed in proptest::collection::vec(any::<bool>(), 3),
     ) {

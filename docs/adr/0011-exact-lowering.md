@@ -8,7 +8,8 @@ Spec §20.4 compares `LoweringPlan` against direct per-value lowering; M3b defer
 The owner asked, while M3e was drafted, that tests cover every data type and variant rather than a
 sample. The first differential, drawing a handful of types, found a panic at once; drawing every
 logical type, in every Arrow encoding a source may send, found eight more defects in lowering and
-three in normalizing; mutation testing found one more in lowering. M3e also takes the minors M3c
+three in normalizing; mutation testing found one more in lowering, and the branch's review four
+more. M3e also takes the minors M3c
 and M3d deferred.
 
 ## Decision
@@ -42,7 +43,17 @@ and M3d deferred.
   - Arrow multiplies dates into timestamps unchecked, wrapping silently in release builds: dates
     and wall-clock times are placed in their columns' units and zones with checked arithmetic.
   - Arrow refuses a wall-clock timestamp that its column's named zone skips or repeats, failing
-    the batch: such times take the offset in force, or the earlier instant, as dates do.
+    the batch: such times take the offset before the shift, or the earlier instant, as dates do.
+  - The first fix read a skipped time as UTC to find its offset, which moved it backward in zones
+    east of UTC (a date in Tehran landed on the day before): the offset is the one in force a day
+    earlier, and the reference finds the shift by bisection instead.
+  - A `Date64` beyond a `Date32`'s days became null in a timestamp column and was refused on its
+    way to JSON or text: dates go to timestamps from their own days, and to JSON, and within
+    structs and lists, as `Date64`s. A `Date` column still refuses them.
+  - Arrow renders a `Date64` as a date and a time: it is rendered as a date.
+  - Arrow widens times of day outside a day unchecked (`Time64` microseconds to nanoseconds
+    overflowed, panicking in debug builds): times are rescaled here and refused where the finer
+    type cannot hold them.
   - Filtering rows out of a dictionary leaves their values in it, and converting a dictionary
     converts every value, so a value only a dropped row held could refuse the batch: dictionary
     and run-end encodings are decoded, keeping only the values rows hold, before any conversion.
@@ -53,10 +64,12 @@ and M3d deferred.
 - **Dates and wall-clock times in zoned columns.** A date in a zoned timestamp column is its
   midnight there, as Arrow converts it, and a wall-clock time is that time there. Where a named
   zone's clocks show the time twice, the earlier instant; where they skip it, the offset in force
-  then. Beyond the years a named zone's offsets are known for, the value is refused; fixed
-  offsets hold everywhere.
+  before they did, so the time moves forward by the gap, as PostgreSQL and `java.time` move it.
+  Beyond the years a named zone's offsets are known for, the value is refused; fixed offsets hold
+  everywhere.
 - **Normalizing does not depend on encodings.** A property test normalizes every drawn batch as
-  drawn and with every encoding plain, and requires the same parts, ids, lineage and values. It
+  drawn and with every encoding plain, and requires the same parts, ids, lineage and values; its
+  dates stay within a `Date32`'s days, as a far `Date64` has no other encoding. It
   found that run-end values and list views were hashed by their Arrow type's name, list views
   were never split into child tables, and dates, times, timestamps and durations were hashed by
   their unit and date type. Identity now encodes temporal values as their kind and nanoseconds and
@@ -76,6 +89,8 @@ and M3d deferred.
   - SQL destinations index a child table of a merge table by its root id when they create it.
   - The files destination rewrites a child table only where its roots' rows drop children.
   - A lowering plan keeps its constant columns for every batch no larger than the largest seen.
+  - Text is rendered into one reused buffer, not a string per value: as fast as Arrow's cast for
+    decimals and faster for timestamps.
   - A plan made for a view already superseded is used but not cached over the current view's.
 - **Dependencies.** The engine uses `chrono`, the version arrow already builds, for zone offsets.
 

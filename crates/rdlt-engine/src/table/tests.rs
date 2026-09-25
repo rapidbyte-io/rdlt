@@ -1183,3 +1183,95 @@ fn a_wall_clock_time_a_named_zone_skips_becomes_the_instant_of_the_offset_in_for
     assert_eq!(placed.value(0), 1_541_300_400);
     assert!(placed.is_null(1));
 }
+
+#[test]
+fn a_date64_beyond_the_days_a_date32_holds_converts_to_its_exact_timestamp() {
+    use rdlt_connector::TimeUnit as Unit;
+    let days = i64::from(i32::MAX) + 10;
+    let dates: ArrayRef = Arc::new(arrow_array::Date64Array::from(vec![days * 86_400_000]));
+    let seconds = LogicalType::Timestamp(Unit::Second, None);
+    let placed = convert(&dates, &LogicalType::Date, &seconds).unwrap();
+    let placed = placed.as_primitive::<arrow_array::types::TimestampSecondType>();
+    assert!(placed.is_valid(0));
+    assert_eq!(placed.value(0), days * 86_400);
+}
+
+#[test]
+fn times_widen_exactly_and_a_time_no_finer_unit_holds_is_refused() {
+    use arrow_array::{Time32SecondArray, Time64MicrosecondArray};
+    use rdlt_connector::TimeUnit as Unit;
+    let seconds: ArrayRef = Arc::new(Time32SecondArray::from(vec![Some(-5), Some(90_000), None]));
+    let nanos = convert(
+        &seconds,
+        &LogicalType::Time(Unit::Second),
+        &LogicalType::Time(Unit::Nanosecond),
+    )
+    .unwrap();
+    let nanos = nanos.as_primitive::<arrow_array::types::Time64NanosecondType>();
+    assert_eq!(
+        nanos.iter().collect::<Vec<_>>(),
+        [Some(-5_000_000_000), Some(90_000_000_000_000), None]
+    );
+    let far: ArrayRef = Arc::new(Time32SecondArray::from(vec![i32::MAX]));
+    assert!(
+        convert(
+            &far,
+            &LogicalType::Time(Unit::Second),
+            &LogicalType::Time(Unit::Millisecond)
+        )
+        .is_err()
+    );
+    let far: ArrayRef = Arc::new(Time64MicrosecondArray::from(vec![i64::MAX / 100]));
+    assert!(
+        convert(
+            &far,
+            &LogicalType::Time(Unit::Microsecond),
+            &LogicalType::Time(Unit::Nanosecond)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn dates_a_date32_cannot_hold_are_written_to_json_as_dates() {
+    let days = i64::from(i32::MAX) + 10;
+    let dates: ArrayRef = Arc::new(arrow_array::Date64Array::from(vec![
+        86_400_000,
+        days * 86_400_000,
+    ]));
+    let rendered = json(&dates, &LogicalType::Date).unwrap();
+    let rendered = rendered.as_string::<i32>();
+    assert_eq!(rendered.value(0), "\"1970-01-02\"");
+    assert_eq!(rendered.value(1), "\"+5881580-07-21\"");
+}
+
+#[test]
+fn a_far_date_nested_in_a_list_converts_to_json_items() {
+    let days = i64::from(i32::MAX) + 10;
+    let dates: ArrayRef = Arc::new(arrow_array::Date64Array::from(vec![days * 86_400_000]));
+    let structs = StructArray::from(vec![(
+        Arc::new(ArrowField::new("d", DataType::Date64, true)),
+        dates,
+    )]);
+    let item = Field::new(
+        "item",
+        LogicalType::Struct(
+            rdlt_connector::Fields::new(vec![Field::new("d", LogicalType::Date, true)]).unwrap(),
+        ),
+        true,
+    );
+    let list: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(ArrowField::new("item", structs.data_type().clone(), true)),
+        arrow_buffer::OffsetBuffer::from_lengths([1]),
+        Arc::new(structs),
+        None,
+    ));
+    let from = LogicalType::List(Box::new(item));
+    let to = LogicalType::List(Box::new(Field::new("item", LogicalType::Json, true)));
+    let converted = convert(&list, &from, &to).unwrap();
+    let items = converted.as_list::<i32>().value(0);
+    assert_eq!(
+        items.as_string::<i32>().value(0),
+        "{\"d\":\"+5881580-07-21\"}"
+    );
+}
