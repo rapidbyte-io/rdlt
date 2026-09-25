@@ -46,8 +46,13 @@ pub(crate) fn convert(
         (LogicalType::Timestamp(_, None), LogicalType::Timestamp(unit, Some(zone))) => {
             temporal::localized(array, arrow_unit(*unit), zone)
         }
+        (LogicalType::Time(_), LogicalType::Time(unit)) => {
+            temporal::times(array, arrow_unit(*unit))
+        }
+        // Nested dates stay wide until each meets its own target: a far `Date64` a `Date` column
+        // refuses, JSON, text and timestamps hold.
         (LogicalType::Struct(from_fields), LogicalType::Struct(to_fields)) => {
-            let source = normalize(array, from)?;
+            let source = normalize_to(array, &wide_dates(&from.to_arrow()))?;
             let source = source.as_struct();
             let columns = to_fields
                 .iter()
@@ -82,7 +87,7 @@ pub(crate) fn convert(
             )?))
         }
         (LogicalType::List(from_item), LogicalType::List(to_item)) => {
-            let source = normalize(array, from)?;
+            let source = normalize_to(array, &wide_dates(&from.to_arrow()))?;
             list(source.as_list::<i32>(), from_item, to_item)
         }
         _ => cast(array, &to.to_arrow()),
@@ -103,11 +108,34 @@ fn arrow_unit(unit: rdlt_connector::TimeUnit) -> arrow_schema::TimeUnit {
 /// `array` in the plain Arrow type of `logical`: large, view and dictionary encodings, maps and
 /// wider integer storage come out as the type the logical type names.
 pub(crate) fn normalize(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, ArrowError> {
-    let target = logical.to_arrow();
-    if *array.data_type() == target {
+    normalize_to(array, &logical.to_arrow())
+}
+
+/// `array` cast to `target`, with its maps unmapped first.
+fn normalize_to(array: &ArrayRef, target: &DataType) -> Result<ArrayRef, ArrowError> {
+    if array.data_type() == target {
         return Ok(Arc::clone(array));
     }
-    cast(&unmapped(array)?, &target)
+    cast(&unmapped(array)?, target)
+}
+
+/// `data_type` with its dates, at any depth, in a `Date64`, which holds every day a `Date32`
+/// holds and the far ones only it does.
+fn wide_dates(data_type: &DataType) -> DataType {
+    let field = |field: &FieldRef| {
+        Arc::new(
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(wide_dates(field.data_type())),
+        )
+    };
+    match data_type {
+        DataType::Date32 => DataType::Date64,
+        DataType::Struct(fields) => DataType::Struct(fields.iter().map(field).collect()),
+        DataType::List(item) => DataType::List(field(item)),
+        other => other.clone(),
+    }
 }
 
 /// `array` with every dictionary and run-end encoding in it, at any depth, decoded.
@@ -269,8 +297,14 @@ pub(crate) fn json(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
     if *logical == LogicalType::Json {
         return normalize(array, logical);
     }
-    let field: FieldRef = Arc::new(Field::new("value", logical.clone(), true).to_arrow());
-    let array = normalize(array, logical)?;
+    // Dates go to JSON as `Date64`s, so a far one a `Date32` cannot hold is written too.
+    let target = wide_dates(&logical.to_arrow());
+    let field: FieldRef = Arc::new(
+        Field::new("value", logical.clone(), true)
+            .to_arrow()
+            .with_data_type(target.clone()),
+    );
+    let array = normalize_to(array, &target)?;
     let options = EncoderOptions::default()
         .with_explicit_nulls(true)
         .with_encoder_factory(Arc::new(Extensions));

@@ -40,7 +40,7 @@ impl EncoderFactory for Extensions {
             }
             // arrow-json renders temporal values it cannot hold as nothing or `<invalid>`.
             (_, data_type) if temporal::is_temporal(data_type) => {
-                Box::new(TemporalText(temporal::Renderer::new(array)?))
+                Box::new(TemporalText(temporal::Renderer::new(array)?, String::new()))
             }
             // arrow-json encodes a list's items with the list's field, losing the items'
             // extension types; items are encoded with their own field here.
@@ -82,13 +82,15 @@ impl Encoder for Floats<'_> {
     }
 }
 
-/// Writes a temporal value as a JSON string of its text.
-struct TemporalText<'a>(temporal::Renderer<'a>);
+/// Writes a temporal value as a JSON string of its text, rendered into a reused buffer.
+struct TemporalText<'a>(temporal::Renderer<'a>, String);
 
 impl Encoder for TemporalText<'_> {
     fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
+        self.1.clear();
+        self.0.write(idx, &mut self.1);
         out.push(b'"');
-        out.extend_from_slice(self.0.render(idx).as_bytes());
+        out.extend_from_slice(self.1.as_bytes());
         out.push(b'"');
     }
 }

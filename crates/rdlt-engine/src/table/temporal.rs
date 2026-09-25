@@ -14,11 +14,12 @@
 
 #[cfg(test)]
 mod tests;
+mod text;
 
-use std::fmt::Write as _;
+pub(crate) use text::{Renderer, text};
+
 use std::sync::Arc;
 
-use arrow_array::builder::StringBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::temporal_conversions::as_datetime;
 use arrow_array::timezone::Tz;
@@ -29,12 +30,12 @@ use arrow_array::types::{
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
 };
 use arrow_array::{
-    Array, ArrayRef, TimestampMicrosecondArray, TimestampMillisecondArray,
+    Array, ArrayRef, Time32MillisecondArray, Time32SecondArray, Time64MicrosecondArray,
+    Time64NanosecondArray, TimestampMicrosecondArray, TimestampMillisecondArray,
     TimestampNanosecondArray, TimestampSecondArray,
 };
-use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, TimeUnit};
-use chrono::{LocalResult, NaiveDateTime, Offset as _, TimeZone as _};
+use chrono::{LocalResult, NaiveDateTime, Offset as _, TimeDelta, TimeZone as _};
 
 /// Nanoseconds in a day.
 const DAY: i128 = 86_400 * NANOS_PER_SECOND;
@@ -46,18 +47,25 @@ pub(crate) fn midnights(
     unit: TimeUnit,
     zone: Option<&Arc<str>>,
 ) -> Result<ArrayRef, ArrowError> {
-    let dates = arrow_cast::cast(array, &DataType::Date32)?;
-    let dates = dates.as_primitive::<Date32Type>();
+    // A `Date64` may hold more days than a `Date32`, so its days are read from it directly.
+    let days: Vec<Option<i64>> = match array.data_type() {
+        DataType::Date64 => array
+            .as_primitive::<Date64Type>()
+            .iter()
+            .map(|millis| millis.map(|millis| millis / 86_400_000))
+            .collect(),
+        _ => arrow_cast::cast(array, &DataType::Date32)?
+            .as_primitive::<Date32Type>()
+            .iter()
+            .map(|days| days.map(i64::from))
+            .collect(),
+    };
     let per_day = 86_400 * per_second(unit);
-    let local: Vec<Option<i64>> = dates
-        .iter()
+    let local: Vec<Option<i64>> = days
+        .into_iter()
         .map(|days| {
-            days.map(|days| {
-                i64::from(days)
-                    .checked_mul(per_day)
-                    .ok_or_else(|| overflow(days))
-            })
-            .transpose()
+            days.map(|days| days.checked_mul(per_day).ok_or_else(|| overflow(days)))
+                .transpose()
         })
         .collect::<Result<_, _>>()?;
     placed(local, unit, zone)
@@ -131,7 +139,13 @@ fn instant(value: i64, unit: TimeUnit, zone: &str, tz: Tz) -> Result<i64, ArrowE
         })?;
         let offset = match tz.offset_from_local_datetime(&local) {
             LocalResult::Single(offset) | LocalResult::Ambiguous(offset, _) => offset,
-            LocalResult::None => tz.offset_from_utc_datetime(&local),
+            // Clocks skipped `local`: the offset in force before they did, a day earlier, moves
+            // it forward by the gap.
+            LocalResult::None => tz.offset_from_utc_datetime(
+                &local
+                    .checked_sub_signed(TimeDelta::days(1))
+                    .expect("clocks skip only within the years a zone's offsets are known for"),
+            ),
         };
         i64::from(offset.fix().local_minus_utc())
     };
@@ -139,6 +153,41 @@ fn instant(value: i64, unit: TimeUnit, zone: &str, tz: Tz) -> Result<i64, ArrowE
         .checked_mul(per_second(unit))
         .and_then(|offset| value.checked_sub(offset))
         .ok_or_else(|| overflow(value))
+}
+
+/// `array`, times of day, in `unit`: each time exactly, refused where the type storing `unit`
+/// cannot hold it, as Arrow's unchecked multiplication would wrap it.
+pub(crate) fn times(array: &ArrayRef, unit: TimeUnit) -> Result<ArrayRef, ArrowError> {
+    let (DataType::Time32(from) | DataType::Time64(from)) = *array.data_type() else {
+        unreachable!("{} is not a time of day", array.data_type())
+    };
+    let per = nanos(1, unit);
+    let values = (0..array.len())
+        .map(|row| (!array.is_null(row)).then(|| nanos(raw(array.as_ref(), row), from) / per));
+    let narrow = |value: i128| i32::try_from(value).map_err(|_| overflow(value));
+    let wide = |value: i128| i64::try_from(value).map_err(|_| overflow(value));
+    Ok(match unit {
+        TimeUnit::Second => Arc::new(Time32SecondArray::from(
+            values
+                .map(|value| value.map(narrow).transpose())
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        TimeUnit::Millisecond => Arc::new(Time32MillisecondArray::from(
+            values
+                .map(|value| value.map(narrow).transpose())
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        TimeUnit::Microsecond => Arc::new(Time64MicrosecondArray::from(
+            values
+                .map(|value| value.map(wide).transpose())
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        TimeUnit::Nanosecond => Arc::new(Time64NanosecondArray::from(
+            values
+                .map(|value| value.map(wide).transpose())
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+    })
 }
 
 /// Seconds a zone written as `UTC` or `±HH:MM` is ahead of UTC; `None` for a named zone.
@@ -204,130 +253,44 @@ pub(crate) fn is_temporal(data_type: &DataType) -> bool {
     )
 }
 
-/// Each value of `array`, a boolean, number or temporal array, as text; nulls stay null.
-pub(crate) fn text(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
-    let renderer = Renderer::new(array.as_ref())?;
-    let nulls = array.logical_nulls();
-    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 24);
-    for row in 0..array.len() {
-        if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
-            builder.append_null();
-        } else {
-            builder.append_value(renderer.render(row));
+/// The value at `row` as its type stores it.
+fn raw(array: &dyn Array, row: usize) -> i64 {
+    match array.data_type() {
+        DataType::Date32 => i64::from(array.as_primitive::<Date32Type>().value(row)),
+        DataType::Date64 => array.as_primitive::<Date64Type>().value(row),
+        DataType::Time32(TimeUnit::Second) => {
+            i64::from(array.as_primitive::<Time32SecondType>().value(row))
         }
-    }
-    Ok(Arc::new(builder.finish()))
-}
-
-/// Renders the values of one temporal array.
-pub(crate) struct Renderer<'a> {
-    array: &'a dyn Array,
-    formatter: ArrayFormatter<'a>,
-    /// For a named zone's timestamps, whether the zone's offset at an instant is whole minutes,
-    /// which is all the text of an offset holds; other instants are rendered in UTC.
-    whole_minutes: Option<Box<dyn Fn(i64) -> bool + 'a>>,
-}
-
-impl<'a> Renderer<'a> {
-    /// A renderer of `array`'s values.
-    pub(crate) fn new(array: &'a dyn Array) -> Result<Self, ArrowError> {
-        let formatter = ArrayFormatter::try_new(array, &FormatOptions::default())?;
-        let whole_minutes = match array.data_type() {
-            DataType::Timestamp(unit, Some(zone)) if fixed_offset(zone).is_none() => {
-                let (unit, tz): (TimeUnit, Tz) = (*unit, zone.parse()?);
-                let whole = move |value: i64| {
-                    naive(value, unit).is_none_or(|utc| {
-                        tz.offset_from_utc_datetime(&utc).fix().local_minus_utc() % 60 == 0
-                    })
-                };
-                Some(Box::new(whole) as Box<dyn Fn(i64) -> bool + 'a>)
-            }
-            _ => None,
-        };
-        Ok(Self {
-            array,
-            formatter,
-            whole_minutes,
-        })
-    }
-
-    /// The text of the value at `row`, which is not null.
-    pub(crate) fn render(&self, row: usize) -> String {
-        if let DataType::Duration(unit) = self.array.data_type() {
-            return duration(nanos(self.raw(row), *unit));
+        DataType::Time32(_) => i64::from(array.as_primitive::<Time32MillisecondType>().value(row)),
+        DataType::Time64(TimeUnit::Microsecond) => {
+            array.as_primitive::<Time64MicrosecondType>().value(row)
         }
-        if self
-            .whole_minutes
-            .as_ref()
-            .is_some_and(|whole| !whole(self.raw(row)))
-        {
-            return self.beyond(row);
+        DataType::Time64(_) => array.as_primitive::<Time64NanosecondType>().value(row),
+        DataType::Timestamp(TimeUnit::Second, _) => {
+            array.as_primitive::<TimestampSecondType>().value(row)
         }
-        self.formatter
-            .value(row)
-            .try_to_string()
-            .unwrap_or_else(|_| self.beyond(row))
-    }
-
-    /// The text of a value Arrow cannot render: exact, and for instants in UTC.
-    fn beyond(&self, row: usize) -> String {
-        let value = self.raw(row);
-        match self.array.data_type() {
-            DataType::Date32 => date(i128::from(value)),
-            DataType::Date64 => date(i128::from(value).div_euclid(86_400_000)),
-            DataType::Time32(unit) | DataType::Time64(unit) => clock(nanos(value, *unit)),
-            DataType::Timestamp(unit, zone) => {
-                let instant = nanos(value, *unit);
-                let day = instant.div_euclid(DAY);
-                let suffix = if zone.is_some() { "Z" } else { "" };
-                format!("{}T{}{suffix}", date(day), clock(instant.rem_euclid(DAY)))
-            }
-            other => unreachable!("{other} is not temporal"),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            array.as_primitive::<TimestampMillisecondType>().value(row)
         }
-    }
-
-    /// The value at `row` as its type stores it.
-    fn raw(&self, row: usize) -> i64 {
-        let array = self.array;
-        match array.data_type() {
-            DataType::Date32 => i64::from(array.as_primitive::<Date32Type>().value(row)),
-            DataType::Date64 => array.as_primitive::<Date64Type>().value(row),
-            DataType::Time32(TimeUnit::Second) => {
-                i64::from(array.as_primitive::<Time32SecondType>().value(row))
-            }
-            DataType::Time32(_) => {
-                i64::from(array.as_primitive::<Time32MillisecondType>().value(row))
-            }
-            DataType::Time64(TimeUnit::Microsecond) => {
-                array.as_primitive::<Time64MicrosecondType>().value(row)
-            }
-            DataType::Time64(_) => array.as_primitive::<Time64NanosecondType>().value(row),
-            DataType::Timestamp(TimeUnit::Second, _) => {
-                array.as_primitive::<TimestampSecondType>().value(row)
-            }
-            DataType::Timestamp(TimeUnit::Millisecond, _) => {
-                array.as_primitive::<TimestampMillisecondType>().value(row)
-            }
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                array.as_primitive::<TimestampMicrosecondType>().value(row)
-            }
-            DataType::Timestamp(TimeUnit::Nanosecond, _) => {
-                array.as_primitive::<TimestampNanosecondType>().value(row)
-            }
-            DataType::Duration(TimeUnit::Second) => {
-                array.as_primitive::<DurationSecondType>().value(row)
-            }
-            DataType::Duration(TimeUnit::Millisecond) => {
-                array.as_primitive::<DurationMillisecondType>().value(row)
-            }
-            DataType::Duration(TimeUnit::Microsecond) => {
-                array.as_primitive::<DurationMicrosecondType>().value(row)
-            }
-            DataType::Duration(TimeUnit::Nanosecond) => {
-                array.as_primitive::<DurationNanosecondType>().value(row)
-            }
-            other => unreachable!("{other} is not temporal"),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            array.as_primitive::<TimestampMicrosecondType>().value(row)
         }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            array.as_primitive::<TimestampNanosecondType>().value(row)
+        }
+        DataType::Duration(TimeUnit::Second) => {
+            array.as_primitive::<DurationSecondType>().value(row)
+        }
+        DataType::Duration(TimeUnit::Millisecond) => {
+            array.as_primitive::<DurationMillisecondType>().value(row)
+        }
+        DataType::Duration(TimeUnit::Microsecond) => {
+            array.as_primitive::<DurationMicrosecondType>().value(row)
+        }
+        DataType::Duration(TimeUnit::Nanosecond) => {
+            array.as_primitive::<DurationNanosecondType>().value(row)
+        }
+        other => unreachable!("{other} is not temporal"),
     }
 }
 
@@ -340,62 +303,4 @@ fn nanos(value: i64, unit: TimeUnit) -> i128 {
         TimeUnit::Nanosecond => 1,
     };
     i128::from(value) * per
-}
-
-/// `nanos` as an ISO 8601 duration of seconds, as Arrow renders it: `PT1.5S`, `-PT0.5S`.
-fn duration(nanos: i128) -> String {
-    let sign = if nanos < 0 { "-" } else { "" };
-    let nanos = nanos.unsigned_abs();
-    let seconds = nanos / NANOS_PER_SECOND.unsigned_abs();
-    let fraction = nanos % NANOS_PER_SECOND.unsigned_abs();
-    if fraction == 0 {
-        format!("{sign}PT{seconds}S")
-    } else {
-        let digits = format!("{fraction:09}");
-        format!("{sign}PT{seconds}.{}S", digits.trim_end_matches('0'))
-    }
-}
-
-/// The date `days` since the epoch, `YYYY-MM-DD`, its year signed beyond `0000`–`9999`.
-fn date(days: i128) -> String {
-    // Howard Hinnant's civil_from_days.
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let of_era = shifted.rem_euclid(146_097);
-    let year_of_era = (of_era - of_era / 1_460 + of_era / 36_524 - of_era / 146_096) / 365;
-    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * of_year + 2) / 153;
-    let day = of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
-    let year = year_of_era + era * 400 + i128::from(month <= 2);
-    let mut text = String::new();
-    match year {
-        0..=9_999 => write!(text, "{year:04}"),
-        10_000.. => write!(text, "+{year}"),
-        _ => write!(text, "-{:04}", year.unsigned_abs()),
-    }
-    .expect("writing to a string cannot fail");
-    write!(text, "-{month:02}-{day:02}").expect("writing to a string cannot fail");
-    text
-}
-
-/// A time of day `nanos` after midnight, `HH:MM:SS` and a fraction where there is one, as
-/// `chrono` renders one: three, six or nine digits.
-fn clock(nanos: i128) -> String {
-    let sign = if nanos < 0 { "-" } else { "" };
-    let nanos = nanos.unsigned_abs();
-    let seconds = nanos / NANOS_PER_SECOND.unsigned_abs();
-    let fraction = nanos % NANOS_PER_SECOND.unsigned_abs();
-    let (hours, minutes, seconds) = (seconds / 3_600, seconds / 60 % 60, seconds % 60);
-    let fraction = match fraction {
-        0 => String::new(),
-        _ if fraction.is_multiple_of(1_000_000) => format!(".{:03}", fraction / 1_000_000),
-        _ if fraction.is_multiple_of(1_000) => format!(".{:06}", fraction / 1_000),
-        _ => format!(".{fraction:09}"),
-    };
-    format!("{sign}{hours:02}:{minutes:02}:{seconds:02}{fraction}")
 }

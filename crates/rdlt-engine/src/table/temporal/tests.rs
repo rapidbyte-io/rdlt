@@ -1,3 +1,4 @@
+use super::text::{clock, date, duration};
 use super::*;
 
 #[test]
@@ -154,11 +155,22 @@ fn clocks_render_fractions_in_three_six_or_nine_digits() {
 
 #[test]
 fn times_outside_a_day_render_as_signed_clocks() {
-    let times: ArrayRef = Arc::new(arrow_array::Time32MillisecondArray::from(vec![
-        -1_500, 90_000_000,
-    ]));
+    let times: ArrayRef = Arc::new(Time32MillisecondArray::from(vec![-1_500, 90_000_000]));
     let rendered = text(&times).unwrap();
     let rendered = rendered.as_string::<i32>();
     assert_eq!(rendered.value(0), "-00:00:01.500");
     assert_eq!(rendered.value(1), "25:00:00");
+}
+
+#[test]
+fn a_time_a_zone_east_of_utc_skips_moves_forward_by_the_gap() {
+    // Berlin skipped from 02:00 to 03:00 on 2024-03-31: 02:30 is 03:30 at +02:00, 01:30 UTC.
+    let naive: ArrayRef = Arc::new(TimestampSecondArray::from(vec![1_711_852_200]));
+    let berlin: Arc<str> = Arc::from("Europe/Berlin");
+    let placed = localized(&naive, TimeUnit::Second, &berlin).unwrap();
+    assert_eq!(timestamps(&placed), [Some(1_711_848_600)]);
+    // Tehran skipped midnight on 2020-03-21: it is 01:00 at +04:30, 20:30 UTC the day before.
+    let tehran: Arc<str> = Arc::from("Asia/Tehran");
+    let placed = midnights(&dates(vec![Some(18_342)]), TimeUnit::Second, Some(&tehran)).unwrap();
+    assert_eq!(timestamps(&placed), [Some(1_584_736_200)]);
 }

@@ -132,8 +132,8 @@ pub(super) fn canonical_into(value: &Scalar, from: &LogicalType, to: &LogicalTyp
 }
 
 /// Whether `to` holds `value`, of `from`: a time converted to a finer unit, or placed in a zone,
-/// may leave the `i64` that stores it, and a named zone's offsets are known only for the years
-/// `chrono` holds.
+/// may leave the integer that stores it (a `Date32`'s days, a `Time32`'s `i32`, an `i64`), and a
+/// named zone's offsets are known only for the years `chrono` holds.
 fn holds(value: &Scalar, from: &LogicalType, to: &LogicalType) -> bool {
     use LogicalType as T;
     let within = |nanos: i128, unit: TimeUnit| i64::try_from(nanos / self::nanos(unit)).is_ok();
@@ -144,6 +144,14 @@ fn holds(value: &Scalar, from: &LogicalType, to: &LogicalType) -> bool {
             })
     };
     match (value, from, to) {
+        (Scalar::Date(days), _, T::Date) => i32::try_from(*days).is_ok(),
+        (Scalar::Temporal(value), T::Time(from), T::Time(to)) => {
+            let value = i128::from(*value) * nanos(*from) / nanos(*to);
+            match to {
+                TimeUnit::Second | TimeUnit::Millisecond => i32::try_from(value).is_ok(),
+                _ => i64::try_from(value).is_ok(),
+            }
+        }
         (Scalar::Date(days), _, T::Timestamp(unit, zone)) => {
             placed(i128::from(*days) * DAY, *unit, zone)
         }
@@ -174,8 +182,9 @@ fn holds(value: &Scalar, from: &LogicalType, to: &LogicalType) -> bool {
 }
 
 /// Nanoseconds `zone` is ahead of UTC at the wall-clock time `local`: a fixed offset, or a named
-/// zone's where its clocks show `local` (the earlier where they show it twice, the offset in force
-/// where they skip it); `None` beyond the years a named zone's offsets are known for.
+/// zone's where its clocks show `local` (the earlier where they show it twice, and where they
+/// skip it the offset before they did, so the time moves forward by the gap); `None` beyond the
+/// years a named zone's offsets are known for.
 fn offset(zone: &str, local: i128) -> Option<i128> {
     use chrono::{LocalResult, Offset as _, TimeZone as _};
     const SECOND: i128 = 1_000_000_000;
@@ -198,10 +207,31 @@ fn offset(zone: &str, local: i128) -> Option<i128> {
     let nanos = u32::try_from(local.rem_euclid(SECOND)).expect("a fraction");
     let local = chrono::DateTime::from_timestamp(seconds, nanos)?.naive_utc();
     let offset = match tz.offset_from_local_datetime(&local) {
-        LocalResult::Single(offset) | LocalResult::Ambiguous(offset, _) => offset,
-        LocalResult::None => tz.offset_from_utc_datetime(&local),
+        LocalResult::Single(offset) | LocalResult::Ambiguous(offset, _) => {
+            offset.fix().local_minus_utc()
+        }
+        LocalResult::None => {
+            // The shift lies within a day of `local` read as UTC: find its second by bisection.
+            let at = |seconds: i64| {
+                let utc = chrono::DateTime::from_timestamp(seconds, 0).expect("in range");
+                tz.offset_from_utc_datetime(&utc.naive_utc())
+                    .fix()
+                    .local_minus_utc()
+            };
+            let (mut before, mut after) = (seconds - 86_400, seconds + 86_400);
+            let shifted = at(after);
+            while after - before > 1 {
+                let middle = before + (after - before) / 2;
+                if at(middle) == shifted {
+                    after = middle;
+                } else {
+                    before = middle;
+                }
+            }
+            at(before)
+        }
     };
-    Some(i128::from(offset.fix().local_minus_utc()) * SECOND)
+    Some(i128::from(offset) * SECOND)
 }
 
 /// What a JSON value means.

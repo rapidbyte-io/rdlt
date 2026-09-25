@@ -23,7 +23,7 @@ pub(crate) enum Scalar {
     Utf8(String),
     Binary(Vec<u8>),
     /// Days since the epoch.
-    Date(i32),
+    Date(i64),
     /// A time of day, a timestamp or a duration, in its type's unit.
     Temporal(i64),
     Uuid([u8; 16]),

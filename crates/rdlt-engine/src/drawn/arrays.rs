@@ -5,8 +5,8 @@ use std::sync::Arc;
 use arrow_array::builder::{BinaryBuilder, StringBuilder};
 use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Date32Array, Decimal128Array, Decimal256Array, DictionaryArray,
-    DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray,
+    Array, ArrayRef, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
+    DictionaryArray, DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray,
     DurationSecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array, Int16Array,
     Int32Array, Int64Array, ListArray, MapArray, RunArray, StructArray, Time32MillisecondArray,
     Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
@@ -176,12 +176,19 @@ fn temporal(shape: &Shape, values: &[&Scalar]) -> ArrayRef {
     };
     let narrow = |value: i64| i32::try_from(value).expect("a drawn value in range");
     match &shape.logical {
-        T::Date => Arc::new(Date32Array::from_iter(values.iter().map(
-            |value| match value {
+        T::Date => {
+            let days = values.iter().map(|value| match value {
                 Scalar::Date(days) => Some(*days),
                 _ => None,
-            },
-        ))),
+            });
+            if shape.encoding == Encoding::Date64 {
+                Arc::new(Date64Array::from_iter(
+                    days.map(|days| days.map(|days| days * 86_400_000)),
+                ))
+            } else {
+                Arc::new(Date32Array::from_iter(days.map(|days| days.map(narrow))))
+            }
+        }
         T::Time(TimeUnit::Second) => Arc::new(Time32SecondArray::from_iter(
             temporals().map(|value| value.map(narrow)),
         )),

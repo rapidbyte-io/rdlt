@@ -275,11 +275,15 @@ fn date(text: &str) -> i64 {
 
 /// Nanoseconds since midnight of `text`, `HH:MM:SS` with an optional fraction.
 fn time(text: &str) -> i128 {
+    let (sign, text) = match text.strip_prefix('-') {
+        Some(text) => (-1, text),
+        None => (1, text),
+    };
     let mut parts = text.splitn(3, ':');
     let hours: i128 = parts.next().expect("hours").parse().expect("hours");
     let minutes: i128 = parts.next().expect("minutes").parse().expect("minutes");
     let seconds = seconds(parts.next().expect("seconds"));
-    (hours * 3600 + minutes * 60) * 1_000_000_000 + seconds
+    sign * ((hours * 3600 + minutes * 60) * 1_000_000_000 + seconds)
 }
 
 /// Nanoseconds in `text`, seconds with an optional fraction.
