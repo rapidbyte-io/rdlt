@@ -332,6 +332,8 @@ struct VaultConfig {
     /// Replaces child rows only in the child tables a commit stages rows for, not in every one
     /// it lists.
     ignore_child_tables: bool,
+    /// Swaps in only the first generation a commit finishes.
+    finish_one_generation: bool,
 }
 
 #[derive(Default)]
@@ -557,7 +559,12 @@ impl VaultSession {
             }
         }
         self.merge_all(store, merging, &committed, meta);
-        for (path, generation) in &meta.finish_generations {
+        let finishing = if self.config.finish_one_generation {
+            1
+        } else {
+            usize::MAX
+        };
+        for (path, generation) in meta.finish_generations.iter().take(finishing) {
             let Some(table) = store.tables.get(path).cloned() else {
                 continue;
             };
@@ -1035,9 +1042,13 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
         ("refuse_widening", &["D-SCHEMA"][..]),
         ("refuse_dictionaries", &["D-ENCODING"][..]),
         ("decode_only_strings", &["D-ENCODING"][..]),
-        ("one_table_per_segment", &["D-CHILDREN", "D-TABLES"][..]),
+        (
+            "one_table_per_segment",
+            &["D-REPLACE", "D-CHILDREN", "D-TABLES"][..],
+        ),
         ("children_merge_by_key", &["D-CHILDREN"][..]),
         ("ignore_child_tables", &["D-CHILDREN"][..]),
+        ("finish_one_generation", &["D-REPLACE"][..]),
     ];
     for (flag, clauses) in cases {
         let report = certify_vault(flag, Some(flag)).await;

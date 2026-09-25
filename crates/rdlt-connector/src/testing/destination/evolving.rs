@@ -31,31 +31,53 @@ impl Bench<'_> {
         }
     }
 
-    /// Stages a generation over two commits: rows stay hidden until the commit that finishes the
-    /// generation replaces the table's rows with them.
+    /// Stages a generation of the clause's table and one of a second table over two commits: rows
+    /// stay hidden until the commit that finishes both generations replaces both tables' rows
+    /// with them.
     pub(super) async fn generations_swap_in_atomically(&self) -> Result<(), Violation> {
         let base = self.table();
         let generation = TableRef {
             generation: Some(GENERATION),
             ..base.clone()
         };
+        let other = self.other_table("generation");
+        let other_generation = TableRef {
+            generation: Some(GENERATION),
+            ..other.clone()
+        };
         let mut opened = self.staged(self.destination, 1, &[1]).await?;
         let mut writer = bounded_call("writer", opened.session.writer(&generation)).await?;
         write(&mut writer, 2, rows()).await?;
         write(&mut writer, 3, rows()).await?;
+        self.writer_of(&mut opened.session, &other).await?;
+        let mut other_writer = self
+            .writer_of(&mut opened.session, &other_generation)
+            .await?;
+        write(&mut other_writer, 2, rows()).await?;
         commit(
             &mut opened.session,
             &meta(self.load_id(1), opened.epoch, &[1, 2], Vec::new()),
         )
         .await?;
         expect_rows(self.published_rows().await?, 3)?;
+        expect_rows(self.rows_of(&other).await?, 0)?;
         let finish = CommitMeta {
             commit_seq: CommitSeq::FIRST.next(),
-            finish_generations: vec![(base.path.clone(), GENERATION)],
+            finish_generations: vec![
+                (base.path.clone(), GENERATION),
+                (other.path.clone(), GENERATION),
+            ],
             ..meta(self.load_id(1), opened.epoch, &[3], Vec::new())
         };
         commit(&mut opened.session, &finish).await?;
-        expect_rows(self.published_rows().await?, 6)
+        expect_rows(self.published_rows().await?, 6)?;
+        expect_rows(self.rows_of(&other).await?, 3)
+    }
+
+    /// How many rows `table` holds.
+    async fn rows_of(&self, table: &TableRef) -> Result<usize, Violation> {
+        let batches = bounded_call("probe", self.probe.published(table)).await?;
+        Ok(batches.iter().map(RecordBatch::num_rows).sum())
     }
 
     /// Adds a column and widens one, each applied twice, with rows committed before and after.

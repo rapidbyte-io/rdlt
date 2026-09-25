@@ -504,6 +504,37 @@ async fn partitions_making_one_plan_at_once_share_it() {
 }
 
 #[tokio::test]
+async fn partitions_adding_one_child_table_at_once_add_it_once() {
+    let changes = Changes::default();
+    let session = SharedSession::new(Box::new(Recorder(Arc::clone(&changes))));
+    let path = TablePath::new(["orders", "items"]).unwrap();
+    let mut names = rdlt_connector::NameMap::default();
+    names
+        .insert(ColumnKey::Source(ColumnPath::from("sku")), "sku")
+        .unwrap();
+    let recorded = rdlt_connector::TableState {
+        schema: Some((
+            SchemaVersion(1),
+            TableSchema::new(vec![Field::new("sku", LogicalType::Utf8, true)]).unwrap(),
+        )),
+        physical: Some("orders__items".into()),
+        names,
+    };
+    let state = rdlt_connector::PipelineState {
+        tables: BTreeMap::from([(path, recorded)]),
+        ..rdlt_connector::PipelineState::default()
+    };
+    let tables = Tables::new(session).committed(&state);
+    tables.add(resolver(), &table(Some(GenerationId(3))), Model::default());
+    let items = vec![Arc::from("items")];
+    // Creating the child's generation yields, so the second call waits on the first.
+    let (one, two) = tokio::join!(tables.child(0, &items), tables.child(0, &items));
+    assert_eq!(one.unwrap(), two.unwrap());
+    assert_eq!(tables.slots.read().len(), 2, "one child table");
+    assert_eq!(changes.lock().len(), 1, "its generation was created once");
+}
+
+#[tokio::test]
 async fn a_merge_streams_table_created_before_it_merged_gains_only_its_sequence_column() {
     let changes = Changes::default();
     let session = SharedSession::new(Box::new(Recorder(Arc::clone(&changes))));
