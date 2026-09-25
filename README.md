@@ -16,7 +16,8 @@ parallel on the compute pool, and every batch is lowered there through a plan ma
 schema. Streams can `normalize` nested data into child tables whose rows carry their lineage; a merge
 replaces each root's child rows in the same commit, and a dropped row takes its children with it.
 Differential tests draw every logical type in every Arrow encoding a source may send and check that
-each value lowers, and normalizes, exactly.
+each value lowers, and normalizes, exactly; the simulation drives the same types and encodings
+through whole runs and reads every stored cell back by its type.
 
 ## Development
 
