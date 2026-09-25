@@ -102,3 +102,24 @@ the flat corpora, the decoder given the schema:
 | `flat_wide` (200 columns) | 527 MiB/s | 279 MiB/s |
 
 The shredder is faster on both, and needs no schema, so the engine has no fast path (ADR 0008).
+
+## Normalizing
+
+A normalized stream's batches are split into child tables after shredding, and each row gets its
+lineage (spec §8.7). `cargo bench -p rdlt-engine --features bench --bench shred -- normalize`
+measures it on one core, on the `with_arrays` corpus: `nested`'s rows with up to three orders of a
+few tags each, so rows reach two child tables. `shred_only` shreds it; `keyed` shreds and
+normalizes rows identified by their `id`; `keyless` shreds and normalizes rows identified by their
+whole content, whose canonical encoding is the extra cost.
+
+| Group | Time | Throughput | Against `shred_only` |
+|---|---|---|---|
+| `shred_only` | 55.8–56.0 ms | 571–573 MiB/s | 1 |
+| `keyed` | 72.3–75.1 ms | 426–443 MiB/s | 1.29–1.35× |
+| `keyless` | 112.0–113.2 ms | 283–286 MiB/s | 2.0× |
+
+Intel Core Ultra X7 358H, 4 performance cores (`taskset -c 0-3`), on mains power, 2026-09-25, two
+runs back to back. A first draft of the encoding, which built each row's encoding a column at a
+time with a buffer per field, ran `keyless` at 5.8× on battery; it now encodes a row at a time
+into one buffer, with lengths in LEB128. Formatting floats as their shortest round-trip text, which
+the spec asks of every number, is most of what remains.
