@@ -32,6 +32,7 @@ base64 = "0.22" # cursor bytes inside JSON state values
 bytes = { version = "1.12.1", features = [
   "serde",
 ] } # zero-copy byte buffers for pushes, cursors and state
+chrono = { version = "0.4.45", default-features = false } # calendar dates and zone offsets for exact temporal conversions, the version arrow uses
 proc-macro2 = "1.0.107" # token streams for rdlt-connector-macros
 quote = "1.0.47" # code generation for rdlt-connector-macros
 schemars = "1.2.2" # JSON Schema for connector configuration

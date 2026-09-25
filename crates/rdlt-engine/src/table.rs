@@ -8,6 +8,7 @@ mod model;
 mod registry;
 mod resolve;
 mod session;
+mod temporal;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
