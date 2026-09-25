@@ -23,6 +23,7 @@ type Log = Arc<Mutex<Vec<String>>>;
 
 struct Recording {
     table: usize,
+    version: u32,
     log: Log,
     fail_write: bool,
     fail_flush: bool,
@@ -34,7 +35,13 @@ impl DestinationWriter for Recording {
             if self.fail_write {
                 return Err(ConnectorError::data("write refused"));
             }
-            let entry = format!("t{} s{} r{}", self.table, segment.0, batch.num_rows());
+            let entry = format!(
+                "t{} v{} s{} r{}",
+                self.table,
+                self.version,
+                segment.0,
+                batch.num_rows()
+            );
             self.log.lock().push(entry);
             Ok(())
         })
@@ -45,7 +52,8 @@ impl DestinationWriter for Recording {
             if self.fail_flush {
                 return Err(ConnectorError::data("flush refused"));
             }
-            self.log.lock().push(format!("t{} flush", self.table));
+            let entry = format!("t{} v{} flush", self.table, self.version);
+            self.log.lock().push(entry);
             Ok(WriteStats::default())
         })
     }
@@ -73,11 +81,13 @@ impl DestinationSession for Session {
         }
         let writer: Box<dyn DestinationWriter> = Box::new(Recording {
             table: table.name[1..].parse().unwrap(),
+            version: table.version.0,
             log: Arc::clone(&self.log),
             fail_write: self.fail_write,
             fail_flush: self.fail_flush,
         });
-        self.log.lock().push(format!("open {}", table.name));
+        let entry = format!("open {} v{}", table.name, table.version.0);
+        self.log.lock().push(entry);
         Box::pin(async move { Ok(writer) })
     }
 
@@ -136,8 +146,27 @@ async fn write(
     segment: u64,
     count: i64,
 ) -> Result<(), crate::Error> {
+    write_at(
+        lanes,
+        budget,
+        (lane, table, SchemaVersion(0)),
+        segment,
+        count,
+    )
+    .await
+}
+
+/// Writes `count` rows of segment `segment` to `table` on `lane`, lowered for `version`.
+async fn write_at(
+    lanes: &Lanes,
+    budget: &MemoryBudget,
+    (lane, table, version): (usize, usize, SchemaVersion),
+    segment: u64,
+    count: i64,
+) -> Result<(), crate::Error> {
     let write = Write {
         table,
+        version,
         segment: SegmentId(segment),
         batch: rows(count),
         reservation: Box::new(budget.acquire(10).await),
@@ -182,7 +211,12 @@ async fn a_lane_stages_writes_in_order_and_flushes_every_table_before_answering(
     assert_eq!(
         *log.lock(),
         [
-            "open t1", "t1 s1 r3", "open t0", "t0 s2 r4", "t0 flush", "t1 flush"
+            "open t1 v0",
+            "t1 v0 s1 r3",
+            "open t0 v0",
+            "t0 v0 s2 r4",
+            "t0 v0 flush",
+            "t1 v0 flush"
         ],
         "a writer opens on its table's first write"
     );
@@ -255,4 +289,32 @@ async fn a_lane_that_cannot_open_a_writer_ends_with_a_destination_error() {
         error.to_string().contains("creating a writer for table t0"),
         "{error}"
     );
+}
+
+#[tokio::test]
+async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_for() {
+    let log = Log::default();
+    let budget = MemoryBudget::new(1_000);
+    let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    let at = |version| (0, 0, SchemaVersion(version));
+    write_at(&lanes, &budget, at(1), 1, 2).await.unwrap();
+    write_at(&lanes, &budget, at(2), 1, 3).await.unwrap();
+    // A partition still lowering for the older version writes after the table changed.
+    write_at(&lanes, &budget, at(1), 2, 4).await.unwrap();
+    lanes.flush().await.unwrap();
+    assert_eq!(
+        *log.lock(),
+        [
+            "open t0 v1",
+            "t0 v1 s1 r2",
+            "open t0 v2",
+            "t0 v2 s1 r3",
+            "t0 v1 s2 r4",
+            "t0 v1 flush",
+            "t0 v2 flush"
+        ]
+    );
+    drop(lanes);
+    lane.await.unwrap().unwrap();
 }

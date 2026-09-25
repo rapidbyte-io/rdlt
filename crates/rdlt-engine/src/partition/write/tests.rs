@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use rdlt_connector::{Partition, Permit, StreamName};
+use rdlt_connector::{Partition, Permit, SchemaVersion, StreamName};
 
 use super::normalized::{charge_parts, share_growth};
 use super::{LOWERING_WINDOW, charge_growth, hold, shred_failed, windows};
@@ -79,6 +79,7 @@ fn lowered_batches_are_charged_in_full_before_any_is_queued() {
     let held = hold(&budget, &shredded, Vec::new());
     let lowered = [ids(100), ids(10)].map(|batch| Prepared {
         batch,
+        version: SchemaVersion(1),
         discarded_rows: 0,
         discarded_values: 0,
     });
@@ -120,6 +121,7 @@ fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
         .map(|(table, batch)| {
             let prepared = Prepared {
                 batch,
+                version: SchemaVersion(1),
                 discarded_rows: 0,
                 discarded_values: 0,
             };

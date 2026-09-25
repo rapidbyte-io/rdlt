@@ -221,6 +221,7 @@ async fn queue(
             lane,
             Write {
                 table,
+                version: prepared.version,
                 segment: open.id,
                 batch: prepared.batch,
                 reservation,
