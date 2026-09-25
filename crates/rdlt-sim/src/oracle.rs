@@ -1,6 +1,8 @@
 //! The exactly-once oracle: a seeded workload runs through faults, retries, crashes, stops and
 //! concurrent runs, and the destination must end up holding exactly what a reference model says.
 
+mod children;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -229,6 +231,14 @@ fn check_contents(world: &World, phase: usize, seed: Seed) {
         let order = |row: &Map<String, Value>| Value::Object(row.clone()).to_string();
         expected.sort_by_key(order);
         actual.sort_by_key(order);
+        if stream.normalized() {
+            children::check(
+                world,
+                stream,
+                &expected_rows(world, stream, phase, seed),
+                seed,
+            );
+        }
         if actual != expected {
             let first = actual
                 .iter()
@@ -255,8 +265,20 @@ fn expected(
     phase: usize,
     seed: Seed,
 ) -> Vec<Map<String, Value>> {
+    if stream.write == WriteMode::Merge {
+        return merged(stream, world.workload.salt, phase);
+    }
+    expected_rows(world, stream, phase, seed)
+        .iter()
+        .filter_map(|row| source_row(stream, row))
+        .collect()
+}
+
+/// The rows the reference model says a stream that does not merge loaded by `phase`, each as
+/// often as its table holds it.
+fn expected_rows(world: &World, stream: &SimStream, phase: usize, seed: Seed) -> Vec<Row> {
     let salt = world.workload.salt;
-    let rows: Vec<Row> = match (stream.read, stream.write) {
+    match (stream.read, stream.write) {
         (ReadMode::Full, WriteMode::Append) => (0..=phase)
             .flat_map(|done| {
                 let copies = completions(world, &stream.name, done);
@@ -268,12 +290,8 @@ fn expected(
                 std::iter::repeat_n(stream.all_rows(salt, done), copies).flatten()
             })
             .collect(),
-        (_, WriteMode::Merge) => return merged(stream, salt, phase),
         _ => stream.all_rows(salt, phase),
-    };
-    rows.iter()
-        .filter_map(|row| source_row(stream, row))
-        .collect()
+    }
 }
 
 /// The rows a merge stream's table holds after `phase`: for each key, the last row delivered.
@@ -314,6 +332,17 @@ fn source_row(stream: &SimStream, row: &Row) -> Option<Map<String, Value>> {
             SchemaPolicy::DiscardRow => return None,
             SchemaPolicy::DiscardValue => continue,
             _ => {}
+        }
+        if stream.normalized() {
+            // Objects flatten into a column per field; arrays go to child tables.
+            match extra {
+                Extra::Object(n) => {
+                    source.insert(format!("{name}.n"), json!(n));
+                    continue;
+                }
+                Extra::List(_) => continue,
+                _ => {}
+            }
         }
         let value = match extra {
             Extra::Int(value) => json!(value),

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use rdlt_connector::ReadMode;
 use rdlt_engine::{Nested, SchemaPolicy, WriteMode};
 
-use super::{PHASES, Workload};
+use super::{PHASES, Shape, Workload};
 use crate::rng::SplitMix64;
 
 #[test]
@@ -147,5 +147,38 @@ fn merge_rows_share_keys_within_their_partition() {
     assert!(
         rows.iter()
             .all(|row| row.key.is_some_and(|key| key < 1_000_000))
+    );
+}
+
+#[test]
+fn some_streams_normalize_arrays_but_none_that_merge_or_discard() {
+    let streams: Vec<_> = (0..300)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed)).streams)
+        .collect();
+    for json in [false, true] {
+        assert!(
+            streams.iter().any(|stream| {
+                stream.normalized()
+                    && stream.json == json
+                    && stream.drift.iter().any(|drift| {
+                        drift
+                            .shapes
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .any(|shape| *shape == Shape::List)
+                    })
+            }),
+            "some normalized stream pushing JSON={json} has arrays"
+        );
+    }
+    assert!(
+        streams
+            .iter()
+            .filter(|stream| stream.normalized())
+            .all(|stream| {
+                stream.write != WriteMode::Merge && stream.policy == SchemaPolicy::Evolve
+            }),
+        "normalized streams neither merge nor discard"
     );
 }
