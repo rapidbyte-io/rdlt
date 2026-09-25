@@ -318,3 +318,22 @@ async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_f
     drop(lanes);
     lane.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn a_flush_reaches_only_the_writers_written_since_the_last() {
+    let log = Log::default();
+    let budget = MemoryBudget::new(1_000);
+    let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    let at = |version| (0, 0, SchemaVersion(version));
+    write_at(&lanes, &budget, at(1), 1, 2).await.unwrap();
+    write_at(&lanes, &budget, at(2), 1, 3).await.unwrap();
+    lanes.flush().await.unwrap();
+    log.lock().clear();
+    // The table has moved on to version 2: its older writer has nothing left to flush.
+    write_at(&lanes, &budget, at(2), 2, 4).await.unwrap();
+    lanes.flush().await.unwrap();
+    assert_eq!(*log.lock(), ["t0 v2 s2 r4", "t0 v2 flush"]);
+    drop(lanes);
+    lane.await.unwrap().unwrap();
+}
