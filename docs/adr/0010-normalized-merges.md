@@ -33,15 +33,20 @@ minors.
   position, keeps matching its root when earlier rows are dropped. Only a stream's own table
   compacts a batch to the last row of each key; a child table's key is shared by its root's rows.
 - **Dropped rows take their descendants.** A unit's parts are lowered parents first. A part first
-  loses the rows whose parent was dropped, then meets its table's policy; the ids of every row
-  dropped either way are kept for the parts below. Every dropped row counts in the stream's
+  loses the rows whose parent was dropped, then meets its table's policy; every row dropped
+  either way is kept, by its part and position, for the parts below. Rows are never known by
+  their ids here, since rows sharing a key share an id. Every dropped row counts in the stream's
   `discarded_rows`, whichever table it belongs to.
 - **A new array is a change its parents carry.** Under `discard_row`, a new array drops the rows
-  holding it, with their descendants; the array's own rows are never written.
+  holding it, with their descendants; the array's own rows are never written. A new array that
+  is discarded, under either policy, takes the arrays within it along, uncounted, as part of the
+  value already discarded.
 - **New arrays meet the policy once the stream's table exists.** ADR 0009 governed a new array only
   once state recorded the stream's table. A new column is governed once the table has been created,
   whether by a declared schema, an earlier unit, or an earlier load; a new array now is too,
-  judged as its unit starts, so the unit that creates the table takes every array it holds.
+  judged as its unit starts, so the unit that creates the table takes every array it holds. An
+  array the stream's declared schema holds, at any depth, is never new: the declared schema
+  creates only the stream's own table, and each array's table is created by its first rows.
 - **Simulation.** Simulated streams normalize under every write mode and policy. The simulated
   destination merges child tables by their root, and the oracle checks each child table against
   the rows the model keeps: each key's last kept row for merges.

@@ -53,7 +53,10 @@ impl Planning<'_> {
         let index = tables.add_normalized(resolver, &table, model, shape.clone());
         if let Some(declared) = spec.schema() {
             let incoming = match &shape {
-                Some(shape) => normalize::root_columns(declared, shape)?,
+                Some(shape) => {
+                    tables.declare_children(index, normalize::declared_arrays(declared, shape));
+                    normalize::root_columns(declared, shape)?
+                }
                 None => Incoming::from(declared.clone()),
             };
             tables.fit(index, &incoming).await?;
