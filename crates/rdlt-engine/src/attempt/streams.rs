@@ -62,7 +62,7 @@ impl Planning<'_> {
             tables.fit(index, &incoming).await?;
         }
         tables.create_generation(index).await?;
-        tables.add_lineage(index).await?;
+        tables.add_meta_columns(index).await?;
         for child in tables.recorded_children(index) {
             tables.child(index, &child).await?;
         }

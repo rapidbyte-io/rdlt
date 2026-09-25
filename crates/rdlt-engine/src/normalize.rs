@@ -30,7 +30,7 @@ use rdlt_connector::{ColumnPath, Field, LogicalType, TableSchema};
 use crate::error::Error;
 use crate::table::Incoming;
 
-pub(crate) use cascade::Dropped;
+pub(crate) use cascade::{Dropped, Pruned};
 
 /// How a stream's batches normalize.
 #[derive(Clone, Debug, PartialEq, Eq)]

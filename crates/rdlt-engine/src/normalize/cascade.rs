@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt32Type;
-use arrow_array::{ArrayRef, BooleanArray};
+use arrow_array::{Array, ArrayRef, BooleanArray};
 use arrow_schema::ArrowError;
 
 use super::{Lineage, Parent, Part};
@@ -32,6 +32,11 @@ pub(crate) struct Pruned {
 }
 
 impl Dropped {
+    /// Whether no row was dropped.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
     /// Records the parent rows of `part`'s rows as dropped.
     pub(crate) fn parents_of(&mut self, part: &Part) {
         if let Some(parent) = &part.lineage.parent {
@@ -101,7 +106,7 @@ impl Dropped {
 
 impl Pruned {
     /// `part` with every row.
-    fn whole(part: Part) -> Self {
+    pub(crate) fn whole(part: Part) -> Self {
         Self {
             part,
             count: 0,
@@ -115,7 +120,8 @@ fn position(row: usize) -> u32 {
     u32::try_from(row).unwrap_or(u32::MAX)
 }
 
-/// `part` with only the rows `kept` keeps.
+/// `part` with only the rows `kept` keeps, and without the columns only dropped rows held values
+/// in, so dropped rows change no schema.
 fn retain(part: Part, kept: &BooleanArray) -> Result<Part, ArrowError> {
     let filter = |array: &ArrayRef| arrow_select::filter::filter(array.as_ref(), kept);
     let parent = part
@@ -131,10 +137,18 @@ fn retain(part: Part, kept: &BooleanArray) -> Result<Part, ArrowError> {
             })
         })
         .transpose()?;
+    let batch = arrow_select::filter::filter_record_batch(&part.batch, kept)?;
+    let held = |array: &ArrayRef| array.logical_null_count() < array.len();
+    let columns: Vec<usize> = (0..batch.num_columns())
+        .filter(|column| held(batch.column(*column)) || !held(part.batch.column(*column)))
+        .collect();
     Ok(Part {
         path: part.path,
-        columns: part.columns,
-        batch: arrow_select::filter::filter_record_batch(&part.batch, kept)?,
+        columns: columns
+            .iter()
+            .map(|column| part.columns[*column].clone())
+            .collect(),
+        batch: batch.project(&columns)?,
         lineage: Lineage {
             id: filter(&part.lineage.id)?,
             root_row: filter(&part.lineage.root_row)?,

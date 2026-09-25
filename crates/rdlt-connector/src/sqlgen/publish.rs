@@ -210,12 +210,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
         segments: &SegmentSet,
     ) -> Result<Statement> {
         let (owner, root) = child_key(key)?;
+        // Root columns are qualified, so one the root staging lacks is an error rather than the
+        // child table's column of that name.
+        let staging = self.quote(&staging_table(&root.table));
         let mut sql = self.sql();
         sql.push(&format!(
-            "DELETE FROM {target} WHERE {} IN (SELECT {} FROM {} WHERE ",
+            "DELETE FROM {target} WHERE {} IN (SELECT {staging}.{} FROM {staging} WHERE ",
             self.quote(owner),
             self.quote(&root.id),
-            self.quote(&staging_table(&root.table))
         ));
         self.rows_of(
             &mut sql,
@@ -240,13 +242,13 @@ impl<D: SqlDialect> SqlPlanner<D> {
         segments: &SegmentSet,
     ) -> Result<()> {
         let (owner, root) = child_key(key)?;
-        let id = self.quote(&root.id);
+        let staging = self.quote(&staging_table(&root.table));
+        let id = format!("{staging}.{}", self.quote(&root.id));
         sql.push(&format!(
-            " AND ({}, {}) IN (SELECT {id}, MAX({}) FROM {} WHERE ",
+            " AND ({}, {}) IN (SELECT {id}, MAX({staging}.{}) FROM {staging} WHERE ",
             self.quote(owner),
             self.quote(&key.seq),
             self.quote(&root.seq),
-            self.quote(&staging_table(&root.table))
         ));
         self.rows_of(sql, &root_staged(root, staged), pipeline, epoch, segments);
         sql.push(&format!(" GROUP BY {id})"));

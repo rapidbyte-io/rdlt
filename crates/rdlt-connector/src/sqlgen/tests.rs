@@ -978,6 +978,58 @@ fn a_child_table_keeps_only_the_children_of_its_staged_roots_winning_rows() {
 }
 
 #[test]
+fn a_child_tables_root_columns_are_read_from_the_root_staging_only() {
+    let (connection, planner) = database();
+    let (roots, mut items) = roots_and_items();
+    // The root id column names a column only the child table has.
+    if let Some(key) = items.merge.as_mut().and_then(|key| key.root.as_mut()) {
+        key.id = "root".into();
+    }
+    let root_fields = [
+        ("id", LogicalType::Int64, false),
+        ("seq", LogicalType::Binary, false),
+    ];
+    let item_fields = [
+        ("root", LogicalType::Int64, false),
+        ("name", LogicalType::Utf8, false),
+        ("seq", LogicalType::Binary, false),
+    ];
+    apply(&connection, &planner, &create(&roots, &root_fields)).unwrap();
+    apply(&connection, &planner, &create(&items, &item_fields)).unwrap();
+    let item = |id: i64, name: &str, byte: u8| vec![Value::Integer(id), text(name), seq(byte)];
+    stage_values(
+        &connection,
+        &planner,
+        &items,
+        &["root", "name", "seq"],
+        vec![item(1, "a", 1)],
+    );
+    let columns = columns(&connection, &planner, "items");
+    let merge = staged("items", None, items.merge.clone());
+    let plan = planner
+        .publish(
+            &merge,
+            &columns,
+            &pipeline("mine"),
+            Epoch(1),
+            &segments(&[1]),
+        )
+        .unwrap();
+    let failed = plan.iter().any(|statement| {
+        connection
+            .execute(
+                &statement.sql,
+                rusqlite::params_from_iter(statement.params.iter().map(value)),
+            )
+            .is_err()
+    });
+    assert!(
+        failed,
+        "a root column the root staging lacks is an error, not the child's column"
+    );
+}
+
+#[test]
 fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
     let (connection, planner) = database();
     let keys = TableRef {

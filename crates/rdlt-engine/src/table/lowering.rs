@@ -47,8 +47,6 @@ pub(crate) struct Prepared {
     pub(crate) discarded_rows: u64,
     /// Values nulled because they carried a discarded change.
     pub(crate) discarded_values: u64,
-    /// Which of the batch's rows the schema policy kept, where it dropped some.
-    pub(crate) kept: Option<BooleanArray>,
 }
 
 /// Where one of the view's columns takes its values from.
@@ -123,6 +121,17 @@ impl LoweringPlan {
         &self.view
     }
 
+    /// Whether the schema policy drops some of the rows the plan lowers: those holding a value of
+    /// a change it discards.
+    pub(crate) fn drops_rows(&self) -> bool {
+        self.routes.contains(&Route::DiscardRows)
+    }
+
+    /// Which rows of `batch` the schema policy keeps, where it drops some.
+    pub(crate) fn kept(&self, batch: &RecordBatch) -> Option<BooleanArray> {
+        kept_by(batch, &self.routes)
+    }
+
     /// The incoming columns the plan lowers.
     pub(crate) fn incoming(&self) -> &Incoming {
         &self.incoming
@@ -150,7 +159,6 @@ impl LoweringPlan {
                 batch: RecordBatch::new_empty(Arc::clone(&view.schema)),
                 discarded_rows,
                 discarded_values: 0,
-                kept,
             });
         }
         let discarded_values = self
@@ -195,7 +203,6 @@ impl LoweringPlan {
             batch: prepared,
             discarded_rows,
             discarded_values,
-            kept,
         })
     }
 
@@ -321,6 +328,17 @@ fn discard_rows(
     batch: &RecordBatch,
     routes: &[Route],
 ) -> Result<(RecordBatch, Option<BooleanArray>, u64), arrow_schema::ArrowError> {
+    let Some(keep) = kept_by(batch, routes) else {
+        return Ok((batch.clone(), None, 0));
+    };
+    let kept = arrow_select::filter::filter_record_batch(batch, &keep)?;
+    let dropped = (batch.num_rows() - kept.num_rows()) as u64;
+    Ok((kept, Some(keep), dropped))
+}
+
+/// Which rows of `batch` hold no value in a column routed to [`Route::DiscardRows`], where some
+/// do.
+fn kept_by(batch: &RecordBatch, routes: &[Route]) -> Option<BooleanArray> {
     let discarding: Vec<&ArrayRef> = routes
         .iter()
         .enumerate()
@@ -337,19 +355,18 @@ fn discard_rows(
             .is_some_and(|nulls| nulls.null_count() == nulls.len())
     };
     if nulls.iter().all(empty) {
-        return Ok((batch.clone(), None, 0));
+        return None;
     }
-    let keep: BooleanArray = (0..batch.num_rows())
-        .map(|row| {
-            let absent = |nulls: &Option<arrow_buffer::NullBuffer>| {
-                nulls.as_ref().is_some_and(|nulls| nulls.is_null(row))
-            };
-            Some(nulls.iter().all(absent))
-        })
-        .collect();
-    let kept = arrow_select::filter::filter_record_batch(batch, &keep)?;
-    let dropped = (batch.num_rows() - kept.num_rows()) as u64;
-    Ok((kept, Some(keep), dropped))
+    Some(
+        (0..batch.num_rows())
+            .map(|row| {
+                let absent = |nulls: &Option<arrow_buffer::NullBuffer>| {
+                    nulls.as_ref().is_some_and(|nulls| nulls.is_null(row))
+                };
+                Some(nulls.iter().all(absent))
+            })
+            .collect(),
+    )
 }
 
 /// The lineage columns of `view`'s rows and their types: `lineage`, the rows `kept` keeps where

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ConnectorError, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange, TablePath,
-    TableRef, TableState,
+    ConnectorError, Field, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange,
+    TablePath, TableRef, TableState,
 };
 
 use super::model::Model;
@@ -288,22 +288,26 @@ impl Tables {
         Error::connector(Side::Destination, context, error).with_stream(stream)
     }
 
-    /// Adds the lineage column of a stream's table created before the stream normalized; a table
-    /// that already has it changes nothing, as a generation created with it does.
-    pub(crate) async fn add_lineage(&self, table: usize) -> Result<(), Error> {
+    /// Adds the metadata columns a stream's table created before the stream merged or normalized
+    /// lacks: its sequence and lineage columns, nullable, since the rows it holds have none.
+    ///
+    /// A table that already has them changes nothing, as a generation created with them does.
+    pub(crate) async fn add_meta_columns(&self, table: usize) -> Result<(), Error> {
         let view = self.view(table);
-        let Some(id) = &view.meta.id else {
-            return Ok(());
-        };
         if !view.model.created() {
             return Ok(());
         }
+        let added = [&view.meta.seq, &view.meta.id];
         let changes: Vec<TableChange> = view.physical[view.model.columns.len()..]
             .iter()
-            .filter(|field| field.name() == id.as_ref())
+            .filter(|field| {
+                added
+                    .iter()
+                    .any(|name| name.as_deref() == Some(field.name()))
+            })
             .map(|field| TableChange::AddColumn {
                 table: view.table.clone(),
-                field: field.clone(),
+                field: Field::new(field.name(), field.logical_type().clone(), true),
             })
             .collect();
         self.apply(table, &changes).await
