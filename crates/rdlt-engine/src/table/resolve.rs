@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rdlt_connector::{
-    Capabilities, ColumnKey, ColumnPath, Field, LogicalType, StreamName, TableSchema, TypeKind,
+    Capabilities, ColumnKey, ColumnPath, Field, LogicalType, RootKey, StreamName, TableSchema,
+    TypeKind,
 };
 
 use super::lower::{LineageColumns, MetaNames, lower};
@@ -82,6 +83,8 @@ pub(crate) struct Resolver {
     pub(crate) capabilities: Arc<Capabilities>,
     pub(crate) naming: Naming,
     pub(crate) meta: MetaNames,
+    /// For a child table of a merge stream, the stream's table, whose merges replace its rows.
+    pub(crate) root: Option<RootKey>,
 }
 
 /// A batch's columns as they arrive: their types, and each column's path within its table.
@@ -115,15 +118,19 @@ struct Arriving<'a> {
 
 impl Resolver {
     /// The resolver of a child table of the same stream: with the stream's settings but not
-    /// those of its own table's columns, and a child's lineage columns.
-    pub(crate) fn child(&self) -> Result<Self, Error> {
+    /// those of its own table's columns or its merge key, and a child's lineage columns; a merge
+    /// stream's child table follows `root`, its root table, with a sequence column.
+    pub(crate) fn child(&self, root: Option<RootKey>) -> Result<Self, Error> {
         let settings = Settings {
             stream: self.settings.stream.without_columns(),
+            key: Vec::new(),
             ..self.settings.clone()
         };
+        let merge = root.is_some();
         Ok(Self {
             settings,
-            meta: MetaNames::assign(&self.naming, false, LineageColumns::Child)?,
+            meta: MetaNames::assign(&self.naming, merge, LineageColumns::Child)?,
+            root,
             ..self.clone()
         })
     }

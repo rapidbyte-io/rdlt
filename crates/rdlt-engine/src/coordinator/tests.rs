@@ -180,6 +180,7 @@ impl Setup {
                     id: None,
                     parent: None,
                 },
+                root: None,
             };
             let index = tables.add(resolver, &table(None), Model::default());
             if let (0, Some(schema)) = (index, &self.schema) {

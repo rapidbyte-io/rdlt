@@ -24,5 +24,6 @@ pub(crate) fn resolver(stream: &str) -> Resolver {
         meta: MetaNames::assign(&naming, false, LineageColumns::None).expect("metadata names"),
         naming,
         capabilities: Arc::new(capabilities),
+        root: None,
     }
 }

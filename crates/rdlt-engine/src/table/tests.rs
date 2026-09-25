@@ -55,6 +55,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
             id: None,
             parent: None,
         },
+        root: None,
     }
 }
 

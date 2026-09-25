@@ -1,6 +1,7 @@
 //! The tables of one attempt: their current views, the schema changes partitions make, and what
 //! the next commit records about them.
 
+mod children;
 #[cfg(test)]
 mod tests;
 
@@ -10,8 +11,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ColumnPath, ConnectorError, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange,
-    TablePath, TableRef, TableState,
+    ConnectorError, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange, TablePath,
+    TableRef, TableState,
 };
 
 use super::model::Model;
@@ -21,7 +22,8 @@ use super::{LoweringPlan, TableView};
 use crate::error::{Error, Side};
 use crate::naming::Naming;
 use crate::normalize::Shape;
-use crate::policy::SchemaPolicy;
+
+pub(crate) use children::Admission;
 
 /// How many times a table's change is named around columns that attempts which never committed
 /// left behind before the conflict fails the run.
@@ -44,17 +46,6 @@ struct Slot {
     plans: Mutex<Vec<Arc<LoweringPlan>>>,
     /// How the stream normalizes, for a normalized stream's own table.
     shape: Option<Arc<Shape>>,
-}
-
-/// What becomes of rows for a child table that may be new.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Admission {
-    /// The table is added, or exists, and takes them.
-    Add,
-    /// The stream's schema is frozen: the rows fail the stream.
-    Refuse,
-    /// The stream discards what would change its schema: the rows are dropped and counted.
-    Discard,
 }
 
 /// Child tables' indexes by their stream's table and their path below it.
@@ -175,94 +166,6 @@ impl Tables {
     /// How the stream whose table is `table` normalizes, if it does.
     pub(crate) fn shape(&self, table: usize) -> Option<Arc<Shape>> {
         self.slot(table).shape.clone()
-    }
-
-    /// The child table at `path` below the table `root`, added at its committed schema, with its
-    /// replace generation, the first time it is asked for.
-    pub(crate) async fn child(&self, root: usize, path: &[Arc<str>]) -> Result<usize, Error> {
-        let key = (root, path.to_vec());
-        if let Some(index) = self.children.lock().get(&key) {
-            return Ok(*index);
-        }
-        let _adding = self.adding.lock().await;
-        if let Some(index) = self.children.lock().get(&key) {
-            return Ok(*index);
-        }
-        let parent = self.slot(root);
-        let base = self.view(root).table.clone();
-        let table_path = TablePath::new(base.path.segments().chain(path.iter().map(AsRef::as_ref)))
-            .map_err(|error| {
-                Error::internal(format!("a child table has no valid path: {error}"))
-            })?;
-        let resolver = parent.resolver.child()?;
-        let model = Model::from_state(self.committed.get(&table_path))?;
-        let table = TableRef {
-            name: self.name(&table_path, &resolver.naming)?,
-            path: table_path,
-            version: SchemaVersion(model.version),
-            generation: base.generation,
-            merge: None,
-        };
-        let index = self.add(resolver, &table, model);
-        self.create_generation(index).await?;
-        self.children.lock().insert(key, index);
-        Ok(index)
-    }
-
-    /// What becomes of rows for the child table at `path` below `root`, which may be new.
-    ///
-    /// A child table that exists, or whose stream's table state does not record yet, is added as
-    /// its rows arrive. A new one below a recorded table is a change to the stream's schema, which
-    /// its policy for the array's column decides.
-    pub(crate) fn admit_child(&self, root: usize, path: &[Arc<str>]) -> Admission {
-        if self.children.lock().contains_key(&(root, path.to_vec())) {
-            return Admission::Add;
-        }
-        let base = self.view(root).table.path.clone();
-        let child = base.segments().chain(path.iter().map(AsRef::as_ref));
-        let recorded = TablePath::new(child).is_ok_and(|child| self.committed.contains_key(&child));
-        if recorded || !self.committed.contains_key(&base) {
-            return Admission::Add;
-        }
-        let Ok(column) = ColumnPath::new(path.to_vec()) else {
-            return Admission::Add;
-        };
-        match self.slot(root).resolver.settings.column(&column).policy {
-            SchemaPolicy::Freeze => Admission::Refuse,
-            SchemaPolicy::DiscardValue => Admission::Discard,
-            SchemaPolicy::Evolve | SchemaPolicy::DiscardRow => Admission::Add,
-        }
-    }
-
-    /// The paths below `root` of the child tables state records for it.
-    pub(crate) fn recorded_children(&self, root: usize) -> Vec<Vec<Arc<str>>> {
-        let base = self.view(root).table.path.clone();
-        let depth = base.segments().count();
-        self.committed
-            .keys()
-            .filter(|path| {
-                path.segments().count() > depth && path.segments().take(depth).eq(base.segments())
-            })
-            .map(|path| path.segments().skip(depth).map(Arc::from).collect())
-            .collect()
-    }
-
-    /// The paths of `root` and of every child table added below it.
-    pub(crate) fn family(&self, root: usize) -> Vec<TablePath> {
-        let mut paths = vec![self.view(root).table.path.clone()];
-        let children: Vec<usize> = self
-            .children
-            .lock()
-            .iter()
-            .filter(|((parent, _), _)| *parent == root)
-            .map(|(_, index)| *index)
-            .collect();
-        paths.extend(
-            children
-                .into_iter()
-                .map(|index| self.view(index).table.path.clone()),
-        );
-        paths
     }
 
     /// The plan lowering batches of `incoming` into `table`: the plan made for the table's current
