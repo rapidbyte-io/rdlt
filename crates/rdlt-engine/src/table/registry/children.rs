@@ -67,14 +67,27 @@ impl Tables {
         Ok(index)
     }
 
+    /// Records `paths`, the arrays below the table `root` that its stream's declared schema
+    /// holds: their rows change no schema.
+    pub(crate) fn declare_children(&self, root: usize, paths: Vec<Vec<Arc<str>>>) {
+        self.declared
+            .lock()
+            .extend(paths.into_iter().map(|path| (root, path)));
+    }
+
     /// What becomes of rows for the child table at `path` below `root`, which may be new.
     ///
-    /// A child table that exists, or that state records, takes its rows, as does a new one while
-    /// the stream's table is being created: before a unit that `existed` says found it created,
-    /// as a table being created takes every column. After that, a new child table is a change to
-    /// the stream's schema, which its policy for the array's column decides.
+    /// A child table that exists, that state records or whose array the stream declares takes
+    /// its rows, as does a new one while the stream's table is being created: before a unit that
+    /// `existed` says found it created, as a table being created takes every column. After that,
+    /// a new child table is a change to the stream's schema, which its policy for the array's
+    /// column decides.
     pub(crate) fn admit_child(&self, root: usize, path: &[Arc<str>], existed: bool) -> Admission {
-        if self.children.lock().contains_key(&(root, path.to_vec())) || !existed {
+        let key = (root, path.to_vec());
+        if !existed
+            || self.children.lock().contains_key(&key)
+            || self.declared.lock().contains(&key)
+        {
             return Admission::Add;
         }
         let base = self.view(root).table.path.clone();

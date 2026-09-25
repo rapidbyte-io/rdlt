@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -238,7 +239,7 @@ struct Discarded {
 
 /// The table and plan of each of `parts`, a unit's, found in order, and what they discarded: a
 /// part below the stream's table goes to its child table, added the first time unless the
-/// stream's policy refuses or discards a new one.
+/// stream's policy refuses or discards a new one, whose descendants then go with it.
 async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -247,7 +248,15 @@ async fn plan_parts(
     let existed = context.tables.view(job.table).model.created();
     let mut planned = Vec::with_capacity(parts.len());
     let mut discarded = Discarded::default();
+    // Parts not written, whose own descendants go with them, uncounted: they are part of the
+    // array value already discarded.
+    let mut skipped: BTreeSet<Vec<Arc<str>>> = BTreeSet::new();
     for part in parts {
+        let parent = part.lineage.parent.as_ref();
+        if parent.is_some_and(|parent| skipped.contains(&parent.path)) {
+            skipped.insert(part.path);
+            continue;
+        }
         let table = if part.path.is_empty() {
             job.table
         } else {
@@ -255,10 +264,12 @@ async fn plan_parts(
                 Admission::Add => context.tables.child(job.table, &part.path).await?,
                 Admission::Discard => {
                     discarded.values += part.batch.num_rows() as u64;
+                    skipped.insert(part.path);
                     continue;
                 }
                 Admission::DiscardParents => {
                     discarded.rows.parents_of(&part);
+                    skipped.insert(part.path);
                     continue;
                 }
                 Admission::Refuse => return Err(frozen(job, &part.path)),

@@ -593,3 +593,74 @@ async fn a_policy_on_a_streams_column_stays_off_its_child_tables() {
         "{items:?}"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn arrays_a_source_declares_are_no_schema_change() {
+    let fields = |fields: Vec<RdltField>| LogicalType::Struct(Fields::new(fields).unwrap());
+    let list = |item: LogicalType| LogicalType::List(Box::new(RdltField::new("item", item, true)));
+    let item = fields(vec![
+        RdltField::new("sku", LogicalType::Utf8, true),
+        RdltField::new("tags", list(LogicalType::Utf8), true),
+    ]);
+    let declared = TableSchema::new(vec![
+        RdltField::new("id", LogicalType::Int64, false),
+        RdltField::new("items", list(item), true),
+    ])
+    .unwrap();
+    let push = r#"{"id":1,"items":[{"sku":"a","tags":["t"]}]}"#;
+    for policy in [
+        SchemaPolicy::Freeze,
+        SchemaPolicy::DiscardRow,
+        SchemaPolicy::DiscardValue,
+    ] {
+        let store = format!("declared_arrays_{policy:?}").to_lowercase();
+        let plan = stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(policy),
+        );
+        let source = BatchStream::json("events", &[push]).declared(declared.clone());
+        let outcome = load(&store, vec![source], vec![plan]).await;
+        succeeded(&outcome);
+        let report = &outcome.report.streams["events"];
+        assert_eq!(
+            (report.discarded_rows, report.discarded_values),
+            (0, 0),
+            "{policy:?}"
+        );
+        for table in ["events", "events__items", "events__items__tags"] {
+            assert_eq!(
+                published_json(&store, table).len(),
+                1,
+                "{policy:?}: {table}"
+            );
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_arrays_within_a_discarded_array_go_with_it() {
+    for policy in [SchemaPolicy::DiscardRow, SchemaPolicy::DiscardValue] {
+        let store = format!("within_discarded_{policy:?}").to_lowercase();
+        let plan = || normalized("events").column("items", SchemaSettings::new().policy(policy));
+        let first = BatchStream::json("events", &[r#"{"id":1}"#]);
+        succeeded(&load(&store, vec![first], vec![plan()]).await);
+        let second = r#"{"id":2,"items":[{"sku":"a","tags":["t"]}]}"#;
+        let outcome = load(
+            &store,
+            vec![BatchStream::json("events", &[second])],
+            vec![plan()],
+        )
+        .await;
+        succeeded(&outcome);
+        for table in ["events__items", "events__items__tags"] {
+            assert!(schema(&store, table).is_none(), "{policy:?}: {table}");
+        }
+        let kept = if policy == SchemaPolicy::DiscardRow {
+            1
+        } else {
+            2
+        };
+        assert_eq!(published_json(&store, "events").len(), kept, "{policy:?}");
+    }
+}

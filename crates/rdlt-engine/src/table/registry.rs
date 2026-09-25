@@ -59,6 +59,9 @@ pub(crate) struct Tables {
     slots: RwLock<Vec<Arc<Slot>>>,
     /// Child tables by their stream's table and their path below it.
     children: Mutex<Children>,
+    /// The arrays below each normalized stream's table that its declared schema holds, by that
+    /// table and their path below it.
+    declared: Mutex<BTreeSet<(usize, Vec<Arc<str>>)>>,
     /// Held while a child table is added, so each is added once.
     adding: tokio::sync::Mutex<()>,
     /// The tables state records, whose names and schemas tables keep.
@@ -81,6 +84,7 @@ impl Tables {
             session,
             slots: RwLock::new(Vec::new()),
             children: Mutex::new(BTreeMap::new()),
+            declared: Mutex::new(BTreeSet::new()),
             adding: tokio::sync::Mutex::new(()),
             committed: BTreeMap::new(),
             taken: Mutex::new(BTreeSet::new()),

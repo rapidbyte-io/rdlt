@@ -245,6 +245,47 @@ pub(crate) fn root_columns(schema: &TableSchema, shape: &Shape) -> Result<Incomi
     Ok(Incoming { schema, paths })
 }
 
+/// The paths below the stream's table of the arrays `schema`'s rows hold, which normalizing makes
+/// child tables of: each array's, then those of the arrays its items hold.
+///
+/// Arrays deeper than the shape's depth stay whole and never have rows of their own, so listing
+/// them too changes nothing.
+pub(crate) fn declared_arrays(schema: &TableSchema, shape: &Shape) -> Vec<Vec<Arc<str>>> {
+    let mut arrays = Vec::new();
+    for field in schema.fields().iter() {
+        if !shape.whole.contains(field.name()) {
+            arrays_within(
+                vec![Arc::from(field.name())],
+                field.logical_type(),
+                &mut arrays,
+            );
+        }
+    }
+    arrays
+}
+
+/// Collects the paths of the arrays a value of `logical` at `path` holds, itself included.
+fn arrays_within(path: Vec<Arc<str>>, logical: &LogicalType, arrays: &mut Vec<Vec<Arc<str>>>) {
+    match logical {
+        LogicalType::Struct(fields) => {
+            for inner in fields.iter() {
+                let mut inner_path = path.clone();
+                inner_path.push(Arc::from(inner.name()));
+                arrays_within(inner_path, inner.logical_type(), arrays);
+            }
+        }
+        LogicalType::List(item) => {
+            arrays.push(path.clone());
+            let mut items = path;
+            if !matches!(item.logical_type(), LogicalType::Struct(_)) {
+                items.push(Arc::from(VALUE));
+            }
+            arrays_within(items, item.logical_type(), arrays);
+        }
+        _ => {}
+    }
+}
+
 /// Collects the columns `field`, at `path` with values at `depth`, flattens into.
 fn flatten(
     path: Vec<Arc<str>>,
