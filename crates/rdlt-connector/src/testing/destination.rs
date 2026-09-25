@@ -1,5 +1,6 @@
 //! Destination clauses.
 
+mod children;
 mod clauses;
 mod encoding;
 mod evolving;
@@ -123,6 +124,7 @@ impl Bench<'_> {
             "D-REPLACE" => self.generations_swap_in_atomically().await,
             "D-SCHEMA" => self.schema_changes_apply().await,
             "D-MERGE" => self.merges_keep_the_newest_row().await,
+            "D-CHILDREN" => self.children_follow_their_roots().await,
             "D-ENCODING" => self.dictionaries_publish_their_values().await,
             "D-TABLES" => self.segments_span_tables().await,
             _ => self.stale_sessions_are_fenced().await,
@@ -418,6 +420,7 @@ fn meta(load: LoadId, epoch: Epoch, segments: &[u64], state_delta: Vec<StateChan
             .collect::<SegmentSet>(),
         state_delta,
         finish_generations: Vec::new(),
+        child_tables: Vec::new(),
     }
 }
 

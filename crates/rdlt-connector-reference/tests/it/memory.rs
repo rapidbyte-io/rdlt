@@ -94,6 +94,7 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
         segments: SegmentSet::from_iter([SegmentId(1)]),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
+        child_tables: Vec::new(),
     };
     assert_eq!(first.session.commit(&meta).await.unwrap().rows, 2);
     assert_eq!(
@@ -142,6 +143,7 @@ fn commit_meta(session: &OpenedSession, seq: CommitSeq, segments: &[u64]) -> Com
         segments: segments.iter().copied().map(SegmentId).collect(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
+        child_tables: Vec::new(),
     }
 }
 
@@ -179,6 +181,7 @@ async fn a_replace_generation_stays_hidden_until_its_finishing_commit_swaps_it_i
     stage(&mut opened, &generation, 3, vec![4]).await;
     let finish = CommitMeta {
         finish_generations: vec![(path, GenerationId(9))],
+        child_tables: Vec::new(),
         ..commit_meta(&opened, CommitSeq::FIRST.next().next(), &[3])
     };
     opened.session.commit(&finish).await.unwrap();
@@ -335,6 +338,7 @@ fn merge_table() -> TableRef {
         merge: Some(MergeKey {
             columns: vec!["id".into()],
             seq: "_rdlt_seq".into(),
+            root: None,
         }),
         ..table_ref("m")
     }

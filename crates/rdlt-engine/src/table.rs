@@ -76,6 +76,7 @@ impl TableView {
         let merge = resolver.meta.seq.as_ref().map(|seq| MergeKey {
             columns: key_names.iter().map(|name| (*name).into()).collect(),
             seq: seq.clone(),
+            root: None,
         });
         let key = key_names
             .iter()

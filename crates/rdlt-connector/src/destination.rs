@@ -7,6 +7,8 @@ mod tests;
 use std::future::Future;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use arrow_array::RecordBatch;
 use serde::de::DeserializeOwned;
 
@@ -60,13 +62,38 @@ pub struct TableRef {
 /// How a merge table matches rows.
 ///
 /// A published row replaces the published row with the same key. Among the rows one commit
-/// publishes for one key, the row with the greatest `seq` wins.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// publishes for one key, the row with the greatest `seq` wins. A child table of a merge table
+/// follows its root instead (see [`RootKey`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MergeKey {
     /// The key columns' identifiers.
     pub columns: Vec<Arc<str>>,
     /// The identifier of the column that orders rows within a commit: 16 bytes of `Binary`,
     /// compared bytewise.
+    pub seq: Arc<str>,
+    /// For a child table of a merge table, the root table whose merges replace its rows.
+    pub root: Option<RootKey>,
+}
+
+/// How a child table of a normalized merge stream follows its root table (spec §8.7): a merge
+/// replaces all child rows of each root it publishes.
+///
+/// The child table's key ([`MergeKey::columns`]) is its rows' root id, and its `seq` column holds
+/// the sequence of the root row each child row came from. A commit that publishes rows of the
+/// root table removes every published child row whose root id is among those rows' `id`s, then
+/// publishes the staged child rows whose root id and sequence are a published root row's `id` and
+/// `seq`: the children of each root's winning row. A root whose winning row has no children is
+/// left with none, and so is a child table the commit stages nothing for: the commit lists every
+/// child table in [`CommitMeta::child_tables`].
+///
+/// [`CommitMeta::child_tables`]: crate::CommitMeta::child_tables
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RootKey {
+    /// The root table's identifier.
+    pub table: Arc<str>,
+    /// The root table's column holding each row's id.
+    pub id: Arc<str>,
+    /// The root table's sequence column.
     pub seq: Arc<str>,
 }
 

@@ -7,7 +7,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, UInt32Array, new_null_array};
 use arrow_row::{RowConverter, SortField};
 use arrow_schema::{ArrowError, DataType, SchemaRef};
-use rdlt_connector::MergeKey;
+use rdlt_connector::{MergeKey, RootKey};
 
 /// `batch` under `schema`: columns found by name and cast to the schema's types, missing columns
 /// null.
@@ -76,6 +76,60 @@ pub(crate) fn merge(
         .into_iter()
         .filter(|batch| batch.num_rows() > 0)
         .collect())
+}
+
+/// The published rows of a child table once the roots `roots` publish replace their children:
+/// published rows of those roots go, and of `incoming`, the rows of each root's winning row, by
+/// root id and sequence, are added.
+pub(crate) fn merge_children(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    incoming: &[RecordBatch],
+    key: &MergeKey,
+    root: &RootKey,
+    roots: &[RecordBatch],
+) -> Result<Vec<RecordBatch>, ArrowError> {
+    let mut winners: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    for batch in roots {
+        let (ids, seqs) = (binary(batch, &root.id)?, binary(batch, &root.seq)?);
+        let (ids, seqs) = (ids.as_binary::<i32>(), seqs.as_binary::<i32>());
+        for row in 0..batch.num_rows() {
+            let (id, seq) = (ids.value(row), seqs.value(row));
+            if winners.get(id).is_none_or(|best| best.as_slice() < seq) {
+                winners.insert(id.to_vec(), seq.to_vec());
+            }
+        }
+    }
+    let column = key
+        .columns
+        .first()
+        .ok_or_else(|| ArrowError::SchemaError("a child table's key names its root id".into()))?;
+    let published = concat(published, schema)?;
+    let owners = binary(&published, column)?;
+    let owners = owners.as_binary::<i32>();
+    let kept: BooleanArray = (0..published.num_rows())
+        .map(|row| Some(!winners.contains_key(owners.value(row))))
+        .collect();
+    let published = arrow_select::filter::filter_record_batch(&published, &kept)?;
+    let incoming = concat(incoming, schema)?;
+    let (owners, seqs) = (binary(&incoming, column)?, binary(&incoming, &key.seq)?);
+    let (owners, seqs) = (owners.as_binary::<i32>(), seqs.as_binary::<i32>());
+    let winning: BooleanArray = (0..incoming.num_rows())
+        .map(|row| Some(winners.get(owners.value(row)).map(Vec::as_slice) == Some(seqs.value(row))))
+        .collect();
+    let incoming = arrow_select::filter::filter_record_batch(&incoming, &winning)?;
+    Ok([published, incoming]
+        .into_iter()
+        .filter(|batch| batch.num_rows() > 0)
+        .collect())
+}
+
+/// `batch`'s column `name` as `Binary`.
+fn binary(batch: &RecordBatch, name: &str) -> Result<ArrayRef, ArrowError> {
+    let column = batch
+        .column_by_name(name)
+        .ok_or_else(|| ArrowError::SchemaError(format!("no column {name}")))?;
+    arrow_cast::cast(column, &DataType::Binary)
 }
 
 fn converter(schema: &SchemaRef, key: &MergeKey) -> Result<RowConverter, ArrowError> {

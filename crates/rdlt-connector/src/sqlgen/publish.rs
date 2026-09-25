@@ -5,7 +5,7 @@ use super::catalog::{GENERATIONS, SEGMENTS};
 use super::tables::{STAGING_COLUMNS, staging_table};
 use super::{Column, Sql, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
 use crate::commit::SegmentSet;
-use crate::destination::{MergeKey, TableRef};
+use crate::destination::{MergeKey, RootKey, TableRef};
 use crate::error::{ConnectorError, Result};
 use crate::id::{Epoch, GenerationId, PipelineId, SegmentId};
 
@@ -65,10 +65,6 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// The statement recording that `rows` rows of `bytes` bytes were staged for `table` in
     /// `segment`, with how the writer's table merges.
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "arrays of strings always serialize to JSON"
-    )]
     pub fn record_segment(
         &self,
         table: &TableRef,
@@ -87,10 +83,10 @@ impl<D: SqlDialect> SqlPlanner<D> {
             integer(segment.0),
             SqlValue::Text(table.name.to_string()),
             generation,
-            table.merge.as_ref().map_or(SqlValue::Null, |key| {
-                let columns: Vec<&str> = key.columns.iter().map(AsRef::as_ref).collect();
-                SqlValue::Text(serde_json::to_string(&columns).expect("strings serialize"))
-            }),
+            table
+                .merge
+                .as_ref()
+                .map_or(SqlValue::Null, |key| SqlValue::Text(encode_merge_key(key))),
             table
                 .merge
                 .as_ref()
@@ -130,7 +126,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
     ///
     /// A merge keeps one row per key: a staged row replaces the published rows with its key, and
     /// among staged rows of one key the greatest sequence wins. It needs no key index, so a table
-    /// that merged before, or never did, merges alike.
+    /// that merged before, or never did, merges alike. A child table of a merge table replaces
+    /// the children of the roots its root's staged rows publish, reading them from the root's
+    /// staging, so it publishes before its root.
     pub fn publish(
         &self,
         staged: &Staged,
@@ -164,6 +162,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 ));
                 self.rows_of(&mut insert, staged, pipeline, epoch, segments);
             }
+            Some(key) if key.root.is_some() => {
+                plan.push(self.replace_children(&target, staged, key, pipeline, epoch, segments)?);
+                insert.push(&format!(
+                    "INSERT INTO {target} ({names}) SELECT {names} FROM {staging} WHERE "
+                ));
+                self.rows_of(&mut insert, staged, pipeline, epoch, segments);
+                self.of_winning_roots(&mut insert, staged, key, pipeline, epoch, segments)?;
+            }
             Some(key) => {
                 let keys: Vec<String> = key.columns.iter().map(|c| self.quote(c)).collect();
                 let keys = keys.join(", ");
@@ -190,6 +196,61 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.rows_of(&mut delete, staged, pipeline, epoch, segments);
         plan.push(delete.finish());
         Ok(plan)
+    }
+
+    /// The statement removing the rows of the child table `target` whose roots the root table's
+    /// rows staged in `segments` publish.
+    fn replace_children(
+        &self,
+        target: &str,
+        staged: &Staged,
+        key: &MergeKey,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segments: &SegmentSet,
+    ) -> Result<Statement> {
+        let (owner, root) = child_key(key)?;
+        let mut sql = self.sql();
+        sql.push(&format!(
+            "DELETE FROM {target} WHERE {} IN (SELECT {} FROM {} WHERE ",
+            self.quote(owner),
+            self.quote(&root.id),
+            self.quote(&staging_table(&root.table))
+        ));
+        self.rows_of(
+            &mut sql,
+            &root_staged(root, staged),
+            pipeline,
+            epoch,
+            segments,
+        );
+        sql.push(")");
+        Ok(sql.finish())
+    }
+
+    /// Narrows `sql`'s staged child rows to those of each root's winning row: whose root id and
+    /// sequence are a staged root row's id and greatest sequence.
+    fn of_winning_roots(
+        &self,
+        sql: &mut Sql<'_, D>,
+        staged: &Staged,
+        key: &MergeKey,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segments: &SegmentSet,
+    ) -> Result<()> {
+        let (owner, root) = child_key(key)?;
+        let id = self.quote(&root.id);
+        sql.push(&format!(
+            " AND ({}, {}) IN (SELECT {id}, MAX({}) FROM {} WHERE ",
+            self.quote(owner),
+            self.quote(&key.seq),
+            self.quote(&root.seq),
+            self.quote(&staging_table(&root.table))
+        ));
+        self.rows_of(sql, &root_staged(root, staged), pipeline, epoch, segments);
+        sql.push(&format!(" GROUP BY {id})"));
+        Ok(())
     }
 
     /// The statement forgetting what `pipeline` staged at `epoch` in `segments`, once published.
@@ -303,16 +364,83 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 }
 
-/// The merge key a [`SqlPlanner::staged`] row records: its key columns, a JSON array, and its
-/// sequence column.
+/// How a staged segment records a merge key: its key columns as a JSON array, or, for a child
+/// table, an object of its key columns and its root.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum RecordedKey {
+    Columns(Vec<String>),
+    Child {
+        columns: Vec<String>,
+        root: RecordedRoot,
+    },
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RecordedRoot {
+    table: String,
+    id: String,
+    seq: String,
+}
+
+/// `key`'s columns and root as a staged segment records them.
+fn encode_merge_key(key: &MergeKey) -> String {
+    let columns = key.columns.iter().map(ToString::to_string).collect();
+    let recorded = match &key.root {
+        None => RecordedKey::Columns(columns),
+        Some(root) => RecordedKey::Child {
+            columns,
+            root: RecordedRoot {
+                table: root.table.to_string(),
+                id: root.id.to_string(),
+                seq: root.seq.to_string(),
+            },
+        },
+    };
+    serde_json::to_string(&recorded).expect("merge keys serialize")
+}
+
+/// The merge key a [`SqlPlanner::staged`] row records: its key columns, a JSON array or an object
+/// of the columns and the root of a child table, and its sequence column.
 pub fn merge_key(columns: &str, seq: &str) -> Result<MergeKey> {
-    let columns: Vec<String> = serde_json::from_str(columns).map_err(|error| {
-        ConnectorError::internal(format!("a staged merge key is not a JSON array: {error}"))
+    let recorded: RecordedKey = serde_json::from_str(columns).map_err(|error| {
+        ConnectorError::internal(format!("a staged merge key is not recorded JSON: {error}"))
     })?;
+    let (columns, root) = match recorded {
+        RecordedKey::Columns(columns) => (columns, None),
+        RecordedKey::Child { columns, root } => {
+            let root = RootKey {
+                table: root.table.into(),
+                id: root.id.into(),
+                seq: root.seq.into(),
+            };
+            (columns, Some(root))
+        }
+    };
     Ok(MergeKey {
         columns: columns.into_iter().map(Into::into).collect(),
         seq: seq.into(),
+        root,
     })
+}
+
+/// A child table's root id column and its root.
+fn child_key(key: &MergeKey) -> Result<(&str, &RootKey)> {
+    match (key.columns.first(), &key.root) {
+        (Some(owner), Some(root)) => Ok((owner, root)),
+        _ => Err(ConnectorError::internal(
+            "a child table's key names its root id and its root",
+        )),
+    }
+}
+
+/// The root table's rows, staged beside a child table's `staged` rows.
+fn root_staged(root: &RootKey, staged: &Staged) -> Staged {
+    Staged {
+        name: root.table.to_string(),
+        generation: staged.generation,
+        merge: None,
+    }
 }
 
 /// The columns of the segments catalog that say who staged a segment.

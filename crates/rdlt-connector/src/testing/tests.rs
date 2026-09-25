@@ -19,7 +19,7 @@ use crate::capabilities::{Capabilities, SchemaChanges};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::commit::{CommitMeta, Receipt};
 use crate::destination::{
-    DestinationConnector, MergeKey, OpenContext, Opened, Session, TableChange, TableRef,
+    DestinationConnector, MergeKey, OpenContext, Opened, RootKey, Session, TableChange, TableRef,
     TableWriter, WriteStats,
 };
 use crate::emitter::Emitter;
@@ -327,6 +327,11 @@ struct VaultConfig {
     decode_only_strings: bool,
     /// Keeps only the last table's rows staged in a segment.
     one_table_per_segment: bool,
+    /// Merges a child table by its own key, as if it had no root.
+    children_merge_by_key: bool,
+    /// Replaces child rows only in the child tables a commit stages rows for, not in every one
+    /// it lists.
+    ignore_child_tables: bool,
 }
 
 #[derive(Default)]
@@ -518,6 +523,8 @@ impl VaultSession {
     fn publish(&self, store: &mut VaultStore, meta: &CommitMeta) -> u64 {
         let mut rows = 0;
         let mut merging: BTreeMap<String, Vec<(MergeKey, RecordBatch)>> = BTreeMap::new();
+        // Every batch the commit publishes, by table: a child table follows its root's.
+        let mut committed: BTreeMap<String, Vec<RecordBatch>> = BTreeMap::new();
         for segment in self.segments_to_publish(store, meta) {
             let key = (self.pipeline.clone(), segment);
             let batches = if self.config.republish {
@@ -527,13 +534,17 @@ impl VaultSession {
             };
             for staged in batches {
                 rows += staged.batch.num_rows() as u64;
+                committed
+                    .entry(staged.table.clone())
+                    .or_default()
+                    .push(staged.batch.clone());
                 match (staged.generation, staged.merge) {
                     (Some(generation), _) if !self.config.replace_early => store
                         .generations
                         .entry((staged.table, generation))
                         .or_default()
                         .push(staged.batch),
-                    (_, Some(key)) if !self.config.merge_appends => merging
+                    (_, Some(key)) if !(self.config.merge_appends && key.root.is_none()) => merging
                         .entry(staged.table)
                         .or_default()
                         .push((key, staged.batch)),
@@ -545,9 +556,7 @@ impl VaultSession {
                 }
             }
         }
-        for (table, incoming) in merging {
-            merge(store.published.entry(table).or_default(), incoming);
-        }
+        self.merge_all(store, merging, &committed, meta);
         for (path, generation) in &meta.finish_generations {
             let Some(table) = store.tables.get(path).cloned() else {
                 continue;
@@ -560,6 +569,43 @@ impl VaultSession {
             store.published.insert(table, rows);
         }
         rows
+    }
+
+    /// Merges `merging`, the rows the commit publishes into merge tables, into `store`: a child
+    /// table follows its root's rows in `committed`, even where the commit staged it nothing.
+    fn merge_all(
+        &self,
+        store: &mut VaultStore,
+        mut merging: BTreeMap<String, Vec<(MergeKey, RecordBatch)>>,
+        committed: &BTreeMap<String, Vec<RecordBatch>>,
+        meta: &CommitMeta,
+    ) {
+        // A listed child table the commit staged nothing for follows its root all the same.
+        for child in &meta.child_tables {
+            if !self.config.children_merge_by_key && !self.config.ignore_child_tables {
+                merging.entry(child.table.to_string()).or_default();
+            }
+        }
+        for (table, incoming) in merging {
+            let listed = meta
+                .child_tables
+                .iter()
+                .find(|child| *child.table == *table);
+            let key = incoming
+                .first()
+                .map(|(key, _)| key.clone())
+                .or_else(|| listed.map(|child| child.merge.clone()));
+            let published = store.published.entry(table).or_default();
+            match key {
+                Some(key) if key.root.is_some() && !self.config.children_merge_by_key => {
+                    let root = key.root.clone().expect("a child table names its root");
+                    let root_rows = committed.get(root.table.as_ref()).cloned();
+                    let root_rows = root_rows.unwrap_or_default();
+                    replace_children(published, &incoming, &root, &root_rows, &key);
+                }
+                _ => merge(published, incoming),
+            }
+        }
     }
 
     /// With `refuse_unstaged`, the first segment of `meta` this pipeline never staged.
@@ -741,7 +787,10 @@ impl TableWriter for VaultWriter {
         if !self.config.stale_writes && current != self.epoch {
             return Err(ConnectorError::fenced("stale"));
         }
-        if let Some(refusal) = self.config.refusal(store.columns.get(&self.table), &batch) {
+        let Some(columns) = store.columns.get(&self.table) else {
+            return Err(ConnectorError::data("no table of that name was created"));
+        };
+        if let Some(refusal) = self.config.refusal(Some(columns), &batch) {
             return Err(ConnectorError::data(refusal));
         }
         let dropped: Vec<usize> = batch
@@ -786,6 +835,55 @@ impl TableWriter for VaultWriter {
     async fn flush(&mut self) -> Result<WriteStats> {
         Ok(WriteStats::default())
     }
+}
+
+/// Replaces the children of the roots `root_rows` publish: published rows of those roots go, and
+/// of `incoming`, the rows of each root's winning row stay.
+fn replace_children(
+    published: &mut Vec<RecordBatch>,
+    incoming: &[(MergeKey, RecordBatch)],
+    root: &RootKey,
+    root_rows: &[RecordBatch],
+    key: &MergeKey,
+) {
+    let bytes = |batch: &RecordBatch, column: &str, row: usize| -> Vec<u8> {
+        let values = batch
+            .column_by_name(column)
+            .expect("lineage columns are there");
+        values.as_binary::<i32>().value(row).to_vec()
+    };
+    let mut winners: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    for batch in root_rows {
+        for row in 0..batch.num_rows() {
+            let (id, seq) = (bytes(batch, &root.id, row), bytes(batch, &root.seq, row));
+            if winners.get(&id).is_none_or(|best| *best < seq) {
+                winners.insert(id, seq);
+            }
+        }
+    }
+    let of = |batch: &RecordBatch, row: usize| {
+        (
+            bytes(batch, &key.columns[0], row),
+            bytes(batch, &key.seq, row),
+        )
+    };
+    let mut kept = Vec::new();
+    for batch in published.iter() {
+        for row in 0..batch.num_rows() {
+            if !winners.contains_key(&of(batch, row).0) {
+                kept.push(batch.slice(row, 1));
+            }
+        }
+    }
+    for (_, batch) in incoming {
+        for row in 0..batch.num_rows() {
+            let (id, seq) = of(batch, row);
+            if winners.get(&id) == Some(&seq) {
+                kept.push(batch.slice(row, 1));
+            }
+        }
+    }
+    *published = kept;
 }
 
 /// Merges `incoming` into `published` a row at a time: an incoming row replaces the published
@@ -913,35 +1011,37 @@ async fn a_correct_destination_passes_every_clause() {
 }
 
 #[tokio::test]
-async fn each_broken_destination_behavior_fails_exactly_its_clause() {
+async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
     let cases = [
-        ("static_epoch", "D-EPOCH"),
-        ("miscount", "D-COMMIT"),
-        ("republish", "D-IDEMPOTENT"),
-        ("forget_state", "D-STATE"),
-        ("ignore_deletes", "D-STATE"),
-        ("keep_staging", "D-DISCARD"),
-        ("no_fence", "D-FENCE"),
-        ("wrong_fence_kind", "D-FENCE"),
-        ("forget_receipts", "D-IDEMPOTENT"),
-        ("publish_all", "D-COMMIT"),
-        ("local_state", "D-STATE"),
-        ("stale_writes", "D-DISCARD"),
-        ("replace_early", "D-REPLACE"),
-        ("merge_appends", "D-MERGE"),
-        ("refuse_repeated_changes", "D-SCHEMA"),
-        ("ignore_added_columns", "D-SCHEMA"),
-        ("accept_conflicts", "D-SCHEMA"),
-        ("refuse_narrower", "D-SCHEMA"),
-        ("uncoded_conflicts", "D-SCHEMA"),
-        ("refuse_widening", "D-SCHEMA"),
-        ("refuse_dictionaries", "D-ENCODING"),
-        ("decode_only_strings", "D-ENCODING"),
-        ("one_table_per_segment", "D-TABLES"),
+        ("static_epoch", &["D-EPOCH"][..]),
+        ("miscount", &["D-COMMIT"][..]),
+        ("republish", &["D-IDEMPOTENT"][..]),
+        ("forget_state", &["D-STATE"][..]),
+        ("ignore_deletes", &["D-STATE"][..]),
+        ("keep_staging", &["D-DISCARD"][..]),
+        ("no_fence", &["D-FENCE"][..]),
+        ("wrong_fence_kind", &["D-FENCE"][..]),
+        ("forget_receipts", &["D-IDEMPOTENT"][..]),
+        ("publish_all", &["D-COMMIT"][..]),
+        ("local_state", &["D-STATE"][..]),
+        ("stale_writes", &["D-DISCARD"][..]),
+        ("replace_early", &["D-REPLACE"][..]),
+        ("merge_appends", &["D-MERGE", "D-CHILDREN"][..]),
+        ("refuse_repeated_changes", &["D-SCHEMA"][..]),
+        ("ignore_added_columns", &["D-SCHEMA"][..]),
+        ("accept_conflicts", &["D-SCHEMA"][..]),
+        ("refuse_narrower", &["D-SCHEMA"][..]),
+        ("uncoded_conflicts", &["D-SCHEMA"][..]),
+        ("refuse_widening", &["D-SCHEMA"][..]),
+        ("refuse_dictionaries", &["D-ENCODING"][..]),
+        ("decode_only_strings", &["D-ENCODING"][..]),
+        ("one_table_per_segment", &["D-CHILDREN", "D-TABLES"][..]),
+        ("children_merge_by_key", &["D-CHILDREN"][..]),
+        ("ignore_child_tables", &["D-CHILDREN"][..]),
     ];
-    for (flag, clause) in cases {
+    for (flag, clauses) in cases {
         let report = certify_vault(flag, Some(flag)).await;
-        assert_eq!(failed(&report), [clause], "{flag}: {report}");
+        assert_eq!(failed(&report), clauses, "{flag}: {report}");
     }
 }
 
