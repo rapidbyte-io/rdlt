@@ -127,6 +127,66 @@ pub(super) fn drift_values(stream: &SimStream, row: &Row) -> u64 {
     (pending.columns.len() + items) as u64
 }
 
+/// The type each drift column of `stream` must have where every batch of `rows`, the rows
+/// delivered so far, that holds it holds it at one type: a column the policy keeps whole, and which
+/// never meets another type, has no reason to widen or split.
+pub(super) fn uniform(stream: &SimStream, rows: &[Row]) -> BTreeMap<String, LogicalType> {
+    if stream.normalized() || stream.policy != SchemaPolicy::Evolve {
+        return BTreeMap::new();
+    }
+    let mut uniform = BTreeMap::new();
+    'columns: for (index, drift) in stream.drift.iter().enumerate() {
+        let mut types = BTreeMap::new();
+        for row in rows {
+            let Some(value) = &row.extras[index] else {
+                continue;
+            };
+            let logical = if stream.json {
+                match pushed_type(value) {
+                    Pushed::Typed(logical) => logical,
+                    Pushed::Null => continue,
+                    Pushed::Container => continue 'columns,
+                }
+            } else {
+                drift_type(row, drift).clone()
+            };
+            if logical != LogicalType::Null {
+                types.insert(logical.to_string(), logical);
+            }
+        }
+        if types.len() == 1
+            && let Some((_, logical)) = types.pop_first()
+        {
+            uniform.insert(drift.name.clone(), logical);
+        }
+    }
+    uniform
+}
+
+/// What the engine infers for a value pushed in JSON.
+#[derive(Debug, PartialEq)]
+enum Pushed {
+    /// A null, which has no type.
+    Null,
+    /// A scalar, of this type.
+    Typed(LogicalType),
+    /// An object or array, whose inferred type this does not model.
+    Container,
+}
+
+/// What the engine infers for `value`, pushed in JSON.
+fn pushed_type(value: &Scalar) -> Pushed {
+    match value {
+        Scalar::Null => Pushed::Null,
+        Scalar::Bool(_) => Pushed::Typed(LogicalType::Bool),
+        Scalar::Int(_) => Pushed::Typed(LogicalType::Int64),
+        Scalar::Float64(float) if float.is_finite() => Pushed::Typed(LogicalType::Float64),
+        // A float JSON cannot hold is pushed as its name.
+        Scalar::Float64(_) | Scalar::Utf8(_) => Pushed::Typed(LogicalType::Utf8),
+        _ => Pushed::Container,
+    }
+}
+
 /// The type of `drift`'s values in `row`'s batch.
 fn drift_type<'a>(row: &Row, drift: &'a Drift) -> &'a LogicalType {
     let partition = usize::try_from(row.partition).unwrap_or(0);

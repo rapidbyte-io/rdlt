@@ -2,7 +2,7 @@ use rdlt_connector::{Field, Fields, LogicalType};
 use rdlt_testkit::drawn::Scalar;
 use serde_json::{Value, json};
 
-use super::{Node, Pending, Tables};
+use super::{Node, Pending, Pushed, Tables, pushed_type};
 
 fn objects() -> LogicalType {
     let fields = Fields::new(vec![
@@ -66,4 +66,26 @@ fn pushed_arrays_of_arrays_become_grandchild_tables() {
         idents,
         ["1:2/s.a[0]/s.a.value[0]", "1:2/s.a[0]/s.a.value[1]"]
     );
+}
+
+#[test]
+fn pushed_scalars_are_inferred_as_json_holds_them() {
+    let typed = Pushed::Typed;
+    assert_eq!(
+        pushed_type(&Scalar::Float64(1.5)),
+        typed(LogicalType::Float64)
+    );
+    assert_eq!(pushed_type(&Scalar::Int(3)), typed(LogicalType::Int64));
+    assert_eq!(pushed_type(&Scalar::Bool(true)), typed(LogicalType::Bool));
+    assert_eq!(
+        pushed_type(&Scalar::Float64(f64::NAN)),
+        typed(LogicalType::Utf8),
+        "a float JSON cannot hold is pushed as its name"
+    );
+    assert_eq!(
+        pushed_type(&Scalar::Null),
+        Pushed::Null,
+        "a null has no type"
+    );
+    assert_eq!(pushed_type(&Scalar::List(Vec::new())), Pushed::Container);
 }

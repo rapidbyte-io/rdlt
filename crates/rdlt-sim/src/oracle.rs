@@ -239,7 +239,14 @@ async fn settle(seed: Seed) {
 /// Checks every stream's tables against the reference model after `phase`.
 fn check_contents(world: &World, phase: usize, seed: Seed) {
     for stream in &world.workload.streams {
-        tables::check(world, stream, &kept_rows(world, stream, phase, seed), seed);
+        let delivered: Vec<Row> = (0..=phase).flat_map(|done| stream.all_rows(done)).collect();
+        tables::check(
+            world,
+            stream,
+            &kept_rows(world, stream, phase, seed),
+            &delivered,
+            seed,
+        );
     }
 }
 
