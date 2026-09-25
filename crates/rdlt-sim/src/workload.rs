@@ -69,6 +69,9 @@ pub struct SimStream {
     pub json: bool,
     /// Whether the source sends each batch as a slice of a larger one.
     pub sliced: bool,
+    /// Whether a JSON stream pushes floats JSON cannot hold, by name; otherwise its floats are
+    /// finite, so a column of them keeps its inferred type.
+    pub named_floats: bool,
     /// Each partition's rows in each phase.
     rows: Vec<[Vec<Row>; PHASES]>,
 }
@@ -166,6 +169,7 @@ impl SimStream {
             },
             json,
             sliced: features.sliced && rng.chance(500),
+            named_floats: json && rng.chance(250),
             drift,
             partitions,
             rows: Vec::new(),
@@ -233,7 +237,11 @@ impl SimStream {
             .map(|(column, drift)| {
                 let shape = drift.shapes[partition][delivered].as_ref()?;
                 let seed = mix(value ^ (column as u64 + 1));
-                Some(values::drawn(shape, !self.json, seed))
+                let keep = |value: &Scalar| match (self.json, self.named_floats) {
+                    (false, _) => values::convergent(value, &shape.logical),
+                    (true, named) => named || values::finite(value),
+                };
+                Some(values::drawn(shape, seed, keep))
             })
             .collect();
         Row {

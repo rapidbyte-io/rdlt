@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7230485de423ae6c24b1323d00dcf86c7788cdd29872313da7861a616fa0da50 # shrinks to records = [Object([("c", Array([Array([Int(-9223372036854775808), Null, Null]), Null])), ("b", Object([("d", Float(953110.4692884684)), ("a", Null), ("b", Array([Text("aa"), Null]))]))]), Object([("b", Object([("d", Float(0.0))]))])], cuts = [(0, false)], fault = None, at = 0, chunk_bytes = 1

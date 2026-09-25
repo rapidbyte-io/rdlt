@@ -9,20 +9,29 @@ use rdlt_testkit::drawn::{Encoding, Scalar, Shape, values};
 /// Tries at a value that converges before a drift value is null instead.
 const TRIES: u64 = 16;
 
-/// A value of `shape` drawn from `seed`: null one time in five, and for an Arrow stream, one
-/// every finer unit holds.
-pub(super) fn drawn(shape: &Shape, arrow: bool, seed: u64) -> Scalar {
+/// A value of `shape` drawn from `seed` that `keep` keeps, null one time in five.
+pub(super) fn drawn(shape: &Shape, seed: u64, keep: impl Fn(&Scalar) -> bool) -> Scalar {
     let strategy = values::value(shape, true);
     (0..TRIES)
         .map(|attempt| draw(&strategy, mix(seed ^ attempt)))
-        .find(|value| !arrow || convergent(value, &shape.logical))
+        .find(|value| keep(value))
         .unwrap_or(Scalar::Null)
+}
+
+/// Whether every float in `value` is finite, so JSON holds it as a number.
+pub(super) fn finite(value: &Scalar) -> bool {
+    match value {
+        Scalar::Float64(float) => float.is_finite(),
+        Scalar::Struct(fields) => fields.iter().all(|(_, inner)| finite(inner)),
+        Scalar::List(items) => items.iter().all(finite),
+        _ => true,
+    }
 }
 
 /// Whether every type `logical` widens into holds `value`: dates and instants within the
 /// nanoseconds an `i64` holds, a day to spare for zones; times of day within a `Time32` of
 /// milliseconds; durations within an `i64` of nanoseconds.
-fn convergent(value: &Scalar, logical: &LogicalType) -> bool {
+pub(super) fn convergent(value: &Scalar, logical: &LogicalType) -> bool {
     use LogicalType as T;
     let spared = i128::from(i64::MAX) - DAY;
     match (value, logical) {

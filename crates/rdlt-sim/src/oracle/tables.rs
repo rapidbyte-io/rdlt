@@ -4,7 +4,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rdlt_connector::{Field, IdentifierCase, IdentifierChars, LogicalType, TablePath, TableSchema};
+use rdlt_connector::{
+    ColumnKey, ColumnPath, Field, IdentifierCase, IdentifierChars, LogicalType, TablePath,
+    TableSchema,
+};
 use rdlt_engine::Nested;
 use rdlt_testkit::canon::{Canon, storage};
 use rdlt_testkit::decode;
@@ -16,9 +19,17 @@ use crate::workload::{Row, SimStream};
 use crate::world::World;
 
 /// Checks every table of `stream` against the model's tables for `rows`, the rows its table
-/// holds.
-pub(super) fn check(world: &World, stream: &SimStream, rows: &[Row], seed: Seed) {
+/// holds, of `delivered`, every row delivered so far.
+pub(super) fn check(
+    world: &World,
+    stream: &SimStream,
+    rows: &[Row],
+    delivered: &[Row],
+    seed: Seed,
+) {
     let expected = expected::tables(stream, rows);
+    let uniform = expected::uniform(stream, delivered);
+    let none = BTreeMap::new();
     let mut paths: BTreeSet<(usize, Vec<String>)> = expected
         .keys()
         .map(|path| (path.len(), path.clone()))
@@ -48,6 +59,7 @@ pub(super) fn check(world: &World, stream: &SimStream, rows: &[Row], seed: Seed)
             stream,
             path,
             parents: &parents,
+            uniform: if path.len() == 1 { &uniform } else { &none },
             seed,
         };
         let ids = table.check(rows, &lineage);
@@ -65,6 +77,8 @@ struct Table<'a> {
     path: &'a [String],
     /// The tables a child table's rows' parents may be rows of, closest first.
     parents: &'a [Vec<String>],
+    /// The type each column a single type only ever arrived at has, by path.
+    uniform: &'a BTreeMap<String, LogicalType>,
     seed: Seed,
 }
 
@@ -156,9 +170,7 @@ impl Table<'_> {
             (ident, Some(own.clone()))
         } else {
             let number = |column: &str| {
-                let physical = published
-                    .names
-                    .get(&rdlt_connector::ColumnKey::Source(column.into()))?;
+                let physical = published.names.get(&ColumnKey::Source(column.into()))?;
                 Some(text(&cell(physical)))
             };
             let ident = format!("{}:{}", number("id")?, number("value")?);
@@ -210,9 +222,18 @@ impl Table<'_> {
                 (Some(sent), []) => Some(format!(
                     "{path} holds no value in {physicals:?}; the model expects {sent:?}"
                 )),
-                (Some(sent), [cell]) => self
-                    .value(cell, sent)
-                    .map(|finding| format!("{path}: {finding}")),
+                (Some(sent), [cell]) => {
+                    let own = published
+                        .names
+                        .get(&ColumnKey::Source(ColumnPath::from(path.as_str())));
+                    self.value(
+                        cell,
+                        sent,
+                        own == Some(cell.physical),
+                        self.uniform.get(path),
+                    )
+                    .map(|finding| format!("{path}: {finding}"))
+                }
                 (_, many) => Some(format!(
                     "{path} holds values in {:?}",
                     many.iter().map(|cell| cell.physical).collect::<Vec<_>>()
@@ -225,8 +246,22 @@ impl Table<'_> {
     /// Why `cell` does not hold `sent`, if it does not: its column's type does not hold the
     /// value's, the destination stores the column otherwise than its capabilities say, or the cell
     /// means another value.
-    fn value(&self, cell: &Cell<'_>, sent: &expected::Sent) -> Option<String> {
+    fn value(
+        &self,
+        cell: &Cell<'_>,
+        sent: &expected::Sent,
+        own: bool,
+        uniform: Option<&LogicalType>,
+    ) -> Option<String> {
         let (physical, logical) = (cell.physical, &cell.logical);
+        if let Some(uniform) = uniform
+            && (!own || logical != uniform)
+        {
+            return Some(format!(
+                "{physical} is {logical}, but every value of its column arrived as {uniform}, \
+                 which its own column keeps"
+            ));
+        }
         if let Some(source) = sent.source()
             && logical.join(source) != *logical
         {
