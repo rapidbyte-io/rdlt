@@ -461,3 +461,61 @@ async fn a_stream_that_evolves_may_normalize_in_a_pipeline_that_drops_rows() {
         .await;
     succeeded(&outcome);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_frozen_stream_keeps_loading_the_arrays_it_has() {
+    let frozen = || {
+        stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(SchemaPolicy::Freeze),
+        )
+    };
+    for id in [1, 2] {
+        let push = format!(r#"{{"id":{id},"items":[{{"sku":"x"}}]}}"#);
+        let outcome = load(
+            "frozen_arrays",
+            vec![BatchStream::json("events", &[&push])],
+            vec![frozen()],
+        )
+        .await;
+        succeeded(&outcome);
+    }
+    assert_eq!(published_json("frozen_arrays", "events__items").len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_policy_on_a_streams_column_stays_off_its_child_tables() {
+    let plan = || {
+        normalized("events").column(
+            "sku",
+            SchemaSettings::new().policy(SchemaPolicy::DiscardValue),
+        )
+    };
+    let first = r#"{"id":1,"sku":1,"items":[{"sku":1}]}"#;
+    succeeded(
+        &load(
+            "column_policy",
+            vec![BatchStream::json("events", &[first])],
+            vec![plan()],
+        )
+        .await,
+    );
+    let second = r#"{"id":2,"items":[{"sku":"x"}]}"#;
+    let outcome = load(
+        "column_policy",
+        vec![BatchStream::json("events", &[second])],
+        vec![plan()],
+    )
+    .await;
+    succeeded(&outcome);
+    assert_eq!(
+        outcome.report.streams["events"].discarded_values, 0,
+        "the child table's sku evolves"
+    );
+    let items = published_json("column_policy", "events__items");
+    assert!(
+        items.iter().any(|row| row.to_string().contains('x')),
+        "{items:?}"
+    );
+}

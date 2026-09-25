@@ -119,7 +119,6 @@ impl Resolver {
     pub(crate) fn child(&self) -> Result<Self, Error> {
         let settings = Settings {
             stream: self.settings.stream.without_columns(),
-            key: Vec::new(),
             ..self.settings.clone()
         };
         Ok(Self {
