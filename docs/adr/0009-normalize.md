@@ -1,6 +1,7 @@
 # ADR 0009: Normalizing nested data into child tables
 
-Status: accepted, 2026-09-25.
+Status: accepted, 2026-09-25; merges, dropped rows and the admission of new arrays are amended
+by ADR 0010.
 
 ## Context
 
