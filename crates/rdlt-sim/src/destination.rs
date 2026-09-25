@@ -221,12 +221,27 @@ impl Store {
                 }
             }
         }
+        for child in &meta.child_tables {
+            merging
+                .entry(child.table.to_string())
+                .or_insert_with(|| (child.merge.clone(), Vec::new()));
+        }
+        let roots: BTreeMap<String, Vec<Cells>> = merging
+            .iter()
+            .filter(|(_, (key, _))| key.root.is_none())
+            .map(|(name, (_, rows))| (name.clone(), rows.clone()))
+            .collect();
         for (name, (key, rows)) in merging {
-            cells::merge(
-                &mut self.tables.entry(name).or_default().published,
-                rows,
-                &key,
-            );
+            let published = &mut self.tables.entry(name).or_default().published;
+            match &key.root {
+                None => cells::merge(published, rows, &key),
+                Some(root) => {
+                    let roots = roots
+                        .get(root.table.as_ref())
+                        .map_or(&[][..], Vec::as_slice);
+                    cells::merge_children(published, rows, &key, root, roots);
+                }
+            }
         }
         for (path, generation) in &meta.finish_generations {
             let Some(name) = self.names.get(path).cloned() else {

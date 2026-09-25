@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
-    ConnectorErrorKind, Epoch, Field, LogicalType, SchemaVersion, SegmentId, Session, TableChange,
-    TablePath, TableRef, TableSchema, TableWriter,
+    ConnectorErrorKind, Epoch, Field, LogicalType, MergeKey, RootKey, SchemaVersion, SegmentId,
+    Session, TableChange, TablePath, TableRef, TableSchema, TableWriter,
 };
+use serde_json::json;
 
 use super::SimSession;
+use super::cells::{Cells, merge_children};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::world::World;
@@ -120,4 +122,44 @@ fn a_column_widened_along_two_branches_holds_their_join() {
         columns.get("n"),
         Some(&LogicalType::Int64.join(&LogicalType::Float64))
     );
+}
+
+#[test]
+fn a_child_table_keeps_only_the_children_of_each_merged_roots_winning_row() {
+    let cells = |pairs: &[(&str, &str)]| -> Cells {
+        pairs
+            .iter()
+            .map(|(column, value)| ((*column).to_owned(), json!(value)))
+            .collect()
+    };
+    let key = MergeKey {
+        columns: vec!["owner".into()],
+        seq: "seq".into(),
+        root: Some(RootKey {
+            table: "roots".into(),
+            id: "id".into(),
+            seq: "seq".into(),
+        }),
+    };
+    let root = key.root.clone().unwrap();
+    let mut published = vec![
+        cells(&[("owner", "r1"), ("seq", "1"), ("v", "old")]),
+        cells(&[("owner", "r2"), ("seq", "1"), ("v", "kept")]),
+        cells(&[("owner", "r3"), ("seq", "1"), ("v", "gone")]),
+    ];
+    let incoming = vec![
+        cells(&[("owner", "r1"), ("seq", "5"), ("v", "new")]),
+        cells(&[("owner", "r1"), ("seq", "3"), ("v", "stale")]),
+    ];
+    let roots = [
+        cells(&[("id", "r1"), ("seq", "3")]),
+        cells(&[("id", "r1"), ("seq", "5")]),
+        cells(&[("id", "r3"), ("seq", "2")]),
+    ];
+    merge_children(&mut published, incoming, &key, &root, &roots);
+    let values: Vec<&str> = published
+        .iter()
+        .map(|row| row["v"].as_str().unwrap())
+        .collect();
+    assert_eq!(values, ["kept", "new"]);
 }
