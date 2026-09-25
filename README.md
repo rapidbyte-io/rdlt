@@ -15,6 +15,8 @@ integration suite runs against every destination. JSON pushes are coalesced and 
 parallel on the compute pool, and every batch is lowered there through a plan made once per table
 schema. Streams can `normalize` nested data into child tables whose rows carry their lineage; a merge
 replaces each root's child rows in the same commit, and a dropped row takes its children with it.
+Differential tests draw every logical type in every Arrow encoding a source may send and check that
+each value lowers, and normalizes, exactly.
 
 ## Development
 

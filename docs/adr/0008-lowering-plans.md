@@ -1,6 +1,6 @@
 # ADR 0008: Lowering plans, constant metadata and the JSON fast path
 
-Status: accepted, 2026-09-24.
+Status: accepted, 2026-09-24; the per-value differential it defers is ADR 0011's.
 
 ## Context
 
