@@ -24,6 +24,8 @@ pub(crate) struct BatchStream {
     pub(crate) schema: Option<TableSchema>,
     /// Whether the stream checkpoints only after its last push, so its pushes share a segment.
     pub(crate) one_segment: bool,
+    /// Whether the stream never checkpoints, so its partition ends with rows after no cursor.
+    pub(crate) unchecked: bool,
 }
 
 impl BatchStream {
@@ -35,6 +37,7 @@ impl BatchStream {
             primary_key: None,
             schema: None,
             one_segment: false,
+            unchecked: false,
         }
     }
 
@@ -58,6 +61,12 @@ impl BatchStream {
     /// Checkpoints only after the last push.
     pub(crate) fn one_segment(mut self) -> Self {
         self.one_segment = true;
+        self
+    }
+
+    /// Never checkpoints.
+    pub(crate) fn unchecked(mut self) -> Self {
+        self.unchecked = true;
         self
     }
 
@@ -160,7 +169,7 @@ impl ReadStream<BatchSource> for Pushing {
                 Push::Json(json) => out.json(json.clone()).await?,
                 Push::Arrow(batch) | Push::Changes(batch) => out.batch(batch.clone()).await?,
             }
-            if !stream.one_segment || index + 1 == stream.pushes.len() {
+            if !stream.unchecked && (!stream.one_segment || index + 1 == stream.pushes.len()) {
                 out.checkpoint(&(index + 1)).await?;
             }
         }

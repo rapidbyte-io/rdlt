@@ -342,3 +342,32 @@ async fn a_declared_schema_creates_the_table_before_any_row_and_changes_evolve_i
     assert_eq!(evolved.report.status, RunStatus::Succeeded);
     assert_eq!(columns("declared", "events").len(), 2);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_read_whose_rows_after_its_last_checkpoint_are_all_discarded_counts_them() {
+    let name = "discard_every_row";
+    let discard_rows = SchemaSettings::new().policy(SchemaPolicy::DiscardRow);
+    let run = |stream_batches: Vec<RecordBatch>| async move {
+        let events = BatchStream::new("events", stream_batches).unchecked();
+        engine(commit_every(10))
+            .run(
+                pipeline(name, [stream("events").schema(discard_rows)]),
+                batches(name, vec![events]).await,
+                memory(name).await,
+            )
+            .await
+    };
+    let created = run(vec![batch(vec![("id", ints(&[1]))])]).await;
+    assert_eq!(created.report.status, RunStatus::Succeeded);
+    let extra: ArrayRef = Arc::new(StringArray::from(vec![Some("e"), Some("f")]));
+    let discarding = run(vec![batch(vec![("id", ints(&[2, 3])), ("extra", extra)])]).await;
+    assert_eq!(discarding.report.status, RunStatus::Succeeded);
+    let report = discarding
+        .report
+        .streams
+        .get("events")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!((report.rows, report.discarded_rows), (0, 2));
+    assert_eq!(published_json(name, "events"), vec![json!({"id": 1})]);
+}
