@@ -249,7 +249,7 @@ impl LoweringPlan {
     }
 
     /// The load id and load start columns for `rows` rows: slices of arrays built once, and
-    /// built again only for a batch more than the arrays hold or less than half of it.
+    /// built again only for a batch more than the arrays hold, whose keys take a byte a row.
     fn constants(
         &self,
         stamp: &Stamp,
@@ -259,7 +259,7 @@ impl LoweringPlan {
         let fits = constants.as_ref().is_some_and(|built| {
             built.load_id == stamp.load_id
                 && built.loaded_at == stamp.loaded_at
-                && (rows..=rows.saturating_mul(2)).contains(&built.rows)
+                && built.rows >= rows
         });
         if !fits {
             *constants = Some(Constants::new(&self.view, stamp, rows)?);

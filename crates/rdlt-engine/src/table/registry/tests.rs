@@ -14,7 +14,7 @@ use crate::error::ErrorKind;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::SchemaSettings;
-use crate::table::{Incoming, MetaNames, Model, Resolver, Settings};
+use crate::table::{Incoming, LoweringPlan, MetaNames, Model, Resolver, Settings};
 
 type Changes = Arc<Mutex<Vec<TableChange>>>;
 
@@ -532,6 +532,34 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
     assert_eq!(one.unwrap(), two.unwrap());
     assert_eq!(tables.slots.read().len(), 2, "one child table");
     assert_eq!(changes.lock().len(), 1, "its generation was created once");
+}
+
+#[test]
+fn a_plan_for_a_superseded_view_is_not_cached_over_the_current_views_plans() {
+    let resolver = resolver();
+    let incoming = schema(&[("id", LogicalType::Int64)]);
+    let view =
+        |model: Model| Arc::new(crate::table::TableView::new(&table(None), model, &resolver));
+    let old = resolver.resolve(&Model::default(), &incoming).unwrap();
+    let wide = schema(&[("id", LogicalType::Int64), ("note", LogicalType::Utf8)]);
+    let new = resolver.resolve(&old.model, &wide).unwrap();
+    let (stale, current) = (view(old.model), view(new.model));
+    let plan = |view: &Arc<crate::table::TableView>, incoming: &Incoming, routes| {
+        Arc::new(LoweringPlan::new(
+            resolver.stream.clone(),
+            Arc::clone(view),
+            incoming.clone(),
+            routes,
+        ))
+    };
+    let kept = plan(&current, &wide, new.routes);
+    let mut plans = vec![Arc::clone(&kept)];
+    super::cache(&mut plans, plan(&stale, &incoming, old.routes), &current);
+    assert_eq!(plans.len(), 1);
+    assert!(
+        Arc::ptr_eq(&plans[0], &kept),
+        "the current view's plan stays"
+    );
 }
 
 #[tokio::test]

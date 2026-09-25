@@ -16,7 +16,7 @@ use rdlt_engine::{
     CommitPolicy, Engine, EngineConfig, PipelinePlan, RayonPool, StreamPlan, SystemEnv,
 };
 
-/// Rows per batch: about 8 MiB of ten mixed columns.
+/// Rows per batch: about 7 MB of ten mixed columns, as docs/perf/passthrough.md records.
 const ROWS: i64 = 80_000;
 /// Batches per run.
 const BATCHES: usize = 64;

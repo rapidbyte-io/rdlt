@@ -1030,6 +1030,33 @@ fn a_child_tables_root_columns_are_read_from_the_root_staging_only() {
 }
 
 #[test]
+fn a_child_table_of_a_merge_table_is_indexed_by_its_root() {
+    let (connection, planner) = database();
+    let (_, items) = roots_and_items();
+    let fields = [
+        ("root", LogicalType::Int64, false),
+        ("seq", LogicalType::Binary, false),
+    ];
+    apply(&connection, &planner, &create(&items, &fields)).unwrap();
+    let statement = Statement {
+        sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'items'".to_owned(),
+        params: Vec::new(),
+    };
+    let indexes = query(&connection, &statement);
+    assert_eq!(indexes.len(), 1, "{indexes:?}");
+    assert!(
+        format!("{:?}", indexes[0]).contains("(\\\"root\\\")"),
+        "{indexes:?}"
+    );
+    assert!(
+        apply(&connection, &planner, &create(&items, &fields))
+            .unwrap()
+            .is_empty(),
+        "applying the change again plans nothing"
+    );
+}
+
+#[test]
 fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
     let (connection, planner) = database();
     let keys = TableRef {
