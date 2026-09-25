@@ -5,17 +5,19 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rdlt_connector::{
-    Capabilities, Catalog, Checkpointing, ColumnKey, ColumnPath, Cursor, GenerationId,
-    LOAD_ID_COLUMN, LOADED_AT_COLUMN, Partition, PartitionState, PipelineState, ReadMode,
-    SEQ_COLUMN, SchemaVersion, StreamName, StreamSpec, StreamState, TablePath, TableRef,
+    Capabilities, Catalog, Checkpointing, ColumnKey, ColumnPath, Cursor, GenerationId, Partition,
+    PartitionState, PipelineState, ReadMode, SchemaVersion, StreamName, StreamSpec, StreamState,
+    TablePath, TableRef,
 };
 
 use super::{Planned, RunContext};
 use crate::coordinator::{Cycle, StreamRun};
 use crate::error::{Error, Side};
 use crate::naming::Naming;
+use crate::normalize::{self, Shape};
 use crate::plan::{StreamPlan, WriteMode};
-use crate::table::{MetaNames, Model, Resolver, Settings, Tables};
+use crate::policy::{Nested, SchemaPolicy};
+use crate::table::{Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables};
 
 /// What planning an attempt's streams needs besides the stream itself.
 pub(super) struct Planning<'a> {
@@ -24,8 +26,6 @@ pub(super) struct Planning<'a> {
     pub(super) state: &'a PipelineState,
     pub(super) naming: Naming,
     pub(super) capabilities: Arc<Capabilities>,
-    /// Table identifiers taken so far: committed ones, then those planned in this attempt.
-    pub(super) taken: BTreeSet<String>,
 }
 
 impl Planning<'_> {
@@ -38,7 +38,7 @@ impl Planning<'_> {
     pub(super) async fn stream(
         &mut self,
         plan: &StreamPlan,
-        tables: &mut Tables,
+        tables: &Tables,
     ) -> Result<Planned, Error> {
         let name = plan.name();
         let spec = check_stream(self.context, plan, self.catalog)?;
@@ -47,12 +47,21 @@ impl Planning<'_> {
             (WriteMode::Replace, Read::Cycle(cycle, _)) => Some(cycle.generation),
             _ => None,
         };
-        let (resolver, table, model) = self.table(plan, spec, generation)?;
-        let index = tables.add(resolver, &table, model);
+        let shape = normalized(self.context, plan, spec)?;
+        let (resolver, table, model) =
+            self.table(plan, spec, generation, tables, shape.is_some())?;
+        let index = tables.add_normalized(resolver, &table, model, shape.clone());
         if let Some(declared) = spec.schema() {
-            tables.fit(index, declared).await?;
+            let incoming = match &shape {
+                Some(shape) => normalize::root_columns(declared, shape)?,
+                None => Incoming::from(declared.clone()),
+            };
+            tables.fit(index, &incoming).await?;
         }
         tables.create_generation(index).await?;
+        for child in tables.recorded_children(index) {
+            tables.child(index, &child).await?;
+        }
         let (cycle, partitions) = match read {
             Read::Incremental(state) => (None, partitions(self.context, name, &state).await?),
             Read::Cycle(cycle, state) => {
@@ -64,7 +73,7 @@ impl Planning<'_> {
             stream: StreamRun {
                 name: name.clone(),
                 write: plan.write_mode(),
-                path: table.path,
+                table: index,
                 cycle,
                 remaining: partitions.len(),
                 stopped: false,
@@ -77,24 +86,26 @@ impl Planning<'_> {
     /// The stream's table as committed, or with a free identifier when new, and the resolver of
     /// its batches; a merge stream's key columns are named up front, so writers learn the key.
     fn table(
-        &mut self,
+        &self,
         plan: &StreamPlan,
         spec: &StreamSpec,
         generation: Option<GenerationId>,
+        tables: &Tables,
+        normalized: bool,
     ) -> Result<(Resolver, TableRef, Model), Error> {
         let name = plan.name();
         let key = merge_key(plan, spec)?;
         let path = TablePath::new([name.to_string()]).map_err(|error| {
             Error::internal(format!("stream {name} has no valid table path: {error}"))
         })?;
-        let committed = self.state.tables.get(&path);
-        let mut model = Model::from_state(committed)?;
-        let physical = match committed.and_then(|table| table.physical.clone()) {
-            Some(physical) => physical,
-            None => self.naming.table(&path, &self.taken)?.into(),
+        let mut model = Model::from_state(tables.recorded_table(&path))?;
+        let physical = tables.name(&path, &self.naming)?;
+        let lineage = if normalized {
+            LineageColumns::Root
+        } else {
+            LineageColumns::None
         };
-        self.taken.insert(physical.to_string());
-        let meta = meta_names(&self.naming, !key.is_empty())?;
+        let meta = MetaNames::assign(&self.naming, !key.is_empty(), lineage)?;
         let keys: BTreeSet<ColumnKey> = key.iter().cloned().map(ColumnKey::Source).collect();
         self.naming
             .assign_columns(&mut model.names, &keys, &meta.all())?;
@@ -120,19 +131,71 @@ impl Planning<'_> {
     }
 }
 
-/// The identifiers of the metadata columns, with a sequence column for merge tables.
-fn meta_names(naming: &Naming, merge: bool) -> Result<MetaNames, Error> {
-    let mut taken = BTreeSet::new();
-    let mut name = |column: &str| -> Result<Arc<str>, Error> {
-        let name = naming.metadata(column, &taken)?;
-        taken.insert(name.clone());
-        Ok(name.into())
+/// How `plan`'s stream normalizes, if its settings or the pipeline's say it does.
+///
+/// A normalized stream cannot merge, nor drop rows for a schema change, yet: both would have to
+/// reach the rows' children too. Its rows are identified by the merge key or the source's primary
+/// key where there is one.
+fn normalized(
+    context: &RunContext,
+    plan: &StreamPlan,
+    spec: &StreamSpec,
+) -> Result<Option<Shape>, Error> {
+    let pipeline = context.plan.schema_settings();
+    let nested = plan
+        .schema_settings()
+        .nested_setting()
+        .or_else(|| pipeline.nested_setting());
+    let Some(Nested::Normalize { max_depth }) = nested else {
+        return Ok(None);
     };
-    Ok(MetaNames {
-        load_id: name(LOAD_ID_COLUMN)?,
-        loaded_at: name(LOADED_AT_COLUMN)?,
-        seq: merge.then(|| name(SEQ_COLUMN)).transpose()?,
-    })
+    let name = plan.name();
+    let refuse = |code: &str, detail: &str| {
+        Err(Error::config(format!("stream {name}: {detail}"))
+            .with_code(code)
+            .with_stream(name))
+    };
+    if plan.write_mode() == WriteMode::Merge {
+        return refuse(
+            "normalize_merge_unsupported",
+            "a normalized stream cannot merge yet",
+        );
+    }
+    let policies = [plan.schema_settings(), pipeline]
+        .into_iter()
+        .chain(plan.columns().map(|(_, settings)| settings))
+        .filter_map(|settings| settings.policy_setting());
+    if policies
+        .into_iter()
+        .any(|policy| policy == SchemaPolicy::DiscardRow)
+    {
+        return refuse(
+            "normalize_discard_row_unsupported",
+            "a normalized stream cannot discard rows yet, since their children would stay",
+        );
+    }
+    let whole = plan
+        .columns()
+        .filter(|(_, settings)| {
+            matches!(
+                settings.nested_setting(),
+                Some(Nested::Native | Nested::Json)
+            )
+        })
+        .filter_map(|(column, _)| column.segments().next().map(Arc::from))
+        .collect();
+    let key = plan
+        .merge_key()
+        .or_else(|| spec.primary_key())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|column| column.segments().next().map(Arc::from))
+        .collect();
+    Ok(Some(Shape {
+        max_depth,
+        whole,
+        key,
+    }))
 }
 
 /// The stream's catalog entry, once the source can read it as planned and the destination can

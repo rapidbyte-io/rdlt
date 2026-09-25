@@ -29,7 +29,7 @@ use crate::partition::{Progress, Seal};
 use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog};
-use crate::table::{MetaNames, Model, Resolver, Settings, SharedSession, Tables};
+use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
 
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
 type Acks = Arc<Mutex<Vec<(StreamName, Vec<(PartitionId, Cursor)>)>>>;
@@ -144,7 +144,11 @@ struct Setup {
 }
 
 impl Setup {
-    fn new(streams: Vec<StreamRun>, partitions: Vec<PartitionRun>) -> Self {
+    fn new(mut streams: Vec<StreamRun>, partitions: Vec<PartitionRun>) -> Self {
+        // Each stream's table is added in the stream's order.
+        for (table, stream) in streams.iter_mut().enumerate() {
+            stream.table = table;
+        }
         Self {
             streams,
             partitions,
@@ -157,7 +161,7 @@ impl Setup {
 
     /// The tables of the setup's streams, over `session`.
     async fn tables(&self, session: Arc<SharedSession>) -> Arc<Tables> {
-        let mut tables = Tables::new(session);
+        let tables = Tables::new(session);
         let capabilities = rdlt_connector::Capabilities::minimal();
         for stream in &self.streams {
             let resolver = Resolver {
@@ -173,11 +177,16 @@ impl Setup {
                     load_id: "_rdlt_load_id".into(),
                     loaded_at: "_rdlt_loaded_at".into(),
                     seq: None,
+                    id: None,
+                    parent: None,
                 },
             };
             let index = tables.add(resolver, &table(None), Model::default());
             if let (0, Some(schema)) = (index, &self.schema) {
-                tables.fit(index, schema).await.unwrap();
+                tables
+                    .fit(index, &Incoming::from(schema.clone()))
+                    .await
+                    .unwrap();
             }
         }
         Arc::new(tables)
@@ -189,10 +198,6 @@ impl Setup {
         let closed = Arc::new(AtomicBool::new(false));
         let (progress, progress_feed) = mpsc::unbounded_channel();
         let (barrier_sender, barrier) = watch::channel(0);
-        let (lanes, lane_tasks) = Lanes::new(vec![Vec::new()], NonZeroUsize::MIN);
-        for lane in lane_tasks {
-            tokio::spawn(lane.run(CancellationToken::new()));
-        }
         let harness = Harness {
             progress,
             barrier,
@@ -211,6 +216,10 @@ impl Setup {
             fail: self.fail_commit,
         }));
         let tables = self.tables(session).await;
+        let (lanes, lane_tasks) = Lanes::new(NonZeroUsize::MIN, &tables, NonZeroUsize::MIN);
+        for lane in lane_tasks {
+            tokio::spawn(lane.run(CancellationToken::new()));
+        }
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::new(SystemEnv::new(pool)),
             policy: self.policy,
@@ -291,14 +300,10 @@ fn schema() -> TableSchema {
 }
 
 fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRun {
-    let generation = match write {
-        WriteMode::Replace => cycle.as_ref().map(|cycle| cycle.generation),
-        WriteMode::Append | WriteMode::Merge => None,
-    };
     StreamRun {
         name: name(),
         write,
-        path: table(generation).path,
+        table: 0,
         cycle,
         remaining: partitions,
         stopped: false,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{Partition, Permit, StreamName};
 
-use super::{LOWERING_WINDOW, charge_growth, hold, shred_failed, windows};
+use super::{LOWERING_WINDOW, charge_growth, hold, share_growth, shred_failed, windows};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
@@ -107,4 +107,41 @@ fn units_are_lowered_in_order_in_windows_of_a_bounded_size() {
     assert_eq!(windows.concat(), (0..20).collect::<Vec<_>>());
     assert_eq!(windows.len(), 20_usize.div_ceil(LOWERING_WINDOW));
     assert!(super::windows(Vec::<usize>::new()).is_empty());
+}
+
+#[test]
+fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
+    let budget = MemoryBudget::new(1 << 20);
+    let held = hold(&budget, &[ids(10)], Vec::new()).remove(0);
+    let parts: Vec<(usize, Prepared)> = [ids(100), ids(50)]
+        .into_iter()
+        .enumerate()
+        .map(|(table, batch)| {
+            let prepared = Prepared {
+                batch,
+                discarded_rows: 0,
+                discarded_values: 0,
+            };
+            (table, prepared)
+        })
+        .collect();
+    let lowered: u64 = parts
+        .iter()
+        .map(|(_, part)| u64::try_from(part.batch.get_array_memory_size()).unwrap())
+        .sum();
+    let shared = share_growth(&budget, &parts, held);
+    assert_eq!(
+        budget.reserved(),
+        lowered,
+        "the parts' bytes, not the unit's"
+    );
+    let first = Arc::clone(&shared);
+    drop(shared);
+    assert_eq!(
+        budget.reserved(),
+        lowered,
+        "held while a part waits to be staged"
+    );
+    drop(first);
+    assert_eq!(budget.reserved(), 0);
 }

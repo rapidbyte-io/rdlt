@@ -7,6 +7,9 @@ mod lowering;
 mod model;
 mod registry;
 mod resolve;
+mod session;
+#[cfg(test)]
+pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 
@@ -15,11 +18,12 @@ use rdlt_connector::{
     ColumnKey, Field, LogicalType, MergeKey, SchemaVersion, TableRef, TableSchema,
 };
 
-pub(crate) use lower::MetaNames;
+pub(crate) use lower::{LineageColumns, MetaNames};
 pub(crate) use lowering::{LoweringPlan, Prepared, Stamp};
 pub(crate) use model::Model;
-pub(crate) use registry::{SharedSession, Tables};
-pub(crate) use resolve::{Resolver, Settings};
+pub(crate) use registry::Tables;
+pub(crate) use resolve::{Incoming, Resolver, Settings};
+pub(crate) use session::SharedSession;
 
 /// A table at one schema version: everything needed to prepare batches for it.
 #[derive(Clone, Debug, PartialEq)]

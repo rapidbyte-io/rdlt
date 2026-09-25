@@ -5,18 +5,22 @@
 mod tests;
 
 use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    CommitMeta, ConnectorError, DestinationSession, DestinationWriter, Receipt, SchemaVersion,
-    StateChange, StateEntry, TableChange, TableRef, TableSchema,
+    ConnectorError, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange, TablePath,
+    TableRef, TableState,
 };
 
 use super::model::Model;
-use super::resolve::{Change, Resolution, Resolver, Route};
+use super::resolve::{Change, Incoming, Resolution, Resolver, Route};
+use super::session::SharedSession;
 use super::{LoweringPlan, TableView};
 use crate::error::{Error, Side};
+use crate::naming::Naming;
+use crate::normalize::Shape;
 
 /// How many times a table's change is named around columns that attempts which never committed
 /// left behind before the conflict fails the run.
@@ -25,72 +29,6 @@ pub(crate) const CONFLICT_RETRIES: usize = 4;
 /// Lowering plans kept per table: one per incoming schema its partitions send, for its current
 /// view.
 const PLANS: usize = 8;
-
-/// The destination session, shared by the coordinator's commits and the partitions' schema
-/// changes until the coordinator closes it.
-pub(crate) struct SharedSession(tokio::sync::Mutex<Option<Box<dyn DestinationSession>>>);
-
-impl SharedSession {
-    pub(crate) fn new(session: Box<dyn DestinationSession>) -> Arc<Self> {
-        Arc::new(Self(tokio::sync::Mutex::new(Some(session))))
-    }
-
-    /// Applies `changes` in order, stopping at the first the destination refuses.
-    ///
-    /// Each call returns the destination's own result inside the error for a closed session.
-    pub(crate) async fn apply_schema(
-        &self,
-        changes: &[TableChange],
-    ) -> Result<rdlt_connector::Result<()>, Error> {
-        let mut session = self.0.lock().await;
-        let session = session.as_mut().ok_or_else(closed)?;
-        for change in changes {
-            if let Err(error) = session.apply_schema(change).await {
-                return Ok(Err(error));
-            }
-        }
-        Ok(Ok(()))
-    }
-
-    /// A writer for `table`.
-    pub(crate) async fn writer(
-        &self,
-        table: &TableRef,
-    ) -> Result<rdlt_connector::Result<Box<dyn DestinationWriter>>, Error> {
-        let mut session = self.0.lock().await;
-        Ok(session.as_mut().ok_or_else(closed)?.writer(table).await)
-    }
-
-    /// Commits `meta`.
-    pub(crate) async fn commit(
-        &self,
-        meta: &CommitMeta,
-    ) -> Result<rdlt_connector::Result<Receipt>, Error> {
-        let mut session = self.0.lock().await;
-        Ok(session.as_mut().ok_or_else(closed)?.commit(meta).await)
-    }
-
-    /// Closes the session; later calls find it closed.
-    pub(crate) async fn close(&self) -> Result<(), Error> {
-        let Some(session) = self.0.lock().await.take() else {
-            return Ok(());
-        };
-        session
-            .close()
-            .await
-            .map_err(|error| Error::connector(Side::Destination, "closing the session", error))
-    }
-}
-
-fn closed() -> Error {
-    Error::internal("the destination session is already closed")
-}
-
-impl std::fmt::Debug for SharedSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedSession").finish_non_exhaustive()
-    }
-}
 
 /// One table and its resolver.
 #[derive(Debug)]
@@ -103,13 +41,27 @@ struct Slot {
     recorded: Mutex<u32>,
     /// Plans for the current view, the newest last.
     plans: Mutex<Vec<Arc<LoweringPlan>>>,
+    /// How the stream normalizes, for a normalized stream's own table.
+    shape: Option<Arc<Shape>>,
 }
 
-/// Every table of an attempt.
+/// Child tables' indexes by their stream's table and their path below it.
+type Children = BTreeMap<(usize, Vec<Arc<str>>), usize>;
+
+/// Every table of an attempt: each stream's own, and the child tables of normalized streams,
+/// added as their first rows arrive.
 #[derive(Debug)]
 pub(crate) struct Tables {
     session: Arc<SharedSession>,
-    slots: Vec<Slot>,
+    slots: RwLock<Vec<Arc<Slot>>>,
+    /// Child tables by their stream's table and their path below it.
+    children: Mutex<Children>,
+    /// Held while a child table is added, so each is added once.
+    adding: tokio::sync::Mutex<()>,
+    /// The tables state records, whose names and schemas tables keep.
+    committed: BTreeMap<TablePath, TableState>,
+    /// Table identifiers taken: committed ones, then those this attempt assigns.
+    taken: Mutex<BTreeSet<String>>,
 }
 
 /// What a commit records about the tables, and the versions it records.
@@ -120,11 +72,30 @@ pub(crate) struct TablesDelta {
 }
 
 impl Tables {
+    /// The tables of an attempt over `session`, where state records no table yet.
     pub(crate) fn new(session: Arc<SharedSession>) -> Self {
         Self {
             session,
-            slots: Vec::new(),
+            slots: RwLock::new(Vec::new()),
+            children: Mutex::new(BTreeMap::new()),
+            adding: tokio::sync::Mutex::new(()),
+            committed: BTreeMap::new(),
+            taken: Mutex::new(BTreeSet::new()),
         }
+    }
+
+    /// The same tables, over the tables `state` records.
+    #[must_use]
+    pub(crate) fn committed(mut self, state: &PipelineState) -> Self {
+        self.taken = Mutex::new(
+            state
+                .tables
+                .values()
+                .filter_map(|table| table.physical.as_deref().map(str::to_owned))
+                .collect(),
+        );
+        self.committed = state.tables.clone();
+        self
     }
 
     /// The session the tables change through.
@@ -132,23 +103,129 @@ impl Tables {
         &self.session
     }
 
+    /// The table at `path` as state records it, if it does.
+    pub(crate) fn recorded_table(&self, path: &TablePath) -> Option<&TableState> {
+        self.committed.get(path)
+    }
+
+    /// The identifier of the table at `path`: the committed one, or a free one under `naming`.
+    pub(crate) fn name(&self, path: &TablePath, naming: &Naming) -> Result<Arc<str>, Error> {
+        let mut taken = self.taken.lock();
+        let physical = match self
+            .committed
+            .get(path)
+            .and_then(|table| table.physical.clone())
+        {
+            Some(physical) => physical,
+            None => naming.table(path, &taken)?.into(),
+        };
+        taken.insert(physical.to_string());
+        Ok(physical)
+    }
+
     /// Adds the table `table` at its committed `model`; returns its index.
-    pub(crate) fn add(&mut self, resolver: Resolver, table: &TableRef, model: Model) -> usize {
+    pub(crate) fn add(&self, resolver: Resolver, table: &TableRef, model: Model) -> usize {
+        self.add_normalized(resolver, table, model, None)
+    }
+
+    /// Adds the table `table` at its committed `model`, whose stream normalizes as `shape`, if
+    /// it does; returns its index.
+    pub(crate) fn add_normalized(
+        &self,
+        resolver: Resolver,
+        table: &TableRef,
+        model: Model,
+        shape: Option<Shape>,
+    ) -> usize {
         let recorded = model.version;
         let view = TableView::new(table, model, &resolver);
-        self.slots.push(Slot {
+        let mut slots = self.slots.write();
+        slots.push(Arc::new(Slot {
             resolver,
             current: Mutex::new(Arc::new(view)),
             evolving: tokio::sync::Mutex::new(()),
             recorded: Mutex::new(recorded),
             plans: Mutex::new(Vec::new()),
-        });
-        self.slots.len() - 1
+            shape: shape.map(Arc::new),
+        }));
+        slots.len() - 1
+    }
+
+    fn slot(&self, table: usize) -> Arc<Slot> {
+        Arc::clone(&self.slots.read()[table])
     }
 
     /// The current view of `table`.
     pub(crate) fn view(&self, table: usize) -> Arc<TableView> {
-        Arc::clone(&self.slots[table].current.lock())
+        Arc::clone(&self.slot(table).current.lock())
+    }
+
+    /// How the stream whose table is `table` normalizes, if it does.
+    pub(crate) fn shape(&self, table: usize) -> Option<Arc<Shape>> {
+        self.slot(table).shape.clone()
+    }
+
+    /// The child table at `path` below the table `root`, added at its committed schema, with its
+    /// replace generation, the first time it is asked for.
+    pub(crate) async fn child(&self, root: usize, path: &[Arc<str>]) -> Result<usize, Error> {
+        let key = (root, path.to_vec());
+        if let Some(index) = self.children.lock().get(&key) {
+            return Ok(*index);
+        }
+        let _adding = self.adding.lock().await;
+        if let Some(index) = self.children.lock().get(&key) {
+            return Ok(*index);
+        }
+        let parent = self.slot(root);
+        let base = self.view(root).table.clone();
+        let table_path = TablePath::new(base.path.segments().chain(path.iter().map(AsRef::as_ref)))
+            .map_err(|error| {
+                Error::internal(format!("a child table has no valid path: {error}"))
+            })?;
+        let resolver = parent.resolver.child()?;
+        let model = Model::from_state(self.committed.get(&table_path))?;
+        let table = TableRef {
+            name: self.name(&table_path, &resolver.naming)?,
+            path: table_path,
+            version: SchemaVersion(model.version),
+            generation: base.generation,
+            merge: None,
+        };
+        let index = self.add(resolver, &table, model);
+        self.create_generation(index).await?;
+        self.children.lock().insert(key, index);
+        Ok(index)
+    }
+
+    /// The paths below `root` of the child tables state records for it.
+    pub(crate) fn recorded_children(&self, root: usize) -> Vec<Vec<Arc<str>>> {
+        let base = self.view(root).table.path.clone();
+        let depth = base.segments().count();
+        self.committed
+            .keys()
+            .filter(|path| {
+                path.segments().count() > depth && path.segments().take(depth).eq(base.segments())
+            })
+            .map(|path| path.segments().skip(depth).map(Arc::from).collect())
+            .collect()
+    }
+
+    /// The paths of `root` and of every child table added below it.
+    pub(crate) fn family(&self, root: usize) -> Vec<TablePath> {
+        let mut paths = vec![self.view(root).table.path.clone()];
+        let children: Vec<usize> = self
+            .children
+            .lock()
+            .iter()
+            .filter(|((parent, _), _)| *parent == root)
+            .map(|(_, index)| *index)
+            .collect();
+        paths.extend(
+            children
+                .into_iter()
+                .map(|index| self.view(index).table.path.clone()),
+        );
+        paths
     }
 
     /// The plan lowering batches of `incoming` into `table`: the plan made for the table's current
@@ -156,9 +233,10 @@ impl Tables {
     pub(crate) async fn plan(
         &self,
         table: usize,
-        incoming: TableSchema,
+        incoming: impl Into<Incoming>,
     ) -> Result<Arc<LoweringPlan>, Error> {
-        let slot = &self.slots[table];
+        let incoming = incoming.into();
+        let slot = self.slot(table);
         let view = self.view(table);
         let planned = |plans: &[Arc<LoweringPlan>], view: &Arc<TableView>| {
             plans
@@ -197,9 +275,9 @@ impl Tables {
     pub(crate) async fn fit(
         &self,
         table: usize,
-        incoming: &TableSchema,
+        incoming: &Incoming,
     ) -> Result<(Arc<TableView>, Vec<Route>), Error> {
-        let slot = &self.slots[table];
+        let slot = self.slot(table);
         let view = self.view(table);
         let resolution = slot.resolver.resolve(&view.model, incoming)?;
         if resolution.changes.is_empty() {
@@ -257,7 +335,8 @@ impl Tables {
 
     /// The error for the destination refusing a change to `table`.
     fn refused(&self, table: usize, error: ConnectorError) -> Error {
-        let stream = &self.slots[table].resolver.stream;
+        let slot = self.slot(table);
+        let stream = &slot.resolver.stream;
         let context = format!("changing the table of stream {stream}");
         Error::connector(Side::Destination, context, error).with_stream(stream)
     }
@@ -278,7 +357,8 @@ impl Tables {
     /// The schema and names of every table changed since state last recorded it.
     pub(crate) fn delta(&self) -> TablesDelta {
         let mut delta = TablesDelta::default();
-        for (index, slot) in self.slots.iter().enumerate() {
+        let slots = self.slots.read().clone();
+        for (index, slot) in slots.iter().enumerate() {
             let view = self.view(index);
             if view.model.version <= *slot.recorded.lock() {
                 continue;
@@ -304,7 +384,8 @@ impl Tables {
     /// Notes that state now records `versions`.
     pub(crate) fn recorded(&self, versions: &[(usize, u32)]) {
         for (index, version) in versions {
-            let mut recorded = self.slots[*index].recorded.lock();
+            let slot = self.slot(*index);
+            let mut recorded = slot.recorded.lock();
             *recorded = (*recorded).max(*version);
         }
     }

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 
 use crate::error::Error;
-use crate::policy::SchemaSettings;
+use crate::policy::{Nested, SchemaSettings};
 
 /// How a stream's rows reach its table.
 #[non_exhaustive]
@@ -109,6 +109,11 @@ impl StreamPlan {
     /// The schema settings of `column`, if the plan sets any.
     pub fn column_settings(&self, column: &ColumnPath) -> Option<&SchemaSettings> {
         self.columns.get(column)
+    }
+
+    /// Every column the plan sets schema settings for, with them.
+    pub(crate) fn columns(&self) -> impl Iterator<Item = (&ColumnPath, &SchemaSettings)> {
+        self.columns.iter()
     }
 
     /// The type hinted for `column`, if any.
@@ -252,6 +257,16 @@ fn check_columns(stream: &StreamPlan) -> Result<(), Error> {
                 ),
             );
         }
+    }
+    if let Some((column, _)) = stream
+        .columns
+        .iter()
+        .find(|(_, settings)| matches!(settings.nested_setting(), Some(Nested::Normalize { .. })))
+    {
+        return refuse(
+            "plan_nested_normalize_column",
+            format!("column {column} is set to normalize; only pipelines and streams normalize"),
+        );
     }
     if let Some((column, _)) = stream
         .hints

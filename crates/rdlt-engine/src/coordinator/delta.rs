@@ -139,7 +139,12 @@ impl Coordinator {
             .filter(|stream| stream.write == WriteMode::Replace)
             .filter_map(|stream| {
                 let cycle = stream.cycle.as_ref()?;
-                Some((stream.path.clone(), cycle.generation))
+                Some((stream.table, cycle.generation))
+            })
+            .flat_map(|(table, generation)| {
+                // A stream's child tables swap in with its table.
+                let family = self.parts.tables.family(table);
+                family.into_iter().map(move |path| (path, generation))
             })
             .collect()
     }

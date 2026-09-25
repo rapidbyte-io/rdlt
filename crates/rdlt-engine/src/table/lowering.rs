@@ -14,13 +14,14 @@ use arrow_array::{
 };
 use arrow_row::{RowConverter, SortField};
 use parking_lot::Mutex;
-use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName, TableSchema};
+use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName};
 
 use super::TableView;
 use super::convert::{convert, text};
-use super::lower::{LOAD_ID_TYPE, loaded_at_type};
-use super::resolve::Route;
+use super::lower::{ID_TYPE, IDX_TYPE, LOAD_ID_TYPE, loaded_at_type};
+use super::resolve::{Incoming, Route};
 use crate::error::Error;
+use crate::normalize::Lineage;
 
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
@@ -57,7 +58,7 @@ enum Source {
 pub(crate) struct LoweringPlan {
     stream: StreamName,
     view: Arc<TableView>,
-    incoming: TableSchema,
+    incoming: Incoming,
     routes: Vec<Route>,
     /// Where each of the view's columns takes its values from, in the view's order.
     sources: Vec<Source>,
@@ -81,12 +82,16 @@ impl LoweringPlan {
     pub(crate) fn new(
         stream: StreamName,
         view: Arc<TableView>,
-        incoming: TableSchema,
+        incoming: Incoming,
         routes: Vec<Route>,
     ) -> Self {
         let mut sources = vec![Source::Nulls; view.model.columns.len()];
         let mut discarded = Vec::new();
-        for (index, (route, field)) in routes.iter().zip(incoming.fields().iter()).enumerate() {
+        for (index, (route, field)) in routes
+            .iter()
+            .zip(incoming.schema.fields().iter())
+            .enumerate()
+        {
             match route {
                 Route::Column(column) => {
                     sources[*column] = Source::Incoming(index, field.logical_type().clone());
@@ -111,23 +116,28 @@ impl LoweringPlan {
         &self.view
     }
 
-    /// The incoming schema the plan lowers.
-    pub(crate) fn incoming(&self) -> &TableSchema {
+    /// The incoming columns the plan lowers.
+    pub(crate) fn incoming(&self) -> &Incoming {
         &self.incoming
     }
 
     /// `batch`, whose columns are the plan's incoming ones, as rows of its table.
     ///
     /// Every column goes where the plan's routes send it, converted exactly and lowered to how
-    /// the destination stores it, and the metadata columns follow. A merge table's batch keeps
-    /// only the last row of each key.
-    pub(crate) fn prepare(&self, batch: &RecordBatch, stamp: &Stamp) -> Result<Prepared, Error> {
+    /// the destination stores it, and the metadata columns follow, `lineage` last for the tables
+    /// of normalized streams. A merge table's batch keeps only the last row of each key.
+    pub(crate) fn prepare(
+        &self,
+        batch: &RecordBatch,
+        lineage: Option<&Lineage>,
+        stamp: &Stamp,
+    ) -> Result<Prepared, Error> {
         let stream = &self.stream;
         let view = &self.view;
         let failed = |error: arrow_schema::ArrowError| {
             Error::internal(format!("stream {stream}: preparing a batch: {error}"))
         };
-        let (batch, discarded_rows) = discard_rows(batch, &self.routes).map_err(failed)?;
+        let (batch, kept, discarded_rows) = discard_rows(batch, &self.routes).map_err(failed)?;
         if batch.num_rows() == 0 {
             return Ok(Prepared {
                 batch: RecordBatch::new_empty(Arc::clone(&view.schema)),
@@ -165,6 +175,8 @@ impl LoweringPlan {
         if view.meta.seq.is_some() {
             columns.push(sequence(view, stamp, rows).map_err(failed)?);
         }
+        let first = columns.len();
+        columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
         let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
         let prepared = if view.table.merge.is_some() {
             compact(&prepared, &view.key).map_err(failed)?
@@ -176,6 +188,27 @@ impl LoweringPlan {
             discarded_rows,
             discarded_values,
         })
+    }
+
+    /// The lineage columns of the plan's table, lowered, from `lineage` and the rows `kept`
+    /// keeps; the first is the table's column at `first`.
+    fn lineage(
+        &self,
+        lineage: Option<&Lineage>,
+        kept: Option<&BooleanArray>,
+        first: usize,
+    ) -> Result<Vec<ArrayRef>, Error> {
+        let stream = &self.stream;
+        lineage_columns(&self.view, stream, lineage, kept)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, (array, logical))| {
+                let lowered = self.view.physical[first + index].logical_type();
+                lower_array(&array, &logical, lowered).map_err(|error| {
+                    Error::internal(format!("stream {stream}: lowering lineage: {error}"))
+                })
+            })
+            .collect()
     }
 
     /// The load id and load start columns for `rows` rows: slices of arrays built once, and
@@ -257,7 +290,7 @@ fn store(
 fn discard_rows(
     batch: &RecordBatch,
     routes: &[Route],
-) -> Result<(RecordBatch, u64), arrow_schema::ArrowError> {
+) -> Result<(RecordBatch, Option<BooleanArray>, u64), arrow_schema::ArrowError> {
     let discarding: Vec<&ArrayRef> = routes
         .iter()
         .enumerate()
@@ -268,13 +301,52 @@ fn discard_rows(
         .iter()
         .all(|column| column.null_count() == column.len())
     {
-        return Ok((batch.clone(), 0));
+        return Ok((batch.clone(), None, 0));
     }
     let keep: BooleanArray = (0..batch.num_rows())
         .map(|row| Some(discarding.iter().all(|column| column.is_null(row))))
         .collect();
     let kept = arrow_select::filter::filter_record_batch(batch, &keep)?;
-    Ok((kept.clone(), (batch.num_rows() - kept.num_rows()) as u64))
+    let dropped = (batch.num_rows() - kept.num_rows()) as u64;
+    Ok((kept, Some(keep), dropped))
+}
+
+/// The lineage columns of `view`'s rows and their types: `lineage`, the rows `kept` keeps where
+/// the schema policy dropped some; none for a stream that does not normalize.
+fn lineage_columns(
+    view: &TableView,
+    stream: &StreamName,
+    lineage: Option<&Lineage>,
+    kept: Option<&BooleanArray>,
+) -> Result<Vec<(ArrayRef, LogicalType)>, Error> {
+    if view.meta.id.is_none() {
+        return Ok(Vec::new());
+    }
+    let missing =
+        |what: &str| Error::internal(format!("stream {stream}: a {what} batch has no lineage"));
+    let lineage = lineage.ok_or_else(|| missing("normalized table's"))?;
+    let mut columns = vec![(Arc::clone(&lineage.id), ID_TYPE)];
+    if view.meta.parent.is_some() {
+        let parent = lineage
+            .parent
+            .as_ref()
+            .ok_or_else(|| missing("child table's"))?;
+        columns.push((Arc::clone(&parent.id), ID_TYPE));
+        columns.push((Arc::clone(&parent.root), ID_TYPE));
+        columns.push((Arc::clone(&parent.idx), IDX_TYPE));
+    }
+    let Some(kept) = kept else {
+        return Ok(columns);
+    };
+    columns
+        .into_iter()
+        .map(|(array, logical)| {
+            let array = arrow_select::filter::filter(array.as_ref(), kept).map_err(|error| {
+                Error::internal(format!("stream {stream}: filtering lineage: {error}"))
+            })?;
+            Ok((array, logical))
+        })
+        .collect()
 }
 
 /// Refuses a merge batch that lacks a key column or holds a null key.

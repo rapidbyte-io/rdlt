@@ -10,6 +10,7 @@ mod engine;
 mod json;
 mod ledger;
 mod merge;
+mod normalize;
 mod schema;
 mod support;
 
