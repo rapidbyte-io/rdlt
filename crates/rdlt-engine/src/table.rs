@@ -67,6 +67,11 @@ impl TableView {
             .collect();
         let physical =
             lower::physical_fields(&model, &nested, &resolver.meta, &resolver.capabilities);
+        let model_types: Vec<LogicalType> = model
+            .columns
+            .iter()
+            .map(|column| column.logical_type().clone())
+            .collect();
         let lowered = physical
             .iter()
             .take(model.columns.len())
@@ -94,7 +99,7 @@ impl TableView {
                 merge,
                 ..table.clone()
             },
-            schema: lower::prepared_schema(&physical, model.columns.len()),
+            schema: lower::prepared_schema(&physical, &model_types),
             lowered,
             physical,
             meta: resolver.meta.clone(),

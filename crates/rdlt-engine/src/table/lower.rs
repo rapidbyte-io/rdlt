@@ -204,15 +204,16 @@ pub(crate) fn physical_fields(
     fields
 }
 
-/// The Arrow schema of prepared batches of a table whose columns are `fields`, the model's
-/// `columns` first: the load id and load start, which hold one value per batch, are dictionaries
-/// of it (spec §8.5).
-pub(crate) fn prepared_schema(fields: &[Field], columns: usize) -> SchemaRef {
+/// The Arrow schema of prepared batches of a table whose columns are `fields`, the columns of the
+/// `model`, of these types, first: each stored as another type names its own, and the load id and
+/// load start, which hold one value per batch, are dictionaries of it (spec §8.5).
+pub(crate) fn prepared_schema(fields: &[Field], model: &[LogicalType]) -> SchemaRef {
+    let columns = model.len();
     let fields: Vec<ArrowField> = fields
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            let arrow = field.to_arrow();
+            let arrow = named(field.to_arrow(), field.logical_type(), model.get(index));
             if index == columns || index == columns + 1 {
                 let encoded = DataType::Dictionary(
                     Box::new(DataType::Int8),
@@ -225,4 +226,19 @@ pub(crate) fn prepared_schema(fields: &[Field], columns: usize) -> SchemaRef {
         })
         .collect();
     Arc::new(Schema::new(fields))
+}
+
+/// `arrow`, a column stored as `stored`, naming `logical`, the model's type for it, where the
+/// destination stores it as another type.
+#[expect(clippy::disallowed_types, reason = "Arrow field metadata is a HashMap")]
+fn named(arrow: ArrowField, stored: &LogicalType, logical: Option<&LogicalType>) -> ArrowField {
+    match logical {
+        Some(logical) if logical != stored => {
+            let mut metadata: std::collections::HashMap<String, String> = arrow.metadata().clone();
+            let json = serde_json::to_string(logical).expect("a logical type serializes");
+            metadata.insert(rdlt_connector::LOGICAL_TYPE_KEY.to_owned(), json);
+            arrow.with_metadata(metadata)
+        }
+        _ => arrow,
+    }
 }

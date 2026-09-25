@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-pub use arrow::UnsupportedType;
+pub use arrow::{LOGICAL_TYPE_KEY, UnsupportedType};
 
 /// The largest decimal precision, in digits.
 pub const MAX_DECIMAL_PRECISION: u8 = 76;

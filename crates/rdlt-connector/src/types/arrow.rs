@@ -13,6 +13,10 @@ const EXTENSION_NAME: &str = "ARROW:extension:name";
 const UUID_EXTENSION: &str = "arrow.uuid";
 const JSON_EXTENSION: &str = "arrow.json";
 
+/// The Arrow field metadata key a written batch's column carries where the destination stores its
+/// values as another type: the column's logical type, as JSON, so `"Date"` on dates stored as text.
+pub const LOGICAL_TYPE_KEY: &str = "rdlt:logical_type";
+
 /// An Arrow type with no logical equivalent.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("field {field:?}: arrow type {data_type} has no logical equivalent")]
@@ -24,6 +28,14 @@ pub struct UnsupportedType {
 }
 
 impl Field {
+    /// The logical type of a written batch's column `field`, where the engine lowered it to the type
+    /// it is stored as and named it under [`LOGICAL_TYPE_KEY`]; `None` for a column stored as its
+    /// own type.
+    pub fn lowered_from(field: &ArrowField) -> Option<LogicalType> {
+        let named = field.metadata().get(LOGICAL_TYPE_KEY)?;
+        serde_json::from_str(named).ok()
+    }
+
     /// The Arrow field for this field; `Uuid` and `Json` carry Arrow's canonical extension names.
     pub fn to_arrow(&self) -> ArrowField {
         let field = ArrowField::new(

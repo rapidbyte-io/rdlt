@@ -413,3 +413,16 @@ proptest! {
         prop_assert_eq!(serde_json::from_str::<LogicalType>(&json).unwrap(), a);
     }
 }
+
+#[test]
+fn a_written_column_stored_as_another_type_names_its_logical_type() {
+    let named = |value: &str| {
+        let metadata = HashMap::from([(super::LOGICAL_TYPE_KEY.to_owned(), value.to_owned())]);
+        ArrowField::new("day", DataType::Utf8, true).with_metadata(metadata)
+    };
+    let date = serde_json::to_string(&LogicalType::Date).unwrap();
+    assert_eq!(Field::lowered_from(&named(&date)), Some(LogicalType::Date));
+    assert_eq!(Field::lowered_from(&named("not json")), None);
+    let plain = ArrowField::new("day", DataType::Utf8, true);
+    assert_eq!(Field::lowered_from(&plain), None);
+}

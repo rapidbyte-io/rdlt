@@ -1275,3 +1275,35 @@ fn a_far_date_nested_in_a_list_converts_to_json_items() {
         "{\"d\":\"+5881580-07-21\"}"
     );
 }
+
+#[test]
+fn a_column_stored_as_another_type_names_its_logical_type_in_the_batch() {
+    use arrow_array::Date32Array;
+    let mut text_dates = capabilities();
+    text_dates.types.remove(&TypeKind::Date);
+    let resolver = resolver(text_dates, plan(), &[]);
+    let model = created(
+        &resolver,
+        &[("day", LogicalType::Date), ("n", LogicalType::Int64)],
+    );
+    let batch = batch(vec![
+        ("day", Arc::new(Date32Array::from(vec![1])) as ArrayRef),
+        ("n", Arc::new(Int64Array::from(vec![2])) as ArrayRef),
+    ]);
+    let prepared = prepared(&resolver, &model, &batch);
+    let schema = prepared.batch.schema();
+    let named = |column: &str| {
+        let field = schema.field_with_name(column).unwrap();
+        field
+            .metadata()
+            .get(rdlt_connector::LOGICAL_TYPE_KEY)
+            .cloned()
+    };
+    assert_eq!(
+        schema.field_with_name("day").unwrap().data_type(),
+        &DataType::Utf8
+    );
+    let logical: LogicalType = serde_json::from_str(&named("day").unwrap()).unwrap();
+    assert_eq!(logical, LogicalType::Date);
+    assert_eq!(named("n"), None, "a column stored as its type names none");
+}

@@ -121,8 +121,8 @@ pub use state::{
     StateKey, StateRecord, StreamState, TableState,
 };
 pub use types::{
-    DecimalType, Field, Fields, LogicalType, MAX_DECIMAL_PRECISION, TimeUnit, TypeError, TypeKind,
-    UnsupportedType,
+    DecimalType, Field, Fields, LOGICAL_TYPE_KEY, LogicalType, MAX_DECIMAL_PRECISION, TimeUnit,
+    TypeError, TypeKind, UnsupportedType,
 };
 
 /// Everything a connector author needs, in one import.
