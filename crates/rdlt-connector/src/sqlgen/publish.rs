@@ -128,7 +128,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// among staged rows of one key the greatest sequence wins. It needs no key index, so a table
     /// that merged before, or never did, merges alike. A child table of a merge table replaces
     /// the children of the roots its root's staged rows publish, reading them from the root's
-    /// staging, so it publishes before its root.
+    /// staging, so it publishes before its root; it is indexed by its root id first, however it
+    /// was created, as each such commit deletes its rows by it.
     pub fn publish(
         &self,
         staged: &Staged,
@@ -137,13 +138,13 @@ impl<D: SqlDialect> SqlPlanner<D> {
         epoch: Epoch,
         segments: &SegmentSet,
     ) -> Result<Vec<Statement>> {
-        let target = match staged.generation {
+        let name = match staged.generation {
             Some(generation) => super::tables::generation_table(&staged.name, generation),
             None => staged.name.clone(),
         };
         if columns.is_empty() {
             return Err(ConnectorError::data(format!(
-                "table {target} does not exist to publish into"
+                "table {name} does not exist to publish into"
             )));
         }
         let names: Vec<String> = columns
@@ -152,7 +153,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             .collect();
         let names = names.join(", ");
         let staging = self.quote(&staging_table(&staged.name));
-        let target = self.quote(&target);
+        let target = self.quote(&name);
         let mut plan = Vec::new();
         let mut insert = self.sql();
         match &staged.merge {
@@ -163,6 +164,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 self.rows_of(&mut insert, staged, pipeline, epoch, segments);
             }
             Some(key) if key.root.is_some() => {
+                plan.push(self.root_index(&name, key)?);
                 plan.push(self.replace_children(&target, staged, key, pipeline, epoch, segments)?);
                 insert.push(&format!(
                     "INSERT INTO {target} ({names}) SELECT {names} FROM {staging} WHERE "
@@ -196,6 +198,20 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.rows_of(&mut delete, staged, pipeline, epoch, segments);
         plan.push(delete.finish());
         Ok(plan)
+    }
+
+    /// The statement indexing the child table `target` by its root id, where it is not.
+    fn root_index(&self, target: &str, key: &MergeKey) -> Result<Statement> {
+        let (owner, _) = child_key(key)?;
+        Ok(Statement {
+            sql: format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
+                self.quote(&format!("{target}__rdlt_root")),
+                self.quote(target),
+                self.quote(owner)
+            ),
+            params: Vec::new(),
+        })
     }
 
     /// The statement removing the rows of the child table `target` whose roots the root table's

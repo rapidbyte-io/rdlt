@@ -1030,30 +1030,54 @@ fn a_child_tables_root_columns_are_read_from_the_root_staging_only() {
 }
 
 #[test]
-fn a_child_table_of_a_merge_table_is_indexed_by_its_root() {
+fn a_child_table_is_indexed_by_its_root_when_it_merges_however_it_was_created() {
     let (connection, planner) = database();
-    let (_, items) = roots_and_items();
-    let fields = [
+    let (roots, items) = roots_and_items();
+    let root_fields = [
+        ("id", LogicalType::Int64, false),
+        ("seq", LogicalType::Binary, false),
+    ];
+    let item_fields = [
         ("root", LogicalType::Int64, false),
         ("seq", LogicalType::Binary, false),
     ];
-    apply(&connection, &planner, &create(&items, &fields)).unwrap();
-    let statement = Statement {
-        sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'items'".to_owned(),
-        params: Vec::new(),
+    // Created while its stream appended, so without a merge key.
+    apply(&connection, &planner, &create(&roots, &root_fields)).unwrap();
+    apply(
+        &connection,
+        &planner,
+        &create(&table("items"), &item_fields),
+    )
+    .unwrap();
+    let indexes = || {
+        let statement = Statement {
+            sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'items'"
+                .to_owned(),
+            params: Vec::new(),
+        };
+        query(&connection, &statement)
     };
-    let indexes = query(&connection, &statement);
-    assert_eq!(indexes.len(), 1, "{indexes:?}");
-    assert!(
-        format!("{:?}", indexes[0]).contains("(\\\"root\\\")"),
-        "{indexes:?}"
-    );
-    assert!(
-        apply(&connection, &planner, &create(&items, &fields))
-            .unwrap()
-            .is_empty(),
-        "applying the change again plans nothing"
-    );
+    assert!(indexes().is_empty());
+    let columns = columns(&connection, &planner, "items");
+    let merge = staged("items", None, items.merge.clone());
+    for _ in 0..2 {
+        let plan = planner
+            .publish(
+                &merge,
+                &columns,
+                &pipeline("mine"),
+                Epoch(1),
+                &segments(&[1]),
+            )
+            .unwrap();
+        run_all(&connection, &plan);
+        let indexes = indexes();
+        assert_eq!(indexes.len(), 1, "{indexes:?}");
+        assert!(
+            format!("{:?}", indexes[0]).contains("(\\\"root\\\")"),
+            "{indexes:?}"
+        );
+    }
 }
 
 #[test]

@@ -86,7 +86,8 @@ and M3d deferred.
 - **Certification.** `D-REPLACE` swaps two tables' generations in one commit; the Vault fault
   `finish_one_generation` fails it alone.
 - **Performance.**
-  - SQL destinations index a child table of a merge table by its root id when they create it.
+  - SQL destinations index a child table of a merge table by its root id each time it merges,
+    so one created before its stream merged is indexed too.
   - The files destination rewrites a child table only where its roots' rows drop children.
   - A lowering plan keeps its constant columns for every batch no larger than the largest seen.
   - Text is rendered into one reused buffer, not a string per value: as fast as Arrow's cast for
