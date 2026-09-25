@@ -192,7 +192,9 @@ pub trait Session: Send + 'static {
     ///
     /// Re-committing the same `(load_id, commit_seq)` returns the stored receipt without
     /// publishing. A commit whose epoch is older than the pipeline's fails with a fenced error.
-    /// A segment this session never staged publishes nothing; the commit may instead fail.
+    /// A segment this session never staged publishes nothing; the commit may instead fail. A
+    /// segment may hold rows for several tables, as a stream and its child tables share their
+    /// partition's segments, and its commit publishes each table's rows (clause `D-TABLES`).
     fn commit(&mut self, meta: &CommitMeta) -> impl Future<Output = Result<Receipt>> + Send;
 
     /// Ends the session.
