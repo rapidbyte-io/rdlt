@@ -2,7 +2,7 @@ use rdlt_connector::{Field, Fields, LogicalType};
 use rdlt_testkit::drawn::Scalar;
 use serde_json::{Value, json};
 
-use super::{Node, Pending, Pushed, Tables, pushed_type};
+use super::{Node, Pending, Pushed, Tables, counted, pushed_type};
 
 fn objects() -> LogicalType {
     let fields = Fields::new(vec![
@@ -88,4 +88,32 @@ fn pushed_scalars_are_inferred_as_json_holds_them() {
         "a null has no type"
     );
     assert_eq!(pushed_type(&Scalar::List(Vec::new())), Pushed::Container);
+}
+
+#[test]
+fn a_json_null_counts_as_a_value_its_policy_discards() {
+    let null = || {
+        vec![(
+            "a".to_owned(),
+            Node::Typed(Scalar::Json(Value::Null), LogicalType::Json),
+        )]
+    };
+    assert_eq!(counted(null(), None), 1);
+    assert_eq!(counted(null(), Some(8)), 1, "normalized, it is a leaf too");
+}
+
+#[test]
+fn an_empty_array_or_an_object_of_nulls_counts_only_where_it_is_stored_whole() {
+    let empty = || vec![("a".to_owned(), Node::Json(json!([])))];
+    assert_eq!(counted(empty(), None), 1);
+    assert_eq!(counted(empty(), Some(8)), 0, "normalized, it holds no item");
+    let nulls = || vec![("a".to_owned(), Node::Json(json!({"x": null})))];
+    assert_eq!(counted(nulls(), None), 1);
+    assert_eq!(
+        counted(nulls(), Some(8)),
+        0,
+        "normalized, it holds no value column"
+    );
+    let items = vec![("a".to_owned(), Node::Json(json!([{"x": 1}, 2])))];
+    assert_eq!(counted(items, Some(8)), 2, "each item counts");
 }
