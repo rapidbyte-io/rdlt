@@ -2,6 +2,7 @@
 //! concurrent runs, and the destination must end up holding exactly what a reference model says.
 
 mod expected;
+mod names;
 mod tables;
 
 use std::sync::Arc;
