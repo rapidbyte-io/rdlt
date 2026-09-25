@@ -7,7 +7,9 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 
 - Run `just ready`: the pull-request gate plus mutation testing of your change. CI does not run
   mutation testing on pull requests (ADR 0003), so a missed mutant is caught here or not at all.
-- Run full mutation passes with `just mutants -j 2`; more jobs can fill a 16 GB `/tmp`.
+- Run full mutation passes with `just mutants -j 4`. Mutation builds carry no debug info, so
+  four jobs' build directories (about 2 GB each) fit a 16 GB `/tmp`. Do not set
+  `CARGO_INCREMENTAL=0`: incremental builds make a run about a third faster.
 - `main` is protected: changes land through pull requests, rebase-merged, with every review thread
   resolved. Commit messages follow Conventional Commits with body lines of at most 72 characters
   (`committed` checks them).

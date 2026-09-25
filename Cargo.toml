@@ -110,6 +110,13 @@ inherits = "release"
 debug-assertions = true
 overflow-checks = true
 
+# Mutation testing: each mutant rebuilds and relinks the test binaries, which debug info only
+# slows, and incremental builds keep each job's rebuild to the crate the mutant is in.
+[profile.mutants]
+inherits = "dev"
+debug = false
+incremental = true
+
 # Benchmarks build as a shipped binary would, so ratios against other engines are fair.
 [profile.bench]
 lto = "fat"

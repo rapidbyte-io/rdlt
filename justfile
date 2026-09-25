@@ -45,11 +45,12 @@ coverage:
 mutants *args:
     cargo mutants --package rdlt-engine --package rdlt-connector {{ args }}
 
-# Mutation testing over this branch's changes, including uncommitted ones, against `base`
-mutants-diff base="origin/main":
+# Mutation testing over this branch's changes, including uncommitted ones, against `base`, in
+# `jobs` parallel builds; incremental builds are what make rebuilding per mutant cheap
+mutants-diff base="origin/main" jobs="4":
     mkdir -p target
     git diff --src-prefix=a/ --dst-prefix=b/ "$(git merge-base {{ base }} HEAD)" > target/mutants.diff
-    cargo mutants --package rdlt-engine --package rdlt-connector --in-diff target/mutants.diff -j 2
+    CARGO_INCREMENTAL=1 cargo mutants --package rdlt-engine --package rdlt-connector --in-diff target/mutants.diff -j {{ jobs }}
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`
 fuzz target seconds="60":

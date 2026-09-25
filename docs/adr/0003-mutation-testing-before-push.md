@@ -1,6 +1,6 @@
 # ADR 0003: Mutation testing runs before pushing until production
 
-Status: accepted, 2026-09-23.
+Status: accepted, 2026-09-23; amended 2026-09-25 (faster local runs).
 
 ## Context
 
@@ -18,6 +18,10 @@ check on a CI runner.
 - The pull-request workflow has no `mutants` job, and `mutants` is not a required check on `main`.
 - The weekly workflow still runs the full mutation suite, so a mutant that slips through a local
   run is found within a week.
+- Mutants build with the `mutants` cargo profile: no debug info, incremental builds, and four
+  jobs in `just mutants-diff`. On M3e's 313 mutants that took a run from 27m48s (two jobs of
+  debug builds, incremental off) to 8m35s, catching the same 271: debug info cost a quarter of
+  the time, two more jobs a third of the rest, and incremental builds a third of that.
 
 ## Consequences
 
