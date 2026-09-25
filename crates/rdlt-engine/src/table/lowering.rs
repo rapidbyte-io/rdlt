@@ -22,7 +22,7 @@ use super::lower::{ID_TYPE, IDX_TYPE, LOAD_ID_TYPE, loaded_at_type};
 use super::resolve::{Incoming, Route};
 use crate::error::Error;
 use crate::normalize::Lineage;
-use merge::{check_key, compact, sequence};
+use merge::{check_key, compact, positions, sequence};
 
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
@@ -43,6 +43,8 @@ pub(crate) struct Prepared {
     pub(crate) discarded_rows: u64,
     /// Values nulled because they carried a discarded change.
     pub(crate) discarded_values: u64,
+    /// Which of the batch's rows the schema policy kept, where it dropped some.
+    pub(crate) kept: Option<BooleanArray>,
 }
 
 /// Where one of the view's columns takes its values from.
@@ -144,6 +146,7 @@ impl LoweringPlan {
                 batch: RecordBatch::new_empty(Arc::clone(&view.schema)),
                 discarded_rows,
                 discarded_values: 0,
+                kept,
             });
         }
         let discarded_values = self
@@ -188,11 +191,13 @@ impl LoweringPlan {
             batch: prepared,
             discarded_rows,
             discarded_values,
+            kept,
         })
     }
 
-    /// The sequence column of `rows` rows of a merge table, which the rows `kept` keeps: a child
-    /// row's sequence is its root row's, from `lineage`, so it follows its root's merge.
+    /// The sequence column of `rows` rows of a merge table, which the rows `kept` keeps: a row's
+    /// sequence is its position among the rows received, and a normalized stream's row's is its
+    /// root row's, from `lineage`, so a child row follows its root's merge.
     fn sequence(
         &self,
         lineage: Option<&Lineage>,
@@ -204,12 +209,11 @@ impl LoweringPlan {
         let failed = |error: arrow_schema::ArrowError| {
             Error::internal(format!("stream {stream}: sequencing a batch: {error}"))
         };
-        let root_rows = lineage
-            .and_then(|lineage| lineage.parent.as_ref())
-            .map(|parent| kept_rows(&parent.root_row, kept))
-            .transpose()
-            .map_err(failed)?;
-        sequence(&self.view, stamp, rows, root_rows.as_ref()).map_err(failed)
+        let positions = match lineage {
+            Some(lineage) => Some(kept_rows(&lineage.root_row, kept).map_err(failed)?),
+            None => kept.map(positions),
+        };
+        sequence(&self.view, stamp, rows, positions.as_ref()).map_err(failed)
     }
 
     /// The lineage columns of the plan's table, lowered, from `lineage` and the rows `kept`

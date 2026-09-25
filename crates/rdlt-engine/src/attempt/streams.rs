@@ -16,7 +16,7 @@ use crate::error::{Error, Side};
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
 use crate::plan::{StreamPlan, WriteMode};
-use crate::policy::{Nested, SchemaPolicy};
+use crate::policy::Nested;
 use crate::table::{Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables};
 
 /// What planning an attempt's streams needs besides the stream itself.
@@ -47,7 +47,7 @@ impl Planning<'_> {
             (WriteMode::Replace, Read::Cycle(cycle, _)) => Some(cycle.generation),
             _ => None,
         };
-        let shape = normalized(self.context, plan, spec)?;
+        let shape = normalized(self.context, plan, spec);
         let (resolver, table, model) =
             self.table(plan, spec, generation, tables, shape.is_some())?;
         let index = tables.add_normalized(resolver, &table, model, shape.clone());
@@ -135,42 +135,16 @@ impl Planning<'_> {
 
 /// How `plan`'s stream normalizes, if its settings or the pipeline's say it does.
 ///
-/// A normalized stream cannot merge, nor drop rows for a schema change, yet: both would have to
-/// reach the rows' children too. Its rows are identified by the merge key or the source's primary
-/// key where there is one.
-fn normalized(
-    context: &RunContext,
-    plan: &StreamPlan,
-    spec: &StreamSpec,
-) -> Result<Option<Shape>, Error> {
+/// Its rows are identified by the merge key or the source's primary key where there is one.
+fn normalized(context: &RunContext, plan: &StreamPlan, spec: &StreamSpec) -> Option<Shape> {
     let pipeline = context.plan.schema_settings();
     let nested = plan
         .schema_settings()
         .nested_setting()
         .or_else(|| pipeline.nested_setting());
     let Some(Nested::Normalize { max_depth }) = nested else {
-        return Ok(None);
+        return None;
     };
-    let name = plan.name();
-    let refuse = |code: &str, detail: &str| {
-        Err(Error::config(format!("stream {name}: {detail}"))
-            .with_code(code)
-            .with_stream(name))
-    };
-    let stream_policy = plan
-        .schema_settings()
-        .policy_setting()
-        .or_else(|| pipeline.policy_setting());
-    let mut policies = plan
-        .columns()
-        .filter_map(|(_, settings)| settings.policy_setting())
-        .chain(stream_policy);
-    if policies.any(|policy| policy == SchemaPolicy::DiscardRow) {
-        return refuse(
-            "normalize_discard_row_unsupported",
-            "a normalized stream cannot discard rows yet, since their children would stay",
-        );
-    }
     let whole = plan
         .columns()
         .filter(|(_, settings)| {
@@ -188,11 +162,11 @@ fn normalized(
         .iter()
         .filter_map(|column| column.segments().next().map(Arc::from))
         .collect();
-    Ok(Some(Shape {
+    Some(Shape {
         max_depth,
         whole,
         key,
-    }))
+    })
 }
 
 /// The stream's catalog entry, once the source can read it as planned and the destination can

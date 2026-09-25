@@ -5,6 +5,7 @@
 //! alike. A container (an object or an array) nested deeper than the stream's `max_depth` stays
 //! whole, and its table stores it as `Json`.
 
+mod cascade;
 mod identity;
 #[cfg(test)]
 mod reference;
@@ -26,6 +27,8 @@ use rdlt_connector::{ColumnPath, Field, LogicalType, TableSchema};
 
 use crate::error::Error;
 use crate::table::Incoming;
+
+pub(crate) use cascade::Dropped;
 
 /// How a stream's batches normalize.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +59,9 @@ pub(crate) struct Part {
 pub(crate) struct Lineage {
     /// Each row's id.
     pub(crate) id: ArrayRef,
+    /// The position of each row's root row, the row itself for a stream's own table, among the
+    /// stream's rows the batch holds: a merge table's rows take their sequence from it.
+    pub(crate) root_row: ArrayRef,
     /// For a child table, each row's parent.
     pub(crate) parent: Option<Parent>,
 }
@@ -69,15 +75,17 @@ pub(crate) struct Parent {
     pub(crate) root: ArrayRef,
     /// Each row's position in its parent's array.
     pub(crate) idx: ArrayRef,
-    /// The position of each row's root row among the stream's rows the batch holds, which a merge
-    /// table's rows take their sequence from.
-    pub(crate) root_row: ArrayRef,
+    /// The path of the parent rows' part.
+    pub(crate) path: Vec<Arc<str>>,
+    /// The position of each row's parent row among its part's rows.
+    pub(crate) row: ArrayRef,
 }
 
-/// The rows of a table whose arrays become child tables: each row's id, its root's id and the
-/// position of its root row.
+/// The rows of a table whose arrays become child tables: their part's path, each row's id, its
+/// root's id and the position of its root row.
 #[derive(Clone, Copy)]
 struct Rows<'a> {
+    path: &'a [Arc<str>],
     ids: &'a BinaryArray,
     roots: &'a BinaryArray,
     positions: &'a UInt32Array,
@@ -108,14 +116,16 @@ pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>,
     }
     let mut parts = Vec::new();
     let arrays = std::mem::take(&mut root.arrays);
+    let root_rows =
+        UInt32Array::from_iter_values(0..u32::try_from(batch.num_rows()).unwrap_or(u32::MAX));
     let lineage = Lineage {
         id: Arc::new(ids.clone()),
+        root_row: Arc::new(root_rows.clone()),
         parent: None,
     };
     parts.push(root.part(Vec::new(), batch.num_rows(), lineage)?);
-    let root_rows =
-        UInt32Array::from_iter_values(0..u32::try_from(batch.num_rows()).unwrap_or(u32::MAX));
     let rows = Rows {
+        path: &[],
         ids: &ids,
         roots: &ids,
         positions: &root_rows,
@@ -353,15 +363,18 @@ fn expand(
     let arrays = std::mem::take(&mut table.arrays);
     let lineage = Lineage {
         id: Arc::new(ids.clone()),
+        root_row: Arc::new(root_rows.clone()),
         parent: Some(Parent {
             id: parent_ids,
             root: Arc::new(root_ids.clone()),
             idx: Arc::new(items.idx),
-            root_row: Arc::new(root_rows.clone()),
+            path: parents.path.to_vec(),
+            row: Arc::new(items.parents),
         }),
     };
     parts.push(table.part(path.to_vec(), values.len(), lineage)?);
     let rows = Rows {
+        path,
         ids: &ids,
         roots: &root_ids,
         positions: &root_rows,

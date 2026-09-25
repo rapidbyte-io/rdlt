@@ -6,13 +6,21 @@ use std::sync::Arc;
 use arrow_array::builder::BinaryBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt32Type;
-use arrow_array::{ArrayRef, RecordBatch, UInt32Array};
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch, UInt32Array};
 use arrow_row::{RowConverter, SortField};
 use rdlt_connector::{LogicalType, StreamName};
 
 use super::{Source, Stamp, lower_array};
 use crate::error::Error;
 use crate::table::TableView;
+
+/// The positions of the rows `kept` keeps.
+pub(super) fn positions(kept: &BooleanArray) -> ArrayRef {
+    let kept = (0..kept.len()).filter(|row| kept.value(*row));
+    Arc::new(UInt32Array::from_iter_values(
+        kept.map(|row| u32::try_from(row).unwrap_or(u32::MAX)),
+    ))
+}
 
 /// Refuses a merge batch that lacks a key column or holds a null key.
 pub(super) fn check_key(

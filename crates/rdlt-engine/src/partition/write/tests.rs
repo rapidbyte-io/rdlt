@@ -80,6 +80,7 @@ fn lowered_batches_are_charged_in_full_before_any_is_queued() {
         batch,
         discarded_rows: 0,
         discarded_values: 0,
+        kept: None,
     });
     let sizes = [
         u64::try_from(lowered[0].batch.get_array_memory_size()).unwrap(),
@@ -121,6 +122,7 @@ fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
                 batch,
                 discarded_rows: 0,
                 discarded_values: 0,
+                kept: None,
             };
             (table, prepared)
         })
