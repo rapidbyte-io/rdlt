@@ -20,7 +20,7 @@ use arrow_array::{
     UInt32Array, make_array,
 };
 use arrow_buffer::NullBuffer;
-use arrow_schema::{ArrowError, DataType, Field as ArrowField, Schema};
+use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef, Schema};
 use rdlt_connector::{ColumnPath, Field, LogicalType, TableSchema};
 
 use crate::error::Error;
@@ -73,7 +73,8 @@ pub(crate) struct Parent {
 /// The columns and arrays one table's rows hold while a batch normalizes.
 #[derive(Default)]
 struct Table {
-    columns: Vec<(ColumnPath, ArrayRef)>,
+    /// Each column's path, its Arrow field (whose name the part replaces) and its values.
+    columns: Vec<(ColumnPath, FieldRef, ArrayRef)>,
     /// Arrays within depth, which become child tables: their path in this table, their values
     /// and their depth.
     arrays: Vec<(Vec<Arc<str>>, ArrayRef, u8)>,
@@ -87,9 +88,9 @@ pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>,
     for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
         let path = vec![Arc::from(field.name().as_str())];
         if shape.whole.contains(field.name().as_str()) {
-            root.column(path, Arc::clone(column))?;
+            root.column(path, field, Arc::clone(column))?;
         } else {
-            root.place(path, column, 1, shape.max_depth)?;
+            root.place(path, field, column, 1, shape.max_depth)?;
         }
     }
     let mut parts = Vec::new();
@@ -114,34 +115,40 @@ pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>,
 }
 
 impl Table {
-    fn column(&mut self, path: Vec<Arc<str>>, array: ArrayRef) -> Result<(), ArrowError> {
+    fn column(
+        &mut self,
+        path: Vec<Arc<str>>,
+        field: &FieldRef,
+        array: ArrayRef,
+    ) -> Result<(), ArrowError> {
         let path =
             ColumnPath::new(path).map_err(|error| ArrowError::SchemaError(error.to_string()))?;
-        self.columns.push((path, array));
+        self.columns.push((path, Arc::clone(field), array));
         Ok(())
     }
 
-    /// Places `array`, the column at `path` whose values sit at `depth`: an object within depth
-    /// flattens into its fields, an array within depth waits to become a child table, and
-    /// anything else is a column.
+    /// Places `array`, of `field`, the column at `path` whose values sit at `depth`: an object
+    /// within depth flattens into its fields, an array within depth waits to become a child
+    /// table, and anything else is a column.
     fn place(
         &mut self,
         path: Vec<Arc<str>>,
+        field: &FieldRef,
         array: &ArrayRef,
         depth: u8,
         max_depth: u8,
     ) -> Result<(), ArrowError> {
         if depth > max_depth {
-            return self.column(path, Arc::clone(array));
+            return self.column(path, field, Arc::clone(array));
         }
         match array.data_type() {
             DataType::Struct(_) => {
                 let object = array.as_struct();
-                for (field, values) in object.fields().iter().zip(object.columns()) {
-                    let mut field_path = path.clone();
-                    field_path.push(Arc::from(field.name().as_str()));
-                    let values = within(values, object.nulls())?;
-                    self.place(field_path, &values, depth + 1, max_depth)?;
+                for (inner, values) in object.fields().iter().zip(object.columns()) {
+                    let mut inner_path = path.clone();
+                    inner_path.push(Arc::from(inner.name().as_str()));
+                    let values = within(values, object.nulls());
+                    self.place(inner_path, inner, &values, depth + 1, max_depth)?;
                 }
                 Ok(())
             }
@@ -149,18 +156,27 @@ impl Table {
                 self.arrays.push((path, Arc::clone(array), depth));
                 Ok(())
             }
-            _ => self.column(path, Arc::clone(array)),
+            _ => self.column(path, field, Arc::clone(array)),
         }
     }
 
     /// The part of `rows` rows at `path` this table holds.
     fn part(self, path: Vec<Arc<str>>, rows: usize, lineage: Lineage) -> Result<Part, ArrowError> {
-        let (columns, arrays): (Vec<ColumnPath>, Vec<ArrayRef>) = self.columns.into_iter().unzip();
-        let fields: Vec<ArrowField> = columns
-            .iter()
-            .zip(&arrays)
-            .map(|(path, array)| ArrowField::new(name(path), array.data_type().clone(), true))
-            .collect();
+        let mut columns = Vec::with_capacity(self.columns.len());
+        let mut fields = Vec::with_capacity(self.columns.len());
+        let mut arrays = Vec::with_capacity(self.columns.len());
+        for (path, field, array) in self.columns {
+            // The field keeps its metadata, such as the JSON and UUID extension names.
+            let field = field
+                .as_ref()
+                .clone()
+                .with_name(name(&path))
+                .with_data_type(array.data_type().clone())
+                .with_nullable(true);
+            columns.push(path);
+            fields.push(field);
+            arrays.push(array);
+        }
         let options = RecordBatchOptions::new().with_row_count(Some(rows));
         let batch =
             RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options)?;
@@ -241,13 +257,23 @@ fn name(path: &ColumnPath) -> String {
 }
 
 /// `values`, a field of an object, null wherever the object is.
-fn within(values: &ArrayRef, object: Option<&NullBuffer>) -> Result<ArrayRef, ArrowError> {
+///
+/// Values of a type that holds no null buffer stay as they are: `Null` values are null already,
+/// and unions and run-end encoded arrays keep their own.
+fn within(values: &ArrayRef, object: Option<&NullBuffer>) -> ArrayRef {
     let Some(object) = object else {
-        return Ok(Arc::clone(values));
+        return Arc::clone(values);
     };
+    if *values.data_type() == DataType::Null {
+        return Arc::clone(values);
+    }
     let nulls = NullBuffer::union(Some(object), values.nulls());
-    let data = values.to_data().into_builder().nulls(nulls).build()?;
-    Ok(make_array(data))
+    values
+        .to_data()
+        .into_builder()
+        .nulls(nulls)
+        .build()
+        .map_or_else(|_| Arc::clone(values), make_array)
 }
 
 /// The item field of an array type, if `data_type` is one.
@@ -306,7 +332,11 @@ fn expand(
     let root_ids = arrow_select::take::take(roots, &items.parents, None)?;
     let root_ids = root_ids.as_binary::<i32>().clone();
     let ids = identity::child_ids(parent_ids.as_binary::<i32>(), &items.idx);
-    let mut table = items_table(&values, depth + 1, max_depth)?;
+    let item = match list.data_type() {
+        DataType::List(item) => Arc::clone(item),
+        other => Arc::new(ArrowField::new(VALUE, other.clone(), true)),
+    };
+    let mut table = items_table(&item, &values, depth + 1, max_depth)?;
     let arrays = std::mem::take(&mut table.arrays);
     let lineage = Lineage {
         id: Arc::new(ids.clone()),
@@ -367,15 +397,20 @@ impl Items {
 /// The child table of `values`, items at `depth`: an object within depth flattens into columns,
 /// an array within depth becomes a grandchild table under `value`, and anything else is the column
 /// `value`.
-fn items_table(values: &ArrayRef, depth: u8, max_depth: u8) -> Result<Table, ArrowError> {
+fn items_table(
+    item: &FieldRef,
+    values: &ArrayRef,
+    depth: u8,
+    max_depth: u8,
+) -> Result<Table, ArrowError> {
     let mut table = Table::default();
     match values.data_type() {
         DataType::Struct(_) if depth <= max_depth => {
             let object = values.as_struct();
             for (field, column) in object.fields().iter().zip(object.columns()) {
-                let column = within(column, object.nulls())?;
+                let column = within(column, object.nulls());
                 let path = vec![Arc::from(field.name().as_str())];
-                table.place(path, &column, depth + 1, max_depth)?;
+                table.place(path, field, &column, depth + 1, max_depth)?;
             }
         }
         data_type if item_field(data_type).is_some() && depth <= max_depth => {
@@ -383,7 +418,7 @@ fn items_table(values: &ArrayRef, depth: u8, max_depth: u8) -> Result<Table, Arr
                 .arrays
                 .push((vec![Arc::from(VALUE)], Arc::clone(values), depth));
         }
-        _ => table.column(vec![Arc::from(VALUE)], Arc::clone(values))?,
+        _ => table.column(vec![Arc::from(VALUE)], item, Arc::clone(values))?,
     }
     Ok(table)
 }

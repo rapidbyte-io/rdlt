@@ -184,11 +184,12 @@ pub(crate) fn physical_fields(
             false,
         ));
     }
+    // Lineage columns are nullable: rows loaded before their stream normalized have none.
     if let Some(id) = &meta.id {
         fields.push(Field::new(
             Arc::clone(id),
             lower(&ID_TYPE, native, capabilities),
-            false,
+            true,
         ));
     }
     if let Some([parent, root, idx]) = &meta.parent {
@@ -196,7 +197,7 @@ pub(crate) fn physical_fields(
             fields.push(Field::new(
                 Arc::clone(name),
                 lower(&logical, native, capabilities),
-                false,
+                true,
             ));
         }
     }

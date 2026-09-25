@@ -59,6 +59,7 @@ impl Planning<'_> {
             tables.fit(index, &incoming).await?;
         }
         tables.create_generation(index).await?;
+        tables.add_lineage(index).await?;
         for child in tables.recorded_children(index) {
             tables.child(index, &child).await?;
         }
@@ -161,14 +162,15 @@ fn normalized(
             "a normalized stream cannot merge yet",
         );
     }
-    let policies = [plan.schema_settings(), pipeline]
-        .into_iter()
-        .chain(plan.columns().map(|(_, settings)| settings))
-        .filter_map(|settings| settings.policy_setting());
-    if policies
-        .into_iter()
-        .any(|policy| policy == SchemaPolicy::DiscardRow)
-    {
+    let stream_policy = plan
+        .schema_settings()
+        .policy_setting()
+        .or_else(|| pipeline.policy_setting());
+    let mut policies = plan
+        .columns()
+        .filter_map(|(_, settings)| settings.policy_setting())
+        .chain(stream_policy);
+    if policies.any(|policy| policy == SchemaPolicy::DiscardRow) {
         return refuse(
             "normalize_discard_row_unsupported",
             "a normalized stream cannot discard rows yet, since their children would stay",

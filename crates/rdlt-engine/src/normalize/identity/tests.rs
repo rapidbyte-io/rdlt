@@ -143,9 +143,10 @@ fn arrays_maps_and_other_types_encode_by_their_values() {
     map.values().append_value(1);
     map.append(true).unwrap();
     let entry = [
-        b"[{".to_vec(),
+        b"[{k".to_vec(),
         prefixed(b"keys"),
         tagged(b's', b"k"),
+        b"k".to_vec(),
         prefixed(b"values"),
         b"d1;}]".to_vec(),
     ]

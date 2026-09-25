@@ -114,10 +114,16 @@ struct Arriving<'a> {
 }
 
 impl Resolver {
-    /// The resolver of a child table of the same stream, whose tables normalize and never merge:
-    /// with a child's lineage columns.
+    /// The resolver of a child table of the same stream: with the stream's settings but not
+    /// those of its own table's columns, and a child's lineage columns.
     pub(crate) fn child(&self) -> Result<Self, Error> {
+        let settings = Settings {
+            stream: self.settings.stream.without_columns(),
+            key: Vec::new(),
+            ..self.settings.clone()
+        };
         Ok(Self {
+            settings,
             meta: MetaNames::assign(&self.naming, false, LineageColumns::Child)?,
             ..self.clone()
         })
@@ -152,7 +158,13 @@ impl Resolver {
             };
             routes.push(self.route(&mut draft, &column, model.created())?);
         }
-        draft.finish(routes, &self.naming, &self.meta.all())
+        let mut resolution = draft.finish(routes, &self.naming, &self.meta.all())?;
+        // A normalized stream's table holds its rows' lineage even where they hold no other value,
+        // so its first batch creates it.
+        if self.meta.id.is_some() && !resolution.model.created() {
+            resolution.model.version = 1;
+        }
+        Ok(resolution)
     }
 
     /// Where `column` goes, recording the changes it needs.

@@ -171,6 +171,7 @@ fn encode(value: &Json, out: &mut Vec<u8>) {
                 .collect();
             fields.sort_by_key(|(name, _)| *name);
             for (name, field) in fields {
+                out.push(b'k');
                 length(out, name.as_bytes());
                 encode(field, out);
             }

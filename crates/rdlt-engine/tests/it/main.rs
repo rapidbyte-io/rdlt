@@ -11,6 +11,7 @@ mod json;
 mod ledger;
 mod merge;
 mod normalize;
+mod normalized;
 mod schema;
 mod support;
 

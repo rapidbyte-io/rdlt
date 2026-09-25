@@ -88,11 +88,27 @@ fn rows_of(part: &Part) -> Vec<Row> {
                     parent.idx.as_primitive::<Int64Type>().value(row),
                 )
             });
+            let schema = part.batch.schema();
             let columns = part
                 .columns
                 .iter()
-                .zip(part.batch.columns())
-                .map(|(path, column)| (path, json_of(column, row)))
+                .zip(schema.fields().iter().zip(part.batch.columns()))
+                .map(|(path, (field, column))| {
+                    let value = json_of(column, row);
+                    // A column whose values mix types holds them as JSON text.
+                    let json = field
+                        .metadata()
+                        .get("ARROW:extension:name")
+                        .map(String::as_str)
+                        == Some("arrow.json");
+                    match (json, value) {
+                        (true, Json::String(text)) => (
+                            path,
+                            serde_json::from_str(&text).expect("JSON columns hold JSON"),
+                        ),
+                        (_, value) => (path, value),
+                    }
+                })
                 .filter(|(_, value)| !value.is_null())
                 .map(|(path, value)| {
                     let path = path.segments().map(str::to_owned).collect();
@@ -382,8 +398,8 @@ fn item() -> impl Strategy<Value = Json> {
 
 fn record() -> impl Strategy<Value = Json> {
     let inner = maybe(text()).prop_map(|c| object(vec![("c", c)]));
-    let meta = (maybe((0_i64..5).prop_map(Json::from)), maybe(inner))
-        .prop_map(|(a, b)| object(vec![("a", a), ("b", b)]));
+    let a = prop_oneof![(0_i64..5).prop_map(Json::from), Just(Json::Null)];
+    let meta = (maybe(a), maybe(inner)).prop_map(|(a, b)| object(vec![("a", a), ("b", b)]));
     let matrix = array(array((0_i64..3).prop_map(Json::from), 0.0), 0.0);
     let nested_key = array((0_i64..3).prop_map(Json::from), 0.0)
         .prop_map(|values| object(vec![("b", Some(values))]));
@@ -397,10 +413,12 @@ fn record() -> impl Strategy<Value = Json> {
         maybe(matrix),
         maybe((0_i64..3).prop_map(Json::from)),
         maybe(nested_key),
+        maybe(prop_oneof![(0_i64..3).prop_map(Json::from), text()]),
     )
         .prop_map(
-            |(id, name, amount, meta, items, scores, matrix, flat, nested)| {
+            |(id, name, amount, meta, items, scores, matrix, flat, nested, mixed)| {
                 object(vec![
+                    ("mixed", mixed),
                     ("id", id),
                     ("name", name),
                     ("amount", amount),
@@ -470,4 +488,76 @@ fn fields_of_a_null_object_are_null_whatever_the_array_holds_beneath() {
     let a = parts[0].batch.column(0);
     assert_eq!(a.as_primitive::<Int64Type>().value(0), 1);
     assert!(a.is_null(1), "the null object's field is null, not 2");
+}
+
+#[test]
+fn a_null_field_of_an_object_null_in_other_rows_normalizes() {
+    let records = [
+        json!({"id": 1, "o": {"a": null, "b": 1}}),
+        json!({"id": 2, "o": null}),
+    ];
+    let parts = parts(&records, &shape(8));
+    let columns: Vec<String> = parts[0].columns.iter().map(ToString::to_string).collect();
+    assert_eq!(columns, ["id", "o.a", "o.b"]);
+}
+
+#[test]
+fn columns_keep_the_arrow_types_their_fields_declare() {
+    let records = [
+        json!({"a": 1, "o": {"m": 1}}),
+        json!({"a": "x", "o": {"m": [2]}}),
+    ];
+    let parts = parts(&records, &shape(8));
+    let schema = rdlt_connector::TableSchema::from_arrow(&parts[0].batch.schema()).unwrap();
+    let types: Vec<&rdlt_connector::LogicalType> = schema
+        .fields()
+        .iter()
+        .map(rdlt_connector::Field::logical_type)
+        .collect();
+    assert_eq!(
+        types,
+        [
+            &rdlt_connector::LogicalType::Json,
+            &rdlt_connector::LogicalType::Json
+        ],
+        "mixed values stay JSON, flattened or not"
+    );
+}
+
+#[test]
+fn a_rows_id_does_not_depend_on_the_rows_beside_it() {
+    let alone = parts(&[json!({"id": 1, "a": 1, "o": {"b": 2}})], &shape(0));
+    let beside = parts(
+        &[
+            json!({"id": 1, "a": 1, "o": {"b": 2}}),
+            json!({"a": "x", "o": [3]}),
+        ],
+        &shape(0),
+    );
+    let id = |parts: &[Part]| parts[0].lineage.id.as_binary::<i32>().value(0).to_vec();
+    assert_eq!(
+        id(&alone),
+        id(&beside),
+        "values widened to JSON hash as themselves"
+    );
+}
+
+#[test]
+fn rows_that_differ_never_encode_alike() {
+    let text = format!("{}t}}", "x".repeat(121));
+    let key = format!("\u{1}bs{{{}", "x".repeat(121));
+    let first = json!({"a": {}, "b": text});
+    let second = json!({"a": {key: true}});
+    let ids: Vec<Vec<u8>> = [first, second]
+        .iter()
+        .map(|record| {
+            parts(std::slice::from_ref(record), &shape(0))[0]
+                .lineage
+                .id
+                .as_binary::<i32>()
+                .value(0)
+                .to_vec()
+        })
+        .collect();
+    assert_ne!(ids[0], ids[1]);
 }

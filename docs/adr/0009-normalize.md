@@ -31,18 +31,28 @@ leaves open, and one it words otherwise.
   key or the source's primary key) or, without one, of the whole row; a child's is the xxh3-128 of
   its parent's id and its position. The encoding tags each value's kind, renders integers as their
   digits and floats as their shortest round-trip text (so `1` and `1.0` agree), lists an object's
-  non-null fields in name order (so a missing field and a null one agree) and writes lengths in
-  LEB128. It works on Arrow values, so an id does not depend on the batch, chunk or Arrow type that
-  carried the row. A reference normalizer over JSON values, with its own encoding, checks it.
+  non-null fields in name order (so a missing field and a null one agree), encodes the JSON text
+  a column of mixed types holds as the values it renders, tags every field and writes lengths in
+  LEB128, so no encoding is a prefix of another. It works on Arrow values, so an id does not
+  depend on the batch, chunk or Arrow type that carried the row. A reference normalizer over JSON
+  values, with its own encoding, checks it. Roots that share a key, or whose key is null, share an
+  id, as the spec's keyed identity has them.
 - **Lineage columns' types.** The spec gives the ids as `FixedSizeBinary(16)` and the position as
   `UInt32`. The contract has no fixed-size binary or unsigned logical types, so the ids are 16
   bytes of `Binary`, as `_rdlt_seq` already is, and the position is `Int64`; every destination
-  stores both. A stream's own table carries `_rdlt_id`; child tables carry all four.
+  stores both. A stream's own table carries `_rdlt_id`; child tables carry all four. They are
+  nullable: a stream that starts to normalize keeps its table, to which planning adds the lineage
+  columns, and its earlier rows have none.
 - **Child tables.** A child table's path is its parent table's path and the array's path within
   the parent row, and its name comes from the naming rules for that path, so `a__b` as a key and
   `a.b` as nesting never alias (D4). Tables that state records keep their names. A child table is
-  added the first time its rows arrive, creating it through the session; lanes open a table's writer
-  on its first write rather than at the attempt's start.
+  added the first time its rows arrive, creating it through the session, even when its rows hold
+  nothing but their lineage (an array of arrays); lanes open a table's writer on its first write
+  rather than at the attempt's start.
+- **Schema policy per child table.** Child tables follow the stream's settings, not those of the
+  stream's own table's columns, whose names they may share. A new array below a stream's table
+  that state records is a schema change the stream's policy decides: `freeze` refuses it with
+  `schema_frozen`, `discard_value` drops its rows and counts them, `evolve` adds its table.
 - **Segments span tables.** A partition's rows and its child rows share the partition's segments.
   The destination contract now says a segment may hold rows for several tables, and certification
   clause `D-TABLES` checks it; the reference destinations already met it.
@@ -53,8 +63,8 @@ leaves open, and one it words otherwise.
   that it holds, objects flattened; child tables are created by their first rows.
 - **Reports.** A stream's reported rows count the rows of its child tables too; reports stay per
   stream.
-- **Not yet.** Normalizing a stream that merges, or whose policy drops rows, is a `Config` error
-  until M3d, since both have to reach the rows' children.
+- **Not yet.** Normalizing a stream that merges, or whose effective policy or a column's drops
+  rows, is a `Config` error until M3d, since both have to reach the rows' children.
 
 ## Consequences
 
