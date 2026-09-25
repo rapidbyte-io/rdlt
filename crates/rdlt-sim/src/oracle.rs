@@ -87,9 +87,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) {
         }
         settle(seed).await;
         check_contents(&world, phase, seed);
-        if features.reports_complete() {
-            check_discards(&world, phase, &reports, seed);
-        }
+        check_discards(&world, phase, &reports, features.reports_complete(), seed);
     }
     let violations = world.violations();
     World::unregister(&name);
@@ -250,9 +248,11 @@ fn check_contents(world: &World, phase: usize, seed: Seed) {
     }
 }
 
-/// Checks that the rows and values each stream's policy discarded in `phase`, as its runs'
-/// `reports` count them, are those the model's policy discards.
-fn check_discards(world: &World, phase: usize, reports: &[Report], seed: Seed) {
+/// Checks the rows and values each stream's policy discarded in `phase`, as its runs' `reports`
+/// count them, against those the model's policy discards: exactly where the reports are
+/// `complete`, and otherwise never more, as a dropped run's report or a commit whose response was
+/// lost goes uncounted.
+fn check_discards(world: &World, phase: usize, reports: &[Report], complete: bool, seed: Seed) {
     for stream in &world.workload.streams {
         let counted = reports
             .iter()
@@ -284,11 +284,22 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], seed: Seed) {
                 _ => (rows, values),
             }
         });
-        assert_eq!(
-            counted, expected,
-            "seed {seed}: stream {} ({:?}, {:?}, {:?}) in phase {phase} counted (rows, values) \
-             discarded; the model counts otherwise",
-            stream.name, stream.read, stream.write, stream.policy
+        let fits = if complete {
+            counted == expected
+        } else {
+            counted.0 <= expected.0 && counted.1 <= expected.1
+        };
+        assert!(
+            fits,
+            "seed {seed}: stream {} ({:?}, {:?}, {:?}) in phase {phase} counted {counted:?} \
+             (rows, values) discarded; the model counts {expected:?}, which reports that are \
+             {} must {}",
+            stream.name,
+            stream.read,
+            stream.write,
+            stream.policy,
+            if complete { "complete" } else { "incomplete" },
+            if complete { "equal" } else { "not exceed" },
         );
     }
 }
