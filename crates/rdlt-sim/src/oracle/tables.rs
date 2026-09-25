@@ -4,15 +4,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rdlt_connector::{
-    ColumnKey, ColumnPath, Field, IdentifierCase, IdentifierChars, LogicalType, TablePath,
-    TableSchema,
-};
-use rdlt_engine::Nested;
+use rdlt_connector::{ColumnKey, ColumnPath, Field, LogicalType, TablePath, TableSchema};
+use rdlt_engine::{Nested, WriteMode};
 use rdlt_testkit::canon::{Canon, storage};
 use rdlt_testkit::decode;
 
 use super::expected::{self, Expected};
+use super::names;
 use crate::destination::{Published, Stored, published_table, table_paths};
 use crate::seed::Seed;
 use crate::workload::{Row, SimStream};
@@ -109,6 +107,12 @@ impl Table<'_> {
                 findings.push("a row names no known parent".to_owned());
                 continue;
             };
+            let columns = fields(row);
+            for column in names::unnamed(&columns, &published.names, self.meta()) {
+                findings.push(format!(
+                    "row {ident} has column {column}, which no name map names"
+                ));
+            }
             match templates.get(ident.as_str()) {
                 Some((template, _)) => self.compare(row, template, &published, &mut findings),
                 None => findings.push(format!("row {ident} is not in the model")),
@@ -282,47 +286,33 @@ impl Table<'_> {
             .then(|| format!("{physical} holds {:?}, not {expected:?}", cell.value))
     }
 
-    /// Checks the table's identifiers against the destination's rules: within its length, in its
-    /// case and characters, none reserved, and each distinct.
+    /// Checks the table's identifiers against the destination's rules, and each distinct.
     fn check_names(&self, published: &Published) {
         let rules = &self.world.capabilities.identifiers;
         let mut seen = BTreeSet::new();
-        let columns = published.rows.iter().flat_map(|row| {
-            let schema = row.row.schema();
-            let names: Vec<String> = schema
-                .fields()
-                .iter()
-                .map(|field| field.name().clone())
-                .collect();
-            names
-        });
+        let columns = published.rows.iter().flat_map(fields);
         for name in std::iter::once(published.physical.clone()).chain(columns) {
-            if !seen.insert(name.clone()) {
-                continue;
+            if seen.insert(name.clone()) {
+                assert!(
+                    names::fits(rules, &name),
+                    "seed {}: identifier {name:?} of table {:?} breaks the destination's rules \
+                     {rules:?}",
+                    self.seed,
+                    self.path
+                );
             }
-            let fits = name.len() <= usize::from(rules.max_len.get())
-                && match rules.case {
-                    IdentifierCase::Lower => !name.chars().any(char::is_uppercase),
-                    IdentifierCase::Upper => !name.chars().any(char::is_lowercase),
-                    IdentifierCase::Preserve => true,
-                }
-                && match rules.chars {
-                    IdentifierChars::AsciiWord => {
-                        name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    }
-                    IdentifierChars::Any => !name.chars().any(char::is_control),
-                }
-                && !rules
-                    .reserved
-                    .iter()
-                    .any(|word| word.eq_ignore_ascii_case(&name));
-            assert!(
-                fits,
-                "seed {}: identifier {name:?} of table {:?} breaks the destination's rules \
-                 {rules:?}",
-                self.seed, self.path
-            );
         }
+    }
+
+    /// How many metadata columns follow a row's source columns: the load id and load start, a
+    /// merge table's sequence, and a normalized stream's lineage, a child's four columns of it.
+    fn meta(&self) -> usize {
+        let lineage = match (self.path.len() > 1, self.stream.normalized()) {
+            (true, _) => 4,
+            (false, true) => 1,
+            (false, false) => 0,
+        };
+        2 + usize::from(self.stream.write == WriteMode::Merge) + lineage
     }
 }
 
@@ -370,4 +360,14 @@ fn read<'a>(
         lowered,
         value,
     })
+}
+
+/// The names of `row`'s columns, in order.
+fn fields(row: &Stored) -> Vec<String> {
+    let schema = row.row.schema();
+    schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect()
 }
