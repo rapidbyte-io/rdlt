@@ -52,22 +52,6 @@ impl<D: SqlDialect> SqlPlanner<D> {
         plan
     }
 
-    /// The statement indexing `table`, a child table of a merge table, by its root id, which each
-    /// commit publishing its roots deletes its rows by; nothing for other tables.
-    fn root_index(&self, table: &TableRef, target: &str) -> Option<Statement> {
-        let key = table.merge.as_ref().filter(|key| key.root.is_some())?;
-        let owner = key.columns.first()?;
-        let index = self.quote(&format!("{target}__rdlt_root"));
-        Some(Statement {
-            sql: format!(
-                "CREATE INDEX IF NOT EXISTS {index} ON {} ({})",
-                self.quote(target),
-                self.quote(owner)
-            ),
-            params: Vec::new(),
-        })
-    }
-
     /// The statements applying `change`, given the columns its target and staging tables have
     /// now, empty where a table is missing.
     ///
@@ -85,11 +69,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         match change {
             TableChange::Create { schema, .. } => {
                 let fields: Vec<&Field> = schema.fields().iter().collect();
-                let mut plan = self.fields(&names, [target, staging], &fields)?;
-                if target.is_empty() {
-                    plan.extend(self.root_index(table, &names[0]));
-                }
-                Ok(plan)
+                self.fields(&names, [target, staging], &fields)
             }
             TableChange::AddColumn { field, .. } => {
                 if target.is_empty() {
