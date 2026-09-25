@@ -16,11 +16,23 @@ pub fn draw<S: Strategy>(strategy: &S, seed: u64) -> S::Value {
         chunk.copy_from_slice(&state.to_le_bytes());
     }
     let rng = TestRng::from_seed(RngAlgorithm::ChaCha, &bytes);
-    let mut runner = TestRunner::new_with_rng(Config::default(), rng);
+    let mut runner = TestRunner::new_with_rng(fixed(), rng);
     strategy
         .new_tree(&mut runner)
         .expect("the strategies drawn from reject few values")
         .current()
+}
+
+/// A runner's configuration with what shapes a draw fixed at proptest's defaults: `Config::default`
+/// reads them from `PROPTEST_*` variables, and a seed must draw alike wherever it replays.
+fn fixed() -> Config {
+    Config {
+        max_default_size_range: 100,
+        max_local_rejects: 65_536,
+        max_global_rejects: 1024,
+        max_flat_map_regens: 1_000_000,
+        ..Config::default()
+    }
 }
 
 /// The `SplitMix64` step of `state`.
