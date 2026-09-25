@@ -111,17 +111,35 @@ pub(super) fn drift_values(stream: &SimStream, row: &Row) -> u64 {
         .iter()
         .zip(&row.extras)
         .filter_map(|(drift, extra)| Some((drift, extra.as_ref()?)))
-        .map(|(drift, extra)| (drift, node(stream, drift_type(row, drift), extra)))
+        .map(|(drift, extra)| {
+            (
+                drift.name.clone(),
+                node(stream, drift_type(row, drift), extra),
+            )
+        })
+        .collect();
+    let max_depth = match stream.nested {
+        Nested::Normalize { max_depth } => Some(max_depth),
+        _ => None,
+    };
+    counted(nodes, max_depth)
+}
+
+/// The values `nodes`, drift columns' by name, count as: each non-null one, or, normalized to
+/// `max_depth`, each value column and array item it normalizes into.
+fn counted(nodes: Vec<(String, Node)>, max_depth: Option<u8>) -> u64 {
+    let nodes = nodes
+        .into_iter()
         .filter(|(_, node)| !matches!(node.kind(), Kind::Null));
-    let Nested::Normalize { max_depth } = stream.nested else {
+    let Some(max_depth) = max_depth else {
         return nodes.count() as u64;
     };
     let mut pending = Pending {
         counting: true,
         ..Pending::default()
     };
-    for (drift, node) in nodes {
-        pending.place(vec![drift.name.clone()], node, 1, max_depth);
+    for (name, node) in nodes {
+        pending.place(vec![name], node, 1, max_depth);
     }
     let items: usize = pending.arrays.iter().map(|(_, items, _)| items.len()).sum();
     (pending.columns.len() + items) as u64
