@@ -3,7 +3,8 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{Partition, Permit, StreamName};
 
-use super::{LOWERING_WINDOW, charge_growth, hold, share_growth, shred_failed, windows};
+use super::normalized::{charge_parts, share_growth};
+use super::{LOWERING_WINDOW, charge_growth, hold, shred_failed, windows};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
@@ -80,7 +81,6 @@ fn lowered_batches_are_charged_in_full_before_any_is_queued() {
         batch,
         discarded_rows: 0,
         discarded_values: 0,
-        kept: None,
     });
     let sizes = [
         u64::try_from(lowered[0].batch.get_array_memory_size()).unwrap(),
@@ -122,7 +122,6 @@ fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
                 batch,
                 discarded_rows: 0,
                 discarded_values: 0,
-                kept: None,
             };
             (table, prepared)
         })
@@ -145,5 +144,31 @@ fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
         "held while a part waits to be staged"
     );
     drop(first);
+    assert_eq!(budget.reserved(), 0);
+}
+
+#[test]
+fn normalized_parts_are_charged_before_they_wait_on_their_tables() {
+    let budget = MemoryBudget::new(1 << 22);
+    let held = hold(&budget, &[ids(10)], Vec::new()).remove(0);
+    let shape = crate::normalize::Shape {
+        max_depth: 8,
+        whole: std::collections::BTreeSet::new(),
+        key: Vec::new(),
+    };
+    let parts = crate::normalize::normalize(&ids(1000), &shape).unwrap();
+    let bytes: usize = parts
+        .iter()
+        .map(|part| {
+            let lineage = &part.lineage;
+            part.batch.get_array_memory_size()
+                + lineage.id.get_array_memory_size()
+                + lineage.root_row.get_array_memory_size()
+        })
+        .sum();
+    let bytes = u64::try_from(bytes).unwrap();
+    let held = charge_parts(&budget, &parts, held);
+    assert_eq!(budget.reserved(), bytes);
+    drop(held);
     assert_eq!(budget.reserved(), 0);
 }

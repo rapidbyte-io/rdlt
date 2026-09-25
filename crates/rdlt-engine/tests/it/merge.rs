@@ -203,3 +203,52 @@ async fn the_later_batch_of_one_segment_wins_its_key() {
         [json!({"id": 1, "v": "c"}), json!({"id": 2, "v": "b"})]
     );
 }
+
+/// Loads `pushes` of `events` into `target`'s `store` as `plan` says, and checks the run
+/// succeeded.
+async fn load_into(
+    target: crate::support::targets::Target,
+    store: &str,
+    pushes: &[&str],
+    plan: rdlt_engine::StreamPlan,
+) {
+    let source = batches(
+        &target.name(store),
+        vec![BatchStream::json("events", pushes)],
+    )
+    .await;
+    let outcome = engine(commit_every(1))
+        .run(
+            pipeline(store, [plan]),
+            source,
+            target.destination(store).await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{target:?}: {:?}",
+        outcome.error
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_destination_merges_into_a_table_it_appended_to_and_appends_again() {
+    let keyed = || merging("events").key(["id"]);
+    for target in crate::support::targets::Target::ALL {
+        let store = "switched";
+        let appended = [r#"{"id":1,"v":"a"}"#, r#"{"id":1,"v":"b"}"#];
+        load_into(target, store, &appended, stream("events")).await;
+        let merged = [r#"{"id":1,"v":"c"}"#, r#"{"id":2,"v":"d"}"#];
+        load_into(target, store, &merged, keyed()).await;
+        let mut rows = target.json(store, "events");
+        rows.sort_by_key(ToString::to_string);
+        assert_eq!(
+            rows,
+            [json!({"id": 1, "v": "c"}), json!({"id": 2, "v": "d"})],
+            "{target:?}: the merge replaced both appended rows of key 1"
+        );
+        load_into(target, store, &[r#"{"id":1,"v":"e"}"#], stream("events")).await;
+        assert_eq!(target.rows(store, "events"), 3, "{target:?}");
+    }
+}

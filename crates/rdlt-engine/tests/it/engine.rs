@@ -10,7 +10,7 @@ use rdlt_engine::{
 use crate::support::destinations::limited;
 use crate::support::script::{Fault, Hang, PushKind, Script, ScriptStream, id, reconnect};
 use crate::support::{
-    COMPUTE_JOBS, commit_every, engine, every_id, generator, memory, pipeline, published_ids,
+    commit_every, counting_engine, engine, every_id, generator, memory, pipeline, published_ids,
     published_rows, retrying, stream, until,
 };
 
@@ -828,8 +828,8 @@ async fn arrow_batches_are_lowered_on_the_compute_pool() {
     let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 25, 5)])
         .connect("lowered_on_the_pool")
         .await;
-    let before = COMPUTE_JOBS.load(Ordering::SeqCst);
-    let outcome = engine(commit_every(1000))
+    let (engine, jobs) = counting_engine(commit_every(1000));
+    let outcome = engine
         .run(
             pipeline("lowered-on-the-pool", [stream("events")]),
             source,
@@ -842,6 +842,6 @@ async fn arrow_batches_are_lowered_on_the_compute_pool() {
         "{:?}",
         outcome.error
     );
-    let jobs = COMPUTE_JOBS.load(Ordering::SeqCst) - before;
+    let jobs = jobs.load(Ordering::SeqCst);
     assert!(jobs >= 5, "{jobs} compute jobs for five batches");
 }

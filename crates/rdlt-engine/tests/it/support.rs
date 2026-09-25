@@ -27,17 +27,21 @@ use serde_json::{Value, json};
 
 /// An engine on the system environment with `config`, running compute jobs inline.
 pub(crate) fn engine(config: EngineConfigBuilder) -> TestEngine {
+    counting_engine(config).0
+}
+
+/// An engine as [`engine`] makes it, and how many compute jobs it has run.
+pub(crate) fn counting_engine(config: EngineConfigBuilder) -> (TestEngine, Arc<AtomicUsize>) {
     let pool = RayonPool::new(NonZeroUsize::MIN).expect("a one-thread pool starts");
     let config = config.build().expect("the test configuration is valid");
-    TestEngine(Engine::new(
-        config,
-        Arc::new(InlineEnv(SystemEnv::new(pool))),
-    ))
+    let jobs = Arc::new(AtomicUsize::new(0));
+    let env = InlineEnv(SystemEnv::new(pool), Inline(Arc::clone(&jobs)));
+    (TestEngine(Engine::new(config, Arc::new(env))), jobs)
 }
 
 /// The system's clock and randomness, with compute jobs run on the calling thread: the paused
 /// test runtime would otherwise advance its clock while a job runs on another thread.
-struct InlineEnv(SystemEnv);
+struct InlineEnv(SystemEnv, Inline);
 
 impl Env for InlineEnv {
     fn now(&self) -> std::time::SystemTime {
@@ -57,19 +61,16 @@ impl Env for InlineEnv {
     }
 
     fn compute(&self) -> &dyn ComputePool {
-        &Inline
+        &self.1
     }
 }
 
-/// A [`ComputePool`] that runs each job at once, on the calling thread.
-struct Inline;
-
-/// How many jobs the engines of this test process ran on their compute pool.
-pub(crate) static COMPUTE_JOBS: AtomicUsize = AtomicUsize::new(0);
+/// A [`ComputePool`] that runs each job at once, on the calling thread, counting them.
+struct Inline(Arc<AtomicUsize>);
 
 impl ComputePool for Inline {
     fn execute(&self, job: Job) {
-        COMPUTE_JOBS.fetch_add(1, Ordering::SeqCst);
+        self.0.fetch_add(1, Ordering::SeqCst);
         job();
     }
 }

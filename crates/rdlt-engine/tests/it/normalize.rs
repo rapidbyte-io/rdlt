@@ -664,3 +664,74 @@ async fn the_arrays_within_a_discarded_array_go_with_it() {
         assert_eq!(published_json(&store, "events").len(), kept, "{policy:?}");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_children_of_a_dropped_row_change_no_schema() {
+    let plan = || {
+        stream("events")
+            .schema(
+                SchemaSettings::new()
+                    .nested(Nested::normalize())
+                    .policy(SchemaPolicy::Freeze),
+            )
+            .column(
+                "extra",
+                SchemaSettings::new().policy(SchemaPolicy::DiscardRow),
+            )
+    };
+    let first = r#"{"id":1,"items":[{"sku":"a"}]}"#;
+    succeeded(
+        &load(
+            "unchanged",
+            vec![BatchStream::json("events", &[first])],
+            vec![plan()],
+        )
+        .await,
+    );
+    let second = [
+        r#"{"id":2,"extra":1,"items":[{"sku":"b","n":1,"tags":["t"]}]}"#,
+        r#"{"id":3,"items":[{"sku":"c"}]}"#,
+    ]
+    .join("\n");
+    let outcome = load(
+        "unchanged",
+        vec![BatchStream::json("events", &[&second])],
+        vec![plan()],
+    )
+    .await;
+    succeeded(&outcome);
+    let items = schema("unchanged", "events__items").expect("the items table");
+    assert!(
+        items.fields().iter().all(|field| field.name() != "n"),
+        "{items:?}"
+    );
+    assert!(schema("unchanged", "events__items__tags").is_none());
+    assert_eq!(published_json("unchanged", "events__items").len(), 2);
+    assert_eq!(
+        outcome.report.streams["events"].discarded_rows, 3,
+        "row 2, its item and the item's tag"
+    );
+}
+
+/// The compute jobs a run of `push` as `plan` takes.
+async fn pool_jobs(store: &str, push: &str, plan: StreamPlan) -> usize {
+    let source = batches(store, vec![BatchStream::json("events", &[push])]).await;
+    let (engine, jobs) = crate::support::counting_engine(commit_every(1));
+    let outcome = engine
+        .run(pipeline(store, [plan]), source, memory(store).await)
+        .await;
+    succeeded(&outcome);
+    jobs.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_normalized_unit_that_drops_nothing_takes_no_pool_trips_per_part() {
+    let push = r#"{"id":1,"items":[{"sku":"a","tags":["t"]}],"more":[1,2]}"#;
+    let plain = pool_jobs("pool_plain", push, stream("events")).await;
+    let normalized = pool_jobs("pool_normalized", push, normalized("events")).await;
+    assert_eq!(
+        normalized,
+        plain + 1,
+        "normalizing takes one job; none of its four parts takes a trip of its own"
+    );
+}

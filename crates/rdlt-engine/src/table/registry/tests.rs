@@ -502,3 +502,26 @@ async fn partitions_making_one_plan_at_once_share_it() {
     assert_eq!(changes.lock().len(), 1, "the table was created once");
     assert!(Arc::ptr_eq(&tables.plan(0, incoming).await.unwrap(), &one));
 }
+
+#[tokio::test]
+async fn a_merge_streams_table_created_before_it_merged_gains_only_its_sequence_column() {
+    let changes = Changes::default();
+    let session = SharedSession::new(Box::new(Recorder(Arc::clone(&changes))));
+    let tables = Tables::new(session);
+    let mut merging = resolver();
+    merging.meta.seq = Some("_rdlt_seq".into());
+    let appended = merging
+        .resolve(&Model::default(), &schema(&[("id", LogicalType::Int64)]))
+        .unwrap()
+        .model;
+    tables.add(merging, &table(None), appended);
+    tables.add_meta_columns(0).await.unwrap();
+    let applied = changes.lock();
+    let [TableChange::AddColumn { field, .. }] = &applied[..] else {
+        panic!("{applied:?}")
+    };
+    assert_eq!(
+        (field.name(), field.logical_type(), field.is_nullable()),
+        ("_rdlt_seq", &LogicalType::Binary, true)
+    );
+}
