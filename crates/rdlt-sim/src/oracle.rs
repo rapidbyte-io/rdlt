@@ -1,7 +1,8 @@
 //! The exactly-once oracle: a seeded workload runs through faults, retries, crashes, stops and
 //! concurrent runs, and the destination must end up holding exactly what a reference model says.
 
-mod children;
+mod expected;
+mod tables;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,17 +11,17 @@ use rdlt_connector::{
     ConnectContext, PipelineId, ReadMode, StreamName, destination_factory, source_factory,
 };
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunHandle, RunStatus,
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, RunHandle, RunStatus,
     SchemaPolicy, SchemaSettings, StopMode, StreamPlan, WriteMode,
 };
-use serde_json::{Map, Value, json};
+use serde_json::json;
 
-use crate::destination::{SimDestination, canonical, completions, published, reads_in_progress};
+use crate::destination::{SimDestination, completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::source::SimSource;
-use crate::workload::{Extra, PHASES, Row, SimStream};
+use crate::workload::{PHASES, Row, SimStream};
 use crate::world::World;
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
@@ -58,23 +59,25 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) {
     let world = World::register(&name, &mut rng);
     let engine = Engine::new(config(&mut rng), env);
     let plan = plan(&world.workload.streams);
+    let features = world.workload.features;
     for phase in 0..PHASES {
         world.set_phase(phase);
         let mut runs = 0;
         let mut succeeded = false;
         let mut failure = None;
+        let mut reports = Vec::new();
         // A phase ends once a run has succeeded and no full read is left half done, so each full
         // read the model counts is complete.
         while !succeeded || reads_in_progress(&world) {
             let faulty = runs < FAULTY_RUNS;
-            world.set_faulty(faulty);
-            let scenario = if faulty {
+            world.set_faulty(faulty && features.faults);
+            let scenario = if faulty && features.disruptions {
                 pick(&mut rng)
             } else {
                 Scenario::Plain
             };
             runs += 1;
-            let (success, error) = execute(&engine, &plan, &name, scenario).await;
+            let (success, error) = execute(&engine, &plan, &name, scenario, &mut reports).await;
             succeeded |= success;
             failure = error.or(failure);
             assert!(
@@ -84,6 +87,9 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) {
         }
         settle(seed).await;
         check_contents(&world, phase, seed);
+        if features.reports_complete() {
+            check_discards(&world, phase, &reports, seed);
+        }
     }
     let violations = world.violations();
     World::unregister(&name);
@@ -161,22 +167,24 @@ async fn start(engine: &Engine, plan: &PipelinePlan, world: &str) -> RunHandle {
     engine.run(plan.clone(), Arc::from(source), Arc::from(destination))
 }
 
-/// Runs `scenario`; whether some run succeeded, and the error of a run that failed.
+/// Runs `scenario`, keeping the report of each run that ends; whether some run succeeded, and the
+/// error of a run that failed.
 async fn execute(
     engine: &Engine,
     plan: &PipelinePlan,
     world: &str,
     scenario: Scenario,
+    reports: &mut Vec<Report>,
 ) -> (bool, Option<String>) {
-    match scenario {
-        Scenario::Plain => bounded(start(engine, plan, world).await).await,
+    let (ended, dropped) = match scenario {
+        Scenario::Plain => (vec![bounded(start(engine, plan, world).await).await], false),
         Scenario::Crash(after) => {
             let run = bounded(start(engine, plan, world).await);
             tokio::select! {
                 biased;
-                ended = run => ended,
+                ended = run => (vec![ended], false),
                 // Dropping the run is the crash.
-                () = tokio::time::sleep(after) => (false, None),
+                () = tokio::time::sleep(after) => (Vec::new(), true),
             }
         }
         Scenario::Stop(after) => {
@@ -187,7 +195,7 @@ async fn execute(
                 control.stop(StopMode::AfterCommit);
             };
             let (ended, ()) = tokio::join!(bounded(handle), stop);
-            ended
+            (vec![ended], false)
         }
         Scenario::Concurrent(delay) => {
             let first = bounded(start(engine, plan, world).await);
@@ -196,19 +204,24 @@ async fn execute(
                 bounded(start(engine, plan, world).await).await
             };
             let (first, second) = tokio::join!(first, second);
-            (first.0 || second.0, first.1.or(second.1))
+            (vec![first, second], false)
         }
-    }
+    };
+    let succeeded = ended
+        .iter()
+        .any(|(report, _)| report.status == RunStatus::Succeeded);
+    let error = ended.iter().find_map(|(_, error)| error.clone());
+    reports.extend(ended.into_iter().map(|(report, _)| report));
+    (succeeded && !dropped, error)
 }
 
-/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`]; whether it succeeded, and its
-/// error.
-async fn bounded(run: RunHandle) -> (bool, Option<String>) {
+/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`]; its report, and its error.
+async fn bounded(run: RunHandle) -> (Report, Option<String>) {
     let outcome = tokio::time::timeout(RUN_LIMIT, run)
         .await
         .expect("every run ends within the limit of virtual time");
     let error = outcome.error.map(|error| format!("{error:?}"));
-    (outcome.report.status == RunStatus::Succeeded, error)
+    (outcome.report, error)
 }
 
 /// Lets aborted tasks finish, then checks that no task outlived its run.
@@ -223,56 +236,59 @@ async fn settle(seed: Seed) {
     assert_eq!(alive, 0, "seed {seed}: {alive} tasks outlived their runs");
 }
 
-/// Checks every stream's table against the reference model after `phase`.
+/// Checks every stream's tables against the reference model after `phase`.
 fn check_contents(world: &World, phase: usize, seed: Seed) {
     for stream in &world.workload.streams {
-        let mut expected = expected(world, stream, phase, seed);
-        let mut actual = published(world, &stream.name);
-        let order = |row: &Map<String, Value>| Value::Object(row.clone()).to_string();
-        expected.sort_by_key(order);
-        actual.sort_by_key(order);
-        if stream.normalized() {
-            children::check(world, stream, &kept_rows(world, stream, phase, seed), seed);
-        }
-        if actual != expected {
-            let first = actual
-                .iter()
-                .zip(&expected)
-                .find(|(actual, expected)| actual != expected);
-            panic!(
-                "seed {seed}: stream {} ({:?}, {:?}, {:?}) after phase {phase} holds {} rows; the \
-                 model expects {}; first difference {first:?}",
-                stream.name,
-                stream.read,
-                stream.write,
-                stream.policy,
-                actual.len(),
-                expected.len()
-            );
-        }
+        tables::check(world, stream, &kept_rows(world, stream, phase, seed), seed);
     }
 }
 
-/// What the reference model says `stream`'s table holds after `phase`, as source rows.
-fn expected(
-    world: &World,
-    stream: &SimStream,
-    phase: usize,
-    seed: Seed,
-) -> Vec<Map<String, Value>> {
-    if stream.write == WriteMode::Merge {
-        return merged(stream, world.workload.salt, phase);
+/// Checks that the rows and values each stream's policy discarded in `phase`, as its runs'
+/// `reports` count them, are those the model's policy discards.
+fn check_discards(world: &World, phase: usize, reports: &[Report], seed: Seed) {
+    for stream in &world.workload.streams {
+        let counted = reports
+            .iter()
+            .filter_map(|report| report.streams.get(&stream.name))
+            .fold((0, 0), |(rows, values), counts| {
+                (
+                    rows + counts.discarded_rows,
+                    values + counts.discarded_values,
+                )
+            });
+        let read: Vec<Row> = match stream.read {
+            ReadMode::Full => {
+                let copies = completions(world, &stream.name, phase);
+                std::iter::repeat_n(stream.all_rows(phase), copies)
+                    .flatten()
+                    .collect()
+            }
+            _ => stream
+                .all_rows(phase)
+                .into_iter()
+                .filter(|row| row.delivered == phase)
+                .collect(),
+        };
+        let expected = read.iter().fold((0, 0), |(rows, values), row| {
+            let held = expected::drift_values(stream, row);
+            match stream.policy {
+                SchemaPolicy::DiscardRow => (rows + u64::from(held > 0), values),
+                SchemaPolicy::DiscardValue => (rows, values + held),
+                _ => (rows, values),
+            }
+        });
+        assert_eq!(
+            counted, expected,
+            "seed {seed}: stream {} ({:?}, {:?}, {:?}) in phase {phase} counted (rows, values) \
+             discarded; the model counts otherwise",
+            stream.name, stream.read, stream.write, stream.policy
+        );
     }
-    expected_rows(world, stream, phase, seed)
-        .iter()
-        .filter_map(|row| source_row(stream, row))
-        .collect()
 }
 
 /// The rows the reference model says a stream that does not merge loaded by `phase`, each as
 /// often as its table holds it.
 fn expected_rows(world: &World, stream: &SimStream, phase: usize, seed: Seed) -> Vec<Row> {
-    let salt = world.workload.salt;
     match (stream.read, stream.write) {
         (ReadMode::Full, WriteMode::Append) => (0..=phase)
             .flat_map(|done| {
@@ -282,10 +298,10 @@ fn expected_rows(world: &World, stream: &SimStream, phase: usize, seed: Seed) ->
                     "seed {seed}: stream {} never completed",
                     stream.name
                 );
-                std::iter::repeat_n(stream.all_rows(salt, done), copies).flatten()
+                std::iter::repeat_n(stream.all_rows(done), copies).flatten()
             })
             .collect(),
-        _ => stream.all_rows(salt, phase),
+        _ => stream.all_rows(phase),
     }
 }
 
@@ -294,28 +310,20 @@ fn expected_rows(world: &World, stream: &SimStream, phase: usize, seed: Seed) ->
 /// holds it.
 fn kept_rows(world: &World, stream: &SimStream, phase: usize, seed: Seed) -> Vec<Row> {
     if stream.write == WriteMode::Merge {
-        return merged_rows(stream, world.workload.salt, phase);
+        return merged_rows(stream, phase);
     }
     expected_rows(world, stream, phase, seed)
         .into_iter()
-        .filter(|row| source_row(stream, row).is_some())
-        .collect()
-}
-
-/// The rows a merge stream's table holds after `phase`: for each key, the last row delivered.
-fn merged(stream: &SimStream, salt: u64, phase: usize) -> Vec<Map<String, Value>> {
-    merged_rows(stream, salt, phase)
-        .iter()
-        .filter_map(|row| source_row(stream, row))
+        .filter(|row| expected::kept(stream, row))
         .collect()
 }
 
 /// For each key of a merge stream, the last row delivered by `phase` that the policy keeps.
-fn merged_rows(stream: &SimStream, salt: u64, phase: usize) -> Vec<Row> {
+fn merged_rows(stream: &SimStream, phase: usize) -> Vec<Row> {
     let mut rows: std::collections::BTreeMap<i64, Row> = std::collections::BTreeMap::new();
     for delivered in 0..=phase {
-        for row in stream.all_rows(salt, delivered) {
-            if row.delivered != delivered || source_row(stream, &row).is_none() {
+        for row in stream.all_rows(delivered) {
+            if row.delivered != delivered || !expected::kept(stream, &row) {
                 continue;
             }
             if let Some(key) = row.key {
@@ -324,51 +332,4 @@ fn merged_rows(stream: &SimStream, salt: u64, phase: usize) -> Vec<Row> {
         }
     }
     rows.into_values().collect()
-}
-
-/// `row` as the source sent it, once the stream's policy has discarded what it discards; `None`
-/// when the policy drops the row.
-fn source_row(stream: &SimStream, row: &Row) -> Option<Map<String, Value>> {
-    let mut source = Map::new();
-    source.insert("id".to_owned(), json!(row.id));
-    source.insert("partition".to_owned(), json!(row.partition));
-    source.insert("offset".to_owned(), json!(row.offset));
-    source.insert("value".to_owned(), json!(row.value));
-    if let Some(key) = row.key {
-        source.insert("key".to_owned(), json!(key));
-    }
-    let extras = stream
-        .drift
-        .iter()
-        .zip(&row.extras)
-        .filter_map(|(drift, extra)| Some((drift.name.clone(), extra.as_ref()?)));
-    for (name, extra) in extras {
-        match stream.policy {
-            SchemaPolicy::DiscardRow => return None,
-            SchemaPolicy::DiscardValue => continue,
-            _ => {}
-        }
-        if stream.normalized() {
-            // Objects flatten into a column per field; arrays go to child tables.
-            match extra {
-                Extra::Object(n) => {
-                    source.insert(format!("{name}.n"), json!(n));
-                    continue;
-                }
-                Extra::List(_) => continue,
-                _ => {}
-            }
-        }
-        let value = match extra {
-            Extra::Int(value) => json!(value),
-            Extra::Quarters(quarters) => {
-                json!(f64::from(i32::try_from(*quarters).unwrap_or(0)) / 4.0)
-            }
-            Extra::Text(text) => json!(text),
-            Extra::Object(n) => json!({ "n": n }),
-            Extra::List(items) => json!(items),
-        };
-        source.insert(name, canonical(value));
-    }
-    Some(source)
 }

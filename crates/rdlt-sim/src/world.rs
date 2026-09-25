@@ -10,6 +10,7 @@ use rdlt_connector::{Capabilities, ConnectorError, IdentifierCase, SchemaChanges
 
 use crate::destination::Store;
 use crate::rng::SplitMix64;
+use crate::swarm::Features;
 use crate::workload::Workload;
 
 /// Where a connector can fail, and how often, in failures per thousand calls.
@@ -56,9 +57,10 @@ static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mut
 impl World {
     /// A world whose workload and faults derive from `rng`, registered as `name`.
     pub fn register(name: &str, rng: &mut SplitMix64) -> Arc<Self> {
+        let features = Features::draw(rng);
         let world = Arc::new(Self {
-            workload: Workload::generate(rng),
-            capabilities: capabilities(rng),
+            workload: Workload::generate(rng, features),
+            capabilities: capabilities(rng, features),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
@@ -138,10 +140,17 @@ impl World {
     }
 }
 
-/// Destination capabilities drawn from `rng`: whether it stores JSON, which widenings and nested
-/// types it stores, and the identifier rules it names columns under.
-fn capabilities(rng: &mut SplitMix64) -> Capabilities {
+/// Destination capabilities drawn from `rng`: which types it stores natively, whether it stores
+/// JSON, which widenings and nested types it stores, and the identifier rules it names columns
+/// under.
+fn capabilities(rng: &mut SplitMix64, features: Features) -> Capabilities {
     let mut capabilities = Capabilities::minimal();
+    if features.narrow {
+        // Text always among them, every other type stored natively or as text.
+        capabilities
+            .types
+            .retain(|kind| *kind == TypeKind::Utf8 || rng.chance(500));
+    }
     capabilities.write_modes.replace = true;
     capabilities.write_modes.merge = true;
     if rng.chance(700) {

@@ -2,11 +2,8 @@
 
 use std::sync::Arc;
 
-use arrow_array::builder::{Int64Builder, ListBuilder};
-use arrow_array::{
-    ArrayRef, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray,
-};
-use arrow_schema::{DataType, Field as ArrowField};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchOptions};
+use arrow_schema::{DataType, Field as ArrowField, Schema};
 use bytes::Bytes;
 use rdlt_connector::{
     Checkpointing, ConnectContext, ConnectorError, Emitter, Field, LogicalType, Partition,
@@ -18,7 +15,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::destination::committed_next;
-use crate::workload::{Extra, Row, Shape, SimStream};
+use rdlt_testkit::drawn::json::rendered;
+use rdlt_testkit::drawn::{Scalar, array, field};
+
+use crate::workload::{Row, SimStream};
 use crate::world::{FaultPoint, World};
 
 /// Configuration of [`SimSource`]: the world to serve.
@@ -140,7 +140,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         let world = &source.world;
         let stream = self.stream(source);
         let index = partition_index(partition)?;
-        let rows = stream.rows(world.workload.salt, index, world.phase());
+        let rows = stream.rows(index, world.phase());
         let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
         let mut batches = 0;
         while next < rows.len() {
@@ -205,38 +205,53 @@ fn partition_index(partition: &Partition) -> Result<usize> {
 }
 
 /// `rows` of `stream` as one batch: the base columns, the key of a merge stream, and every drift
-/// column present where the rows were delivered.
+/// column present where the rows were delivered; for a sliced stream, a slice of a batch holding
+/// the rows three times.
 fn batch(stream: &SimStream, rows: &[Row]) -> RecordBatch {
+    if !stream.sliced {
+        return whole(stream, rows);
+    }
+    let tripled: Vec<Row> = rows.iter().chain(rows).chain(rows).cloned().collect();
+    whole(stream, &tripled).slice(rows.len(), rows.len())
+}
+
+fn whole(stream: &SimStream, rows: &[Row]) -> RecordBatch {
     let column =
         |value: fn(&Row) -> i64| Arc::new(Int64Array::from_iter_values(rows.iter().map(value)));
-    let mut columns: Vec<(String, ArrayRef)> = vec![
-        ("id".to_owned(), column(|row| row.id)),
-        ("partition".to_owned(), column(|row| row.partition)),
-        ("offset".to_owned(), column(|row| row.offset)),
-        ("value".to_owned(), column(|row| row.value)),
+    let base = |name: &str| ArrowField::new(name, DataType::Int64, false);
+    let mut fields = vec![base("id"), base("partition"), base("offset"), base("value")];
+    let mut columns: Vec<ArrayRef> = vec![
+        column(|row| row.id),
+        column(|row| row.partition),
+        column(|row| row.offset),
+        column(|row| row.value),
     ];
     if stream.keys > 0 {
-        columns.push(("key".to_owned(), column(|row| row.key.unwrap_or_default())));
+        fields.push(base("key"));
+        columns.push(column(|row| row.key.unwrap_or_default()));
     }
     let (partition, delivered) = rows.first().map_or((0, 0), |row| {
         (usize::try_from(row.partition).unwrap_or(0), row.delivered)
     });
     for (index, drift) in stream.drift.iter().enumerate() {
-        if let Some(shape) = drift.shapes[partition][delivered] {
-            let values: Vec<Option<&Extra>> =
-                rows.iter().map(|row| row.extras[index].as_ref()).collect();
-            columns.push((drift.name.clone(), array(shape, &values)));
+        if let Some(shape) = &drift.shapes[partition][delivered] {
+            let values: Vec<&Scalar> = rows
+                .iter()
+                .map(|row| row.extras[index].as_ref().unwrap_or(&Scalar::Null))
+                .collect();
+            let array = array(shape, &values);
+            fields.push(field(&drift.name, shape, &array, true));
+            columns.push(array);
         }
     }
-    RecordBatch::try_from_iter(columns).expect("equal-length columns make a batch")
+    let options = RecordBatchOptions::new().with_row_count(Some(rows.len()));
+    RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), columns, &options)
+        .expect("equal-length columns make a batch")
 }
 
 /// `rows` of `stream` as a JSON push with the columns a batch of them has: a JSON array when
 /// `array`, else JSON lines.
 fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
-    let (partition, delivered) = rows.first().map_or((0, 0), |row| {
-        (usize::try_from(row.partition).unwrap_or(0), row.delivered)
-    });
     let objects = rows.iter().map(|row| {
         let mut object = Map::new();
         object.insert("id".to_owned(), json!(row.id));
@@ -246,12 +261,9 @@ fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
         if stream.keys > 0 {
             object.insert("key".to_owned(), json!(row.key.unwrap_or_default()));
         }
-        for (index, drift) in stream.drift.iter().enumerate() {
-            if let Some(shape) = drift.shapes[partition][delivered] {
-                let value = row.extras[index]
-                    .as_ref()
-                    .map_or(Value::Null, |extra| rendered(shape, extra));
-                object.insert(drift.name.clone(), value);
+        for (drift, extra) in stream.drift.iter().zip(&row.extras) {
+            if let Some(extra) = extra {
+                object.insert(drift.name.clone(), rendered(extra));
             }
         }
         Value::Object(object).to_string()
@@ -262,77 +274,4 @@ fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
     } else {
         objects.join("\n")
     })
-}
-
-/// `extra` as JSON, as a column of `shape` holds it.
-fn rendered(shape: Shape, extra: &Extra) -> Value {
-    match (shape, extra) {
-        (Shape::Int32, _) => json!(i32::try_from(integer(extra)).unwrap_or(0)),
-        (Shape::Int64, _) => json!(integer(extra)),
-        (Shape::Float, _) => json!(f64::from(i32::try_from(integer(extra)).unwrap_or(0)) / 4.0),
-        (Shape::Text, Extra::Text(text)) => json!(text),
-        (Shape::Object, _) => json!({ "n": integer(extra) }),
-        (Shape::List, Extra::List(items)) => json!(items),
-        (Shape::Text | Shape::List, _) => Value::Null,
-    }
-}
-
-/// The integer a numeric column of any shape holds for `extra`.
-fn integer(extra: &Extra) -> i64 {
-    match extra {
-        Extra::Int(value) | Extra::Quarters(value) | Extra::Object(value) => *value,
-        Extra::Text(_) | Extra::List(_) => 0,
-    }
-}
-
-/// `values` as an array of `shape`.
-fn array(shape: Shape, values: &[Option<&Extra>]) -> ArrayRef {
-    let int = integer;
-    match shape {
-        Shape::Int32 => {
-            Arc::new(Int32Array::from_iter(values.iter().map(|value| {
-                value.map(|extra| i32::try_from(int(extra)).unwrap_or(0))
-            })))
-        }
-        Shape::Int64 => Arc::new(Int64Array::from_iter(
-            values.iter().map(|value| value.map(int)),
-        )),
-        Shape::Float => Arc::new(Float64Array::from_iter(values.iter().map(|value| {
-            value.map(|extra| {
-                let quarters = i32::try_from(int(extra)).unwrap_or(0);
-                f64::from(quarters) / 4.0
-            })
-        }))),
-        Shape::Text => Arc::new(StringArray::from_iter(values.iter().map(|value| {
-            value.and_then(|extra| match extra {
-                Extra::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-        }))),
-        Shape::Object => {
-            let n: ArrayRef = Arc::new(Int64Array::from_iter(
-                values.iter().map(|value| value.map(int)),
-            ));
-            let field = Arc::new(ArrowField::new("n", DataType::Int64, true));
-            let nulls = values.iter().map(Option::is_some).collect::<Vec<_>>();
-            Arc::new(StructArray::new(
-                vec![field].into(),
-                vec![n],
-                Some(nulls.into()),
-            ))
-        }
-        Shape::List => {
-            let mut builder = ListBuilder::new(Int64Builder::new());
-            for value in values {
-                match value {
-                    Some(Extra::List(items)) => {
-                        builder.values().append_slice(items);
-                        builder.append(true);
-                    }
-                    _ => builder.append(false),
-                }
-            }
-            Arc::new(builder.finish())
-        }
-    }
 }

@@ -5,10 +5,10 @@ use rdlt_connector::{
     ConnectorErrorKind, Epoch, Field, LogicalType, MergeKey, RootKey, SchemaVersion, SegmentId,
     Session, TableChange, TablePath, TableRef, TableSchema, TableWriter,
 };
-use serde_json::json;
+use rdlt_testkit::canon::Canon;
 
 use super::SimSession;
-use super::cells::{Cells, merge_children};
+use super::cells::{Cells, Stored, merge_children};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::world::World;
@@ -126,11 +126,13 @@ fn a_column_widened_along_two_branches_holds_their_join() {
 
 #[test]
 fn a_child_table_keeps_only_the_children_of_each_merged_roots_winning_row() {
-    let cells = |pairs: &[(&str, &str)]| -> Cells {
-        pairs
+    let cells = |pairs: &[(&str, &str)]| -> Stored {
+        let cells: Cells = pairs
             .iter()
-            .map(|(column, value)| ((*column).to_owned(), json!(value)))
-            .collect()
+            .map(|(column, value)| ((*column).to_owned(), Canon::Text((*value).to_owned())))
+            .collect();
+        let empty = RecordBatch::new_empty(Arc::new(arrow_schema::Schema::empty()));
+        Stored { cells, row: empty }
     };
     let key = MergeKey {
         columns: vec!["owner".into()],
@@ -159,7 +161,10 @@ fn a_child_table_keeps_only_the_children_of_each_merged_roots_winning_row() {
     merge_children(&mut published, incoming, &key, &root, &roots);
     let values: Vec<&str> = published
         .iter()
-        .map(|row| row["v"].as_str().unwrap())
+        .map(|row| match &row.cells["v"] {
+            Canon::Text(text) => text.as_str(),
+            other => panic!("{other:?}"),
+        })
         .collect();
     assert_eq!(values, ["kept", "new"]);
 }
