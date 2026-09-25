@@ -6,6 +6,8 @@
 //! whole, and its table stores it as `Json`.
 
 mod cascade;
+#[cfg(test)]
+mod encodings;
 mod identity;
 #[cfg(test)]
 mod reference;
@@ -345,6 +347,8 @@ fn item_field(data_type: &DataType) -> Option<&Arc<ArrowField>> {
         DataType::List(item)
         | DataType::LargeList(item)
         | DataType::FixedSizeList(item, _)
+        | DataType::ListView(item)
+        | DataType::LargeListView(item)
         | DataType::Map(item, _) => Some(item),
         _ => None,
     }

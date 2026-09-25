@@ -11,8 +11,11 @@
 //!
 //! Rows encode one at a time into one buffer, through encoders worked out once per batch: other
 //! string, binary and array types are cast to the plain ones first, maps are arrays of their
-//! entries, and dictionaries are their values.
+//! entries, and dictionaries and run-end encodings are their values. Dates, times, timestamps and
+//! durations encode as their kind and nanoseconds, so a value's unit, zone or date type does not
+//! change its encoding.
 
+mod canonical;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +33,7 @@ use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
 use super::as_list;
+use canonical::{decimals, nanoseconds, temporal_tag};
 
 /// The ids of `batch`'s rows as roots: of the `key` columns' values in order, or of the whole row
 /// where there is no key.
@@ -96,6 +100,9 @@ const NUMBER: u8 = b'd';
 const STRING: u8 = b's';
 const BYTES: u8 = b'b';
 const OTHER: u8 = b'x';
+const INSTANT: u8 = b'i';
+const TIME_OF_DAY: u8 = b'c';
+const ELAPSED: u8 = b'e';
 const OBJECT: u8 = b'{';
 const OBJECT_END: u8 = b'}';
 const ARRAY: u8 = b'[';
@@ -119,11 +126,14 @@ enum Encoder {
     Json(StringArray),
     Bytes(BinaryArray),
     /// Decimals, as their text without trailing zeros after the point.
-    Decimal(ArrayRef),
+    Decimal(Vec<Option<String>>),
     /// An object: where it is null, and its fields in name order.
     Object(Option<NullBuffer>, Vec<(String, Encoder)>),
     /// An array, and its items.
     Array(ListArray, Box<Encoder>),
+    /// Dates, timestamps, times of day or durations: their kind's tag and each value in
+    /// nanoseconds.
+    Temporal(u8, Vec<Option<i128>>),
     /// Values of any other type, as their type and text.
     Other(ArrayRef, String),
 }
@@ -163,7 +173,11 @@ impl Encoder {
             DataType::Decimal32(..)
             | DataType::Decimal64(..)
             | DataType::Decimal128(..)
-            | DataType::Decimal256(..) => Self::Decimal(Arc::clone(array)),
+            | DataType::Decimal256(..) => Self::Decimal(decimals(array)?),
+            data_type if temporal_tag(data_type).is_some() => {
+                let tag = temporal_tag(data_type).expect("a temporal type");
+                Self::Temporal(tag, nanoseconds(array)?)
+            }
             DataType::Struct(_) => {
                 let object = array.as_struct();
                 let fields = object.fields().iter().zip(object.columns());
@@ -172,6 +186,8 @@ impl Encoder {
             DataType::List(_)
             | DataType::LargeList(_)
             | DataType::FixedSizeList(..)
+            | DataType::ListView(_)
+            | DataType::LargeListView(_)
             | DataType::Map(..) => {
                 let list = as_list(array)?;
                 let item = match list.data_type() {
@@ -182,6 +198,7 @@ impl Encoder {
                 Self::Array(list, Box::new(items))
             }
             DataType::Dictionary(_, values) => Self::new(field, &cast(values)?)?,
+            DataType::RunEndEncoded(_, values) => Self::new(field, &cast(values.data_type())?)?,
             other => Self::Other(Arc::clone(array), other.to_string()),
         })
     }
@@ -208,7 +225,9 @@ impl Encoder {
             Self::Float(values) => values.is_null(index),
             Self::Text(values) | Self::Json(values) => values.is_null(index),
             Self::Bytes(values) => values.is_null(index),
-            Self::Decimal(values) | Self::Other(values, _) => values.is_null(index),
+            Self::Decimal(values) => values[index].is_none(),
+            Self::Temporal(_, values) => values[index].is_none(),
+            Self::Other(values, _) => values.is_null(index),
             Self::Object(nulls, _) => nulls.as_ref().is_some_and(|nulls| nulls.is_null(index)),
             Self::Array(list, _) => list.is_null(index),
         }
@@ -236,13 +255,13 @@ impl Encoder {
                 length(out, values.value(index));
             }
             Self::Decimal(values) => {
-                let text = formatted(values, index);
-                let text = if text.contains('.') {
-                    text.trim_end_matches('0').trim_end_matches('.')
-                } else {
-                    text.as_str()
-                };
+                let text = values[index].as_deref().unwrap_or_default();
                 number(out, |row| row.write_all(text.as_bytes()));
+            }
+            Self::Temporal(tag, values) => {
+                out.push(*tag);
+                let nanos = values[index].unwrap_or_default().to_string();
+                length(out, nanos.as_bytes());
             }
             Self::Json(values) => json(values.value(index), out),
             Self::Object(_, fields) => {
