@@ -12,11 +12,12 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use rdlt_connector::{
     Capabilities, CommitMeta, CommitSeq, ConnectContext, ConnectorError, DestinationConnector,
     Epoch, GenerationId, LoadId, MergeKey, OpenContext, Opened, PartitionId, Receipt, Result,
-    SegmentId, Session, StateChange, StateEntry, StateRecord, StreamName, TableChange, TablePath,
-    TableRef, TableWriter, WriteStats,
+    SchemaVersion, SegmentId, Session, StateChange, StateEntry, StateRecord, StreamName,
+    TableChange, TablePath, TableRef, TableWriter, WriteStats,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -139,6 +140,8 @@ impl Session for SimSession {
             world: Arc::clone(&self.world),
             epoch: self.epoch,
             table: table.name.to_string(),
+            version: table.version,
+            schema: None,
             generation: table.generation,
             merge: table.merge.clone(),
             buffered: Vec::new(),
@@ -343,6 +346,11 @@ pub struct SimWriter {
     world: Arc<World>,
     epoch: Epoch,
     table: String,
+    /// The schema version the writer's writes follow.
+    version: SchemaVersion,
+    /// The schema of its first batch, which each of its batches must have: a writer serves one
+    /// version, and every batch lowered for a version has the version's schema.
+    schema: Option<SchemaRef>,
     generation: Option<GenerationId>,
     merge: Option<MergeKey>,
     buffered: Vec<(SegmentId, Vec<Stored>)>,
@@ -358,6 +366,13 @@ impl TableWriter for SimWriter {
             let held = store.tables.get(&self.table).map(|table| &table.columns);
             columns::unfit(held.unwrap_or(&columns::Columns::new()), &batch)
         };
+        let first = self.schema.get_or_insert_with(|| batch.schema());
+        if *first != batch.schema() {
+            self.world.violation(format!(
+                "table {}: a writer of version {} wrote batches of two schemas",
+                self.table, self.version.0
+            ));
+        }
         for finding in unfit {
             self.world
                 .violation(format!("table {}: {finding}", self.table));
