@@ -9,7 +9,7 @@ use super::{
     generation_table, micros, receipt, staging_table,
 };
 use crate::commit::SegmentSet;
-use crate::destination::{MergeKey, TableChange, TableRef};
+use crate::destination::{MergeKey, RootKey, TableChange, TableRef};
 use crate::error::ConnectorErrorKind;
 use crate::id::{
     CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath,
@@ -150,6 +150,7 @@ fn keyed(name: &str) -> TableRef {
         merge: Some(MergeKey {
             columns: vec!["id".into()],
             seq: "seq".into(),
+            root: None,
         }),
         ..table(name)
     }
@@ -869,6 +870,113 @@ fn a_merge_keeps_the_greatest_sequence_of_each_key_and_replaces_published_rows()
     assert_eq!(rows_of(&connection, "orders"), expected);
 }
 
+/// The table `roots`, merging by `id`, and its child table `items`, whose rows name their root
+/// in `root`.
+fn roots_and_items() -> (TableRef, TableRef) {
+    let items = TableRef {
+        merge: Some(MergeKey {
+            columns: vec!["root".into()],
+            seq: "seq".into(),
+            root: Some(RootKey {
+                table: "roots".into(),
+                id: "id".into(),
+                seq: "seq".into(),
+            }),
+        }),
+        ..table("items")
+    };
+    (keyed("roots"), items)
+}
+
+/// A 16-byte sequence whose last byte is `byte`.
+fn seq(byte: u8) -> Value {
+    let mut bytes = vec![0; 16];
+    bytes[15] = byte;
+    Value::Blob(bytes)
+}
+
+/// Stages `rows` of `columns` for `table` as pipeline `mine` at epoch 1 in segment 1.
+fn stage_values(
+    connection: &Connection,
+    planner: &SqlPlanner<Sqlite>,
+    table: &TableRef,
+    columns: &[&str],
+    rows: Vec<Vec<Value>>,
+) {
+    let statement = planner.stage(table, &pipeline("mine"), Epoch(1), SegmentId(1), columns);
+    for row in rows {
+        let mut values: Vec<Value> = statement.params.iter().map(value).collect();
+        values.extend(row);
+        connection
+            .execute(&statement.sql, rusqlite::params_from_iter(values))
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_child_table_keeps_only_the_children_of_its_staged_roots_winning_rows() {
+    let (connection, planner) = database();
+    let (roots, items) = roots_and_items();
+    let root_fields = [
+        ("id", LogicalType::Int64, false),
+        ("seq", LogicalType::Binary, false),
+    ];
+    let item_fields = [
+        ("root", LogicalType::Int64, false),
+        ("name", LogicalType::Utf8, false),
+        ("seq", LogicalType::Binary, false),
+    ];
+    apply(&connection, &planner, &create(&roots, &root_fields)).unwrap();
+    apply(&connection, &planner, &create(&items, &item_fields)).unwrap();
+    connection
+        .execute(
+            "INSERT INTO items VALUES (1, 'old', x''), (2, 'kept', x'')",
+            [],
+        )
+        .unwrap();
+    let root = |id: i64, byte: u8| vec![Value::Integer(id), seq(byte)];
+    stage_values(
+        &connection,
+        &planner,
+        &roots,
+        &["id", "seq"],
+        vec![root(1, 3), root(1, 5)],
+    );
+    let item = |id: i64, name: &str, byte: u8| vec![Value::Integer(id), text(name), seq(byte)];
+    let staged_items = vec![item(1, "stale", 3), item(1, "new", 5), item(3, "orphan", 7)];
+    stage_values(
+        &connection,
+        &planner,
+        &items,
+        &["root", "name", "seq"],
+        staged_items,
+    );
+    let columns = columns(&connection, &planner, "items");
+    let merge = staged("items", None, items.merge.clone());
+    let plan = planner
+        .publish(
+            &merge,
+            &columns,
+            &pipeline("mine"),
+            Epoch(1),
+            &segments(&[1]),
+        )
+        .unwrap();
+    run_all(&connection, &plan);
+    let statement = Statement {
+        sql: "SELECT root, name FROM items ORDER BY root, name".to_owned(),
+        params: Vec::new(),
+    };
+    assert_eq!(
+        query(&connection, &statement),
+        [
+            vec![Value::Integer(1), text("new")],
+            vec![Value::Integer(2), text("kept")],
+        ],
+        "root 1's old and stale children go, and a child of no staged root waits"
+    );
+}
+
 #[test]
 fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
     let (connection, planner) = database();
@@ -876,6 +984,7 @@ fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
         merge: Some(MergeKey {
             columns: vec!["id".into(), "seq".into()],
             seq: "seq".into(),
+            root: None,
         }),
         ..table("keys")
     };

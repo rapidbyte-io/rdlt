@@ -5,15 +5,16 @@ use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitSeq, Epoch, GenerationId, LoadId, MergeKey, PipelineId, SchemaChanges, SegmentId,
-    StateChange, StateRecord, TablePath, TypeKind,
+    CommitSeq, Epoch, GenerationId, LoadId, MergeKey, PipelineId, RootKey, SchemaChanges,
+    SegmentId, StateChange, StateRecord, TablePath, TypeKind,
 };
 
 use crate::columns::changed;
-use crate::merge::merge;
+use crate::merge::{merge, merge_children};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -84,24 +85,7 @@ impl Store {
         epoch: Epoch,
         meta: &CommitMeta,
     ) -> Result<(u64, u64)> {
-        let mut plans = Vec::new();
-        for (name, table) in &self.tables {
-            let staged: Staged = meta
-                .segments
-                .iter()
-                .filter_map(|segment| table.staged.get(&(pipeline.clone(), epoch, segment)))
-                .flatten()
-                .cloned()
-                .collect();
-            if staged.is_empty() {
-                continue;
-            }
-            let merged = match &table.merge {
-                Some(key) => Some(table.merged(&staged, key)?),
-                None => None,
-            };
-            plans.push((name.clone(), staged, merged));
-        }
+        let plans = self.plans(pipeline, epoch, meta)?;
         let (mut rows, mut bytes) = (0, 0);
         for table in self.tables.values_mut() {
             for segment in meta.segments.iter() {
@@ -137,6 +121,63 @@ impl Store {
         Ok((rows, bytes))
     }
 
+    /// What publishing `meta` does to each table: the batches it staged, and for a merge table
+    /// its rows once merged.
+    fn plans(&self, pipeline: &PipelineId, epoch: Epoch, meta: &CommitMeta) -> Result<Vec<Plan>> {
+        let mut plans = Vec::new();
+        for (name, table) in &self.tables {
+            let staged: Staged = meta
+                .segments
+                .iter()
+                .filter_map(|segment| table.staged.get(&(pipeline.clone(), epoch, segment)))
+                .flatten()
+                .cloned()
+                .collect();
+            // A child table the commit lists follows its root even where it staged nothing.
+            let listed = meta
+                .child_tables
+                .iter()
+                .find(|child| *child.table == **name)
+                .map(|child| &child.merge);
+            if staged.is_empty() && listed.is_none() {
+                continue;
+            }
+            let merge = table.merge.as_ref().or(listed);
+            let merged = match merge {
+                Some(key) => match &key.root {
+                    Some(root) => {
+                        let roots = self.staged_rows(&root.table, pipeline, epoch, meta);
+                        Some(table.merged_children(&staged, key, root, &roots)?)
+                    }
+                    None => Some(table.merged(&staged, key)?),
+                },
+                None => None,
+            };
+            plans.push((name.clone(), staged, merged));
+        }
+        Ok(plans)
+    }
+
+    /// The batches `pipeline`'s session at `epoch` staged for the table `name` in `meta`'s
+    /// segments.
+    fn staged_rows(
+        &self,
+        name: &str,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        meta: &CommitMeta,
+    ) -> Vec<RecordBatch> {
+        let Some(table) = self.tables.get(name) else {
+            return Vec::new();
+        };
+        meta.segments
+            .iter()
+            .filter_map(|segment| table.staged.get(&(pipeline.clone(), epoch, segment)))
+            .flatten()
+            .map(|(_, batch)| batch.clone())
+            .collect()
+    }
+
     /// The table `table` refers to, recording its name for its path and how it merges.
     fn table(&mut self, table: &TableRef) -> &mut Table {
         self.names
@@ -166,22 +207,44 @@ struct Table {
     staged: BTreeMap<(PipelineId, Epoch, SegmentId), Staged>,
 }
 
+/// What a commit does to one table: its name, the batches the commit staged for it, and for a
+/// merge table its rows once merged.
+type Plan = (String, Staged, Option<Vec<RecordBatch>>);
+
 /// Batches staged under one segment, each for the table itself or for a replace generation.
 type Staged = Vec<(Option<GenerationId>, RecordBatch)>;
 
 impl Table {
-    /// The table's rows once `staged` is merged in by `key`.
-    fn merged(&self, staged: &Staged, key: &MergeKey) -> Result<Vec<RecordBatch>> {
-        let schema = match &self.schema {
-            Some(schema) => Arc::new(schema.to_arrow()),
+    /// The schema rows of the table merge under: its own, or else `staged`'s.
+    fn merge_schema(&self, staged: &Staged) -> Result<SchemaRef> {
+        match &self.schema {
+            Some(schema) => Ok(Arc::new(schema.to_arrow())),
             None => staged
                 .first()
                 .map(|(_, batch)| batch.schema())
-                .ok_or_else(|| ConnectorError::internal("merging nothing"))?,
-        };
+                .ok_or_else(|| ConnectorError::internal("merging nothing")),
+        }
+    }
+
+    /// The table's rows once `staged` is merged in by `key`.
+    fn merged(&self, staged: &Staged, key: &MergeKey) -> Result<Vec<RecordBatch>> {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
-        merge(&schema, &self.published, &incoming, key)
+        merge(&self.merge_schema(staged)?, &self.published, &incoming, key)
             .map_err(|error| ConnectorError::data(format!("merging rows: {error}")))
+    }
+
+    /// The child table's rows once `staged` replaces the children of the roots `roots` publish.
+    fn merged_children(
+        &self,
+        staged: &Staged,
+        key: &MergeKey,
+        root: &RootKey,
+        roots: &[RecordBatch],
+    ) -> Result<Vec<RecordBatch>> {
+        let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
+        let schema = self.merge_schema(staged)?;
+        merge_children(&schema, &self.published, &incoming, key, root, roots)
+            .map_err(|error| ConnectorError::data(format!("merging child rows: {error}")))
     }
 }
 

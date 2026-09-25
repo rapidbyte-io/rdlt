@@ -9,7 +9,9 @@ use std::time::SystemTime;
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{Epoch, GenerationId, LoadId, MergeKey, SegmentId, TablePath};
+use rdlt_connector::{
+    ChildTable, Epoch, GenerationId, LoadId, MergeKey, RootKey, SegmentId, TablePath,
+};
 
 use super::format::FileFormat;
 use super::manifest::{self, Manifest};
@@ -114,6 +116,9 @@ impl Session for FilesSession {
     }
 }
 
+/// The files a commit publishes, by table and generation.
+type Staging<'a> = BTreeMap<(String, Option<GenerationId>), Vec<&'a StagedFile>>;
+
 /// Publishes the files this session staged in `meta`'s segments by creating the next manifest.
 fn commit(location: &Location, shared: &Mutex<Shared>, meta: &CommitMeta) -> Result<Receipt> {
     let mut manifest = manifest::latest(&location.dir)?.unwrap_or_default();
@@ -136,16 +141,7 @@ fn commit(location: &Location, shared: &Mutex<Shared>, meta: &CommitMeta) -> Res
             .collect();
         (staged, shared.names.clone())
     };
-    let mut by_table: BTreeMap<(String, Option<GenerationId>), Vec<&StagedFile>> = BTreeMap::new();
-    for file in &staged {
-        by_table
-            .entry((file.table.name.to_string(), file.table.generation))
-            .or_default()
-            .push(file);
-    }
-    for ((name, _), files) in by_table {
-        publish(location, &mut manifest, &name, &files, meta)?;
-    }
+    publish_all(location, &mut manifest, &staged, meta)?;
     manifest.paths.extend(names);
     for (path, generation) in &meta.finish_generations {
         let Some(name) = manifest.paths.get(&path_key(path)).cloned() else {
@@ -185,6 +181,7 @@ fn publish(
     name: &str,
     files: &[&StagedFile],
     meta: &CommitMeta,
+    staged: &Staging<'_>,
 ) -> Result<()> {
     let table = manifest.tables.entry(name.to_owned()).or_default();
     let first = &files[0].table;
@@ -196,7 +193,11 @@ fn publish(
             .or_default()
             .extend(paths),
         (None, Some(key)) => {
-            let merged = merged(location, name, &table.files, files, key, meta)?;
+            let root = key.root.as_ref().map(|root| {
+                let files = staged.get(&(root.table.to_string(), None));
+                (root, files.map(Vec::as_slice).unwrap_or_default())
+            });
+            let merged = merged(location, name, &table.files, files, key, root, meta)?;
             table.files = merged.into_iter().collect();
         }
         (None, None) => table.files.extend(paths),
@@ -204,14 +205,66 @@ fn publish(
     Ok(())
 }
 
+/// Adds the `staged` files of `meta` to what `manifest` lists for their tables, and has the
+/// child tables it lists follow their roots.
+fn publish_all(
+    location: &Location,
+    manifest: &mut Manifest,
+    staged: &[StagedFile],
+    meta: &CommitMeta,
+) -> Result<()> {
+    let mut by_table: Staging<'_> = BTreeMap::new();
+    for file in staged {
+        by_table
+            .entry((file.table.name.to_string(), file.table.generation))
+            .or_default()
+            .push(file);
+    }
+    for ((name, _), files) in &by_table {
+        publish(location, manifest, name, files, meta, &by_table)?;
+    }
+    for child in &meta.child_tables {
+        follow_root(location, manifest, child, meta, &by_table)?;
+    }
+    Ok(())
+}
+
+/// Replaces, in the child table `child` the commit staged nothing for, the children of the roots
+/// its root's staged files publish.
+fn follow_root(
+    location: &Location,
+    manifest: &mut Manifest,
+    child: &ChildTable,
+    meta: &CommitMeta,
+    staged: &Staging<'_>,
+) -> Result<()> {
+    let Some(root) = &child.merge.root else {
+        return Ok(());
+    };
+    let name = child.table.to_string();
+    let Some(root_files) = staged.get(&(root.table.to_string(), None)) else {
+        return Ok(());
+    };
+    if staged.contains_key(&(name.clone(), None)) {
+        return Ok(());
+    }
+    let table = manifest.tables.entry(name.clone()).or_default();
+    let root = Some((root, root_files.as_slice()));
+    let merged = merged(location, &name, &table.files, &[], &child.merge, root, meta)?;
+    table.files = merged.into_iter().collect();
+    Ok(())
+}
+
 /// Writes the rows of the table `name` once `files` are merged into its `published` files by
-/// `key` to one new file; returns its path, or none when the table is empty.
+/// `key`, or for a child table once they replace the children of the roots its root's `files`
+/// publish, to one new file; returns its path, or none when the table is empty.
 fn merged(
     location: &Location,
     name: &str,
     published: &[String],
     files: &[&StagedFile],
     key: &MergeKey,
+    root: Option<(&RootKey, &[&StagedFile])>,
     meta: &CommitMeta,
 ) -> Result<Option<String>> {
     let schema = tables::read(&location.root, name)?
@@ -226,7 +279,25 @@ fn merged(
     };
     let published = read(&mut published.iter())?;
     let incoming = read(&mut files.iter().map(|file| &file.path))?;
-    let merged = crate::merge::merge(&schema, &published, &incoming, key)
+    let merged = match root {
+        Some((root, root_files)) => {
+            let root_schema = tables::read(&location.root, &root.table)?.ok_or_else(|| {
+                ConnectorError::data(format!("root table {} does not exist", root.table))
+            })?;
+            let root_schema = Arc::new(root_schema.to_arrow());
+            let mut roots = Vec::new();
+            for file in root_files {
+                roots.extend(
+                    location
+                        .format
+                        .read(&location.root.join(&file.path), &root_schema)?,
+                );
+            }
+            crate::merge::merge_children(&schema, &published, &incoming, key, root, &roots)
+        }
+        None => crate::merge::merge(&schema, &published, &incoming, key),
+    };
+    let merged = merged
         .and_then(|batches| arrow_select::concat::concat_batches(&schema, &batches))
         .map_err(|error| ConnectorError::data(format!("merging table {name}: {error}")))?;
     if merged.num_rows() == 0 {

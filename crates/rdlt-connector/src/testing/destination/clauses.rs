@@ -46,6 +46,11 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
                     greatest sequence's",
     },
     Clause {
+        id: "D-CHILDREN",
+        statement: "a child table of a merge table holds the children of each root's winning row \
+                    only, whatever it held before",
+    },
+    Clause {
         id: "D-ENCODING",
         statement: "dictionary-encoded columns publish the values they encode",
     },

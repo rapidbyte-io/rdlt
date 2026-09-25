@@ -59,6 +59,7 @@ async fn late_discard<C: DestinationConnector>(config: serde_json::Value) -> u64
         segments: [SegmentId(1)].into_iter().collect::<SegmentSet>(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
+        child_tables: Vec::new(),
     };
     newer
         .session

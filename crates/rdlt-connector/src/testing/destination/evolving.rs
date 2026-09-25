@@ -20,7 +20,7 @@ use crate::types::{Field, LogicalType, TypeKind};
 
 impl Bench<'_> {
     /// Another table of this clause, called `suffix` after the clause's own.
-    fn other_table(&self, suffix: &str) -> TableRef {
+    pub(super) fn other_table(&self, suffix: &str) -> TableRef {
         let name = format!("{}_{suffix}", self.name());
         TableRef {
             path: TablePath::new([name.as_str()]).expect("table paths are valid"),
@@ -201,6 +201,7 @@ impl Bench<'_> {
             merge: Some(MergeKey {
                 columns: vec!["id".into()],
                 seq: SEQ.into(),
+                root: None,
             }),
             ..self.table()
         };
@@ -288,7 +289,9 @@ pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'stati
     let capabilities = destination.capabilities();
     match id {
         "D-REPLACE" if !capabilities.write_modes.replace => Some("the destination cannot replace"),
-        "D-MERGE" if !capabilities.write_modes.merge => Some("the destination cannot merge"),
+        "D-MERGE" | "D-CHILDREN" if !capabilities.write_modes.merge => {
+            Some("the destination cannot merge")
+        }
         "D-SCHEMA"
             if !capabilities.schema_changes.add_column
                 && !capabilities

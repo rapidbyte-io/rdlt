@@ -230,6 +230,7 @@ async fn sessions_forward_every_call() {
         segments: SegmentSet::from_iter([SegmentId(4)]),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
+        child_tables: Vec::new(),
     };
     assert_eq!(session.commit(&meta).await.unwrap().rows, 1);
     session.close().await.unwrap();

@@ -215,30 +215,36 @@ fn publish(
     meta: &CommitMeta,
 ) -> Result<(i64, i64)> {
     let (mut rows, mut bytes) = (0, 0);
-    for row in query(
+    let mut staged = query(
         transaction,
         &planner.staged(pipeline, epoch, &meta.segments),
-    )? {
-        let [name, generation, key, seq, count, size] = &row[..] else {
-            return Err(ConnectorError::internal(
-                "a staged segment has missing fields",
-            ));
-        };
-        let name = text(name)?;
-        let generation = match generation {
-            Value::Null => None,
-            other => Some(GenerationId(sqlgen::unsigned(integer(other)?))),
-        };
-        let merge = match (key, seq) {
-            (Value::Text(key), Value::Text(seq)) => Some(sqlgen::merge_key(key, seq)?),
-            _ => None,
-        };
-        let staged = Staged {
-            name,
-            generation,
-            merge,
-        };
-        let target = match generation {
+    )?
+    .iter()
+    .map(|row| staged_segment(row))
+    .collect::<Result<Vec<_>>>()?;
+    // A child table the commit lists follows its root even where it staged nothing.
+    for child in &meta.child_tables {
+        let root = child.merge.root.as_ref().map(|root| root.table.to_string());
+        let root_staged = staged
+            .iter()
+            .any(|(staged, ..)| Some(&staged.name) == root.as_ref());
+        let own_staged = staged
+            .iter()
+            .any(|(staged, ..)| *staged.name == *child.table);
+        if root_staged && !own_staged {
+            let listed = Staged {
+                name: child.table.to_string(),
+                generation: None,
+                merge: Some(child.merge.clone()),
+            };
+            staged.push((listed, 0, 0));
+        }
+    }
+    // Child tables publish first: they read their roots' staged rows, which a root's publish
+    // removes.
+    staged.sort_by_key(|(staged, ..)| staged.merge.as_ref().is_none_or(|key| key.root.is_none()));
+    for (staged, count, size) in staged {
+        let target = match staged.generation {
             Some(generation) => sqlgen::generation_table(&staged.name, generation),
             None => staged.name.clone(),
         };
@@ -247,14 +253,37 @@ fn publish(
             transaction,
             &planner.publish(&staged, &columns, pipeline, epoch, &meta.segments)?,
         )?;
-        rows += integer(count)?;
-        bytes += integer(size)?;
+        rows += count;
+        bytes += size;
     }
     run(
         transaction,
         &planner.forget(pipeline, epoch, &meta.segments),
     )?;
     Ok((rows, bytes))
+}
+
+/// A row of [`SqlPlanner::staged`]: what a table staged, with its rows and bytes.
+fn staged_segment(row: &[Value]) -> Result<(Staged, i64, i64)> {
+    let [name, generation, key, seq, count, size] = row else {
+        return Err(ConnectorError::internal(
+            "a staged segment has missing fields",
+        ));
+    };
+    let generation = match generation {
+        Value::Null => None,
+        other => Some(GenerationId(sqlgen::unsigned(integer(other)?))),
+    };
+    let merge = match (key, seq) {
+        (Value::Text(key), Value::Text(seq)) => Some(sqlgen::merge_key(key, seq)?),
+        _ => None,
+    };
+    let staged = Staged {
+        name: text(name)?,
+        generation,
+        merge,
+    };
+    Ok((staged, integer(count)?, integer(size)?))
 }
 
 /// Swaps `generation` in as the table `name`.

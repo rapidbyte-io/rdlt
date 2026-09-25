@@ -3,10 +3,12 @@
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::destination::MergeKey;
 use crate::id::{CommitSeq, Epoch, GenerationId, LoadId, SegmentId, TablePath};
 use crate::state::StateChange;
 
@@ -147,6 +149,21 @@ pub struct CommitMeta {
     pub state_delta: Vec<StateChange>,
     /// Replace generations to swap in with this commit.
     pub finish_generations: Vec<(TablePath, GenerationId)>,
+    /// The child tables of merge tables: each follows the root rows this commit publishes,
+    /// whether or not the commit stages rows of its own (see [`RootKey`]).
+    ///
+    /// [`RootKey`]: crate::RootKey
+    #[serde(default)]
+    pub child_tables: Vec<ChildTable>,
+}
+
+/// A child table of a merge table, as a commit lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildTable {
+    /// The child table's identifier.
+    pub table: Arc<str>,
+    /// How it merges: by its root, which [`MergeKey::root`] names.
+    pub merge: MergeKey,
 }
 
 /// A destination's acknowledgment of a commit.

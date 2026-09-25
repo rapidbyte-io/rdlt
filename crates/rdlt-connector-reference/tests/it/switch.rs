@@ -25,6 +25,7 @@ fn table(merging: bool) -> TableRef {
         merge: merging.then(|| MergeKey {
             columns: vec!["id".into()],
             seq: "seq".into(),
+            root: None,
         }),
     }
 }
@@ -95,6 +96,7 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
             segments: [SegmentId(segment)].into_iter().collect::<SegmentSet>(),
             state_delta: Vec::new(),
             finish_generations: Vec::new(),
+            child_tables: Vec::new(),
         };
         opened
             .session

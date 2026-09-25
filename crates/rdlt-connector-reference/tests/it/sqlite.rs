@@ -55,6 +55,7 @@ fn commit(opened: &OpenedSession) -> CommitMeta {
         segments: [SegmentId(1)].into_iter().collect::<SegmentSet>(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
+        child_tables: Vec::new(),
     }
 }
 
