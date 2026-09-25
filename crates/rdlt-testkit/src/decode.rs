@@ -1,6 +1,10 @@
 //! Stored cells read back as what they mean: native values, their text, and JSON, read with the
 //! type they were written from.
 
+mod json;
+#[cfg(test)]
+mod tests;
+
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
@@ -13,12 +17,13 @@ use arrow_array::types::{
 use arrow_schema::{DataType, TimeUnit as ArrowUnit};
 use rdlt_connector::{Field, Fields, LogicalType};
 
-use super::super::reference::{Canon, DAY, decimal, float, hex, uuid};
+use self::json::{Json, parse};
+use crate::canon::{Canon, DAY, decimal, float, hex, uuid};
 
 /// How to read the values of a column of `column` that received values of `source`: the column's
 /// type, but the source's wherever the column holds `Json`, which the source's values were
 /// rendered into.
-pub(super) fn hint(column: &LogicalType, source: Option<&LogicalType>) -> LogicalType {
+pub fn hint(column: &LogicalType, source: Option<&LogicalType>) -> LogicalType {
     use LogicalType as T;
     match (column, source) {
         (T::Json, Some(source)) => source.clone(),
@@ -46,9 +51,15 @@ pub(super) fn hint(column: &LogicalType, source: Option<&LogicalType>) -> Logica
     }
 }
 
+/// `text`, JSON a source pushed, as a column of `logical` holds it: its numbers as that type's
+/// values, so a number in a float column means the float it parses to.
+pub fn json_as(text: &str, logical: &LogicalType) -> Canon {
+    typed(&parse(text), logical)
+}
+
 /// The cell at `row` of `array`, a column of `logical` stored as `lowered`, read as `hint`
 /// says.
-pub(super) fn cell(
+pub fn cell(
     array: &dyn Array,
     row: usize,
     logical: &LogicalType,
@@ -60,6 +71,12 @@ pub(super) fn cell(
         .is_some_and(|nulls| nulls.is_null(row))
     {
         return Canon::Null;
+    }
+    // Destinations receive the load id and load start as dictionaries of one value.
+    if let DataType::Dictionary(_, values) = array.data_type() {
+        let plain = arrow_cast::cast(&arrow_array::make_array(array.to_data()), values)
+            .expect("a dictionary casts to its values' type");
+        return cell(plain.as_ref(), row, logical, lowered, hint);
     }
     let nested = matches!(
         logical,
@@ -322,123 +339,4 @@ fn elapsed(text: &str) -> i128 {
         .and_then(|rest| rest.strip_suffix('S'))
         .unwrap_or_else(|| panic!("a duration of seconds, not {text}"));
     sign * seconds(seconds_text)
-}
-
-/// JSON, its numbers kept as their text.
-#[derive(Debug)]
-enum Json {
-    Null,
-    Bool(bool),
-    Number(String),
-    String(String),
-    Array(Vec<Json>),
-    Object(Vec<(String, Json)>),
-}
-
-/// `text`, JSON the engine wrote.
-fn parse(text: &str) -> Json {
-    let mut reader = Reader {
-        bytes: text.as_bytes(),
-        at: 0,
-    };
-    let json = reader.value();
-    reader.space();
-    assert_eq!(reader.at, text.len(), "trailing text after JSON: {text}");
-    json
-}
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl Reader<'_> {
-    fn space(&mut self) {
-        while self.bytes.get(self.at).is_some_and(u8::is_ascii_whitespace) {
-            self.at += 1;
-        }
-    }
-
-    fn eat(&mut self, byte: u8) {
-        self.space();
-        assert_eq!(self.bytes[self.at], byte, "JSON at {}", self.at);
-        self.at += 1;
-    }
-
-    fn value(&mut self) -> Json {
-        self.space();
-        match self.bytes[self.at] {
-            b'n' => self.word("null", Json::Null),
-            b't' => self.word("true", Json::Bool(true)),
-            b'f' => self.word("false", Json::Bool(false)),
-            b'"' => Json::String(self.string()),
-            b'[' => {
-                self.at += 1;
-                let mut items = Vec::new();
-                self.space();
-                if self.bytes[self.at] == b']' {
-                    self.at += 1;
-                    return Json::Array(items);
-                }
-                loop {
-                    items.push(self.value());
-                    self.space();
-                    self.at += 1;
-                    if self.bytes[self.at - 1] == b']' {
-                        return Json::Array(items);
-                    }
-                }
-            }
-            b'{' => {
-                self.at += 1;
-                let mut members = Vec::new();
-                self.space();
-                if self.bytes[self.at] == b'}' {
-                    self.at += 1;
-                    return Json::Object(members);
-                }
-                loop {
-                    self.space();
-                    let name = self.string();
-                    self.eat(b':');
-                    members.push((name, self.value()));
-                    self.space();
-                    self.at += 1;
-                    if self.bytes[self.at - 1] == b'}' {
-                        return Json::Object(members);
-                    }
-                }
-            }
-            _ => {
-                let start = self.at;
-                while self.bytes.get(self.at).is_some_and(|byte| {
-                    matches!(byte, b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
-                }) {
-                    self.at += 1;
-                }
-                Json::Number(String::from_utf8(self.bytes[start..self.at].to_vec()).expect("ASCII"))
-            }
-        }
-    }
-
-    fn word(&mut self, word: &str, json: Json) -> Json {
-        assert!(
-            self.bytes[self.at..].starts_with(word.as_bytes()),
-            "JSON at {}",
-            self.at
-        );
-        self.at += word.len();
-        json
-    }
-
-    fn string(&mut self) -> String {
-        let start = self.at;
-        self.at += 1;
-        while self.bytes[self.at] != b'"' {
-            self.at += if self.bytes[self.at] == b'\\' { 2 } else { 1 };
-        }
-        self.at += 1;
-        let quoted = std::str::from_utf8(&self.bytes[start..self.at]).expect("UTF-8");
-        serde_json::from_str(quoted).expect("a JSON string")
-    }
 }

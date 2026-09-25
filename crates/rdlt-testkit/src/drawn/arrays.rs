@@ -23,15 +23,19 @@ const EXTENSION_NAME: &str = "ARROW:extension:name";
 
 /// How a column's values travel in Arrow, beside the plain type of their logical type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Encoding {
+pub enum Encoding {
+    /// The plain Arrow type of the logical type.
     Plain,
     /// The unsigned integer type one size down: `UInt8` for `Int16` up to `UInt64` for
     /// `Decimal(20, 0)`.
     Unsigned,
     /// `Float16` for `Float32`.
     Half,
+    /// `Decimal32` for a decimal it holds.
     Decimal32,
+    /// `Decimal64` for a decimal it holds.
     Decimal64,
+    /// `Decimal256`.
     Decimal256,
     /// `LargeUtf8`, `LargeBinary` or `LargeList`.
     Large,
@@ -39,10 +43,13 @@ pub(crate) enum Encoding {
     View,
     /// `LargeListView`.
     LargeView,
+    /// A dictionary of the plain values, keyed by `Int32`.
     Dictionary,
+    /// A run-end encoding of the plain values, run ends in `Int32`.
     RunEnd,
     /// `FixedSizeBinary` or `FixedSizeList` of this size.
     FixedSize(i32),
+    /// `Date64` for a date.
     Date64,
     /// A map of a list of key and value structs.
     Map,
@@ -50,16 +57,19 @@ pub(crate) enum Encoding {
 
 /// A type as a batch's column holds it: its logical type, its encoding and, for structs and
 /// lists, its fields' or item's.
-#[derive(Clone, Debug)]
-pub(crate) struct Shape {
-    pub(crate) logical: LogicalType,
-    pub(crate) encoding: Encoding,
-    pub(crate) children: Vec<Shape>,
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shape {
+    /// What the values mean.
+    pub logical: LogicalType,
+    /// How they travel.
+    pub encoding: Encoding,
+    /// A struct's fields' shapes, or a list's item's.
+    pub children: Vec<Shape>,
 }
 
 /// The Arrow field `name` of `shape` holding `array`: its extension type named where it has one.
 #[expect(clippy::disallowed_types, reason = "Arrow field metadata is a HashMap")]
-pub(crate) fn field(name: &str, shape: &Shape, array: &ArrayRef, nullable: bool) -> ArrowField {
+pub fn field(name: &str, shape: &Shape, array: &ArrayRef, nullable: bool) -> ArrowField {
     let field = ArrowField::new(name, array.data_type().clone(), nullable);
     let extension = match shape.logical {
         LogicalType::Uuid => Some("arrow.uuid"),
@@ -76,7 +86,7 @@ pub(crate) fn field(name: &str, shape: &Shape, array: &ArrayRef, nullable: bool)
 }
 
 /// `values`, of `shape`, as an Arrow array in its encoding.
-pub(crate) fn array(shape: &Shape, values: &[&Scalar]) -> ArrayRef {
+pub fn array(shape: &Shape, values: &[&Scalar]) -> ArrayRef {
     let plain = plain(shape, values);
     encode(shape, plain)
 }

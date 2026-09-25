@@ -35,7 +35,7 @@ fn decimal(precision: u8, scale: u8) -> LogicalType {
 /// A type the lattice joins `shape`'s with without widening it to `Json`: a wider integer, a float
 /// or decimal holding it, another unit or zone, a date's timestamp, a struct with a field changed,
 /// added or removed, or a list of an item's neighbor.
-pub(crate) fn neighbor(shape: &Shape) -> BoxedStrategy<Shape> {
+pub fn neighbor(shape: &Shape) -> BoxedStrategy<Shape> {
     use LogicalType as T;
     let leaf = |types: Vec<LogicalType>| {
         proptest::sample::select(types)
@@ -154,9 +154,9 @@ fn structure(fields: &Fields, children: &[Shape]) -> BoxedStrategy<Shape> {
     prop_oneof![2 => changed, 1 => added, 1 => removed].boxed()
 }
 
-/// One to four batches over [`NAMES`]: each batch holds some of the columns, each of its base
+/// One to four batches over the columns `a`, `b` and `c`: each batch holds some of the columns, each of its base
 /// type, a neighbor of it, or now and then another type.
-pub(crate) fn batches() -> impl Strategy<Value = Vec<Drawn>> {
+pub fn batches() -> impl Strategy<Value = Vec<Drawn>> {
     proptest::collection::vec(shape(2), NAMES.len()).prop_flat_map(|bases| {
         let batch = {
             let bases = bases.clone();

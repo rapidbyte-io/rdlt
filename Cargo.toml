@@ -16,6 +16,7 @@ rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }          
 rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.0" }       # #[source] and #[destination]
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
+rdlt-testkit = { path = "crates/rdlt-testkit" }                                            # drawn data and the value model, for tests and rdlt-sim
 
 # Libraries
 arrow-array = { version = "59.2", features = [

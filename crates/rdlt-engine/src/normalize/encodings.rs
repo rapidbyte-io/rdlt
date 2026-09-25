@@ -8,8 +8,8 @@ use proptest::prelude::*;
 use rdlt_connector::Field;
 
 use super::{Part, Shape, normalize};
-use crate::drawn::{Drawn, Encoding, Scalar, Shape as Drawing, array, field, values};
 use crate::table::plain;
+use rdlt_testkit::drawn::{Drawn, Encoding, Scalar, Shape as Drawing, array, field, values};
 
 /// `shape` with every encoding plain.
 fn plainly(shape: &Drawing) -> Drawing {
@@ -102,7 +102,7 @@ fn held(parts: &[Part]) -> Vec<Held> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(crate::drawn::cases(512)))]
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(512)))]
 
     #[test]
     fn normalizing_a_batch_does_not_depend_on_its_encodings(
