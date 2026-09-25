@@ -34,14 +34,19 @@ faults, concurrency, replay and coverage.
   value in exactly one of its column's own and variant columns, whose type holds the value's
   type, stored as the destination's capabilities say, and reading back to exactly the value sent,
   converted as the column's type converts it. A null must stay null. Identifiers follow the
-  destination's rules. Normalized streams' child tables are checked at any depth, each row matched
-  to its parent through its lineage ids. Where no run was disrupted and no fault injected, the
-  runs' reports must count exactly the rows and values the policy discarded.
+  destination's rules, and every column a stored row has is named, or metadata. A column whose
+  values only ever arrived at one type must be exactly that type, in its own column: a column's
+  type holding its values is not enough, as `Json` holds every value. Every batch through one
+  writer must have one schema, as a writer serves one version. Normalized streams' child tables
+  are checked at any depth, each row matched to its parent through its lineage ids. Where no run
+  was disrupted and no fault injected, the runs' reports must count exactly the rows and values
+  the policy discarded, and on every other seed no more.
 - **Found and fixed in the engine.**
   - A lane kept one writer per table for its whole attempt, so after a schema change the writer's
     `TableRef` named an older version than the batches it wrote, against the contract's "the
     schema version writes follow". Each write now goes through a writer of the version it was
-    lowered for.
+    lowered for, and a flush reaches only the writers written since the last, so older versions'
+    writers cost nothing more.
   - A destination could not tell what a lowered column holds: a text column of dates looked like
     any text column, and state records only a commit's newest schema. Written batches now name the
     logical type of each column stored as another type in the field metadata key
@@ -54,8 +59,12 @@ faults, concurrency, replay and coverage.
 
 - The simulation runs 10⁴ seeds in CI and 10⁵ locally in about ten minutes, as before.
 - A failed run's report may miss a commit whose response its last attempt lost; a later attempt of
-  the same run would have credited it. Discard counts are therefore checked only on seeds without
-  faults or disruptions.
+  the same run would have credited it. Discard counts are therefore checked exactly only on seeds
+  without faults or disruptions, and bounded on the rest.
+- JSON streams mostly push finite floats, so a column of them keeps one inferred type the oracle can
+  check; one in four also pushes floats JSON cannot hold, by name.
+- Draws fix the settings proptest otherwise reads from `PROPTEST_*` variables, so a seed replays
+  alike wherever it runs.
 - A child's id derives from its parent's and its position (spec §7.4), so two arrays of one row
   give their children the same ids; a child table's rows are read against their parent table.
 - A text column widened in place keeps the text of its older type: dates stay `YYYY-MM-DD` in a
