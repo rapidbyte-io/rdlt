@@ -9,16 +9,18 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{DestinationWriter, PartitionId, Permit, SegmentId};
+use rdlt_connector::{DestinationWriter, PartitionId, Permit, SchemaVersion, SegmentId, TableRef};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Side};
 use crate::table::Tables;
 
-/// A batch for one table, tagged with its segment; the reservation drops once it is staged.
+/// A batch for one table, tagged with its segment and the schema version it was lowered for; the
+/// reservation drops once it is staged.
 pub(crate) struct Write {
     pub(crate) table: usize,
+    pub(crate) version: SchemaVersion,
     pub(crate) segment: SegmentId,
     pub(crate) batch: RecordBatch,
     pub(crate) reservation: Permit,
@@ -35,11 +37,11 @@ pub(crate) struct Lanes {
     senders: Vec<mpsc::Sender<Message>>,
 }
 
-/// One lane's end: its queue, and a writer for each table it has written to.
+/// One lane's end: its queue, and a writer for each table and schema version it has written.
 pub(crate) struct Lane {
     receiver: mpsc::Receiver<Message>,
     tables: Arc<Tables>,
-    writers: BTreeMap<usize, Box<dyn DestinationWriter>>,
+    writers: BTreeMap<(usize, SchemaVersion), Box<dyn DestinationWriter>>,
 }
 
 impl Lanes {
@@ -117,7 +119,7 @@ impl Lane {
             };
             match message {
                 Some(Message::Write(write)) => {
-                    let writer = self.writer(write.table).await?;
+                    let writer = self.writer(write.table, write.version).await?;
                     writer
                         .write(write.segment, write.batch)
                         .await
@@ -142,16 +144,26 @@ impl Lane {
 }
 
 impl Lane {
-    /// The lane's writer for `table`, opened on its first write.
-    async fn writer(&mut self, table: usize) -> Result<&mut Box<dyn DestinationWriter>, Error> {
-        match self.writers.entry(table) {
+    /// The lane's writer for `table`'s batches lowered for `version`, opened on the first of them:
+    /// a writer's table names the schema its writes follow, and a partition may still write
+    /// batches of an older version after the table changes.
+    async fn writer(
+        &mut self,
+        table: usize,
+        version: SchemaVersion,
+    ) -> Result<&mut Box<dyn DestinationWriter>, Error> {
+        match self.writers.entry((table, version)) {
             Entry::Occupied(writer) => Ok(writer.into_mut()),
             Entry::Vacant(vacant) => {
                 let view = self.tables.view(table);
+                let table = TableRef {
+                    version,
+                    ..view.table.clone()
+                };
                 let writer = self
                     .tables
                     .session()
-                    .writer(&view.table)
+                    .writer(&table)
                     .await?
                     .map_err(|error| {
                         let context = format!("creating a writer for table {}", view.table.name);
