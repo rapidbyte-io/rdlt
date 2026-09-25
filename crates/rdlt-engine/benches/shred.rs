@@ -14,7 +14,7 @@ use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::RayonPool;
-use rdlt_engine::bench::{shred, shred_on};
+use rdlt_engine::bench::{normalize, shred, shred_on};
 
 /// Bytes each corpus holds.
 const CORPUS_BYTES: usize = 32 << 20;
@@ -78,6 +78,29 @@ fn nested(index: u64, mix: &mut Mix) -> String {
         mix.below(100_000),
         14 + mix.below(10),
         mix.below(100_000),
+    )
+}
+
+/// Nested rows with arrays: `nested`'s fields and up to three orders of a few tags each.
+fn with_arrays(index: u64, mix: &mut Mix) -> String {
+    let row = nested(index, mix);
+    let orders: Vec<String> = (0..mix.below(4))
+        .map(|order| {
+            let tags: Vec<String> = (0..mix.below(3))
+                .map(|tag| format!(r#""t{}""#, mix.below(50) + tag))
+                .collect();
+            format!(
+                r#"{{"sku":"s{}","qty":{},"tags":[{}]}}"#,
+                mix.below(1000) + order,
+                1 + mix.below(9),
+                tags.join(",")
+            )
+        })
+        .collect();
+    format!(
+        r#"{},"orders":[{}]}}"#,
+        &row[..row.len() - 1],
+        orders.join(",")
     )
 }
 
@@ -253,5 +276,41 @@ fn decode(pushes: &[Bytes], schema: &SchemaRef) -> usize {
     rows
 }
 
-criterion_group!(benches, single_core, many_cores, arrow_json_fast_path);
+/// Shredding rows with arrays, alone and normalized into child tables with their lineage (spec
+/// §8.7): keyed roots hash their key, keyless ones their whole row.
+fn normalizing(c: &mut Criterion) {
+    let pushes = corpus(with_arrays);
+    let bytes: usize = pushes.iter().map(Bytes::len).sum();
+    let mut group = c.benchmark_group("normalize");
+    group.sample_size(10);
+    group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
+    group.bench_function("shred_only", |b| {
+        b.iter(|| black_box(shred(&pushes, CHUNK_BYTES).expect("the corpus shreds")));
+    });
+    for (name, key) in [("keyed", &["id"][..]), ("keyless", &[][..])] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let batches = shred(&pushes, CHUNK_BYTES).expect("the corpus shreds");
+                let parts: usize = batches
+                    .iter()
+                    .map(|batch| {
+                        normalize(batch, 8, key)
+                            .expect("the batch normalizes")
+                            .len()
+                    })
+                    .sum();
+                black_box(parts)
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    single_core,
+    many_cores,
+    arrow_json_fast_path,
+    normalizing
+);
 criterion_main!(benches);

@@ -10,7 +10,7 @@ use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter, WriteStats}
 use serde_json::json;
 
 use super::connectors::Replay;
-use super::{Refused, SinkWriter, ipc_sink, replay, shred, shred_on};
+use super::{Refused, SinkWriter, ipc_sink, normalize, replay, shred, shred_on};
 use crate::compute::RayonPool;
 use crate::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 
@@ -101,4 +101,21 @@ async fn the_sink_encodes_each_batch_and_reports_what_it_staged() {
     };
     assert_eq!(writer.flush().await.unwrap(), staged);
     assert_eq!(writer.flush().await.unwrap(), WriteStats::default());
+}
+
+#[test]
+fn normalizing_a_shredded_batch_names_each_table_by_its_path() {
+    let push = Bytes::from_static(br#"{"id":1,"items":[{"sku":"a","tags":["x"]}]}"#);
+    let batches = shred(&[push], 1 << 20).unwrap();
+    let parts = normalize(&batches[0], 8, &["id"]).unwrap();
+    let paths: Vec<Vec<String>> = parts.iter().map(|(path, _)| path.clone()).collect();
+    assert_eq!(
+        paths,
+        [
+            Vec::new(),
+            vec!["items".to_owned()],
+            vec!["items".to_owned(), "tags".to_owned()],
+        ]
+    );
+    assert!(parts.iter().all(|(_, batch)| batch.num_rows() == 1));
 }

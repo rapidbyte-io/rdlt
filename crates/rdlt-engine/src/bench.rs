@@ -4,10 +4,14 @@ mod connectors;
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use arrow_array::RecordBatch;
+use arrow_schema::ArrowError;
 use bytes::Bytes;
 
 use crate::compute::{ComputePool, Inline, ready};
+use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
 pub use connectors::{SinkSession, SinkWriter, ipc_sink, replay};
@@ -42,4 +46,25 @@ pub async fn shred_on(
     chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, Refused> {
     Ok(shred::shred(pool, pushes, chunk_bytes).await?)
+}
+
+/// `batch` normalized as a stream normalized to `max_depth` whose rows `key` identifies: each
+/// table's path below the stream's table, and its rows' data columns.
+pub fn normalize(
+    batch: &RecordBatch,
+    max_depth: u8,
+    key: &[&str],
+) -> Result<Vec<(Vec<String>, RecordBatch)>, ArrowError> {
+    let shape = Shape {
+        max_depth,
+        whole: std::collections::BTreeSet::new(),
+        key: key.iter().map(|column| Arc::from(*column)).collect(),
+    };
+    Ok(normalize::normalize(batch, &shape)?
+        .into_iter()
+        .map(|part| {
+            let path = part.path.iter().map(ToString::to_string).collect();
+            (path, part.batch)
+        })
+        .collect())
 }
