@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -37,11 +37,13 @@ pub(crate) struct Lanes {
     senders: Vec<mpsc::Sender<Message>>,
 }
 
-/// One lane's end: its queue, and a writer for each table and schema version it has written.
+/// One lane's end: its queue, a writer for each table and schema version it has written, and
+/// which of them it wrote since its last flush.
 pub(crate) struct Lane {
     receiver: mpsc::Receiver<Message>,
     tables: Arc<Tables>,
     writers: BTreeMap<(usize, SchemaVersion), Box<dyn DestinationWriter>>,
+    written: BTreeSet<(usize, SchemaVersion)>,
 }
 
 impl Lanes {
@@ -61,6 +63,7 @@ impl Lanes {
                     receiver,
                     tables: Arc::clone(tables),
                     writers: BTreeMap::new(),
+                    written: BTreeSet::new(),
                 };
                 (sender, lane)
             })
@@ -119,6 +122,7 @@ impl Lane {
             };
             match message {
                 Some(Message::Write(write)) => {
+                    self.written.insert((write.table, write.version));
                     let writer = self.writer(write.table, write.version).await?;
                     writer
                         .write(write.segment, write.batch)
@@ -129,7 +133,11 @@ impl Lane {
                     drop(write.reservation);
                 }
                 Some(Message::Flush(reply)) => {
-                    for writer in self.writers.values_mut() {
+                    // A writer written before the last flush holds nothing more to flush.
+                    for key in std::mem::take(&mut self.written) {
+                        let Some(writer) = self.writers.get_mut(&key) else {
+                            continue;
+                        };
                         writer.flush().await.map_err(|error| {
                             Error::connector(Side::Destination, "flushing staged writes", error)
                         })?;
