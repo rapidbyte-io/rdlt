@@ -250,14 +250,18 @@ fn follow_root(
     }
     let table = manifest.tables.entry(name.clone()).or_default();
     let root = Some((root, root_files.as_slice()));
-    let merged = merged(location, &name, &table.files, &[], &child.merge, root, meta)?;
-    table.files = merged.into_iter().collect();
+    let (rows, held) = merged_rows(location, &name, &table.files, &[], &child.merge, root)?;
+    // Nothing staged for the table, so it changes only where its roots' rows drop children.
+    if rows.num_rows() == held {
+        return Ok(());
+    }
+    table.files = written(location, &name, &rows, meta)?.into_iter().collect();
     Ok(())
 }
 
 /// Writes the rows of the table `name` once `files` are merged into its `published` files by
 /// `key`, or for a child table once they replace the children of the roots its root's `files`
-/// publish, to one new file; returns its path, or none when the table is empty.
+/// publish; the file written, or none where no rows remain.
 fn merged(
     location: &Location,
     name: &str,
@@ -267,6 +271,20 @@ fn merged(
     root: Option<(&RootKey, &[&StagedFile])>,
     meta: &CommitMeta,
 ) -> Result<Option<String>> {
+    let (rows, _) = merged_rows(location, name, published, files, key, root)?;
+    written(location, name, &rows, meta)
+}
+
+/// The rows of the table `name` once `files` are merged into its `published` files, as
+/// [`merged`] writes them, and how many rows the published files held.
+fn merged_rows(
+    location: &Location,
+    name: &str,
+    published: &[String],
+    files: &[&StagedFile],
+    key: &MergeKey,
+    root: Option<(&RootKey, &[&StagedFile])>,
+) -> Result<(RecordBatch, usize)> {
     let schema = tables::read(&location.root, name)?
         .ok_or_else(|| ConnectorError::data(format!("table {name} does not exist")))?;
     let schema = Arc::new(schema.to_arrow());
@@ -278,6 +296,7 @@ fn merged(
         Ok(batches)
     };
     let published = read(&mut published.iter())?;
+    let held = published.iter().map(RecordBatch::num_rows).sum();
     let incoming = read(&mut files.iter().map(|file| &file.path))?;
     let merged = match root {
         Some((root, root_files)) => {
@@ -300,11 +319,22 @@ fn merged(
     let merged = merged
         .and_then(|batches| arrow_select::concat::concat_batches(&schema, &batches))
         .map_err(|error| ConnectorError::data(format!("merging table {name}: {error}")))?;
-    if merged.num_rows() == 0 {
+    Ok((merged, held))
+}
+
+/// Writes `rows` of the table `name` as commit `meta`'s merge; the file written, or none for no
+/// rows.
+fn written(
+    location: &Location,
+    name: &str,
+    rows: &RecordBatch,
+    meta: &CommitMeta,
+) -> Result<Option<String>> {
+    if rows.num_rows() == 0 {
         return Ok(None);
     }
     let path = location.staged(&format!("merged/{}", meta.commit_seq.get()), name, None, 0);
-    location.format.write(&location.root.join(&path), &merged)?;
+    location.format.write(&location.root.join(&path), rows)?;
     Ok(Some(path))
 }
 

@@ -964,18 +964,14 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     let stamp = stamp();
     let hundred = keys(100, &stamp);
     assert_eq!(keys(100, &stamp), hundred, "the same size reuses them");
+    assert_eq!(keys(60, &stamp), hundred, "a smaller batch reuses them");
     assert_eq!(
-        keys(60, &stamp),
+        keys(4, &stamp),
         hundred,
-        "a batch over half their size reuses them"
+        "a much smaller batch reuses them too"
     );
-    assert_ne!(
-        keys(40, &stamp),
-        hundred,
-        "a much smaller batch gets its own"
-    );
-    let forty = keys(40, &stamp);
-    assert_ne!(keys(41, &stamp), forty, "a larger batch gets its own");
+    assert_eq!(keys(100, &stamp), hundred, "and so does the size after it");
+    assert_ne!(keys(101, &stamp), hundred, "a larger batch gets its own");
     let later = Stamp {
         load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(2_000), 6),
         ..stamp

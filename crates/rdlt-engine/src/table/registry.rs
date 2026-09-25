@@ -48,6 +48,20 @@ struct Slot {
     shape: Option<Arc<Shape>>,
 }
 
+/// Keeps `plan` among `plans`, the plans of a table whose view is `current`, dropping those of
+/// earlier views and, once there are [`PLANS`], the oldest; a plan of a view already superseded
+/// is used but not kept.
+fn cache(plans: &mut Vec<Arc<LoweringPlan>>, plan: Arc<LoweringPlan>, current: &Arc<TableView>) {
+    if !Arc::ptr_eq(plan.view(), current) {
+        return;
+    }
+    plans.retain(|kept| Arc::ptr_eq(kept.view(), current));
+    if plans.len() == PLANS {
+        plans.remove(0);
+    }
+    plans.push(plan);
+}
+
 /// Child tables' indexes by their stream's table and their path below it.
 type Children = BTreeMap<(usize, Vec<Arc<str>>), usize>;
 
@@ -203,11 +217,8 @@ impl Tables {
             incoming,
             routes,
         ));
-        plans.retain(|plan| Arc::ptr_eq(plan.view(), &view));
-        if plans.len() == PLANS {
-            plans.remove(0);
-        }
-        plans.push(Arc::clone(&plan));
+        let current = self.view(table);
+        cache(&mut plans, Arc::clone(&plan), &current);
         Ok(plan)
     }
 
