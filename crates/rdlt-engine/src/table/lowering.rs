@@ -2,7 +2,11 @@
 //! worked out once and applied to every batch — discards, exact conversions, lowering, metadata
 //! columns and, for merge tables, the sequence column and compaction.
 
+#[cfg(test)]
+mod differential;
 mod merge;
+#[cfg(test)]
+mod reference;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,7 +158,7 @@ impl LoweringPlan {
             .iter()
             .map(|index| {
                 let column = batch.column(*index);
-                (column.len() - column.null_count()) as u64
+                (column.len() - column.logical_null_count()) as u64
             })
             .sum();
         check_key(stream, view, &batch, &self.sources)?;
@@ -323,14 +327,25 @@ fn discard_rows(
         .filter(|(_, route)| **route == Route::DiscardRows)
         .map(|(index, _)| batch.column(index))
         .collect();
-    if discarding
-        .iter()
-        .all(|column| column.null_count() == column.len())
-    {
+    // Run-end and dictionary encodings hold their nulls in their values, so only their logical
+    // nulls say which rows hold a value.
+    let nulls: Vec<Option<arrow_buffer::NullBuffer>> =
+        discarding.iter().map(Array::logical_nulls).collect();
+    let empty = |nulls: &Option<arrow_buffer::NullBuffer>| {
+        nulls
+            .as_ref()
+            .is_some_and(|nulls| nulls.null_count() == nulls.len())
+    };
+    if nulls.iter().all(empty) {
         return Ok((batch.clone(), None, 0));
     }
     let keep: BooleanArray = (0..batch.num_rows())
-        .map(|row| Some(discarding.iter().all(|column| column.is_null(row))))
+        .map(|row| {
+            let absent = |nulls: &Option<arrow_buffer::NullBuffer>| {
+                nulls.as_ref().is_some_and(|nulls| nulls.is_null(row))
+            };
+            Some(nulls.iter().all(absent))
+        })
         .collect();
     let kept = arrow_select::filter::filter_record_batch(batch, &keep)?;
     let dropped = (batch.num_rows() - kept.num_rows()) as u64;

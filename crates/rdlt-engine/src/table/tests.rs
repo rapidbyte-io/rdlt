@@ -1071,3 +1071,119 @@ fn only_a_normalized_table_is_created_by_a_batch_without_values() {
         .unwrap();
     assert_eq!(again.model.version, 2, "a batch that fits changes nothing");
 }
+
+#[test]
+fn a_column_of_nulls_arriving_at_a_json_column_lowers_to_nulls() {
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let model = created(&resolver, &[("doc", LogicalType::Json)]);
+    let nulls = batch(vec![(
+        "doc",
+        arrow_array::new_null_array(&DataType::Null, 2),
+    )]);
+    let prepared = prepared(&resolver, &model, &nulls);
+    assert_eq!(prepared.batch.num_rows(), 2);
+    assert_eq!(prepared.batch.column(0).null_count(), 2);
+}
+
+#[test]
+fn a_map_column_lowers_as_a_list_of_key_and_value_structs() {
+    use arrow_array::builder::{Int64Builder, MapBuilder, StringBuilder};
+    let mut builder = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
+    builder.keys().append_value("k");
+    builder.values().append_value(7);
+    builder.append(true).unwrap();
+    builder.append(false).unwrap();
+    let map: ArrayRef = Arc::new(builder.finish());
+    let batch = batch(vec![("m", map)]);
+    let incoming = Incoming::from(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let mut native = capabilities();
+    native.nested.structs = true;
+    native.nested.lists = true;
+    let resolver = resolver(native, plan(), &[]);
+    let model = resolver
+        .resolve(&Model::default(), &incoming)
+        .unwrap()
+        .model;
+    let prepared = prepared(&resolver, &model, &batch);
+    let lists = prepared.batch.column(0).as_list::<i32>();
+    assert!(lists.is_null(1));
+    let entries = lists.value(0);
+    let entries = entries.as_struct();
+    assert_eq!(entries.column(0).as_string::<i32>().value(0), "k");
+    assert_eq!(entries.column(1).as_primitive::<Int64Type>().value(0), 7);
+}
+
+#[test]
+fn json_inside_a_list_stays_json_when_the_list_becomes_text() {
+    let item = Field::new("item", LogicalType::Json, true);
+    let logical = LogicalType::List(Box::new(item.clone()));
+    let values: ArrayRef = Arc::new(StringArray::from(vec!["null", "{\"a\":1}"]));
+    let list: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(item.to_arrow()),
+        arrow_buffer::OffsetBuffer::from_lengths([2]),
+        values,
+        None,
+    ));
+    let text = super::convert::text(&list, &logical).unwrap();
+    assert_eq!(text.as_string::<i32>().value(0), "[null,{\"a\":1}]");
+}
+
+#[test]
+fn values_only_a_dropped_row_held_in_a_dictionary_are_not_converted() {
+    use arrow_array::{DictionaryArray, DurationMicrosecondArray, types::Int32Type};
+    let dropping = plan().schema(SchemaSettings::new().policy(SchemaPolicy::DiscardRow));
+    let resolver = resolver(capabilities(), dropping, &[]);
+    let nanos = LogicalType::Duration(rdlt_connector::TimeUnit::Nanosecond);
+    let model = created(&resolver, &[("d", nanos)]);
+    // Row 0 carries a new column, so it is dropped; its duration overflows nanoseconds.
+    let values: ArrayRef = Arc::new(DurationMicrosecondArray::from(vec![i64::MIN / 2, 1]));
+    let keys = Int32Array::from(vec![0, 1]);
+    let durations = DictionaryArray::<Int32Type>::try_new(keys, values).unwrap();
+    let batch = batch(vec![
+        ("d", Arc::new(durations) as ArrayRef),
+        (
+            "new",
+            Arc::new(Int64Array::from(vec![Some(1), None])) as ArrayRef,
+        ),
+    ]);
+    let prepared = prepared(&resolver, &model, &batch);
+    assert_eq!(prepared.discarded_rows, 1);
+    assert_eq!(prepared.batch.num_rows(), 1);
+}
+
+#[test]
+fn non_finite_floats_are_named_in_json() {
+    let floats: ArrayRef = Arc::new(Float64Array::from(vec![
+        Some(f64::NAN),
+        Some(f64::INFINITY),
+        Some(f64::NEG_INFINITY),
+        Some(1.5),
+        None,
+    ]));
+    let rendered = json(&floats, &LogicalType::Float64).unwrap();
+    let rendered = rendered.as_string::<i32>();
+    let texts: Vec<Option<&str>> = rendered.iter().collect();
+    assert_eq!(
+        texts,
+        [
+            Some("\"NaN\""),
+            Some("\"Infinity\""),
+            Some("\"-Infinity\""),
+            Some("1.5"),
+            None
+        ]
+    );
+}
+
+#[test]
+fn a_wall_clock_time_a_named_zone_skips_becomes_the_instant_of_the_offset_in_force() {
+    use arrow_array::TimestampSecondArray;
+    use rdlt_connector::TimeUnit as Unit;
+    // 2018-11-04 00:00 never happened in São Paulo: clocks went from 23:59:59 to 01:00 at -03:00.
+    let naive: ArrayRef = Arc::new(TimestampSecondArray::from(vec![Some(1_541_289_600), None]));
+    let zoned = LogicalType::Timestamp(Unit::Second, Some(Arc::from("America/Sao_Paulo")));
+    let placed = convert(&naive, &LogicalType::Timestamp(Unit::Second, None), &zoned).unwrap();
+    let placed = placed.as_primitive::<arrow_array::types::TimestampSecondType>();
+    assert_eq!(placed.value(0), 1_541_300_400);
+    assert!(placed.is_null(1));
+}

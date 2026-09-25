@@ -1307,6 +1307,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "bytes",
+ "chrono",
  "criterion",
  "getrandom 0.4.3",
  "memchr",

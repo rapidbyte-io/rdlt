@@ -52,7 +52,7 @@ pub(super) fn check_key(
                     format!("a batch has no key column {name}"),
                 );
             }
-            Source::Incoming(index, _) if batch.column(*index).null_count() > 0 => {
+            Source::Incoming(index, _) if batch.column(*index).logical_null_count() > 0 => {
                 return refuse("merge_key_null", format!("key column {name} holds a null"));
             }
             Source::Incoming(..) => {}

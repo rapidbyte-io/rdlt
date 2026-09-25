@@ -25,6 +25,8 @@ mod budget;
 mod compute;
 mod config;
 mod coordinator;
+#[cfg(test)]
+mod drawn;
 mod env;
 mod error;
 mod lane;
