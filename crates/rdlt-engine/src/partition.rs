@@ -215,12 +215,13 @@ async fn read_and_ingest(
 
 /// Where a partition that read to its end resumes, if anywhere new.
 ///
-/// Rows written after the last checkpoint have no cursor that resumes past them, so committing
-/// them marks the partition `Done`. Otherwise the partition resumes from its last cursor, so an
+/// Rows received after the last checkpoint have no cursor that resumes past them, so committing
+/// them marks the partition `Done`, whether they were written or its policy discarded them all,
+/// and the seal carries the discards. Otherwise the partition resumes from its last cursor, so an
 /// incremental read picks up rows the source adds later. A partition that read nothing and never
 /// checkpointed records no position, so its next read starts from the beginning again.
 fn end_state(ingested: &Ingested) -> Option<PartitionState> {
-    match (&ingested.last_cursor, ingested.open.rows) {
+    match (&ingested.last_cursor, ingested.open.received) {
         (Some(cursor), 0) => Some(PartitionState::Cursor(cursor.clone())),
         (None, 0) => None,
         _ => Some(PartitionState::Done),

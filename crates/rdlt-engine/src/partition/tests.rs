@@ -4,17 +4,23 @@ use super::coalesce::Coalescer;
 use super::{Ingested, OpenSegment, end_state};
 use crate::config::BatchPolicy;
 
-fn ingested(rows: u64, cursor: Option<u64>) -> Ingested {
+/// A read that ended with `received` rows after its last cursor, `written` of them written.
+fn received(received: u64, written: u64, cursor: Option<u64>) -> Ingested {
     Ingested {
         open: OpenSegment {
             id: SegmentId(9),
-            rows,
+            rows: written,
+            received,
             ..OpenSegment::default()
         },
         last_cursor: cursor.map(|next| Cursor::encode(1, &next).unwrap()),
         stopped: false,
         coalescer: Coalescer::new(BatchPolicy::default()),
     }
+}
+
+fn ingested(rows: u64, cursor: Option<u64>) -> Ingested {
+    received(rows, rows, cursor)
 }
 
 #[test]
@@ -26,6 +32,15 @@ fn a_partition_ends_at_its_last_cursor_unless_rows_follow_it() {
     );
     assert_eq!(end_state(&ingested(3, Some(5))), Some(PartitionState::Done));
     assert_eq!(end_state(&ingested(3, None)), Some(PartitionState::Done));
+}
+
+#[test]
+fn rows_after_the_last_cursor_its_policy_discarded_all_of_end_the_partition() {
+    assert_eq!(
+        end_state(&received(2, 0, Some(5))),
+        Some(PartitionState::Done)
+    );
+    assert_eq!(end_state(&received(2, 0, None)), Some(PartitionState::Done));
 }
 
 #[test]
