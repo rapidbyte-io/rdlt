@@ -9,7 +9,7 @@ repository.workspace = true
 
 [features]
 # Internals for the benchmarks and fuzz targets (spec §21.2); not a public API.
-bench = ["dep:arrow-ipc", "dep:schemars", "dep:serde_json"]
+bench = ["dep:arrow-ipc", "dep:schemars"]
 
 [dependencies]
 arrow-array.workspace = true
@@ -29,7 +29,7 @@ rayon.workspace = true
 rdlt-connector.workspace = true
 schemars = { workspace = true, optional = true }
 serde.workspace = true
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 sonic-rs.workspace = true
 stacker.workspace = true
 thiserror.workspace = true
