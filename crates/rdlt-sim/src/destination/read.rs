@@ -19,30 +19,52 @@ use crate::world::World;
 /// JSON a destination stored as text, having no JSON type, is read back through the committed
 /// schema's types. A value found in two columns of one source column is a violation.
 pub fn published(world: &World, stream: &str) -> Vec<Map<String, Value>> {
-    let store = world.store.lock();
     let Ok(path) = TablePath::new([stream]) else {
         return Vec::new();
     };
-    let Some((physical, names)) = names(&store.state, &path) else {
+    published_table(world, &path)
+        .into_iter()
+        .map(|(source, _)| source)
+        .collect()
+}
+
+/// Every row published to the table at `path`: as the source sent it, and its metadata columns,
+/// those no source column names, each with the type the table stores it as.
+pub(crate) fn published_table(world: &World, path: &TablePath) -> Vec<(Map<String, Value>, Meta)> {
+    let store = world.store.lock();
+    let Some((physical, names)) = names(&store.state, path) else {
         return Vec::new();
     };
     let Some(table) = store.tables.get(physical.as_str()) else {
         return Vec::new();
     };
-    let types = logical_types(&store.state, &path);
+    let types = logical_types(&store.state, path);
+    let sourced: BTreeSet<&str> = names.iter().map(|(_, name)| name).collect();
     table
         .published
         .iter()
         .map(|row| {
-            cells::unlowered(row, &types, &table.columns)
+            let source = cells::unlowered(row, &types, &table.columns)
                 .and_then(|row| cells::source_row(&row, &names))
                 .unwrap_or_else(|finding| {
-                    world.violation(format!("stream {stream}: {finding}"));
+                    world.violation(format!("table {path}: {finding}"));
                     Map::new()
+                });
+            let meta = row
+                .iter()
+                .filter(|(column, _)| !sourced.contains(column.as_str()))
+                .filter_map(|(column, value)| {
+                    let logical = table.columns.get(column)?.clone();
+                    Some((logical, value.clone()))
                 })
+                .collect();
+            (source, meta)
         })
         .collect()
 }
+
+/// A row's metadata values, each with the type its column stores.
+pub(crate) type Meta = Vec<(LogicalType, Value)>;
 
 /// The logical type of each column of the table at `path`, by identifier, as state records it.
 fn logical_types(

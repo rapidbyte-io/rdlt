@@ -26,6 +26,7 @@ use crate::world::{FaultPoint, World};
 
 pub use cells::Cells;
 pub(crate) use cells::canonical;
+pub(crate) use read::{Meta, published_table};
 pub(crate) use read::{committed_next, reads_in_progress};
 pub use read::{completions, published};
 use read::{names, next_offset};
@@ -280,12 +281,17 @@ impl Store {
         }
     }
 
-    /// Checks that every row just published lies before its partition's committed cursor.
+    /// Checks that every row just published to a stream's table lies before its partition's
+    /// committed cursor.
     fn check_cursors(&self, world: &World, published: &[(String, Vec<Cells>)]) {
         for (table, rows) in published {
             let Some((path, _)) = self.names.iter().find(|(_, name)| *name == table) else {
                 continue;
             };
+            // A child table's rows carry no position; the oracle checks them against their rows.
+            if path.segments().count() > 1 {
+                continue;
+            }
             let Some(stream) = path
                 .segments()
                 .next()

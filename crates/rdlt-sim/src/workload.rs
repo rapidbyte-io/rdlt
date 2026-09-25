@@ -161,7 +161,7 @@ impl SimStream {
             })
             .collect();
         let drift = drift(rng, partitions.len());
-        Self {
+        let mut stream = Self {
             name: format!("s{index}"),
             read,
             write,
@@ -192,7 +192,20 @@ impl SimStream {
             json: rng.chance(333),
             drift,
             partitions,
+        };
+        // Normalized streams neither merge nor discard yet (spec §8.7, M3c).
+        if stream.write != WriteMode::Merge
+            && stream.policy == SchemaPolicy::Evolve
+            && rng.chance(300)
+        {
+            stream.nested = Nested::normalize();
         }
+        stream
+    }
+
+    /// Whether the stream's arrays land in child tables.
+    pub fn normalized(&self) -> bool {
+        matches!(self.nested, Nested::Normalize { .. })
     }
 
     /// The phase that first delivers row `offset` of `partition`: incremental rows keep the phase
