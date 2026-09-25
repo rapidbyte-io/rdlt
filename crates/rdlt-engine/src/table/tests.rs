@@ -1047,3 +1047,26 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn only_a_normalized_table_is_created_by_a_batch_without_values() {
+    let plain = resolver(capabilities(), plan(), &[]);
+    let nulls = schema(&[("unknown", LogicalType::Null)]);
+    let resolution = plain.resolve(&Model::default(), &nulls).unwrap();
+    assert!(
+        !resolution.model.created(),
+        "a plain table waits for a value"
+    );
+    let mut normalized = resolver(capabilities(), plan(), &[]);
+    normalized.meta.id = Some("_rdlt_id".into());
+    let first = normalized.resolve(&Model::default(), &nulls).unwrap();
+    assert_eq!(first.model.version, 1, "its rows' lineage creates it");
+    let wider = normalized
+        .resolve(&first.model, &schema(&[("a", LogicalType::Int64)]))
+        .unwrap();
+    assert_eq!(wider.model.version, 2);
+    let again = normalized
+        .resolve(&wider.model, &schema(&[("a", LogicalType::Int64)]))
+        .unwrap();
+    assert_eq!(again.model.version, 2, "a batch that fits changes nothing");
+}

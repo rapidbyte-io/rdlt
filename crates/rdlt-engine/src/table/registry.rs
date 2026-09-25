@@ -381,25 +381,19 @@ impl Tables {
         Error::connector(Side::Destination, context, error).with_stream(stream)
     }
 
-    /// Adds `table`'s lineage columns where the table was created before its stream normalized;
-    /// a table that already has them changes nothing.
+    /// Adds the lineage column of a stream's table created before the stream normalized; a table
+    /// that already has it changes nothing, as a generation created with it does.
     pub(crate) async fn add_lineage(&self, table: usize) -> Result<(), Error> {
         let view = self.view(table);
-        if !view.model.created() || view.table.generation.is_some() || view.meta.id.is_none() {
+        let Some(id) = &view.meta.id else {
+            return Ok(());
+        };
+        if !view.model.created() {
             return Ok(());
         }
         let changes: Vec<TableChange> = view.physical[view.model.columns.len()..]
             .iter()
-            .filter(|field| {
-                let name = field.name();
-                view.meta.id.as_deref() == Some(name)
-                    || view
-                        .meta
-                        .parent
-                        .iter()
-                        .flatten()
-                        .any(|column| column.as_ref() == name)
-            })
+            .filter(|field| field.name() == id.as_ref())
             .map(|field| TableChange::AddColumn {
                 table: view.table.clone(),
                 field: field.clone(),

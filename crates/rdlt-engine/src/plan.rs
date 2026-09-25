@@ -117,7 +117,6 @@ impl StreamPlan {
         Self {
             columns: BTreeMap::new(),
             hints: BTreeMap::new(),
-            key: None,
             ..self.clone()
         }
     }
