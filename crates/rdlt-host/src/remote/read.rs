@@ -61,7 +61,11 @@ pub(super) async fn run(
                 let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
                 match reader.event(frame)? {
                     Read::Done => return Ok(()),
-                    Read::Event(event) => sink.send(event).await?,
+                    // A send fails only once the engine has stopped the read, even one that
+                    // waited for room; the next turn forwards the stop, and the read drains.
+                    Read::Event(event) => {
+                        sink.send(event).await.ok();
+                    }
                     Read::Nothing => {}
                 }
                 controls.send(control(Control::Credit(v1::Credit { bytes: size }))).await.ok();
