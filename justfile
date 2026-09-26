@@ -51,19 +51,19 @@ sim-coverage seeds="1000":
 # Measure line and branch coverage and apply the CI gate
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    cargo +{{ nightly }} llvm-cov nextest --branch --package rdlt-engine --package rdlt-connector --all-features --json --summary-only --output-path target/coverage.json
+    cargo +{{ nightly }} llvm-cov nextest --branch --package rdlt-engine --package rdlt-connector --package rdlt-wire --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/'
     cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
 
 # Mutation testing; extra arguments go to cargo-mutants, for example --in-diff pr.diff
 mutants *args:
-    cargo mutants --package rdlt-engine --package rdlt-connector {{ args }}
+    cargo mutants --package rdlt-engine --package rdlt-connector --package rdlt-wire {{ args }}
 
 # Mutation testing over this branch's changes, including uncommitted ones, against `base`, in
 # `jobs` parallel builds; incremental builds are what make rebuilding per mutant cheap
 mutants-diff base="origin/main" jobs="4":
     mkdir -p target
     git diff --src-prefix=a/ --dst-prefix=b/ "$(git merge-base {{ base }} HEAD)" > target/mutants.diff
-    CARGO_INCREMENTAL=1 cargo mutants --package rdlt-engine --package rdlt-connector --in-diff target/mutants.diff -j {{ jobs }}
+    CARGO_INCREMENTAL=1 cargo mutants --package rdlt-engine --package rdlt-connector --package rdlt-wire --in-diff target/mutants.diff -j {{ jobs }}
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`
 fuzz target seconds="60":

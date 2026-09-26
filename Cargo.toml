@@ -64,6 +64,7 @@ xxhash-rust = { version = "0.8.18", features = [
 anyhow = "1.0.104" # error reporting at xtask's command-line entry point
 cargo_metadata = "0.23.1" # xtask reads the workspace graph for the dependency rule
 clap = { version = "4.6.7", features = ["derive"] } # command-line parsing for xtask
+flatbuffers = "25.2.10" # hand-built IPC messages, for rdlt-wire's framing tests
 criterion = { version = "0.8.2", default-features = false, features = [
   "cargo_bench_support",
 ] } # throughput benchmarks
