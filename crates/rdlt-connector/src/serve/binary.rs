@@ -1,69 +1,28 @@
 //! A connector binary's whole `main`: its arguments, the connection its host passed it, and its
 //! shutdown when the host says so.
 
-#[cfg(test)]
-mod tests;
-
 use std::future::Future;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use rdlt_wire::Limits;
 use tokio::io::AsyncReadExt as _;
+use tokio_util::sync::CancellationToken;
 
-use super::{Served, inherited, serve_until};
+use super::args::{Args, Failure, parse};
+use super::{Served, inherited, listen, serve_until};
 use crate::factory::{RoleFactory, Serve};
-
-/// Why a connector binary could not serve.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub(super) struct Failure(String);
-
-impl From<String> for Failure {
-    fn from(message: String) -> Self {
-        Self(message)
-    }
-}
-
-impl From<&str> for Failure {
-    fn from(message: &str) -> Self {
-        Self(message.to_owned())
-    }
-}
-
-/// What a connector binary was asked to do.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Args {
-    /// The file descriptor of the socket the host passed.
-    pub(super) fd: i32,
-}
-
-/// The binary's arguments: `--rdlt-fd N`, or `--rdlt-fd=N`.
-pub(super) fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, Failure> {
-    let mut fd = None;
-    while let Some(arg) = args.next() {
-        let value = match arg.strip_prefix("--rdlt-fd") {
-            Some("") => args.next(),
-            Some(rest) => rest.strip_prefix('=').map(str::to_owned),
-            None => return Err(format!("unknown argument `{arg}`").into()),
-        };
-        let value = value.ok_or("`--rdlt-fd` needs a file descriptor")?;
-        let number = value
-            .parse()
-            .map_err(|_| format!("`--rdlt-fd {value}` is not a file descriptor"))?;
-        if fd.replace(number).is_some() {
-            return Err("`--rdlt-fd` is given twice".into());
-        }
-    }
-    let fd = fd.ok_or("a connector binary is started by its host, with `--rdlt-fd`")?;
-    Ok(Args { fd })
-}
 
 /// Serves `C` as a whole binary's `main` does: `fn main() -> ExitCode { serve::<C>() }`.
 ///
-/// It serves the socket its host passed with `--rdlt-fd` until the host closes it, and shuts down
-/// gracefully once its standard input ends or it receives `SIGTERM`. The host manages it, so it
-/// ignores `SIGINT`: a terminal's Ctrl-C reaches the host, which stops its connectors itself.
+/// Spawned by its host, with `--rdlt-fd`, it serves the socket the host passed until the host
+/// closes it, and shuts down gracefully once its standard input ends or it receives `SIGTERM`. The
+/// host manages it, so it ignores `SIGINT`: a terminal's Ctrl-C reaches the host, which stops its
+/// connectors itself.
+///
+/// Run on its own, with `--listen <address> --tls-cert <path> --tls-key <path> --tls-client-ca <path>`, it
+/// serves every host that connects over mutual TLS, and says where on standard output
+/// (`listening on <address>`). The first `SIGTERM` or `SIGINT` stops it gracefully; a second, at once.
 pub fn serve<C: Serve>() -> ExitCode {
     Served::from(C::factory()).serve()
 }
@@ -98,17 +57,33 @@ impl Served {
 }
 
 fn run(served: Served) -> Result<(), Failure> {
-    let args = parse(std::env::args().skip(1))?;
+    match parse(std::env::args().skip(1))? {
+        Args::Inherited { fd } => inherited_socket(served, fd),
+        Args::Listen(listening) => {
+            let runtime = runtime()?;
+            let served = runtime.block_on(async move {
+                let (stop, now) = signalled().map_err(|error| format!("watching for stops failed: {error}"))?;
+                tokio::select! {
+                    biased;
+                    () = now => Ok(()),
+                    served = listen::listen(Arc::new(served), &listening, Limits::default(), stop) => served,
+                }
+            });
+            runtime.shutdown_background();
+            served
+        }
+    }
+}
+
+/// Serves the socket the host passed at `fd`.
+fn inherited_socket(served: Served, fd: i32) -> Result<(), Failure> {
     // First, before anything in this process opens a file: see `inherited::adopt`.
-    let socket = inherited::adopt(args.fd)
+    let socket = inherited::adopt(fd)
         .map_err(|error| format!("taking the host's socket failed: {error}"))?;
     #[cfg(target_os = "linux")]
     nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)
         .map_err(|error| format!("asking to end with the host failed: {error}"))?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("starting the runtime failed: {error}"))?;
+    let runtime = runtime()?;
     let served = runtime.block_on(async move {
         socket
             .set_nonblocking(true)
@@ -126,6 +101,34 @@ fn run(served: Served) -> Result<(), Failure> {
     // Reading standard input blocks a thread the runtime would otherwise wait for.
     runtime.shutdown_background();
     Ok(served?)
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, Failure> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("starting the runtime failed: {error}").into())
+}
+
+/// A listening connector's stops: the first `SIGTERM` or `SIGINT` ends the first future, a
+/// graceful stop; the second ends the second, a stop at once.
+fn signalled() -> std::io::Result<(impl Future<Output = ()>, impl Future<Output = ()>)> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let (graceful, now) = (CancellationToken::new(), CancellationToken::new());
+    let (first, second) = (graceful.clone(), now.clone());
+    tokio::spawn(async move {
+        for stop in [first, second] {
+            tokio::select! {
+                biased;
+                _ = terminate.recv() => {}
+                _ = interrupt.recv() => {}
+            }
+            stop.cancel();
+        }
+    });
+    Ok((graceful.cancelled_owned(), now.cancelled_owned()))
 }
 
 /// Ends once the host says to stop: standard input ends, or `SIGTERM` arrives; `SIGINT` is
