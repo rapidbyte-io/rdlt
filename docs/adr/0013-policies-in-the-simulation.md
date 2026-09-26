@@ -30,7 +30,10 @@ sequences.
     is discarded with the rest of a push whose join the column does not hold.
 
   The model follows the same batches, since a read resumes only at checkpoints, which fall between
-  batches.
+  batches. The engine shreds a checkpoint's worth of pushes or more together and joins their
+  types, which is the same as long as every push of a column in one partition and phase arrives
+  alike; a test holds the workload to that. Non-finite floats pushed by name, which would break
+  it, are M3h's, with a model of the pushes the engine shreds together.
 - **Where each value sits.** A value whose type fits its column's fixed type must sit in the own
   column, written as exactly that type. A column's type is fixed when it is hinted, when it is
   declared and every batch fits it, or when its every batch arrived as one type. A value a hint
@@ -89,7 +92,9 @@ sequences.
   normalized streams arrived. The model counts them too.
 - About one seed in twelve stops at a key refusal, about half of them in the first phase.
 - A normalized stream's child tables are created by their first rows in whatever order partitions
-  send them, so the oracle predicts their refusals only as possible.
+  send them, so the oracle predicts the refusals of a column holding objects or arrays only as
+  possible. A column of scalars stays one column of the stream's own table, and its refusals are
+  predicted as exactly as any other stream's.
 - A normalized stream's rows that a new array drops go before their batch's schema is resolved,
   taking with them the columns only they hold values in. Which columns arrive then depends on how
   the engine groups a flush's batches, so where rows go the oracle predicts refusals, keys' too,
