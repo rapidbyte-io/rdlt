@@ -1,5 +1,6 @@
 //! Repository automation for rdlt.
 
+mod codegen;
 mod coverage;
 mod deps;
 mod lexer;
@@ -24,6 +25,12 @@ enum Command {
     Lint,
     /// Check that workspace crates depend only on what the architecture allows.
     Deps,
+    /// Generate the wire protocol's Rust code from its `.proto` files.
+    Codegen {
+        /// Fail when the committed code is stale, instead of writing it.
+        #[arg(long)]
+        check: bool,
+    },
     /// Fail when an llvm-cov JSON export is below the coverage thresholds.
     CoverageGate {
         /// Path to the export written by `cargo llvm-cov --json --summary-only`.
@@ -42,6 +49,7 @@ fn main() -> anyhow::Result<ExitCode> {
     match Cli::parse().command {
         Command::Lint => lint::run(&root),
         Command::Deps => deps::run(&root),
+        Command::Codegen { check } => codegen::run(&root, check),
         Command::CoverageGate {
             export,
             lines,

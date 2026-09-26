@@ -1,0 +1,207 @@
+// A source's operations: planning partitions, reading them and learning what committed.
+syntax = "proto3";
+
+package rdlt.connector.v1;
+
+import "rdlt/connector/v1/catalog.proto";
+import "rdlt/connector/v1/state.proto";
+import "rdlt/connector/v1/types.proto";
+
+// Asks for the partitions of a stream.
+message PlanRequest {
+  // The stream.
+  StreamName stream = 1;
+  // Its committed state.
+  StreamState state = 2;
+}
+
+// The partitions of a stream to read.
+message PlanResponse {
+  // Their ids, distinct.
+  repeated string partitions = 1;
+}
+
+// What the engine sends on a read.
+message ReadControl {
+  // The message.
+  oneof control {
+    // Starts the read; the first message.
+    ReadStart start = 1;
+    // Asks for a checkpoint answering a barrier.
+    CheckpointRequest checkpoint = 2;
+    // Grants bytes the source may send.
+    Credit credit = 3;
+    // Asks the read to stop.
+    Stop stop = 4;
+  }
+}
+
+// Starts reading a partition.
+message ReadStart {
+  // The stream.
+  StreamName stream = 1;
+  // The partition's id.
+  string partition = 2;
+  // Where to resume; absent reads from the start.
+  optional Cursor cursor = 3;
+  // How to read.
+  ReadMode mode = 4;
+}
+
+// Asks for a checkpoint answering a barrier.
+message CheckpointRequest {
+  // The barrier.
+  uint64 barrier = 1;
+}
+
+// Bytes a receiver grants its sender.
+message Credit {
+  // The bytes.
+  uint64 bytes = 1;
+}
+
+// How a read should stop.
+enum StopMode {
+  // Never sent; a receiver refuses it.
+  STOP_MODE_UNSPECIFIED = 0;
+  // After a checkpoint, keeping what was read.
+  STOP_MODE_AFTER_CHECKPOINT = 1;
+  // At once.
+  STOP_MODE_NOW = 2;
+}
+
+// Asks a read to stop.
+message Stop {
+  // How.
+  StopMode mode = 1;
+}
+
+// What a source sends on a read.
+message ReadFrame {
+  // The frame.
+  oneof frame {
+    // An Arrow schema, once per schema epoch.
+    SchemaFrame schema = 1;
+    // An Arrow record or dictionary batch.
+    BatchFrame batch = 2;
+    // JSON records.
+    JsonFrame json = 3;
+    // A resumable position.
+    CheckpointFrame checkpoint = 4;
+    // A log line.
+    LogFrame log = 5;
+    // A metric sample.
+    MetricFrame metric = 6;
+    // The end of the read.
+    Done done = 7;
+  }
+}
+
+// An Arrow schema: an IPC schema message.
+message SchemaFrame {
+  // The epoch the schema opens; batches name it.
+  uint64 schema_epoch = 1;
+  // The IPC schema message, as a flatbuffer.
+  bytes ipc_schema = 2;
+}
+
+// What a batch holds.
+enum BatchKind {
+  // Never sent; a receiver refuses it.
+  BATCH_KIND_UNSPECIFIED = 0;
+  // Rows.
+  BATCH_KIND_ARROW = 1;
+  // Changes.
+  BATCH_KIND_CHANGE = 2;
+}
+
+// An Arrow batch, in Arrow Flight's FlightData layout.
+message BatchFrame {
+  // The schema epoch it belongs to.
+  uint64 schema_epoch = 1;
+  // What it holds.
+  BatchKind kind = 2;
+  // The IPC message: a record batch or dictionary batch flatbuffer.
+  bytes data_header = 3;
+  // The message's body buffers.
+  bytes data_body = 4;
+}
+
+// JSON records: an array of objects, or newline-delimited objects.
+message JsonFrame {
+  // The JSON.
+  bytes data = 1;
+}
+
+// A resumable position; it seals everything sent since the previous checkpoint.
+message CheckpointFrame {
+  // Where to resume.
+  Cursor cursor = 1;
+  // The barrier it answers, if one was pending.
+  optional uint64 barrier = 2;
+}
+
+// The severity of a log line.
+enum LogLevel {
+  // Never sent; a receiver refuses it.
+  LOG_LEVEL_UNSPECIFIED = 0;
+  // Something failed.
+  LOG_LEVEL_ERROR = 1;
+  // Something is wrong but reading continues.
+  LOG_LEVEL_WARN = 2;
+  // Progress worth recording.
+  LOG_LEVEL_INFO = 3;
+  // Detail for debugging.
+  LOG_LEVEL_DEBUG = 4;
+}
+
+// A log line.
+message LogFrame {
+  // Its severity.
+  LogLevel level = 1;
+  // The line.
+  string message = 2;
+}
+
+// A metric sample.
+message MetricFrame {
+  // The metric's name.
+  string name = 1;
+  // The sample.
+  double value = 2;
+}
+
+// Why a read ended.
+enum DoneReason {
+  // Never sent; a receiver refuses it.
+  DONE_REASON_UNSPECIFIED = 0;
+  // The partition is exhausted.
+  DONE_REASON_EXHAUSTED = 1;
+  // The read was stopped.
+  DONE_REASON_STOPPED = 2;
+}
+
+// The end of a read.
+message Done {
+  // Why it ended.
+  DoneReason reason = 1;
+}
+
+// Reports cursors a destination committed.
+message CommittedRequest {
+  // The stream.
+  StreamName stream = 1;
+  // Each committed partition's cursor.
+  repeated CommittedCursor cursors = 2;
+}
+
+// A partition's committed cursor.
+message CommittedCursor {
+  // The partition's id.
+  string partition = 1;
+  // Its cursor.
+  Cursor cursor = 2;
+}
+
+// The answer to a committed report.
+message CommittedResponse {}

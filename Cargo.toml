@@ -17,6 +17,7 @@ rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
 rdlt-testkit = { path = "crates/rdlt-testkit" }                                            # drawn data and the value model, for tests and rdlt-sim
+rdlt-wire = { path = "crates/rdlt-wire", version = "0.0.0" }                               # the wire protocol: messages, the Arrow codec and limits
 
 # Libraries
 arrow-array = { version = "59.2", features = [
@@ -48,6 +49,7 @@ uuid = { version = "1.26.1", features = ["serde"] } # load ids (UUIDv7)
 getrandom = "0.4.3" # the operating system random source behind SystemEnv
 memchr = "2.8.3" # finding the lines of JSON pushes
 parking_lot = "0.12.5" # locks without poisoning
+prost = "0.14.4" # protocol buffer messages of the wire protocol
 rayon = "1.12.0" # the compute pool for CPU-bound stages
 sonic-rs = "0.5.10" # SIMD JSON parsing and rendering for the shredder
 stacker = "0.1.25" # stack grown on demand, so JSON at the nesting limit parses in every build
@@ -67,6 +69,8 @@ criterion = { version = "0.8.2", default-features = false, features = [
 ] } # throughput benchmarks
 peak_alloc = "0.3.0" # the heap's peak size, for the engine's memory bound
 proptest = "1.11.0" # property tests
+prost-build = "0.14.4" # xtask generates the wire protocol's Rust code
+protox = "0.9.1" # xtask compiles the wire protocol's .proto files without protoc
 regex = "1.13.1" # xtask lint patterns
 rusqlite = { version = "0.40.2", default-features = false, features = [
   "bundled",

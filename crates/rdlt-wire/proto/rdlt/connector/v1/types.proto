@@ -1,0 +1,192 @@
+// Types every other file of the protocol uses: logical types, schemas, identifiers and times.
+syntax = "proto3";
+
+package rdlt.connector.v1;
+
+// A marker carrying no value, for the cases of a oneof that hold nothing.
+message Unit {}
+
+// A logical type, as the connector contract's lattice defines it.
+message LogicalType {
+  // The type.
+  oneof kind {
+    // No values but null.
+    Unit null = 1;
+    // True or false.
+    Unit bool = 2;
+    // An 8-bit signed integer.
+    Unit int8 = 3;
+    // A 16-bit signed integer.
+    Unit int16 = 4;
+    // A 32-bit signed integer.
+    Unit int32 = 5;
+    // A 64-bit signed integer.
+    Unit int64 = 6;
+    // A 32-bit float.
+    Unit float32 = 7;
+    // A 64-bit float.
+    Unit float64 = 8;
+    // A decimal of a precision and scale.
+    Decimal decimal = 9;
+    // UTF-8 text.
+    Unit utf8 = 10;
+    // Bytes.
+    Unit binary = 11;
+    // A calendar date.
+    Unit date = 12;
+    // A time of day in a unit.
+    TimeUnit time = 13;
+    // An instant, or a wall-clock time without a zone.
+    Timestamp timestamp = 14;
+    // A length of time in a unit.
+    TimeUnit duration = 15;
+    // A UUID.
+    Unit uuid = 16;
+    // A JSON document.
+    Unit json = 17;
+    // Named fields.
+    Struct struct = 18;
+    // A list of one item type.
+    Field list = 19;
+  }
+}
+
+// The unit of a time, timestamp or duration.
+enum TimeUnit {
+  // Never sent; a receiver refuses it.
+  TIME_UNIT_UNSPECIFIED = 0;
+  // Seconds.
+  TIME_UNIT_SECOND = 1;
+  // Milliseconds.
+  TIME_UNIT_MILLISECOND = 2;
+  // Microseconds.
+  TIME_UNIT_MICROSECOND = 3;
+  // Nanoseconds.
+  TIME_UNIT_NANOSECOND = 4;
+}
+
+// A decimal type.
+message Decimal {
+  // Significant digits, 1 to 76.
+  uint32 precision = 1;
+  // Digits after the point, at most the precision.
+  uint32 scale = 2;
+}
+
+// A timestamp type.
+message Timestamp {
+  // Its unit.
+  TimeUnit unit = 1;
+  // Its time zone; absent for a wall-clock time without one.
+  optional string zone = 2;
+}
+
+// A struct type.
+message Struct {
+  // Its fields, in order.
+  repeated Field fields = 1;
+}
+
+// A named, typed field.
+message Field {
+  // Its name.
+  string name = 1;
+  // Its type.
+  LogicalType type = 2;
+  // Whether it may hold nulls.
+  bool nullable = 3;
+}
+
+// A table's columns.
+message TableSchema {
+  // Its fields, in order.
+  repeated Field fields = 1;
+}
+
+// The kind of a logical type, without its parameters.
+enum TypeKind {
+  // Never sent; a receiver refuses it.
+  TYPE_KIND_UNSPECIFIED = 0;
+  // Null.
+  TYPE_KIND_NULL = 1;
+  // Bool.
+  TYPE_KIND_BOOL = 2;
+  // Int8.
+  TYPE_KIND_INT8 = 3;
+  // Int16.
+  TYPE_KIND_INT16 = 4;
+  // Int32.
+  TYPE_KIND_INT32 = 5;
+  // Int64.
+  TYPE_KIND_INT64 = 6;
+  // Float32.
+  TYPE_KIND_FLOAT32 = 7;
+  // Float64.
+  TYPE_KIND_FLOAT64 = 8;
+  // Decimal.
+  TYPE_KIND_DECIMAL = 9;
+  // Utf8.
+  TYPE_KIND_UTF8 = 10;
+  // Binary.
+  TYPE_KIND_BINARY = 11;
+  // Date.
+  TYPE_KIND_DATE = 12;
+  // Time.
+  TYPE_KIND_TIME = 13;
+  // Timestamp.
+  TYPE_KIND_TIMESTAMP = 14;
+  // Duration.
+  TYPE_KIND_DURATION = 15;
+  // Uuid.
+  TYPE_KIND_UUID = 16;
+  // Json.
+  TYPE_KIND_JSON = 17;
+  // Struct.
+  TYPE_KIND_STRUCT = 18;
+  // List.
+  TYPE_KIND_LIST = 19;
+}
+
+// A path to a column: its segments, outermost first.
+message ColumnPath {
+  // The segments.
+  repeated string segments = 1;
+}
+
+// A stream's name.
+message StreamName {
+  // Its namespace, if it has one.
+  optional string namespace = 1;
+  // Its name.
+  string name = 2;
+}
+
+// A table's path: its segments, outermost first.
+message TablePath {
+  // The segments.
+  repeated string segments = 1;
+}
+
+// A resumable position in a partition, in the connector's own format.
+message Cursor {
+  // The format's version.
+  uint32 version = 1;
+  // The encoded position.
+  bytes bytes = 2;
+}
+
+// An instant: seconds and nanoseconds since the Unix epoch.
+message Instant {
+  // Whole seconds since 1970-01-01T00:00:00Z.
+  int64 seconds = 1;
+  // Nanoseconds within the second, 0 to 999 999 999.
+  uint32 nanos = 2;
+}
+
+// A length of time.
+message Duration {
+  // Whole seconds.
+  uint64 seconds = 1;
+  // Nanoseconds within the second, 0 to 999 999 999.
+  uint32 nanos = 2;
+}

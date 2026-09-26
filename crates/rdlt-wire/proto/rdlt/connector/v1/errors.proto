@@ -1,0 +1,54 @@
+// Failures, as a connector reports them.
+syntax = "proto3";
+
+package rdlt.connector.v1;
+
+import "rdlt/connector/v1/types.proto";
+
+// What kind of failure an error is.
+enum ErrorKind {
+  // Never sent; a receiver treats it as internal.
+  ERROR_KIND_UNSPECIFIED = 0;
+  // The configuration is invalid or refers to something that does not exist.
+  ERROR_KIND_CONFIG = 1;
+  // Credentials are missing, wrong or lack a permission.
+  ERROR_KIND_AUTH = 2;
+  // A failure that may succeed on retry.
+  ERROR_KIND_TRANSIENT = 3;
+  // The remote system asked the caller to slow down.
+  ERROR_KIND_RATE_LIMITED = 4;
+  // The data cannot be read or stored.
+  ERROR_KIND_DATA = 5;
+  // The request asks for something the connector does not support.
+  ERROR_KIND_UNSUPPORTED = 6;
+  // A newer session fenced this one.
+  ERROR_KIND_FENCED = 7;
+  // The operation was stopped.
+  ERROR_KIND_STOPPED = 8;
+  // A bug.
+  ERROR_KIND_INTERNAL = 9;
+}
+
+// A limit a value exceeded.
+message LimitExceeded {
+  // The limit's name.
+  string name = 1;
+  // The limit.
+  uint64 limit = 2;
+  // The value's size.
+  uint64 actual = 3;
+}
+
+// A connector failure.
+message Error {
+  // Its kind.
+  ErrorKind kind = 1;
+  // A one-line message naming its subject.
+  string message = 2;
+  // A machine code, if it has one.
+  optional string code = 3;
+  // How long to wait before retrying, if the connector says.
+  optional Duration retry_after = 4;
+  // The limit exceeded, for an error that exceeded one.
+  optional LimitExceeded limit = 5;
+}
