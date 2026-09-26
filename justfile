@@ -35,6 +35,11 @@ test *args:
 sim seed="" seeds="1000":
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim
 
+# Run the simulation on many threads and the real clock, where races the paused single thread
+# never meets can happen; its failures name their seed but do not replay exactly
+stress seeds="20":
+    RDLT_SIM_SEEDS="{{ seeds }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --run-ignored ignored-only -E 'test(many_threads)'
+
 # Measure line and branch coverage and apply the CI gate
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview

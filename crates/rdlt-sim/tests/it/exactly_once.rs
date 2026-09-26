@@ -12,13 +12,13 @@ const FOUND: [u64; 2] = [
 #[test]
 fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
     for seed in seeds(200) {
-        check_exactly_once(seed);
+        let _ = check_exactly_once(seed);
     }
 }
 
 #[test]
 fn seeds_that_once_found_a_defect_pass() {
     for seed in FOUND {
-        check_exactly_once(Seed::new(seed));
+        let _ = check_exactly_once(Seed::new(seed));
     }
 }

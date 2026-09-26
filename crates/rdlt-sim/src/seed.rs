@@ -126,6 +126,32 @@ where
     })
 }
 
+/// Runs `scenario` for `seed` on a runtime of many threads and the real clock, with a
+/// [`SimEnv::threaded`]: as the engine runs in production, so races the paused single thread
+/// never meets can happen, and a failure is not replayed exactly.
+///
+/// # Panics
+///
+/// Panics when the scenario panics, after printing the seed.
+pub fn run_threaded<F, Fut, T>(seed: Seed, scenario: F) -> T
+where
+    F: FnOnce(Arc<SimEnv>) -> Fut,
+    Fut: Future<Output = T>,
+{
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_time()
+        .build()
+        .expect("a runtime of many threads builds");
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+        runtime.block_on(async { scenario(Arc::new(SimEnv::threaded(seed))).await })
+    }));
+    outcome.unwrap_or_else(|payload| {
+        report_failure(seed);
+        panic::resume_unwind(payload)
+    })
+}
+
 #[expect(
     clippy::print_stderr,
     reason = "the seed must reach the test output to be replayable"

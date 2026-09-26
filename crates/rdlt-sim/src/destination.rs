@@ -27,6 +27,7 @@ pub use cells::{Cells, Stored};
 pub use read::completions;
 pub(crate) use read::{Published, published_table, table_paths};
 pub(crate) use read::{committed_next, reads_in_progress};
+pub use store::Digest;
 use store::Staged;
 pub(crate) use store::Store;
 

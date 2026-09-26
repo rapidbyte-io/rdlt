@@ -42,6 +42,9 @@ pub struct Features {
     /// A destination two pipelines share: the workload's streams split between them, and they
     /// run at once.
     pub shared: bool,
+    /// Tasks scheduled in orders the seed varies: sleeps a little longer, and compute jobs on
+    /// tasks of their own.
+    pub perturb: bool,
 }
 
 impl Features {
@@ -60,6 +63,7 @@ impl Features {
         keys: true,
         identifiers: true,
         shared: true,
+        perturb: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
@@ -82,6 +86,7 @@ impl Features {
             keys: rng.chance(500),
             identifiers: rng.chance(500),
             shared: rng.chance(500),
+            perturb: rng.chance(500),
         }
     }
 

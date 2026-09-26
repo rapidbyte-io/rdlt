@@ -2,6 +2,7 @@
 //! staging, and how a commit publishes into them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use rdlt_connector::{
     CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, MergeKey, PartitionId, PipelineId, Receipt,
@@ -50,7 +51,30 @@ pub(super) struct Table {
     pub(super) generations: BTreeMap<GenerationId, Vec<Stored>>,
 }
 
+/// A digest of everything a destination holds: its tables' columns and rows, and each pipeline's
+/// state and receipts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Digest(u64);
+
 impl Store {
+    /// A digest of everything the store holds.
+    pub(crate) fn digest(&self) -> Digest {
+        let mut hasher = DefaultHasher::new();
+        for (name, table) in &self.tables {
+            name.hash(&mut hasher);
+            format!("{:?}", table.columns).hash(&mut hasher);
+            for row in &table.published {
+                format!("{:?}", row.cells).hash(&mut hasher);
+            }
+        }
+        for (pipeline, store) in &self.pipelines {
+            pipeline.to_string().hash(&mut hasher);
+            format!("{:?}", store.state).hash(&mut hasher);
+        }
+        format!("{:?}", self.receipts).hash(&mut hasher);
+        Digest(hasher.finish())
+    }
+
     /// The epoch of `pipeline`'s newest session.
     pub(super) fn epoch(&self, pipeline: &PipelineId) -> Epoch {
         self.pipelines

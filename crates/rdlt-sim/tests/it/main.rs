@@ -2,3 +2,4 @@
 
 mod determinism;
 mod exactly_once;
+mod stress;
