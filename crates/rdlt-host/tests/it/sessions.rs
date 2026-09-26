@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::serve::{Served, serve_connection};
+use rdlt_connector::serve::{ServeError, Served, serve_connection};
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
     Destination as _, LoadId, OpenContext, PipelineId, Role, SchemaVersion, SegmentId, Source as _,
@@ -234,6 +234,76 @@ fn writes_within(window: u64) -> usize {
         }
     }
     unreachable!("the credit runs out")
+}
+
+/// A socket whose shutdown fails with its error kind: `NotConnected` as macOS's does once the peer
+/// has closed.
+struct ShutdownFails(UnixStream, std::io::ErrorKind);
+
+impl tokio::io::AsyncRead for ShutdownFails {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_read(context, buffer)
+    }
+}
+
+impl tokio::io::AsyncWrite for ShutdownFails {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.0).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Err(self.1.into()))
+    }
+}
+
+/// How serving ends when the socket's shutdown fails with `kind`, after a host's check.
+async fn served_until_shutdown_fails(kind: std::io::ErrorKind) -> Result<(), ServeError> {
+    let (host, connector) = UnixStream::pair().expect("a socket pair");
+    let served = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+    let io = ShutdownFails(connector, kind);
+    let serving = tokio::spawn(serve_connection(served, io, Limits::default()));
+    let config = serde_json::json!({ "streams": { "items": [] } });
+    let connection = Connection::connect(host, Role::Source, &config, Options::default());
+    RemoteSource::new(connection.await.expect("the source handshakes"))
+        .check()
+        .await
+        .expect("the check passes");
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("the served connection ends")
+        .expect("serving does not panic")
+}
+
+#[tokio::test]
+async fn a_host_that_closes_first_ends_the_served_connection_cleanly() {
+    served_until_shutdown_fails(std::io::ErrorKind::NotConnected)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_transport_that_fails_otherwise_fails_the_served_connection() {
+    served_until_shutdown_fails(std::io::ErrorKind::PermissionDenied)
+        .await
+        .unwrap_err();
 }
 
 #[tokio::test]
