@@ -1,9 +1,7 @@
 //! Process placement: a connector found by its path, or by name on the connector directories and
 //! `PATH`, is spawned with its socket on file descriptor 3, and respawned when it is lost.
 
-mod process;
-mod session;
-mod supervised;
+pub(crate) mod process;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,12 +12,12 @@ use rdlt_connector::{
 };
 use sha2::Digest as _;
 
+use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
 pub use process::LastWords;
 use process::{Launch, executable};
-use supervised::{Spawned, SupervisedDestination, SupervisedSource, Supervisor};
 
-use crate::provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError, accepts};
-use crate::remote::{Options, RemoteDestination};
+use crate::provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
+use crate::remote::Options;
 
 /// Places connectors in processes of their own.
 #[derive(Clone, Debug)]
@@ -126,21 +124,18 @@ impl Local {
             env_passthrough: self.env_passthrough.clone(),
             grace: self.grace,
         };
-        let supervisor = Supervisor::start(launch, role, config.clone(), self.options)
-            .await
-            .map_err(|spawned| match spawned {
-                Spawned::Io(source) => spawn_failed(reference, &path, source),
-                Spawned::Connect(source) => handshake_failed(reference, source),
-            })?;
+        let supervisor =
+            Supervisor::start(Start::Spawn(launch), role, config.clone(), self.options)
+                .await
+                .map_err(|spawned| match spawned {
+                    Spawned::Io(source) | Spawned::Unreachable(source) | Spawned::Tls(source) => {
+                        spawn_failed(reference, &path, source)
+                    }
+                    Spawned::Connect(source) => handshake_failed(reference, source),
+                })?;
         let spec = supervisor
-            .spec(role)
-            .await
-            .map_err(|source| handshake_failed(reference, source))?;
-        if spec.id != reference.id {
-            let message = format!("{} serves `{}`", path.display(), spec.id);
-            return Err(handshake_failed(reference, ConnectorError::config(message)));
-        }
-        accepts(reference, &spec.version)?;
+            .checked_spec(reference, &path.display().to_string())
+            .await?;
         Ok((supervisor, spec, path, digest))
     }
 }
@@ -220,19 +215,5 @@ impl Provider for Local {
                 digest: Some(digest),
             })
         })
-    }
-}
-
-impl Supervisor {
-    /// The live connector's spec, for `role`.
-    async fn spec(&self, role: Role) -> Result<ConnectorSpec, ConnectorError> {
-        let connection = self.live().await;
-        crate::remote::contract_spec(connection.spec(), role)
-    }
-
-    /// The capabilities the live destination declares.
-    async fn capabilities(&self) -> Result<rdlt_connector::Capabilities, ConnectorError> {
-        let destination = RemoteDestination::new(self.live().await)?;
-        Ok(destination.capabilities().clone())
     }
 }

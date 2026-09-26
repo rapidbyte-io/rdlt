@@ -47,6 +47,13 @@ impl ConnectorRef {
         self.path = Some(path.into());
         self
     }
+
+    /// Reaches the connector listening at `endpoint`, `grpcs://host:port`.
+    #[must_use]
+    pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self
+    }
 }
 
 /// Where a placed connector runs.
@@ -58,6 +65,11 @@ pub enum Placement {
     Process {
         /// The binary.
         path: PathBuf,
+    },
+    /// Elsewhere on the network, listening at `endpoint`.
+    Remote {
+        /// The endpoint, `grpcs://host:port`.
+        endpoint: String,
     },
 }
 
@@ -125,6 +137,29 @@ pub enum ProviderError {
         /// Why it could not start.
         #[source]
         source: std::io::Error,
+    },
+    /// The connector's endpoint could not be reached, or is no endpoint.
+    #[error("connector `{id}` at `{endpoint}` could not be reached")]
+    Unreachable {
+        /// The connector's id.
+        id: ConnectorId,
+        /// The endpoint.
+        endpoint: String,
+        /// Why.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The TLS with the connector failed: the configuration, or the handshake, as when either end
+    /// refuses the other's certificate.
+    #[error("the TLS with connector `{id}` at `{endpoint}` failed")]
+    Tls {
+        /// The connector's id.
+        id: ConnectorId,
+        /// The endpoint.
+        endpoint: String,
+        /// Why.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     /// The connector started, but did not connect: its handshake, or its own connect, failed.
     #[error("connector `{id}` did not connect")]
