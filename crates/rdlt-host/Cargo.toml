@@ -13,7 +13,9 @@ arrow-schema.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
 rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-wire.workspace = true
+semver.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tokio-stream.workspace = true
 tokio-util.workspace = true
