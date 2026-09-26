@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
-use super::{Admission, Permit, Push, SourceEvent, admitted_partition_channel, partition_channel};
+use super::{
+    Admission, Permit, Push, Requested, SourceEvent, admitted_partition_channel, partition_channel,
+};
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
 use crate::spec::BoxFuture;
@@ -177,4 +179,35 @@ fn a_sink_debugs_its_answered_barrier_and_whether_it_admits() {
         format!("{admitted:?}"),
         "PartitionSink { answered: 0, admitted: true, .. }"
     );
+}
+
+#[tokio::test]
+async fn a_forwarded_read_learns_of_each_newer_barrier_once() {
+    let (mut sink, feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
+    feed.request_checkpoint(3);
+    assert_eq!(sink.requested(0).await, Requested::Checkpoint(3));
+    // A barrier already forwarded is not asked for again; the next newer one is.
+    let waiting = tokio::spawn(async move { sink.requested(3).await });
+    tokio::task::yield_now().await;
+    feed.request_checkpoint(5);
+    assert_eq!(
+        waiting.await.expect("the wait completes"),
+        Requested::Checkpoint(5)
+    );
+}
+
+#[tokio::test]
+async fn a_forwarded_read_does_not_ask_for_a_barrier_its_checkpoint_answered() {
+    let (mut sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
+    feed.request_checkpoint(2);
+    let cursor = Cursor::new(1, Bytes::from_static(b"c")).expect("a small cursor");
+    sink.send(SourceEvent::Checkpoint {
+        cursor,
+        answers: Some(2),
+    })
+    .await
+    .expect("the send goes");
+    feed.recv().await.expect("the checkpoint arrives");
+    feed.stop();
+    assert_eq!(sink.requested(0).await, Requested::Stop);
 }

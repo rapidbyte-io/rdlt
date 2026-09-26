@@ -692,3 +692,60 @@ fn every_limit_either_end_refuses_by_keeps_its_name_across_the_wire() {
         assert_eq!(back.limit().map(|limit| limit.name), Some(*name));
     }
 }
+
+#[test]
+fn an_error_crosses_a_grpc_status_whole() {
+    let error = ConnectorError::new(ConnectorErrorKind::RateLimited, "slow down")
+        .with_code("api.throttled")
+        .with_retry_after(Some(Duration::from_secs(3)));
+    let back = super::error(&super::status(&error));
+    assert_eq!(carried(&back), carried(&error));
+}
+
+#[test]
+fn a_status_without_an_error_is_a_transient_or_internal_transport_failure() {
+    use rdlt_wire::tonic::{Code, Status};
+    for code in [
+        Code::Unavailable,
+        Code::DeadlineExceeded,
+        Code::ResourceExhausted,
+        Code::Aborted,
+        Code::Cancelled,
+        Code::Unknown,
+    ] {
+        let error = super::error(&Status::new(code, "the stream broke"));
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Transient, Some(super::TRANSPORT)),
+            "{code:?}"
+        );
+    }
+    for code in [Code::Internal, Code::PermissionDenied, Code::Unimplemented] {
+        let error = super::error(&Status::new(code, "the peer is not rdlt"));
+        assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{code:?}");
+    }
+}
+
+#[test]
+fn every_kind_takes_its_own_grpc_code() {
+    use ConnectorErrorKind as K;
+    use rdlt_wire::tonic::Code;
+    let codes = [
+        (K::Config, Code::InvalidArgument),
+        (K::Auth, Code::PermissionDenied),
+        (K::Transient, Code::Unavailable),
+        (K::RateLimited, Code::ResourceExhausted),
+        (K::Data, Code::FailedPrecondition),
+        (K::Unsupported, Code::Unimplemented),
+        (K::Fenced, Code::Aborted),
+        (K::Stopped, Code::Cancelled),
+        (K::Internal, Code::Internal),
+    ];
+    for (kind, code) in codes {
+        assert_eq!(
+            super::status(&ConnectorError::new(kind, "x")).code(),
+            code,
+            "{kind:?}"
+        );
+    }
+}

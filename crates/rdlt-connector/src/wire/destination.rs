@@ -12,7 +12,7 @@ use crate::state::StateChange;
 use crate::types::{Field, LogicalType};
 
 /// The load id whose 16 bytes `bytes` holds.
-pub(super) fn load_id(bytes: &[u8]) -> Result<LoadId, Invalid> {
+pub(crate) fn load_id(bytes: &[u8]) -> Result<LoadId, Invalid> {
     let bytes: [u8; 16] = bytes
         .try_into()
         .map_err(|_| Invalid::OutOfRange("load id"))?;

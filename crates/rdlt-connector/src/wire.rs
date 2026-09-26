@@ -9,6 +9,7 @@ mod catalog;
 mod destination;
 mod error;
 mod state;
+mod status;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -16,6 +17,7 @@ mod types;
 use std::error::Error as StdError;
 
 pub use rdlt_wire::v1;
+pub use status::{MALFORMED_FRAME, TRANSPORT, error, frame_error, status};
 
 /// A message from the wire that does not decode into the contract's type.
 #[derive(Debug, thiserror::Error)]
@@ -45,10 +47,7 @@ pub enum Invalid {
 
 impl Invalid {
     /// A `what` that breaks a rule, as `source` says.
-    pub(crate) fn rejected(
-        what: &'static str,
-        source: impl StdError + Send + Sync + 'static,
-    ) -> Self {
+    pub fn rejected(what: &'static str, source: impl StdError + Send + Sync + 'static) -> Self {
         Self::Rejected {
             what,
             source: Box::new(source),

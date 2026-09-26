@@ -146,11 +146,14 @@ impl fmt::Debug for PartitionSink {
 }
 
 impl PartitionSink {
-    /// Sends `event`, waiting while the channel is full.
+    /// Sends `event`, waiting while the channel is full; a read that runs elsewhere and forwards
+    /// its events sends them here.
     ///
-    /// Fails with a [`Stopped`](crate::ConnectorErrorKind::Stopped) error once the engine has asked
-    /// the read to stop or dropped its end.
-    pub(crate) async fn send(&mut self, event: SourceEvent) -> Result<()> {
+    /// # Errors
+    ///
+    /// A [`Stopped`](crate::ConnectorErrorKind::Stopped) error once the engine has asked the read
+    /// to stop or dropped its end.
+    pub async fn send(&mut self, event: SourceEvent) -> Result<()> {
         if let SourceEvent::Checkpoint {
             answers: Some(barrier),
             ..
@@ -175,11 +178,44 @@ impl PartitionSink {
         }
     }
 
+    /// The engine's next request of the read: a checkpoint answering a barrier newer than
+    /// `forwarded` and than any checkpoint sent, or to stop; for a read that runs elsewhere and is
+    /// forwarded the engine's requests.
+    pub async fn requested(&mut self, forwarded: u64) -> Requested {
+        loop {
+            if self.stop.is_cancelled() {
+                return Requested::Stop;
+            }
+            let barrier = *self.barrier.borrow_and_update();
+            if barrier > forwarded.max(self.answered) {
+                return Requested::Checkpoint(barrier);
+            }
+            tokio::select! {
+                biased;
+                () = self.stop.cancelled() => return Requested::Stop,
+                changed = self.barrier.changed() => {
+                    if changed.is_err() {
+                        return Requested::Stop;
+                    }
+                }
+            }
+        }
+    }
+
     /// The newest barrier no checkpoint has answered yet.
     pub(crate) fn pending_barrier(&self) -> Option<u64> {
         let requested = *self.barrier.borrow();
         (requested > self.answered).then_some(requested)
     }
+}
+
+/// What the engine asks of a partition's read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Requested {
+    /// A checkpoint answering this barrier.
+    Checkpoint(u64),
+    /// To stop reading.
+    Stop,
 }
 
 /// The engine's end of a partition channel.
