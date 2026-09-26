@@ -1,10 +1,11 @@
 //! What the reference model says each of a stream's tables holds: every kept row's values by
 //! column path, normalized into child tables at any depth where the stream normalizes.
 
+mod discards;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::LogicalType;
 use rdlt_engine::SchemaPolicy;
@@ -14,8 +15,9 @@ use rdlt_testkit::drawn::Scalar;
 use rdlt_testkit::drawn::json::rendered;
 use serde_json::Value;
 
-use super::arrivals::{Arrival, all, arrival, fixed};
+use super::arrivals::{Arrival, all, arrival, fixed, widest};
 use crate::workload::{Drift, Relaxed, Row, SimStream};
+pub(super) use discards::{Chance, Discards, discards, dropped, pruned};
 
 /// A value the source sent, which its cell must mean exactly.
 #[derive(Clone, Debug)]
@@ -64,6 +66,8 @@ pub(super) struct Expected {
     pub(super) columns: BTreeMap<String, Sent>,
     /// Where each value whose place the model knows must sit, by column path.
     pub(super) placed: BTreeMap<String, Placement>,
+    /// The paths of values its policy may have discarded, which the table may lack.
+    pub(super) optional: BTreeSet<String>,
 }
 
 /// Each table's rows, by the table's path.
@@ -129,8 +133,14 @@ fn drifted(
         let Some(extra) = &row.extras[column] else {
             continue;
         };
-        if changed(stream, row, column) && policy(stream, column) == SchemaPolicy::DiscardValue {
-            continue;
+        if policy(stream, column) == SchemaPolicy::DiscardValue {
+            match changed(stream, row, column) {
+                Chance::Surely => continue,
+                Chance::Perhaps => {
+                    pending.optional.insert(drift.name.clone());
+                }
+                Chance::Never => {}
+            }
         }
         let node = node(stream, drift_type(row, drift), extra);
         let path = vec![drift.name.clone()];
@@ -139,11 +149,14 @@ fn drifted(
             _ => pending.whole(&path, node),
         }
         if let Some(own) = &owned[column] {
-            let fits = arrival(stream, row, column).and_then(|arrival| arrival.fits(own));
-            let placement = match fits {
-                Some(true) => Placement::Own(own.clone()),
-                Some(false) => Placement::Variant,
-                None => Placement::Any,
+            let fits = |arrival: Option<Arrival>| arrival.and_then(|arrival| arrival.fits(own));
+            let placement = match (
+                fits(arrival(stream, row, column)),
+                fits(widest(stream, row, column)),
+            ) {
+                (Some(false), _) => Placement::Variant,
+                (Some(true), Some(true)) => Placement::Own(own.clone()),
+                _ => Placement::Any,
             };
             placed.insert(drift.name.clone(), placement);
         }
@@ -164,19 +177,34 @@ fn policy(stream: &SimStream, column: usize) -> SchemaPolicy {
 
 /// Whether drift column `column`'s batch holding `row` is a change its policy discards: a column
 /// its table lacks, of a type, or one the column's fixed type does not hold.
-fn changed(stream: &SimStream, row: &Row, column: usize) -> bool {
+///
+/// A value whose own push the fixed type holds is changed only perhaps where it may be shredded
+/// together with a push the type does not hold.
+fn changed(stream: &SimStream, row: &Row, column: usize) -> Chance {
     if !matches!(
         policy(stream, column),
         SchemaPolicy::DiscardRow | SchemaPolicy::DiscardValue
     ) {
-        return false;
+        return Chance::Never;
     }
     let Some(arrival) = arrival(stream, row, column) else {
-        return false;
+        return Chance::Never;
     };
-    match fixed(stream, column) {
-        None => !arrival.is_null(),
-        Some(fixed) => arrival.fits(&fixed) == Some(false),
+    let Some(fixed) = fixed(stream, column) else {
+        return if arrival.is_null() {
+            Chance::Never
+        } else {
+            Chance::Surely
+        };
+    };
+    let unfit =
+        |arrival: Option<Arrival>| arrival.and_then(|arrival| arrival.fits(&fixed)) == Some(false);
+    if unfit(Some(arrival)) {
+        Chance::Surely
+    } else if unfit(widest(stream, row, column)) {
+        Chance::Perhaps
+    } else {
+        Chance::Never
     }
 }
 
@@ -214,80 +242,6 @@ fn owned(stream: &SimStream, delivered: &[Row], column: usize) -> Option<Logical
             _ => None,
         },
     }
-}
-
-/// Whether `stream`'s policies keep `row`: no column that discards rows changes in it with a
-/// value.
-pub(super) fn kept(stream: &SimStream, row: &Row) -> bool {
-    discards(stream, row).0 == 0
-}
-
-/// Whether `row` goes before its batch's schema is resolved: in a stream that normalizes, it holds
-/// an item of a new array whose column drops rows, and the child table that would take the item
-/// drops its parent row with it.
-pub(super) fn pruned(stream: &SimStream, row: &Row) -> bool {
-    let Some(max_depth) = stream.max_depth() else {
-        return false;
-    };
-    stream.drift.iter().enumerate().any(|(column, drift)| {
-        let Some(extra) = &row.extras[column] else {
-            return false;
-        };
-        policy(stream, column) == SchemaPolicy::DiscardRow
-            && !stream.whole(column)
-            && child_rows(
-                &drift.name,
-                node(stream, drift_type(row, drift), extra),
-                max_depth,
-            ) > 0
-    })
-}
-
-/// The rows and values `stream`'s policies discard from `row`.
-///
-/// Where a column that discards rows changes in it with a value, that is the row, and the rows its
-/// values in child tables that take them would have added; otherwise each value of a column that
-/// discards values and changes in it. Where the stream normalizes, a value counts each value
-/// column and array item it normalizes into, so an empty array or an object of nulls counts none.
-pub(super) fn discards(stream: &SimStream, row: &Row) -> (u64, u64) {
-    let mut values = 0;
-    let mut dropped = false;
-    for (column, drift) in stream.drift.iter().enumerate() {
-        let Some(extra) = &row.extras[column] else {
-            continue;
-        };
-        if !changed(stream, row, column) {
-            continue;
-        }
-        let node = node(stream, drift_type(row, drift), extra);
-        let max_depth = stream.max_depth().filter(|_| !stream.whole(column));
-        let count = counted(vec![(drift.name.clone(), node)], max_depth);
-        match policy(stream, column) {
-            SchemaPolicy::DiscardRow => dropped |= count > 0,
-            _ => values += count,
-        }
-    }
-    if !dropped {
-        return (0, values);
-    }
-    let children: u64 = stream
-        .drift
-        .iter()
-        .enumerate()
-        .filter(|(column, _)| {
-            !matches!(
-                policy(stream, *column),
-                SchemaPolicy::DiscardRow | SchemaPolicy::DiscardValue
-            ) && !stream.whole(*column)
-        })
-        .filter_map(|(column, drift)| {
-            let extra = row.extras[column].as_ref()?;
-            let max_depth = stream.max_depth()?;
-            let node = node(stream, drift_type(row, drift), extra);
-            Some(child_rows(&drift.name, node, max_depth))
-        })
-        .sum();
-    (1 + children, 0)
 }
 
 /// The rows `node`, the value of column `name`, adds to child tables, normalized to `max_depth`.
@@ -412,6 +366,8 @@ impl Node {
 struct Pending {
     columns: BTreeMap<String, Sent>,
     arrays: Vec<(Vec<String>, Vec<Node>, u8)>,
+    /// The paths of values its policy may have discarded.
+    optional: BTreeSet<String>,
     /// Whether the row's values are being counted, rather than stored: JSON's `null` counts.
     counting: bool,
 }
@@ -464,6 +420,7 @@ impl Pending {
             ident: ident.to_owned(),
             columns: self.columns,
             placed,
+            optional: self.optional,
         });
         for (path, items, depth) in self.arrays {
             let mut child_table = table.to_vec();

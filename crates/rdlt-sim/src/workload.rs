@@ -289,6 +289,27 @@ impl SimStream {
             .collect()
     }
 
+    /// The offsets of the rows whose pushes the engine may shred together with the push holding
+    /// row `offset` of `partition` in `phase`: those between the checkpoints around it, as the
+    /// engine gathers pushes only up to a checkpoint, and where the stream checkpoints on demand,
+    /// wherever the engine asks, every row the phase reads.
+    pub fn span(&self, partition: usize, phase: usize, offset: usize) -> Range<usize> {
+        let batches = self.batches(partition, phase);
+        let every = match self.checkpointing {
+            Checkpointing::Natural => usize::try_from(self.checkpoint_every).unwrap_or(1),
+            Checkpointing::OnDemand => batches.len().max(1),
+        };
+        let at = batches
+            .iter()
+            .position(|batch| batch.contains(&offset))
+            .unwrap_or(0);
+        let group = &batches[at / every * every..batches.len().min((at / every + 1) * every)];
+        match (group.first(), group.last()) {
+            (Some(first), Some(last)) => first.start..last.end,
+            _ => offset..offset,
+        }
+    }
+
     /// The phase that first delivers row `offset` of `partition`: incremental rows keep the phase
     /// they first appeared in, full reads deliver every row again in each phase.
     fn delivered(&self, partition: usize, offset: u64, phase: usize) -> usize {

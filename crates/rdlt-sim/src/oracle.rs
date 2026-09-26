@@ -28,6 +28,7 @@ use crate::seed::{Seed, run};
 use crate::source::SimSource;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
+use expected::Discards;
 use refusals::Failure;
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
@@ -350,9 +351,10 @@ fn check_contents(world: &World, phase: usize, stopped: bool, seed: Seed) {
 }
 
 /// Checks the rows and values each stream's policy discarded in `phase`, as its runs' `reports`
-/// count them, against those the model's policy discards: exactly where the reports are
-/// complete, and otherwise never more, as a dropped run's report or a commit whose response was
-/// lost goes uncounted, and a phase that `stopped` short may leave a full read in progress.
+/// count them, against those the model's policy discards: within the least and most it may
+/// discard where the reports are complete, and otherwise never more, as a dropped run's report
+/// or a commit whose response was lost goes uncounted, and a phase that `stopped` short may leave
+/// a full read in progress.
 fn check_discards(world: &World, phase: usize, reports: &[Report], stopped: bool, seed: Seed) {
     let complete = world.workload.features.reports_complete() && !stopped;
     for stream in &world.workload.streams {
@@ -378,17 +380,21 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], stopped: bool
                 .filter(|row| row.delivered == phase)
                 .collect(),
         };
-        let expected = read.iter().fold((0, 0), |(rows, values), row| {
-            let (dropped, discarded) = expected::discards(stream, row);
-            (rows + dropped, values + discarded)
+        let expected = read.iter().fold(Discards::default(), |sum, row| {
+            let discards = expected::discards(stream, row);
+            Discards {
+                rows: (sum.rows.0 + discards.rows.0, sum.rows.1 + discards.rows.1),
+                values: (
+                    sum.values.0 + discards.values.0,
+                    sum.values.1 + discards.values.1,
+                ),
+            }
         });
-        let fits = if complete {
-            counted == expected
-        } else {
-            counted.0 <= expected.0 && counted.1 <= expected.1
+        let within = |counted: u64, (least, most): (u64, u64)| {
+            counted <= most && (!complete || counted >= least)
         };
         assert!(
-            fits,
+            within(counted.0, expected.rows) && within(counted.1, expected.values),
             "seed {seed}: stream {} ({:?}, {:?}, {:?}) in phase {phase} counted {counted:?} \
              (rows, values) discarded; the model counts {expected:?}, which reports that are \
              {} must {}",
@@ -397,7 +403,11 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], stopped: bool
             stream.write,
             stream.schema,
             if complete { "complete" } else { "incomplete" },
-            if complete { "equal" } else { "not exceed" },
+            if complete {
+                "fall within"
+            } else {
+                "not exceed"
+            },
         );
     }
 }

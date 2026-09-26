@@ -541,3 +541,38 @@ fn features_off_leave_their_parts_of_the_workload_out() {
         }
     }
 }
+
+#[test]
+fn a_span_holds_the_batches_between_the_checkpoints_around_a_row() {
+    let stream = streams()
+        .into_iter()
+        .find(|stream| {
+            stream.checkpointing == rdlt_connector::Checkpointing::Natural
+                && stream.checkpoint_every > 1
+                && stream.batches(0, 0).len() > usize::try_from(stream.checkpoint_every).unwrap()
+        })
+        .expect("a stream checkpointing every few batches");
+    let every = usize::try_from(stream.checkpoint_every).unwrap();
+    let batches = stream.batches(0, 0);
+    let span = stream.span(0, 0, batches[every].start);
+    assert_eq!(
+        span.start, batches[every].start,
+        "the span starts at a checkpoint"
+    );
+    let last = batches.len().min(2 * every) - 1;
+    assert_eq!(span.end, batches[last].end, "and ends at the next");
+    let on_demand = streams()
+        .into_iter()
+        .find(|stream| {
+            stream.checkpointing == rdlt_connector::Checkpointing::OnDemand
+                && !stream.batches(0, 0).is_empty()
+        })
+        .expect("a stream checkpointing on demand");
+    let batches = on_demand.batches(0, 0);
+    let span = on_demand.span(0, 0, batches[0].start);
+    assert_eq!(
+        span,
+        batches[0].start..batches.last().unwrap().end,
+        "anywhere in the read"
+    );
+}

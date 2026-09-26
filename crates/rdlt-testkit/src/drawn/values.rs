@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use super::Drawn;
 use super::Scalar;
 use super::arrays::{Encoding, Shape};
+use super::floats::{doubles, singles};
 
 /// The source columns batches draw from.
 const NAMES: [&str; 3] = ["a", "b", "c"];
@@ -207,8 +208,8 @@ fn present(shape: &Shape) -> BoxedStrategy<Scalar> {
         T::Float32 if shape.encoding == E::Half => any::<u16>()
             .prop_map(|bits| Scalar::Float32(half(bits)))
             .boxed(),
-        T::Float32 => any::<f32>().prop_map(Scalar::Float32).boxed(),
-        T::Float64 => any::<f64>().prop_map(Scalar::Float64).boxed(),
+        T::Float32 => singles().prop_map(Scalar::Float32).boxed(),
+        T::Float64 => doubles().prop_map(Scalar::Float64).boxed(),
         T::Decimal(_) if unsigned => any::<u64>()
             .prop_map(|value| Scalar::Decimal(value.to_string()))
             .boxed(),

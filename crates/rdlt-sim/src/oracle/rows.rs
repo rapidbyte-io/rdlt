@@ -4,27 +4,31 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::ReadMode;
 use rdlt_engine::WriteMode;
 
-use super::expected;
+use super::expected::{self, Chance};
 use crate::destination::completions;
 use crate::seed::Seed;
 use crate::workload::{Row, SimStream};
 use crate::world::World;
 
-/// Rows a table must hold `count` times in all, any of `rows` each time.
+/// Rows a table must hold `count` times in all, any of `rows` each time, or where `at_most`, no
+/// more often.
 #[derive(Clone, Debug)]
 pub(super) struct Group {
     pub(super) rows: Vec<Row>,
     pub(super) count: usize,
+    pub(super) at_most: bool,
 }
 
 /// The groups of rows `stream`'s table holds after `phase`, as the model has them, each held at
 /// most as often where the phase `stopped` short: for a merge stream, one row of each key the
 /// policy keeps; otherwise each row the policy keeps, as often as the table holds it.
+///
+/// A row the policy perhaps drops is held at most as often.
 pub(super) fn groups(
     world: &World,
     stream: &SimStream,
@@ -37,10 +41,12 @@ pub(super) fn groups(
     }
     let mut counts: BTreeMap<String, Group> = BTreeMap::new();
     for row in loaded(world, stream, phase, stopped, seed) {
-        if expected::kept(stream, &row) {
+        let dropped = expected::dropped(stream, &row);
+        if dropped != Chance::Surely {
             let group = counts.entry(expected::ident(&row)).or_insert(Group {
                 rows: vec![row],
                 count: 0,
+                at_most: stopped || dropped == Chance::Perhaps,
             });
             group.count += 1;
         }
@@ -84,17 +90,25 @@ struct Latest {
 
 /// One group for each key of a merge stream: the last row the policy keeps of each partition's
 /// rows of the key delivered in the last phase that delivered any, as partitions race to merge
-/// a key they share; where the phase `stopped` short, any row of the key delivered so far.
+/// a key they share.
+///
+/// Where the phase `stopped` short, or the policy perhaps drops a row of the key, it is any row
+/// of the key delivered so far, at most once.
 fn merged(stream: &SimStream, phase: usize, stopped: bool) -> Vec<Group> {
     let mut keys: BTreeMap<Identity, Latest> = BTreeMap::new();
     let mut every: BTreeMap<Identity, Vec<Row>> = BTreeMap::new();
+    let mut uncertain: BTreeSet<Identity> = BTreeSet::new();
     for delivered in 0..=phase {
         for row in stream.all_rows(delivered) {
-            if row.delivered != delivered || !expected::kept(stream, &row) {
+            let dropped = expected::dropped(stream, &row);
+            if row.delivered != delivered || dropped == Chance::Surely {
                 continue;
             }
             let Some(key) = row.key else { continue };
             let identity = (key, row.tag.clone());
+            if dropped == Chance::Perhaps {
+                uncertain.insert(identity.clone());
+            }
             every.entry(identity.clone()).or_default().push(row.clone());
             let latest = keys.entry(identity).or_insert(Latest {
                 phase: delivered,
@@ -107,16 +121,21 @@ fn merged(stream: &SimStream, phase: usize, stopped: bool) -> Vec<Group> {
             latest.rows.insert(row.partition, row);
         }
     }
-    if stopped {
-        return every
-            .into_values()
-            .map(|rows| Group { rows, count: 1 })
-            .collect();
-    }
-    keys.into_values()
-        .map(|latest| Group {
-            rows: latest.rows.into_values().collect(),
-            count: 1,
+    keys.into_iter()
+        .map(|(identity, latest)| {
+            if stopped || uncertain.contains(&identity) {
+                Group {
+                    rows: every.remove(&identity).unwrap_or_default(),
+                    count: 1,
+                    at_most: true,
+                }
+            } else {
+                Group {
+                    rows: latest.rows.into_values().collect(),
+                    count: 1,
+                    at_most: false,
+                }
+            }
         })
         .collect()
 }

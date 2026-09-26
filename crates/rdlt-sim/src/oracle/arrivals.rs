@@ -75,6 +75,25 @@ pub(super) fn arrival(stream: &SimStream, row: &Row, column: usize) -> Option<Ar
         .reduce(Arrival::join)
 }
 
+/// The widest type drift column `column` may arrive as in the batch the engine writes `row` in:
+/// the join of every push it may shred together with `row`'s, or `None` where none holds the
+/// column.
+///
+/// An Arrow batch's column has one type whatever the engine gathers it with.
+pub(super) fn widest(stream: &SimStream, row: &Row, column: usize) -> Option<Arrival> {
+    if !stream.json {
+        return arrival(stream, row, column);
+    }
+    let partition = usize::try_from(row.partition).unwrap_or(0);
+    let offset = usize::try_from(row.offset).unwrap_or(0);
+    let rows = stream.rows(partition, row.delivered);
+    rows[stream.span(partition, row.delivered, offset)]
+        .iter()
+        .filter_map(|row| row.extras[column].as_ref())
+        .map(pushed)
+        .reduce(Arrival::join)
+}
+
 /// The type the engine infers for `value`, pushed in JSON: a float JSON cannot hold is pushed as
 /// its name.
 pub(super) fn pushed(value: &Scalar) -> Arrival {

@@ -12,7 +12,7 @@ use rdlt_connector::{Capabilities, LogicalType};
 use rdlt_engine::{Error, ErrorKind, Nested, OnUnsupported, SchemaPolicy};
 use rdlt_testkit::canon::storage;
 
-use super::arrivals::{Arrival, arrival};
+use super::arrivals::{Arrival, arrival, widest};
 use super::expected;
 use crate::workload::{Relaxed, SimStream};
 use crate::world::World;
@@ -264,8 +264,24 @@ impl<'a> Column<'a> {
             .as_ref()
             .map(|declared| drift.hint.clone().unwrap_or_else(|| declared.clone()));
         let arrivals: Vec<Vec<Arrival>> = (0..=phase).map(|at| self.arrivals(at)).collect();
-        outcome(initial, &arrivals, rules.code(), |current, arrival| {
+        let outcome = outcome(initial, &arrivals, rules.code(), |current, arrival| {
             rules.step(current, arrival)
+        });
+        // Which pushes the engine shreds together decides a column whose pushes differ in type.
+        if outcome.must && self.gathered(phase) {
+            return Outcome::may(rules.code());
+        }
+        outcome
+    }
+
+    /// Whether some push of the column by `phase` may be shredded with another of another type.
+    fn gathered(&self, phase: usize) -> bool {
+        (0..=phase).any(|at| {
+            (0..self.stream.partitions.len()).any(|partition| {
+                self.stream.read(partition, at).iter().any(|row| {
+                    arrival(self.stream, row, self.index) != widest(self.stream, row, self.index)
+                })
+            })
         })
     }
 
@@ -285,16 +301,20 @@ impl<'a> Column<'a> {
                 .all(|arrival| matches!(arrival, Arrival::Typed(logical) if scalar(&logical)))
     }
 
-    /// The distinct types the column arrives as in `phase`, other than nulls.
+    /// The distinct types the column arrives as in `phase`, other than nulls: its pushes', and
+    /// the widest the engine may shred them into.
     fn arrivals(&self, phase: usize) -> Vec<Arrival> {
         let mut arrivals = Vec::new();
         for partition in 0..self.stream.partitions.len() {
             for row in self.stream.read(partition, phase) {
-                if let Some(arrival) = arrival(self.stream, row, self.index)
-                    && !arrival.is_null()
-                    && !arrivals.contains(&arrival)
-                {
-                    arrivals.push(arrival);
+                let pushes = [
+                    arrival(self.stream, row, self.index),
+                    widest(self.stream, row, self.index),
+                ];
+                for arrival in pushes.into_iter().flatten() {
+                    if !arrival.is_null() && !arrivals.contains(&arrival) {
+                        arrivals.push(arrival);
+                    }
                 }
             }
         }
