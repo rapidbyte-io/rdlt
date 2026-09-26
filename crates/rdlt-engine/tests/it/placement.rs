@@ -1,5 +1,6 @@
 //! The destination-facing scenarios against every reference destination spawned in a process of
-//! its own, the placement matrix's second leg (§20.9).
+//! its own, and listening on the network reached over mutual TLS: the placement matrix's second
+//! and third legs (§20.9).
 //!
 //! They run on the real clock: a spawned connector's heartbeat and deadlines do, and a paused
 //! clock would expire them while the connector's process works.
@@ -12,13 +13,17 @@ use crate::{destinations, merge, normalized};
 
 #[tokio::test]
 async fn publishes_every_row_once() {
-    each(Target::SPAWNED, destinations::publishes_every_row_once).await;
+    each(
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
+        destinations::publishes_every_row_once,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn resumes_an_incremental_read_where_it_committed() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::resumes_an_incremental_read_where_it_committed,
     )
     .await;
@@ -27,7 +32,7 @@ async fn resumes_an_incremental_read_where_it_committed() {
 #[tokio::test]
 async fn appends_a_fresh_copy_every_full_run_and_replaces_one() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::appends_a_fresh_copy_every_full_run_and_replaces_one,
     )
     .await;
@@ -36,7 +41,7 @@ async fn appends_a_fresh_copy_every_full_run_and_replaces_one() {
 #[tokio::test]
 async fn keeps_a_stopped_replace_hidden_until_it_completes() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::keeps_a_stopped_replace_hidden_until_it_completes,
     )
     .await;
@@ -45,7 +50,7 @@ async fn keeps_a_stopped_replace_hidden_until_it_completes() {
 #[tokio::test]
 async fn merges_the_newest_row_of_each_key_across_runs() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::merges_the_newest_row_of_each_key_across_runs,
     )
     .await;
@@ -54,7 +59,7 @@ async fn merges_the_newest_row_of_each_key_across_runs() {
 #[tokio::test]
 async fn publishes_a_commit_whose_response_was_lost_once() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::publishes_a_commit_whose_response_was_lost_once,
     )
     .await;
@@ -62,13 +67,17 @@ async fn publishes_a_commit_whose_response_was_lost_once() {
 
 #[tokio::test]
 async fn fences_an_older_run() {
-    each(Target::SPAWNED, destinations::fences_an_older_run).await;
+    each(
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
+        destinations::fences_an_older_run,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn evolves_a_table_as_its_batches_change() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::evolves_a_table_as_its_batches_change,
     )
     .await;
@@ -77,7 +86,7 @@ async fn evolves_a_table_as_its_batches_change() {
 #[tokio::test]
 async fn stores_nested_values_natively_or_as_json_text() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::stores_nested_values_natively_or_as_json_text,
     )
     .await;
@@ -86,7 +95,7 @@ async fn stores_nested_values_natively_or_as_json_text() {
 #[tokio::test]
 async fn loads_streams_named_like_its_own_tables() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         destinations::loads_streams_named_like_its_own_tables,
     )
     .await;
@@ -95,7 +104,7 @@ async fn loads_streams_named_like_its_own_tables() {
 #[tokio::test]
 async fn takes_tables_of_arrays_that_hold_only_arrays() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         normalized::takes_tables_of_arrays_that_hold_only_arrays,
     )
     .await;
@@ -104,7 +113,7 @@ async fn takes_tables_of_arrays_that_hold_only_arrays() {
 #[tokio::test]
 async fn takes_normalize_turned_on_for_an_existing_stream() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         normalized::takes_normalize_turned_on_for_an_existing_stream,
     )
     .await;
@@ -113,7 +122,7 @@ async fn takes_normalize_turned_on_for_an_existing_stream() {
 #[tokio::test]
 async fn replaces_a_roots_children_when_it_merges() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         normalized::replaces_a_roots_children_when_it_merges,
     )
     .await;
@@ -122,7 +131,7 @@ async fn replaces_a_roots_children_when_it_merges() {
 #[tokio::test]
 async fn keeps_the_children_of_a_keys_last_row_in_a_commit() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         normalized::keeps_the_children_of_a_keys_last_row_in_a_commit,
     )
     .await;
@@ -131,7 +140,7 @@ async fn keeps_the_children_of_a_keys_last_row_in_a_commit() {
 #[tokio::test]
 async fn keeps_the_children_of_rows_after_a_dropped_one() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         normalized::keeps_the_children_of_rows_after_a_dropped_one,
     )
     .await;
@@ -140,7 +149,7 @@ async fn keeps_the_children_of_rows_after_a_dropped_one() {
 #[tokio::test]
 async fn drops_only_the_rows_carrying_a_change_among_rows_sharing_a_key() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         normalized::drops_only_the_rows_carrying_a_change_among_rows_sharing_a_key,
     )
     .await;
@@ -149,7 +158,7 @@ async fn drops_only_the_rows_carrying_a_change_among_rows_sharing_a_key() {
 #[tokio::test]
 async fn merges_into_a_table_it_appended_to_and_appends_again() {
     each(
-        Target::SPAWNED,
+        Target::SPAWNED.into_iter().chain(Target::REMOTE),
         merge::merges_into_a_table_it_appended_to_and_appends_again,
     )
     .await;
@@ -157,7 +166,7 @@ async fn merges_into_a_table_it_appended_to_and_appends_again() {
 
 #[tokio::test]
 async fn a_spawned_source_loads_every_row_once() {
-    for target in [Target::Memory, Target::SpawnedSqlite] {
+    for target in [Target::Memory, Target::SpawnedSqlite, Target::RemoteSqlite] {
         let source = spawned_generator(&[("orders", 1000, 4, 37)]).await;
         let outcome = engine(commit_every(250))
             .run(

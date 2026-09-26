@@ -2,6 +2,7 @@
 
 pub(crate) mod batches;
 pub(crate) mod destinations;
+pub(crate) mod listening;
 pub(crate) mod script;
 pub(crate) mod targets;
 
