@@ -12,6 +12,16 @@ default = ["macros"]
 macros = ["dep:rdlt-connector-macros"]
 testing = ["dep:arrow-cast"]
 wire = ["dep:rdlt-wire"]
+serve = [
+  "wire",
+  "dep:http",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:tokio-stream",
+  "dep:tower",
+  "rdlt-wire/serve",
+  "tokio/net",
+]
 sqlgen = []
 
 [dependencies]
@@ -22,6 +32,11 @@ base64.workspace = true
 bytes.workspace = true
 rdlt-connector-macros = { workspace = true, optional = true }
 rdlt-wire = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true, features = ["http2", "server"] }
+hyper-util = { workspace = true, optional = true, features = ["tokio", "service"] }
+tokio-stream = { workspace = true, optional = true }
+tower = { workspace = true, optional = true, features = ["util"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

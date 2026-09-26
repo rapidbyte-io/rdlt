@@ -70,6 +70,8 @@ pub mod limits;
 mod meta;
 mod schema;
 mod secret;
+#[cfg(feature = "serve")]
+pub mod serve;
 mod sink;
 mod source;
 mod spec;

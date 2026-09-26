@@ -1,0 +1,38 @@
+[package]
+name = "rdlt-host"
+description = "Hosting rdlt connectors out of process: the engine's source and destination over the wire protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+hyper-util = { workspace = true, features = ["tokio"] }
+rdlt-connector = { workspace = true, features = ["wire"] }
+rdlt-wire.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tonic = { workspace = true, features = ["channel", "codegen"] }
+tower = { workspace = true, features = ["util"] }
+
+[dev-dependencies]
+bytes.workspace = true
+http.workspace = true
+hyper = { workspace = true, features = ["http2", "server"] }
+hyper-util = { workspace = true, features = ["service", "tokio"] }
+rdlt-connector = { workspace = true, features = ["serve"] }
+rdlt-connector-reference.workspace = true
+rdlt-engine.workspace = true
+rdlt-wire = { workspace = true, features = ["serve"] }
+schemars.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tonic = { workspace = true, features = ["server"] }
+
+[lints]
+workspace = true

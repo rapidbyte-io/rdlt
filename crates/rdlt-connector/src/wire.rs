@@ -16,6 +16,8 @@ mod types;
 
 use std::error::Error as StdError;
 
+#[cfg(feature = "serve")]
+pub(crate) use destination::load_id;
 pub use rdlt_wire::v1;
 pub use status::{MALFORMED_FRAME, TRANSPORT, error, frame_error, status};
 

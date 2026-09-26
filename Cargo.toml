@@ -16,6 +16,7 @@ rdlt-connector = { path = "crates/rdlt-connector", version = "0.0.0" }          
 rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.0" }       # #[source] and #[destination]
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
+rdlt-host = { path = "crates/rdlt-host", version = "0.0.0" }                               # connectors out of process
 rdlt-testkit = { path = "crates/rdlt-testkit" }                                            # drawn data and the value model, for tests and rdlt-sim
 rdlt-wire = { path = "crates/rdlt-wire", version = "0.0.0" }                               # the wire protocol: messages, the Arrow codec and limits
 
@@ -52,6 +53,11 @@ parking_lot = "0.12.5" # locks without poisoning
 prost = "0.14.4" # protocol buffer messages of the wire protocol
 tonic = { version = "0.14.6", default-features = false } # gRPC: the wire protocol's service stubs, server and client
 tonic-prost = "0.14.6" # the protobuf codec of the wire protocol's gRPC service
+http = "1.5.0" # the requests a served connection's gRPC service takes
+hyper = { version = "1.11.1", default-features = false } # one HTTP/2 connection served to its end
+hyper-util = { version = "0.1.21", default-features = false } # tokio's executor, timers and IO for hyper
+tokio-stream = { version = "0.1.19", default-features = false } # the streams a served read and write answer with
+tower = { version = "0.5.3", default-features = false } # adapting the gRPC service and the client's connector
 rayon = "1.12.0" # the compute pool for CPU-bound stages
 sonic-rs = "0.5.10" # SIMD JSON parsing and rendering for the shredder
 stacker = "0.1.25" # stack grown on demand, so JSON at the nesting limit parses in every build
