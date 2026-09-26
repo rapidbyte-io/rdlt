@@ -21,14 +21,15 @@ socket will be.
   - It opens with a handshake that names the role and carries the configuration. The connector
     then connects for that role, once.
   - Every later call works on that connection. A call before the handshake is refused
-    (`no_handshake`), and so is a second handshake (`handshake_repeated`) or a call for the other
-    role (`role`).
+    (`no_handshake`), and so is a second handshake (`handshake_repeated`), before it connects
+    anything, or a call for the other role (`role`).
   - A binary serves every role it has a factory for (`Served`), and the handshake's spec lists
     them.
   - A host of another major version is refused (`protocol_version`, `Unsupported`).
   - The configuration document is admitted against the connector's limit. Each end enforces its
-    own limits on what it receives, and the host also refuses, typed, a frame beyond the limit
-    the connector's handshake declares, before sending it.
+    own limits on what it receives, and also refuses, typed, to send what the other end's limits
+    from the handshake would refuse: a served read fails with the limit's error, and so does a
+    remote write.
   - `serve_connection` drives the connection's HTTP/2 itself, with hyper, until the host closes
     it. tonic's own server returns as soon as its incoming stream ends, and it cannot tie state to
     one connection.
