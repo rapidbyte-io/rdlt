@@ -19,3 +19,4 @@ pub mod v1;
 pub use codec::{Decoder, Encoder, IpcFrame};
 pub use error::{Frame, Problem, WireError};
 pub use limits::{Limits, Refusal};
+pub use prost;
