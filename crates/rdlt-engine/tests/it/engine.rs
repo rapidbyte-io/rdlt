@@ -593,6 +593,22 @@ async fn retries_stop_after_the_last_attempt() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_connector_that_panics_fails_the_run_rather_than_its_caller() {
+    use crate::support::destinations::{Step, failing};
+    let name = "panic-open";
+    let script = Script::new(vec![ScriptStream::new("events", 1, 20, 5)]);
+    let (_, source) = script.connect(name).await;
+    let retry = RetryPolicy::default().max_attempts(1);
+    let destination = failing(memory(name).await, Step::PanicOnOpen);
+    let outcome = engine(commit_every(10).retry(retry))
+        .run(pipeline(name, [stream("events")]), source, destination)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the attempt fails");
+    assert_eq!(error.kind(), ErrorKind::Internal);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_failure_at_any_step_of_an_attempt_names_its_side() {
     use crate::support::destinations::{Step, failing};
     let run = |destination, script: Script, name: &'static str| async move {

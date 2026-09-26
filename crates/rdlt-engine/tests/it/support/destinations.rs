@@ -158,9 +158,11 @@ pub(crate) enum Step {
     LoseResponse,
     /// The first commit lands but its response is lost, and the open after it fails.
     LoseResponseThenOpen,
+    /// Opening panics, as a connector with a bug may.
+    PanicOnOpen,
 }
 
-/// `inner`, failing with a transient error at `step`.
+/// `inner`, failing with a transient error at `step`, or panicking there.
 pub(crate) fn failing(inner: Arc<dyn Destination>, step: Step) -> Arc<dyn Destination> {
     Arc::new(Failing {
         inner,
@@ -198,6 +200,7 @@ impl Destination for Failing {
             let refuse = self.step == Step::LoseResponseThenOpen
                 && self.lost.load(Ordering::SeqCst)
                 && !self.refused.swap(true, Ordering::SeqCst);
+            assert!(self.step != Step::PanicOnOpen, "injected panic");
             if self.step == Step::Open || refuse {
                 return Err(injected());
             }

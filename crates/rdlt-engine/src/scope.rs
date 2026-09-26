@@ -3,7 +3,11 @@
 #[cfg(test)]
 mod tests;
 
-use std::future::Future;
+use std::any::Any;
+use std::future::{Future, poll_fn};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::pin::pin;
+use std::task::Poll;
 
 use tokio::task::{JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -78,12 +82,37 @@ impl<E: ScopeError> Drop for TaskScope<E> {
 
 /// The panic message of a task that panicked, or a fixed text when there is none.
 fn describe(error: JoinError) -> String {
-    let Ok(payload) = error.try_into_panic() else {
-        return "task was aborted".to_owned();
-    };
+    match error.try_into_panic() {
+        Ok(payload) => message(payload.as_ref()),
+        Err(_) => "task was aborted".to_owned(),
+    }
+}
+
+/// The message a panic carried, or a fixed text when it carried none.
+fn message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|message| (*message).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "task panicked".to_owned())
+}
+
+/// A future panicked; the panic's message.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct Panicked(String);
+
+/// Awaits `future` on the calling task, containing a panic it raises: its output, or the panic.
+///
+/// A future that panicked is dropped, never polled again.
+pub(crate) async fn contained<F: Future>(future: F) -> Result<F::Output, Panicked> {
+    let mut future = pin!(future);
+    poll_fn(
+        |context| match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(context))) {
+            Ok(Poll::Ready(output)) => Poll::Ready(Ok(output)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(payload) => Poll::Ready(Err(Panicked(message(payload.as_ref())))),
+        },
+    )
+    .await
 }
