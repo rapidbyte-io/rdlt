@@ -157,7 +157,9 @@ fn normalized(context: &RunContext, plan: &StreamPlan, spec: &StreamSpec) -> Opt
                 Some(Nested::Native | Nested::Json)
             )
         })
-        .filter_map(|(column, _)| column.segments().next().map(Arc::from))
+        .map(|(column, _)| column)
+        .chain(plan.hinted_columns())
+        .filter_map(|column| column.segments().next().map(Arc::from))
         .collect();
     let key = plan
         .merge_key()
