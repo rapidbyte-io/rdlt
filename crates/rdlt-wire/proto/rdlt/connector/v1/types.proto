@@ -6,48 +6,61 @@ package rdlt.connector.v1;
 // A marker carrying no value, for the cases of a oneof that hold nothing.
 message Unit {}
 
-// A logical type, as the connector contract's lattice defines it.
+// A logical type, as the connector contract's lattice defines it: the nodes of its tree in
+// pre-order. A struct's node is followed by the subtree of each of its fields in order, and a
+// list's node by its item's subtree. However deep the type, the message nests no deeper, so the
+// receiver bounds the depth by its nesting limit rather than the protobuf decoder's.
 message LogicalType {
-  // The type.
+  // The nodes; the first is the type itself.
+  repeated TypeNode nodes = 1;
+}
+
+// One node of a logical type's tree.
+message TypeNode {
+  // For a struct's field or a list's item, the field's name; empty for the type itself.
+  string name = 1;
+  // For a struct's field or a list's item, whether it may hold nulls.
+  bool nullable = 2;
+  // The node's type.
   oneof kind {
     // No values but null.
-    Unit null = 1;
+    Unit null = 3;
     // True or false.
-    Unit bool = 2;
+    Unit bool = 4;
     // An 8-bit signed integer.
-    Unit int8 = 3;
+    Unit int8 = 5;
     // A 16-bit signed integer.
-    Unit int16 = 4;
+    Unit int16 = 6;
     // A 32-bit signed integer.
-    Unit int32 = 5;
+    Unit int32 = 7;
     // A 64-bit signed integer.
-    Unit int64 = 6;
+    Unit int64 = 8;
     // A 32-bit float.
-    Unit float32 = 7;
+    Unit float32 = 9;
     // A 64-bit float.
-    Unit float64 = 8;
+    Unit float64 = 10;
     // A decimal of a precision and scale.
-    Decimal decimal = 9;
+    Decimal decimal = 11;
     // UTF-8 text.
-    Unit utf8 = 10;
+    Unit utf8 = 12;
     // Bytes.
-    Unit binary = 11;
+    Unit binary = 13;
     // A calendar date.
-    Unit date = 12;
+    Unit date = 14;
     // A time of day in a unit.
-    TimeUnit time = 13;
+    TimeUnit time = 15;
     // An instant, or a wall-clock time without a zone.
-    Timestamp timestamp = 14;
+    Timestamp timestamp = 16;
     // A length of time in a unit.
-    TimeUnit duration = 15;
+    TimeUnit duration = 17;
     // A UUID.
-    Unit uuid = 16;
+    Unit uuid = 18;
     // A JSON document.
-    Unit json = 17;
-    // Named fields.
-    Struct struct = 18;
-    // A list of one item type.
-    Field list = 19;
+    Unit json = 19;
+    // A struct of this many fields, whose subtrees follow.
+    uint32 struct = 20;
+    // A list, whose item's subtree follows.
+    Unit list = 21;
   }
 }
 
@@ -79,12 +92,6 @@ message Timestamp {
   TimeUnit unit = 1;
   // Its time zone; absent for a wall-clock time without one.
   optional string zone = 2;
-}
-
-// A struct type.
-message Struct {
-  // Its fields, in order.
-  repeated Field fields = 1;
 }
 
 // A named, typed field.

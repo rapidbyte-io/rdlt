@@ -2,78 +2,94 @@
 /// A marker carrying no value, for the cases of a oneof that hold nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Unit {}
-/// A logical type, as the connector contract's lattice defines it.
+/// A logical type, as the connector contract's lattice defines it: the nodes of its tree in
+/// pre-order. A struct's node is followed by the subtree of each of its fields in order, and a
+/// list's node by its item's subtree. However deep the type, the message nests no deeper, so the
+/// receiver bounds the depth by its nesting limit rather than the protobuf decoder's.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogicalType {
-    /// The type.
-    #[prost(
-        oneof = "logical_type::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19"
-    )]
-    pub kind: ::core::option::Option<logical_type::Kind>,
+    /// The nodes; the first is the type itself.
+    #[prost(message, repeated, tag = "1")]
+    pub nodes: ::prost::alloc::vec::Vec<TypeNode>,
 }
-/// Nested message and enum types in `LogicalType`.
-pub mod logical_type {
-    /// The type.
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+/// One node of a logical type's tree.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TypeNode {
+    /// For a struct's field or a list's item, the field's name; empty for the type itself.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// For a struct's field or a list's item, whether it may hold nulls.
+    #[prost(bool, tag = "2")]
+    pub nullable: bool,
+    /// The node's type.
+    #[prost(
+        oneof = "type_node::Kind",
+        tags = "3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
+    )]
+    pub kind: ::core::option::Option<type_node::Kind>,
+}
+/// Nested message and enum types in `TypeNode`.
+pub mod type_node {
+    /// The node's type.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Kind {
         /// No values but null.
-        #[prost(message, tag = "1")]
+        #[prost(message, tag = "3")]
         Null(super::Unit),
         /// True or false.
-        #[prost(message, tag = "2")]
+        #[prost(message, tag = "4")]
         Bool(super::Unit),
         /// An 8-bit signed integer.
-        #[prost(message, tag = "3")]
+        #[prost(message, tag = "5")]
         Int8(super::Unit),
         /// A 16-bit signed integer.
-        #[prost(message, tag = "4")]
+        #[prost(message, tag = "6")]
         Int16(super::Unit),
         /// A 32-bit signed integer.
-        #[prost(message, tag = "5")]
+        #[prost(message, tag = "7")]
         Int32(super::Unit),
         /// A 64-bit signed integer.
-        #[prost(message, tag = "6")]
+        #[prost(message, tag = "8")]
         Int64(super::Unit),
         /// A 32-bit float.
-        #[prost(message, tag = "7")]
+        #[prost(message, tag = "9")]
         Float32(super::Unit),
         /// A 64-bit float.
-        #[prost(message, tag = "8")]
+        #[prost(message, tag = "10")]
         Float64(super::Unit),
         /// A decimal of a precision and scale.
-        #[prost(message, tag = "9")]
+        #[prost(message, tag = "11")]
         Decimal(super::Decimal),
         /// UTF-8 text.
-        #[prost(message, tag = "10")]
+        #[prost(message, tag = "12")]
         Utf8(super::Unit),
         /// Bytes.
-        #[prost(message, tag = "11")]
+        #[prost(message, tag = "13")]
         Binary(super::Unit),
         /// A calendar date.
-        #[prost(message, tag = "12")]
+        #[prost(message, tag = "14")]
         Date(super::Unit),
         /// A time of day in a unit.
-        #[prost(enumeration = "super::TimeUnit", tag = "13")]
+        #[prost(enumeration = "super::TimeUnit", tag = "15")]
         Time(i32),
         /// An instant, or a wall-clock time without a zone.
-        #[prost(message, tag = "14")]
+        #[prost(message, tag = "16")]
         Timestamp(super::Timestamp),
         /// A length of time in a unit.
-        #[prost(enumeration = "super::TimeUnit", tag = "15")]
+        #[prost(enumeration = "super::TimeUnit", tag = "17")]
         Duration(i32),
         /// A UUID.
-        #[prost(message, tag = "16")]
+        #[prost(message, tag = "18")]
         Uuid(super::Unit),
         /// A JSON document.
-        #[prost(message, tag = "17")]
-        Json(super::Unit),
-        /// Named fields.
-        #[prost(message, tag = "18")]
-        Struct(super::Struct),
-        /// A list of one item type.
         #[prost(message, tag = "19")]
-        List(::prost::alloc::boxed::Box<super::Field>),
+        Json(super::Unit),
+        /// A struct of this many fields, whose subtrees follow.
+        #[prost(uint32, tag = "20")]
+        Struct(u32),
+        /// A list, whose item's subtree follows.
+        #[prost(message, tag = "21")]
+        List(super::Unit),
     }
 }
 /// A decimal type.
@@ -96,13 +112,6 @@ pub struct Timestamp {
     #[prost(string, optional, tag = "2")]
     pub zone: ::core::option::Option<::prost::alloc::string::String>,
 }
-/// A struct type.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Struct {
-    /// Its fields, in order.
-    #[prost(message, repeated, tag = "1")]
-    pub fields: ::prost::alloc::vec::Vec<Field>,
-}
 /// A named, typed field.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Field {
@@ -110,8 +119,8 @@ pub struct Field {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     /// Its type.
-    #[prost(message, optional, boxed, tag = "2")]
-    pub r#type: ::core::option::Option<::prost::alloc::boxed::Box<LogicalType>>,
+    #[prost(message, optional, tag = "2")]
+    pub r#type: ::core::option::Option<LogicalType>,
     /// Whether it may hold nulls.
     #[prost(bool, tag = "3")]
     pub nullable: bool,
@@ -1521,7 +1530,8 @@ pub struct CloseRequest {
 /// The answer to a close.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CloseResponse {}
-/// The limits each end enforces on what it receives.
+/// The limits each end enforces on what it receives. A limit left 0, as a peer from before that
+/// limit existed leaves it, is the protocol's default.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Limits {
     /// Bytes in one frame.
@@ -1605,6 +1615,9 @@ pub struct HandshakeResponse {
     /// The features, of those offered, it will use.
     #[prost(string, repeated, tag = "2")]
     pub accepted_features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The limits the connector enforces on what it receives.
+    #[prost(message, optional, tag = "3")]
+    pub limits: ::core::option::Option<Limits>,
 }
 /// Asks the connector to verify connectivity and permissions.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
