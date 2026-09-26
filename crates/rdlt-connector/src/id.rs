@@ -282,6 +282,7 @@ impl LoadId {
     }
 
     /// The load id whose 16 bytes are `bytes`.
+    #[cfg(feature = "wire")]
     pub(crate) fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(uuid::Uuid::from_bytes(bytes))
     }
@@ -321,6 +322,7 @@ impl CommitSeq {
     }
 
     /// The sequence number `value`, if it is not zero.
+    #[cfg(feature = "wire")]
     pub(crate) fn new(value: u64) -> Option<Self> {
         NonZeroU64::new(value).map(Self)
     }
