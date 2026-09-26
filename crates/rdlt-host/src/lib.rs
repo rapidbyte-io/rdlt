@@ -4,10 +4,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod local;
 pub mod provider;
 pub mod registry;
 pub mod remote;
 
+pub use local::{LastWords, Local};
 pub use provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
 pub use registry::Registry;
 pub use remote::{

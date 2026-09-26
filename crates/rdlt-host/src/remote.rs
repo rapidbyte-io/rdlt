@@ -181,6 +181,11 @@ impl Connection {
         &self.spec
     }
 
+    /// Whether the connector was lost: every call on the connection fails.
+    pub(crate) fn is_lost(&self) -> bool {
+        self.lost.is_cancelled()
+    }
+
     /// Runs `call`, a call of the protocol named `what`, within `deadline`, failing once the
     /// connector is lost.
     async fn call<T>(
@@ -195,6 +200,24 @@ impl Connection {
             answer = within(deadline, what, call) => answer,
         }
     }
+}
+
+/// The contract's spec of the connector the handshake's `spec` describes, in `role`.
+pub(crate) fn contract_spec(
+    spec: &v1::ConnectorSpec,
+    role: Role,
+) -> Result<rdlt_connector::ConnectorSpec, ConnectorError> {
+    use rdlt_connector::wire::Invalid;
+    let id = rdlt_connector::ConnectorId::parse(&spec.id)
+        .map_err(|error| source::invalid(&Invalid::rejected("connector id", error)))?;
+    let config_schema = serde_json::from_str(&spec.config_schema_json)
+        .map_err(|error| source::invalid(&Invalid::rejected("configuration schema", error)))?;
+    Ok(rdlt_connector::ConnectorSpec {
+        id,
+        version: spec.version.clone(),
+        role,
+        config_schema,
+    })
 }
 
 /// The error of a call after the connector was lost.

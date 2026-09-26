@@ -49,6 +49,7 @@ syn = { version = "2", features = ["full"] } # parsing impl blocks in rdlt-conne
 uuid = { version = "1.26.1", features = ["serde"] } # load ids (UUIDv7)
 getrandom = "0.4.3" # the operating system random source behind SystemEnv
 memchr = "2.8.3" # finding the lines of JSON pushes
+command-fds = { version = "0.3.3", default-features = false } # a spawned connector's socket at file descriptor 3
 nix = { version = "0.31.3", default-features = false } # a spawned connector ends with its host (PR_SET_PDEATHSIG), and the host signals its connectors
 parking_lot = "0.12.5" # locks without poisoning
 prost = "0.14.4" # protocol buffer messages of the wire protocol
@@ -61,6 +62,12 @@ tokio-stream = { version = "0.1.19", default-features = false } # the streams a 
 tower = { version = "0.5.3", default-features = false } # adapting the gRPC service and the client's connector
 rayon = "1.12.0" # the compute pool for CPU-bound stages
 semver = "1.0.28" # the versions a connector reference accepts
+sha2 = { version = "0.10.9", default-features = false, features = [
+  "std",
+] } # the digest of a connector's binary
+tracing = { version = "0.1.44", default-features = false, features = [
+  "std",
+] } # a spawned connector's output
 sonic-rs = "0.5.10" # SIMD JSON parsing and rendering for the shredder
 stacker = "0.1.25" # stack grown on demand, so JSON at the nesting limit parses in every build
 thiserror = "2.0.20" # typed error derives
@@ -120,6 +127,11 @@ large_futures = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unused_async_trait_impl = "allow"            # connectors implement async trait methods with `async fn`, awaiting or not
+
+# A spawned connector's digest hashes its binary, which a debug build makes hundreds of megabytes;
+# optimised, the tests that spawn connectors hash it in a fraction of a second, not seconds.
+[profile.dev.package.sha2]
+opt-level = 3
 
 # The simulation suite: optimised, since it replays thousands of seeds per run, with the overflow
 # checks and debug assertions a simulation exists to trip.
