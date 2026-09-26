@@ -36,6 +36,9 @@ pub struct Features {
     pub settings: bool,
     /// Merge keys that change type, collide across partitions or span two columns.
     pub keys: bool,
+    /// Destinations with other identifier rules: any characters, reserved words and table
+    /// prefixes.
+    pub identifiers: bool,
 }
 
 impl Features {
@@ -52,6 +55,7 @@ impl Features {
         narrow: true,
         settings: true,
         keys: true,
+        identifiers: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
@@ -72,6 +76,7 @@ impl Features {
             narrow: rng.chance(500),
             settings: rng.chance(500),
             keys: rng.chance(500),
+            identifiers: rng.chance(500),
         }
     }
 

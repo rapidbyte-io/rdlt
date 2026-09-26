@@ -6,8 +6,8 @@ mod tests;
 
 use rdlt_connector::{IdentifierCase, IdentifierChars, IdentifierRules, NameMap};
 
-/// Whether `name` follows `rules`: within their length, in their case and characters, and not
-/// reserved.
+/// Whether `name` follows `rules`: within their length, in their case and characters, and not a
+/// word they reserve, compared as they fold case.
 pub(super) fn fits(rules: &IdentifierRules, name: &str) -> bool {
     name.len() <= usize::from(rules.max_len.get())
         && match rules.case {
@@ -21,10 +21,26 @@ pub(super) fn fits(rules: &IdentifierRules, name: &str) -> bool {
             }
             IdentifierChars::Any => !name.chars().any(char::is_control),
         }
+        && !rules.reserved.iter().any(|word| fold(rules, word) == name)
+}
+
+/// `text` folded to the case `rules` keep identifiers in.
+fn fold(rules: &IdentifierRules, text: &str) -> String {
+    match rules.case {
+        IdentifierCase::Lower => text.to_lowercase(),
+        IdentifierCase::Upper => text.to_uppercase(),
+        IdentifierCase::Preserve => text.to_owned(),
+    }
+}
+
+/// Whether `name`, a table's, follows `rules` and starts with none of the prefixes they reserve
+/// for the destination's own tables, compared as the rules fold case.
+pub(super) fn fits_table(rules: &IdentifierRules, name: &str) -> bool {
+    fits(rules, name)
         && !rules
-            .reserved
+            .reserved_table_prefixes
             .iter()
-            .any(|word| word.eq_ignore_ascii_case(name))
+            .any(|prefix| fold(rules, name).starts_with(&fold(rules, prefix)))
 }
 
 /// The columns among `fields`, a stored row's, that `names` does not name, leaving out the last

@@ -26,6 +26,10 @@ pub const PHASES: usize = 2;
 /// Names drift columns draw from; some fold to one identifier under case-folding rules.
 const DRIFT_NAMES: [&str; 6] = ["d0", "D0", "extra", "Extra", "note", "a__b"];
 
+/// More names drift columns draw from where a seed exercises identifiers: characters outside
+/// ASCII words, one that grows as it folds to upper case, and one only spaces set apart.
+const WIDE_NAMES: [&str; 5] = ["naïve", "日付", "straße", "a b", "Ünï-cöde"];
+
 /// Everything a simulated source serves.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workload {
@@ -394,6 +398,9 @@ fn normalized(rng: &mut SplitMix64) -> Nested {
 /// JSON holds.
 fn drift(rng: &mut SplitMix64, partitions: usize, features: Features, json: bool) -> Vec<Drift> {
     let mut names: Vec<&str> = DRIFT_NAMES.to_vec();
+    if features.identifiers {
+        names.extend(WIDE_NAMES);
+    }
     let fresh = |rng: &mut SplitMix64| -> Shape {
         let seed = rng.next_u64();
         if json {
