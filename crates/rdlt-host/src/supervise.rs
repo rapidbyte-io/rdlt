@@ -46,6 +46,8 @@ pub(crate) struct Supervisor {
     config: serde_json::Value,
     options: Options,
     running: Mutex<Running>,
+    /// The spec the connector was checked to serve: whatever is started again must serve it.
+    checked: std::sync::OnceLock<ConnectorSpec>,
 }
 
 impl Supervisor {
@@ -63,6 +65,7 @@ impl Supervisor {
             config,
             options,
             running: Mutex::new(running),
+            checked: std::sync::OnceLock::new(),
         })
     }
 
@@ -74,12 +77,30 @@ impl Supervisor {
     /// The connection to a live connector, starting it again if it was lost.
     async fn connection(&self) -> Result<Arc<Connection>, ConnectorError> {
         let mut running = self.running.lock().await;
-        if running.connection.is_lost() {
-            *running = begin(&self.start, self.role, &self.config, self.options)
+        if running.connection.is_spent() {
+            let started = begin(&self.start, self.role, &self.config, self.options)
                 .await
                 .map_err(Spawned::into_error)?;
+            self.same(&started.connection)?;
+            *running = started;
         }
         Ok(Arc::clone(&running.connection))
+    }
+
+    /// Whether `connection`'s connector serves the spec the first was checked to serve: a redial
+    /// may reach whatever listens at the endpoint now.
+    fn same(&self, connection: &Connection) -> Result<(), ConnectorError> {
+        let Some(checked) = self.checked.get() else {
+            return Ok(());
+        };
+        let spec = crate::remote::contract_spec(connection.spec(), self.role)?;
+        if spec == *checked {
+            return Ok(());
+        }
+        Err(ConnectorError::config(format!(
+            "the connector started again serves `{}` {}, not `{}` {} as it was placed",
+            spec.id, spec.version, checked.id, checked.version
+        )))
     }
 
     /// `result`, its error carrying the connector's last words when its transport failed.
@@ -124,6 +145,7 @@ impl Supervisor {
             return Err(handshake_failed(ConnectorError::config(message)));
         }
         accepts(reference, &spec.version)?;
+        self.checked.set(spec.clone()).ok();
         Ok(spec)
     }
 

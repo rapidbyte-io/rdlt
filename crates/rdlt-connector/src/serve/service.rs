@@ -12,8 +12,10 @@ use rdlt_wire::tonic::{self, Request, Response, Status, Streaming};
 use rdlt_wire::v1::connector_server::Connector;
 use tokio::sync::{Mutex, OnceCell};
 use tokio_stream::StreamExt as _;
+use tokio_util::sync::CancellationToken;
 
 use super::handshake::unsupported;
+use super::until::Until;
 use super::{Served, read, write};
 use crate::destination::{Destination, DestinationSession, OpenContext, TableChange};
 use crate::error::{ConnectorError, ConnectorErrorKind};
@@ -41,10 +43,12 @@ pub(super) struct Service {
     pub(super) host: OnceCell<Limits>,
     pub(super) sessions: Mutex<BTreeMap<u64, SessionSlot>>,
     pub(super) next_session: AtomicU64,
+    /// Cancelled once the connection is stopping, which ends every heartbeat stream.
+    pub(super) stopping: CancellationToken,
 }
 
 impl Service {
-    pub(super) fn new(served: Arc<Served>, limits: Limits) -> Self {
+    pub(super) fn new(served: Arc<Served>, limits: Limits, stopping: CancellationToken) -> Self {
         Self {
             served,
             limits,
@@ -52,6 +56,7 @@ impl Service {
             host: OnceCell::new(),
             sessions: Mutex::new(BTreeMap::new()),
             next_session: AtomicU64::new(1),
+            stopping,
         }
     }
 
@@ -323,7 +328,8 @@ impl Connector for Service {
         let pongs = request
             .into_inner()
             .map(|ping| ping.map(|ping| v1::Pong { seq: ping.seq }));
-        Ok(Response::new(Box::pin(pongs)))
+        let stopped = self.stopping.clone().cancelled_owned();
+        Ok(Response::new(Box::pin(Until::new(pongs, stopped))))
     }
 }
 

@@ -264,12 +264,14 @@ async fn accepted(stream: &mut TlsStream<TcpStream>) -> Result<(), Spawned> {
         }
         tcp.readable().await.map_err(Spawned::Unreachable)?;
         match tls.read_tls(&mut Ready(tcp)) {
+            // Closed with no alert: no certificate was refused, and the connector may listen
+            // again.
             Ok(0) => {
                 let closed = std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "the connector closed the connection after its handshake",
                 );
-                return Err(Spawned::Tls(closed));
+                return Err(Spawned::Unreachable(closed));
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}

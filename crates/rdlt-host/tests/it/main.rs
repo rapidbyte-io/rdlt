@@ -7,5 +7,6 @@ mod network;
 mod process;
 mod protocol;
 mod reads;
+mod redial;
 mod sessions;
 mod support;

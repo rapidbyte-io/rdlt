@@ -1,10 +1,10 @@
 //! Connectors listening on the network, reached over mutual TLS: placed at their endpoints,
-//! refused when either end's certificate does not hold, and redialed when they are lost.
+//! refused when either end's certificate does not hold.
 
 use std::process::Stdio;
 use std::time::Duration;
 
-use rdlt_connector::{ConnectorErrorKind, ConnectorId};
+use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Identity, Placement, Provider as _, ProviderError, Remote};
 use rdlt_testkit::tls::{Files, Pki};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
@@ -12,7 +12,7 @@ use tokio::process::{Child, Command};
 
 use crate::process::example;
 
-fn identity(files: &Files) -> Identity {
+pub(crate) fn identity(files: &Files) -> Identity {
     Identity {
         cert: files.cert.clone(),
         key: files.key.clone(),
@@ -21,7 +21,7 @@ fn identity(files: &Files) -> Identity {
 
 /// The scripted connector, listening at `address` over mutual TLS with `server`'s certificate
 /// and `pki`'s CA; its process, and the address it announced.
-async fn listening(pki: &Pki, server: &Files, address: &str) -> (Child, String) {
+pub(crate) async fn listening(pki: &Pki, server: &Files, address: &str) -> (Child, String) {
     let mut child = Command::new(example("scripted_connector"))
         .args(["--listen", address])
         .arg("--tls-cert")
@@ -53,11 +53,11 @@ async fn listening(pki: &Pki, server: &Files, address: &str) -> (Child, String) 
     (child, address)
 }
 
-fn scripted(endpoint: &str) -> ConnectorRef {
+pub(crate) fn scripted(endpoint: &str) -> ConnectorRef {
     ConnectorRef::new(ConnectorId::parse("test.scripted").expect("a valid id")).endpoint(endpoint)
 }
 
-fn port(address: &str) -> u16 {
+pub(crate) fn port(address: &str) -> u16 {
     address
         .rsplit_once(':')
         .and_then(|(_, port)| port.parse().ok())
@@ -153,8 +153,35 @@ async fn a_listening_connector_speaks_no_plaintext_and_says_whom_it_refused() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn peers_that_never_handshake_do_not_keep_a_host_out() {
+    let pki = Pki::new("ca");
+    let (_connector, address) =
+        listening(&pki, &pki.server("server", &["localhost"]), "127.0.0.1:0").await;
+    // As many idle peers as the connector serves hosts at once, none of them authenticated.
+    let mut idle = Vec::new();
+    for _ in 0..256 {
+        idle.push(
+            tokio::net::TcpStream::connect(&address)
+                .await
+                .expect("the connector accepts"),
+        );
+    }
+    let endpoint = format!("grpcs://localhost:{}", port(&address));
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca());
+    let placed = tokio::time::timeout(
+        Duration::from_secs(5),
+        remote.source(&scripted(&endpoint), &serde_json::json!({})),
+    )
+    .await
+    .expect("the host is served while the idle peers wait")
+    .expect("the connector is placed");
+    placed.connector.check().await.expect("the check passes");
+    drop(idle);
+}
+
 /// Asks the listening `connector` to stop, as its operator would.
-fn stop(connector: &Child) {
+pub(crate) fn stop(connector: &Child) {
     let pid = connector
         .id()
         .and_then(|pid| i32::try_from(pid).ok())
@@ -168,6 +195,14 @@ fn stop(connector: &Child) {
 
 #[tokio::test]
 async fn a_connector_that_drops_the_connection_after_its_handshake_is_unreachable() {
+    for reset in [true, false] {
+        dropped_after_handshake(reset).await;
+    }
+}
+
+/// A connector that closes the connection after its handshake, reset when `reset`, is
+/// unreachable: no certificate was refused.
+async fn dropped_after_handshake(reset: bool) {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["localhost"]);
     let config = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
@@ -180,8 +215,10 @@ async fn a_connector_that_drops_the_connection_after_its_handshake_is_unreachabl
     tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("the host connects");
         let tls = acceptor.accept(stream).await.expect("the host handshakes");
-        // Reset, not closed: the host reads an error, not the end of the stream.
-        tls.get_ref().0.set_zero_linger().ok();
+        // Reset, the host reads an error; closed, the end of the stream.
+        if reset {
+            tls.get_ref().0.set_zero_linger().ok();
+        }
         drop(tls);
     });
     let remote = Remote::new(identity(&pki.client("host")), pki.ca());
@@ -193,7 +230,7 @@ async fn a_connector_that_drops_the_connection_after_its_handshake_is_unreachabl
         .expect("refused");
     assert!(
         matches!(refused, ProviderError::Unreachable { .. }),
-        "{refused}"
+        "reset {reset}: {refused}"
     );
 }
 
@@ -246,42 +283,6 @@ async fn a_reference_without_an_endpoint_goes_to_the_fallback() {
         .await
         .expect("the fallback spawns it");
     assert!(matches!(placed.placement, Placement::Process { .. }));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_lost_connector_is_redialed_once_it_listens_again() {
-    let pki = Pki::new("ca");
-    let server = pki.server("server", &["localhost"]);
-    let (connector, address) = listening(&pki, &server, "127.0.0.1:0").await;
-    let endpoint = format!("grpcs://localhost:{}", port(&address));
-    let options = rdlt_host::Options {
-        heartbeat: Duration::from_millis(100),
-        missed: 3,
-        ..rdlt_host::Options::default()
-    };
-    let remote = Remote::new(identity(&pki.client("host")), pki.ca()).options(options);
-    let placed = remote
-        .source(&scripted(&endpoint), &serde_json::json!({}))
-        .await
-        .expect("the connector is placed");
-    placed.connector.check().await.expect("the check passes");
-    drop(connector);
-    let (_again, _) = listening(&pki, &server, &address).await;
-    // Calls fail while the loss is noticed, then the connector is redialed.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        match placed.connector.check().await {
-            Ok(()) => break,
-            Err(error) => {
-                assert_eq!(error.kind(), ConnectorErrorKind::Transient, "{error}");
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "never redialed: {error}"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-    }
 }
 
 #[tokio::test]
