@@ -25,6 +25,12 @@ pub(crate) enum Target {
     SpawnedJsonl,
     /// The files destination, writing Arrow IPC files, in a process of its own.
     SpawnedArrow,
+    /// The SQLite destination, listening on the network, reached over mutual TLS.
+    RemoteSqlite,
+    /// The files destination, writing JSON lines, reached over mutual TLS.
+    RemoteJsonl,
+    /// The files destination, writing Arrow IPC files, reached over mutual TLS.
+    RemoteArrow,
 }
 
 /// Where the file-backed destinations of this test process keep their stores.
@@ -40,22 +46,31 @@ impl Target {
     pub(crate) const SPAWNED: [Self; 3] =
         [Self::SpawnedSqlite, Self::SpawnedJsonl, Self::SpawnedArrow];
 
+    /// The same destinations, listening on the network and reached over mutual TLS.
+    pub(crate) const REMOTE: [Self; 3] = [Self::RemoteSqlite, Self::RemoteJsonl, Self::RemoteArrow];
+
     /// The destination this target places, wherever it runs.
     pub(crate) fn kind(self) -> Self {
         match self {
-            Self::SpawnedSqlite => Self::Sqlite,
-            Self::SpawnedJsonl => Self::Jsonl,
-            Self::SpawnedArrow => Self::Arrow,
+            Self::SpawnedSqlite | Self::RemoteSqlite => Self::Sqlite,
+            Self::SpawnedJsonl | Self::RemoteJsonl => Self::Jsonl,
+            Self::SpawnedArrow | Self::RemoteArrow => Self::Arrow,
             kind => kind,
         }
     }
 
-    /// The example that serves this target's destination, when it runs spawned.
+    /// The example that serves this target's destination, when it runs out of process.
     fn served_by(self) -> Option<(&'static str, &'static str)> {
-        match self {
-            Self::SpawnedSqlite => Some(("io.rapidbyte.sqlite", "serve_sqlite")),
-            Self::SpawnedJsonl | Self::SpawnedArrow => Some(("io.rapidbyte.files", "serve_files")),
-            _ => None,
+        match self.kind() {
+            _ if matches!(
+                self,
+                Self::Memory | Self::Sqlite | Self::Jsonl | Self::Arrow
+            ) =>
+            {
+                None
+            }
+            Self::Sqlite => Some(("io.rapidbyte.sqlite", "serve_sqlite")),
+            _ => Some(("io.rapidbyte.files", "serve_files")),
         }
     }
 
@@ -82,6 +97,11 @@ impl Target {
     /// A connection to `store` in this destination.
     pub(crate) async fn destination(self, store: &str) -> Arc<dyn Destination> {
         let config = self.config(store);
+        if let Some((id, example)) = self.served_by()
+            && Self::REMOTE.contains(&self)
+        {
+            return crate::support::listening::listening(id, example, &config).await;
+        }
         if let Some((id, example)) = self.served_by() {
             let id = ConnectorId::parse(id).expect("a valid id");
             let reference = ConnectorRef::new(id).path(crate::support::example(example));
