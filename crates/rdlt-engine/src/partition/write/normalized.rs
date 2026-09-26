@@ -87,21 +87,32 @@ struct Discarded {
     rows: u64,
 }
 
+/// What becomes of one of a unit's parts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fate {
+    /// Its table takes it; `refused` where its frozen schema refuses it should any of its rows
+    /// remain.
+    Taken { refused: bool },
+    /// It is a new array its stream discards: its rows whose parents load are discarded values.
+    Discarded,
+}
+
 /// The table and plan of each of `parts`, a unit's, found in order, parents first, and what they
 /// discarded.
 ///
 /// Each part first loses the rows whose parent was dropped, and a part left without rows is
 /// neither planned nor given a table, so dropped rows change no schema. The rows its own policy
-/// drops then go for the parts below.
+/// drops then go for the parts below. A discarded array's items count as discarded values only
+/// where their rows load.
 async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
     parts: Vec<Part>,
 ) -> Result<(PlannedParts, Discarded), Error> {
-    let (admitted, mut dropped, values) = admit(job, context, parts);
-    let mut discarded = Discarded { values, rows: 0 };
+    let (admitted, mut dropped) = admit(job, context, parts);
+    let mut discarded = Discarded::default();
     let mut planned = Vec::with_capacity(admitted.len());
-    for (part, refused) in admitted {
+    for (part, fate) in admitted {
         let pruned = if dropped.is_empty() {
             Pruned::whole(part)
         } else {
@@ -113,12 +124,16 @@ async fn plan_parts(
             dropped = back;
             pruned.map_err(|error| pruning_failed(job, &error))?
         };
+        if fate == Fate::Discarded {
+            discarded.values += pruned.part.batch.num_rows() as u64;
+            continue;
+        }
         discarded.rows += pruned.count;
         if pruned.part.batch.num_rows() == 0 {
             continue;
         }
         let path = &pruned.part.path;
-        if refused {
+        if fate == (Fate::Taken { refused: true }) {
             return Err(frozen(job, path));
         }
         let table = if path.is_empty() {
@@ -142,9 +157,8 @@ async fn plan_parts(
     Ok((planned, discarded))
 }
 
-/// The parts of `parts` their stream does not discard, parents first, each with whether its
-/// frozen schema refuses it should any of its rows remain; the rows holding new arrays whose rows
-/// its policy drops; and the values of new arrays it discards.
+/// Each of `parts`, parents first, with its fate, and the rows holding new arrays whose rows the
+/// stream's policy drops.
 ///
 /// A part below the stream's table goes to its child table, added the first time unless the
 /// stream's policy refuses or discards a new one, whose descendants then go with it, uncounted:
@@ -153,10 +167,9 @@ fn admit(
     job: &PartitionJob,
     context: &PartitionContext,
     parts: Vec<Part>,
-) -> (Vec<(Part, bool)>, Dropped, u64) {
+) -> (Vec<(Part, Fate)>, Dropped) {
     let existed = context.tables.view(job.table).model.created();
-    let (mut admitted, mut dropped, mut values) =
-        (Vec::with_capacity(parts.len()), Dropped::default(), 0);
+    let (mut admitted, mut dropped) = (Vec::with_capacity(parts.len()), Dropped::default());
     let mut skipped: BTreeSet<Vec<Arc<str>>> = BTreeSet::new();
     for part in parts {
         let parent = part.lineage.parent.as_ref();
@@ -164,15 +177,14 @@ fn admit(
             skipped.insert(part.path);
             continue;
         }
-        let mut refused = false;
+        let mut fate = Fate::Taken { refused: false };
         if !part.path.is_empty() {
             match context.tables.admit_child(job.table, &part.path, existed) {
                 Admission::Add => {}
-                Admission::Refuse => refused = true,
+                Admission::Refuse => fate = Fate::Taken { refused: true },
                 Admission::Discard => {
-                    values += part.batch.num_rows() as u64;
-                    skipped.insert(part.path);
-                    continue;
+                    skipped.insert(part.path.clone());
+                    fate = Fate::Discarded;
                 }
                 Admission::DiscardParents => {
                     dropped.parents_of(&part);
@@ -181,9 +193,9 @@ fn admit(
                 }
             }
         }
-        admitted.push((part, refused));
+        admitted.push((part, fate));
     }
-    (admitted, dropped, values)
+    (admitted, dropped)
 }
 
 /// Runs `work` on the compute pool.

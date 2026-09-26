@@ -677,6 +677,41 @@ async fn a_hinted_column_of_a_normalized_stream_is_stored_whole_as_its_hint() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn the_items_of_a_discarded_array_count_only_in_rows_that_load() {
+    let plan = || {
+        normalized("events")
+            .column(
+                "flag",
+                SchemaSettings::new().policy(SchemaPolicy::DiscardRow),
+            )
+            .column(
+                "tags",
+                SchemaSettings::new().policy(SchemaPolicy::DiscardValue),
+            )
+    };
+    let first = BatchStream::json("events", &[r#"{"id":1}"#]);
+    succeeded(&load("dropped_items", vec![first], vec![plan()]).await);
+    let second = [
+        r#"{"id":2,"flag":1,"tags":[1,2]}"#,
+        r#"{"id":3,"tags":[3]}"#,
+    ]
+    .join("\n");
+    let outcome = load(
+        "dropped_items",
+        vec![BatchStream::json("events", &[&second])],
+        vec![plan()],
+    )
+    .await;
+    succeeded(&outcome);
+    let report = &outcome.report.streams["events"];
+    assert_eq!(
+        (report.discarded_rows, report.discarded_values),
+        (1, 1),
+        "row 2 goes whole; row 3 loads without its one tag"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn arrays_a_source_declares_are_no_schema_change() {
     let fields = |fields: Vec<RdltField>| LogicalType::Struct(Fields::new(fields).unwrap());
     let list = |item: LogicalType| LogicalType::List(Box::new(RdltField::new("item", item, true)));
