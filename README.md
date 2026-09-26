@@ -17,7 +17,9 @@ schema. Streams can `normalize` nested data into child tables whose rows carry t
 replaces each root's child rows in the same commit, and a dropped row takes its children with it.
 Differential tests draw every logical type in every Arrow encoding a source may send and check that
 each value lowers, and normalizes, exactly; the simulation drives the same types and encodings
-through whole runs and reads every stored cell back by its type.
+through whole runs and reads every stored cell back by its type, under every schema policy and
+setting at every level, with hints, declared columns and merge keys that change type or collide,
+predicting each refusal.
 
 ## Development
 
