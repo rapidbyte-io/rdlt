@@ -8,7 +8,18 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-ipc.workspace = true
+arrow-schema.workspace = true
+bytes.workspace = true
 prost.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+flatbuffers.workspace = true
+proptest.workspace = true
+rdlt-testkit.workspace = true
 
 [lints]
 workspace = true
