@@ -28,8 +28,11 @@ or malformed ones with a typed error; the contract's types convert to and from i
 `rdlt-connector`'s `wire` feature. A connector serves the protocol with `rdlt-connector`'s `serve`
 feature, one handshaken session per connection. The engine loads through it with `rdlt-host`'s
 `RemoteSource` and `RemoteDestination`: errors cross whole, reads and writes keep within credit,
-heartbeats notice a lost connector, and each call has its deadline. Spawning connectors as
-processes, and reaching them over the network, come next.
+heartbeats notice a lost connector, and each call has its deadline. A provider places each
+connector in process or in a process of its own: `rdlt-host`'s `Local` spawns a connector binary
+with its socket on file descriptor 3, drains its output, keeps its last words for its errors,
+stops it when done and respawns it when it is lost, and the engine's integration suite runs
+against the reference connectors both ways. Reaching connectors over the network comes next.
 
 ## Development
 
