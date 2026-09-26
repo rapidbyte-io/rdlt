@@ -6,49 +6,28 @@ mod expected;
 mod names;
 mod refusals;
 mod rows;
+mod scenario;
 mod tables;
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{
-    ColumnPath, ConnectContext, PipelineId, ReadMode, StreamName, destination_factory,
-    source_factory,
-};
+use rdlt_connector::{ColumnPath, PipelineId, ReadMode, StreamName};
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, RunHandle, RunStatus,
-    StopMode, StreamPlan,
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, StreamPlan,
 };
-use serde_json::json;
 
-use crate::destination::{SimDestination, completions, reads_in_progress};
+use crate::destination::{completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
-use crate::source::SimSource;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 use expected::Discards;
-use refusals::Failure;
+use scenario::{Scenario, execute_all, pick};
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
 const FAULTY_RUNS: usize = 4;
-
-/// The longest a single run may take in virtual time before the oracle calls it hung.
-const RUN_LIMIT: Duration = Duration::from_secs(3600);
-
-/// How one run of a phase goes.
-#[derive(Clone, Copy, Debug)]
-enum Scenario {
-    /// The run proceeds undisturbed.
-    Plain,
-    /// The run is dropped after the given time, as if its worker crashed.
-    Crash(Duration),
-    /// The run is asked to stop after committing, after the given time.
-    Stop(Duration),
-    /// A second run of the same pipeline starts after the given time.
-    Concurrent(Duration),
-}
 
 /// Checks the exactly-once guarantee for the workload `seed` generates.
 ///
@@ -100,14 +79,15 @@ impl Simulation {
     /// Runs `phase` until it converges, or a refusal no operator can relax stops it short; the
     /// reports of its runs that ended, and whether it stopped.
     ///
-    /// A phase converges once a run has succeeded and no full read is left half done, so each
-    /// full read the model counts is complete.
+    /// A phase converges once a run of each pipeline has succeeded and no full read is left half
+    /// done, so each full read the model counts is complete.
     async fn converge(&mut self, phase: usize, rng: &mut SplitMix64) -> (Vec<Report>, bool) {
         let (seed, features) = (self.seed, self.world.workload.features);
         self.world.set_phase(phase);
-        let (mut runs, mut succeeded, mut failure) = (0, false, None);
+        let (mut runs, mut failure) = (0, None);
+        let mut succeeded = vec![false; self.world.workload.pipelines];
         let mut reports = Vec::new();
-        while !succeeded || reads_in_progress(&self.world) {
+        while succeeded.contains(&false) || reads_in_progress(&self.world) {
             let faulty = runs < FAULTY_RUNS;
             self.world.set_faulty(faulty && features.faults);
             let scenario = if faulty && features.disruptions {
@@ -116,8 +96,11 @@ impl Simulation {
                 Scenario::Plain
             };
             runs += 1;
-            let ran = self.attempt(phase, scenario, &mut reports).await;
-            succeeded |= ran.succeeded;
+            let clean = !(faulty && (features.faults || features.disruptions));
+            let ran = self.attempt(phase, scenario, clean, &mut reports).await;
+            for (pipeline, success) in ran.succeeded.iter().enumerate() {
+                succeeded[pipeline] |= success;
+            }
             failure = ran.failure.or(failure);
             if ran.stopped {
                 return (reports, true);
@@ -130,26 +113,51 @@ impl Simulation {
         (reports, false)
     }
 
-    /// Runs `scenario` in `phase`, keeping the reports of runs that end, and checks its failures
-    /// against the refusals the model predicts: a refusal an operator can relax is relaxed.
+    /// Runs `scenario` in `phase` for every pipeline at once, keeping the reports of runs that
+    /// end, and checks their failures against the refusals the model predicts: a refusal an
+    /// operator can relax is relaxed, and a `clean` run, with neither faults nor disruptions,
+    /// fails with nothing else.
     async fn attempt(
         &mut self,
         phase: usize,
         scenario: Scenario,
+        clean: bool,
         reports: &mut Vec<Report>,
     ) -> Ran {
         let seed = self.seed;
         let prediction = refusals::predict(&self.world, &self.relaxed, phase);
-        let plan = plan(&self.world.workload, &self.relaxed);
-        let (succeeded, failures) =
-            execute(&self.engine, &plan, &self.name, scenario, reports).await;
-        assert!(
-            !(succeeded && prediction.must),
-            "seed {seed}: phase {phase}: a run succeeded, though every run must meet one of {:?}",
-            prediction.may
-        );
+        let workload = &self.world.workload;
+        let plans: Vec<PipelinePlan> = (0..workload.pipelines)
+            .map(|pipeline| plan(workload, &self.relaxed, pipeline))
+            .collect();
+        let executed = execute_all(&self.engine, &plans, &self.name, scenario).await;
+        let mut failures = Vec::new();
+        for (plan, executed) in plans.iter().zip(&executed) {
+            let refused = plan
+                .streams()
+                .iter()
+                .find(|stream| prediction.must.contains(&stream.name().to_string()));
+            assert!(
+                !(executed.succeeded && refused.is_some()),
+                "seed {seed}: phase {phase}: a run succeeded, though every run of {:?} must meet \
+                 one of {:?}",
+                refused.map(StreamPlan::name),
+                prediction.may
+            );
+        }
+        let succeeded = executed.iter().map(|executed| executed.succeeded).collect();
+        for executed in executed {
+            failures.extend(executed.failures);
+            reports.extend(executed.reports);
+        }
         let refused = refusals::refused(&failures, &prediction)
             .unwrap_or_else(|finding| panic!("seed {seed}: phase {phase}: {finding}"));
+        if let Some(failure) = failures.first().filter(|_| clean && refused.is_none()) {
+            panic!(
+                "seed {seed}: phase {phase}: a run without faults failed with {}",
+                failure.text
+            );
+        }
         let failure = failures.into_iter().last().map(|failure| failure.text);
         let mut stopped = false;
         if let Some((stream, code)) = refused {
@@ -169,8 +177,8 @@ impl Simulation {
 
 /// How one scenario's runs went.
 struct Ran {
-    /// Whether one succeeded.
-    succeeded: bool,
+    /// Whether one succeeded, for each pipeline.
+    succeeded: Vec<bool>,
     /// The last failure among them, printed.
     failure: Option<String>,
     /// Whether one met a refusal no operator can relax.
@@ -205,14 +213,20 @@ fn to_usize(value: u64) -> usize {
     usize::try_from(value).unwrap_or(1)
 }
 
-/// The plan of `workload`'s pipeline, each stream's settings as `relaxed` leaves them.
-fn plan(workload: &Workload, relaxed: &[Relaxed]) -> PipelinePlan {
-    let pipeline = PipelineId::parse("sim").expect("valid pipeline id");
+/// The identifiers of the pipelines sharing the destination.
+const PIPELINES: [&str; 2] = ["sim", "sim-b"];
+
+/// The plan of `workload`'s pipeline `pipeline`, of the streams it loads, each stream's settings
+/// as `relaxed` leaves them.
+fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) -> PipelinePlan {
+    let id = PipelineId::parse(PIPELINES[pipeline]).expect("valid pipeline id");
     let streams = workload
         .streams
         .iter()
         .zip(relaxed)
-        .map(|(stream, relaxed)| {
+        .enumerate()
+        .filter(|(index, _)| index % workload.pipelines == pipeline)
+        .map(|(_, (stream, relaxed))| {
             let name = StreamName::new(&stream.name).expect("valid stream name");
             let settings = stream.schema.relaxing(stream.pipeline, *relaxed);
             let mut plan = StreamPlan::new(name)
@@ -234,92 +248,9 @@ fn plan(workload: &Workload, relaxed: &[Relaxed]) -> PipelinePlan {
                 plan
             }
         });
-    PipelinePlan::new(pipeline, streams)
+    PipelinePlan::new(id, streams)
         .expect("the simulated plan is valid")
         .schema(workload.pipeline.engine())
-}
-
-fn pick(rng: &mut SplitMix64) -> Scenario {
-    let after = Duration::from_millis(rng.below(2000));
-    match rng.below(4) {
-        0 => Scenario::Plain,
-        1 => Scenario::Crash(after),
-        2 => Scenario::Stop(after),
-        _ => Scenario::Concurrent(after / 2),
-    }
-}
-
-async fn start(engine: &Engine, plan: &PipelinePlan, world: &str) -> RunHandle {
-    let config = json!({ "world": world });
-    let source = source_factory::<SimSource>()
-        .connect(config.clone(), ConnectContext::new())
-        .await
-        .expect("the simulated source connects");
-    let destination = destination_factory::<SimDestination>()
-        .connect(config, ConnectContext::new())
-        .await
-        .expect("the simulated destination connects");
-    engine.run(plan.clone(), Arc::from(source), Arc::from(destination))
-}
-
-/// Runs `scenario`, keeping the report of each run that ends; whether some run succeeded, and the
-/// failures of runs that failed.
-async fn execute(
-    engine: &Engine,
-    plan: &PipelinePlan,
-    world: &str,
-    scenario: Scenario,
-    reports: &mut Vec<Report>,
-) -> (bool, Vec<Failure>) {
-    let (ended, dropped) = match scenario {
-        Scenario::Plain => (vec![bounded(start(engine, plan, world).await).await], false),
-        Scenario::Crash(after) => {
-            let run = bounded(start(engine, plan, world).await);
-            tokio::select! {
-                biased;
-                ended = run => (vec![ended], false),
-                // Dropping the run is the crash.
-                () = tokio::time::sleep(after) => (Vec::new(), true),
-            }
-        }
-        Scenario::Stop(after) => {
-            let handle = start(engine, plan, world).await;
-            let control = handle.control();
-            let stop = async {
-                tokio::time::sleep(after).await;
-                control.stop(StopMode::AfterCommit);
-            };
-            let (ended, ()) = tokio::join!(bounded(handle), stop);
-            (vec![ended], false)
-        }
-        Scenario::Concurrent(delay) => {
-            let first = bounded(start(engine, plan, world).await);
-            let second = async {
-                tokio::time::sleep(delay).await;
-                bounded(start(engine, plan, world).await).await
-            };
-            let (first, second) = tokio::join!(first, second);
-            (vec![first, second], false)
-        }
-    };
-    let succeeded = ended
-        .iter()
-        .any(|(report, _)| report.status == RunStatus::Succeeded);
-    let mut failures = Vec::new();
-    for (report, failure) in ended {
-        reports.push(report);
-        failures.extend(failure);
-    }
-    (succeeded && !dropped, failures)
-}
-
-/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`]; its report, and its failure.
-async fn bounded(run: RunHandle) -> (Report, Option<Failure>) {
-    let outcome = tokio::time::timeout(RUN_LIMIT, run)
-        .await
-        .expect("every run ends within the limit of virtual time");
-    let failure = outcome.error.as_ref().map(Failure::of);
-    (outcome.report, failure)
 }
 
 /// Lets aborted tasks finish, then checks that no task outlived its run.

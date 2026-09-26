@@ -39,6 +39,9 @@ pub struct Features {
     /// Destinations with other identifier rules: any characters, reserved words and table
     /// prefixes.
     pub identifiers: bool,
+    /// A destination two pipelines share: the workload's streams split between them, and they
+    /// run at once.
+    pub shared: bool,
 }
 
 impl Features {
@@ -56,6 +59,7 @@ impl Features {
         settings: true,
         keys: true,
         identifiers: true,
+        shared: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
@@ -77,6 +81,7 @@ impl Features {
             settings: rng.chance(500),
             keys: rng.chance(500),
             identifiers: rng.chance(500),
+            shared: rng.chance(500),
         }
     }
 

@@ -4,20 +4,19 @@
 mod cells;
 mod columns;
 mod read;
+mod store;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use rdlt_connector::{
-    Capabilities, CommitMeta, CommitSeq, ConnectContext, ConnectorError, DestinationConnector,
-    Epoch, GenerationId, LoadId, MergeKey, OpenContext, Opened, PartitionId, Receipt, Result,
-    SchemaVersion, SegmentId, Session, StateChange, StateEntry, StateRecord, StreamName,
-    TableChange, TablePath, TableRef, TableWriter, WriteStats,
+    Capabilities, CommitMeta, ConnectContext, ConnectorError, DestinationConnector, Epoch,
+    GenerationId, MergeKey, OpenContext, Opened, PipelineId, Receipt, Result, SchemaVersion,
+    SegmentId, Session, TableChange, TableRef, TableWriter, WriteStats,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -28,37 +27,8 @@ pub use cells::{Cells, Stored};
 pub use read::completions;
 pub(crate) use read::{Published, published_table, table_paths};
 pub(crate) use read::{committed_next, reads_in_progress};
-use read::{names, next_offset};
-
-/// The destination's contents, kept in its world.
-#[derive(Debug, Default)]
-pub(crate) struct Store {
-    epoch: Epoch,
-    state: BTreeMap<String, StateRecord>,
-    receipts: BTreeMap<(LoadId, CommitSeq), Receipt>,
-    staged: BTreeMap<SegmentId, Vec<Staged>>,
-    names: BTreeMap<TablePath, String>,
-    tables: BTreeMap<String, Table>,
-    /// The generations of full reads completed, by stream and the phase they completed in.
-    ///
-    /// A run that read a stream twice would complete the same generation twice, and count once.
-    completions: BTreeMap<(String, usize), BTreeSet<GenerationId>>,
-}
-
-#[derive(Debug)]
-struct Staged {
-    table: String,
-    generation: Option<GenerationId>,
-    merge: Option<MergeKey>,
-    rows: Vec<Stored>,
-}
-
-#[derive(Debug, Default)]
-struct Table {
-    columns: columns::Columns,
-    published: Vec<Stored>,
-    generations: BTreeMap<GenerationId, Vec<Stored>>,
-}
+use store::Staged;
+pub(crate) use store::Store;
 
 /// Configuration of [`SimDestination`]: the world to write to.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -93,28 +63,31 @@ impl DestinationConnector for SimDestination {
         Ok(())
     }
 
-    async fn open(&self, _context: &OpenContext) -> Result<Opened<SimSession>> {
+    async fn open(&self, context: &OpenContext) -> Result<Opened<SimSession>> {
         self.world.latency().await;
         if let Some(fault) = self.world.fault(FaultPoint::Open) {
             return Err(fault);
         }
         let mut store = self.world.store.lock();
-        store.epoch = store.epoch.next();
+        let pipeline = store.pipelines.entry(context.pipeline.clone()).or_default();
+        pipeline.epoch = pipeline.epoch.next();
         Ok(Opened {
             session: SimSession {
                 world: Arc::clone(&self.world),
-                epoch: store.epoch,
+                pipeline: context.pipeline.clone(),
+                epoch: pipeline.epoch,
             },
-            epoch: store.epoch,
-            state: store.state.values().cloned().collect(),
+            epoch: pipeline.epoch,
+            state: pipeline.state.values().cloned().collect(),
         })
     }
 }
 
-/// A session of [`SimDestination`].
+/// A session of [`SimDestination`], for one pipeline.
 #[derive(Debug)]
 pub struct SimSession {
     world: Arc<World>,
+    pipeline: PipelineId,
     epoch: Epoch,
 }
 
@@ -122,22 +95,35 @@ impl Session for SimSession {
     type Writer = SimWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
+        if let Some(fault) = self.world.fault(FaultPoint::ApplyBefore) {
+            return Err(fault);
+        }
         let table = change.table();
-        let mut store = self.world.store.lock();
-        store
-            .names
-            .insert(table.path.clone(), table.name.to_string());
-        let entry = store.tables.entry(table.name.to_string()).or_default();
-        columns::apply(&mut entry.columns, change)
+        {
+            let mut store = self.world.store.lock();
+            store
+                .names
+                .insert(table.path.clone(), table.name.to_string());
+            let entry = store.tables.entry(table.name.to_string()).or_default();
+            columns::apply(&mut entry.columns, change)?;
+        }
+        match self.world.fault(FaultPoint::ApplyAfter) {
+            Some(fault) => Err(fault),
+            None => Ok(()),
+        }
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<SimWriter> {
+        if let Some(fault) = self.world.fault(FaultPoint::Writer) {
+            return Err(fault);
+        }
         let mut store = self.world.store.lock();
         store
             .names
             .insert(table.path.clone(), table.name.to_string());
         Ok(SimWriter {
             world: Arc::clone(&self.world),
+            pipeline: self.pipeline.clone(),
             epoch: self.epoch,
             table: table.name.to_string(),
             version: table.version,
@@ -149,7 +135,12 @@ impl Session for SimSession {
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
-        self.world.store.lock().staged.clear();
+        let pipeline = &self.pipeline;
+        self.world
+            .store
+            .lock()
+            .staged
+            .retain(|(staged, _), _| staged != pipeline);
         Ok(())
     }
 
@@ -160,19 +151,20 @@ impl Session for SimSession {
         }
         let receipt = {
             let mut store = self.world.store.lock();
-            if store.epoch != self.epoch || meta.epoch != self.epoch {
+            let epoch = store.epoch(&self.pipeline);
+            if epoch != self.epoch || meta.epoch != self.epoch {
                 return Err(ConnectorError::fenced(format!(
-                    "the store is at epoch {}; this session opened at {}",
-                    store.epoch, self.epoch
+                    "pipeline {} is at epoch {epoch}; this session opened at {}",
+                    self.pipeline, self.epoch
                 )));
             }
             let key = (meta.load_id, meta.commit_seq);
             if let Some(receipt) = store.receipts.get(&key) {
                 return Ok(receipt.clone());
             }
-            let published = store.publish(meta);
-            store.apply(&self.world, meta);
-            store.check_cursors(&self.world, &published);
+            let published = store.publish(&self.pipeline, meta);
+            store.apply(&self.world, &self.pipeline, meta);
+            store.check_cursors(&self.world, &self.pipeline, &published);
             let receipt = Receipt {
                 load_id: meta.load_id,
                 commit_seq: meta.commit_seq,
@@ -190,152 +182,9 @@ impl Session for SimSession {
     }
 
     async fn close(self) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl Store {
-    /// Publishes the staged segments of `meta` and swaps in the generations it finishes; returns
-    /// the rows published, by table.
-    fn publish(&mut self, meta: &CommitMeta) -> Vec<(String, Vec<Stored>)> {
-        let mut published = Vec::new();
-        let mut merging: BTreeMap<String, (MergeKey, Vec<Stored>)> = BTreeMap::new();
-        for segment in meta.segments.iter() {
-            for staged in self.staged.remove(&segment).unwrap_or_default() {
-                published.push((staged.table.clone(), staged.rows.clone()));
-                if let Some(key) = staged.merge {
-                    merging
-                        .entry(staged.table)
-                        .or_insert_with(|| (key, Vec::new()))
-                        .1
-                        .extend(staged.rows);
-                    continue;
-                }
-                let table = self.tables.entry(staged.table).or_default();
-                match staged.generation {
-                    Some(generation) => table
-                        .generations
-                        .entry(generation)
-                        .or_default()
-                        .extend(staged.rows),
-                    None => table.published.extend(staged.rows),
-                }
-            }
-        }
-        for child in &meta.child_tables {
-            merging
-                .entry(child.table.to_string())
-                .or_insert_with(|| (child.merge.clone(), Vec::new()));
-        }
-        let roots: BTreeMap<String, Vec<Stored>> = merging
-            .iter()
-            .filter(|(_, (key, _))| key.root.is_none())
-            .map(|(name, (_, rows))| (name.clone(), rows.clone()))
-            .collect();
-        for (name, (key, rows)) in merging {
-            let published = &mut self.tables.entry(name).or_default().published;
-            match &key.root {
-                None => cells::merge(published, rows, &key),
-                Some(root) => {
-                    let roots = roots
-                        .get(root.table.as_ref())
-                        .map_or(&[][..], Vec::as_slice);
-                    cells::merge_children(published, rows, &key, root, roots);
-                }
-            }
-        }
-        for (path, generation) in &meta.finish_generations {
-            let Some(name) = self.names.get(path).cloned() else {
-                continue;
-            };
-            let table = self.tables.entry(name).or_default();
-            table.published = table.generations.remove(generation).unwrap_or_default();
-            table.generations.clear();
-        }
-        published
-    }
-
-    /// Applies the state changes of `meta`, checking that no partition's cursor moves backwards
-    /// and counting completed full reads.
-    fn apply(&mut self, world: &World, meta: &CommitMeta) {
-        for change in &meta.state_delta {
-            match change {
-                StateChange::Put(record) => {
-                    match StateEntry::from_record(record) {
-                        Ok(StateEntry::Partition {
-                            stream, partition, ..
-                        }) => {
-                            let before = next_offset(&self.state, &stream, &partition);
-                            self.state.insert(record.key.clone(), record.clone());
-                            let after = next_offset(&self.state, &stream, &partition);
-                            if before.is_some_and(|before| after < Some(before)) {
-                                world.violation(format!(
-                                    "stream {stream} partition {partition}: cursor moved back \
-                                     from {before:?} to {after:?}"
-                                ));
-                            }
-                            continue;
-                        }
-                        Ok(StateEntry::Completed {
-                            stream,
-                            generations,
-                        }) => {
-                            // The read that just completed is the newest in the list.
-                            let key = (stream.to_string(), world.phase());
-                            let newest = generations.last().copied();
-                            self.completions.entry(key).or_default().extend(newest);
-                        }
-                        Ok(_) => {}
-                        Err(error) => world.violation(format!("unreadable state record: {error}")),
-                    }
-                    self.state.insert(record.key.clone(), record.clone());
-                }
-                StateChange::Delete(key) => {
-                    self.state.remove(key);
-                }
-            }
-        }
-    }
-
-    /// Checks that every row just published to a stream's table lies before its partition's
-    /// committed cursor.
-    fn check_cursors(&self, world: &World, published: &[(String, Vec<Stored>)]) {
-        for (table, rows) in published {
-            let Some((path, _)) = self.names.iter().find(|(_, name)| *name == table) else {
-                continue;
-            };
-            // A child table's rows carry no position; the oracle checks them against their rows.
-            if path.segments().count() > 1 {
-                continue;
-            }
-            let Some(stream) = path
-                .segments()
-                .next()
-                .and_then(|name| StreamName::new(name).ok())
-            else {
-                continue;
-            };
-            let Some((_, names)) = names(&self.state, path) else {
-                world.violation(format!("stream {stream}: rows published without names"));
-                continue;
-            };
-            for row in rows {
-                let number = |column: &str| cells::number(row, &names, column);
-                let (Some(partition), Some(offset)) = (number("partition"), number("offset"))
-                else {
-                    world.violation(format!("stream {stream}: a row lacks its position"));
-                    continue;
-                };
-                let partition =
-                    PartitionId::parse(format!("p{partition}")).expect("valid partition id");
-                let next = next_offset(&self.state, &stream, &partition);
-                if next.is_none_or(|next| offset >= next) {
-                    world.violation(format!(
-                        "stream {stream} partition {partition}: row {offset} published past the \
-                         committed cursor {next:?}"
-                    ));
-                }
-            }
+        match self.world.fault(FaultPoint::Close) {
+            Some(fault) => Err(fault),
+            None => Ok(()),
         }
     }
 }
@@ -344,6 +193,7 @@ impl Store {
 #[derive(Debug)]
 pub struct SimWriter {
     world: Arc<World>,
+    pipeline: PipelineId,
     epoch: Epoch,
     table: String,
     /// The schema version the writer's writes follow.
@@ -387,13 +237,14 @@ impl TableWriter for SimWriter {
             return Err(fault);
         }
         let mut store = self.world.store.lock();
-        if store.epoch != self.epoch {
-            return Err(ConnectorError::fenced("a newer session holds the store"));
+        if store.epoch(&self.pipeline) != self.epoch {
+            return Err(ConnectorError::fenced("a newer session holds the pipeline"));
         }
         let mut stats = WriteStats::default();
         for (segment, rows) in self.buffered.drain(..) {
             stats.rows += rows.len() as u64;
-            store.staged.entry(segment).or_default().push(Staged {
+            let key = (self.pipeline.clone(), segment);
+            store.staged.entry(key).or_default().push(Staged {
                 table: self.table.clone(),
                 generation: self.generation,
                 merge: self.merge.clone(),

@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    Capabilities, CommitKind, ConnectorError, IdentifierCase, IdentifierChars, SchemaChanges,
-    TypeKind,
+    Capabilities, CommitKind, ConnectorError, ConnectorErrorKind, IdentifierCase, IdentifierChars,
+    SchemaChanges, TypeKind,
 };
 
 use crate::destination::Store;
@@ -31,15 +31,26 @@ pub(crate) enum FaultPoint {
     /// After the commit lands, so its response is lost.
     CommitAfter,
     Acknowledge,
+    /// Before a schema change applies.
+    ApplyBefore,
+    /// After a schema change applies, so its response is lost.
+    ApplyAfter,
+    /// Opening a table's writer.
+    Writer,
+    /// Closing a session.
+    Close,
+    /// Listing a stream's partitions.
+    Partitions,
 }
 
 impl FaultPoint {
     fn per_mille(self) -> u64 {
         match self {
-            Self::Open | Self::Acknowledge => 30,
+            Self::Open | Self::Acknowledge | Self::Close | Self::Partitions => 30,
             Self::Read => 15,
             Self::Write | Self::Flush => 10,
-            Self::CommitBefore | Self::CommitAfter => 40,
+            Self::Writer => 20,
+            Self::CommitBefore | Self::CommitAfter | Self::ApplyBefore | Self::ApplyAfter => 40,
         }
     }
 }
@@ -118,7 +129,12 @@ impl World {
         self.faulty.store(faulty, Ordering::SeqCst);
     }
 
-    /// A transient or rate-limited failure at `point`, when faults are on and the draw says so.
+    /// A failure at `point`, when faults are on and the draw says so: mostly transient or
+    /// rate-limited, sometimes permanent, and now and then a panic.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the draw says the connector panics.
     pub(crate) fn fault(&self, point: FaultPoint) -> Option<ConnectorError> {
         if !self.faulty.load(Ordering::SeqCst) {
             return None;
@@ -128,12 +144,19 @@ impl World {
             return None;
         }
         let message = format!("injected fault at {point:?}");
-        Some(if rng.chance(250) {
-            let after = Duration::from_millis(1 + rng.below(500));
-            ConnectorError::rate_limited(message, Some(after))
-        } else {
-            ConnectorError::new(rdlt_connector::ConnectorErrorKind::Transient, message)
-        })
+        let fault = match rng.below(20) {
+            0 => {
+                drop(rng);
+                panic!("injected panic at {point:?}");
+            }
+            1 | 2 => ConnectorError::new(ConnectorErrorKind::Data, message),
+            3..=7 => {
+                let after = Duration::from_millis(1 + rng.below(500));
+                ConnectorError::rate_limited(message, Some(after))
+            }
+            _ => ConnectorError::new(ConnectorErrorKind::Transient, message),
+        };
+        Some(fault)
     }
 
     /// Sleeps a short random while, sometimes, when faults are on.

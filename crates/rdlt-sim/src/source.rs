@@ -131,6 +131,9 @@ impl ReadStream<SimSource> for SimStreamReader {
     }
 
     async fn partitions(&self, source: &SimSource, _state: &StreamState) -> Result<Vec<Partition>> {
+        if let Some(fault) = source.world.fault(FaultPoint::Partitions) {
+            return Err(fault);
+        }
         let count = self.stream(source).partitions.len();
         Ok((0..count)
             .map(|index| {
