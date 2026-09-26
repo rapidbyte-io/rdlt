@@ -123,6 +123,11 @@ fn unsafe_code_lives_only_in_the_audited_module_and_every_other_crate_forbids_it
     };
     assert_eq!(rules_of("//! A crate.\n"), vec![Rule::UnforbiddenUnsafe]);
     assert!(rules_of("//! A crate.\n\n#![forbid(unsafe_code)]\n").is_empty());
+    // A module's own forbid does not reach the rest of the crate.
+    assert_eq!(
+        rules_of("mod scoped {\n    #![forbid(unsafe_code)]\n}\n"),
+        vec![Rule::UnforbiddenUnsafe]
+    );
     // The keyword inside a comment, a string or an identifier is not code.
     assert!(rules("// unsafe\nconst S: &str = \"unsafe\";\nfn unsafe_code() {}\n").is_empty());
 }
@@ -138,6 +143,15 @@ fn the_audited_module_and_the_crate_roots_come_from_the_path() {
         ("crates/rdlt-connector/src/serve/read.rs", UnsafeCode::Other),
         ("crates/rdlt-engine/src/lib.rs", UnsafeCode::CrateRoot),
         ("xtask/src/main.rs", UnsafeCode::CrateRoot),
+        (
+            "crates/rdlt-connector-reference/src/bin/rdlt-connector-files.rs",
+            UnsafeCode::CrateRoot,
+        ),
+        ("crates/rdlt-engine/src/main.rs", UnsafeCode::CrateRoot),
+        (
+            "crates/rdlt-engine/src/bin/tool/main.rs",
+            UnsafeCode::CrateRoot,
+        ),
         // The crate holding the audited module denies unsafe code instead of forbidding it.
         ("crates/rdlt-connector/src/lib.rs", UnsafeCode::Other),
         ("crates/rdlt-engine/src/table/lib.rs", UnsafeCode::Other),
