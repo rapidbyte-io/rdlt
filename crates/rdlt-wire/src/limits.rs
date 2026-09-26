@@ -172,16 +172,20 @@ impl From<Limits> for v1::Limits {
 }
 
 impl From<v1::Limits> for Limits {
+    /// The limits a peer sent; a limit it left unset, as a peer from before that limit existed
+    /// does, is the protocol's default.
     fn from(limits: v1::Limits) -> Self {
+        let defaults = Self::default();
+        let or = |sent: u64, default: u64| if sent == 0 { default } else { sent };
         Self {
-            frame_bytes: limits.frame_bytes,
-            batch_rows: limits.batch_rows,
-            schema_columns: limits.schema_columns,
-            nesting_depth: limits.nesting_depth,
-            json_push_bytes: limits.json_push_bytes,
-            cursor_bytes: limits.cursor_bytes,
-            config_bytes: limits.config_bytes,
-            control_string_bytes: limits.control_string_bytes,
+            frame_bytes: or(limits.frame_bytes, defaults.frame_bytes),
+            batch_rows: or(limits.batch_rows, defaults.batch_rows),
+            schema_columns: or(limits.schema_columns, defaults.schema_columns),
+            nesting_depth: or(limits.nesting_depth, defaults.nesting_depth),
+            json_push_bytes: or(limits.json_push_bytes, defaults.json_push_bytes),
+            cursor_bytes: or(limits.cursor_bytes, defaults.cursor_bytes),
+            config_bytes: or(limits.config_bytes, defaults.config_bytes),
+            control_string_bytes: or(limits.control_string_bytes, defaults.control_string_bytes),
         }
     }
 }

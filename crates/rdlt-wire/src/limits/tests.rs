@@ -78,3 +78,20 @@ fn the_default_limits_are_the_protocols() {
         }
     );
 }
+
+#[test]
+fn a_limit_the_peer_leaves_unset_is_the_protocols_default() {
+    let unset = v1::Limits::default();
+    assert_eq!(Limits::from(unset), Limits::default());
+    let partly = v1::Limits {
+        batch_rows: 7,
+        ..v1::Limits::default()
+    };
+    assert_eq!(
+        Limits::from(partly),
+        Limits {
+            batch_rows: 7,
+            ..Limits::default()
+        }
+    );
+}
