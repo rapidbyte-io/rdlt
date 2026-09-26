@@ -146,74 +146,66 @@ fn native(logical: &LogicalType, capabilities: &Capabilities) -> bool {
     }
 }
 
-/// The columns a table has in the destination: the model's columns lowered, then the metadata
-/// columns.
-pub(crate) fn physical_fields(
-    model: &Model,
-    nested: &[Nested],
-    meta: &MetaNames,
-    capabilities: &Capabilities,
-) -> Vec<Field> {
-    let mut fields: Vec<Field> = model
-        .columns
-        .iter()
-        .zip(nested)
-        .map(|(column, nested)| {
-            Field::new(
-                column.name(),
-                lower(column.logical_type(), *nested, capabilities),
-                column.is_nullable(),
-            )
-        })
-        .collect();
-    let native = Nested::Native;
-    fields.push(Field::new(
-        Arc::clone(&meta.load_id),
-        lower(&LOAD_ID_TYPE, native, capabilities),
-        false,
-    ));
-    fields.push(Field::new(
-        Arc::clone(&meta.loaded_at),
-        lower(&loaded_at_type(), native, capabilities),
-        false,
-    ));
+/// The columns a table has in the destination, at their logical types: the model's columns, then
+/// the metadata columns.
+pub(crate) fn logical_fields(model: &Model, meta: &MetaNames) -> Vec<Field> {
+    let mut fields = model.columns.clone();
+    let column = |name: &Arc<str>, logical: LogicalType, nullable| {
+        Field::new(Arc::clone(name), logical, nullable)
+    };
+    fields.push(column(&meta.load_id, LOAD_ID_TYPE, false));
+    fields.push(column(&meta.loaded_at, loaded_at_type(), false));
     if let Some(seq) = &meta.seq {
-        fields.push(Field::new(
-            Arc::clone(seq),
-            lower(&LogicalType::Binary, native, capabilities),
-            false,
-        ));
+        fields.push(column(seq, LogicalType::Binary, false));
     }
     // Lineage columns are nullable: rows loaded before their stream normalized have none.
     if let Some(id) = &meta.id {
-        fields.push(Field::new(
-            Arc::clone(id),
-            lower(&ID_TYPE, native, capabilities),
-            true,
-        ));
+        fields.push(column(id, ID_TYPE, true));
     }
     if let Some([parent, root, idx]) = &meta.parent {
         for (name, logical) in [(parent, ID_TYPE), (root, ID_TYPE), (idx, IDX_TYPE)] {
-            fields.push(Field::new(
-                Arc::clone(name),
-                lower(&logical, native, capabilities),
-                true,
-            ));
+            fields.push(column(name, logical, true));
         }
     }
     fields
 }
 
-/// The Arrow schema of prepared batches of a table whose columns are `fields`, the columns of the
-/// `model`, of these types, first: each stored as another type names its own, and the load id and
-/// load start, which hold one value per batch, are dictionaries of it (spec §8.5).
-pub(crate) fn prepared_schema(fields: &[Field], model: &[LogicalType]) -> SchemaRef {
-    let columns = model.len();
-    let fields: Vec<ArrowField> = fields
+/// The columns a table has in the destination: [`logical_fields`], each lowered as the
+/// destination stores it, the model's under their columns' `nested` settings.
+pub(crate) fn physical_fields(
+    logical: &[Field],
+    nested: &[Nested],
+    capabilities: &Capabilities,
+) -> Vec<Field> {
+    logical
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            let arrow = named(field.to_arrow(), field.logical_type(), model.get(index));
+            let nested = nested.get(index).copied().unwrap_or(Nested::Native);
+            Field::new(
+                field.name(),
+                lower(field.logical_type(), nested, capabilities),
+                field.is_nullable(),
+            )
+        })
+        .collect()
+}
+
+/// The Arrow schema of prepared batches of a table whose columns are `fields`, of the types
+/// `logical` gives, the model's `columns` first: each stored as another type names its own, and
+/// the load id and load start, which hold one value per batch, are dictionaries of it (spec
+/// §8.5).
+pub(crate) fn prepared_schema(fields: &[Field], logical: &[Field], columns: usize) -> SchemaRef {
+    let fields: Vec<ArrowField> = fields
+        .iter()
+        .zip(logical)
+        .enumerate()
+        .map(|(index, (field, logical))| {
+            let arrow = named(
+                field.to_arrow(),
+                field.logical_type(),
+                logical.logical_type(),
+            );
             if index == columns || index == columns + 1 {
                 let encoded = DataType::Dictionary(
                     Box::new(DataType::Int8),
@@ -228,12 +220,12 @@ pub(crate) fn prepared_schema(fields: &[Field], model: &[LogicalType]) -> Schema
     Arc::new(Schema::new(fields))
 }
 
-/// `arrow`, a column stored as `stored`, naming `logical`, the model's type for it, where the
-/// destination stores it as another type.
+/// `arrow`, a column stored as `stored`, naming `logical`, its type, where the destination stores
+/// it as another type.
 #[expect(clippy::disallowed_types, reason = "Arrow field metadata is a HashMap")]
-fn named(arrow: ArrowField, stored: &LogicalType, logical: Option<&LogicalType>) -> ArrowField {
+fn named(arrow: ArrowField, stored: &LogicalType, logical: &LogicalType) -> ArrowField {
     match logical {
-        Some(logical) if logical != stored => {
+        logical if logical != stored => {
             let mut metadata: std::collections::HashMap<String, String> = arrow.metadata().clone();
             let json = serde_json::to_string(logical).expect("a logical type serializes");
             metadata.insert(rdlt_connector::LOGICAL_TYPE_KEY.to_owned(), json);
