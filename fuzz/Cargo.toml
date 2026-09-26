@@ -9,10 +9,15 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+arrow-array = "59.2"
+arrow-schema = "59.2"
 bytes = "1.12.1"
 libfuzzer-sys = "0.4.13"
-rdlt-connector = { path = "../crates/rdlt-connector", default-features = false }
+rdlt-connector = { path = "../crates/rdlt-connector", default-features = false, features = [
+  "wire",
+] }
 rdlt-engine = { path = "../crates/rdlt-engine", features = ["bench"] }
+rdlt-wire = { path = "../crates/rdlt-wire" }
 
 [[bin]]
 name = "state_record"
@@ -24,6 +29,20 @@ bench = false
 [[bin]]
 name = "shred"
 path = "fuzz_targets/shred.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_messages"
+path = "fuzz_targets/wire_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc_frame"
+path = "fuzz_targets/ipc_frame.rs"
 test = false
 doc = false
 bench = false
