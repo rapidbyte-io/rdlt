@@ -5,14 +5,19 @@
 #![forbid(unsafe_code)]
 
 pub mod local;
+pub mod network;
 pub mod provider;
 pub mod registry;
 pub mod remote;
+mod supervise;
 
 pub use local::{LastWords, Local};
+pub use network::Remote;
 pub use provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
+pub use rdlt_wire::tls::Identity;
 pub use registry::Registry;
 pub use remote::{
     CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteDestination,
     RemoteSource,
 };
+pub use supervise::TLS;

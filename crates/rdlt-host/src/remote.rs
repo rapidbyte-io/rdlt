@@ -140,9 +140,15 @@ impl Connection {
                 })
             }
         });
+        // HTTP/2's own pings notice a connection the network dropped silently (§12.6), beside
+        // the protocol's heartbeat, which notices a connector that stopped answering.
+        let patience = options.heartbeat.saturating_mul(options.missed.max(1));
         let channel = Endpoint::from_static("http://connector")
             .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
             .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
+            .http2_keep_alive_interval(options.heartbeat)
+            .keep_alive_timeout(patience)
+            .keep_alive_while_idle(true)
             .connect_with_connector(connector)
             .await
             .map_err(|error| lost(format!("connecting failed: {error}")))?;

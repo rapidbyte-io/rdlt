@@ -9,7 +9,7 @@ use rdlt_connector::{
     TableRef, WriteStats,
 };
 
-use super::supervised::Supervisor;
+use super::Supervisor;
 
 /// A session of a spawned destination.
 pub(crate) struct SupervisedSession {

@@ -14,7 +14,8 @@ command-fds = { workspace = true, features = ["tokio"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 nix = { workspace = true, features = ["signal"] }
 rdlt-connector = { workspace = true, features = ["wire"] }
-rdlt-wire.workspace = true
+rdlt-wire = { workspace = true, features = ["tls"] }
+rustls.workspace = true
 semver.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -28,6 +29,7 @@ tokio = { workspace = true, features = [
   "sync",
   "time",
 ] }
+tokio-rustls.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
 tonic = { workspace = true, features = ["channel", "codegen"] }
@@ -42,6 +44,7 @@ hyper-util = { workspace = true, features = ["service", "tokio"] }
 rdlt-connector = { workspace = true, features = ["serve"] }
 rdlt-connector-reference.workspace = true
 rdlt-engine.workspace = true
+rdlt-testkit.workspace = true
 rdlt-wire = { workspace = true, features = ["serve"] }
 schemars.workspace = true
 serde.workspace = true

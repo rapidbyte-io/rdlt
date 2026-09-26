@@ -1,34 +1,47 @@
-//! Supervision: a spawned connector that is lost, by its transport failing, missing heartbeats or
-//! exiting, which closes its socket, is respawned for the next call, and the engine's retry of the
-//! attempt reaches it.
+//! Supervision: a connector that is lost, by its transport failing, missing heartbeats or exiting,
+//! which closes its socket, is started again for the next call, respawned or redialed, and the
+//! engine's retry of the attempt reaches it.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{
-    BoxFuture, Capabilities, Catalog, ConnectorError, ConnectorErrorKind, Cursor, Destination,
-    OpenContext, OpenedSession, Partition, PartitionId, PartitionSink, ReadRequest, Role, Source,
-    StreamName, StreamState,
+    BoxFuture, Capabilities, Catalog, ConnectorError, ConnectorErrorKind, ConnectorSpec, Cursor,
+    Destination, OpenContext, OpenedSession, Partition, PartitionId, PartitionSink, ReadRequest,
+    Role, Source, StreamName, StreamState,
 };
 use tokio::sync::Mutex;
 
-use super::process::{Launch, Process};
-use super::session::SupervisedSession;
+mod session;
+
+use session::SupervisedSession;
+
+use crate::local::process::{Launch, Process};
+use crate::network::Dial;
+use crate::provider::{ConnectorRef, ProviderError, accepts};
 use crate::remote::{CONNECTOR_LOST, Connection, Options, RemoteDestination, RemoteSource};
 
 /// How long the errors of a lost connector wait for its standard error to close.
 const LAST_WORDS: Duration = Duration::from_secs(1);
 
-/// A connector process and the connection to it.
-pub(crate) struct Running {
-    pub(crate) connection: Arc<Connection>,
-    pub(crate) process: Process,
+/// How a connector starts: spawned in a process of its own, or dialed where it listens.
+pub(crate) enum Start {
+    /// Spawned from its binary.
+    Spawn(Launch),
+    /// Dialed over mutual TLS.
+    Dial(Dial),
 }
 
-/// Spawns a connector, and respawns it once it is lost.
+/// A connector and the connection to it: its process, when this process spawned it.
+pub(crate) struct Running {
+    pub(crate) connection: Arc<Connection>,
+    pub(crate) process: Option<Process>,
+}
+
+/// Starts a connector, and starts it again, respawned or redialed, once it is lost.
 pub(crate) struct Supervisor {
-    launch: Launch,
+    start: Start,
     role: Role,
     config: serde_json::Value,
     options: Options,
@@ -36,16 +49,16 @@ pub(crate) struct Supervisor {
 }
 
 impl Supervisor {
-    /// Starts the connector `launch` describes, as `role`, with `config`.
+    /// Starts the connector `start` describes, as `role`, with `config`.
     pub(crate) async fn start(
-        launch: Launch,
+        start: Start,
         role: Role,
         config: serde_json::Value,
         options: Options,
     ) -> Result<Self, Spawned> {
-        let running = spawn(&launch, role, &config, options).await?;
+        let running = begin(&start, role, &config, options).await?;
         Ok(Self {
-            launch,
+            start,
             role,
             config,
             options,
@@ -53,16 +66,16 @@ impl Supervisor {
         })
     }
 
-    /// The connection to the connector last spawned, lost or not.
+    /// The connection to the connector last started, lost or not.
     pub(crate) async fn live(&self) -> Arc<Connection> {
         Arc::clone(&self.running.lock().await.connection)
     }
 
-    /// The connection to a live connector, respawning it if it was lost.
+    /// The connection to a live connector, starting it again if it was lost.
     async fn connection(&self) -> Result<Arc<Connection>, ConnectorError> {
         let mut running = self.running.lock().await;
         if running.connection.is_lost() {
-            *running = spawn(&self.launch, self.role, &self.config, self.options)
+            *running = begin(&self.start, self.role, &self.config, self.options)
                 .await
                 .map_err(Spawned::into_error)?;
         }
@@ -80,34 +93,109 @@ impl Supervisor {
         }
     }
 
-    /// `error`, carrying the connector's last words when its transport failed.
+    /// `error`, carrying a spawned connector's last words when its transport failed.
     async fn explained(&self, error: ConnectorError) -> ConnectorError {
         let transport = matches!(error.code(), Some(CONNECTOR_LOST | TRANSPORT));
         if !transport || std::error::Error::source(&error).is_some() {
             return error;
         }
         let running = self.running.lock().await;
-        let words = running.process.last_words(LAST_WORDS).await;
-        error.with_source(words)
+        match &running.process {
+            Some(process) => error.with_source(process.last_words(LAST_WORDS).await),
+            None => error,
+        }
+    }
+
+    /// The live connector's spec, for its role, once it is checked to be the connector
+    /// `reference` names, of a version it accepts.
+    pub(crate) async fn checked_spec(
+        &self,
+        reference: &ConnectorRef,
+        found_at: &str,
+    ) -> Result<ConnectorSpec, ProviderError> {
+        let handshake_failed = |source| ProviderError::HandshakeFailed {
+            id: reference.id.clone(),
+            source: Box::new(source),
+        };
+        let spec = crate::remote::contract_spec(self.live().await.spec(), self.role)
+            .map_err(handshake_failed)?;
+        if spec.id != reference.id {
+            let message = format!("{found_at} serves `{}`", spec.id);
+            return Err(handshake_failed(ConnectorError::config(message)));
+        }
+        accepts(reference, &spec.version)?;
+        Ok(spec)
+    }
+
+    /// The capabilities the live destination declares.
+    pub(crate) async fn capabilities(&self) -> Result<Capabilities, ConnectorError> {
+        let destination = RemoteDestination::new(self.live().await)?;
+        Ok(destination.capabilities().clone())
     }
 }
 
-/// Why a connector did not start: its process did not spawn, or it did not connect.
+/// Why a connector did not start.
 pub(crate) enum Spawned {
+    /// Its process did not spawn.
     Io(std::io::Error),
+    /// Its address could not be reached.
+    Unreachable(std::io::Error),
+    /// Its TLS handshake failed.
+    Tls(std::io::Error),
+    /// It did not connect: its handshake, or its own connect, failed.
     Connect(ConnectorError),
 }
 
 impl Spawned {
     fn into_error(self) -> ConnectorError {
         match self {
-            Self::Io(error) => ConnectorError::new(
+            Self::Io(error) | Self::Unreachable(error) => ConnectorError::new(
                 ConnectorErrorKind::Transient,
-                "respawning the lost connector failed",
+                "starting the lost connector again failed",
             )
             .with_code(CONNECTOR_LOST)
             .with_source(error),
+            // A refused certificate is refused again on a retry; a connection lost in the
+            // handshake is not.
+            Self::Tls(error) => {
+                let refused = error
+                    .get_ref()
+                    .is_some_and(<dyn std::error::Error + Send + Sync>::is::<rustls::Error>);
+                let kind = if refused {
+                    ConnectorErrorKind::Auth
+                } else {
+                    ConnectorErrorKind::Transient
+                };
+                ConnectorError::new(kind, "the TLS handshake with the lost connector failed")
+                    .with_code(TLS)
+                    .with_source(error)
+            }
             Self::Connect(error) => error,
+        }
+    }
+}
+
+/// The code of the error a TLS handshake with a connector fails with.
+pub const TLS: &str = "tls";
+
+/// Starts the connector as `start` says, and handshakes with it.
+async fn begin(
+    start: &Start,
+    role: Role,
+    config: &serde_json::Value,
+    options: Options,
+) -> Result<Running, Spawned> {
+    match start {
+        Start::Spawn(launch) => spawn(launch, role, config, options).await,
+        Start::Dial(dial) => {
+            let io = crate::network::dial(dial, options.deadlines.connect).await?;
+            let connection = Connection::connect(io, role, config, options)
+                .await
+                .map_err(Spawned::Connect)?;
+            Ok(Running {
+                connection,
+                process: None,
+            })
         }
     }
 }
@@ -139,7 +227,7 @@ async fn spawn(
     };
     Ok(Running {
         connection,
-        process,
+        process: Some(process),
     })
 }
 
