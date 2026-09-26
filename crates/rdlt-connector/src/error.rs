@@ -134,6 +134,7 @@ impl ConnectorError {
     }
 
     /// Sets how long to wait before retrying, as a connector at the other end of the wire said.
+    #[cfg(feature = "wire")]
     #[must_use]
     pub(crate) fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
         self.retry_after = retry_after;
@@ -141,6 +142,7 @@ impl ConnectorError {
     }
 
     /// Sets the limit exceeded, as a connector at the other end of the wire said.
+    #[cfg(feature = "wire")]
     #[must_use]
     pub(crate) fn with_limit(mut self, limit: Option<LimitExceeded>) -> Self {
         self.limit = limit;
