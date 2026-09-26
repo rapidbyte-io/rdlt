@@ -6,6 +6,7 @@
 //! [`decode`] reads stored cells back to that meaning. Property tests shrink what they draw; the
 //! simulation draws the same values from its seed.
 
+#![forbid(unsafe_code)]
 #![expect(
     clippy::missing_panics_doc,
     reason = "a test kit panics only on values its generators never draw"

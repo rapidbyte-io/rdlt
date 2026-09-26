@@ -1,6 +1,8 @@
 //! Hosting rdlt connectors out of process: the engine's source and destination, over the wire
 //! protocol to a connector served on the other end of a connection.
 
+#![forbid(unsafe_code)]
+
 pub mod remote;
 
 pub use remote::{

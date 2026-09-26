@@ -16,6 +16,8 @@
 //! assert_eq!(source_factory::<GeneratorSource>().spec().id.as_str(), "io.rapidbyte.generator");
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod blocking;
 mod columns;
 pub mod files;

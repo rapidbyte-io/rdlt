@@ -16,7 +16,7 @@ fn reports_findings_with_repository_relative_paths() {
     write(
         root.path(),
         "crates/a/src/lib.rs",
-        "// TODO: later\nfn f() {}\n",
+        "#![forbid(unsafe_code)]\n// TODO: later\nfn f() {}\n",
     );
     write(root.path(), "crates/a/src/x/mod.rs", "fn g() {}\n");
     write(
