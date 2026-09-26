@@ -51,33 +51,34 @@ fn only_json_surely_holds_a_pushed_container() {
 }
 
 #[test]
-fn every_push_of_a_column_in_one_partition_and_phase_arrives_as_one_type() {
-    // The engine joins the types of the pushes it shreds together, a checkpoint's worth or more;
-    // the model decides by push, which is the same while one partition's pushes in one phase
-    // arrive alike.
+fn a_push_may_arrive_as_wide_as_the_pushes_the_engine_may_shred_with_it() {
+    let mut mixed = 0;
     for seed in 0..300 {
         let workload = crate::workload::Workload::generate(
             &mut crate::rng::SplitMix64::new(seed),
             crate::swarm::Features::ALL,
         );
         for stream in workload.streams.iter().filter(|stream| stream.json) {
-            for partition in 0..stream.partitions.len() {
-                for phase in 0..crate::workload::PHASES {
-                    for column in 0..stream.drift.len() {
-                        let mut types: Vec<Arrival> = Vec::new();
-                        for row in stream.read(partition, phase) {
-                            let Some(value) = &row.extras[column] else {
+            for phase in 0..crate::workload::PHASES {
+                for partition in 0..stream.partitions.len() {
+                    for row in stream.read(partition, phase) {
+                        for column in 0..stream.drift.len() {
+                            let (Some(own), Some(wide)) = (
+                                super::arrival(stream, row, column),
+                                super::widest(stream, row, column),
+                            ) else {
                                 continue;
                             };
-                            let arrival = pushed(value);
-                            if !arrival.is_null() && !types.contains(&arrival) {
-                                types.push(arrival);
-                            }
+                            assert_eq!(own.clone().join(wide.clone()), wide, "seed {seed}");
+                            mixed += usize::from(own != wide);
                         }
-                        assert!(types.len() <= 1, "seed {seed}: {types:?}");
                     }
                 }
             }
         }
     }
+    assert!(
+        mixed > 0,
+        "some pushes differ in type from those around them"
+    );
 }

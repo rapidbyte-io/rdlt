@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
-use rdlt_connector::TypeKind;
+use rdlt_connector::{LogicalType, TypeKind};
 
 use serde_json::json;
 
@@ -96,4 +96,39 @@ fn values_render_as_json_names_what_json_cannot_hold() {
         pushed::rendered(&value),
         json!({"x": "NaN", "y": null, "z": ["-Infinity", -3]})
     );
+}
+
+/// The edges a thousand draws of a float column of `logical` meet: NaN, each infinity, and zero
+/// below zero.
+fn edges(logical: LogicalType) -> BTreeSet<&'static str> {
+    let mut runner = TestRunner::deterministic();
+    let shape = Shape {
+        logical,
+        encoding: Encoding::Plain,
+        children: Vec::new(),
+    };
+    let strategy = values::value(&shape, false);
+    let mut met = BTreeSet::new();
+    for _ in 0..1_000 {
+        let value = match strategy.new_tree(&mut runner).expect("a value").current() {
+            Scalar::Float32(value) => f64::from(value),
+            Scalar::Float64(value) => value,
+            other => panic!("a float column drew {other:?}"),
+        };
+        met.extend(match value {
+            _ if value.is_nan() => Some("NaN"),
+            f64::INFINITY => Some("infinity"),
+            f64::NEG_INFINITY => Some("-infinity"),
+            _ if value == 0.0 && value.is_sign_negative() => Some("-0"),
+            _ => None,
+        });
+    }
+    met
+}
+
+#[test]
+fn a_float_column_draws_nan_infinities_and_negative_zero() {
+    let every = BTreeSet::from(["NaN", "infinity", "-infinity", "-0"]);
+    assert_eq!(edges(LogicalType::Float64), every);
+    assert_eq!(edges(LogicalType::Float32), every);
 }

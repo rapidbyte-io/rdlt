@@ -3,6 +3,7 @@
 //! column whose type holds the value's and is stored as the destination's capabilities say.
 
 mod cells;
+mod slots;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,6 +19,7 @@ use crate::seed::Seed;
 use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
 use cells::{Cell, fields, read, text};
+use slots::Slot;
 
 /// Checks every table of `stream` against the model: its own table holds each of `groups`, rows
 /// of `delivered`, every row delivered so far, as often as the group says, or where the runs
@@ -123,60 +125,6 @@ fn check_children(
 
 /// Each table's rows' identities by their lineage ids.
 type Lineage = BTreeMap<Vec<String>, BTreeMap<String, String>>;
-
-/// Rows a table holds `count` times in all, any of `rows` each time.
-struct Slot<'a> {
-    rows: Vec<&'a Expected>,
-    count: usize,
-}
-
-impl<'a> Slot<'a> {
-    /// A slot for each of `groups`, holding the rows of `modeled` each group's rows are.
-    fn of(groups: &[Group], modeled: &'a [Expected]) -> Vec<Self> {
-        let by_ident: BTreeMap<&str, &Expected> = modeled
-            .iter()
-            .map(|row| (row.ident.as_str(), row))
-            .collect();
-        groups
-            .iter()
-            .map(|group| Slot {
-                rows: group
-                    .rows
-                    .iter()
-                    .filter_map(|row| by_ident.get(expected::ident(row).as_str()).copied())
-                    .collect(),
-                count: group.count,
-            })
-            .collect()
-    }
-
-    /// How the table's rows, `held` so often by identity, miscount the slot, if they do: more
-    /// often than it says, or, unless `at_most`, less often.
-    fn miscounted(&self, held: &BTreeMap<String, usize>, at_most: bool) -> Option<String> {
-        let idents: Vec<&str> = self.rows.iter().map(|row| row.ident.as_str()).collect();
-        let found: usize = idents
-            .iter()
-            .map(|ident| held.get(*ident).copied().unwrap_or(0))
-            .sum();
-        (found > self.count || (found < self.count && !at_most))
-            .then(|| format!("rows {idents:?} are held {found} times, not {}", self.count))
-    }
-
-    /// A slot for each of `rows`, held as often as it appears.
-    fn each(rows: &'a [Expected]) -> Vec<Self> {
-        let mut counts: BTreeMap<&str, (&Expected, usize)> = BTreeMap::new();
-        for row in rows {
-            counts.entry(&row.ident).or_insert((row, 0)).1 += 1;
-        }
-        counts
-            .into_values()
-            .map(|(row, count)| Slot {
-                rows: vec![row],
-                count,
-            })
-            .collect()
-    }
-}
 
 /// One table being checked.
 struct Table<'a> {
@@ -339,6 +287,7 @@ impl Table<'_> {
                     "{path} holds {:?} in {}; the model expects no value",
                     cell.value, cell.physical
                 )),
+                (Some(_), []) if template.optional.contains(path) => None,
                 (Some(sent), []) => Some(format!(
                     "{path} holds no value in {physicals:?}; the model expects {sent:?}"
                 )),

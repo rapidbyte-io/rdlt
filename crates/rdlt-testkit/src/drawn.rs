@@ -2,6 +2,7 @@
 //! it in, with values across each type's whole range.
 
 pub mod arrays;
+mod floats;
 pub mod json;
 pub mod neighbors;
 #[cfg(test)]
