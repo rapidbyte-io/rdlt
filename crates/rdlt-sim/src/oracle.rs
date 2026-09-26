@@ -166,7 +166,7 @@ impl Simulation {
         }
         let refused = refusals::refused(&failures, &prediction)
             .unwrap_or_else(|finding| panic!("seed {seed}: phase {phase}: {finding}"));
-        if let Some(failure) = failures.first().filter(|_| clean && refused.is_none()) {
+        if let Some(failure) = refusals::unexplained(&failures, &prediction).filter(|_| clean) {
             panic!(
                 "seed {seed}: phase {phase}: a run without faults failed with {}",
                 failure.text
