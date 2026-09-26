@@ -1,4 +1,5 @@
-//! `cargo xtask codegen`: generates the wire protocol's Rust code from its `.proto` files.
+//! `cargo xtask codegen`: generates the wire protocol's Rust code, its messages and its service's
+//! client and server, from its `.proto` files.
 //!
 //! The generated code is committed, so building rdlt-wire needs neither `protoc` nor a build
 //! script; `--check` fails when the committed code is stale.
@@ -45,8 +46,11 @@ pub(crate) fn generate(root: &Path) -> Result<String, anyhow::Error> {
     let files = protos(&proto_dir)?;
     let descriptors = protox::compile(&files, [&proto_dir]).context("compiling the protocol")?;
     let out = tempfile::tempdir().context("creating a scratch directory")?;
-    prost_build::Config::new()
-        .bytes(["."])
+    tonic_prost_build::configure()
+        .bytes(".")
+        .build_client(true)
+        .build_server(true)
+        .build_transport(false)
         .out_dir(out.path())
         .compile_fds(descriptors)
         .context("generating the protocol's code")?;

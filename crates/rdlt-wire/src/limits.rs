@@ -30,6 +30,9 @@ pub const CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 /// Bytes: bounds one string field of a control message.
 pub const CONTROL_STRING_BYTES: u64 = 64 * 1024;
 
+/// Bytes: the credit a receiver grants a sender by default, before the sender's frames spend it.
+pub const CREDIT_WINDOW: u64 = 4 * 1024 * 1024;
+
 /// The code of every refusal.
 pub const LIMIT_EXCEEDED: &str = "limit_exceeded";
 
@@ -112,6 +115,14 @@ impl Limits {
             limit,
             actual,
         })
+    }
+
+    /// The largest protocol message either end sends or accepts: a frame, and the fields around
+    /// it.
+    pub fn message_bytes(&self) -> usize {
+        usize::try_from(self.frame_bytes)
+            .unwrap_or(usize::MAX)
+            .saturating_add(64 * 1024)
     }
 
     /// Admits a frame of `bytes`.

@@ -3,7 +3,6 @@ syntax = "proto3";
 
 package rdlt.connector.v1;
 
-import "rdlt/connector/v1/catalog.proto";
 import "rdlt/connector/v1/state.proto";
 import "rdlt/connector/v1/types.proto";
 
@@ -44,8 +43,9 @@ message ReadStart {
   string partition = 2;
   // Where to resume; absent reads from the start.
   optional Cursor cursor = 3;
-  // How to read.
-  ReadMode mode = 4;
+  // The contract's read carries no mode: the stream's committed state and the cursor say how.
+  reserved 4;
+  reserved "mode";
 }
 
 // Asks for a checkpoint answering a barrier.
@@ -54,7 +54,9 @@ message CheckpointRequest {
   uint64 barrier = 1;
 }
 
-// Bytes a receiver grants its sender.
+// Bytes a receiver grants its sender. A sender may send a frame while its credit is above zero;
+// the frame spends its encoded size, which may leave the credit below zero until more is granted.
+// So a small window bounds how far a sender runs ahead, and no frame is too large for it.
 message Credit {
   // The bytes.
   uint64 bytes = 1;
@@ -171,20 +173,11 @@ message MetricFrame {
   double value = 2;
 }
 
-// Why a read ended.
-enum DoneReason {
-  // Never sent; a receiver refuses it.
-  DONE_REASON_UNSPECIFIED = 0;
-  // The partition is exhausted.
-  DONE_REASON_EXHAUSTED = 1;
-  // The read was stopped.
-  DONE_REASON_STOPPED = 2;
-}
-
-// The end of a read.
+// The end of a read: the source's read returned. A read that fails ends with the error's status
+// instead, and one the host stopped ends however the source's read returned.
 message Done {
-  // Why it ended.
-  DoneReason reason = 1;
+  reserved 1;
+  reserved "reason";
 }
 
 // Reports cursors a destination committed.

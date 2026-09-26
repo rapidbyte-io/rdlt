@@ -16,6 +16,12 @@ bytes.workspace = true
 flatbuffers.workspace = true
 prost.workspace = true
 thiserror.workspace = true
+tonic = { workspace = true, features = ["codegen"] }
+tonic-prost.workspace = true
+
+[features]
+# The service's server stub, for a connector that serves the protocol.
+serve = ["tonic/server"]
 
 [dev-dependencies]
 proptest.workspace = true

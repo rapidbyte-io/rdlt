@@ -95,3 +95,13 @@ fn a_limit_the_peer_leaves_unset_is_the_protocols_default() {
         }
     );
 }
+
+#[test]
+fn the_credit_window_and_a_messages_overhead_are_the_protocols() {
+    assert_eq!(super::CREDIT_WINDOW, 4_194_304);
+    let limits = Limits {
+        frame_bytes: 10,
+        ..Limits::default()
+    };
+    assert_eq!(limits.message_bytes(), 10 + 65_536);
+}
