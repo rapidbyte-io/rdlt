@@ -228,10 +228,15 @@ async fn dropped_after_handshake(reset: bool) {
         .await
         .err()
         .expect("refused");
-    assert!(
-        matches!(refused, ProviderError::Unreachable { .. }),
-        "reset {reset}: {refused}"
-    );
+    let ProviderError::Unreachable { source, .. } = &refused else {
+        panic!("reset {reset}: {refused}");
+    };
+    let expected = if reset {
+        std::io::ErrorKind::ConnectionReset
+    } else {
+        std::io::ErrorKind::UnexpectedEof
+    };
+    assert_eq!(source.kind(), expected, "reset {reset}: {source}");
 }
 
 #[test]
