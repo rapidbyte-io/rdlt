@@ -109,6 +109,19 @@ async fn a_read_the_engine_stops_ends_as_the_source_returns() {
 }
 
 #[tokio::test]
+async fn a_read_stopped_while_the_engine_is_full_ends_as_the_source_returns() {
+    let source = ticks(serde_json::json!({})).await;
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(1).expect("not zero"));
+    let reading = tokio::spawn(async move { source.read(request(), sink).await });
+    // The engine takes nothing, so the host waits to hand it the next frame when the stop comes.
+    feed.recv().await.expect("the read sends");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    feed.stop();
+    while feed.recv().await.is_some() {}
+    reading.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn committed_cursors_reach_the_source() {
     let source = ticks(serde_json::json!({ "rows": 3 })).await;
     let (events, read) = events(&source).await;
