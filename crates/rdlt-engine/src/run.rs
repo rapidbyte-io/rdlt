@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rdlt_connector::{Destination, Source};
+use rdlt_connector::{Destination, LoadId, Source};
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{self, RunContext};
@@ -23,6 +23,7 @@ use crate::env::Env;
 use crate::error::Error;
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus};
+use crate::scope::contained;
 
 /// Moves data from sources to destinations, exactly once.
 ///
@@ -190,6 +191,25 @@ fn credit(
     }
 }
 
+/// Runs one attempt, which `log` records, unless the run is stopped now; dropping the attempt
+/// ends every task it started.
+///
+/// A connector that panics fails its attempt, not the caller awaiting the run.
+async fn attempted(
+    context: &RunContext,
+    control: &RunControl,
+    load_id: LoadId,
+    log: Arc<Mutex<AttemptLog>>,
+) -> Result<AttemptEnd, Error> {
+    tokio::select! {
+        biased;
+        () = control.now.cancelled() => Err(Error::cancelled("the run was stopped")),
+        result = contained(attempt::run(context, load_id, log)) => result.unwrap_or_else(|panic| {
+            Err(Error::internal(format!("an attempt panicked: {panic}")))
+        }),
+    }
+}
+
 /// Runs attempts until one finishes, the retry policy gives up, or the run is stopped.
 async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
     let started = context.env.instant();
@@ -202,12 +222,7 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
         let load_id = context.env.load_id();
         let log = Arc::new(Mutex::new(AttemptLog::default()));
         let started_at = context.env.now();
-        let result = tokio::select! {
-            biased;
-            // Stopping now wins; dropping the attempt ends every task it started.
-            () = control.now.cancelled() => Err(Error::cancelled("the run was stopped")),
-            result = attempt::run(&context, load_id, Arc::clone(&log)) => result,
-        };
+        let result = attempted(&context, &control, load_id, Arc::clone(&log)).await;
         let mut log = std::mem::take(&mut *log.lock());
         credit(&mut attempts, &mut unresolved, &mut log, result.is_err());
         let progressed = !log.commits.is_empty();
