@@ -1307,3 +1307,21 @@ fn a_column_stored_as_another_type_names_its_logical_type_in_the_batch() {
     assert_eq!(logical, LogicalType::Date);
     assert_eq!(named("n"), None, "a column stored as its type names none");
 }
+
+#[test]
+fn a_metadata_column_stored_as_another_type_names_its_logical_type_too() {
+    let mut text_ids = capabilities();
+    text_ids.types.remove(&TypeKind::Uuid);
+    let resolver = resolver(text_ids, plan(), &[]);
+    let model = created(&resolver, &[("n", LogicalType::Int64)]);
+    let batch = batch(vec![("n", Arc::new(Int64Array::from(vec![2])) as ArrayRef)]);
+    let prepared = prepared(&resolver, &model, &batch);
+    let schema = prepared.batch.schema();
+    let load_id = schema.field_with_name("_rdlt_load_id").unwrap();
+    let named = load_id
+        .metadata()
+        .get(rdlt_connector::LOGICAL_TYPE_KEY)
+        .unwrap();
+    let logical: LogicalType = serde_json::from_str(named).unwrap();
+    assert_eq!(logical, LogicalType::Uuid);
+}
