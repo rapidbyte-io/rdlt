@@ -91,3 +91,23 @@ fn a_failing_scenario_panics_with_its_payload() {
     let payload = outcome.unwrap_err();
     assert_eq!(payload.downcast_ref::<&str>(), Some(&"scenario failed"));
 }
+
+#[test]
+fn the_same_seed_leaves_the_destination_alike() {
+    // A fixed few, however many seeds the run covers: each replays twice.
+    let digests: Vec<_> = (0..20)
+        .map(Seed::new)
+        .map(|seed| (seed, rdlt_sim::check_exactly_once(seed)))
+        .collect();
+    for (seed, digest) in &digests {
+        assert_eq!(rdlt_sim::check_exactly_once(*seed), *digest, "seed {seed}");
+    }
+    let distinct: std::collections::BTreeSet<String> = digests
+        .iter()
+        .map(|(_, digest)| format!("{digest:?}"))
+        .collect();
+    assert!(
+        distinct.len() > 1,
+        "different seeds leave different contents"
+    );
+}

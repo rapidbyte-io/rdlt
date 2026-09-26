@@ -17,10 +17,10 @@ use rdlt_engine::{
     CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, StreamPlan,
 };
 
-use crate::destination::{completions, reads_in_progress};
+use crate::destination::{Digest, completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
-use crate::seed::{Seed, run};
+use crate::seed::{Seed, run, run_threaded};
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 use expected::Discards;
@@ -29,20 +29,32 @@ use scenario::{Scenario, execute_all, pick};
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
 const FAULTY_RUNS: usize = 4;
 
-/// Checks the exactly-once guarantee for the workload `seed` generates.
+/// Checks the exactly-once guarantee for the workload `seed` generates; returns a digest of what
+/// the destination holds at the end, which the same seed always leaves alike.
 ///
 /// # Panics
 ///
 /// Panics, naming the seed, when the destination's contents differ from the reference model, an
 /// invariant breaks, a run hangs, or a task outlives its run.
-pub fn check_exactly_once(seed: Seed) {
-    run(seed, |env| async move { simulate(seed, env).await });
+pub fn check_exactly_once(seed: Seed) -> Digest {
+    run(seed, |env| async move { simulate(seed, env).await })
 }
 
-async fn simulate(seed: Seed, env: Arc<SimEnv>) {
+/// Checks the exactly-once guarantee for the workload `seed` generates, run on many threads and
+/// the real clock, where races the simulation's single thread never meets can happen.
+///
+/// # Panics
+///
+/// Panics, naming the seed, as [`check_exactly_once`] does.
+pub fn stress(seed: Seed) {
+    run_threaded(seed, |env| async move { simulate(seed, env).await });
+}
+
+async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
     let world = World::register(&name, &mut rng);
+    env.perturb(world.workload.features.perturb);
     let mut simulation = Simulation {
         seed,
         engine: Engine::new(config(&mut rng), env),
@@ -61,8 +73,10 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) {
         }
     }
     let violations = simulation.world.violations();
+    let digest = simulation.world.store.lock().digest();
     World::unregister(&simulation.name);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
+    digest
 }
 
 /// One simulation: its world, the engine its runs share, and what an operator relaxed after
