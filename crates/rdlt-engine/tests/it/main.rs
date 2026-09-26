@@ -12,6 +12,7 @@ mod ledger;
 mod merge;
 mod normalize;
 mod normalized;
+mod placement;
 mod schema;
 mod support;
 

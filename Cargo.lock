@@ -1846,6 +1846,7 @@ dependencies = [
  "rayon",
  "rdlt-connector",
  "rdlt-connector-reference",
+ "rdlt-host",
  "rdlt-testkit",
  "schemars",
  "serde",
