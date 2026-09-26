@@ -6,8 +6,8 @@ use arrow_array::TimestampMicrosecondArray;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int8Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{
-    Array, ArrayRef, FixedSizeBinaryArray, Float64Array, Int16Array, Int32Array, Int64Array,
-    ListArray, RecordBatch, StringArray, StructArray,
+    Array, ArrayRef, FixedSizeBinaryArray, Float32Array, Float64Array, Int16Array, Int32Array,
+    Int64Array, ListArray, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::{DataType, Field as ArrowField, TimeUnit};
 use proptest::prelude::*;
@@ -1170,6 +1170,33 @@ fn non_finite_floats_are_named_in_json() {
             None
         ]
     );
+}
+
+#[test]
+fn floats_are_written_to_json_as_the_shortest_text_that_reads_back_as_them() {
+    // The last is exactly 83220810649108.625, halfway between two shortest texts: it goes to the
+    // even one.
+    let doubles: ArrayRef = Arc::new(Float64Array::from(vec![
+        2.714_928_365_531_52e19,
+        0.1,
+        1e300,
+        83_220_810_649_108.62,
+    ]));
+    let rendered = json(&doubles, &LogicalType::Float64).unwrap();
+    let texts: Vec<Option<&str>> = rendered.as_string::<i32>().iter().collect();
+    assert_eq!(
+        texts,
+        [
+            Some("2.71492836553152e+19"),
+            Some("0.1"),
+            Some("1e+300"),
+            Some("83220810649108.62")
+        ]
+    );
+    let singles: ArrayRef = Arc::new(Float32Array::from(vec![0.1_f32, 16_777_216.0]));
+    let rendered = json(&singles, &LogicalType::Float32).unwrap();
+    let texts: Vec<Option<&str>> = rendered.as_string::<i32>().iter().collect();
+    assert_eq!(texts, [Some("0.1"), Some("16777216.0")]);
 }
 
 #[test]

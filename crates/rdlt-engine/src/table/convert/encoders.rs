@@ -1,8 +1,6 @@
 //! JSON encoders arrow-json lacks or gets wrong: the canonical extension types, non-finite
 //! floats, temporal values beyond the years `chrono` holds, and lists of extension-typed items.
 
-use std::sync::LazyLock;
-
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{Array, ListArray};
@@ -34,10 +32,8 @@ impl EncoderFactory for Extensions {
                 Box::new(UuidText(array.as_fixed_size_binary()))
             }
             // JSON has no non-finite numbers, which arrow-json writes as `null`; they are named.
-            (_, DataType::Float32 | DataType::Float64) => {
-                let plain = make_encoder(field, array, &PLAIN)?;
-                Box::new(Floats { array, plain })
-            }
+            // arrow-json also writes some finite ones with more digits than they need.
+            (_, DataType::Float32 | DataType::Float64) => Box::new(Floats(array)),
             // arrow-json renders temporal values it cannot hold as nothing or `<invalid>`.
             (_, data_type) if temporal::is_temporal(data_type) => {
                 Box::new(TemporalText(temporal::Renderer::new(array)?, String::new()))
@@ -55,28 +51,32 @@ impl EncoderFactory for Extensions {
     }
 }
 
-/// Options for arrow-json's own encoders, which the engine's defer to.
-static PLAIN: LazyLock<EncoderOptions> =
-    LazyLock::new(|| EncoderOptions::default().with_explicit_nulls(true));
-
-/// Writes floats as arrow-json does, and a non-finite one as a JSON string of its name: `NaN`,
-/// `Infinity` or `-Infinity`.
-struct Floats<'a> {
-    array: &'a dyn Array,
-    plain: NullableEncoder<'a>,
-}
+/// Writes a finite float as the shortest text that reads back as it, and a non-finite one as a
+/// JSON string of its name: `NaN`, `Infinity` or `-Infinity`.
+///
+/// A tie between two shortest texts goes to the even one, as JSON writers break it.
+struct Floats<'a>(&'a dyn Array);
 
 impl Encoder for Floats<'_> {
     fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
-        let value = match self.array.data_type() {
-            DataType::Float32 => f64::from(self.array.as_primitive::<Float32Type>().value(idx)),
-            _ => self.array.as_primitive::<Float64Type>().value(idx),
+        let (value, single) = match self.0.data_type() {
+            DataType::Float32 => {
+                let value = self.0.as_primitive::<Float32Type>().value(idx);
+                (f64::from(value), Some(value))
+            }
+            _ => (self.0.as_primitive::<Float64Type>().value(idx), None),
         };
         let name: &[u8] = match value {
             value if value.is_nan() => b"\"NaN\"",
             value if value == f64::INFINITY => b"\"Infinity\"",
             value if value == f64::NEG_INFINITY => b"\"-Infinity\"",
-            _ => return self.plain.encode(idx, out),
+            _ => {
+                let written = match single {
+                    Some(single) => serde_json::to_writer(&mut *out, &single),
+                    None => serde_json::to_writer(&mut *out, &value),
+                };
+                return written.expect("a finite float writes to a vector");
+            }
         };
         out.extend_from_slice(name);
     }
