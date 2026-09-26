@@ -749,3 +749,26 @@ fn every_kind_takes_its_own_grpc_code() {
         );
     }
 }
+
+#[test]
+fn a_long_message_crosses_a_status_cut_to_the_control_string_limit() {
+    // One byte and then two-byte characters, so the limit falls inside a character.
+    let message = format!("x{}", "é".repeat(40_000));
+    let error = ConnectorError::new(ConnectorErrorKind::Auth, message.clone()).with_code("denied");
+    let status = super::status(&error);
+    // The status's own message is short, so its trailers fit every client's header limit.
+    assert!(status.message().len() <= 1024, "{}", status.message().len());
+    let back = super::error(&status);
+    assert_eq!(
+        (back.kind(), back.code()),
+        (ConnectorErrorKind::Auth, Some("denied"))
+    );
+    let limit = usize::try_from(rdlt_wire::limits::CONTROL_STRING_BYTES).expect("fits");
+    let carried = back.to_string();
+    assert!(
+        carried.len() <= limit && carried.len() > limit - 4,
+        "{}",
+        carried.len()
+    );
+    assert!(message.starts_with(&carried));
+}

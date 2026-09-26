@@ -15,6 +15,8 @@ use tower::ServiceExt as _;
 /// How the fake breaks the protocol.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Fault {
+    /// It answers each heartbeat with a sequence number the host never sent.
+    EchoAhead,
     /// Its reads send a schema that is no IPC message.
     GarbageSchema,
     /// It never answers a heartbeat, and its checks never end.
@@ -167,9 +169,16 @@ impl Connector for Fake {
         if matches!(self.0, Fault::Silent) {
             return Ok(Response::new(Box::pin(tokio_stream::pending())));
         }
-        let pongs = request
-            .into_inner()
-            .map(|ping| ping.map(|ping| v1::Pong { seq: ping.seq }));
+        let ahead = if matches!(self.0, Fault::EchoAhead) {
+            1000
+        } else {
+            0
+        };
+        let pongs = request.into_inner().map(move |ping| {
+            ping.map(|ping| v1::Pong {
+                seq: ping.seq + ahead,
+            })
+        });
         Ok(Response::new(Box::pin(pongs)))
     }
 }

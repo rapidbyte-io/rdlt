@@ -1,6 +1,7 @@
 //! Connector errors as gRPC statuses: the status's code follows the error's kind, and its details
 //! carry the error whole, so the other end reads back the same error.
 
+use rdlt_wire::limits::CONTROL_STRING_BYTES;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::tonic::{Code, Status};
 
@@ -10,7 +11,7 @@ use crate::error::{ConnectorError, ConnectorErrorKind};
 /// The code a transport failure with no error in its details goes by.
 pub const TRANSPORT: &str = "transport";
 
-/// `error` as a gRPC status carrying it whole.
+/// `error` as a gRPC status carrying it whole, its message cut to the control string limit.
 pub fn status(error: &ConnectorError) -> Status {
     let code = match error.kind() {
         ConnectorErrorKind::Config => Code::InvalidArgument,
@@ -23,8 +24,20 @@ pub fn status(error: &ConnectorError) -> Status {
         ConnectorErrorKind::Stopped => Code::Cancelled,
         ConnectorErrorKind::Internal => Code::Internal,
     };
-    let details = v1::Error::from(error).encode_to_vec();
-    Status::with_details(code, error.to_string(), details.into())
+    let mut carried = v1::Error::from(error);
+    cut(&mut carried.message, CONTROL_STRING_BYTES);
+    let mut message = error.to_string();
+    cut(&mut message, STATUS_MESSAGE_BYTES);
+    Status::with_details(code, message, carried.encode_to_vec().into())
+}
+
+/// Bytes: the status's own message, for a reader that does not decode its details.
+const STATUS_MESSAGE_BYTES: u64 = 1024;
+
+/// Cuts `text` to at most `bytes`, at a character's boundary.
+fn cut(text: &mut String, bytes: u64) {
+    let end = text.floor_char_boundary(usize::try_from(bytes).unwrap_or(usize::MAX));
+    text.truncate(end);
 }
 
 /// The error `status` carries; one without an error in its details is a failure of the transport,
