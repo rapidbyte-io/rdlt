@@ -19,7 +19,9 @@ Differential tests draw every logical type in every Arrow encoding a source may 
 each value lowers, and normalizes, exactly; the simulation drives the same types and encodings
 through whole runs and reads every stored cell back by its type, under every schema policy and
 setting at every level, with hints, declared columns and merge keys that change type or collide,
-predicting each refusal.
+predicting each refusal. It injects permanent failures and connector panics at every connector
+call, shares a destination between two pipelines, perturbs the scheduler by seed, replays each
+seed alike, runs on many threads nightly, and measures how much of the engine it reaches.
 
 ## Development
 
@@ -31,6 +33,8 @@ just --list         # see every recipe
 just ci             # what the pull-request gate runs: lint, test, coverage, simulation
 just ready          # before pushing: `just ci` plus mutation testing of your change
 just sim 42         # replay simulation seed 42
+just stress 20      # the simulation on many threads and the real clock
+just sim-coverage   # how much of the engine the simulation alone reaches
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Architecture decisions live
