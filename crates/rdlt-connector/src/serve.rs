@@ -71,7 +71,7 @@ impl Served {
 pub struct ServeError(#[source] hyper::Error);
 
 /// Serves the protocol on `io`, enforcing `limits` on what it receives, until the host closes the
-/// connection.
+/// connection, which ends it cleanly.
 ///
 /// # Errors
 ///
@@ -96,5 +96,25 @@ where
         .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
         .serve_connection(TokioIo::new(io), TowerToHyperService::new(service))
         .await
-        .map_err(ServeError)
+        .or_else(|error| {
+            if gone(&error) {
+                Ok(())
+            } else {
+                Err(ServeError(error))
+            }
+        })
+}
+
+/// Whether `error` says the host had already closed its end, which is how a connection ends: some
+/// platforms, macOS among them, fail the shutdown of a socket whose peer has closed.
+fn gone(error: &hyper::Error) -> bool {
+    use std::io::ErrorKind;
+    std::error::Error::source(error)
+        .and_then(|source| source.downcast_ref::<std::io::Error>())
+        .is_some_and(|io| {
+            matches!(
+                io.kind(),
+                ErrorKind::NotConnected | ErrorKind::BrokenPipe | ErrorKind::ConnectionReset
+            )
+        })
 }
