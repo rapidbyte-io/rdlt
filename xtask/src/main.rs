@@ -1,5 +1,7 @@
 //! Repository automation for rdlt.
 
+#![forbid(unsafe_code)]
+
 mod codegen;
 mod coverage;
 mod deps;

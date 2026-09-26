@@ -17,6 +17,8 @@
 //! assert!(slept >= Duration::from_secs(60));
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod destination;
 mod env;
 mod oracle;

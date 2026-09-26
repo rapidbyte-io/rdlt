@@ -17,6 +17,8 @@
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod attempt;
 #[cfg(feature = "bench")]
 #[doc(hidden)]

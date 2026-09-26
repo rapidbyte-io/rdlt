@@ -89,7 +89,9 @@ tempfile = "3.27.0" # temporary directories in tests
 walkdir = "2.5.0" # xtask walks the source tree
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Every crate root forbids unsafe code but rdlt-connector's, whose one audited module holds the
+# workspace's only `unsafe` (§20.14); `cargo xtask lint` checks both.
+unsafe_code = "deny"
 missing_docs = "warn"
 unreachable_pub = "warn"
 missing_debug_implementations = "warn"

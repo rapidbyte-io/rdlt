@@ -2,6 +2,8 @@
 //! package `rdlt.connector.v1`, the codec carrying Arrow batches in them, and the limits each
 //! end enforces on what it receives.
 
+#![forbid(unsafe_code)]
+
 pub mod codec;
 pub mod error;
 pub mod limits;

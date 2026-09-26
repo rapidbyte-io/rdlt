@@ -4,6 +4,8 @@
 //! `VERSION`, which is the version of the crate that defines the connector. Use them through
 //! `rdlt_connector::prelude`.
 
+#![forbid(unsafe_code)]
+
 mod expand;
 
 use proc_macro::TokenStream;
