@@ -7,6 +7,8 @@
 pub mod codec;
 pub mod error;
 pub mod limits;
+#[cfg(feature = "tls")]
+pub mod tls;
 
 /// The messages of package `rdlt.connector.v1`, and its `Connector` service's client
 /// (`connector_client`) and server (`connector_server`), generated from the `.proto` files under
