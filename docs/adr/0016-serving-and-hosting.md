@@ -26,8 +26,9 @@ socket will be.
   - A binary serves every role it has a factory for (`Served`), and the handshake's spec lists
     them.
   - A host of another major version is refused (`protocol_version`, `Unsupported`).
-  - The configuration document is admitted against the connector's limit, and the host's limits
-    are kept for what the connector sends.
+  - The configuration document is admitted against the connector's limit. Each end enforces its
+    own limits on what it receives, and the host also refuses, typed, a frame beyond the limit
+    the connector's handshake declares, before sending it.
   - `serve_connection` drives the connection's HTTP/2 itself, with hyper, until the host closes
     it. tonic's own server returns as soon as its incoming stream ends, and it cannot tie state to
     one connection.
@@ -40,6 +41,10 @@ socket will be.
     error, and the write ends.
   - A frame the codec refuses, or a message that does not decode, is an internal error:
     `malformed_frame` or `invalid_message`.
+  - A status's own message is cut to 1 KiB, and the error in its details to the control string
+    limit, so its trailers fit the host's header limit (`HEADER_LIST_BYTES`, 256 KiB).
+  - A write the connector ended answers with the error its last answers carry, not a transport
+    failure.
 - **Credit** (§12.5).
   - A sender sends while its credit is above zero, and each frame spends its encoded size, which
     may leave the credit below zero until more is granted. A small window then bounds how far a
@@ -51,6 +56,10 @@ socket will be.
   - A host cannot tell a connector that overran its credit from one that did not, because it
     grants credit back as it consumes. So the protection is the served end keeping to its credit,
     plus HTTP/2's own flow control, not a check on the host.
+  - Both ends grant HTTP/2's largest connection window (`CONNECTION_WINDOW`). Credit and each
+    stream's window bound what a peer sends, so frames the engine has not taken yet, on reads it
+    is behind on, never starve the connection's other streams. The heartbeat is one of them: with
+    HTTP/2's default window, four backpressured reads silenced it and lost a live connector.
 - **Liveness and deadlines** (§12.6).
   - The host sends a heartbeat every interval (5 s by default). Once as many as it allows (6) are
     unanswered when the next is due, the connector is lost, and every call on the connection
@@ -60,6 +69,12 @@ socket will be.
     `deadline_exceeded` error. Reporting committed cursors, which §12.6 does not list, takes the
     commit's deadline.
   - A started read has no deadline: silence on a data stream is never fatal.
+  - Each frame of a write is sent within the write-ack deadline, as the transport's windows may
+    fill before the connector's credit is spent: a destination whose writer never returns fails
+    the write with `deadline_exceeded` rather than hanging it.
+  - After this end stalls, the next heartbeat waits its interval rather than catching up, so a
+    stalled host does not lose a live connector. An echo of a heartbeat never sent answers
+    nothing.
   - A commit longer than the heartbeat's patience succeeds while the connector answers
     heartbeats, which is ledger item L3 (`slow_commit_within_deadline_succeeds`).
 - **Reads.**

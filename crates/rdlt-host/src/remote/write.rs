@@ -9,8 +9,8 @@ use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
-use rdlt_wire::Encoder;
 use rdlt_wire::prost::Message as _;
+use rdlt_wire::{Encoder, WireError};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
@@ -80,13 +80,7 @@ impl RemoteWriter {
             Ok(Ok(Some(ack))) => ack.ack,
             Ok(Ok(None)) => return Err(out_of_turn("the end of the write")),
             Ok(Err(status)) => return Err(rdlt_connector::wire::error(&status)),
-            Err(_) => {
-                return Err(ConnectorError::new(
-                    rdlt_connector::ConnectorErrorKind::Transient,
-                    format!("an answer to a write took longer than its deadline of {deadline:?}"),
-                )
-                .with_code(super::DEADLINE_EXCEEDED));
-            }
+            Err(_) => return Err(late(deadline)),
         };
         match message {
             Some(v1::write_ack::Ack::Error(error)) => Err(ConnectorError::try_from(error)
@@ -112,7 +106,27 @@ impl RemoteWriter {
             }
         }
         self.credit -= i64::try_from(size).unwrap_or(i64::MAX);
-        self.frames.send(frame).await.map_err(|_| lost_error())
+        // The transport's windows may fill before the credit is spent: the send has a deadline.
+        let deadline = self.connection.options.deadlines.write_ack;
+        let sent = tokio::select! {
+            biased;
+            () = self.connection.lost.cancelled() => return Err(lost_error()),
+            sent = tokio::time::timeout(deadline, self.frames.send(frame)) => sent,
+        };
+        match sent {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(self.ended().await),
+            Err(_) => Err(late(deadline)),
+        }
+    }
+
+    /// Why the connector ended the write: the error its answers end with.
+    async fn ended(&mut self) -> ConnectorError {
+        loop {
+            if let Err(error) = self.ack().await {
+                return error;
+            }
+        }
     }
 
     async fn write_batch(
@@ -135,6 +149,12 @@ impl RemoteWriter {
             .batch(&batch)
             .map_err(|error| frame_error(&error))?
         {
+            // A frame beyond the connector's limit is refused here, typed, rather than by its
+            // transport.
+            self.connection
+                .peer
+                .admit_frame(frame.header.len().saturating_add(frame.body.len()))
+                .map_err(|refusal| frame_error(&WireError::Refused(refusal)))?;
             self.send(Frame::Batch(v1::WriteBatch {
                 segment: segment.0,
                 data_header: frame.header,
@@ -173,4 +193,13 @@ impl DestinationWriter for RemoteWriter {
     fn flush(&mut self) -> BoxFuture<'_, rdlt_connector::Result<WriteStats>> {
         Box::pin(self.flush_all())
     }
+}
+
+/// The error of an answer to a write that took longer than `deadline`.
+fn late(deadline: std::time::Duration) -> ConnectorError {
+    ConnectorError::new(
+        rdlt_connector::ConnectorErrorKind::Transient,
+        format!("an answer to a write took longer than its deadline of {deadline:?}"),
+    )
+    .with_code(super::DEADLINE_EXCEEDED)
 }

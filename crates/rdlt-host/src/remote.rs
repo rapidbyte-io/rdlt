@@ -102,6 +102,8 @@ impl Default for Options {
 pub struct Connection {
     client: ConnectorClient<Channel>,
     spec: v1::ConnectorSpec,
+    /// The limits the connector enforces on what it receives.
+    peer: Limits,
     options: Options,
     lost: CancellationToken,
 }
@@ -139,6 +141,8 @@ impl Connection {
             }
         });
         let channel = Endpoint::from_static("http://connector")
+            .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
+            .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
             .connect_with_connector(connector)
             .await
             .map_err(|error| lost(format!("connecting failed: {error}")))?;
@@ -164,6 +168,7 @@ impl Connection {
         let connection = Arc::new(Self {
             client,
             spec: response.spec.unwrap_or_default(),
+            peer: response.limits.map(Limits::from).unwrap_or_default(),
             options,
             lost: lost.clone(),
         });
@@ -237,13 +242,17 @@ async fn heartbeat(
     };
     let mut echoes = echoes.into_inner();
     let mut ticks = tokio::time::interval(options.heartbeat);
+    // After this end stalls, the next heartbeat waits its interval: the connector gets its time.
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let (mut sent, mut answered) = (0_u64, 0_u64);
     loop {
         tokio::select! {
             biased;
             () = lost.cancelled() => return,
             echo = echoes.message() => match echo {
-                Ok(Some(echo)) => answered = answered.max(echo.seq),
+                // An echo of a heartbeat never sent answers nothing.
+                Ok(Some(echo)) if echo.seq <= sent => answered = answered.max(echo.seq),
+                Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
             },
             _ = ticks.tick() => {

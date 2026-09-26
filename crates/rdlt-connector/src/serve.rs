@@ -93,6 +93,7 @@ where
     });
     hyper::server::conn::http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
+        .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
         .serve_connection(TokioIo::new(io), TowerToHyperService::new(service))
         .await
         .map_err(ServeError)
