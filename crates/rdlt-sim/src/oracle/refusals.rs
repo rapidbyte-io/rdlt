@@ -251,7 +251,7 @@ impl<'a> Column<'a> {
         {
             return Outcome::must(rules.code());
         }
-        if self.stream.normalized() && !self.stream.whole(self.index) {
+        if self.stream.normalized() && !self.stream.whole(self.index) && !self.scalar(phase) {
             let arrives = !self.arrivals(phase).is_empty();
             return if arrives {
                 Outcome::may(rules.code())
@@ -267,6 +267,22 @@ impl<'a> Column<'a> {
         outcome(initial, &arrivals, rules.code(), |current, arrival| {
             rules.step(current, arrival)
         })
+    }
+
+    /// Whether the column's values by `phase`, and its declared type, are all scalars, which a
+    /// stream that normalizes keeps in one column of its own table, as other streams do.
+    fn scalar(&self, phase: usize) -> bool {
+        let scalar = |logical: &LogicalType| {
+            !matches!(
+                logical,
+                LogicalType::Struct(_) | LogicalType::List(_) | LogicalType::Json
+            )
+        };
+        let declared = self.stream.drift[self.index].declared.as_ref();
+        declared.is_none_or(scalar)
+            && (0..=phase)
+                .flat_map(|at| self.arrivals(at))
+                .all(|arrival| matches!(arrival, Arrival::Typed(logical) if scalar(&logical)))
     }
 
     /// The distinct types the column arrives as in `phase`, other than nulls.

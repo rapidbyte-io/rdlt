@@ -49,3 +49,35 @@ fn only_json_surely_holds_a_pushed_container() {
     )));
     assert_eq!(Arrival::Container.fits(&list), None);
 }
+
+#[test]
+fn every_push_of_a_column_in_one_partition_and_phase_arrives_as_one_type() {
+    // The engine joins the types of the pushes it shreds together, a checkpoint's worth or more;
+    // the model decides by push, which is the same while one partition's pushes in one phase
+    // arrive alike.
+    for seed in 0..300 {
+        let workload = crate::workload::Workload::generate(
+            &mut crate::rng::SplitMix64::new(seed),
+            crate::swarm::Features::ALL,
+        );
+        for stream in workload.streams.iter().filter(|stream| stream.json) {
+            for partition in 0..stream.partitions.len() {
+                for phase in 0..crate::workload::PHASES {
+                    for column in 0..stream.drift.len() {
+                        let mut types: Vec<Arrival> = Vec::new();
+                        for row in stream.read(partition, phase) {
+                            let Some(value) = &row.extras[column] else {
+                                continue;
+                            };
+                            let arrival = pushed(value);
+                            if !arrival.is_null() && !types.contains(&arrival) {
+                                types.push(arrival);
+                            }
+                        }
+                        assert!(types.len() <= 1, "seed {seed}: {types:?}");
+                    }
+                }
+            }
+        }
+    }
+}
