@@ -21,7 +21,11 @@ through whole runs and reads every stored cell back by its type, under every sch
 setting at every level, with hints, declared columns and merge keys that change type or collide,
 predicting each refusal. It injects permanent failures and connector panics at every connector
 call, shares a destination between two pipelines, perturbs the scheduler by seed, replays each
-seed alike, runs on many threads nightly, and measures how much of the engine it reaches.
+seed alike, runs on many threads nightly, and measures how much of the engine it reaches. The wire
+protocol for connectors that run out of process (`rdlt-wire`) defines its messages, carries Arrow
+batches in Arrow Flight's layout with each schema sent once, and refuses frames beyond its limits
+or malformed ones with a typed error; the contract's types convert to and from its messages under
+`rdlt-connector`'s `wire` feature. Serving it and hosting connectors come next.
 
 ## Development
 
@@ -35,6 +39,7 @@ just ready          # before pushing: `just ci` plus mutation testing of your ch
 just sim 42         # replay simulation seed 42
 just stress 20      # the simulation on many threads and the real clock
 just sim-coverage   # how much of the engine the simulation alone reaches
+cargo xtask codegen # regenerate the wire protocol's code after changing its .proto files
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Architecture decisions live
