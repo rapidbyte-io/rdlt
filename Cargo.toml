@@ -61,6 +61,10 @@ hyper-util = { version = "0.1.21", default-features = false } # tokio's executor
 tokio-stream = { version = "0.1.19", default-features = false } # the streams a served read and write answer with
 tower = { version = "0.5.3", default-features = false } # adapting the gRPC service and the client's connector
 rayon = "1.12.0" # the compute pool for CPU-bound stages
+rustls = { version = "0.23.45", default-features = false, features = [
+  "ring",
+  "std",
+] } # TLS 1.3 for connectors reached over the network
 semver = "1.0.28" # the versions a connector reference accepts
 sha2 = { version = "0.10.9", default-features = false, features = [
   "std",
@@ -87,6 +91,7 @@ criterion = { version = "0.8.2", default-features = false, features = [
 ] } # throughput benchmarks
 peak_alloc = "0.3.0" # the heap's peak size, for the engine's memory bound
 proptest = "1.11.0" # property tests
+rcgen = "0.14.10" # a certificate authority made at test time, for the protocol's TLS
 tonic-prost-build = "0.14.6" # xtask generates the wire protocol's messages and service stubs
 protox = "0.9.1" # xtask compiles the wire protocol's .proto files without protoc
 regex = "1.13.1" # xtask lint patterns

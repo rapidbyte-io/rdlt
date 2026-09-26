@@ -15,6 +15,7 @@ arrow-schema.workspace = true
 bytes.workspace = true
 flatbuffers.workspace = true
 prost.workspace = true
+rustls = { workspace = true, optional = true }
 thiserror.workspace = true
 tonic = { workspace = true, features = ["codegen"] }
 tonic-prost.workspace = true
@@ -22,6 +23,8 @@ tonic-prost.workspace = true
 [features]
 # The service's server stub, for a connector that serves the protocol.
 serve = ["tonic/server"]
+# The protocol's TLS, for connectors reached over the network.
+tls = ["dep:rustls"]
 
 [dev-dependencies]
 proptest.workspace = true

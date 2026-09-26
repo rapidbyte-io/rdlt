@@ -16,6 +16,7 @@ pub mod canon;
 pub mod decode;
 pub mod draw;
 pub mod drawn;
+pub mod tls;
 
 /// Cases a property test runs: `PROPTEST_CASES` where set, for long local runs, else `default`.
 pub fn cases(default: u32) -> u32 {
