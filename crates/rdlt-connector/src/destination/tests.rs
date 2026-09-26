@@ -303,3 +303,12 @@ async fn the_factory_publishes_identity_and_capabilities() {
         .unwrap();
     assert_eq!(missing.code(), Some("config_invalid"));
 }
+
+#[test]
+fn a_destinations_factory_debugs_as_its_role_and_id() {
+    let factory = crate::factory::RoleFactory::Destination(destination_factory::<Recorder>());
+    assert_eq!(
+        format!("{factory:?}"),
+        "Destination(ConnectorId(\"io.test.recorder\"))"
+    );
+}

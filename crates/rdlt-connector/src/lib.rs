@@ -65,6 +65,7 @@ mod cursor;
 mod destination;
 mod emitter;
 mod error;
+mod factory;
 mod id;
 pub mod limits;
 mod meta;
@@ -99,6 +100,7 @@ pub use destination::{
 };
 pub use emitter::Emitter;
 pub use error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result, ResultExt};
+pub use factory::{RoleFactory, Serve};
 pub use id::{
     CommitSeq, ConnectorId, Epoch, GenerationId, IdError, LoadId, PartitionId, PipelineId,
     SchemaVersion, SegmentId, StreamName, TablePath,
@@ -111,6 +113,8 @@ pub use meta::{
 pub use rdlt_connector_macros::{destination, source};
 pub use schema::{ColumnKey, ColumnPath, EmptyColumnPath, SchemaError, TableSchema};
 pub use secret::Secret;
+#[cfg(feature = "serve")]
+pub use serve::serve;
 pub use sink::{
     Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
     admitted_partition_channel, partition_channel,

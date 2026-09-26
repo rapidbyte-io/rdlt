@@ -28,6 +28,38 @@ fn adds_the_id_and_the_crate_version() {
 }
 
 #[test]
+fn makes_the_connector_servable_by_its_type_in_its_role() {
+    let source = expand(
+        quote!(id = "io.example.tickets"),
+        quote!(impl SourceConnector for Tickets {}),
+        Role::Source,
+    );
+    assert!(
+        source.contains(
+            "impl :: rdlt_connector :: Serve for Tickets { fn factory () -> :: rdlt_connector :: \
+             RoleFactory { :: rdlt_connector :: RoleFactory :: Source (:: rdlt_connector :: \
+             source_factory :: < Self > ()) } }"
+        ),
+        "{source}"
+    );
+    let destination = expand(
+        quote!(id = "io.example.sink"),
+        quote!(
+            impl<T: Send> DestinationConnector for Sink<T> where T: Sync {}
+        ),
+        Role::Destination,
+    );
+    assert!(
+        destination.contains(
+            "impl < T : Send > :: rdlt_connector :: Serve for Sink < T > where T : Sync { fn \
+             factory () -> :: rdlt_connector :: RoleFactory { :: rdlt_connector :: RoleFactory :: \
+             Destination (:: rdlt_connector :: destination_factory :: < Self > ()) } }"
+        ),
+        "{destination}"
+    );
+}
+
+#[test]
 fn accepts_a_path_qualified_trait() {
     let expanded = expand(
         quote!(id = "io.example.sink"),

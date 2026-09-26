@@ -20,7 +20,12 @@ serve = [
   "dep:tokio-stream",
   "dep:tower",
   "rdlt-wire/serve",
+  "tokio/io-std",
+  "tokio/io-util",
   "tokio/net",
+  "tokio/rt-multi-thread",
+  "tokio/signal",
+  "dep:nix",
 ]
 sqlgen = []
 
@@ -45,6 +50,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 uuid.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, optional = true, features = ["process", "signal"] }
 
 [dev-dependencies]
 proptest.workspace = true

@@ -58,6 +58,11 @@ coverage:
     cargo +{{ nightly }} llvm-cov nextest --branch --package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/'
     cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
 
+# Run the audited `unsafe` module's tests under Miri (§20.14): the workspace's only `unsafe` code
+miri:
+    rustup toolchain install {{ nightly }} --profile minimal --component miri
+    cargo +{{ nightly }} miri test --package rdlt-connector --features serve --lib -- --exact serve::inherited::tests::an_owned_descriptor_is_its_socket
+
 # Mutation testing; extra arguments go to cargo-mutants, for example --in-diff pr.diff
 mutants *args:
     cargo mutants {{ mutated }} {{ args }}
@@ -75,7 +80,7 @@ fuzz target seconds="60":
     cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" -- -max_total_time={{ seconds }}
 
 # Everything the pull-request gate runs
-ci: lint test coverage (sim "" "10000")
+ci: lint test coverage miri (sim "" "10000")
 
 # Everything to run before pushing: the pull-request gate and mutation testing of the change
 ready: ci mutants-diff

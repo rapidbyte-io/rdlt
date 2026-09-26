@@ -4,7 +4,7 @@
 mod tests;
 
 use proc_macro2::TokenStream;
-use quote::ToTokens;
+use quote::quote;
 use syn::parse::Parser;
 use syn::{ItemImpl, LitStr, parse_quote};
 
@@ -23,6 +23,18 @@ impl Role {
         }
     }
 
+    /// The factory function for this role, and the `RoleFactory` variant it goes in.
+    fn factory(self) -> TokenStream {
+        match self {
+            Self::Source => quote!(::rdlt_connector::RoleFactory::Source(
+                ::rdlt_connector::source_factory::<Self>()
+            )),
+            Self::Destination => quote!(::rdlt_connector::RoleFactory::Destination(
+                ::rdlt_connector::destination_factory::<Self>()
+            )),
+        }
+    }
+
     fn trait_name(self) -> &'static str {
         match self {
             Self::Source => "SourceConnector",
@@ -31,7 +43,8 @@ impl Role {
     }
 }
 
-/// Adds `ID` and `VERSION` to the connector trait `impl` block in `item`.
+/// Adds `ID` and `VERSION` to the connector trait `impl` block in `item`, and makes the connector
+/// servable by its type (`rdlt_connector::Serve`).
 pub(crate) fn connector(
     args: TokenStream,
     item: TokenStream,
@@ -58,7 +71,15 @@ pub(crate) fn connector(
     block.items.push(parse_quote!(
         const VERSION: &'static str = ::core::env!("CARGO_PKG_VERSION");
     ));
-    Ok(block.into_token_stream())
+    let (generics, _, where_clause) = block.generics.split_for_impl();
+    let connector = &block.self_ty;
+    let factory = role.factory();
+    let serve = quote! {
+        impl #generics ::rdlt_connector::Serve for #connector #where_clause {
+            fn factory() -> ::rdlt_connector::RoleFactory { #factory }
+        }
+    };
+    Ok(quote!(#block #serve))
 }
 
 fn parse_id(args: TokenStream, role: Role) -> syn::Result<LitStr> {
