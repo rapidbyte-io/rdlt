@@ -67,6 +67,7 @@ fn resolver(capabilities: Capabilities, policy: SchemaPolicy, nested: Nested) ->
             stream: StreamPlan::new(stream.clone())
                 .schema(SchemaSettings::new().policy(policy).nested(nested)),
             key: Vec::new(),
+            owner: None,
         },
         stream,
         meta: MetaNames::assign(&naming, false, LineageColumns::None).expect("metadata names"),

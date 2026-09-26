@@ -52,7 +52,11 @@ impl Tables {
             }),
             _ => None,
         };
-        let resolver = parent.resolver.child(root_key)?;
+        let owner = path.first().map_or_else(
+            || Err(Error::internal("a child table's path is empty")),
+            |column| Ok(ColumnPath::from(column.as_ref())),
+        )?;
+        let resolver = parent.resolver.child(root_key, owner)?;
         let model = Model::from_state(self.committed.get(&table_path))?;
         let table = TableRef {
             name: self.name(&table_path, &resolver.naming)?,

@@ -19,6 +19,7 @@ pub(crate) fn resolver(stream: &str) -> Resolver {
             pipeline: SchemaSettings::default(),
             stream: StreamPlan::new(stream.clone()),
             key: Vec::new(),
+            owner: None,
         },
         stream,
         meta: MetaNames::assign(&naming, false, LineageColumns::None).expect("metadata names"),

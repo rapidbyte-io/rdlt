@@ -66,6 +66,7 @@ fn resolver() -> Resolver {
             pipeline: SchemaSettings::default(),
             stream: StreamPlan::new(StreamName::new("orders").unwrap()),
             key: Vec::new(),
+            owner: None,
         },
         naming: Naming::new(capabilities.identifiers.clone()),
         capabilities: Arc::new(capabilities),

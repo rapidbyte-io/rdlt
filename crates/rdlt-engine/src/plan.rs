@@ -111,11 +111,10 @@ impl StreamPlan {
         self.columns.get(column)
     }
 
-    /// The same stream without its column settings and hints, which name columns of its own
-    /// table: its child tables' settings.
-    pub(crate) fn without_columns(&self) -> Self {
+    /// The same stream without its hints, which name columns of its own table: its child
+    /// tables' settings.
+    pub(crate) fn without_hints(&self) -> Self {
         Self {
-            columns: BTreeMap::new(),
             hints: BTreeMap::new(),
             ..self.clone()
         }

@@ -56,13 +56,19 @@ pub(crate) struct Settings {
     pub(crate) stream: StreamPlan,
     /// The merge key's columns; empty for streams that do not merge.
     pub(crate) key: Vec<ColumnPath>,
+    /// For a child table, the stream's column whose arrays it holds, whose settings every column
+    /// of the table takes.
+    pub(crate) owner: Option<ColumnPath>,
 }
 
 impl Settings {
-    /// The settings that apply to `column`.
+    /// The settings that apply to `column`: those of the stream's column it is, or was flattened
+    /// from, or, in a child table, those of the column whose arrays the table holds.
     pub(crate) fn column(&self, column: &ColumnPath) -> Resolved {
+        let top = column.segments().next().map(ColumnPath::from);
+        let owner = self.owner.as_ref().or(top.as_ref()).unwrap_or(column);
         policy::resolve([
-            self.stream.column_settings(column),
+            self.stream.column_settings(owner),
             None,
             Some(self.stream.schema_settings()),
             Some(&self.pipeline),
@@ -117,13 +123,15 @@ struct Arriving<'a> {
 }
 
 impl Resolver {
-    /// The resolver of a child table of the same stream: with the stream's settings but not
-    /// those of its own table's columns or its merge key, and a child's lineage columns; a merge
-    /// stream's child table follows `root`, its root table, with a sequence column.
-    pub(crate) fn child(&self, root: Option<RootKey>) -> Result<Self, Error> {
+    /// The resolver of a child table of the same stream holding the arrays of the stream's column
+    /// `owner`: with the settings of `owner` for every column, no hints or merge key, and a
+    /// child's lineage columns; a merge stream's child table follows `root`, its root table, with
+    /// a sequence column.
+    pub(crate) fn child(&self, root: Option<RootKey>, owner: ColumnPath) -> Result<Self, Error> {
         let settings = Settings {
-            stream: self.settings.stream.without_columns(),
+            stream: self.settings.stream.without_hints(),
             key: Vec::new(),
+            owner: Some(owner),
             ..self.settings.clone()
         };
         let merge = root.is_some();
