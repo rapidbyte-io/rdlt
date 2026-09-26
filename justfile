@@ -52,10 +52,11 @@ sim-coverage seeds="1000":
     RDLT_SIM_SEEDS="{{ seeds }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 82 --branches 73
 
-# Measure line and branch coverage and apply the CI gate
+# Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and
+# one killed as its test ends leaves a truncated profile, which the merge skips
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    cargo +{{ nightly }} llvm-cov nextest --branch --package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/'
+    cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/'
     cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
 
 # Run the audited `unsafe` module's tests under Miri (§20.14): the workspace's only `unsafe` code
