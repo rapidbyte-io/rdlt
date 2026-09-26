@@ -4,11 +4,14 @@
 //! and carries the configuration, and every later call works on the connector that handshake
 //! connected. A binary serves every role it has a factory for.
 
+mod binary;
 mod handshake;
+mod inherited;
 mod read;
 mod service;
 mod write;
 
+use std::future::Future;
 use std::sync::Arc;
 
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
@@ -17,6 +20,8 @@ use rdlt_wire::Limits;
 use rdlt_wire::v1::connector_server::ConnectorServer;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower::ServiceExt as _;
+
+pub use binary::serve;
 
 use crate::destination::DestinationFactory;
 use crate::source::SourceFactory;
@@ -84,6 +89,20 @@ pub async fn serve_connection<IO>(
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
+    serve_until(served, io, limits, std::future::pending()).await
+}
+
+/// Serves as [`serve_connection`] does, and once `stop` ends, stops taking new calls and ends
+/// when the calls in flight have.
+async fn serve_until<IO>(
+    served: Arc<Served>,
+    io: IO,
+    limits: Limits,
+    stop: impl Future<Output = ()>,
+) -> Result<(), ServeError>
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let bytes = limits.message_bytes();
     let service = ConnectorServer::new(service::Service::new(served, limits))
         .max_decoding_message_size(bytes)
@@ -91,18 +110,30 @@ where
     let service = service.map_request(|request: http::Request<hyper::body::Incoming>| {
         request.map(rdlt_wire::tonic::body::Body::new)
     });
-    hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-        .timer(TokioTimer::new())
-        .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
-        .serve_connection(TokioIo::new(io), TowerToHyperService::new(service))
-        .await
-        .or_else(|error| {
-            if gone(&error) {
-                Ok(())
-            } else {
-                Err(ServeError(error))
-            }
-        })
+    let builder = {
+        let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
+        builder
+            .timer(TokioTimer::new())
+            .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW);
+        builder
+    };
+    let connection = builder.serve_connection(TokioIo::new(io), TowerToHyperService::new(service));
+    tokio::pin!(connection, stop);
+    let served = tokio::select! {
+        biased;
+        served = connection.as_mut() => served,
+        () = stop => {
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    };
+    served.or_else(|error| {
+        if gone(&error) {
+            Ok(())
+        } else {
+            Err(ServeError(error))
+        }
+    })
 }
 
 /// Whether `error` says the host had already closed its end, which is how a connection ends: some

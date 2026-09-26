@@ -83,6 +83,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just coverage
+      - run: just miri
 
   commits:
     if: github.event_name == 'pull_request'

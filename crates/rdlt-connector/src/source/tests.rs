@@ -336,3 +336,12 @@ async fn a_failing_read_reports_its_error() {
     assert_eq!(result.unwrap_err().kind(), ConnectorErrorKind::Data);
     assert!(events.is_empty());
 }
+
+#[test]
+fn a_sources_factory_debugs_as_its_role_and_id() {
+    let factory = crate::factory::RoleFactory::Source(source_factory::<Counter>());
+    assert_eq!(
+        format!("{factory:?}"),
+        "Source(ConnectorId(\"io.test.counter\"))"
+    );
+}
