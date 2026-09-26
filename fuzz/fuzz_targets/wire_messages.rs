@@ -14,13 +14,13 @@ use rdlt_wire::prost::Message;
 fn check<T, W>(bytes: &[u8])
 where
     W: Message + Default + for<'a> From<&'a T>,
-    T: TryFrom<W>,
+    T: TryFrom<W> + PartialEq + std::fmt::Debug,
 {
     let Ok(message) = W::decode(bytes) else { return };
     let Ok(value) = T::try_from(message) else { return };
     let again = W::from(&value);
     let value_again = T::try_from(W::decode(again.encode_to_vec().as_slice()).expect("decodes"));
-    assert!(value_again.is_ok(), "a converted message converts again");
+    assert_eq!(value_again.ok(), Some(value), "the round trip changed the value");
 }
 
 fuzz_target!(|input: (u8, Vec<u8>)| {
