@@ -134,7 +134,7 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
     for (stream, relaxed) in world.workload.streams.iter().zip(relaxed) {
         let columns = (0..stream.drift.len())
             .map(|column| Column::new(stream, column, *relaxed, &capabilities).outcome(phase));
-        let key = (stream.keys > 0).then(|| key_outcome(stream, &capabilities, phase));
+        let key = (stream.keys > 0).then(|| key_outcome(stream, *relaxed, &capabilities, phase));
         let pruning = prunes(stream, phase);
         for outcome in columns.chain(key) {
             if let Some(code) = outcome.code {

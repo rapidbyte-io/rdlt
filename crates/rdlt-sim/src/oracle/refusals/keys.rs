@@ -1,20 +1,24 @@
-//! What a merge stream's key columns may meet: a key widens where the destination can, and is
-//! refused otherwise.
+//! What a merge stream's key columns may meet: a key widens where the destination can and its
+//! schema is not frozen, and is refused otherwise.
 
 use rdlt_connector::{Capabilities, LogicalType};
-use rdlt_engine::Nested;
+use rdlt_engine::{Nested, SchemaPolicy};
 
-use super::{Arrival, KEY_CHANGED, Outcome, Step, outcome, widens};
+use super::{Arrival, FROZEN, KEY_CHANGED, Outcome, Step, outcome, widens};
 use crate::workload::{Relaxed, SimStream};
 
-/// What a merge stream's key batches may meet: a key column widens where the destination can,
-/// and is refused otherwise.
+/// What a merge stream's key batches may meet, its settings as `relaxed` leaves them: a key
+/// column widens where the destination can and the schema is not frozen, and is refused
+/// otherwise.
 pub(super) fn key_outcome(
     stream: &SimStream,
+    relaxed: Relaxed,
     capabilities: &Capabilities,
     phase: usize,
 ) -> Outcome {
-    let nested = stream.resolved(None, Relaxed::default()).nested;
+    let resolved = stream.resolved(None, relaxed);
+    let frozen = resolved.policy == SchemaPolicy::Freeze;
+    let code = if frozen { FROZEN } else { KEY_CHANGED };
     let arrivals: Vec<Vec<Arrival>> = (0..=phase)
         .map(|at| {
             let mut types = Vec::new();
@@ -30,16 +34,18 @@ pub(super) fn key_outcome(
     outcome(
         Some(LogicalType::Int64),
         &arrivals,
-        KEY_CHANGED,
-        |current, arrival| key_step(current, arrival, nested, capabilities),
+        code,
+        |current, arrival| key_step(current, arrival, frozen, resolved.nested, capabilities),
     )
 }
 
 /// What a key batch column arriving as `arrival` does to a key column of `current`: a key
-/// column widens where the destination can, and is refused otherwise.
+/// column widens where the destination can and the schema is not `frozen`, and is refused
+/// otherwise.
 pub(super) fn key_step(
     current: Option<&LogicalType>,
     arrival: &Arrival,
+    frozen: bool,
     nested: Nested,
     capabilities: &Capabilities,
 ) -> Step {
@@ -47,7 +53,8 @@ pub(super) fn key_step(
         return Step::Unknown;
     };
     let joined = current.join(logical);
-    let widened = joined != LogicalType::Json && widens(current, &joined, nested, capabilities);
+    let widened =
+        !frozen && joined != LogicalType::Json && widens(current, &joined, nested, capabilities);
     if joined == *current || widened {
         Step::To(joined)
     } else {

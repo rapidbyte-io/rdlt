@@ -309,6 +309,21 @@ fn key_columns_never_take_variants() {
 }
 
 #[test]
+fn a_frozen_merge_key_is_refused_rather_than_widened() {
+    let frozen = plan().schema(SchemaSettings::new().policy(SchemaPolicy::Freeze));
+    let resolver = resolver(capabilities(), frozen, &["id"]);
+    let model = created(&resolver, &[("id", LogicalType::Int32)]);
+    let narrower = resolver
+        .resolve(&model, &schema(&[("id", LogicalType::Int16)]))
+        .unwrap();
+    assert_eq!(narrower.routes, [Route::Column(0)], "a narrower key fits");
+    let error = resolver
+        .resolve(&model, &schema(&[("id", LogicalType::Int64)]))
+        .unwrap_err();
+    assert_eq!(error.code(), Some("schema_frozen"));
+}
+
+#[test]
 fn columns_of_only_nulls_create_nothing() {
     let resolver = resolver(capabilities(), plan(), &[]);
     let model = created(
