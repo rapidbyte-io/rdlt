@@ -394,15 +394,16 @@ async fn a_call_for_the_other_role_is_refused() {
 }
 
 #[tokio::test]
-async fn a_second_handshake_is_refused() {
+async fn a_second_handshake_is_refused_before_it_connects() {
     let mut client = raw_client(served(memory())).await;
     let config = rows(1).to_string();
     client
         .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source, &config))
         .await
         .unwrap();
+    // Refused as repeated before its configuration is read, let alone a second connector made.
     let status = client
-        .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source, &config))
+        .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source, "not JSON"))
         .await
         .unwrap_err();
     assert_eq!(carried(&status).code(), Some("handshake_repeated"));

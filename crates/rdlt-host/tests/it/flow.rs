@@ -243,3 +243,28 @@ async fn a_write_beyond_the_connectors_frame_limit_is_refused_typed() {
     );
     assert_ne!(error.code(), Some(CONNECTOR_LOST));
 }
+
+#[tokio::test]
+async fn a_read_frame_beyond_the_hosts_limit_is_refused_typed() {
+    let options = Options {
+        limits: Limits {
+            frame_bytes: 64 * 1024,
+            ..Limits::default()
+        },
+        ..Options::default()
+    };
+    let source = blobs(serde_json::json!({}), options).await;
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
+    let request = ReadRequest {
+        stream: StreamName::new("blobs").expect("a valid stream name"),
+        partition: Partition::single(),
+        cursor: None,
+    };
+    let reading = tokio::spawn(async move { source.read(request, sink).await });
+    while feed.recv().await.is_some() {}
+    let error = reading.await.expect("the read ends").unwrap_err();
+    assert_eq!(
+        error.limit().map(|limit| (limit.name, limit.limit)),
+        Some(("frame bytes", 64 * 1024))
+    );
+}

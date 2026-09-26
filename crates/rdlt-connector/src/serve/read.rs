@@ -60,6 +60,13 @@ struct Outbox {
     encoder: Encoder,
     schema: Option<SchemaRef>,
     epoch: u64,
+    /// The host's limits, which every frame sent keeps within.
+    host: Limits,
+}
+
+/// A frame the host's limits refuse, as the status the read fails with.
+fn refused(refusal: rdlt_wire::Refusal) -> Status {
+    status(&frame_error(&rdlt_wire::WireError::Refused(refusal)))
 }
 
 impl Outbox {
@@ -73,18 +80,29 @@ impl Outbox {
         match event {
             SourceEvent::Push(Push::Arrow(batch)) => self.batch(&batch, v1::BatchKind::Arrow)?,
             SourceEvent::Push(Push::Changes(batch)) => self.batch(&batch, v1::BatchKind::Change)?,
-            SourceEvent::Push(Push::Json(data)) => self.push(Frame::Json(v1::JsonFrame { data })),
+            SourceEvent::Push(Push::Json(data)) => {
+                self.host.admit_json(data.len()).map_err(refused)?;
+                self.push(Frame::Json(v1::JsonFrame { data }));
+            }
             SourceEvent::Checkpoint { cursor, answers } => {
+                let cursor = v1::Cursor::from(&cursor);
+                self.host
+                    .admit_cursor(cursor.bytes.len())
+                    .map_err(refused)?;
                 self.push(Frame::Checkpoint(v1::CheckpointFrame {
-                    cursor: Some(v1::Cursor::from(&cursor)),
+                    cursor: Some(cursor),
                     barrier: answers,
                 }));
             }
-            SourceEvent::Log { level, message } => self.push(Frame::Log(v1::LogFrame {
-                level: log_level(level) as i32,
-                message,
-            })),
+            SourceEvent::Log { level, message } => {
+                self.host.admit_string(&message).map_err(refused)?;
+                self.push(Frame::Log(v1::LogFrame {
+                    level: log_level(level) as i32,
+                    message,
+                }));
+            }
             SourceEvent::Metric { name, value } => {
+                self.host.admit_string(&name).map_err(refused)?;
                 self.push(Frame::Metric(v1::MetricFrame { name, value }));
             }
         }
@@ -108,6 +126,9 @@ impl Outbox {
             .batch(batch)
             .map_err(|error| status(&frame_error(&error)))?;
         for frame in frames {
+            self.host
+                .admit_frame(frame.header.len().saturating_add(frame.body.len()))
+                .map_err(refused)?;
             self.push(Frame::Batch(v1::BatchFrame {
                 schema_epoch: self.epoch,
                 kind: kind as i32,
@@ -135,7 +156,7 @@ async fn pump(
     request: ReadRequest,
     mut controls: Streaming<v1::ReadControl>,
     frames: mpsc::Sender<Result<v1::ReadFrame, Status>>,
-    _host: Limits,
+    host: Limits,
 ) {
     let (sink, mut feed) = partition_channel(EVENTS);
     let mut reading = tokio::spawn(async move { source.read(request, sink).await });
@@ -145,6 +166,7 @@ async fn pump(
         encoder: Encoder::default(),
         schema: None,
         epoch: 0,
+        host,
     };
     let mut done = false;
     loop {

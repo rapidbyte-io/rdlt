@@ -16,6 +16,10 @@ impl Service {
         &self,
         request: v1::HandshakeRequest,
     ) -> Result<v1::ConnectorSpec, ConnectorError> {
+        // A repeated handshake is refused before it does any work, let alone connects again.
+        if self.connected.initialized() {
+            return Err(repeated());
+        }
         if request.protocol_major != PROTOCOL_MAJOR {
             let message = format!(
                 "protocol version {} is not this connector's {PROTOCOL_MAJOR}",
@@ -63,12 +67,9 @@ impl Service {
             Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
         };
         let spec = self.spec(spec, &connected);
+        // A handshake that ran beside this one connected first.
         if self.connected.set(connected).is_err() {
-            return Err(ConnectorError::new(
-                ConnectorErrorKind::Internal,
-                "the connection already had its handshake",
-            )
-            .with_code("handshake_repeated"));
+            return Err(repeated());
         }
         Ok(spec)
     }
@@ -111,4 +112,13 @@ fn unserved(role: &str) -> ConnectorError {
         format!("this connector does not serve the {role} role"),
         "role",
     )
+}
+
+/// The error of a handshake on a connection that already had its handshake.
+fn repeated() -> ConnectorError {
+    ConnectorError::new(
+        ConnectorErrorKind::Internal,
+        "the connection already had its handshake",
+    )
+    .with_code("handshake_repeated")
 }
