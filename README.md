@@ -25,7 +25,11 @@ seed alike, runs on many threads nightly, and measures how much of the engine it
 protocol for connectors that run out of process (`rdlt-wire`) defines its messages, carries Arrow
 batches in Arrow Flight's layout with each schema sent once, and refuses frames beyond its limits
 or malformed ones with a typed error; the contract's types convert to and from its messages under
-`rdlt-connector`'s `wire` feature. Serving it and hosting connectors come next.
+`rdlt-connector`'s `wire` feature. A connector serves the protocol with `rdlt-connector`'s `serve`
+feature, one handshaken session per connection. The engine loads through it with `rdlt-host`'s
+`RemoteSource` and `RemoteDestination`: errors cross whole, reads and writes keep within credit,
+heartbeats notice a lost connector, and each call has its deadline. Spawning connectors as
+processes, and reaching them over the network, come next.
 
 ## Development
 
