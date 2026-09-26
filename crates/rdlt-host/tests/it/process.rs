@@ -93,6 +93,29 @@ async fn connector_writing_stdout_keeps_running() {
     }
 }
 
+/// The most memory this process has held, in KiB.
+#[cfg(target_os = "linux")]
+fn peak_kib() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").expect("the status reads");
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|value| value.trim().trim_end_matches(" kB").parse().ok())
+        .expect("the status holds VmHWM")
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn connector_writing_unbroken_stdout_keeps_the_host_bounded() {
+    let script = serde_json::json!({ "stdout_unbroken_bytes": 256 * 1024 * 1024 });
+    let source = spawned(&local(), script).await;
+    let before = peak_kib();
+    source.check().await.expect("the check passes");
+    let grown = peak_kib() - before;
+    // Far less than the 256 MiB written: the host keeps a bounded piece of each line.
+    assert!(grown < 64 * 1024, "the host's peak grew by {grown} KiB");
+}
+
 #[tokio::test]
 async fn connector_crash_error_carries_stderr_tail() {
     let script = serde_json::json!({ "crash": "boom: the disk melted" });
@@ -399,6 +422,21 @@ async fn a_configuration_the_connector_refuses_fails_its_handshake_with_its_own_
         std::error::Error::source(source.as_ref()).is_none(),
         "{source:?}"
     );
+}
+
+#[tokio::test]
+async fn a_bare_relative_path_spawns_the_file_it_names() {
+    let binary = example("scripted_connector");
+    // Each test runs in a process of its own, so this changes no other test's directory.
+    std::env::set_current_dir(binary.parent().expect("the examples directory"))
+        .expect("the directory changes");
+    let reference = scripted().path("scripted_connector");
+    let placed = local()
+        .source(&reference, &serde_json::json!({}))
+        .await
+        .expect("the connector starts");
+    assert_eq!(placed.placement, Placement::Process { path: binary });
+    placed.connector.check().await.expect("the check passes");
 }
 
 #[tokio::test]

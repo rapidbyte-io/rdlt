@@ -17,9 +17,12 @@ use serde::{Deserialize, Serialize};
 struct Script {
     /// Rows its one stream, `rows`, reads; none reads until stopped.
     rows: Option<u64>,
-    /// Bytes its check writes to standard output first.
+    /// Bytes its check writes to standard output first, in lines.
     #[serde(default)]
     stdout_bytes: usize,
+    /// Bytes its check writes to standard output first, with no line break.
+    #[serde(default)]
+    stdout_unbroken_bytes: usize,
     /// A last word its check writes to standard error before it exits with status 3.
     crash: Option<String>,
     /// The row at which a read crashes, once: the first time, it creates `marker` and exits.
@@ -90,6 +93,10 @@ impl SourceConnector for Scripted {
         let mut stdout = std::io::stdout();
         for _ in 0..script.stdout_bytes / 64 {
             writeln!(stdout, "{}", "o".repeat(63)).ok();
+        }
+        let chunk = vec![b'u'; 64 * 1024];
+        for _ in 0..script.stdout_unbroken_bytes / chunk.len() {
+            stdout.write_all(&chunk).ok();
         }
         stdout.flush().ok();
         if let Some(words) = &script.crash {

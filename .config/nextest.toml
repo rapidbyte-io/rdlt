@@ -25,7 +25,12 @@ slow-timeout = { period = "60s" }
 slow-timeout = { period = "5s", terminate-after = 2 }
 leak-timeout = "500ms"
 
-# Spawned connectors and the placement matrix run on the real clock: a scenario sleeps for seconds.
+# The placement matrix runs on the real clock, and a scenario sleeps for seconds; the host's process
+# tests spawn connectors, each within seconds.
 [[profile.mutants.overrides]]
-filter = "test(/^placement::/) | (package(rdlt-host) & test(/^process::/))"
+filter = "test(/^placement::/)"
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.mutants.overrides]]
+filter = "package(rdlt-host) & test(/^process::/)"
+slow-timeout = { period = "10s", terminate-after = 2 }

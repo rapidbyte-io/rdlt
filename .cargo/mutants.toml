@@ -3,3 +3,6 @@ profile = "mutants"
 exclude_globs = ["xtask/**", "crates/rdlt-sim/**", "crates/rdlt-wire/src/generated/**"]
 all_features = true
 additional_cargo_test_args = ["--profile", "mutants"]
+# A mutant that hangs a test is caught when nextest terminates the test, which it does well within
+# this; cargo-mutants' own timeout would count it as a timeout instead.
+minimum_test_timeout = 90

@@ -3,8 +3,8 @@
 //!
 //! Rust cannot know that a file descriptor number names an open file nothing else owns, so
 //! turning it into an owned socket is `unsafe`. [`adopt`] establishes both before [`own`] does:
-//! the descriptor is open, and it is taken once per process, before the process opens anything
-//! itself.
+//! the descriptor is an open socket; it is not close-on-exec, so this process did not open it, as
+//! the standard library opens everything close-on-exec; and it is taken once per process.
 
 #![expect(
     unsafe_code,
@@ -16,7 +16,8 @@
 mod tests;
 
 use std::io;
-use std::os::fd::{FromRawFd as _, OwnedFd, RawFd};
+use std::os::fd::{BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
+use std::os::unix::fs::FileTypeExt as _;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -30,7 +31,9 @@ static ADOPTED: AtomicBool = AtomicBool::new(false);
 ///
 /// # Errors
 ///
-/// When `fd` is a standard stream, is not open, was adopted already, or is not a Unix socket.
+/// When `fd` is a standard stream, is not open, is not a Unix socket, was opened by this process
+/// (it is close-on-exec, as everything the standard library opens is), or a socket was adopted
+/// already.
 /// The socket returned is a close-on-exec duplicate: `fd` itself is closed.
 pub(crate) fn adopt(fd: RawFd) -> io::Result<UnixStream> {
     if fd <= 2 {
@@ -40,12 +43,26 @@ pub(crate) fn adopt(fd: RawFd) -> io::Result<UnixStream> {
         ));
     }
     // Resolves only while `fd` is open, on Linux and macOS alike.
-    std::fs::metadata(format!("/dev/fd/{fd}")).map_err(|error| {
+    let metadata = std::fs::metadata(format!("/dev/fd/{fd}")).map_err(|error| {
         io::Error::new(
             io::ErrorKind::NotFound,
             format!("file descriptor {fd} is not open: {error}"),
         )
     })?;
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("file descriptor {fd} is not a socket"),
+        ));
+    }
+    // The standard library opens every file close-on-exec, and `dup2`, through which the host
+    // passes its socket, clears the flag: a descriptor that has it is this process's own.
+    if close_on_exec(fd)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("file descriptor {fd} was opened by this process, not passed by its host"),
+        ));
+    }
     if ADOPTED.swap(true, Ordering::SeqCst) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -53,11 +70,21 @@ pub(crate) fn adopt(fd: RawFd) -> io::Result<UnixStream> {
         ));
     }
     let inherited = UnixStream::from(own(fd));
-    // Any file but a Unix socket fails here, and is closed as `inherited` drops.
+    // A socket of another family fails here, and is closed as `inherited` drops.
     inherited.local_addr()?;
     // The descriptor came through `dup2`, which clears close-on-exec, so a process the connector
     // starts would keep the host's socket open. The duplicate is close-on-exec, and `fd` closes.
     inherited.try_clone()
+}
+
+/// Whether open descriptor `fd` is close-on-exec.
+fn close_on_exec(fd: RawFd) -> io::Result<bool> {
+    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+    // SAFETY: `adopt` checked that `fd` is open; it is borrowed for this call only, which reads
+    // its flags and neither closes nor keeps it.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let flags = fcntl(borrowed, FcntlArg::F_GETFD).map_err(io::Error::from)?;
+    Ok(FdFlag::from_bits_truncate(flags).contains(FdFlag::FD_CLOEXEC))
 }
 
 /// Owns `fd`.
