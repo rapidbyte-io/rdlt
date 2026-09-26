@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use super::{ScopeError, TaskScope};
+use super::{ScopeError, TaskScope, contained};
 
 #[derive(Debug, PartialEq, Eq)]
 enum TestError {
@@ -166,4 +166,28 @@ async fn panic_messages_are_kept_whatever_the_payload() {
             Err(TestError::Panicked(expected.to_owned()))
         );
     }
+}
+
+#[tokio::test]
+async fn a_contained_future_gives_its_output_after_waiting() {
+    let output = contained(async {
+        tokio::task::yield_now().await;
+        7
+    })
+    .await;
+    assert_eq!(output.ok(), Some(7));
+}
+
+#[tokio::test]
+async fn a_contained_future_that_panics_after_waiting_gives_its_panic() {
+    let output = contained(async {
+        tokio::task::yield_now().await;
+        panic!("boom");
+    })
+    .await;
+    let panic: Result<(), _> = output;
+    assert_eq!(
+        panic.map_err(|panicked| panicked.to_string()),
+        Err("boom".to_owned())
+    );
 }
