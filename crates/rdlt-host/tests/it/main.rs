@@ -3,6 +3,7 @@
 mod flow;
 mod liveness;
 mod loads;
+mod process;
 mod protocol;
 mod reads;
 mod sessions;

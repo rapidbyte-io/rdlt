@@ -10,17 +10,29 @@ repository.workspace = true
 [dependencies]
 arrow-array.workspace = true
 arrow-schema.workspace = true
+command-fds = { workspace = true, features = ["tokio"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+nix = { workspace = true, features = ["signal"] }
 rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-wire.workspace = true
 semver.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = [
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt",
+  "sync",
+  "time",
+] }
 tokio-stream.workspace = true
 tokio-util.workspace = true
 tonic = { workspace = true, features = ["channel", "codegen"] }
 tower = { workspace = true, features = ["util"] }
+tracing.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true
@@ -33,7 +45,8 @@ rdlt-engine.workspace = true
 rdlt-wire = { workspace = true, features = ["serve"] }
 schemars.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-std", "process", "rt-multi-thread", "signal"] }
 tonic = { workspace = true, features = ["server"] }
 
 [lints]
