@@ -33,6 +33,19 @@ pub const CONTROL_STRING_BYTES: u64 = 64 * 1024;
 /// The code of every refusal.
 pub const LIMIT_EXCEEDED: &str = "limit_exceeded";
 
+/// The field each refusal names, one per limit; a receiver that decodes a refusal keeps these.
+pub const FIELDS: &[&str] = &[
+    "frame bytes",
+    "batch rows",
+    "schema columns",
+    "nesting depth",
+    "json push bytes",
+    "cursor bytes",
+    "config bytes",
+    "control string bytes",
+    "values per node",
+];
+
 /// The limits one end enforces on what it receives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {

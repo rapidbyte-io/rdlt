@@ -4,17 +4,13 @@ use super::types::{duration, std_duration};
 use super::{Invalid, v1};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 
-/// The names of the limits either end enforces, as [`LimitExceeded`] names them.
-const LIMIT_NAMES: &[&str] = &[
+/// The names of the limits the contract enforces where data enters rdlt, besides those of the
+/// protocol, [`rdlt_wire::limits::FIELDS`].
+const CONTRACT_LIMITS: &[&str] = &[
     "batch columns",
     "batch rows",
-    "config bytes",
-    "control string bytes",
     "cursor bytes",
-    "frame bytes",
     "json push bytes",
-    "nesting depth",
-    "schema columns",
 ];
 
 /// The name a limit that `name` does not match goes by.
@@ -74,8 +70,9 @@ impl TryFrom<v1::Error> for ConnectorError {
 
     fn try_from(error: v1::Error) -> Result<Self, Invalid> {
         let limit = error.limit.map(|limit| LimitExceeded {
-            name: LIMIT_NAMES
+            name: rdlt_wire::limits::FIELDS
                 .iter()
+                .chain(CONTRACT_LIMITS)
                 .find(|name| **name == limit.name)
                 .copied()
                 .unwrap_or(UNKNOWN_LIMIT),

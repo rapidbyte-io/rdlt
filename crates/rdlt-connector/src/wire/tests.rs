@@ -672,3 +672,23 @@ fn a_type_nested_to_the_protocols_depth_crosses_the_wire_and_one_deeper_is_refus
         Err(Invalid::OutOfRange("nesting depth"))
     ));
 }
+
+#[test]
+fn every_limit_either_end_refuses_by_keeps_its_name_across_the_wire() {
+    let contract = [
+        "batch columns",
+        "batch rows",
+        "cursor bytes",
+        "json push bytes",
+    ];
+    for name in rdlt_wire::limits::FIELDS.iter().chain(&contract) {
+        let error =
+            ConnectorError::new(ConnectorErrorKind::Data, "over").with_limit(Some(LimitExceeded {
+                name,
+                limit: 1,
+                actual: 2,
+            }));
+        let back = crossed::<_, v1::Error>(&error).unwrap();
+        assert_eq!(back.limit().map(|limit| limit.name), Some(*name));
+    }
+}
