@@ -595,6 +595,66 @@ async fn a_policy_on_a_streams_column_stays_off_its_child_tables() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_policy_on_a_normalized_column_governs_the_columns_and_child_tables_it_becomes() {
+    let plan = || {
+        normalized("events").column(
+            "meta",
+            SchemaSettings::new().policy(SchemaPolicy::DiscardValue),
+        )
+    };
+    let first = BatchStream::json("events", &[r#"{"id":1}"#]);
+    succeeded(&load("owned", vec![first], vec![plan()]).await);
+    let second = r#"{"id":2,"meta":{"a":1,"items":[{"sku":"x"}]}}"#;
+    let outcome = load(
+        "owned",
+        vec![BatchStream::json("events", &[second])],
+        vec![plan()],
+    )
+    .await;
+    succeeded(&outcome);
+    assert_eq!(
+        outcome.report.streams["events"].discarded_values, 2,
+        "meta.a and the item of meta.items"
+    );
+    let events = schema("owned", "events").expect("the table");
+    assert!(
+        events
+            .fields()
+            .iter()
+            .all(|field| !field.name().starts_with("meta")),
+        "{events:?}"
+    );
+    assert!(schema("owned", "events__meta__items").is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frozen_array_column_freezes_its_child_tables_columns() {
+    let plan =
+        || normalized("events").column("items", SchemaSettings::new().policy(SchemaPolicy::Freeze));
+    let first = r#"{"id":1,"items":[{"sku":"x"}]}"#;
+    succeeded(
+        &load(
+            "frozen_items",
+            vec![BatchStream::json("events", &[first])],
+            vec![plan()],
+        )
+        .await,
+    );
+    let second = r#"{"id":2,"items":[{"sku":"y","qty":2}]}"#;
+    let outcome = load(
+        "frozen_items",
+        vec![BatchStream::json("events", &[second])],
+        vec![plan()],
+    )
+    .await;
+    let error = outcome.error.expect("the frozen items refuse a new field");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("schema_frozen"))
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn arrays_a_source_declares_are_no_schema_change() {
     let fields = |fields: Vec<RdltField>| LogicalType::Struct(Fields::new(fields).unwrap());
     let list = |item: LogicalType| LogicalType::List(Box::new(RdltField::new("item", item, true)));

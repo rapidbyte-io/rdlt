@@ -43,7 +43,8 @@ pub enum Nested {
     /// column per field, and containers nested deeper than `max_depth` are stored as `Json`.
     ///
     /// Only pipelines and streams normalize; a column set to [`Nested::Native`] or
-    /// [`Nested::Json`] in a normalized stream is stored whole.
+    /// [`Nested::Json`] in a normalized stream is stored whole. The settings of
+    /// a stream's column apply to the columns it flattens into and the child tables of its arrays.
     Normalize {
         /// How deep objects and arrays normalize; deeper ones are stored as `Json`.
         max_depth: u8,

@@ -45,6 +45,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
             pipeline: SchemaSettings::default(),
             stream,
             key: key.iter().map(|column| ColumnPath::from(*column)).collect(),
+            owner: None,
         },
         naming: Naming::new(capabilities.identifiers.clone()),
         capabilities: Arc::new(capabilities),

@@ -126,6 +126,7 @@ impl Planning<'_> {
                 pipeline: *self.context.plan.schema_settings(),
                 stream: plan.clone(),
                 key,
+                owner: None,
             },
             capabilities: Arc::clone(&self.capabilities),
             naming: self.naming.clone(),

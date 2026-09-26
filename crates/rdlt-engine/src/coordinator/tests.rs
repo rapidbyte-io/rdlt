@@ -170,6 +170,7 @@ impl Setup {
                     pipeline: crate::policy::SchemaSettings::default(),
                     stream: StreamPlan::new(stream.name.clone()),
                     key: Vec::new(),
+                    owner: None,
                 },
                 naming: Naming::new(capabilities.identifiers.clone()),
                 capabilities: Arc::new(capabilities.clone()),
