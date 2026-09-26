@@ -33,6 +33,8 @@ disallowed-methods = [
   { path = "tokio::task::JoinSet::spawn", reason = "spawn through TaskScope so every task has an owner" },
   { path = "rayon::join", reason = "run CPU work on Env::compute" },
   { path = "rayon::scope", reason = "run CPU work on Env::compute" },
+  { path = "tokio::sync::watch::Receiver::changed", reason = "wakes waiters in a random order; use crate::watch" },
+  { path = "tokio::sync::watch::Receiver::wait_for", reason = "wakes waiters in a random order; use crate::watch" },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "iteration order breaks deterministic simulation; use BTreeMap" },
