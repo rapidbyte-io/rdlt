@@ -76,6 +76,9 @@ sequences.
     digits than reading it back needs: `2.71492836553152e19` became `2.7149283655315202e19`, the
     same double but another number to a destination that keeps JSON numbers exact. Floats are
     now written as the shortest text that reads back as them.
+  - A merge key widened even where the schema was frozen, altering the destination's key column
+    where freezing promises no change. A frozen key now refuses any type it does not hold with
+    `schema_frozen`, which an operator can relax.
 - **Found and fixed in the oracle.** Reserved words are compared after the destination's rules
   fold case. Before, the oracle compared them ignoring case, and so wrongly flagged `D0` where a
   case-preserving destination reserves `d0`.

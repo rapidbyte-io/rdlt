@@ -252,6 +252,10 @@ impl Resolver {
             && self.widens(&current, &joined, column.settings.nested);
         let cannot = |what: &str| format!("the column is {current} and {what} {}", column.logical);
         if column.is_key {
+            // A frozen schema changes for no column, its key's included.
+            if column.settings.policy == SchemaPolicy::Freeze {
+                return Err(self.refused(column, "schema_frozen", &cannot("cannot hold")));
+            }
             if widens {
                 draft.widen(original, joined);
                 return Ok(Route::Column(original));

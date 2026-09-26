@@ -179,22 +179,56 @@ fn a_key_widens_where_the_destination_can_and_is_refused_otherwise() {
     let int64 = LogicalType::Int64;
     let native = Nested::Native;
     assert_eq!(
-        key_step(Some(&int64), &typed(decimal.clone()), native, &widening),
+        key_step(
+            Some(&int64),
+            &typed(decimal.clone()),
+            false,
+            native,
+            &widening
+        ),
         Step::To(decimal.clone())
     );
     assert_eq!(
-        key_step(Some(&int64), &typed(LogicalType::Int8), native, &widening),
+        key_step(
+            Some(&int64),
+            &typed(LogicalType::Int8),
+            false,
+            native,
+            &widening
+        ),
         Step::To(int64.clone()),
         "a narrower key fits"
     );
     let fixed = capabilities(&[]);
     assert_eq!(
-        key_step(Some(&int64), &typed(decimal), native, &fixed),
+        key_step(Some(&int64), &typed(decimal.clone()), false, native, &fixed),
         Step::Refused
     );
     assert_eq!(
-        key_step(Some(&int64), &typed(LogicalType::Utf8), native, &widening),
+        key_step(
+            Some(&int64),
+            &typed(LogicalType::Utf8),
+            false,
+            native,
+            &widening
+        ),
         Step::Refused,
         "a key never becomes JSON"
+    );
+    assert_eq!(
+        key_step(Some(&int64), &typed(decimal), true, native, &widening),
+        Step::Refused,
+        "a frozen key never widens"
+    );
+    assert_eq!(
+        key_step(
+            Some(&int64),
+            &typed(LogicalType::Int8),
+            true,
+            native,
+            &widening
+        ),
+        Step::To(int64.clone()),
+        "though a narrower one still fits"
     );
 }
