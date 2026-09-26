@@ -41,8 +41,9 @@ xxhash-rust.workspace = true
 criterion.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
-rdlt-connector = { workspace = true, features = ["testing"] }
+rdlt-connector = { workspace = true, features = ["serve", "testing"] }
 rdlt-connector-reference.workspace = true
+rdlt-host.workspace = true
 rdlt-testkit.workspace = true
 schemars.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }

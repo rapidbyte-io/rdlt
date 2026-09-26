@@ -11,7 +11,10 @@ use serde_json::json;
 use crate::schema::{batch, ints, text};
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, failing, limited};
-use crate::support::{commit_every, engine, memory, pipeline, published_json, retrying, stream};
+use crate::support::targets::Target;
+use crate::support::{
+    commit_every, each, engine, memory, pipeline, published_json, retrying, stream,
+};
 
 fn merging(name: &str) -> rdlt_engine::StreamPlan {
     stream(name).write(WriteMode::Merge)
@@ -206,12 +209,7 @@ async fn the_later_batch_of_one_segment_wins_its_key() {
 
 /// Loads `pushes` of `events` into `target`'s `store` as `plan` says, and checks the run
 /// succeeded.
-async fn load_into(
-    target: crate::support::targets::Target,
-    store: &str,
-    pushes: &[&str],
-    plan: rdlt_engine::StreamPlan,
-) {
+async fn load_into(target: Target, store: &str, pushes: &[&str], plan: rdlt_engine::StreamPlan) {
     let source = batches(
         &target.name(store),
         vec![BatchStream::json("events", pushes)],
@@ -234,21 +232,27 @@ async fn load_into(
 
 #[tokio::test(start_paused = true)]
 async fn every_destination_merges_into_a_table_it_appended_to_and_appends_again() {
+    each(
+        Target::IN_PROCESS,
+        merges_into_a_table_it_appended_to_and_appends_again,
+    )
+    .await;
+}
+
+pub(crate) async fn merges_into_a_table_it_appended_to_and_appends_again(target: Target) {
     let keyed = || merging("events").key(["id"]);
-    for target in crate::support::targets::Target::ALL {
-        let store = "switched";
-        let appended = [r#"{"id":1,"v":"a"}"#, r#"{"id":1,"v":"b"}"#];
-        load_into(target, store, &appended, stream("events")).await;
-        let merged = [r#"{"id":1,"v":"c"}"#, r#"{"id":2,"v":"d"}"#];
-        load_into(target, store, &merged, keyed()).await;
-        let mut rows = target.json(store, "events");
-        rows.sort_by_key(ToString::to_string);
-        assert_eq!(
-            rows,
-            [json!({"id": 1, "v": "c"}), json!({"id": 2, "v": "d"})],
-            "{target:?}: the merge replaced both appended rows of key 1"
-        );
-        load_into(target, store, &[r#"{"id":1,"v":"e"}"#], stream("events")).await;
-        assert_eq!(target.rows(store, "events"), 3, "{target:?}");
-    }
+    let store = "switched";
+    let appended = [r#"{"id":1,"v":"a"}"#, r#"{"id":1,"v":"b"}"#];
+    load_into(target, store, &appended, stream("events")).await;
+    let merged = [r#"{"id":1,"v":"c"}"#, r#"{"id":2,"v":"d"}"#];
+    load_into(target, store, &merged, keyed()).await;
+    let mut rows = target.json(store, "events");
+    rows.sort_by_key(ToString::to_string);
+    assert_eq!(
+        rows,
+        [json!({"id": 1, "v": "c"}), json!({"id": 2, "v": "d"})],
+        "{target:?}: the merge replaced both appended rows of key 1"
+    );
+    load_into(target, store, &[r#"{"id":1,"v":"e"}"#], stream("events")).await;
+    assert_eq!(target.rows(store, "events"), 3, "{target:?}");
 }

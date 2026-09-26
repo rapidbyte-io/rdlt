@@ -1,23 +1,30 @@
-//! The reference destinations the destination-facing tests run against, each keeping a test's
-//! stores apart.
+//! The reference destinations the destination-facing tests run against, in process and spawned in
+//! a process of their own, each keeping a test's stores apart.
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use arrow_array::{Array, Int64Array, RecordBatch};
-use rdlt_connector::{ConnectContext, Destination, destination_factory};
+use rdlt_connector::{ConnectContext, ConnectorId, Destination, destination_factory};
 use rdlt_connector_reference::{
     FilesDestination, MemoryDestination, SqliteDestination, files, published, sqlite,
 };
+use rdlt_host::{ConnectorRef, Provider as _};
 use serde_json::{Value, json};
 
-/// A reference destination.
+/// A reference destination, and where it runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Memory,
     Sqlite,
     Jsonl,
     Arrow,
+    /// The SQLite destination in a process of its own.
+    SpawnedSqlite,
+    /// The files destination, writing JSON lines, in a process of its own.
+    SpawnedJsonl,
+    /// The files destination, writing Arrow IPC files, in a process of its own.
+    SpawnedArrow,
 }
 
 /// Where the file-backed destinations of this test process keep their stores.
@@ -25,8 +32,32 @@ static ROOT: LazyLock<tempfile::TempDir> =
     LazyLock::new(|| tempfile::tempdir().expect("a temporary directory is created"));
 
 impl Target {
-    /// Every reference destination.
-    pub(crate) const ALL: [Self; 4] = [Self::Memory, Self::Sqlite, Self::Jsonl, Self::Arrow];
+    /// Every reference destination, in the test's process.
+    pub(crate) const IN_PROCESS: [Self; 4] = [Self::Memory, Self::Sqlite, Self::Jsonl, Self::Arrow];
+
+    /// Every reference destination that keeps its stores where the test can read them, spawned
+    /// in a process of its own: the memory destination keeps them in its process's memory.
+    pub(crate) const SPAWNED: [Self; 3] =
+        [Self::SpawnedSqlite, Self::SpawnedJsonl, Self::SpawnedArrow];
+
+    /// The destination this target places, wherever it runs.
+    pub(crate) fn kind(self) -> Self {
+        match self {
+            Self::SpawnedSqlite => Self::Sqlite,
+            Self::SpawnedJsonl => Self::Jsonl,
+            Self::SpawnedArrow => Self::Arrow,
+            kind => kind,
+        }
+    }
+
+    /// The example that serves this target's destination, when it runs spawned.
+    fn served_by(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::SpawnedSqlite => Some(("io.rapidbyte.sqlite", "serve_sqlite")),
+            Self::SpawnedJsonl | Self::SpawnedArrow => Some(("io.rapidbyte.files", "serve_files")),
+            _ => None,
+        }
+    }
 
     /// `store` for this destination, so sources and stores of one test never mix destinations.
     pub(crate) fn name(self, store: &str) -> String {
@@ -37,50 +68,46 @@ impl Target {
         ROOT.path().join(self.name(store))
     }
 
+    /// The configuration of `store` in this destination.
+    fn config(self, store: &str) -> Value {
+        let path = self.path(store);
+        match self.kind() {
+            Self::Sqlite => json!({ "path": path.with_extension("db") }),
+            Self::Jsonl => json!({ "root": path, "format": "jsonl" }),
+            Self::Arrow => json!({ "root": path, "format": "arrow" }),
+            _ => json!({ "store": self.name(store) }),
+        }
+    }
+
     /// A connection to `store` in this destination.
     pub(crate) async fn destination(self, store: &str) -> Arc<dyn Destination> {
-        let path = self.path(store);
-        let connected = match self {
-            Self::Memory => {
-                destination_factory::<MemoryDestination>()
-                    .connect(json!({ "store": self.name(store) }), ConnectContext::new())
-                    .await
-            }
-            Self::Sqlite => {
-                destination_factory::<SqliteDestination>()
-                    .connect(
-                        json!({ "path": path.with_extension("db") }),
-                        ConnectContext::new(),
-                    )
-                    .await
-            }
-            Self::Jsonl | Self::Arrow => {
-                let format = if self == Self::Jsonl {
-                    "jsonl"
-                } else {
-                    "arrow"
-                };
-                destination_factory::<FilesDestination>()
-                    .connect(
-                        json!({ "root": path, "format": format }),
-                        ConnectContext::new(),
-                    )
-                    .await
-            }
+        let config = self.config(store);
+        if let Some((id, example)) = self.served_by() {
+            let id = ConnectorId::parse(id).expect("a valid id");
+            let reference = ConnectorRef::new(id).path(crate::support::example(example));
+            let placed = crate::support::local()
+                .destination(&reference, &config)
+                .await
+                .expect("the destination starts");
+            return Arc::from(placed.connector);
+        }
+        let factory = match self {
+            Self::Memory => destination_factory::<MemoryDestination>(),
+            Self::Sqlite => destination_factory::<SqliteDestination>(),
+            _ => destination_factory::<FilesDestination>(),
         };
+        let connected = factory.connect(config, ConnectContext::new()).await;
         Arc::from(connected.expect("the destination connects"))
     }
 
     /// Every published batch of `table` in `store`.
     pub(crate) fn published(self, store: &str, table: &str) -> Vec<RecordBatch> {
         let path = self.path(store);
-        match self {
+        match self.kind() {
             Self::Memory => published(&self.name(store), table),
             Self::Sqlite => sqlite::published(path.with_extension("db"), table)
                 .expect("the database reads back"),
-            Self::Jsonl | Self::Arrow => {
-                files::published(&path, table).expect("the files read back")
-            }
+            _ => files::published(&path, table).expect("the files read back"),
         }
     }
 

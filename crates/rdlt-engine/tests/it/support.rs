@@ -25,6 +25,29 @@ use rdlt_engine::{
 };
 use serde_json::{Value, json};
 
+/// The example `name`, which the test build builds beside the tests: in the first directory above
+/// the test binary that holds an `examples` directory with it, whichever layout the build uses.
+pub(crate) fn example(name: &str) -> std::path::PathBuf {
+    let tests = std::env::current_exe().expect("the test binary has a path");
+    tests
+        .ancestors()
+        .map(|dir| dir.join("examples").join(name))
+        .find(|example| example.is_file())
+        .expect("the test build builds the examples")
+}
+
+/// Runs `scenario` against each of `targets`, in turn.
+pub(crate) async fn each<Run>(
+    targets: impl IntoIterator<Item = targets::Target>,
+    scenario: impl Fn(targets::Target) -> Run,
+) where
+    Run: std::future::Future<Output = ()>,
+{
+    for target in targets {
+        scenario(target).await;
+    }
+}
+
 /// An engine on the system environment with `config`, running compute jobs inline.
 pub(crate) fn engine(config: EngineConfigBuilder) -> TestEngine {
     counting_engine(config).0
@@ -144,20 +167,39 @@ pub(crate) fn stream(name: &str) -> StreamPlan {
 
 /// A generator source of `streams`, each `(name, rows, partitions, batch_rows)`.
 pub(crate) async fn generator(streams: &[(&str, u64, u64, u64)]) -> Arc<dyn Source> {
+    let source = source_factory::<GeneratorSource>()
+        .connect(generated(streams), ConnectContext::new())
+        .await
+        .expect("the generator connects");
+    Arc::from(source)
+}
+
+/// The generator's configuration for `streams`: each a name, rows, partitions and batch rows.
+fn generated(streams: &[(&str, u64, u64, u64)]) -> Value {
     let streams: Vec<Value> = streams
         .iter()
         .map(|(name, rows, partitions, batch_rows)| {
             json!({ "name": name, "rows": rows, "partitions": partitions, "batch_rows": batch_rows })
         })
         .collect();
-    let source = source_factory::<GeneratorSource>()
-        .connect(
-            json!({ "seed": 7, "streams": streams }),
-            ConnectContext::new(),
-        )
+    json!({ "seed": 7, "streams": streams })
+}
+
+/// Places connectors in processes of their own, whose coverage, when measured, is kept.
+pub(crate) fn local() -> rdlt_host::Local {
+    rdlt_host::Local::new().env_passthrough("LLVM_PROFILE_FILE")
+}
+
+/// The generator, as [`generator`], spawned in a process of its own.
+pub(crate) async fn spawned_generator(streams: &[(&str, u64, u64, u64)]) -> Arc<dyn Source> {
+    use rdlt_host::Provider as _;
+    let id = rdlt_connector::ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
+    let reference = rdlt_host::ConnectorRef::new(id).path(example("serve_generator"));
+    let placed = local()
+        .source(&reference, &generated(streams))
         .await
-        .expect("the generator connects");
-    Arc::from(source)
+        .expect("the generator starts");
+    Arc::from(placed.connector)
 }
 
 /// A memory destination writing to `store`.
