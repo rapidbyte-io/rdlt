@@ -1,0 +1,129 @@
+// The connector service: the handshake, and every operation a source or destination serves.
+syntax = "proto3";
+
+package rdlt.connector.v1;
+
+import "rdlt/connector/v1/catalog.proto";
+import "rdlt/connector/v1/destination.proto";
+import "rdlt/connector/v1/source.proto";
+
+// A connector, serving every role it supports.
+service Connector {
+  // Agrees the protocol version and features, and configures the connector.
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  // Verifies connectivity and permissions.
+  rpc Check(CheckRequest) returns (CheckResponse);
+  // The source's catalog.
+  rpc Discover(DiscoverRequest) returns (Catalog);
+  // The partitions of a stream to read.
+  rpc Plan(PlanRequest) returns (PlanResponse);
+  // Reads a partition.
+  rpc Read(stream ReadControl) returns (stream ReadFrame);
+  // Reports cursors a destination committed.
+  rpc Committed(CommittedRequest) returns (CommittedResponse);
+  // Opens a destination session.
+  rpc Open(OpenRequest) returns (OpenResponse);
+  // Applies a schema change.
+  rpc ApplySchema(ApplySchemaRequest) returns (ApplySchemaResponse);
+  // Writes a table's batches.
+  rpc Write(stream WriteFrame) returns (stream WriteAck);
+  // Commits a session's staged segments.
+  rpc Commit(CommitRequest) returns (Receipt);
+  // Closes a session.
+  rpc Close(CloseRequest) returns (CloseResponse);
+  // Proves both ends are alive.
+  rpc Heartbeat(stream Ping) returns (stream Pong);
+}
+
+// The side of a connection a connector serves.
+enum Role {
+  // Never sent; a receiver refuses it.
+  ROLE_UNSPECIFIED = 0;
+  // A source.
+  ROLE_SOURCE = 1;
+  // A destination.
+  ROLE_DESTINATION = 2;
+}
+
+// The limits each end enforces on what it receives.
+message Limits {
+  // Bytes in one frame.
+  uint64 frame_bytes = 1;
+  // Rows in one batch.
+  uint64 batch_rows = 2;
+  // Columns in one schema.
+  uint64 schema_columns = 3;
+  // Levels of nesting.
+  uint64 nesting_depth = 4;
+  // Bytes in one JSON push.
+  uint64 json_push_bytes = 5;
+  // Bytes in one cursor.
+  uint64 cursor_bytes = 6;
+  // Bytes in the configuration document.
+  uint64 config_bytes = 7;
+  // Bytes in one string field of a control message.
+  uint64 control_string_bytes = 8;
+}
+
+// Opens the conversation.
+message HandshakeRequest {
+  // The protocol's major version; it must match.
+  uint32 protocol_major = 1;
+  // The protocol's minor version.
+  uint32 protocol_minor = 2;
+  // The optional features the host can use.
+  repeated string features = 3;
+  // The role the host wants.
+  Role role = 4;
+  // The connector's configuration, as JSON.
+  string config_json = 5;
+  // The host's W3C trace context.
+  string traceparent = 6;
+  // The limits the host enforces.
+  Limits limits = 7;
+}
+
+// Who the connector is and what it can do.
+message ConnectorSpec {
+  // Its id.
+  string id = 1;
+  // Its version.
+  string version = 2;
+  // The roles it serves.
+  repeated Role roles = 3;
+  // The JSON Schema its configuration must satisfy.
+  string config_schema_json = 4;
+  // What it declares as a source, if it is one.
+  optional SourceCapabilities source_capabilities = 5;
+  // What it can store as a destination, if it is one.
+  optional Capabilities destination_capabilities = 6;
+}
+
+// The connector's answer to a handshake.
+message HandshakeResponse {
+  // The connector's spec.
+  ConnectorSpec spec = 1;
+  // The features, of those offered, it will use.
+  repeated string accepted_features = 2;
+}
+
+// Asks the connector to verify connectivity and permissions.
+message CheckRequest {}
+
+// The answer to a check.
+message CheckResponse {}
+
+// Asks a source for its catalog.
+message DiscoverRequest {}
+
+// A heartbeat.
+message Ping {
+  // Its sequence number.
+  uint64 seq = 1;
+}
+
+// The answer to a heartbeat.
+message Pong {
+  // The sequence number of the ping it answers.
+  uint64 seq = 1;
+}

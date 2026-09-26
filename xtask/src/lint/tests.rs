@@ -46,3 +46,14 @@ fn a_tree_without_source_roots_is_clean() {
     let root = tempfile::tempdir().unwrap();
     assert!(lint_tree(root.path()).unwrap().is_empty());
 }
+
+#[test]
+fn generated_code_is_not_linted() {
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        "crates/a/src/generated/v1.rs",
+        "// TODO: later\nfn f() {}\n",
+    );
+    assert!(lint_tree(root.path()).unwrap().is_empty());
+}

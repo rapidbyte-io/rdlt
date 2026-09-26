@@ -1,0 +1,191 @@
+// What a source offers and what a destination can store.
+syntax = "proto3";
+
+package rdlt.connector.v1;
+
+import "rdlt/connector/v1/types.proto";
+
+// How a stream can be read.
+enum ReadMode {
+  // Never sent; a receiver refuses it.
+  READ_MODE_UNSPECIFIED = 0;
+  // Every row, each time.
+  READ_MODE_FULL = 1;
+  // New and changed rows since a cursor.
+  READ_MODE_INCREMENTAL = 2;
+  // A change stream.
+  READ_MODE_CDC = 3;
+}
+
+// How a stream is split for parallel reads.
+enum Partitioning {
+  // Never sent; a receiver refuses it.
+  PARTITIONING_UNSPECIFIED = 0;
+  // One partition.
+  PARTITIONING_SINGLE = 1;
+  // Partitions the source plans from committed state.
+  PARTITIONING_PLANNED = 2;
+}
+
+// When a stream's reads checkpoint.
+enum Checkpointing {
+  // Never sent; a receiver refuses it.
+  CHECKPOINTING_UNSPECIFIED = 0;
+  // Where the source chooses.
+  CHECKPOINTING_NATURAL = 1;
+  // When the engine asks.
+  CHECKPOINTING_ON_DEMAND = 2;
+}
+
+// Column paths that may be absent as a whole, as distinct from empty.
+message ColumnPaths {
+  // The paths.
+  repeated ColumnPath paths = 1;
+}
+
+// One stream a source offers, and how it can be read.
+message StreamSpec {
+  // The stream's name.
+  StreamName name = 1;
+  // Its declared schema; absent when records are JSON whose schema is inferred.
+  optional TableSchema schema = 2;
+  // Its primary key, if it declares one.
+  optional ColumnPaths primary_key = 3;
+  // Candidate cursor fields for incremental reads.
+  repeated ColumnPath cursor_fields = 4;
+  // The read modes it supports.
+  repeated ReadMode read_modes = 5;
+  // How it is partitioned.
+  Partitioning partitioning = 6;
+  // When its reads checkpoint.
+  Checkpointing checkpointing = 7;
+  // Whether a read from a cursor sees the same rows again.
+  bool replayable = 8;
+  // The column holding each change's time, for change streams.
+  optional ColumnPath change_time = 9;
+}
+
+// Every stream a source offers.
+message Catalog {
+  // The streams, with distinct names.
+  repeated StreamSpec streams = 1;
+}
+
+// How a destination makes a commit visible.
+enum CommitKind {
+  // Never sent; a receiver refuses it.
+  COMMIT_KIND_UNSPECIFIED = 0;
+  // In one transaction.
+  COMMIT_KIND_TRANSACTIONAL = 1;
+  // By publishing a manifest.
+  COMMIT_KIND_MANIFEST = 2;
+}
+
+// The write modes a destination supports.
+message WriteModes {
+  // Appending rows.
+  bool append = 1;
+  // Replacing a table's contents.
+  bool replace = 2;
+  // Merging rows by key.
+  bool merge = 3;
+  // Keeping each row's history.
+  bool history = 4;
+}
+
+// The deletes a destination supports.
+message DeleteModes {
+  // Removing rows.
+  bool hard = 1;
+  // Marking rows deleted.
+  bool soft = 2;
+}
+
+// The nested values a destination stores natively.
+message NestedSupport {
+  // Struct columns.
+  bool structs = 1;
+  // List columns.
+  bool lists = 2;
+  // JSON columns.
+  bool json = 3;
+}
+
+// A widening a destination can apply to a column.
+message Widening {
+  // The kind the column holds.
+  TypeKind from = 1;
+  // The kind it can widen to.
+  TypeKind to = 2;
+}
+
+// The schema changes a destination can apply.
+message SchemaChanges {
+  // Whether it can add columns.
+  bool add_column = 1;
+  // The widenings it can apply in place.
+  repeated Widening widenings = 2;
+}
+
+// How a destination folds the case of identifiers.
+enum IdentifierCase {
+  // Never sent; a receiver refuses it.
+  IDENTIFIER_CASE_UNSPECIFIED = 0;
+  // Keeps case.
+  IDENTIFIER_CASE_PRESERVE = 1;
+  // Folds to lower case.
+  IDENTIFIER_CASE_LOWER = 2;
+  // Folds to upper case.
+  IDENTIFIER_CASE_UPPER = 3;
+}
+
+// The characters a destination allows in identifiers.
+enum IdentifierChars {
+  // Never sent; a receiver refuses it.
+  IDENTIFIER_CHARS_UNSPECIFIED = 0;
+  // Any character.
+  IDENTIFIER_CHARS_ANY = 1;
+  // ASCII letters, digits and underscores.
+  IDENTIFIER_CHARS_ASCII_WORD = 2;
+}
+
+// A destination's rules for identifiers.
+message IdentifierRules {
+  // How it folds case.
+  IdentifierCase case = 1;
+  // The longest identifier, in bytes; at least 1.
+  uint32 max_len = 2;
+  // The characters it allows.
+  IdentifierChars chars = 3;
+  // Words it reserves.
+  repeated string reserved = 4;
+  // Table prefixes it reserves.
+  repeated string reserved_table_prefixes = 5;
+}
+
+// What a destination can store and how it commits.
+message Capabilities {
+  // How it commits.
+  CommitKind commit = 1;
+  // The write modes it supports.
+  WriteModes write_modes = 2;
+  // The deletes it supports.
+  DeleteModes delete_modes = 3;
+  // Whether it applies partial updates.
+  bool partial_updates = 4;
+  // The nested values it stores natively.
+  NestedSupport nested = 5;
+  // The type kinds it stores.
+  repeated TypeKind types = 6;
+  // The schema changes it applies.
+  SchemaChanges schema_changes = 7;
+  // Its identifier rules.
+  IdentifierRules identifiers = 8;
+  // How many writers may stage at once; at least 1.
+  uint32 max_parallel_writers = 9;
+  // The batch size it prefers, in bytes, if it has a preference.
+  optional uint64 preferred_batch_bytes = 10;
+}
+
+// What a source declares about itself; it declares nothing yet.
+message SourceCapabilities {}

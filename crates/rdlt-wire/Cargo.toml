@@ -1,0 +1,14 @@
+[package]
+name = "rdlt-wire"
+description = "The wire protocol between rdlt and out-of-process connectors: messages, the Arrow codec and limits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+prost.workspace = true
+
+[lints]
+workspace = true

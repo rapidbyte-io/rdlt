@@ -13,6 +13,9 @@ use walkdir::WalkDir;
 use crate::lexer::scan;
 use crate::rules::{self, FileRole, Finding, Severity};
 
+/// Directories never scanned: build output, and code generated from other sources.
+const SKIPPED: &[&str] = &["target", "generated"];
+
 /// Directories scanned for Rust sources, relative to the repository root.
 const SOURCE_ROOTS: &[&str] = &["crates", "fuzz", "xtask"];
 
@@ -25,7 +28,9 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
         .filter(|dir| dir.exists())
     {
         let walk = WalkDir::new(&dir).sort_by_file_name().into_iter();
-        for entry in walk.filter_entry(|entry| entry.file_name() != "target") {
+        for entry in
+            walk.filter_entry(|entry| !SKIPPED.iter().any(|skipped| entry.file_name() == *skipped))
+        {
             let entry = entry.with_context(|| format!("walking {}", dir.display()))?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "rs") {

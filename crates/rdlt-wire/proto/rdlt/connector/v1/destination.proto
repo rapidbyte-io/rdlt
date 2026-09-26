@@ -1,0 +1,248 @@
+// A destination's operations: opening a session, applying schema changes, writing, committing.
+syntax = "proto3";
+
+package rdlt.connector.v1;
+
+import "rdlt/connector/v1/errors.proto";
+import "rdlt/connector/v1/state.proto";
+import "rdlt/connector/v1/types.proto";
+import "rdlt/connector/v1/source.proto";
+
+// Opens a session: fences older ones, discards unpublished staging and returns state.
+message OpenRequest {
+  // The pipeline.
+  string pipeline = 1;
+  // The load, a UUIDv7 in its 16 bytes.
+  bytes load_id = 2;
+}
+
+// An open session.
+message OpenResponse {
+  // The session's handle, which later requests name.
+  uint64 session = 1;
+  // The epoch the open set.
+  uint64 epoch = 2;
+  // Every committed state record of the pipeline, with distinct keys.
+  repeated StateRecord state = 3;
+}
+
+// The key rows of a merged table are matched by.
+message MergeKey {
+  // The key's columns.
+  repeated string columns = 1;
+  // The column ordering versions of one key.
+  string seq = 2;
+  // For a child table, the root table's key its rows follow.
+  optional RootKey root = 3;
+}
+
+// How a child table's rows follow the root table's rows.
+message RootKey {
+  // The root table.
+  string table = 1;
+  // The column holding a row's root id.
+  string id = 2;
+  // The root row's sequence column.
+  string seq = 3;
+}
+
+// A table a change or writer applies to.
+message TableRef {
+  // Its path.
+  TablePath path = 1;
+  // Its identifier in the destination.
+  string name = 2;
+  // Its schema version; at least 1.
+  uint32 version = 3;
+  // The hidden generation a replace fills, if it is one.
+  optional uint64 generation = 4;
+  // How its rows merge, if they do.
+  optional MergeKey merge = 5;
+}
+
+// A change to a table's schema.
+message TableChange {
+  // The change.
+  oneof change {
+    // Creates the table.
+    CreateTable create = 1;
+    // Adds a nullable column.
+    AddColumn add_column = 2;
+    // Widens a column.
+    WidenColumn widen = 3;
+  }
+}
+
+// Creates a table.
+message CreateTable {
+  // The table.
+  TableRef table = 1;
+  // Its columns.
+  TableSchema schema = 2;
+}
+
+// Adds a nullable column.
+message AddColumn {
+  // The table.
+  TableRef table = 1;
+  // The column.
+  Field field = 2;
+}
+
+// Widens a column.
+message WidenColumn {
+  // The table.
+  TableRef table = 1;
+  // The column's identifier.
+  string column = 2;
+  // Its current type.
+  LogicalType from = 3;
+  // Its new type.
+  LogicalType to = 4;
+}
+
+// Applies a schema change in a session.
+message ApplySchemaRequest {
+  // The session.
+  uint64 session = 1;
+  // The change.
+  TableChange change = 2;
+}
+
+// The answer to a schema change.
+message ApplySchemaResponse {}
+
+// What the engine sends on a write.
+message WriteFrame {
+  // The frame.
+  oneof frame {
+    // Starts writing a table; the first message.
+    WriteStart start = 1;
+    // An Arrow schema, once per table version.
+    WriteSchema schema = 2;
+    // An Arrow record or dictionary batch.
+    WriteBatch batch = 3;
+    // Asks for everything written so far to be durable in staging.
+    Unit flush = 4;
+  }
+}
+
+// Starts writing a table.
+message WriteStart {
+  // The session.
+  uint64 session = 1;
+  // The table.
+  TableRef table = 2;
+}
+
+// An Arrow schema for a table version: an IPC schema message.
+message WriteSchema {
+  // The table's schema version.
+  uint32 version = 1;
+  // The IPC schema message, as a flatbuffer.
+  bytes ipc_schema = 2;
+}
+
+// An Arrow batch of one segment, in Arrow Flight's FlightData layout.
+message WriteBatch {
+  // The segment.
+  uint64 segment = 1;
+  // The IPC message: a record batch or dictionary batch flatbuffer.
+  bytes data_header = 2;
+  // The message's body buffers.
+  bytes data_body = 3;
+}
+
+// What a destination answers on a write.
+message WriteAck {
+  // The answer.
+  oneof ack {
+    // Grants bytes the engine may send.
+    Credit credit = 1;
+    // Everything written so far is durable in staging.
+    WriteStats flushed = 2;
+    // The write failed.
+    Error error = 3;
+  }
+}
+
+// What a writer staged.
+message WriteStats {
+  // Rows.
+  uint64 rows = 1;
+  // Bytes, as the destination measures them.
+  uint64 bytes = 2;
+}
+
+// A range of segments, both ends included.
+message SegmentRange {
+  // The first segment.
+  uint64 first = 1;
+  // The last segment.
+  uint64 last = 2;
+}
+
+// A generation a commit finishes: its table swaps to it.
+message FinishGeneration {
+  // The table.
+  TablePath table = 1;
+  // The generation.
+  uint64 generation = 2;
+}
+
+// A child table whose rows a commit replaces for the root rows it merges.
+message ChildTable {
+  // The child table's identifier.
+  string table = 1;
+  // How its rows merge.
+  MergeKey merge = 2;
+}
+
+// What a commit publishes.
+message CommitMeta {
+  // The load, a UUIDv7 in its 16 bytes.
+  bytes load_id = 1;
+  // The commit's sequence within the load; at least 1.
+  uint64 commit_seq = 2;
+  // The session's epoch.
+  uint64 epoch = 3;
+  // The segments it publishes, ascending, disjoint and not adjacent.
+  repeated SegmentRange segments = 4;
+  // The state changes it makes.
+  repeated StateChange state_delta = 5;
+  // The generations it finishes.
+  repeated FinishGeneration finish_generations = 6;
+  // The child tables it replaces rows of.
+  repeated ChildTable child_tables = 7;
+}
+
+// Commits in a session.
+message CommitRequest {
+  // The session.
+  uint64 session = 1;
+  // What to publish.
+  CommitMeta meta = 2;
+}
+
+// What a commit published.
+message Receipt {
+  // The load, a UUIDv7 in its 16 bytes.
+  bytes load_id = 1;
+  // The commit's sequence within the load.
+  uint64 commit_seq = 2;
+  // When it committed.
+  Instant committed_at = 3;
+  // Rows published.
+  uint64 rows = 4;
+  // Bytes published.
+  uint64 bytes = 5;
+}
+
+// Closes a session.
+message CloseRequest {
+  // The session.
+  uint64 session = 1;
+}
+
+// The answer to a close.
+message CloseResponse {}

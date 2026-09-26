@@ -1,0 +1,50 @@
+// State: the records a destination keeps for a pipeline, and a stream's state as a source sees it.
+syntax = "proto3";
+
+package rdlt.connector.v1;
+
+import "rdlt/connector/v1/types.proto";
+
+// One state record: a key and the bytes the destination stores for it verbatim.
+message StateRecord {
+  // The key.
+  string key = 1;
+  // The value, which the destination never reads.
+  bytes value = 2;
+}
+
+// A change a commit makes to state.
+message StateChange {
+  // The change.
+  oneof change {
+    // Stores a record.
+    StateRecord put = 1;
+    // Deletes the record of a key.
+    string delete = 2;
+  }
+}
+
+// A partition's committed position.
+message PartitionState {
+  // The partition's id.
+  string partition = 1;
+  // Its position.
+  oneof state {
+    // Where to resume.
+    Cursor cursor = 2;
+    // Finished.
+    Unit done = 3;
+  }
+}
+
+// A stream's committed state, as a source plans from it.
+message StreamState {
+  // The stream's phase.
+  uint32 phase = 1;
+  // Each partition's position, with distinct ids.
+  repeated PartitionState partitions = 2;
+  // The generation a full read fills, if one is in progress.
+  optional uint64 generation = 3;
+  // The generations full reads completed.
+  repeated uint64 completed = 4;
+}

@@ -19,6 +19,7 @@ lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo xtask lint
     cargo xtask deps
+    cargo xtask codegen --check
     cargo machete
     cargo deny check
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
