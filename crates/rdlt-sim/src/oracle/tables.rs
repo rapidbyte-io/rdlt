@@ -2,19 +2,21 @@
 //! each value read back from the cell holding it as the schema it was written under says, in a
 //! column whose type holds the value's and is stored as the destination's capabilities say.
 
+mod cells;
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use rdlt_connector::{ColumnKey, ColumnPath, Field, LogicalType, TablePath, TableSchema};
+use rdlt_connector::{Capabilities, ColumnKey, ColumnPath, TablePath, TableSchema};
 use rdlt_engine::{Nested, WriteMode};
 use rdlt_testkit::canon::{Canon, storage};
-use rdlt_testkit::decode;
 
-use super::expected::{self, Expected};
+use super::expected::{self, Expected, Placement};
 use super::names;
 use crate::destination::{Published, Stored, published_table, table_paths};
 use crate::seed::Seed;
-use crate::workload::{Row, SimStream};
+use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
+use cells::{Cell, fields, read, text};
 
 /// Checks every table of `stream` against the model's tables for `rows`, the rows its table
 /// holds, of `delivered`, every row delivered so far.
@@ -25,9 +27,8 @@ pub(super) fn check(
     delivered: &[Row],
     seed: Seed,
 ) {
-    let expected = expected::tables(stream, rows);
-    let uniform = expected::uniform(stream, delivered);
-    let none = BTreeMap::new();
+    let expected = expected::tables(stream, rows, delivered);
+    let capabilities = world.capabilities();
     let mut paths: BTreeSet<(usize, Vec<String>)> = expected
         .keys()
         .map(|path| (path.len(), path.clone()))
@@ -57,7 +58,7 @@ pub(super) fn check(
             stream,
             path,
             parents: &parents,
-            uniform: if path.len() == 1 { &uniform } else { &none },
+            capabilities: &capabilities,
             seed,
         };
         let ids = table.check(rows, &lineage);
@@ -75,8 +76,8 @@ struct Table<'a> {
     path: &'a [String],
     /// The tables a child table's rows' parents may be rows of, closest first.
     parents: &'a [Vec<String>],
-    /// The type each column a single type only ever arrived at has, by path.
-    uniform: &'a BTreeMap<String, LogicalType>,
+    /// What the destination stores.
+    capabilities: &'a Capabilities,
     seed: Seed,
 }
 
@@ -133,8 +134,8 @@ impl Table<'_> {
             self.stream.name,
             self.stream.read,
             self.stream.write,
-            self.stream.policy,
-            self.stream.nested,
+            self.stream.schema,
+            self.stream.pipeline,
             findings.len(),
             &findings[..findings.len().min(8)]
         );
@@ -234,7 +235,8 @@ impl Table<'_> {
                         cell,
                         sent,
                         own == Some(cell.physical),
-                        self.uniform.get(path),
+                        template.placed.get(path),
+                        self.native(path),
                     )
                     .map(|finding| format!("{path}: {finding}"))
                 }
@@ -247,24 +249,42 @@ impl Table<'_> {
         }
     }
 
-    /// Why `cell` does not hold `sent`, if it does not: its column's type does not hold the
-    /// value's, the destination stores the column otherwise than its capabilities say, or the cell
-    /// means another value.
+    /// Whether the column at `path` stores nested values natively, where the destination can.
+    fn native(&self, path: &str) -> bool {
+        let column = self
+            .stream
+            .drift
+            .iter()
+            .position(|drift| self.path.len() == 1 && drift.name == path);
+        self.stream.resolved(column, Relaxed::default()).nested == Nested::Native
+    }
+
+    /// Why `cell` does not hold `sent`, if it does not: it is not where the model `placed` it, its
+    /// column's type does not hold the value's, the destination stores the column otherwise than
+    /// its capabilities say, with nested values `native` where it can, or the cell means another
+    /// value.
     fn value(
         &self,
         cell: &Cell<'_>,
         sent: &expected::Sent,
         own: bool,
-        uniform: Option<&LogicalType>,
+        placed: Option<&Placement>,
+        native: bool,
     ) -> Option<String> {
         let (physical, logical) = (cell.physical, &cell.logical);
-        if let Some(uniform) = uniform
-            && (!own || logical != uniform)
-        {
-            return Some(format!(
-                "{physical} is {logical}, but every value of its column arrived as {uniform}, \
-                 which its own column keeps"
-            ));
+        match placed {
+            Some(Placement::Own(expected)) if !own || logical != expected => {
+                return Some(format!(
+                    "{physical} is {logical}; the model places the value in its own column, of \
+                     {expected}"
+                ));
+            }
+            Some(Placement::Variant) if own => {
+                return Some(format!(
+                    "{physical}, its own column, holds the value, which its type does not hold"
+                ));
+            }
+            _ => {}
         }
         if let Some(source) = sent.source()
             && logical.join(source) != *logical
@@ -273,8 +293,7 @@ impl Table<'_> {
                 "{physical} is {logical}, which does not hold {source}"
             ));
         }
-        let native = self.stream.nested == Nested::Native;
-        let stored = storage(logical, native, &self.world.capabilities);
+        let stored = storage(logical, native, self.capabilities);
         if cell.lowered != stored {
             return Some(format!(
                 "{physical}, {logical}, is stored as {}, not {stored}",
@@ -288,7 +307,7 @@ impl Table<'_> {
 
     /// Checks the table's identifiers against the destination's rules, and each distinct.
     fn check_names(&self, published: &Published) {
-        let rules = &self.world.capabilities.identifiers;
+        let rules = &self.capabilities.identifiers;
         let mut seen = BTreeSet::new();
         let columns = published.rows.iter().flat_map(fields);
         for name in std::iter::once(published.physical.clone()).chain(columns) {
@@ -314,60 +333,4 @@ impl Table<'_> {
         };
         2 + usize::from(self.stream.write == WriteMode::Merge) + lineage
     }
-}
-
-/// A cell's meaning as text: a number's or a hex id's digits.
-fn text(value: &Canon) -> String {
-    match value {
-        Canon::Number(text) | Canon::Bytes(text) | Canon::Text(text) => text.clone(),
-        other => format!("{other:?}"),
-    }
-}
-
-/// The field of `schema` called `name`.
-fn field<'a>(schema: &'a TableSchema, name: &str) -> Option<&'a Field> {
-    schema.fields().iter().find(|field| field.name() == name)
-}
-
-/// One cell of a row, read.
-struct Cell<'a> {
-    physical: &'a str,
-    /// The logical type it was written with.
-    logical: LogicalType,
-    /// The type the row stores it as.
-    lowered: LogicalType,
-    value: Canon,
-}
-
-/// The cell of `physical` in `row`, read as the logical type the row was written with, with
-/// JSON in it read as `source` says; `None` where the row lacks the column.
-fn read<'a>(
-    row: &Stored,
-    written: &TableSchema,
-    physical: &'a str,
-    source: Option<&LogicalType>,
-) -> Option<Cell<'a>> {
-    let array = row.row.column_by_name(physical)?;
-    let lowered = field(written, physical)?.logical_type().clone();
-    let arrow = row.row.schema();
-    let named = Field::lowered_from(arrow.field_with_name(physical).ok()?);
-    let logical = named.unwrap_or_else(|| lowered.clone());
-    let hint = decode::hint(&logical, source);
-    let value = decode::cell(array.as_ref(), 0, &logical, &lowered, &hint);
-    Some(Cell {
-        physical,
-        logical,
-        lowered,
-        value,
-    })
-}
-
-/// The names of `row`'s columns, in order.
-fn fields(row: &Stored) -> Vec<String> {
-    let schema = row.row.schema();
-    schema
-        .fields()
-        .iter()
-        .map(|field| field.name().clone())
-        .collect()
 }

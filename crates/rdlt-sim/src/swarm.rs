@@ -31,6 +31,9 @@ pub struct Features {
     pub disruptions: bool,
     /// Destinations that store only some types natively, and the rest as text.
     pub narrow: bool,
+    /// Schema settings at every level, type hints, drift columns the source declares, and
+    /// destinations that cannot add columns.
+    pub settings: bool,
 }
 
 impl Features {
@@ -45,6 +48,7 @@ impl Features {
         faults: true,
         disruptions: true,
         narrow: true,
+        settings: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
@@ -63,6 +67,7 @@ impl Features {
             faults: rng.chance(500),
             disruptions: rng.chance(500),
             narrow: rng.chance(500),
+            settings: rng.chance(500),
         }
     }
 

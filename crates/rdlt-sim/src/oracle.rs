@@ -1,19 +1,22 @@
 //! The exactly-once oracle: a seeded workload runs through faults, retries, crashes, stops and
 //! concurrent runs, and the destination must end up holding exactly what a reference model says.
 
+mod arrivals;
 mod expected;
 mod names;
+mod refusals;
 mod tables;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{
-    ConnectContext, PipelineId, ReadMode, StreamName, destination_factory, source_factory,
+    ColumnPath, ConnectContext, PipelineId, ReadMode, StreamName, destination_factory,
+    source_factory,
 };
 use rdlt_engine::{
     CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, RunHandle, RunStatus,
-    SchemaPolicy, SchemaSettings, StopMode, StreamPlan, WriteMode,
+    StopMode, StreamPlan, WriteMode,
 };
 use serde_json::json;
 
@@ -22,8 +25,9 @@ use crate::env::SimEnv;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::source::SimSource;
-use crate::workload::{PHASES, Row, SimStream};
+use crate::workload::{Level, PHASES, Relaxed, Row, SimStream, Workload};
 use crate::world::World;
+use refusals::Failure;
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
 const FAULTY_RUNS: usize = 4;
@@ -58,41 +62,99 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) {
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
     let world = World::register(&name, &mut rng);
-    let engine = Engine::new(config(&mut rng), env);
-    let plan = plan(&world.workload.streams);
-    let features = world.workload.features;
+    let mut simulation = Simulation {
+        seed,
+        engine: Engine::new(config(&mut rng), env),
+        relaxed: vec![Relaxed::default(); world.workload.streams.len()],
+        world,
+        name,
+    };
     for phase in 0..PHASES {
-        world.set_phase(phase);
-        let mut runs = 0;
-        let mut succeeded = false;
-        let mut failure = None;
+        let reports = simulation.converge(phase, &mut rng).await;
+        settle(seed).await;
+        let world = &simulation.world;
+        check_contents(world, phase, seed);
+        check_discards(world, phase, &reports, seed);
+    }
+    let violations = simulation.world.violations();
+    World::unregister(&simulation.name);
+    assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
+}
+
+/// One simulation: its world, the engine its runs share, and what an operator relaxed after
+/// refusals.
+struct Simulation {
+    seed: Seed,
+    name: String,
+    world: Arc<World>,
+    engine: Engine,
+    relaxed: Vec<Relaxed>,
+}
+
+impl Simulation {
+    /// Runs `phase` until it converges; the reports of its runs that ended.
+    ///
+    /// A phase converges once a run has succeeded and no full read is left half done, so each
+    /// full read the model counts is complete.
+    async fn converge(&mut self, phase: usize, rng: &mut SplitMix64) -> Vec<Report> {
+        let (seed, features) = (self.seed, self.world.workload.features);
+        self.world.set_phase(phase);
+        let (mut runs, mut succeeded, mut failure) = (0, false, None);
         let mut reports = Vec::new();
-        // A phase ends once a run has succeeded and no full read is left half done, so each full
-        // read the model counts is complete.
-        while !succeeded || reads_in_progress(&world) {
+        while !succeeded || reads_in_progress(&self.world) {
             let faulty = runs < FAULTY_RUNS;
-            world.set_faulty(faulty && features.faults);
+            self.world.set_faulty(faulty && features.faults);
             let scenario = if faulty && features.disruptions {
-                pick(&mut rng)
+                pick(rng)
             } else {
                 Scenario::Plain
             };
             runs += 1;
-            let (success, error) = execute(&engine, &plan, &name, scenario, &mut reports).await;
-            succeeded |= success;
-            failure = error.or(failure);
+            let ran = self.attempt(phase, scenario, &mut reports).await;
+            succeeded |= ran.succeeded;
+            failure = ran.failure.or(failure);
             assert!(
                 runs < 32,
                 "seed {seed}: phase {phase} did not converge; the last error was {failure:?}"
             );
         }
-        settle(seed).await;
-        check_contents(&world, phase, seed);
-        check_discards(&world, phase, &reports, features.reports_complete(), seed);
+        reports
     }
-    let violations = world.violations();
-    World::unregister(&name);
-    assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
+
+    /// Runs `scenario` in `phase`, keeping the reports of runs that end, and checks its failures
+    /// against the refusals the model predicts: a refusal an operator can relax is relaxed.
+    async fn attempt(
+        &mut self,
+        phase: usize,
+        scenario: Scenario,
+        reports: &mut Vec<Report>,
+    ) -> Ran {
+        let seed = self.seed;
+        let prediction = refusals::predict(&self.world, &self.relaxed, phase);
+        let plan = plan(&self.world.workload, &self.relaxed);
+        let (succeeded, failures) =
+            execute(&self.engine, &plan, &self.name, scenario, reports).await;
+        assert!(
+            !(succeeded && prediction.must),
+            "seed {seed}: phase {phase}: a run succeeded, though every run must meet one of {:?}",
+            prediction.may
+        );
+        let refused = refusals::refused(&failures, &prediction)
+            .unwrap_or_else(|finding| panic!("seed {seed}: phase {phase}: {finding}"));
+        let failure = failures.into_iter().last().map(|failure| failure.text);
+        if let Some((stream, code)) = refused {
+            refusals::relax(&self.world, &mut self.relaxed, &stream, code);
+        }
+        Ran { succeeded, failure }
+    }
+}
+
+/// How one scenario's runs went.
+struct Ran {
+    /// Whether one succeeded.
+    succeeded: bool,
+    /// The last failure among them, printed.
+    failure: Option<String>,
 }
 
 fn config(rng: &mut SplitMix64) -> EngineConfig {
@@ -123,24 +185,38 @@ fn to_usize(value: u64) -> usize {
     usize::try_from(value).unwrap_or(1)
 }
 
-fn plan(streams: &[SimStream]) -> PipelinePlan {
+/// The plan of `workload`'s pipeline, each stream's settings as `relaxed` leaves them.
+fn plan(workload: &Workload, relaxed: &[Relaxed]) -> PipelinePlan {
     let pipeline = PipelineId::parse("sim").expect("valid pipeline id");
-    let streams = streams.iter().map(|stream| {
-        let name = StreamName::new(&stream.name).expect("valid stream name");
-        let settings = SchemaSettings::new()
-            .policy(stream.policy)
-            .nested(stream.nested);
-        let plan = StreamPlan::new(name)
-            .read(stream.read)
-            .write(stream.write)
-            .schema(settings);
-        if stream.keys > 0 && stream.plan_key {
-            plan.key(["key"])
-        } else {
-            plan
-        }
-    });
-    PipelinePlan::new(pipeline, streams).expect("the simulated plan is valid")
+    let streams = workload
+        .streams
+        .iter()
+        .zip(relaxed)
+        .map(|(stream, relaxed)| {
+            let name = StreamName::new(&stream.name).expect("valid stream name");
+            let settings = stream.schema.relaxing(stream.pipeline, *relaxed);
+            let mut plan = StreamPlan::new(name)
+                .read(stream.read)
+                .write(stream.write)
+                .schema(settings.engine());
+            for drift in &stream.drift {
+                let column = ColumnPath::from(drift.name.as_str());
+                if drift.settings != Level::default() {
+                    plan = plan.column(column.clone(), drift.settings.relaxed(*relaxed).engine());
+                }
+                if let Some(hint) = &drift.hint {
+                    plan = plan.hint(column, hint.clone());
+                }
+            }
+            if stream.keys > 0 && stream.plan_key {
+                plan.key(["key"])
+            } else {
+                plan
+            }
+        });
+    PipelinePlan::new(pipeline, streams)
+        .expect("the simulated plan is valid")
+        .schema(workload.pipeline.engine())
 }
 
 fn pick(rng: &mut SplitMix64) -> Scenario {
@@ -167,14 +243,14 @@ async fn start(engine: &Engine, plan: &PipelinePlan, world: &str) -> RunHandle {
 }
 
 /// Runs `scenario`, keeping the report of each run that ends; whether some run succeeded, and the
-/// error of a run that failed.
+/// failures of runs that failed.
 async fn execute(
     engine: &Engine,
     plan: &PipelinePlan,
     world: &str,
     scenario: Scenario,
     reports: &mut Vec<Report>,
-) -> (bool, Option<String>) {
+) -> (bool, Vec<Failure>) {
     let (ended, dropped) = match scenario {
         Scenario::Plain => (vec![bounded(start(engine, plan, world).await).await], false),
         Scenario::Crash(after) => {
@@ -209,18 +285,21 @@ async fn execute(
     let succeeded = ended
         .iter()
         .any(|(report, _)| report.status == RunStatus::Succeeded);
-    let error = ended.iter().find_map(|(_, error)| error.clone());
-    reports.extend(ended.into_iter().map(|(report, _)| report));
-    (succeeded && !dropped, error)
+    let mut failures = Vec::new();
+    for (report, failure) in ended {
+        reports.push(report);
+        failures.extend(failure);
+    }
+    (succeeded && !dropped, failures)
 }
 
-/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`]; its report, and its error.
-async fn bounded(run: RunHandle) -> (Report, Option<String>) {
+/// Awaits `run`, panicking if it takes longer than [`RUN_LIMIT`]; its report, and its failure.
+async fn bounded(run: RunHandle) -> (Report, Option<Failure>) {
     let outcome = tokio::time::timeout(RUN_LIMIT, run)
         .await
         .expect("every run ends within the limit of virtual time");
-    let error = outcome.error.map(|error| format!("{error:?}"));
-    (outcome.report, error)
+    let failure = outcome.error.as_ref().map(Failure::of);
+    (outcome.report, failure)
 }
 
 /// Lets aborted tasks finish, then checks that no task outlived its run.
@@ -251,9 +330,10 @@ fn check_contents(world: &World, phase: usize, seed: Seed) {
 
 /// Checks the rows and values each stream's policy discarded in `phase`, as its runs' `reports`
 /// count them, against those the model's policy discards: exactly where the reports are
-/// `complete`, and otherwise never more, as a dropped run's report or a commit whose response was
+/// complete, and otherwise never more, as a dropped run's report or a commit whose response was
 /// lost goes uncounted.
-fn check_discards(world: &World, phase: usize, reports: &[Report], complete: bool, seed: Seed) {
+fn check_discards(world: &World, phase: usize, reports: &[Report], seed: Seed) {
+    let complete = world.workload.features.reports_complete();
     for stream in &world.workload.streams {
         let counted = reports
             .iter()
@@ -278,12 +358,8 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], complete: boo
                 .collect(),
         };
         let expected = read.iter().fold((0, 0), |(rows, values), row| {
-            let held = expected::drift_values(stream, row);
-            match stream.policy {
-                SchemaPolicy::DiscardRow => (rows + u64::from(held > 0), values),
-                SchemaPolicy::DiscardValue => (rows, values + held),
-                _ => (rows, values),
-            }
+            let (dropped, discarded) = expected::discards(stream, row);
+            (rows + dropped, values + discarded)
         });
         let fits = if complete {
             counted == expected
@@ -298,7 +374,7 @@ fn check_discards(world: &World, phase: usize, reports: &[Report], complete: boo
             stream.name,
             stream.read,
             stream.write,
-            stream.policy,
+            stream.schema,
             if complete { "complete" } else { "incomplete" },
             if complete { "equal" } else { "not exceed" },
         );

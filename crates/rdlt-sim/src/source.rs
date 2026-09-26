@@ -62,6 +62,7 @@ impl SourceConnector for SimSource {
             streams.with(SimStreamReader {
                 index,
                 checkpointing: stream.checkpointing,
+                schema: schema(stream),
                 merge: stream.keys > 0,
                 plan_key: stream.plan_key,
             })
@@ -69,14 +70,15 @@ impl SourceConnector for SimSource {
     }
 }
 
-/// The schema a simulated stream declares: its base columns, and the key of a merge stream.
+/// The schema a simulated stream declares: its base columns, the key of a merge stream, and the
+/// drift columns it declares.
 ///
-/// Drift columns are left out, so they are schema changes the pipeline's policy handles.
+/// Other drift columns are left out, so they are schema changes the pipeline's policy handles.
 #[expect(
     clippy::missing_panics_doc,
     reason = "distinct column names always make a schema"
 )]
-pub fn schema(merge: bool) -> TableSchema {
+pub fn schema(stream: &SimStream) -> TableSchema {
     let column = |name| Field::new(name, LogicalType::Int64, false);
     let mut columns = vec![
         column("id"),
@@ -84,8 +86,13 @@ pub fn schema(merge: bool) -> TableSchema {
         column("offset"),
         column("value"),
     ];
-    if merge {
+    if stream.keys > 0 {
         columns.push(column("key"));
+    }
+    for drift in &stream.drift {
+        if let Some(declared) = &drift.declared {
+            columns.push(Field::new(drift.name.as_str(), declared.clone(), true));
+        }
     }
     TableSchema::new(columns).expect("the simulated schema has distinct names")
 }
@@ -93,6 +100,7 @@ pub fn schema(merge: bool) -> TableSchema {
 struct SimStreamReader {
     index: usize,
     checkpointing: Checkpointing,
+    schema: TableSchema,
     merge: bool,
     plan_key: bool,
 }
@@ -110,7 +118,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         let name = format!("s{}", self.index);
         let spec =
             StreamSpec::new(StreamName::new(name).expect("simulated stream names are valid"))
-                .with_schema(schema(self.merge))
+                .with_schema(self.schema.clone())
                 .with_read_modes([ReadMode::Full, ReadMode::Incremental])
                 .with_partitioning(Partitioning::Planned)
                 .with_checkpointing(self.checkpointing);

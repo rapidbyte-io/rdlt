@@ -1,13 +1,20 @@
 //! Seeded workloads: the streams a simulated source serves and the rows each phase holds.
 
+mod schema;
+mod settings;
 #[cfg(test)]
 mod tests;
 mod values;
 
-use rdlt_connector::{Checkpointing, ReadMode};
-use rdlt_engine::{Nested, SchemaPolicy, WriteMode};
+use std::ops::Range;
+
+use rdlt_connector::{Checkpointing, LogicalType, ReadMode};
+use rdlt_engine::{Nested, OnUnsupported, SchemaPolicy, WriteMode};
 use rdlt_testkit::draw::{draw, mix};
 use rdlt_testkit::drawn::{Scalar, Shape, json, neighbors};
+
+use settings::resolve;
+pub use settings::{Level, Relaxed, Resolved};
 
 use crate::rng::SplitMix64;
 use crate::swarm::Features;
@@ -25,6 +32,8 @@ pub struct Workload {
     pub salt: u64,
     /// The features the seed exercises.
     pub features: Features,
+    /// The pipeline's schema settings.
+    pub pipeline: Level,
     /// The streams.
     pub streams: Vec<SimStream>,
 }
@@ -61,10 +70,10 @@ pub struct SimStream {
     pub plan_key: bool,
     /// Columns whose presence and type change across partitions and phases.
     pub drift: Vec<Drift>,
-    /// What the pipeline does with schema changes.
-    pub policy: SchemaPolicy,
-    /// How the pipeline stores nested values.
-    pub nested: Nested,
+    /// The stream's schema settings.
+    pub schema: Level,
+    /// The pipeline's schema settings, which the stream's inherit.
+    pub pipeline: Level,
     /// Whether the source pushes its rows as JSON rather than Arrow.
     pub json: bool,
     /// Whether the source sends each batch as a slice of a larger one.
@@ -83,6 +92,12 @@ pub struct Drift {
     pub name: String,
     /// Its shape in each partition and phase; `None` where batches lack the column.
     pub shapes: Vec<[Option<Shape>; PHASES]>,
+    /// The column's own schema settings.
+    pub settings: Level,
+    /// The type the plan hints for it.
+    pub hint: Option<LogicalType>,
+    /// The type the source declares it as; undeclared columns are schema changes.
+    pub declared: Option<LogicalType>,
 }
 
 /// One row as the simulation tracks it.
@@ -109,19 +124,31 @@ impl Workload {
     /// A workload of one to three streams drawn from `rng`, exercising `features`.
     pub fn generate(rng: &mut SplitMix64, features: Features) -> Self {
         let salt = rng.next_u64();
+        let pipeline = if features.settings {
+            Level::draw(rng, false, features.normalize)
+        } else {
+            Level::default()
+        };
         let streams = (0..=rng.below(3))
-            .map(|index| SimStream::generate(index, rng, features, salt))
+            .map(|index| SimStream::generate(index, rng, features, salt, pipeline))
             .collect();
         Self {
             salt,
             features,
+            pipeline,
             streams,
         }
     }
 }
 
 impl SimStream {
-    fn generate(index: u64, rng: &mut SplitMix64, features: Features, salt: u64) -> Self {
+    fn generate(
+        index: u64,
+        rng: &mut SplitMix64,
+        features: Features,
+        salt: u64,
+        pipeline: Level,
+    ) -> Self {
         let (read, write) = modes(rng);
         let partitions: Vec<[u64; PHASES]> = (0..=rng.below(4))
             .map(|_| {
@@ -134,6 +161,7 @@ impl SimStream {
             })
             .collect();
         let json = features.json && rng.chance(500);
+        let schema = schema::level(rng, features);
         let drift = if features.drift {
             drift(rng, partitions.len(), features, json)
         } else {
@@ -157,16 +185,8 @@ impl SimStream {
                 0
             },
             plan_key: rng.chance(500),
-            policy: match rng.below(10) {
-                0 => SchemaPolicy::DiscardRow,
-                1 => SchemaPolicy::DiscardValue,
-                _ => SchemaPolicy::Evolve,
-            },
-            nested: if rng.chance(300) {
-                Nested::Json
-            } else {
-                Nested::Native
-            },
+            schema,
+            pipeline,
             json,
             sliced: features.sliced && rng.chance(500),
             named_floats: json && rng.chance(250),
@@ -174,8 +194,8 @@ impl SimStream {
             partitions,
             rows: Vec::new(),
         };
-        if features.normalize && rng.chance(500) {
-            stream.nested = normalized(rng);
+        if features.settings {
+            stream.draw_columns(rng, features);
         }
         stream.rows = (0..stream.partitions.len())
             .map(|partition| stream.draw_rows(salt, partition))
@@ -185,7 +205,66 @@ impl SimStream {
 
     /// Whether the stream's arrays land in child tables.
     pub fn normalized(&self) -> bool {
-        matches!(self.nested, Nested::Normalize { .. })
+        self.max_depth().is_some()
+    }
+
+    /// How deep the stream normalizes, if it does.
+    pub fn max_depth(&self) -> Option<u8> {
+        match resolve(&[self.schema, self.pipeline]).nested {
+            Nested::Normalize { max_depth } => Some(max_depth),
+            _ => None,
+        }
+    }
+
+    /// The settings drift column `column`, or with `None` the stream's other columns, resolve
+    /// to, as `relaxed` leaves them.
+    pub fn resolved(&self, column: Option<usize>, relaxed: Relaxed) -> Resolved {
+        let own = column.map_or_else(Level::default, |column| self.drift[column].settings);
+        let mut resolved = resolve(&[own, self.schema, self.pipeline]);
+        if relaxed.frozen && resolved.policy == SchemaPolicy::Freeze {
+            resolved.policy = SchemaPolicy::Evolve;
+        }
+        if relaxed.refused && resolved.on_unsupported == OnUnsupported::Refuse {
+            resolved.on_unsupported = OnUnsupported::VariantColumn;
+        }
+        resolved
+    }
+
+    /// Whether drift column `column` is stored whole, as one column, in a stream that normalizes:
+    /// its settings say how to store nested values, or the plan hints its type.
+    pub fn whole(&self, column: usize) -> bool {
+        let drift = &self.drift[column];
+        matches!(drift.settings.nested, Some(Nested::Native | Nested::Json)) || drift.hint.is_some()
+    }
+
+    /// The rows of `partition` the source reads in `phase`: every row of a full read, and an
+    /// incremental read's rows new in `phase`.
+    pub fn read(&self, partition: usize, phase: usize) -> &[Row] {
+        let rows = self.rows(partition, phase);
+        &rows[self.start(partition, phase).min(rows.len())..]
+    }
+
+    /// The offset `partition`'s read starts from in `phase`: where the last phase's ended, for an
+    /// incremental read, and else 0.
+    fn start(&self, partition: usize, phase: usize) -> usize {
+        match (self.read, phase.checked_sub(1)) {
+            (ReadMode::Incremental, Some(last)) => {
+                usize::try_from(self.partitions[partition][last]).unwrap_or(usize::MAX)
+            }
+            _ => 0,
+        }
+    }
+
+    /// The offsets of the rows each batch of `partition` in `phase` holds, in order: a read
+    /// resumes only at a checkpoint, and checkpoints fall between batches, so every run sends the
+    /// same batches.
+    pub fn batches(&self, partition: usize, phase: usize) -> Vec<Range<usize>> {
+        let end = self.rows(partition, phase).len();
+        let size = usize::try_from(self.batch_rows).unwrap_or(1);
+        (self.start(partition, phase)..end)
+            .step_by(size)
+            .map(|start| start..(start + size).min(end))
+            .collect()
     }
 
     /// The phase that first delivers row `offset` of `partition`: incremental rows keep the phase
@@ -328,6 +407,9 @@ fn drift(rng: &mut SplitMix64, partitions: usize, features: Features, json: bool
             Drift {
                 name: name.to_owned(),
                 shapes,
+                settings: Level::default(),
+                hint: None,
+                declared: None,
             }
         })
         .collect()

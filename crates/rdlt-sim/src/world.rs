@@ -1,5 +1,8 @@
 //! The world one simulation shares: its workload, faults, destination store and findings.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -43,8 +46,11 @@ impl FaultPoint {
 pub struct World {
     /// What the source serves.
     pub workload: Workload,
-    /// What the destination can store.
-    pub capabilities: Capabilities,
+    /// What the destination can store, until it is granted adding columns.
+    capabilities: Capabilities,
+    /// Whether the destination was granted adding columns, as an operator would after its runs
+    /// were refused for want of it.
+    granted: AtomicBool,
     phase: AtomicUsize,
     faulty: AtomicBool,
     rng: Mutex<SplitMix64>,
@@ -61,6 +67,7 @@ impl World {
         let world = Arc::new(Self {
             workload: Workload::generate(rng, features),
             capabilities: capabilities(rng, features),
+            granted: AtomicBool::new(false),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
@@ -79,6 +86,18 @@ impl World {
     /// Removes the world registered as `name`.
     pub fn unregister(name: &str) {
         WORLDS.lock().remove(name);
+    }
+
+    /// What the destination can store.
+    pub fn capabilities(&self) -> Capabilities {
+        let mut capabilities = self.capabilities.clone();
+        capabilities.schema_changes.add_column |= self.granted.load(Ordering::SeqCst);
+        capabilities
+    }
+
+    /// Lets the destination add columns from now on.
+    pub fn grant_add_column(&self) {
+        self.granted.store(true, Ordering::SeqCst);
     }
 
     /// The phase the source serves.
@@ -141,8 +160,8 @@ impl World {
 }
 
 /// Destination capabilities drawn from `rng`: which types it stores natively, whether it stores
-/// JSON, which widenings and nested types it stores, and the identifier rules it names columns
-/// under.
+/// JSON, which widenings and nested types it stores, whether it adds columns, and the identifier
+/// rules it names columns under.
 fn capabilities(rng: &mut SplitMix64, features: Features) -> Capabilities {
     let mut capabilities = Capabilities::minimal();
     if features.narrow {
@@ -188,6 +207,9 @@ fn capabilities(rng: &mut SplitMix64, features: Features) -> Capabilities {
         std::num::NonZeroU16::new(max_len).expect("identifier lengths are positive");
     if rng.chance(300) {
         capabilities.identifiers.reserved.insert("value".to_owned());
+    }
+    if features.settings && rng.chance(250) {
+        capabilities.schema_changes.add_column = false;
     }
     capabilities.max_parallel_writers =
         std::num::NonZeroU16::new(u16::try_from(1 + rng.below(4)).unwrap_or(1))

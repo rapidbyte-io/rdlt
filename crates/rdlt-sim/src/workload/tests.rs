@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use rdlt_connector::{LogicalType, ReadMode, TypeKind};
-use rdlt_engine::{Nested, SchemaPolicy, WriteMode};
+use rdlt_engine::{Nested, OnUnsupported, SchemaPolicy, WriteMode};
 
-use super::{PHASES, SimStream, Workload};
+use super::{Drift, Level, PHASES, Relaxed, SimStream, Workload};
 use crate::rng::SplitMix64;
 use crate::swarm::Features;
 
@@ -81,6 +81,15 @@ fn row_ids_are_unique_within_a_stream() {
     }
 }
 
+/// The policies `stream`'s columns resolve to: its drift columns' and its others'.
+fn policies(stream: &SimStream) -> Vec<SchemaPolicy> {
+    (0..stream.drift.len())
+        .map(Some)
+        .chain([None])
+        .map(|column| stream.resolved(column, Relaxed::default()).policy)
+        .collect()
+}
+
 #[test]
 fn workloads_cover_merges_drift_json_and_every_policy() {
     let streams: Vec<_> = (0..300)
@@ -107,11 +116,17 @@ fn workloads_cover_merges_drift_json_and_every_policy() {
         SchemaPolicy::DiscardValue,
     ] {
         assert!(
-            streams.iter().any(|stream| stream.policy == policy),
+            streams
+                .iter()
+                .any(|stream| policies(stream).contains(&policy)),
             "{policy:?}"
         );
     }
-    assert!(streams.iter().any(|stream| stream.nested == Nested::Json));
+    assert!(
+        streams
+            .iter()
+            .any(|stream| stream.resolved(None, Relaxed::default()).nested == Nested::Json)
+    );
     assert!(
         streams.iter().any(|stream| stream.json),
         "some stream pushes JSON"
@@ -157,6 +172,139 @@ fn merge_rows_share_keys_within_their_partition() {
     );
 }
 
+/// Every stream of 300 seeds' workloads with every feature on.
+fn streams() -> Vec<SimStream> {
+    (0..300)
+        .flat_map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL).streams)
+        .collect()
+}
+
+#[test]
+fn settings_are_drawn_at_every_level() {
+    let workloads: Vec<Workload> = (0..300)
+        .map(|seed| Workload::generate(&mut SplitMix64::new(seed), Features::ALL))
+        .collect();
+    let streams: Vec<&SimStream> = workloads.iter().flat_map(|w| &w.streams).collect();
+    let drifts: Vec<&Drift> = streams.iter().flat_map(|stream| &stream.drift).collect();
+    let pipelines: Vec<Level> = workloads.iter().map(|w| w.pipeline).collect();
+    let levels: [Vec<Level>; 3] = [
+        pipelines,
+        streams.iter().map(|s| s.schema).collect(),
+        drifts.iter().map(|d| d.settings).collect(),
+    ];
+    for level in &levels {
+        for policy in [
+            SchemaPolicy::Evolve,
+            SchemaPolicy::Freeze,
+            SchemaPolicy::DiscardRow,
+            SchemaPolicy::DiscardValue,
+        ] {
+            assert!(level.iter().any(|l| l.policy == Some(policy)), "{policy:?}");
+        }
+        let refuse = Some(OnUnsupported::Refuse);
+        assert!(level.iter().any(|l| l.on_unsupported == refuse));
+        assert!(level.iter().any(|l| l.nested == Some(Nested::Json)));
+    }
+    assert!(
+        levels[0]
+            .iter()
+            .any(|l| matches!(l.nested, Some(Nested::Normalize { .. })))
+    );
+}
+
+#[test]
+fn drift_columns_are_hinted_declared_both_or_neither() {
+    let streams = streams();
+    let drifts: Vec<&Drift> = streams.iter().flat_map(|stream| &stream.drift).collect();
+    assert!(
+        drifts
+            .iter()
+            .any(|d| d.hint.is_some() && d.declared.is_some())
+    );
+    assert!(
+        drifts
+            .iter()
+            .any(|d| d.hint.is_some() && d.declared.is_none())
+    );
+    assert!(
+        drifts
+            .iter()
+            .any(|d| d.hint.is_none() && d.declared.is_some())
+    );
+    assert!(
+        drifts
+            .iter()
+            .any(|d| d.hint.is_none() && d.declared.is_none())
+    );
+    assert!(
+        streams
+            .iter()
+            .any(|s| s.normalized() && s.drift.iter().any(|d| d.hint.is_some())),
+        "some normalized stream hints a column"
+    );
+}
+
+#[test]
+fn json_streams_hint_and_declare_only_types_json_values_are_inferred_as() {
+    let inferred = [
+        LogicalType::Bool,
+        LogicalType::Int64,
+        LogicalType::Float64,
+        LogicalType::Utf8,
+        LogicalType::Json,
+    ];
+    let typed: Vec<LogicalType> = streams()
+        .iter()
+        .filter(|stream| stream.json)
+        .flat_map(|stream| &stream.drift)
+        .flat_map(|drift| drift.hint.iter().chain(&drift.declared))
+        .cloned()
+        .collect();
+    assert!(!typed.is_empty());
+    assert!(
+        typed.iter().all(|logical| inferred.contains(logical)),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_normalized_stream_declares_no_column_its_policy_discards() {
+    for stream in streams().iter().filter(|stream| stream.normalized()) {
+        for (column, drift) in stream.drift.iter().enumerate() {
+            let policy = stream.resolved(Some(column), Relaxed::default()).policy;
+            let discards = matches!(
+                policy,
+                SchemaPolicy::DiscardRow | SchemaPolicy::DiscardValue
+            );
+            assert!(!(discards && drift.declared.is_some()), "{}", drift.name);
+        }
+    }
+}
+
+#[test]
+fn a_read_resumes_where_the_last_phases_ended_in_batches_of_the_streams_size() {
+    let stream = streams()
+        .into_iter()
+        .find(|stream| {
+            stream.read == ReadMode::Incremental
+                && stream.batch_rows > 1
+                && stream.partitions[0][0] > 0
+                && stream.partitions[0][1] > stream.partitions[0][0]
+        })
+        .expect("an incremental stream that grows");
+    let first = usize::try_from(stream.partitions[0][0]).unwrap();
+    let batches = stream.batches(0, 1);
+    assert_eq!(batches[0].start, first);
+    assert_eq!(batches.last().unwrap().end, stream.rows(0, 1).len());
+    assert!(
+        batches
+            .iter()
+            .all(|batch| batch.len() <= usize::try_from(stream.batch_rows).unwrap())
+    );
+    assert!(stream.read(0, 1).iter().all(|row| row.delivered == 1));
+    assert_eq!(stream.read(0, 0).len(), first);
+}
+
 #[test]
 fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
     let streams: Vec<_> = (0..300)
@@ -193,7 +341,7 @@ fn some_streams_normalize_arrays_under_every_write_mode_and_policy() {
         assert!(
             streams
                 .iter()
-                .any(|stream| has_arrays(stream) && stream.policy == policy),
+                .any(|stream| has_arrays(stream) && policies(stream).contains(&policy)),
             "some normalized stream with arrays has policy {policy:?}"
         );
     }
@@ -290,12 +438,25 @@ fn features_off_leave_their_parts_of_the_workload_out() {
         faults: false,
         disruptions: false,
         narrow: false,
+        settings: false,
     };
     for seed in 0..100 {
         for stream in Workload::generate(&mut SplitMix64::new(seed), none).streams {
             assert!(
                 stream.drift.is_empty() && !stream.json && !stream.sliced && !stream.normalized()
             );
+        }
+    }
+    let unset = Features {
+        drift: true,
+        ..none
+    };
+    for seed in 0..100 {
+        let workload = Workload::generate(&mut SplitMix64::new(seed), unset);
+        assert_eq!(workload.pipeline, Level::default());
+        for drift in workload.streams.iter().flat_map(|stream| &stream.drift) {
+            assert_eq!(drift.settings, Level::default());
+            assert!(drift.hint.is_none() && drift.declared.is_none());
         }
     }
     let scalars = Features {
