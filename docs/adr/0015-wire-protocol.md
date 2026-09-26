@@ -29,6 +29,14 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   `crates/rdlt-wire/proto/rdlt/connector/v1/`, one per concern. The service, handshake, errors,
   types, catalog, state, source and destination messages are each in one file.
   - Every enum's zero is `UNSPECIFIED` and never sent; a receiver refuses it.
+  - A logical type travels as the nodes of its tree in pre-order: a struct's node counts its
+    fields, whose subtrees follow it, and a list's node is followed by its item's. A type nested
+    as deep as the nesting limit (64) then crosses the wire. As a recursive message, two levels of
+    protobuf per level of nesting, it stopped at 48, beyond prost's recursion limit of 100. The
+    receiver bounds the depth itself, and refuses a deeper type by name.
+  - A limit left 0 means the protocol's default, as a peer from before that limit existed leaves
+    it. The handshake's response carries the connector's limits, as its request carries the
+    host's.
   - A value that may be absent as a whole, such as a primary key, is a message of its own, so
     absent and empty differ.
 - **The code is generated and committed.** `cargo xtask codegen` compiles the `.proto` files with
@@ -58,6 +66,13 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   - The `Decoder` validates a schema once and caches it with its dictionaries (§12.4). A frame's
     body length and every buffer's offset and length are checked against the body before Arrow
     reads it, and compressed bodies are refused.
+  - Delta dictionaries are refused: no end negotiates them, and a peer sending one delta after
+    another would grow a dictionary without bound, copying it whole each time.
+  - No node may declare more values than the larger of the row limit and eight per byte of body.
+    Every value but a null or a run needs at least a bit, so a tiny frame cannot declare a child
+    of 2^40 values for whatever reads the batch next to iterate.
+  - The flatbuffer verifier's depth follows the nesting limit, so a schema nested to the limit
+    passes it and one nested deeper is refused by the nesting limit, by name.
   - Arrow's decode runs inside `catch_unwind`. On corrupt node lengths Arrow's readers panic; the
     decoder turns such a panic into a typed error (§12.8).
 - **Limits** (§12.8) are `rdlt_wire::Limits`, with the spec's defaults, enforced on receive with a

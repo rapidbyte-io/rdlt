@@ -457,20 +457,25 @@ fn a_message_missing_a_required_field_is_missing_it() {
     ));
 }
 
+/// A logical type of one node, of `kind`.
+fn one_node(kind: v1::type_node::Kind) -> v1::LogicalType {
+    v1::LogicalType {
+        nodes: vec![v1::TypeNode {
+            name: String::new(),
+            nullable: false,
+            kind: Some(kind),
+        }],
+    }
+}
+
 #[test]
 fn an_unspecified_or_unknown_enum_value_is_refused() {
-    let timestamp = v1::LogicalType {
-        kind: Some(v1::logical_type::Kind::Time(
-            v1::TimeUnit::Unspecified as i32,
-        )),
-    };
+    let timestamp = one_node(v1::type_node::Kind::Time(v1::TimeUnit::Unspecified as i32));
     assert!(matches!(
         crate::types::LogicalType::try_from(timestamp),
         Err(Invalid::Unknown("time unit"))
     ));
-    let unknown = v1::LogicalType {
-        kind: Some(v1::logical_type::Kind::Duration(99)),
-    };
+    let unknown = one_node(v1::type_node::Kind::Duration(99));
     assert!(matches!(
         crate::types::LogicalType::try_from(unknown),
         Err(Invalid::Unknown("time unit"))
@@ -485,12 +490,10 @@ fn an_unspecified_or_unknown_enum_value_is_refused() {
 
 #[test]
 fn numbers_that_do_not_fit_are_out_of_range() {
-    let decimal = v1::LogicalType {
-        kind: Some(v1::logical_type::Kind::Decimal(v1::Decimal {
-            precision: 300,
-            scale: 0,
-        })),
-    };
+    let decimal = one_node(v1::type_node::Kind::Decimal(v1::Decimal {
+        precision: 300,
+        scale: 0,
+    }));
     assert!(matches!(
         crate::types::LogicalType::try_from(decimal),
         Err(Invalid::OutOfRange("decimal precision"))
@@ -624,4 +627,48 @@ fn an_error_of_a_kind_this_end_does_not_know_is_internal_and_an_unknown_limit_ge
     let decoded = ConnectorError::try_from(error).unwrap();
     assert_eq!(decoded.kind(), ConnectorErrorKind::Internal);
     assert_eq!(decoded.limit().map(|limit| limit.name), Some("limit"));
+}
+
+/// A list type nested `levels` deep, its innermost item an integer.
+fn nested(levels: usize) -> crate::types::LogicalType {
+    use crate::types::LogicalType;
+    (1..levels).fold(LogicalType::Int32, |item, _| {
+        LogicalType::List(Box::new(Field::new("item", item, true)))
+    })
+}
+
+#[test]
+fn a_type_nested_to_the_protocols_depth_crosses_the_wire_and_one_deeper_is_refused() {
+    let depth = usize::try_from(crate::limits::MAX_NESTING_DEPTH).unwrap();
+    let schema = TableSchema::new(vec![Field::new("deep", nested(depth), true)]).unwrap();
+    assert_eq!(crossed::<_, v1::TableSchema>(&schema).unwrap(), schema);
+    // Inside the deepest message that carries a schema.
+    let table = TableRef {
+        path: TablePath::new(["t"]).unwrap(),
+        name: Arc::from("t"),
+        version: SchemaVersion(1),
+        generation: None,
+        merge: None,
+    };
+    let change = TableChange::Create {
+        table,
+        schema: schema.clone(),
+    };
+    let request = v1::ApplySchemaRequest {
+        session: 1,
+        change: Some(v1::TableChange::from(&change)),
+    };
+    let decoded = <v1::ApplySchemaRequest as prost::Message>::decode(
+        prost::Message::encode_to_vec(&request).as_slice(),
+    )
+    .expect("a schema at the nesting limit decodes");
+    assert_eq!(
+        TableChange::try_from(decoded.change.unwrap()).unwrap(),
+        change
+    );
+    let deeper = TableSchema::new(vec![Field::new("deep", nested(depth + 1), true)]).unwrap();
+    assert!(matches!(
+        crossed::<_, v1::TableSchema>(&deeper),
+        Err(Invalid::OutOfRange("nesting depth"))
+    ));
 }

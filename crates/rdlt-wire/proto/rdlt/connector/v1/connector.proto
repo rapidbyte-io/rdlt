@@ -45,7 +45,8 @@ enum Role {
   ROLE_DESTINATION = 2;
 }
 
-// The limits each end enforces on what it receives.
+// The limits each end enforces on what it receives. A limit left 0, as a peer from before that
+// limit existed leaves it, is the protocol's default.
 message Limits {
   // Bytes in one frame.
   uint64 frame_bytes = 1;
@@ -105,6 +106,8 @@ message HandshakeResponse {
   ConnectorSpec spec = 1;
   // The features, of those offered, it will use.
   repeated string accepted_features = 2;
+  // The limits the connector enforces on what it receives.
+  Limits limits = 3;
 }
 
 // Asks the connector to verify connectivity and permissions.

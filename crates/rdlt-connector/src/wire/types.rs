@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::{Invalid, narrow, required, v1};
 use crate::cursor::Cursor;
 use crate::id::{StreamName, TablePath};
+use crate::limits::MAX_NESTING_DEPTH;
 use crate::schema::{ColumnPath, TableSchema};
 use crate::types::{DecimalType, Field, Fields, LogicalType, TimeUnit, TypeKind};
 
@@ -33,38 +34,66 @@ pub(super) fn time_unit(value: i32) -> Result<TimeUnit, Invalid> {
 
 impl From<&LogicalType> for v1::LogicalType {
     fn from(logical: &LogicalType) -> Self {
-        use v1::logical_type::Kind;
-        let unit = |unit: &TimeUnit| v1::TimeUnit::from(*unit) as i32;
-        let kind = match logical {
-            LogicalType::Null => Kind::Null(v1::Unit {}),
-            LogicalType::Bool => Kind::Bool(v1::Unit {}),
-            LogicalType::Int8 => Kind::Int8(v1::Unit {}),
-            LogicalType::Int16 => Kind::Int16(v1::Unit {}),
-            LogicalType::Int32 => Kind::Int32(v1::Unit {}),
-            LogicalType::Int64 => Kind::Int64(v1::Unit {}),
-            LogicalType::Float32 => Kind::Float32(v1::Unit {}),
-            LogicalType::Float64 => Kind::Float64(v1::Unit {}),
-            LogicalType::Decimal(decimal) => Kind::Decimal(v1::Decimal {
-                precision: u32::from(decimal.precision()),
-                scale: u32::from(decimal.scale()),
-            }),
-            LogicalType::Utf8 => Kind::Utf8(v1::Unit {}),
-            LogicalType::Binary => Kind::Binary(v1::Unit {}),
-            LogicalType::Date => Kind::Date(v1::Unit {}),
-            LogicalType::Time(time) => Kind::Time(unit(time)),
-            LogicalType::Timestamp(time, zone) => Kind::Timestamp(v1::Timestamp {
-                unit: unit(time),
-                zone: zone.as_deref().map(ToOwned::to_owned),
-            }),
-            LogicalType::Duration(time) => Kind::Duration(unit(time)),
-            LogicalType::Uuid => Kind::Uuid(v1::Unit {}),
-            LogicalType::Json => Kind::Json(v1::Unit {}),
-            LogicalType::Struct(fields) => Kind::Struct(v1::Struct {
-                fields: fields.iter().map(v1::Field::from).collect(),
-            }),
-            LogicalType::List(item) => Kind::List(Box::new(v1::Field::from(item.as_ref()))),
-        };
-        Self { kind: Some(kind) }
+        let mut nodes = Vec::new();
+        push(logical, "", false, &mut nodes);
+        Self { nodes }
+    }
+}
+
+/// Pushes the nodes of `logical`, the type of a field `name` that may hold nulls if `nullable`,
+/// in pre-order.
+fn push(logical: &LogicalType, name: &str, nullable: bool, nodes: &mut Vec<v1::TypeNode>) {
+    use v1::type_node::Kind;
+    let unit = |unit: &TimeUnit| v1::TimeUnit::from(*unit) as i32;
+    let kind = match logical {
+        LogicalType::Null => Kind::Null(v1::Unit {}),
+        LogicalType::Bool => Kind::Bool(v1::Unit {}),
+        LogicalType::Int8 => Kind::Int8(v1::Unit {}),
+        LogicalType::Int16 => Kind::Int16(v1::Unit {}),
+        LogicalType::Int32 => Kind::Int32(v1::Unit {}),
+        LogicalType::Int64 => Kind::Int64(v1::Unit {}),
+        LogicalType::Float32 => Kind::Float32(v1::Unit {}),
+        LogicalType::Float64 => Kind::Float64(v1::Unit {}),
+        LogicalType::Decimal(decimal) => Kind::Decimal(v1::Decimal {
+            precision: u32::from(decimal.precision()),
+            scale: u32::from(decimal.scale()),
+        }),
+        LogicalType::Utf8 => Kind::Utf8(v1::Unit {}),
+        LogicalType::Binary => Kind::Binary(v1::Unit {}),
+        LogicalType::Date => Kind::Date(v1::Unit {}),
+        LogicalType::Time(time) => Kind::Time(unit(time)),
+        LogicalType::Timestamp(time, zone) => Kind::Timestamp(v1::Timestamp {
+            unit: unit(time),
+            zone: zone.as_deref().map(ToOwned::to_owned),
+        }),
+        LogicalType::Duration(time) => Kind::Duration(unit(time)),
+        LogicalType::Uuid => Kind::Uuid(v1::Unit {}),
+        LogicalType::Json => Kind::Json(v1::Unit {}),
+        LogicalType::Struct(fields) => {
+            Kind::Struct(u32::try_from(fields.iter().count()).unwrap_or(u32::MAX))
+        }
+        LogicalType::List(_) => Kind::List(v1::Unit {}),
+    };
+    nodes.push(v1::TypeNode {
+        name: name.to_owned(),
+        nullable,
+        kind: Some(kind),
+    });
+    match logical {
+        LogicalType::Struct(fields) => {
+            for field in fields.iter() {
+                push(
+                    field.logical_type(),
+                    field.name(),
+                    field.is_nullable(),
+                    nodes,
+                );
+            }
+        }
+        LogicalType::List(item) => {
+            push(item.logical_type(), item.name(), item.is_nullable(), nodes);
+        }
+        _ => {}
     }
 }
 
@@ -72,44 +101,74 @@ impl TryFrom<v1::LogicalType> for LogicalType {
     type Error = Invalid;
 
     fn try_from(logical: v1::LogicalType) -> Result<Self, Invalid> {
-        use v1::logical_type::Kind;
-        Ok(match required("logical type", logical.kind)? {
-            Kind::Null(_) => Self::Null,
-            Kind::Bool(_) => Self::Bool,
-            Kind::Int8(_) => Self::Int8,
-            Kind::Int16(_) => Self::Int16,
-            Kind::Int32(_) => Self::Int32,
-            Kind::Int64(_) => Self::Int64,
-            Kind::Float32(_) => Self::Float32,
-            Kind::Float64(_) => Self::Float64,
-            Kind::Decimal(decimal) => {
-                let precision = narrow("decimal precision", decimal.precision)?;
-                let scale = narrow("decimal scale", decimal.scale)?;
-                let decimal = DecimalType::new(precision, scale)
-                    .map_err(|error| Invalid::rejected("decimal", error))?;
-                Self::Decimal(decimal)
-            }
-            Kind::Utf8(_) => Self::Utf8,
-            Kind::Binary(_) => Self::Binary,
-            Kind::Date(_) => Self::Date,
-            Kind::Time(unit) => Self::Time(time_unit(unit)?),
-            Kind::Timestamp(timestamp) => {
-                Self::Timestamp(time_unit(timestamp.unit)?, timestamp.zone.map(Arc::from))
-            }
-            Kind::Duration(unit) => Self::Duration(time_unit(unit)?),
-            Kind::Uuid(_) => Self::Uuid,
-            Kind::Json(_) => Self::Json,
-            Kind::Struct(fields) => Self::Struct(fields_of(fields.fields)?),
-            Kind::List(item) => Self::List(Box::new(Field::try_from(*item)?)),
-        })
+        let mut nodes = logical.nodes.into_iter();
+        let (_, _, decoded) = node(&mut nodes, 1)?;
+        if nodes.next().is_some() {
+            return Err(Invalid::OutOfRange("type nodes"));
+        }
+        Ok(decoded)
     }
+}
+
+/// The next node's field name, nullability and type, its subtree read from `nodes`; it sits
+/// `depth` levels deep, and no node may sit deeper than the nesting limit.
+fn node(
+    nodes: &mut impl Iterator<Item = v1::TypeNode>,
+    depth: u64,
+) -> Result<(String, bool, LogicalType), Invalid> {
+    use v1::type_node::Kind;
+    if depth > MAX_NESTING_DEPTH {
+        return Err(Invalid::OutOfRange("nesting depth"));
+    }
+    let next = required("type node", nodes.next())?;
+    let child = |nodes: &mut _| {
+        let (name, nullable, logical) = node(nodes, depth + 1)?;
+        Ok::<_, Invalid>(Field::new(name, logical, nullable))
+    };
+    let logical = match required("logical type", next.kind)? {
+        Kind::Null(_) => LogicalType::Null,
+        Kind::Bool(_) => LogicalType::Bool,
+        Kind::Int8(_) => LogicalType::Int8,
+        Kind::Int16(_) => LogicalType::Int16,
+        Kind::Int32(_) => LogicalType::Int32,
+        Kind::Int64(_) => LogicalType::Int64,
+        Kind::Float32(_) => LogicalType::Float32,
+        Kind::Float64(_) => LogicalType::Float64,
+        Kind::Decimal(decimal) => {
+            let precision = narrow("decimal precision", decimal.precision)?;
+            let scale = narrow("decimal scale", decimal.scale)?;
+            let decimal = DecimalType::new(precision, scale)
+                .map_err(|error| Invalid::rejected("decimal", error))?;
+            LogicalType::Decimal(decimal)
+        }
+        Kind::Utf8(_) => LogicalType::Utf8,
+        Kind::Binary(_) => LogicalType::Binary,
+        Kind::Date(_) => LogicalType::Date,
+        Kind::Time(unit) => LogicalType::Time(time_unit(unit)?),
+        Kind::Timestamp(timestamp) => {
+            LogicalType::Timestamp(time_unit(timestamp.unit)?, timestamp.zone.map(Arc::from))
+        }
+        Kind::Duration(unit) => LogicalType::Duration(time_unit(unit)?),
+        Kind::Uuid(_) => LogicalType::Uuid,
+        Kind::Json(_) => LogicalType::Json,
+        Kind::Struct(count) => {
+            let fields = (0..count)
+                .map(|_| child(nodes))
+                .collect::<Result<Vec<_>, _>>()?;
+            let fields =
+                Fields::new(fields).map_err(|error| Invalid::rejected("struct fields", error))?;
+            LogicalType::Struct(fields)
+        }
+        Kind::List(_) => LogicalType::List(Box::new(child(nodes)?)),
+    };
+    Ok((next.name, next.nullable, logical))
 }
 
 impl From<&Field> for v1::Field {
     fn from(field: &Field) -> Self {
         Self {
             name: field.name().to_owned(),
-            r#type: Some(Box::new(v1::LogicalType::from(field.logical_type()))),
+            r#type: Some(v1::LogicalType::from(field.logical_type())),
             nullable: field.is_nullable(),
         }
     }
@@ -119,18 +178,9 @@ impl TryFrom<v1::Field> for Field {
     type Error = Invalid;
 
     fn try_from(field: v1::Field) -> Result<Self, Invalid> {
-        let logical = LogicalType::try_from(*required("field type", field.r#type)?)?;
+        let logical = LogicalType::try_from(required("field type", field.r#type)?)?;
         Ok(Self::new(field.name, logical, field.nullable))
     }
-}
-
-/// The fields `fields` hold, with distinct names.
-fn fields_of(fields: Vec<v1::Field>) -> Result<Fields, Invalid> {
-    let fields = fields
-        .into_iter()
-        .map(Field::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
-    Fields::new(fields).map_err(|error| Invalid::rejected("struct fields", error))
 }
 
 impl From<&TableSchema> for v1::TableSchema {
