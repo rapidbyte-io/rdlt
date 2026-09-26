@@ -209,10 +209,22 @@ impl Endpoint {
             .rsplit_once(':')
             .ok_or_else(|| invalid("has no port"))?;
         let port = port.parse().map_err(|_| invalid("has no valid port"))?;
-        let host = host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(host);
+        // An IPv6 address is in brackets, and nothing else is.
+        let host = match host.strip_prefix('[') {
+            Some(inner) => {
+                let inner = inner
+                    .strip_suffix(']')
+                    .ok_or_else(|| invalid("has an unclosed bracket"))?;
+                inner
+                    .parse::<std::net::Ipv6Addr>()
+                    .map_err(|_| invalid("has no IPv6 address in brackets"))?;
+                inner
+            }
+            None if host.contains([':', ']']) => {
+                return Err(invalid("has an IPv6 address outside brackets"));
+            }
+            None => host,
+        };
         if host.is_empty() {
             return Err(invalid("has no host"));
         }

@@ -34,6 +34,14 @@ fn anything_else_is_refused_with_why() {
             "grpcs://connector.example:7443/path",
             "more than a host and a port",
         ),
+        ("grpcs://::1:7443", "IPv6 address outside brackets"),
+        ("grpcs://fe80::1", "IPv6 address outside brackets"),
+        ("grpcs://[::1:7443", "unclosed bracket"),
+        (
+            "grpcs://[connector.example]:7443",
+            "no IPv6 address in brackets",
+        ),
+        ("grpcs://[]:7443", "no IPv6 address in brackets"),
     ];
     for (endpoint, why) in cases {
         let refused = Endpoint::parse(endpoint).expect_err("refused");
