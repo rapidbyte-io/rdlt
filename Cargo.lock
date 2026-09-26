@@ -1813,6 +1813,7 @@ dependencies = [
  "base64 0.22.1",
  "parking_lot",
  "rdlt-connector",
+ "rdlt-host",
  "rusqlite",
  "schemars",
  "serde",
