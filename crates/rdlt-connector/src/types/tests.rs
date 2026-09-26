@@ -320,7 +320,7 @@ fn arrow_types_without_a_logical_equivalent_are_refused() {
     );
 }
 
-fn unit() -> impl Strategy<Value = TimeUnit> {
+pub(crate) fn unit() -> impl Strategy<Value = TimeUnit> {
     prop_oneof![
         Just(TimeUnit::Second),
         Just(TimeUnit::Millisecond),
@@ -329,7 +329,7 @@ fn unit() -> impl Strategy<Value = TimeUnit> {
     ]
 }
 
-fn logical_type() -> impl Strategy<Value = LogicalType> {
+pub(crate) fn logical_type() -> impl Strategy<Value = LogicalType> {
     use LogicalType as T;
     let zone = prop_oneof![
         Just(None),

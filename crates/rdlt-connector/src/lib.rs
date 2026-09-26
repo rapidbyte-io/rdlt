@@ -79,6 +79,8 @@ mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod types;
+#[cfg(feature = "wire")]
+pub mod wire;
 
 pub use capabilities::{
     Capabilities, CommitKind, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules,

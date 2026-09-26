@@ -280,6 +280,11 @@ impl LoadId {
     pub fn as_bytes(&self) -> &[u8; 16] {
         self.0.as_bytes()
     }
+
+    /// The load id whose 16 bytes are `bytes`.
+    pub(crate) fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(uuid::Uuid::from_bytes(bytes))
+    }
 }
 
 impl fmt::Display for LoadId {
@@ -313,6 +318,11 @@ impl CommitSeq {
     /// The sequence number.
     pub fn get(self) -> u64 {
         self.0.get()
+    }
+
+    /// The sequence number `value`, if it is not zero.
+    pub(crate) fn new(value: u64) -> Option<Self> {
+        NonZeroU64::new(value).map(Self)
     }
 }
 
