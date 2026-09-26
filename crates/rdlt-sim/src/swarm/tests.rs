@@ -9,7 +9,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
     let drawn: Vec<Features> = (0..400)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 11] = [
+    let flags: [(&str, Flag); 12] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -21,6 +21,7 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("settings", |features| features.settings),
         ("keys", |features| features.keys),
         ("identifiers", |features| features.identifiers),
+        ("shared", |features| features.shared),
     ];
     for (name, flag) in flags {
         assert!(drawn.iter().any(flag), "{name} is never on");

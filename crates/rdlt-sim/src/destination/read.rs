@@ -25,7 +25,10 @@ pub(crate) struct Published {
 /// What the table at `path` holds, if the destination has it.
 pub(crate) fn published_table(world: &World, path: &TablePath) -> Option<Published> {
     let store = world.store.lock();
-    let (physical, names) = names(&store.state, path)?;
+    let (physical, names) = store
+        .pipelines
+        .values()
+        .find_map(|pipeline| names(&pipeline.state, path))?;
     let rows = store.tables.get(physical.as_str())?.published.clone();
     Some(Published {
         physical,
@@ -63,22 +66,27 @@ pub(super) fn names(
     }
 }
 
-/// Whether state records a full read in progress.
+/// Whether any pipeline's state records a full read in progress.
 pub(crate) fn reads_in_progress(world: &World) -> bool {
     let store = world.store.lock();
-    store
-        .state
-        .keys()
-        .any(|key| matches!(StateKey::parse(key), Ok(StateKey::Generation(_))))
+    store.pipelines.values().any(|pipeline| {
+        pipeline
+            .state
+            .keys()
+            .any(|key| matches!(StateKey::parse(key), Ok(StateKey::Generation(_))))
+    })
 }
 
 /// Distinct full reads of `stream` completed in `phase`.
 pub fn completions(world: &World, stream: &str, phase: usize) -> usize {
     let store = world.store.lock();
+    let key = (stream.to_owned(), phase);
     store
-        .completions
-        .get(&(stream.to_owned(), phase))
-        .map_or(0, BTreeSet::len)
+        .pipelines
+        .values()
+        .filter_map(|pipeline| pipeline.completions.get(&key))
+        .map(BTreeSet::len)
+        .sum()
 }
 
 /// The committed resume offset of a partition: `u64::MAX` once it is done.
@@ -88,7 +96,10 @@ pub(crate) fn committed_next(
     partition: &PartitionId,
 ) -> Option<u64> {
     let store = world.store.lock();
-    next_offset(&store.state, stream, partition)
+    store
+        .pipelines
+        .values()
+        .find_map(|pipeline| next_offset(&pipeline.state, stream, partition))
 }
 
 pub(super) fn next_offset(

@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
-    ConnectorErrorKind, Epoch, Field, LogicalType, MergeKey, RootKey, SchemaVersion, SegmentId,
+    CommitMeta, CommitSeq, ConnectorErrorKind, DestinationConnector, Epoch, Field, LoadId,
+    LogicalType, MergeKey, OpenContext, PipelineId, RootKey, SchemaVersion, SegmentId, SegmentSet,
     Session, TableChange, TablePath, TableRef, TableSchema, TableWriter,
 };
 use rdlt_testkit::canon::Canon;
 
-use super::SimSession;
 use super::cells::{Cells, Stored, merge_children};
+use super::{SimDestination, SimSession};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run};
 use crate::world::World;
@@ -40,6 +41,7 @@ fn session_over(
         |_env| async move {
             let mut session = SimSession {
                 world,
+                pipeline: PipelineId::parse("sim").unwrap(),
                 epoch: Epoch::default(),
             };
             let create = TableChange::Create {
@@ -109,6 +111,7 @@ fn a_writer_given_batches_of_two_schemas_is_a_violation() {
         |_env| async move {
             let mut session = SimSession {
                 world,
+                pipeline: PipelineId::parse("sim").unwrap(),
                 epoch: Epoch::default(),
             };
             let create = TableChange::Create {
@@ -220,4 +223,48 @@ fn a_child_table_keeps_only_the_children_of_each_merged_roots_winning_row() {
         })
         .collect();
     assert_eq!(values, ["kept", "new"]);
+}
+
+#[test]
+fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
+    let name = "shared";
+    let world = World::register(name, &mut SplitMix64::new(1));
+    run(Seed::new(1), {
+        let world = Arc::clone(&world);
+        |_env| async move {
+            let destination = SimDestination { world };
+            let open = |pipeline: &str| OpenContext {
+                pipeline: PipelineId::parse(pipeline).unwrap(),
+                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+            };
+            let mut first = destination.open(&open("first")).await.unwrap();
+            let create = TableChange::Create {
+                table: table(),
+                schema: TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+                    .unwrap(),
+            };
+            first.session.apply_schema(&create).await.unwrap();
+            let mut writer = first.session.writer(&table()).await.unwrap();
+            let rows = batch(vec![("id", Arc::new(Int64Array::from(vec![1])) as _)]);
+            writer.write(SegmentId(1), rows).await.unwrap();
+            writer.flush().await.unwrap();
+            // The second pipeline's open bumps its own epoch and discards its own staging only.
+            let mut second = destination.open(&open("second")).await.unwrap();
+            second.session.discard_staged().await.unwrap();
+            let mut segments = SegmentSet::new();
+            segments.insert(SegmentId(1));
+            let meta = CommitMeta {
+                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+                commit_seq: CommitSeq::FIRST,
+                epoch: first.epoch,
+                segments,
+                state_delta: Vec::new(),
+                finish_generations: Vec::new(),
+                child_tables: Vec::new(),
+            };
+            let receipt = first.session.commit(&meta).await.unwrap();
+            assert_eq!(receipt.rows, 1, "the first pipeline's staged row publishes");
+        }
+    });
+    World::unregister(name);
 }

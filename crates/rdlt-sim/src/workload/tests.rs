@@ -495,6 +495,7 @@ fn features_off_leave_their_parts_of_the_workload_out() {
         settings: false,
         keys: false,
         identifiers: false,
+        shared: false,
     };
     for seed in 0..100 {
         for stream in Workload::generate(&mut SplitMix64::new(seed), none).streams {

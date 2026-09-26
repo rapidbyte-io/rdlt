@@ -37,8 +37,11 @@ pub struct Workload {
     pub salt: u64,
     /// The features the seed exercises.
     pub features: Features,
-    /// The pipeline's schema settings.
+    /// The pipeline's schema settings, which every pipeline sharing the destination has.
     pub pipeline: Level,
+    /// How many pipelines load the streams into one destination: stream `i` belongs to
+    /// pipeline `i % pipelines`.
+    pub pipelines: usize,
     /// The streams.
     pub streams: Vec<SimStream>,
 }
@@ -143,13 +146,19 @@ impl Workload {
         } else {
             Level::default()
         };
-        let streams = (0..=rng.below(3))
+        let streams: Vec<SimStream> = (0..=rng.below(3))
             .map(|index| SimStream::generate(index, rng, features, salt, pipeline))
             .collect();
+        let pipelines = if features.shared && streams.len() > 1 {
+            2
+        } else {
+            1
+        };
         Self {
             salt,
             features,
             pipeline,
+            pipelines,
             streams,
         }
     }
