@@ -1,5 +1,7 @@
 //! The memory source and destination, served to a host that spawns them.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 use rdlt_connector::serve::Served;

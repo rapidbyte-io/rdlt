@@ -68,7 +68,8 @@ pub(crate) struct FileRole {
 pub(crate) enum UnsafeCode {
     /// The audited module, the only one that may hold it.
     Audited,
-    /// A crate's root, which forbids it: every crate's but the audited module's.
+    /// A crate's root (a library's, or a binary's, `src/bin` ones included), which forbids it:
+    /// every crate's but the audited module's.
     CrateRoot,
     /// Any other file, which may not hold it.
     Other,
@@ -91,7 +92,20 @@ impl FileRole {
                 .map(std::path::Component::as_os_str)
                 .collect();
             let root = match parts.as_slice() {
-                [crates, _, src, file] => *crates == "crates" && *src == "src" && *file == "lib.rs",
+                [crates, _, src, file] => {
+                    *crates == "crates"
+                        && *src == "src"
+                        && (*file == "lib.rs" || *file == "main.rs")
+                }
+                [crates, _, src, bin, _] => {
+                    *crates == "crates"
+                        && *src == "src"
+                        && *bin == "bin"
+                        && path.extension().is_some_and(|ext| ext == "rs")
+                }
+                [crates, _, src, bin, _, file] => {
+                    *crates == "crates" && *src == "src" && *bin == "bin" && *file == "main.rs"
+                }
                 [xtask, src, file] => *xtask == "xtask" && *src == "src" && *file == "main.rs",
                 _ => false,
             };
@@ -315,7 +329,15 @@ fn check_code(role: FileRole, scan: &Scan, findings: &mut Vec<Finding>) {
         let message = format!("`unsafe` code lives only in {AUDITED_UNSAFE}");
         findings.push(finding(line, Rule::Unsafe, &message));
     }
-    if role.unsafe_code == UnsafeCode::CrateRoot && !FORBIDS_UNSAFE.is_match(&scan.code) {
+    // Only a crate-level forbid, outside every module and item, reaches the whole crate.
+    let crate_level = |start: usize| {
+        let before = &scan.code[..start];
+        before.matches('{').count() == before.matches('}').count()
+    };
+    let forbidden = FORBIDS_UNSAFE
+        .find_iter(&scan.code)
+        .any(|m| crate_level(m.start()));
+    if role.unsafe_code == UnsafeCode::CrateRoot && !forbidden {
         findings.push(finding(
             1,
             Rule::UnforbiddenUnsafe,
