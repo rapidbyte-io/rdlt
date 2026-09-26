@@ -105,7 +105,11 @@ pub struct Connection {
     /// The limits the connector enforces on what it receives.
     peer: Limits,
     options: Options,
+    /// Cancelled once the connector is lost: every call on the connection fails.
     lost: CancellationToken,
+    /// Cancelled once the connection takes no new calls: the connector was lost, or is stopping
+    /// and finishes the calls in flight.
+    spent: CancellationToken,
 }
 
 impl Drop for Connection {
@@ -131,9 +135,19 @@ impl Connection {
     where
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
+        let (lost, spent) = {
+            let lost = CancellationToken::new();
+            let spent = lost.child_token();
+            (lost, spent)
+        };
         let slot = Arc::new(Mutex::new(Some(io)));
+        let reconnecting = spent.clone();
         let connector = tower::service_fn(move |_| {
             let io = slot.lock().map(|mut slot| slot.take()).ok().flatten();
+            // The channel reconnects once its one connection has closed: the connection is spent.
+            if io.is_none() {
+                reconnecting.cancel();
+            }
             async move {
                 io.map(TokioIo::new).ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::NotConnected, "the connection is spent")
@@ -151,7 +165,7 @@ impl Connection {
             .keep_alive_while_idle(true)
             .connect_with_connector(connector)
             .await
-            .map_err(|error| lost(format!("connecting failed: {error}")))?;
+            .map_err(|error| lost_because(format!("connecting failed: {error}")))?;
         let bytes = options.limits.message_bytes();
         let mut client = ConnectorClient::new(channel)
             .max_decoding_message_size(bytes)
@@ -170,15 +184,15 @@ impl Connection {
         };
         let deadline = options.deadlines.connect;
         let response = within(deadline, "the handshake", client.handshake(request)).await?;
-        let lost = CancellationToken::new();
         let connection = Arc::new(Self {
             client,
             spec: response.spec.unwrap_or_default(),
             peer: response.limits.map(Limits::from).unwrap_or_default(),
             options,
             lost: lost.clone(),
+            spent: spent.clone(),
         });
-        tokio::spawn(heartbeat(connection.client.clone(), options, lost));
+        tokio::spawn(heartbeat(connection.client.clone(), options, lost, spent));
         Ok(connection)
     }
 
@@ -187,9 +201,9 @@ impl Connection {
         &self.spec
     }
 
-    /// Whether the connector was lost: every call on the connection fails.
-    pub(crate) fn is_lost(&self) -> bool {
-        self.lost.is_cancelled()
+    /// Whether the connection takes no new calls: the connector was lost, or is stopping.
+    pub(crate) fn is_spent(&self) -> bool {
+        self.spent.is_cancelled()
     }
 
     /// Runs `call`, a call of the protocol named `what`, within `deadline`, failing once the
@@ -228,10 +242,10 @@ pub(crate) fn contract_spec(
 
 /// The error of a call after the connector was lost.
 fn lost_error() -> ConnectorError {
-    lost("the connector stopped answering heartbeats".to_owned())
+    lost_because("the connector stopped answering heartbeats".to_owned())
 }
 
-fn lost(message: String) -> ConnectorError {
+fn lost_because(message: String) -> ConnectorError {
     ConnectorError::new(ConnectorErrorKind::Transient, message).with_code(CONNECTOR_LOST)
 }
 
@@ -254,10 +268,14 @@ async fn within<T>(
 
 /// Sends a heartbeat every interval, and cancels `lost` once `missed` sent are unanswered when the
 /// next is due, or the heartbeat stream fails.
+///
+/// A connector that ends the stream is stopping: it finishes the calls in flight, and `retired` is
+/// cancelled.
 async fn heartbeat(
     mut client: ConnectorClient<Channel>,
     options: Options,
     lost: CancellationToken,
+    retired: CancellationToken,
 ) {
     let (beats, receiver) = mpsc::channel(4);
     let echoes = tokio::select! {
@@ -282,7 +300,11 @@ async fn heartbeat(
                 // An echo of a heartbeat never sent answers nothing.
                 Ok(Some(echo)) if echo.seq <= sent => answered = answered.max(echo.seq),
                 Ok(Some(_)) => {}
-                Ok(None) | Err(_) => break,
+                Ok(None) => {
+                    retired.cancel();
+                    return;
+                }
+                Err(_) => break,
             },
             _ = ticks.tick() => {
                 if sent - answered >= u64::from(options.missed) {

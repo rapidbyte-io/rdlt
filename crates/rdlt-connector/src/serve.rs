@@ -11,6 +11,7 @@ mod inherited;
 mod listen;
 mod read;
 mod service;
+mod until;
 mod write;
 
 use std::future::Future;
@@ -112,7 +113,9 @@ where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let bytes = limits.message_bytes();
-    let service = ConnectorServer::new(service::Service::new(served, limits))
+    let stopping = tokio_util::sync::CancellationToken::new();
+    let service = service::Service::new(served, limits, stopping.clone());
+    let service = ConnectorServer::new(service)
         .max_decoding_message_size(bytes)
         .max_encoding_message_size(bytes);
     let service = service.map_request(|request: http::Request<hyper::body::Incoming>| {
@@ -134,6 +137,8 @@ where
         biased;
         served = connection.as_mut() => served,
         () = stop => {
+            // Ends the host's heartbeat stream, which would otherwise hold the connection open.
+            stopping.cancel();
             connection.as_mut().graceful_shutdown();
             connection.await
         }

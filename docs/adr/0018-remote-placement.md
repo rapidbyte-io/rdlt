@@ -31,10 +31,11 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
   - `TlsError` names the file a failure came from.
 - **A served binary listens with `--listen <address>`**, and needs `--tls-cert`, `--tls-key` and `--tls-client-ca`. `--listen` and `--rdlt-fd` exclude each other.
   - It says where it listens on standard output (`listening on <address>`), so port 0 works.
-  - A host has 10 s to complete its TLS handshake. At most 256 connections are served at once; a further host waits.
+  - A host has 10 s to complete its TLS handshake, and at most 1,024 handshakes run at once.
+  - At most 256 sessions are served at once; a further host waits once it has handshaken. A peer that never completes its handshake holds a handshake, never a session, so it cannot keep an authenticated host out.
   - A failed accept, as when the process runs out of file descriptors, pauses accepting for 100 ms.
   - Each connection is one session of the protocol, and pings its host over HTTP/2 every 5 s. A host that answers no ping for 30 s is gone.
-  - The first `SIGTERM` or `SIGINT` stops it gracefully: it takes no new connections, and ends when those in flight have. A second stops it at once.
+  - The first `SIGTERM` or `SIGINT` stops it gracefully. It closes its listening socket, so a successor can listen at the address at once. It ends every host's heartbeat stream, which would otherwise hold its connection open. It finishes the calls in flight, then ends. A second signal stops it at once.
   - It ignores its standard input: a standalone server's standard input may be `/dev/null`, whose end is no request to stop. A spawned connector's is, as before.
 - **`Remote` places connectors whose reference names an endpoint**, and every other one with its fallback: `Remote::new(identity, ca).fallback(Local::new())`.
   - An endpoint is `grpcs://host:port`, a host name or IP address and a port, and nothing else.
@@ -43,6 +44,8 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
   - An unreachable or malformed endpoint is `ProviderError::Unreachable`. A remote placement has no digest.
 - **Supervision covers both placements.**
   - A lost connector is started again for the next call: respawned when this process spawned it, redialed when it listens elsewhere.
+  - A connector that ends its heartbeat stream is stopping. The host lets its calls in flight finish, and starts it again for the next call. A connection whose transport closed is started again too.
+  - Whatever is started again must serve the spec that was checked at placement: the same id, version and configuration schema. A redial reaches whatever listens at the endpoint now; another connector there is a configuration error, which no retry mends.
   - The host's connections ping over HTTP/2 every heartbeat interval, and give up after the heartbeat's patience (§12.6).
 - **The placement matrix has its third leg.** The engine's destination-facing scenarios run against the SQLite and files destinations spawned, and listening on the network over mutual TLS. Each run of the remote leg starts its own listening connector, with a CA made for it.
 - **The host's timers stay on tokio's clock.** The simulation's `SimEnv` is tokio's paused clock, and turmoil drives tokio's clock, so M4e's simulation runs the host's heartbeat and deadlines on simulated time.

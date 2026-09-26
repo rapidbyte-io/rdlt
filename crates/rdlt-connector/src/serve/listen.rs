@@ -20,8 +20,13 @@ use super::{Served, serve_until};
 /// How long a host has to complete its TLS handshake: a connection that has not is dropped.
 const HANDSHAKE: Duration = Duration::from_secs(10);
 
-/// Connections served at once: a further host waits until one ends.
-const CONNECTIONS: usize = 256;
+/// Handshakes in flight at once: accepting waits until one ends.
+///
+/// Peers that never complete theirs hold these, and never a session.
+const HANDSHAKES: usize = 1024;
+
+/// Sessions served at once: a further host, once it has handshaken, waits until one ends.
+const SESSIONS: usize = 256;
 
 /// How long accepting pauses after it fails, as when the process is out of file descriptors.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
@@ -44,15 +49,21 @@ pub(super) async fn listen(
         .local_addr()
         .map_err(|error| failure("the listening address", &error))?;
     announce(address)?;
-    let stopping = CancellationToken::new();
-    let room = Arc::new(Semaphore::new(CONNECTIONS));
+    let listening = Arc::new(Listening {
+        acceptor,
+        served,
+        limits,
+        stopping: CancellationToken::new(),
+        sessions: Arc::new(Semaphore::new(SESSIONS)),
+    });
+    let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
     let mut connections = JoinSet::new();
     tokio::pin!(stop);
     loop {
-        let permit = tokio::select! {
+        let handshake = tokio::select! {
             biased;
             () = &mut stop => break,
-            permit = Arc::clone(&room).acquire_owned() => permit.expect("the semaphore is never closed"),
+            permit = Arc::clone(&handshakes).acquire_owned() => permit.expect("the semaphore is never closed"),
         };
         let (stream, peer) = tokio::select! {
             biased;
@@ -66,37 +77,51 @@ pub(super) async fn listen(
                 }
             },
         };
-        let served = Arc::clone(&served);
-        let (acceptor, stopping) = (acceptor.clone(), stopping.clone());
-        connections.spawn(connection(
-            stream, peer, acceptor, served, limits, stopping, permit,
-        ));
+        connections.spawn(connection(stream, peer, handshake, Arc::clone(&listening)));
         while connections.try_join_next().is_some() {}
     }
-    stopping.cancel();
+    // Frees the address for whatever listens next, while the connections in flight drain.
+    drop(listener);
+    listening.stopping.cancel();
     while connections.join_next().await.is_some() {}
     Ok(())
 }
 
-/// Serves one host's connection: its handshake, then its session until it closes or `stopping`
-/// is cancelled.
-async fn connection(
-    stream: TcpStream,
-    peer: SocketAddr,
+/// What every connection of a listening connector shares.
+struct Listening {
     acceptor: TlsAcceptor,
     served: Arc<Served>,
     limits: Limits,
+    /// Cancelled once the connector is stopping.
     stopping: CancellationToken,
-    _permit: OwnedSemaphorePermit,
+    sessions: Arc<Semaphore>,
+}
+
+/// Serves one host's connection: its handshake, holding `handshake`, then its session, once one
+/// is free, until it closes or the connector is stopping.
+async fn connection(
+    stream: TcpStream,
+    peer: SocketAddr,
+    handshake: OwnedSemaphorePermit,
+    listening: Arc<Listening>,
 ) {
     // Frames are small and answered at once: batching them for the network only adds latency.
     stream.set_nodelay(true).ok();
-    let tls = match tokio::time::timeout(HANDSHAKE, acceptor.accept(stream)).await {
+    let accepted = tokio::time::timeout(HANDSHAKE, listening.acceptor.accept(stream)).await;
+    drop(handshake);
+    let tls = match accepted {
         Ok(Ok(tls)) => tls,
         Ok(Err(error)) => return report(&format!("refused a connection from {peer}: {error}")),
         Err(_) => return report(&format!("{peer} did not complete its handshake in time")),
     };
-    if let Err(error) = serve_until(served, tls, limits, stopping.cancelled_owned()).await {
+    let _session = tokio::select! {
+        biased;
+        () = listening.stopping.cancelled() => return,
+        permit = Arc::clone(&listening.sessions).acquire_owned() => permit.expect("the semaphore is never closed"),
+    };
+    let (served, stopping) = (Arc::clone(&listening.served), listening.stopping.clone());
+    if let Err(error) = serve_until(served, tls, listening.limits, stopping.cancelled_owned()).await
+    {
         report(&format!("serving {peer} failed: {error}"));
     }
 }
