@@ -151,6 +151,11 @@ impl StreamSpec {
         &self.cursor_fields
     }
 
+    /// The read modes the stream supports, in the order declared.
+    pub fn read_modes(&self) -> &[ReadMode] {
+        &self.read_modes
+    }
+
     /// Whether the stream supports `mode`.
     pub fn supports(&self, mode: ReadMode) -> bool {
         self.read_modes.contains(&mode)

@@ -133,6 +133,20 @@ impl ConnectorError {
         self
     }
 
+    /// Sets how long to wait before retrying, as a connector at the other end of the wire said.
+    #[must_use]
+    pub(crate) fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    /// Sets the limit exceeded, as a connector at the other end of the wire said.
+    #[must_use]
+    pub(crate) fn with_limit(mut self, limit: Option<LimitExceeded>) -> Self {
+        self.limit = limit;
+        self
+    }
+
     /// Attaches the underlying cause.
     #[must_use]
     pub fn with_source(mut self, source: impl StdError + Send + Sync + 'static) -> Self {
