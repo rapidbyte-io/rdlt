@@ -1,5 +1,6 @@
 //! Integration tests for the reference connectors.
 
+mod binaries;
 mod certify;
 mod discard;
 mod files;
