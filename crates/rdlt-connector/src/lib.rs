@@ -110,7 +110,7 @@ pub use rdlt_connector_macros::{destination, source};
 pub use schema::{ColumnKey, ColumnPath, EmptyColumnPath, SchemaError, TableSchema};
 pub use secret::Secret;
 pub use sink::{
-    Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, SourceEvent,
+    Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
     admitted_partition_channel, partition_channel,
 };
 pub use source::{
