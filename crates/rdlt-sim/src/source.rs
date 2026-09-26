@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchOptions};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchOptions, StringArray};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
 use bytes::Bytes;
 use rdlt_connector::{
@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::destination::committed_next;
 use rdlt_testkit::drawn::json::rendered;
-use rdlt_testkit::drawn::{Scalar, array, field};
+use rdlt_testkit::drawn::{Encoding, Scalar, Shape, array, field};
 
 use crate::workload::{Row, SimStream};
 use crate::world::{FaultPoint, World};
@@ -63,8 +63,7 @@ impl SourceConnector for SimSource {
                 index,
                 checkpointing: stream.checkpointing,
                 schema: schema(stream),
-                merge: stream.keys > 0,
-                plan_key: stream.plan_key,
+                key: (stream.keys > 0 && !stream.plan_key).then(|| stream.key_columns()),
             })
         })
     }
@@ -89,6 +88,9 @@ pub fn schema(stream: &SimStream) -> TableSchema {
     if stream.keys > 0 {
         columns.push(column("key"));
     }
+    if stream.keys > 0 && stream.composite {
+        columns.push(Field::new("tag", LogicalType::Utf8, false));
+    }
     for drift in &stream.drift {
         if let Some(declared) = &drift.declared {
             columns.push(Field::new(drift.name.as_str(), declared.clone(), true));
@@ -101,8 +103,8 @@ struct SimStreamReader {
     index: usize,
     checkpointing: Checkpointing,
     schema: TableSchema,
-    merge: bool,
-    plan_key: bool,
+    /// The primary key the catalog names.
+    key: Option<Vec<&'static str>>,
 }
 
 impl SimStreamReader {
@@ -122,10 +124,9 @@ impl ReadStream<SimSource> for SimStreamReader {
                 .with_read_modes([ReadMode::Full, ReadMode::Incremental])
                 .with_partitioning(Partitioning::Planned)
                 .with_checkpointing(self.checkpointing);
-        if self.merge && !self.plan_key {
-            spec.with_primary_key(["key"])
-        } else {
-            spec
+        match &self.key {
+            Some(key) => spec.with_primary_key(key.iter().copied()),
+            None => spec,
         }
     }
 
@@ -234,13 +235,26 @@ fn whole(stream: &SimStream, rows: &[Row]) -> RecordBatch {
         column(|row| row.offset),
         column(|row| row.value),
     ];
-    if stream.keys > 0 {
-        fields.push(base("key"));
-        columns.push(column(|row| row.key.unwrap_or_default()));
-    }
     let (partition, delivered) = rows.first().map_or((0, 0), |row| {
         (usize::try_from(row.partition).unwrap_or(0), row.delivered)
     });
+    if stream.keys > 0 {
+        let logical = stream.key_type(partition, delivered);
+        let shape = Shape {
+            logical: logical.clone(),
+            encoding: Encoding::Plain,
+            children: Vec::new(),
+        };
+        let keys: Vec<Scalar> = rows.iter().map(|row| row.key_value(logical)).collect();
+        let array = array(&shape, &keys.iter().collect::<Vec<_>>());
+        fields.push(field("key", &shape, &array, false));
+        columns.push(array);
+    }
+    if stream.keys > 0 && stream.composite {
+        fields.push(ArrowField::new("tag", DataType::Utf8, false));
+        let tags = rows.iter().map(|row| row.tag.clone().unwrap_or_default());
+        columns.push(Arc::new(StringArray::from_iter_values(tags)));
+    }
     for (index, drift) in stream.drift.iter().enumerate() {
         if let Some(shape) = &drift.shapes[partition][delivered] {
             let values: Vec<&Scalar> = rows
@@ -268,6 +282,9 @@ fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
         object.insert("value".to_owned(), json!(row.value));
         if stream.keys > 0 {
             object.insert("key".to_owned(), json!(row.key.unwrap_or_default()));
+        }
+        if let Some(tag) = &row.tag {
+            object.insert("tag".to_owned(), json!(tag));
         }
         for (drift, extra) in stream.drift.iter().zip(&row.extras) {
             if let Some(extra) = extra {

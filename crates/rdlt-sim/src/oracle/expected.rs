@@ -80,7 +80,7 @@ pub(super) fn tables(stream: &SimStream, rows: &[Row], delivered: &[Row]) -> Tab
         .collect();
     for row in rows {
         let mut pending = Pending::default();
-        base(row, &mut pending);
+        base(stream, row, &mut pending);
         let placed = drifted(stream, row, &owned, &mut pending);
         pending.emit(
             std::slice::from_ref(&stream.name),
@@ -94,14 +94,25 @@ pub(super) fn tables(stream: &SimStream, rows: &[Row], delivered: &[Row]) -> Tab
 }
 
 /// Records the values of `row`'s base columns in `pending`: its position, value and key.
-fn base(row: &Row, pending: &mut Pending) {
+fn base(stream: &SimStream, row: &Row, pending: &mut Pending) {
     let int = |value: i64| Sent::Typed(Scalar::Int(value), LogicalType::Int64);
     pending.column(&["id".into()], int(row.id));
     pending.column(&["partition".into()], int(row.partition));
     pending.column(&["offset".into()], int(row.offset));
     pending.column(&["value".into()], int(row.value));
-    if let Some(key) = row.key {
-        pending.column(&["key".into()], int(key));
+    if row.key.is_some() {
+        let partition = usize::try_from(row.partition).unwrap_or(0);
+        let logical = stream.key_type(partition, row.delivered);
+        pending.column(
+            &["key".into()],
+            Sent::Typed(row.key_value(logical), logical.clone()),
+        );
+    }
+    if let Some(tag) = &row.tag {
+        pending.column(
+            &["tag".into()],
+            Sent::Typed(Scalar::Utf8(tag.clone()), LogicalType::Utf8),
+        );
     }
 }
 

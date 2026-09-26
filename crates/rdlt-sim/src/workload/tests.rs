@@ -166,10 +166,7 @@ fn merge_rows_share_keys_within_their_partition() {
     let rows = stream.rows(0, 0).to_vec();
     let keys: BTreeSet<_> = rows.iter().map(|row| row.key).collect();
     assert_eq!(keys.len() as u64, stream.keys);
-    assert!(
-        rows.iter()
-            .all(|row| row.key.is_some_and(|key| key < 1_000_000))
-    );
+    assert!(rows.iter().all(|row| row.key.is_some_and(|key| key < 16)));
 }
 
 /// Every stream of 300 seeds' workloads with every feature on.
@@ -279,6 +276,63 @@ fn a_normalized_stream_declares_no_column_its_policy_discards() {
             assert!(!(discards && drift.declared.is_some()), "{}", drift.name);
         }
     }
+}
+
+#[test]
+fn merge_keys_change_type_collide_across_partitions_and_span_two_columns() {
+    let merging: Vec<SimStream> = streams()
+        .into_iter()
+        .filter(|stream| stream.keys > 0)
+        .collect();
+    let types: BTreeSet<String> = merging
+        .iter()
+        .flat_map(|stream| stream.key_types.iter().flatten())
+        .map(ToString::to_string)
+        .collect();
+    for logical in [
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "decimal(20, 0)",
+        "decimal(38, 0)",
+        "utf8",
+        "float64",
+    ] {
+        assert!(types.contains(logical), "{logical}: {types:?}");
+    }
+    let shared = merging
+        .iter()
+        .find(|stream| stream.shared_keys && stream.partitions.len() > 1)
+        .expect("some stream shares keys across partitions");
+    let keys = |partition| -> BTreeSet<Option<i64>> {
+        shared
+            .rows(partition, 0)
+            .iter()
+            .map(|row| row.key)
+            .collect()
+    };
+    assert!(
+        keys(0).is_empty() || keys(1).is_empty() || !keys(0).is_disjoint(&keys(1)),
+        "partitions share keys"
+    );
+    let composite = merging
+        .iter()
+        .find(|stream| stream.composite)
+        .expect("some key spans two columns");
+    assert_eq!(composite.key_columns(), ["key", "tag"]);
+    assert!(composite.all_rows(0).iter().all(|row| row.tag.is_some()));
+    assert!(
+        merging
+            .iter()
+            .filter(|stream| stream.json)
+            .all(|stream| stream
+                .key_types
+                .iter()
+                .flatten()
+                .all(|l| *l == LogicalType::Int64)),
+        "JSON keys are integers"
+    );
 }
 
 #[test]
@@ -439,11 +493,20 @@ fn features_off_leave_their_parts_of_the_workload_out() {
         disruptions: false,
         narrow: false,
         settings: false,
+        keys: false,
     };
     for seed in 0..100 {
         for stream in Workload::generate(&mut SplitMix64::new(seed), none).streams {
             assert!(
                 stream.drift.is_empty() && !stream.json && !stream.sliced && !stream.normalized()
+            );
+            assert!(!stream.shared_keys && !stream.composite);
+            assert!(
+                stream
+                    .key_types
+                    .iter()
+                    .flatten()
+                    .all(|l| *l == LogicalType::Int64)
             );
         }
     }

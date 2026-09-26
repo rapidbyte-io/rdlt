@@ -2,6 +2,7 @@
 //! own column followed through every order the phase's batches may arrive in, as schema
 //! resolution changes it.
 
+mod keys;
 #[cfg(test)]
 mod tests;
 
@@ -15,11 +16,14 @@ use super::arrivals::{Arrival, arrival};
 use super::expected;
 use crate::workload::{Relaxed, SimStream};
 use crate::world::World;
+use keys::key_outcome;
 
 /// The code of a refused change to a frozen schema.
 pub(super) const FROZEN: &str = "schema_frozen";
 /// The code of a change the destination cannot apply and the policy refuses a variant for.
 pub(super) const UNSUPPORTED: &str = "schema_change_unsupported";
+/// The code of a merge key column whose type cannot change.
+pub(super) const KEY_CHANGED: &str = "merge_key_changed";
 
 /// The refusals a phase's runs may meet.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -83,7 +87,7 @@ pub(super) fn refused(
         .iter()
         .filter(|failure| failure.kind == ErrorKind::Schema)
     {
-        let known = [FROZEN, UNSUPPORTED]
+        let known = [FROZEN, UNSUPPORTED, KEY_CHANGED]
             .into_iter()
             .find(|code| failure.code.as_deref() == Some(code));
         let refusal = known
@@ -130,8 +134,9 @@ pub(super) fn predict(world: &World, relaxed: &[Relaxed], phase: usize) -> Predi
     for (stream, relaxed) in world.workload.streams.iter().zip(relaxed) {
         let columns = (0..stream.drift.len())
             .map(|column| Column::new(stream, column, *relaxed, &capabilities).outcome(phase));
+        let key = (stream.keys > 0).then(|| key_outcome(stream, &capabilities, phase));
         let pruning = prunes(stream, phase);
-        for outcome in columns {
+        for outcome in columns.chain(key) {
             if let Some(code) = outcome.code {
                 prediction.may.insert((stream.name.clone(), code));
                 prediction.must |= outcome.must && !pruning;
