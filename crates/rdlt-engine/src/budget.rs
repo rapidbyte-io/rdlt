@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rdlt_connector::{Admission, BoxFuture, Permit};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
+
+use crate::watch;
 
 /// Bytes the engine may hold in flight, shared by everything that reserves them.
 ///

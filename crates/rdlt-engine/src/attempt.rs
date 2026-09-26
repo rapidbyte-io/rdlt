@@ -14,7 +14,7 @@ use rdlt_connector::{
     Cursor, Destination, Epoch, GenerationId, LoadId, OpenContext, OpenedSession, Partition,
     PipelineState, Source, StreamName,
 };
-use tokio::sync::{Semaphore, mpsc, watch};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
@@ -29,6 +29,7 @@ use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
 use crate::table::{SharedSession, Tables};
+use crate::watch;
 
 use streams::Planning;
 

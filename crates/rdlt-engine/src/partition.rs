@@ -15,7 +15,7 @@ use rdlt_connector::{
     Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId,
     Source, SourceEvent, StreamName, admitted_partition_channel,
 };
-use tokio::sync::{Semaphore, mpsc, watch};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
@@ -24,6 +24,7 @@ use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
 use crate::table::Tables;
+use crate::watch;
 
 use coalesce::{Coalescer, Pushed};
 use write::write_flushed;
@@ -282,7 +283,7 @@ impl Barriers {
     /// Barriers for a partition, forwarding one already raised to `feed` at once.
     fn new(mut receiver: watch::Receiver<u64>, on_demand: bool, feed: &PartitionFeed) -> Self {
         if on_demand {
-            let raised = *receiver.borrow_and_update();
+            let raised = receiver.borrow_and_update();
             if raised > 0 {
                 feed.request_checkpoint(raised);
             }
@@ -296,7 +297,7 @@ impl Barriers {
     /// The next barrier raised; `None` once the coordinator has gone.
     async fn next(&mut self) -> Option<u64> {
         if self.receiver.changed().await.is_ok() {
-            Some(*self.receiver.borrow_and_update())
+            Some(self.receiver.borrow_and_update())
         } else {
             self.open = false;
             None

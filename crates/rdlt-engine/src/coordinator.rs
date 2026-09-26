@@ -18,7 +18,7 @@ use rdlt_connector::{
     CommitMeta, CommitSeq, Cursor, Epoch, GenerationId, LoadId, PartitionId, PartitionState,
     Source, StateChange, StateEntry, StreamName,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::CommitPolicy;
@@ -29,6 +29,7 @@ use crate::partition::{Progress, Seal};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
 use crate::table::Tables;
+use crate::watch;
 
 /// A stream as one attempt loads it.
 #[derive(Debug)]

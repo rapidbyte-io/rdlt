@@ -38,6 +38,7 @@ mod run;
 mod scope;
 mod shred;
 mod table;
+mod watch;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
 pub use config::{BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, RetryPolicy};

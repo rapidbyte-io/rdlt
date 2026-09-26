@@ -15,7 +15,7 @@ use rdlt_connector::{
     ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source, StateChange, StateEntry,
     StateKey, StreamName, StreamState, TableChange, TablePath, TableRef, TableSchema,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
@@ -30,6 +30,7 @@ use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
+use crate::watch;
 
 type Commits = Arc<Mutex<Vec<CommitMeta>>>;
 type Acks = Arc<Mutex<Vec<(StreamName, Vec<(PartitionId, Cursor)>)>>>;
@@ -479,7 +480,7 @@ async fn a_commit_waits_for_on_demand_partitions_to_answer_its_barrier() {
     harness.send(Progress::Started { partition: 1 });
     harness.send(Progress::Written { rows: 1, bytes: 8 });
     harness.barrier.changed().await.unwrap();
-    assert_eq!(*harness.barrier.borrow_and_update(), 1);
+    assert_eq!(harness.barrier.borrow_and_update(), 1);
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
         harness.commit_count(),
