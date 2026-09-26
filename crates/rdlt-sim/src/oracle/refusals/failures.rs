@@ -1,5 +1,8 @@
 //! How runs failed, which failures the model predicts, and how an operator relaxes a refusal.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeSet;
 
 use rdlt_engine::{Error, ErrorKind};
@@ -27,6 +30,15 @@ impl Failure {
             stream: error.stream().map(ToString::to_string),
             text: format!("{error:?}"),
         }
+    }
+
+    /// The refusal this failure is, where `prediction` names it: its stream and code.
+    fn refusal(&self, prediction: &Prediction) -> Option<(String, &'static str)> {
+        let code = [FROZEN, UNSUPPORTED, KEY_CHANGED]
+            .into_iter()
+            .find(|code| self.code.as_deref() == Some(code))?;
+        let refusal = (self.stream.clone()?, code);
+        (self.kind == ErrorKind::Schema && prediction.may.contains(&refusal)).then_some(refusal)
     }
 }
 
@@ -61,17 +73,9 @@ pub(in crate::oracle) fn refused(
         .iter()
         .filter(|failure| failure.kind == ErrorKind::Schema)
     {
-        let known = [FROZEN, UNSUPPORTED, KEY_CHANGED]
-            .into_iter()
-            .find(|code| failure.code.as_deref() == Some(code));
-        let refusal = known
-            .zip(failure.stream.clone())
-            .map(|(code, stream)| (stream, code));
-        match refusal {
-            Some((stream, code)) if prediction.may.contains(&(stream.clone(), code)) => {
-                met = Some((stream, code));
-            }
-            _ => {
+        match failure.refusal(prediction) {
+            Some(refusal) => met = Some(refusal),
+            None => {
                 return Err(Unpredicted {
                     failure: failure.text.clone(),
                     predicted: prediction.may.clone(),
@@ -80,6 +84,17 @@ pub(in crate::oracle) fn refused(
         }
     }
     Ok(met)
+}
+
+/// The first of `failures` a run without faults or disruptions must not meet: anything but a
+/// refusal `prediction` names.
+pub(in crate::oracle) fn unexplained<'a>(
+    failures: &'a [Failure],
+    prediction: &Prediction,
+) -> Option<&'a Failure> {
+    failures
+        .iter()
+        .find(|failure| failure.refusal(prediction).is_none())
 }
 
 /// Relaxes what refused `stream`'s runs with `code`, as an operator would: a frozen schema
