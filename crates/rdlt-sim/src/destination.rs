@@ -80,7 +80,7 @@ impl DestinationConnector for SimDestination {
     type Session = SimSession;
 
     fn capabilities(&self) -> Capabilities {
-        self.world.capabilities.clone()
+        self.world.capabilities()
     }
 
     async fn connect(config: SimDestinationConfig, _context: &ConnectContext) -> Result<Self> {

@@ -2,7 +2,9 @@ use rdlt_connector::{Field, Fields, LogicalType};
 use rdlt_testkit::drawn::Scalar;
 use serde_json::{Value, json};
 
-use super::{Node, Pending, Pushed, Tables, counted, pushed_type};
+use std::collections::BTreeMap;
+
+use super::{Node, Pending, Tables, child_rows, counted};
 
 fn objects() -> LogicalType {
     let fields = Fields::new(vec![
@@ -26,7 +28,13 @@ fn normalized(node: Node, max_depth: u8) -> Tables {
     let mut pending = Pending::default();
     pending.place(vec!["a".to_owned()], node, 1, max_depth);
     let mut tables = Tables::new();
-    pending.emit(&["s".to_owned()], "1:2", max_depth, &mut tables);
+    pending.emit(
+        &["s".to_owned()],
+        "1:2",
+        max_depth,
+        BTreeMap::new(),
+        &mut tables,
+    );
     tables
 }
 
@@ -69,28 +77,6 @@ fn pushed_arrays_of_arrays_become_grandchild_tables() {
 }
 
 #[test]
-fn pushed_scalars_are_inferred_as_json_holds_them() {
-    let typed = Pushed::Typed;
-    assert_eq!(
-        pushed_type(&Scalar::Float64(1.5)),
-        typed(LogicalType::Float64)
-    );
-    assert_eq!(pushed_type(&Scalar::Int(3)), typed(LogicalType::Int64));
-    assert_eq!(pushed_type(&Scalar::Bool(true)), typed(LogicalType::Bool));
-    assert_eq!(
-        pushed_type(&Scalar::Float64(f64::NAN)),
-        typed(LogicalType::Utf8),
-        "a float JSON cannot hold is pushed as its name"
-    );
-    assert_eq!(
-        pushed_type(&Scalar::Null),
-        Pushed::Null,
-        "a null has no type"
-    );
-    assert_eq!(pushed_type(&Scalar::List(Vec::new())), Pushed::Container);
-}
-
-#[test]
 fn a_json_null_counts_as_a_value_its_policy_discards() {
     let null = || {
         vec![(
@@ -116,4 +102,25 @@ fn an_empty_array_or_an_object_of_nulls_counts_only_where_it_is_stored_whole() {
     );
     let items = vec![("a".to_owned(), Node::Json(json!([{"x": 1}, 2])))];
     assert_eq!(counted(items, Some(8)), 2, "each item counts");
+}
+
+#[test]
+fn a_value_adds_a_child_row_for_each_array_item_at_any_depth_within_the_limit() {
+    let value = || Node::Json(json!([{"x": 1}, {"x": 2, "y": [1, 2]}, 3]));
+    assert_eq!(
+        child_rows("a", value(), 8),
+        5,
+        "three items and the inner array's two"
+    );
+    assert_eq!(
+        child_rows("a", value(), 1),
+        3,
+        "the inner array is stored whole"
+    );
+    let object = Node::Json(json!({"x": 1, "y": {"z": 2}}));
+    assert_eq!(
+        child_rows("a", object, 8),
+        0,
+        "objects flatten into columns"
+    );
 }
