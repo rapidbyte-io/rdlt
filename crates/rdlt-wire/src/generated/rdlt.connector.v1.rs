@@ -911,9 +911,6 @@ pub struct ReadStart {
     /// Where to resume; absent reads from the start.
     #[prost(message, optional, tag = "3")]
     pub cursor: ::core::option::Option<Cursor>,
-    /// How to read.
-    #[prost(enumeration = "ReadMode", tag = "4")]
-    pub mode: i32,
 }
 /// Asks for a checkpoint answering a barrier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -922,7 +919,9 @@ pub struct CheckpointRequest {
     #[prost(uint64, tag = "1")]
     pub barrier: u64,
 }
-/// Bytes a receiver grants its sender.
+/// Bytes a receiver grants its sender. A sender may send a frame while its credit is above zero;
+/// the frame spends its encoded size, which may leave the credit below zero until more is granted.
+/// So a small window bounds how far a sender runs ahead, and no frame is too large for it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Credit {
     /// The bytes.
@@ -1034,13 +1033,10 @@ pub struct MetricFrame {
     #[prost(double, tag = "2")]
     pub value: f64,
 }
-/// The end of a read.
+/// The end of a read: the source's read returned. A read that fails ends with the error's status
+/// instead, and one the host stopped ends however the source's read returned.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Done {
-    /// Why it ended.
-    #[prost(enumeration = "DoneReason", tag = "1")]
-    pub reason: i32,
-}
+pub struct Done {}
 /// Reports cursors a destination committed.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommittedRequest {
@@ -1167,39 +1163,6 @@ impl LogLevel {
             "LOG_LEVEL_WARN" => Some(Self::Warn),
             "LOG_LEVEL_INFO" => Some(Self::Info),
             "LOG_LEVEL_DEBUG" => Some(Self::Debug),
-            _ => None,
-        }
-    }
-}
-/// Why a read ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum DoneReason {
-    /// Never sent; a receiver refuses it.
-    Unspecified = 0,
-    /// The partition is exhausted.
-    Exhausted = 1,
-    /// The read was stopped.
-    Stopped = 2,
-}
-impl DoneReason {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "DONE_REASON_UNSPECIFIED",
-            Self::Exhausted => "DONE_REASON_EXHAUSTED",
-            Self::Stopped => "DONE_REASON_STOPPED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "DONE_REASON_UNSPECIFIED" => Some(Self::Unspecified),
-            "DONE_REASON_EXHAUSTED" => Some(Self::Exhausted),
-            "DONE_REASON_STOPPED" => Some(Self::Stopped),
             _ => None,
         }
     }
@@ -1673,5 +1636,936 @@ impl Role {
             "ROLE_DESTINATION" => Some(Self::Destination),
             _ => None,
         }
+    }
+}
+/// Generated client implementations.
+pub mod connector_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value
+    )]
+    use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
+    /// A connector, serving every role it supports.
+    #[derive(Debug, Clone)]
+    pub struct ConnectorClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl<T> ConnectorClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> ConnectorClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                    http::Request<tonic::body::Body>,
+                    Response = http::Response<
+                        <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                    >,
+                >,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            ConnectorClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Agrees the protocol version and features, and configures the connector.
+        pub async fn handshake(
+            &mut self,
+            request: impl tonic::IntoRequest<super::HandshakeRequest>,
+        ) -> std::result::Result<tonic::Response<super::HandshakeResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Handshake");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Handshake"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Verifies connectivity and permissions.
+        pub async fn check(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CheckRequest>,
+        ) -> std::result::Result<tonic::Response<super::CheckResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Check");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Check"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// The source's catalog.
+        pub async fn discover(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DiscoverRequest>,
+        ) -> std::result::Result<tonic::Response<super::Catalog>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Discover");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Discover"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// The partitions of a stream to read.
+        pub async fn plan(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PlanRequest>,
+        ) -> std::result::Result<tonic::Response<super::PlanResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Plan");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Plan"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Reads a partition.
+        pub async fn read(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<Message = super::ReadControl>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::ReadFrame>>,
+            tonic::Status,
+        > {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Read");
+            let mut req = request.into_streaming_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Read"));
+            self.inner.streaming(req, path, codec).await
+        }
+        /// Reports cursors a destination committed.
+        pub async fn committed(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CommittedRequest>,
+        ) -> std::result::Result<tonic::Response<super::CommittedResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Committed");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Committed"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Opens a destination session.
+        pub async fn open(
+            &mut self,
+            request: impl tonic::IntoRequest<super::OpenRequest>,
+        ) -> std::result::Result<tonic::Response<super::OpenResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Open");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Open"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Applies a schema change.
+        pub async fn apply_schema(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApplySchemaRequest>,
+        ) -> std::result::Result<tonic::Response<super::ApplySchemaResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/ApplySchema");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "rdlt.connector.v1.Connector",
+                "ApplySchema",
+            ));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Writes a table's batches.
+        pub async fn write(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<Message = super::WriteFrame>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::WriteAck>>,
+            tonic::Status,
+        > {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Write");
+            let mut req = request.into_streaming_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Write"));
+            self.inner.streaming(req, path, codec).await
+        }
+        /// Commits a session's staged segments.
+        pub async fn commit(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CommitRequest>,
+        ) -> std::result::Result<tonic::Response<super::Receipt>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Commit");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Commit"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Closes a session.
+        pub async fn close(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CloseRequest>,
+        ) -> std::result::Result<tonic::Response<super::CloseResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Close");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Close"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Proves both ends are alive.
+        pub async fn heartbeat(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<Message = super::Ping>,
+        ) -> std::result::Result<tonic::Response<tonic::codec::Streaming<super::Pong>>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Heartbeat");
+            let mut req = request.into_streaming_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Heartbeat"));
+            self.inner.streaming(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+pub mod connector_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with ConnectorServer.
+    #[async_trait]
+    pub trait Connector: std::marker::Send + std::marker::Sync + 'static {
+        /// Agrees the protocol version and features, and configures the connector.
+        async fn handshake(
+            &self,
+            request: tonic::Request<super::HandshakeRequest>,
+        ) -> std::result::Result<tonic::Response<super::HandshakeResponse>, tonic::Status>;
+        /// Verifies connectivity and permissions.
+        async fn check(
+            &self,
+            request: tonic::Request<super::CheckRequest>,
+        ) -> std::result::Result<tonic::Response<super::CheckResponse>, tonic::Status>;
+        /// The source's catalog.
+        async fn discover(
+            &self,
+            request: tonic::Request<super::DiscoverRequest>,
+        ) -> std::result::Result<tonic::Response<super::Catalog>, tonic::Status>;
+        /// The partitions of a stream to read.
+        async fn plan(
+            &self,
+            request: tonic::Request<super::PlanRequest>,
+        ) -> std::result::Result<tonic::Response<super::PlanResponse>, tonic::Status>;
+        /// Server streaming response type for the Read method.
+        type ReadStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::ReadFrame, tonic::Status>,
+            > + std::marker::Send
+            + 'static;
+        /// Reads a partition.
+        async fn read(
+            &self,
+            request: tonic::Request<tonic::Streaming<super::ReadControl>>,
+        ) -> std::result::Result<tonic::Response<Self::ReadStream>, tonic::Status>;
+        /// Reports cursors a destination committed.
+        async fn committed(
+            &self,
+            request: tonic::Request<super::CommittedRequest>,
+        ) -> std::result::Result<tonic::Response<super::CommittedResponse>, tonic::Status>;
+        /// Opens a destination session.
+        async fn open(
+            &self,
+            request: tonic::Request<super::OpenRequest>,
+        ) -> std::result::Result<tonic::Response<super::OpenResponse>, tonic::Status>;
+        /// Applies a schema change.
+        async fn apply_schema(
+            &self,
+            request: tonic::Request<super::ApplySchemaRequest>,
+        ) -> std::result::Result<tonic::Response<super::ApplySchemaResponse>, tonic::Status>;
+        /// Server streaming response type for the Write method.
+        type WriteStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::WriteAck, tonic::Status>,
+            > + std::marker::Send
+            + 'static;
+        /// Writes a table's batches.
+        async fn write(
+            &self,
+            request: tonic::Request<tonic::Streaming<super::WriteFrame>>,
+        ) -> std::result::Result<tonic::Response<Self::WriteStream>, tonic::Status>;
+        /// Commits a session's staged segments.
+        async fn commit(
+            &self,
+            request: tonic::Request<super::CommitRequest>,
+        ) -> std::result::Result<tonic::Response<super::Receipt>, tonic::Status>;
+        /// Closes a session.
+        async fn close(
+            &self,
+            request: tonic::Request<super::CloseRequest>,
+        ) -> std::result::Result<tonic::Response<super::CloseResponse>, tonic::Status>;
+        /// Server streaming response type for the Heartbeat method.
+        type HeartbeatStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::Pong, tonic::Status>,
+            > + std::marker::Send
+            + 'static;
+        /// Proves both ends are alive.
+        async fn heartbeat(
+            &self,
+            request: tonic::Request<tonic::Streaming<super::Ping>>,
+        ) -> std::result::Result<tonic::Response<Self::HeartbeatStream>, tonic::Status>;
+    }
+    /// A connector, serving every role it supports.
+    #[derive(Debug)]
+    pub struct ConnectorServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> ConnectorServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for ConnectorServer<T>
+    where
+        T: Connector,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/rdlt.connector.v1.Connector/Handshake" => {
+                    #[allow(non_camel_case_types)]
+                    struct HandshakeSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::HandshakeRequest> for HandshakeSvc<T> {
+                        type Response = super::HandshakeResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::HandshakeRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut =
+                                async move { <T as Connector>::handshake(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = HandshakeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Check" => {
+                    #[allow(non_camel_case_types)]
+                    struct CheckSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::CheckRequest> for CheckSvc<T> {
+                        type Response = super::CheckResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CheckRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move { <T as Connector>::check(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CheckSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Discover" => {
+                    #[allow(non_camel_case_types)]
+                    struct DiscoverSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::DiscoverRequest> for DiscoverSvc<T> {
+                        type Response = super::Catalog;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DiscoverRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut =
+                                async move { <T as Connector>::discover(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DiscoverSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Plan" => {
+                    #[allow(non_camel_case_types)]
+                    struct PlanSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::PlanRequest> for PlanSvc<T> {
+                        type Response = super::PlanResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::PlanRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move { <T as Connector>::plan(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = PlanSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Read" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReadSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::StreamingService<super::ReadControl> for ReadSvc<T> {
+                        type Response = super::ReadFrame;
+                        type ResponseStream = T::ReadStream;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<tonic::Streaming<super::ReadControl>>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move { <T as Connector>::read(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReadSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Committed" => {
+                    #[allow(non_camel_case_types)]
+                    struct CommittedSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::CommittedRequest> for CommittedSvc<T> {
+                        type Response = super::CommittedResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CommittedRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut =
+                                async move { <T as Connector>::committed(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CommittedSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Open" => {
+                    #[allow(non_camel_case_types)]
+                    struct OpenSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::OpenRequest> for OpenSvc<T> {
+                        type Response = super::OpenResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::OpenRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move { <T as Connector>::open(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = OpenSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/ApplySchema" => {
+                    #[allow(non_camel_case_types)]
+                    struct ApplySchemaSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::ApplySchemaRequest> for ApplySchemaSvc<T> {
+                        type Response = super::ApplySchemaResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ApplySchemaRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Connector>::apply_schema(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ApplySchemaSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Write" => {
+                    #[allow(non_camel_case_types)]
+                    struct WriteSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::StreamingService<super::WriteFrame> for WriteSvc<T> {
+                        type Response = super::WriteAck;
+                        type ResponseStream = T::WriteStream;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<tonic::Streaming<super::WriteFrame>>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move { <T as Connector>::write(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = WriteSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Commit" => {
+                    #[allow(non_camel_case_types)]
+                    struct CommitSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::CommitRequest> for CommitSvc<T> {
+                        type Response = super::Receipt;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CommitRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut =
+                                async move { <T as Connector>::commit(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CommitSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Close" => {
+                    #[allow(non_camel_case_types)]
+                    struct CloseSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::CloseRequest> for CloseSvc<T> {
+                        type Response = super::CloseResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CloseRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move { <T as Connector>::close(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CloseSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Heartbeat" => {
+                    #[allow(non_camel_case_types)]
+                    struct HeartbeatSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::StreamingService<super::Ping> for HeartbeatSvc<T> {
+                        type Response = super::Pong;
+                        type ResponseStream = T::HeartbeatStream;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<tonic::Streaming<super::Ping>>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut =
+                                async move { <T as Connector>::heartbeat(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = HeartbeatSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        tonic::Status::GRPC_STATUS,
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    headers.insert(
+                        http::header::CONTENT_TYPE,
+                        tonic::metadata::GRPC_CONTENT_TYPE,
+                    );
+                    Ok(response)
+                }),
+            }
+        }
+    }
+    impl<T> Clone for ConnectorServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "rdlt.connector.v1.Connector";
+    impl<T> tonic::server::NamedService for ConnectorServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
     }
 }
