@@ -76,16 +76,19 @@ impl Local {
         self
     }
 
-    /// The binary `reference` names: its path, or `rdlt-connector-<the id's last segment>` in
-    /// the connector directories, then on `PATH`.
+    /// The binary `reference` names, as an absolute path: its path, or
+    /// `rdlt-connector-<the id's last segment>` in the connector directories, then on `PATH`.
     pub fn resolve(&self, reference: &ConnectorRef) -> Result<PathBuf, ProviderError> {
         let not_found = |source| ProviderError::NotFound {
             id: reference.id.clone(),
             source,
         };
+        // Absolute: spawning a bare name would search `PATH`, and a respawn could run elsewhere.
+        let absolute =
+            |path: &Path| std::path::absolute(path).map_err(|error| not_found(Some(error)));
         if let Some(path) = &reference.path {
             return if executable(path) {
-                Ok(path.clone())
+                absolute(path)
             } else {
                 let error = std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -103,6 +106,7 @@ impl Local {
             .map(|dir| dir.join(&name))
             .find(|candidate| executable(candidate))
             .ok_or_else(|| not_found(None))
+            .and_then(|found| absolute(&found))
     }
 
     /// Spawns the connector `reference` names as `role`, and checks it is that connector.

@@ -51,8 +51,11 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 uuid.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-nix = { workspace = true, optional = true, features = ["process", "signal"] }
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, optional = true, features = ["fs", "process", "signal"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 proptest.workspace = true

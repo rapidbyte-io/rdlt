@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use command_fds::{CommandFdExt as _, FdMapping};
 use rdlt_connector::ConnectorId;
-use tokio::io::{AsyncBufReadExt as _, AsyncRead, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -168,8 +168,10 @@ enum Stream {
     Stderr,
 }
 
-/// Forwards each line of `output` to `tracing`: standard output, which a connector should not
-/// use, as a warning; standard error as information, keeping its last bytes in `kept`'s tail.
+/// Forwards each line of `output` to `tracing`, in pieces of at most [`TAIL_BYTES`], so a
+/// connector that never ends a line cannot grow this process's memory: standard output, which a
+/// connector should not use, as a warning; standard error as information, keeping its last bytes
+/// in `kept`'s tail.
 async fn drain(
     output: impl AsyncRead + Unpin,
     connector: ConnectorId,
@@ -177,28 +179,46 @@ async fn drain(
     stream: Stream,
     kept: Option<(Arc<Tail>, watch::Sender<bool>)>,
 ) {
-    let mut lines = BufReader::new(output);
+    let mut reader = BufReader::new(output);
     let mut line = Vec::new();
     loop {
         line.clear();
-        match lines.read_until(b'\n', &mut line).await {
+        let mut piece = (&mut reader).take(TAIL_BYTES as u64);
+        match piece.read_until(b'\n', &mut line).await {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
         }
-        if let Some((tail, _)) = &kept {
-            tail.push(&line);
-        }
-        let text = String::from_utf8_lossy(&line);
-        let text = text.trim_end();
-        match stream {
-            Stream::Stdout => {
-                tracing::warn!(connector = %connector, pid, "connector wrote to stdout: {text}");
-            }
-            Stream::Stderr => tracing::info!(connector = %connector, pid, "{text}"),
-        }
+        forward(
+            &line,
+            &connector,
+            pid,
+            stream,
+            kept.as_ref().map(|(tail, _)| &**tail),
+        );
     }
     if let Some((_, closed)) = kept {
         closed.send_replace(true);
+    }
+}
+
+/// Forwards `line`, a line of `stream` or a piece of one, to `tracing`, and keeps it in `tail`.
+fn forward(
+    line: &[u8],
+    connector: &ConnectorId,
+    pid: Option<u32>,
+    stream: Stream,
+    tail: Option<&Tail>,
+) {
+    if let Some(tail) = tail {
+        tail.push(line);
+    }
+    let text = String::from_utf8_lossy(line);
+    let text = text.trim_end();
+    match stream {
+        Stream::Stdout => {
+            tracing::warn!(connector = %connector, pid, "connector wrote to stdout: {text}");
+        }
+        Stream::Stderr => tracing::info!(connector = %connector, pid, "{text}"),
     }
 }
 

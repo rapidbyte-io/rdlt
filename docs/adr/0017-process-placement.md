@@ -39,8 +39,11 @@ only at its end. The owner also asked for the host to be simulated over a networ
     socket needs `OwnedFd::from_raw_fd`.
   - `adopt` makes it sound:
     - it refuses the standard streams, which the standard library owns;
-    - it checks that the descriptor is open;
-    - it adopts once per process, first thing in `main`, before anything opens a file.
+    - it checks that the descriptor is an open socket;
+    - it refuses a close-on-exec descriptor. The standard library opens everything
+      close-on-exec, and `dup2`, through which the host passes the socket, clears the flag, so a
+      descriptor with the flag set is one this process opened and owns;
+    - it adopts once per process.
   - Miri runs the module's test (`just miri`, in CI's coverage job).
   - The workspace denies `unsafe` code, and every crate root but `rdlt-connector`'s forbids it.
     `cargo xtask lint` fails on `unsafe` anywhere but that module, and on a crate root that does
@@ -60,12 +63,15 @@ only at its end. The owner also asked for the host to be simulated over a networ
   fallback, else `NotFound` (§13.2).
 - **`Local` places connectors in processes** (§13.3).
   - Resolution takes the reference's path first. Without one, it looks for
-    `rdlt-connector-<the id's last segment>` in the connector directories, then on `PATH`.
+    `rdlt-connector-<the id's last segment>` in the connector directories, then on `PATH`. The
+    path is made absolute, so spawning never searches `PATH` again, and a respawn runs the same
+    file.
   - The connector starts with its socket on file descriptor 3 (`--rdlt-fd=3`) and a piped
     standard input. Its environment is cleared, keeping only the variables `env_passthrough`
     names; the host sets no `RDLT_*` variables yet.
   - Standard output is drained into `tracing` as warnings, and standard error as information,
-    with the connector's id and process id.
+    with the connector's id and process id. A line goes in pieces of at most 8 KiB, so a
+    connector that never ends a line cannot grow the host's memory.
   - The last 8 KiB of standard error, and the exit status, are kept. A transport failure of that
     connector (`connector_lost` or `transport`) carries them as its source (`LastWords`), from
     its source's and destination's calls and from its sessions' and writers'.
