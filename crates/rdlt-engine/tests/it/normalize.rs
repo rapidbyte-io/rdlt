@@ -655,6 +655,28 @@ async fn a_frozen_array_column_freezes_its_child_tables_columns() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_hinted_column_of_a_normalized_stream_is_stored_whole_as_its_hint() {
+    let plan = normalized("events").hint("meta", LogicalType::Json);
+    let push = r#"{"id":1,"meta":{"a":[1,2]}}"#;
+    succeeded(
+        &load(
+            "hinted_whole",
+            vec![BatchStream::json("events", &[push])],
+            vec![plan],
+        )
+        .await,
+    );
+    let rows = published_json("hinted_whole", "events");
+    let meta: Value = serde_json::from_str(rows[0]["meta"].as_str().expect("JSON text"))
+        .expect("the column holds its JSON");
+    assert_eq!(meta, json!({"a": [1, 2]}));
+    assert!(
+        schema("hinted_whole", "events__meta__a").is_none(),
+        "no child table"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn arrays_a_source_declares_are_no_schema_change() {
     let fields = |fields: Vec<RdltField>| LogicalType::Struct(Fields::new(fields).unwrap());
     let list = |item: LogicalType| LogicalType::List(Box::new(RdltField::new("item", item, true)));

@@ -85,6 +85,8 @@ impl StreamPlan {
 
     /// Fixes a column's type: values that do not fit it are incompatible changes, which the schema
     /// policy handles.
+    ///
+    /// A normalized stream stores a hinted column whole.
     #[must_use]
     pub fn hint(mut self, column: impl Into<ColumnPath>, logical_type: LogicalType) -> Self {
         self.hints.insert(column.into(), logical_type);
@@ -118,6 +120,11 @@ impl StreamPlan {
             hints: BTreeMap::new(),
             ..self.clone()
         }
+    }
+
+    /// Every column the plan hints a type for.
+    pub(crate) fn hinted_columns(&self) -> impl Iterator<Item = &ColumnPath> {
+        self.hints.keys()
     }
 
     /// Every column the plan sets schema settings for, with them.
