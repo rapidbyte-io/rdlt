@@ -4,9 +4,11 @@
 //! and carries the configuration, and every later call works on the connector that handshake
 //! connected. A binary serves every role it has a factory for.
 
+mod args;
 mod binary;
 mod handshake;
 mod inherited;
+mod listen;
 mod read;
 mod service;
 mod write;
@@ -75,6 +77,12 @@ impl Served {
 #[error("serving the connection failed")]
 pub struct ServeError(#[source] hyper::Error);
 
+/// How often a served connection pings its host over HTTP/2, as the host's heartbeat pings it.
+const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a ping may go unanswered before the host counts as gone.
+const KEEP_ALIVE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Serves the protocol on `io`, enforcing `limits` on what it receives, until the host closes the
 /// connection, which ends it cleanly.
 ///
@@ -114,7 +122,10 @@ where
         let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
         builder
             .timer(TokioTimer::new())
-            .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW);
+            .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
+            // Pings notice a host the network dropped silently, which would hold its session.
+            .keep_alive_interval(Some(KEEP_ALIVE))
+            .keep_alive_timeout(KEEP_ALIVE_PATIENCE);
         builder
     };
     let connection = builder.serve_connection(TokioIo::new(io), TowerToHyperService::new(service));

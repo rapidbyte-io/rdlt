@@ -20,6 +20,8 @@ serve = [
   "dep:tokio-stream",
   "dep:tower",
   "rdlt-wire/serve",
+  "rdlt-wire/tls",
+  "dep:tokio-rustls",
   "tokio/io-std",
   "tokio/io-util",
   "tokio/net",
@@ -42,6 +44,7 @@ hyper = { workspace = true, optional = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, optional = true, features = ["tokio", "service"] }
 tokio-stream = { workspace = true, optional = true }
 tower = { workspace = true, optional = true, features = ["util"] }
+tokio-rustls = { workspace = true, optional = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

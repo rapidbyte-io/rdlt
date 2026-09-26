@@ -65,6 +65,9 @@ rustls = { version = "0.23.45", default-features = false, features = [
   "ring",
   "std",
 ] } # TLS 1.3 for connectors reached over the network
+tokio-rustls = { version = "0.26.5", default-features = false, features = [
+  "ring",
+] } # rustls over tokio's sockets
 semver = "1.0.28" # the versions a connector reference accepts
 sha2 = { version = "0.10.9", default-features = false, features = [
   "std",
