@@ -40,6 +40,13 @@ sim seed="" seeds="1000":
 stress seeds="20":
     RDLT_SIM_SEEDS="{{ seeds }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --run-ignored ignored-only -E 'test(many_threads)'
 
+# Measure how much of the engine and connector code the simulation alone reaches, test code and
+# the connector's test kit and SQL planner left out, and hold it above its floor
+sim-coverage seeds="1000":
+    rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
+    RDLT_SIM_SEEDS="{{ seeds }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs' -E 'package(rdlt-sim) & test(through_faults)'
+    cargo xtask coverage-gate target/sim-coverage.json --lines 82 --branches 73
+
 # Measure line and branch coverage and apply the CI gate
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
