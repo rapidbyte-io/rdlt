@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
-use rdlt_connector::{Capabilities, LogicalType, SchemaChanges, TypeKind};
+use rdlt_connector::{Capabilities, DecimalType, LogicalType, SchemaChanges, TypeKind};
 use rdlt_engine::{Nested, SchemaPolicy};
 
+use super::keys::key_step;
 use super::{Arrival, Outcome, Rules, Step, UNSUPPORTED, orders, outcome};
 
 /// A destination storing every scalar type natively that widens only `widenings`.
@@ -168,5 +169,32 @@ fn a_phase_starts_from_every_type_the_last_one_may_have_left() {
     assert_eq!(
         outcome(Some(LogicalType::Int8), &phases, UNSUPPORTED, step),
         Outcome::default()
+    );
+}
+
+#[test]
+fn a_key_widens_where_the_destination_can_and_is_refused_otherwise() {
+    let decimal = LogicalType::Decimal(DecimalType::new(20, 0).expect("a valid decimal"));
+    let widening = capabilities(&[(TypeKind::Int64, TypeKind::Decimal)]);
+    let int64 = LogicalType::Int64;
+    let native = Nested::Native;
+    assert_eq!(
+        key_step(Some(&int64), &typed(decimal.clone()), native, &widening),
+        Step::To(decimal.clone())
+    );
+    assert_eq!(
+        key_step(Some(&int64), &typed(LogicalType::Int8), native, &widening),
+        Step::To(int64.clone()),
+        "a narrower key fits"
+    );
+    let fixed = capabilities(&[]);
+    assert_eq!(
+        key_step(Some(&int64), &typed(decimal), native, &fixed),
+        Step::Refused
+    );
+    assert_eq!(
+        key_step(Some(&int64), &typed(LogicalType::Utf8), native, &widening),
+        Step::Refused,
+        "a key never becomes JSON"
     );
 }

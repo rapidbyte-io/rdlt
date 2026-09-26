@@ -1,5 +1,6 @@
 //! Seeded workloads: the streams a simulated source serves and the rows each phase holds.
 
+mod keys;
 mod schema;
 mod settings;
 #[cfg(test)]
@@ -68,6 +69,13 @@ pub struct SimStream {
     pub keys: u64,
     /// Whether the plan names the merge key, rather than the catalog's primary key.
     pub plan_key: bool,
+    /// Whether every partition's rows share the same keys, so merges of one key race across
+    /// partitions.
+    pub shared_keys: bool,
+    /// Whether the merge key spans two columns: the key and a text tag.
+    pub composite: bool,
+    /// The type each partition's batches send the key as in each phase.
+    pub key_types: Vec<[LogicalType; PHASES]>,
     /// Columns whose presence and type change across partitions and phases.
     pub drift: Vec<Drift>,
     /// The stream's schema settings.
@@ -113,6 +121,8 @@ pub struct Row {
     pub value: i64,
     /// The merge key, for merge streams.
     pub key: Option<i64>,
+    /// The merge key's second column, for streams whose key spans two.
+    pub tag: Option<String>,
     /// Each drift column's value, in the stream's drift order: `None` where the row's batch lacks
     /// the column.
     pub extras: Vec<Option<Scalar>>,
@@ -185,6 +195,9 @@ impl SimStream {
                 0
             },
             plan_key: rng.chance(500),
+            shared_keys: false,
+            composite: false,
+            key_types: Vec::new(),
             schema,
             pipeline,
             json,
@@ -196,6 +209,11 @@ impl SimStream {
         };
         if features.settings {
             stream.draw_columns(rng, features);
+        }
+        stream.key_types =
+            vec![std::array::from_fn(|_| LogicalType::Int64); stream.partitions.len()];
+        if write == WriteMode::Merge && features.keys {
+            stream.draw_keys(rng);
         }
         stream.rows = (0..stream.partitions.len())
             .map(|partition| stream.draw_rows(salt, partition))
@@ -307,8 +325,9 @@ impl SimStream {
         // Incremental rows never change; a full read sees new values in each phase.
         let version = delivered as u64 + 1;
         let value = mix(salt ^ mix(id.unsigned_abs() ^ (version << 48)));
-        let key = (self.keys > 0)
-            .then(|| index * 1_000_000 + i64::try_from(offset % self.keys).unwrap_or(0));
+        let first = if self.shared_keys { 0 } else { index * 16 };
+        let key = (self.keys > 0).then(|| first + i64::try_from(offset % self.keys).unwrap_or(0));
+        let tag = (self.keys > 0 && self.composite).then(|| format!("t{}", offset % 3));
         let extras = self
             .drift
             .iter()
@@ -329,6 +348,7 @@ impl SimStream {
             offset: position,
             value: i64::from_ne_bytes(value.to_ne_bytes()),
             key,
+            tag,
             extras,
             delivered,
         }

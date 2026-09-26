@@ -12,23 +12,78 @@ use rdlt_testkit::canon::{Canon, storage};
 
 use super::expected::{self, Expected, Placement};
 use super::names;
+use super::rows::Group;
 use crate::destination::{Published, Stored, published_table, table_paths};
 use crate::seed::Seed;
 use crate::workload::{Relaxed, Row, SimStream};
 use crate::world::World;
 use cells::{Cell, fields, read, text};
 
-/// Checks every table of `stream` against the model's tables for `rows`, the rows its table
-/// holds, of `delivered`, every row delivered so far.
+/// Checks every table of `stream` against the model: its own table holds each of `groups`, rows
+/// of `delivered`, every row delivered so far, as often as the group says, or where the runs
+/// `stopped` short at most as often; its child tables hold exactly the rows the rows it holds
+/// normalize into.
 pub(super) fn check(
     world: &World,
     stream: &SimStream,
-    rows: &[Row],
+    groups: &[Group],
     delivered: &[Row],
+    stopped: bool,
     seed: Seed,
 ) {
-    let expected = expected::tables(stream, rows, delivered);
     let capabilities = world.capabilities();
+    let root = vec![stream.name.clone()];
+    let mut candidates: BTreeMap<String, &Row> = BTreeMap::new();
+    for row in groups.iter().flat_map(|group| &group.rows) {
+        candidates.insert(expected::ident(row), row);
+    }
+    let modeled = expected::tables(
+        stream,
+        &candidates.values().copied().cloned().collect::<Vec<_>>(),
+        delivered,
+    );
+    let slots = Slot::of(groups, modeled.get(&root).map_or(&[][..], Vec::as_slice));
+    let mut lineage: Lineage = BTreeMap::new();
+    let table = Table {
+        world,
+        stream,
+        path: &root,
+        parents: &[],
+        capabilities: &capabilities,
+        at_most: stopped,
+        seed,
+    };
+    let (ids, held) = table.check(&slots, &lineage);
+    lineage.insert(root.clone(), ids);
+    let held: Vec<Row> = candidates
+        .iter()
+        .flat_map(|(ident, row)| {
+            std::iter::repeat_n((*row).clone(), held.get(ident).copied().unwrap_or(0))
+        })
+        .collect();
+    check_children(
+        world,
+        stream,
+        &held,
+        delivered,
+        &capabilities,
+        lineage,
+        seed,
+    );
+}
+
+/// Checks each child table of `stream` against the rows its own table's `held` rows, of
+/// `delivered`, normalize into, their parents' identities in `lineage`.
+fn check_children(
+    world: &World,
+    stream: &SimStream,
+    held: &[Row],
+    delivered: &[Row],
+    capabilities: &Capabilities,
+    mut lineage: Lineage,
+    seed: Seed,
+) {
+    let expected = expected::tables(stream, held, delivered);
     let mut paths: BTreeSet<(usize, Vec<String>)> = expected
         .keys()
         .map(|path| (path.len(), path.clone()))
@@ -42,8 +97,7 @@ pub(super) fn check(
     // Parents come first, so each child row's parent is known when it is read. A child's id
     // derives from its parent's and its position alone (spec §7.4), so sibling arrays' rows share
     // ids: each table's are kept apart.
-    let mut lineage: Lineage = BTreeMap::new();
-    for (_, path) in &paths {
+    for (_, path) in paths.iter().filter(|(depth, _)| *depth > 1) {
         let rows = expected.get(path).map_or(&[][..], Vec::as_slice);
         // A child's parent is a row of a table whose path its own extends: the closest one
         // holding the parent's id, as a column may be an array in some batches and an object
@@ -58,16 +112,71 @@ pub(super) fn check(
             stream,
             path,
             parents: &parents,
-            capabilities: &capabilities,
+            capabilities,
+            at_most: false,
             seed,
         };
-        let ids = table.check(rows, &lineage);
+        let (ids, _) = table.check(&Slot::each(rows), &lineage);
         lineage.insert(path.clone(), ids);
     }
 }
 
 /// Each table's rows' identities by their lineage ids.
 type Lineage = BTreeMap<Vec<String>, BTreeMap<String, String>>;
+
+/// Rows a table holds `count` times in all, any of `rows` each time.
+struct Slot<'a> {
+    rows: Vec<&'a Expected>,
+    count: usize,
+}
+
+impl<'a> Slot<'a> {
+    /// A slot for each of `groups`, holding the rows of `modeled` each group's rows are.
+    fn of(groups: &[Group], modeled: &'a [Expected]) -> Vec<Self> {
+        let by_ident: BTreeMap<&str, &Expected> = modeled
+            .iter()
+            .map(|row| (row.ident.as_str(), row))
+            .collect();
+        groups
+            .iter()
+            .map(|group| Slot {
+                rows: group
+                    .rows
+                    .iter()
+                    .filter_map(|row| by_ident.get(expected::ident(row).as_str()).copied())
+                    .collect(),
+                count: group.count,
+            })
+            .collect()
+    }
+
+    /// How the table's rows, `held` so often by identity, miscount the slot, if they do: more
+    /// often than it says, or, unless `at_most`, less often.
+    fn miscounted(&self, held: &BTreeMap<String, usize>, at_most: bool) -> Option<String> {
+        let idents: Vec<&str> = self.rows.iter().map(|row| row.ident.as_str()).collect();
+        let found: usize = idents
+            .iter()
+            .map(|ident| held.get(*ident).copied().unwrap_or(0))
+            .sum();
+        (found > self.count || (found < self.count && !at_most))
+            .then(|| format!("rows {idents:?} are held {found} times, not {}", self.count))
+    }
+
+    /// A slot for each of `rows`, held as often as it appears.
+    fn each(rows: &'a [Expected]) -> Vec<Self> {
+        let mut counts: BTreeMap<&str, (&Expected, usize)> = BTreeMap::new();
+        for row in rows {
+            counts.entry(&row.ident).or_insert((row, 0)).1 += 1;
+        }
+        counts
+            .into_values()
+            .map(|(row, count)| Slot {
+                rows: vec![row],
+                count,
+            })
+            .collect()
+    }
+}
 
 /// One table being checked.
 struct Table<'a> {
@@ -78,30 +187,37 @@ struct Table<'a> {
     parents: &'a [Vec<String>],
     /// What the destination stores.
     capabilities: &'a Capabilities,
+    /// Whether the table may hold each slot's rows fewer times than the slot says.
+    at_most: bool,
     seed: Seed,
 }
 
 impl Table<'_> {
-    /// Checks the table's rows against `expected`; returns its rows' identities by lineage id.
-    fn check(&self, expected: &[Expected], lineage: &Lineage) -> BTreeMap<String, String> {
+    /// Checks the table's rows against `slots`; returns its rows' identities by lineage id, and
+    /// how often it holds each.
+    fn check(
+        &self,
+        slots: &[Slot<'_>],
+        lineage: &Lineage,
+    ) -> (BTreeMap<String, String>, BTreeMap<String, usize>) {
         let mut ids = BTreeMap::new();
+        let mut held: BTreeMap<String, usize> = BTreeMap::new();
         let path = TablePath::new(self.path.iter().map(String::as_str))
             .expect("the model's table paths are valid");
         let Some(published) = published_table(self.world, &path) else {
+            let expected: usize = slots.iter().map(|slot| slot.count).sum();
             assert!(
-                expected.is_empty(),
-                "seed {}: table {path} is missing; the model expects {} rows",
+                expected == 0 || self.at_most,
+                "seed {}: table {path} is missing; the model expects {expected} rows",
                 self.seed,
-                expected.len()
             );
-            return ids;
+            return (ids, held);
         };
         self.check_names(&published);
-        let mut templates: BTreeMap<&str, (&Expected, usize)> = BTreeMap::new();
-        for row in expected {
-            templates.entry(&row.ident).or_insert((row, 0)).1 += 1;
+        let mut templates: BTreeMap<&str, &Expected> = BTreeMap::new();
+        for row in slots.iter().flat_map(|slot| &slot.rows) {
+            templates.insert(&row.ident, row);
         }
-        let mut held: BTreeMap<String, usize> = BTreeMap::new();
         let mut findings = Vec::new();
         for row in &published.rows {
             let Some(ident) = self.identity(row, &published, lineage, &mut ids) else {
@@ -115,17 +231,16 @@ impl Table<'_> {
                 ));
             }
             match templates.get(ident.as_str()) {
-                Some((template, _)) => self.compare(row, template, &published, &mut findings),
+                Some(template) => self.compare(row, template, &published, &mut findings),
                 None => findings.push(format!("row {ident} is not in the model")),
             }
             *held.entry(ident).or_default() += 1;
         }
-        for (ident, (_, count)) in &templates {
-            let found = held.get(*ident).copied().unwrap_or(0);
-            if found != *count {
-                findings.push(format!("row {ident} is held {found} times, not {count}"));
-            }
-        }
+        findings.extend(
+            slots
+                .iter()
+                .filter_map(|slot| slot.miscounted(&held, self.at_most)),
+        );
         assert!(
             findings.is_empty(),
             "seed {}: stream {} ({:?}, {:?}, {:?}, {:?}) table {path}: {} findings, the first \
@@ -139,7 +254,7 @@ impl Table<'_> {
             findings.len(),
             &findings[..findings.len().min(8)]
         );
-        ids
+        (ids, held)
     }
 
     /// The identity of `row`: its root row's id and value, then the array positions leading to

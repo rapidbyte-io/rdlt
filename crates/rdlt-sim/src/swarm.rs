@@ -34,6 +34,8 @@ pub struct Features {
     /// Schema settings at every level, type hints, drift columns the source declares, and
     /// destinations that cannot add columns.
     pub settings: bool,
+    /// Merge keys that change type, collide across partitions or span two columns.
+    pub keys: bool,
 }
 
 impl Features {
@@ -49,6 +51,7 @@ impl Features {
         disruptions: true,
         narrow: true,
         settings: true,
+        keys: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
@@ -68,6 +71,7 @@ impl Features {
             disruptions: rng.chance(500),
             narrow: rng.chance(500),
             settings: rng.chance(500),
+            keys: rng.chance(500),
         }
     }
 
