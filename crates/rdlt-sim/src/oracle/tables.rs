@@ -423,6 +423,12 @@ impl Table<'_> {
     /// Checks the table's identifiers against the destination's rules, and each distinct.
     fn check_names(&self, published: &Published) {
         let rules = &self.capabilities.identifiers;
+        assert!(
+            names::fits_table(rules, &published.physical),
+            "seed {}: table identifier {:?} breaks the destination's rules {rules:?}",
+            self.seed,
+            published.physical
+        );
         let mut seen = BTreeSet::new();
         let columns = published.rows.iter().flat_map(fields);
         for name in std::iter::once(published.physical.clone()).chain(columns) {

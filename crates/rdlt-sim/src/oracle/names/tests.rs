@@ -5,7 +5,7 @@ use rdlt_connector::{
     ColumnKey, ColumnPath, IdentifierCase, IdentifierChars, IdentifierRules, NameMap,
 };
 
-use super::{fits, unnamed};
+use super::{fits, fits_table, unnamed};
 
 fn rules(case: IdentifierCase) -> IdentifierRules {
     IdentifierRules {
@@ -24,7 +24,7 @@ fn identifiers_follow_the_destinations_rules() {
     assert!(!fits(&lower, "Id"), "the case");
     assert!(!fits(&lower, "toolong"), "the length");
     assert!(!fits(&lower, "a-b"), "the characters");
-    assert!(!fits(&lower, "VALUE"), "reserved, whatever its case");
+    assert!(!fits(&lower, "value"), "reserved");
     assert!(fits(&rules(IdentifierCase::Upper), "ID"));
     assert!(!fits(&rules(IdentifierCase::Upper), "id"));
 }
@@ -40,4 +40,29 @@ fn a_column_no_name_map_names_and_no_metadata_column_is_unnamed() {
         .into();
     assert_eq!(unnamed(&fields, &names, 2), ["stray"]);
     assert!(unnamed(&fields[..1], &names, 0).is_empty());
+}
+
+#[test]
+fn reserved_words_compare_as_the_rules_fold_case() {
+    let upper = rules(IdentifierCase::Upper);
+    assert!(
+        !fits(&upper, "VALUE"),
+        "the reserved word folds to upper case"
+    );
+    let preserve = rules(IdentifierCase::Preserve);
+    assert!(!fits(&preserve, "value"));
+    assert!(
+        fits(&preserve, "Value"),
+        "a case-preserving destination reserves the word as written"
+    );
+}
+
+#[test]
+fn a_table_identifier_starts_with_no_reserved_prefix() {
+    let mut rules = rules(IdentifierCase::Lower);
+    rules.reserved_table_prefixes = BTreeSet::from(["S".to_owned(), "tmp_".to_owned()]);
+    assert!(!fits_table(&rules, "s0"), "prefixes fold like identifiers");
+    assert!(!fits_table(&rules, "tmp_a"));
+    assert!(fits_table(&rules, "_s0"));
+    assert!(!fits_table(&rules, "_s0_long"), "and follow the rules");
 }

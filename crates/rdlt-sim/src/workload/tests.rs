@@ -494,6 +494,7 @@ fn features_off_leave_their_parts_of_the_workload_out() {
         narrow: false,
         settings: false,
         keys: false,
+        identifiers: false,
     };
     for seed in 0..100 {
         for stream in Workload::generate(&mut SplitMix64::new(seed), none).streams {
@@ -520,6 +521,7 @@ fn features_off_leave_their_parts_of_the_workload_out() {
         for drift in workload.streams.iter().flat_map(|stream| &stream.drift) {
             assert_eq!(drift.settings, Level::default());
             assert!(drift.hint.is_none() && drift.declared.is_none());
+            assert!(drift.name.is_ascii(), "{}", drift.name);
         }
     }
     let scalars = Features {
