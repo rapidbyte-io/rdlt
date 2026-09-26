@@ -211,9 +211,14 @@ fn a_body_shorter_than_its_header_declares_is_malformed() {
 /// A record batch message of one row whose one buffer lies at `offset` for `length` bytes, in a
 /// body of `body` bytes.
 fn framed(offset: i64, length: i64, body: i64) -> Bytes {
+    framed_node(offset, length, body, 1)
+}
+
+/// [`framed`], with one node of `values` values.
+fn framed_node(offset: i64, length: i64, body: i64, values: i64) -> Bytes {
     let mut fbb = flatbuffers::FlatBufferBuilder::new();
     let buffers = fbb.create_vector(&[arrow_ipc::Buffer::new(offset, length)]);
-    let nodes = fbb.create_vector(&[arrow_ipc::FieldNode::new(1, 0)]);
+    let nodes = fbb.create_vector(&[arrow_ipc::FieldNode::new(values, 0)]);
     let mut batch = arrow_ipc::RecordBatchBuilder::new(&mut fbb);
     batch.add_length(1);
     batch.add_nodes(nodes);
@@ -383,5 +388,107 @@ fn every_kind_of_nested_type_counts_its_columns_and_levels() {
             (columns, depth),
             "{data_type}"
         );
+    }
+}
+
+/// `header`, a dictionary batch message, marked as a delta onto the dictionary sent before it.
+fn as_delta(header: &Bytes) -> Bytes {
+    let message = arrow_ipc::root_as_message(header).unwrap();
+    let dictionary = message.header_as_dictionary_batch().unwrap();
+    let data = dictionary.data().unwrap();
+    let mut fbb = flatbuffers::FlatBufferBuilder::new();
+    let nodes: Vec<_> = data.nodes().unwrap().iter().copied().collect();
+    let buffers: Vec<_> = data.buffers().unwrap().iter().copied().collect();
+    let (nodes, buffers) = (fbb.create_vector(&nodes), fbb.create_vector(&buffers));
+    let mut batch = arrow_ipc::RecordBatchBuilder::new(&mut fbb);
+    batch.add_length(data.length());
+    batch.add_nodes(nodes);
+    batch.add_buffers(buffers);
+    let batch = batch.finish();
+    let mut delta = arrow_ipc::DictionaryBatchBuilder::new(&mut fbb);
+    delta.add_id(dictionary.id());
+    delta.add_data(batch);
+    delta.add_isDelta(true);
+    let delta = delta.finish();
+    let mut rebuilt = arrow_ipc::MessageBuilder::new(&mut fbb);
+    rebuilt.add_version(message.version());
+    rebuilt.add_header_type(MessageHeader::DictionaryBatch);
+    rebuilt.add_bodyLength(message.bodyLength());
+    rebuilt.add_header(delta.as_union_value());
+    let rebuilt = rebuilt.finish();
+    fbb.finish(rebuilt, None);
+    Bytes::copy_from_slice(fbb.finished_data())
+}
+
+#[test]
+fn a_delta_dictionary_is_refused_so_no_peer_can_grow_one_without_bound() {
+    let batch = strings(&["a", "bb"]);
+    let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
+    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    let frames = encoder.batch(&batch).unwrap();
+    assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
+    let delta = IpcFrame {
+        header: as_delta(&frames[0].header),
+        body: frames[0].body.clone(),
+    };
+    let error = decoder.frame(&delta).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            WireError::Malformed {
+                frame: Frame::Dictionary,
+                problem: Problem::DeltaDictionary
+            }
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_node_of_more_values_than_its_body_could_hold_is_refused_before_arrow_reads_it() {
+    let batch = ints(1);
+    let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
+    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    let frame = IpcFrame {
+        header: framed_node(0, 8, 8, 1 << 40),
+        body: Bytes::from(vec![0; 8]),
+    };
+    match decoder.frame(&frame).unwrap_err() {
+        WireError::Refused(refusal) => {
+            assert_eq!(
+                (refusal.field, refusal.actual),
+                ("values per node", 1 << 40)
+            );
+        }
+        other => panic!("{other}"),
+    }
+}
+
+/// A schema of one column of lists nested `levels` deep, its innermost item an integer.
+fn nested(levels: usize) -> Schema {
+    let inner = (1..levels).fold(DataType::Int32, |item, _| {
+        DataType::List(Arc::new(Field::new("item", item, true)))
+    });
+    Schema::new(vec![Field::new("deep", inner, true)])
+}
+
+#[test]
+fn a_schema_nested_to_the_limit_decodes_and_one_level_deeper_is_refused_by_name() {
+    let depth = usize::try_from(crate::limits::NESTING_DEPTH).unwrap();
+    let mut encoder = Encoder::default();
+    let mut decoder = Decoder::new(Limits::default());
+    assert_eq!(
+        decoder
+            .schema(&encoder.schema(&nested(depth)))
+            .unwrap()
+            .as_ref(),
+        &nested(depth)
+    );
+    match decoder
+        .schema(&encoder.schema(&nested(depth + 1)))
+        .unwrap_err()
+    {
+        WireError::Refused(refusal) => assert_eq!(refusal.field, "nesting depth"),
+        other => panic!("{other}"),
     }
 }

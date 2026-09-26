@@ -49,6 +49,10 @@ pub enum Problem {
         /// The body's length.
         body: u64,
     },
+    /// A dictionary batch extends the dictionary sent before it, which no end negotiates; a
+    /// peer could otherwise grow a dictionary without bound.
+    #[error("the dictionary batch is a delta")]
+    DeltaDictionary,
     /// The body is compressed, which no end negotiates.
     #[error("the body is compressed")]
     Compressed,

@@ -43,7 +43,7 @@ impl Decoder {
     /// A [`WireError`] when the message is too large, malformed, or its schema beyond the limits.
     pub fn schema(&mut self, ipc_schema: &Bytes) -> Result<SchemaRef, WireError> {
         self.limits.admit_frame(ipc_schema.len())?;
-        let message = message(Frame::Schema, ipc_schema)?;
+        let message = message(Frame::Schema, ipc_schema, self.limits.nesting_depth)?;
         let Some(fb) = message.header_as_schema() else {
             return Err(WireError::malformed(
                 Frame::Schema,
@@ -73,7 +73,7 @@ impl Decoder {
     pub fn frame(&mut self, frame: &IpcFrame) -> Result<Option<RecordBatch>, WireError> {
         self.limits
             .admit_frame(frame.header.len().saturating_add(frame.body.len()))?;
-        let message = message(Frame::Batch, &frame.header)?;
+        let message = message(Frame::Batch, &frame.header, self.limits.nesting_depth)?;
         let (kind_of, rows) = match message.header_type() {
             MessageHeader::RecordBatch => (
                 Frame::Batch,
@@ -91,7 +91,17 @@ impl Decoder {
         let Some(schema) = self.schema.clone() else {
             return Err(WireError::malformed(kind_of, Problem::NoSchema));
         };
-        framing(kind_of, &message, &frame.body)?;
+        // A node's values need at least a bit of body each, but for nulls and runs, which
+        // need none: those are bounded by the row limit.
+        let bits = u64::try_from(frame.body.len())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(8);
+        framing(
+            kind_of,
+            &message,
+            &frame.body,
+            self.limits.batch_rows.max(bits),
+        )?;
         let rows = rows
             .and_then(|rows| u64::try_from(rows).ok())
             .unwrap_or(u64::MAX);
@@ -132,9 +142,15 @@ fn unexpected(frame: Frame, message: &Message<'_>) -> WireError {
     )
 }
 
-/// The IPC message `header` holds.
-fn message(frame: Frame, header: &[u8]) -> Result<Message<'_>, WireError> {
-    arrow_ipc::root_as_message(header)
+/// The IPC message `header` holds, verified to a depth that fits a schema nested `depth` levels,
+/// so a schema deeper than that is refused by the nesting limit rather than as no message.
+fn message(frame: Frame, header: &[u8], depth: u64) -> Result<Message<'_>, WireError> {
+    let depth = usize::try_from(depth).unwrap_or(usize::MAX);
+    let options = flatbuffers::VerifierOptions {
+        max_depth: depth.saturating_mul(4).saturating_add(64),
+        ..flatbuffers::VerifierOptions::default()
+    };
+    arrow_ipc::root_as_message_with_opts(&options, header)
         .map_err(|_| WireError::malformed(frame, Problem::NotAMessage))
 }
 
