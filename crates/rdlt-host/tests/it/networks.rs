@@ -9,7 +9,7 @@ use rdlt_connector::{BoxFuture, ConnectorId, source_factory};
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::{ConnectorRef, Network, Provider as _, Remote, Stream};
 use rdlt_testkit::tls::Pki;
-use tokio::io::DuplexStream;
+use tokio::io::{AsyncWriteExt as _, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::network::identity;
@@ -78,6 +78,51 @@ async fn a_connector_served_on_another_network_is_placed_through_it_and_stops_cl
     // A stop ends the listener while its host is connected.
     stop.send(()).expect("the listener runs");
     listening.await.expect("the listener stops");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_host_that_never_completes_http2_preface_after_its_handshake_is_dropped() {
+    let pki = Pki::new("ca");
+    let server = pki.server("server", &["connector"]);
+    let tls = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
+        .expect("the server's configuration builds");
+    let (connections, accepted) = mpsc::unbounded_channel();
+    let (stop, stopped) = oneshot::channel::<()>();
+    let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+    let listening = tokio::spawn(serve_listener(
+        memory,
+        Piped(accepted),
+        Arc::new(tls),
+        rdlt_wire::Limits::default(),
+        async {
+            stopped.await.ok();
+        },
+    ));
+    // A host that completes its TLS handshake, begins HTTP/2's preface, then says nothing more: as
+    // one whose network dropped it.
+    let host = rdlt_wire::tls::client_config(&identity(&pki.client("host")), &pki.ca())
+        .expect("the host's configuration builds");
+    let stream = Pipes(connections)
+        .connect("connector", 7443)
+        .await
+        .expect("the pipe connects");
+    let name = rustls::pki_types::ServerName::try_from("connector").expect("a valid name");
+    let mut silent = tokio_rustls::TlsConnector::from(Arc::new(host))
+        .connect(name, stream)
+        .await
+        .expect("the handshake completes");
+    silent
+        .write_all(b"PRI * HTTP")
+        .await
+        .expect("the preface begins");
+    silent.flush().await.expect("the preface is sent");
+    // Its connection is dropped, so a stop ends the listener rather than waiting for it forever.
+    stop.send(()).expect("the listener runs");
+    tokio::time::timeout(std::time::Duration::from_secs(60), listening)
+        .await
+        .expect("the silent host's connection is dropped")
+        .expect("the listener stops");
+    drop(silent);
 }
 
 /// A listener whose every accept fails, as one out of file descriptors does; it counts them.

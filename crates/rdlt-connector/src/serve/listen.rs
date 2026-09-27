@@ -1,6 +1,8 @@
 //! A connector listening for hosts over the network: each connection is a TLS 1.3 handshake that
 //! requires the host's certificate, then one session of the protocol.
 
+mod speaking;
+
 use std::future::Future;
 use std::io::Write as _;
 use std::net::SocketAddr;
@@ -18,8 +20,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::args::{Failure, Listen};
 use super::{Served, serve_until};
+use speaking::Speaking;
 
-/// How long a host has to complete its TLS handshake: a connection that has not is dropped.
+/// How long a host has to complete its TLS handshake, and then to send HTTP/2's preface: a
+/// connection that has not is dropped.
 const HANDSHAKE: Duration = Duration::from_secs(10);
 
 /// Handshakes in flight at once: accepting waits until one ends.
@@ -81,9 +85,9 @@ pub(super) async fn listen(
 /// with `tls`, until `stop` ends; then drops `listener`, stops taking connections, and ends when
 /// those in flight have.
 ///
-/// A host has 10 s to complete its TLS handshake, and at most 1024 handshakes run at once. At
-/// most 256 sessions are served at once: a further host waits once it has handshaken. What
-/// happens to each connection is reported on standard error.
+/// A host has 10 s to complete its TLS handshake, and 10 s more to send HTTP/2's preface; at
+/// most 1024 handshakes run at once. At most 256 sessions are served at once: a further host
+/// waits once it has handshaken. What happens to each connection is reported on standard error.
 pub async fn serve_listener<L: Listener>(
     served: Arc<Served>,
     mut listener: L,
@@ -165,6 +169,8 @@ async fn connection<S>(
         permit = Arc::clone(&listening.sessions).acquire_owned() => permit.expect("the semaphore is never closed"),
     };
     let (served, stopping) = (Arc::clone(&listening.served), listening.stopping.clone());
+    // A host has as long to send HTTP/2's preface as it had to complete its TLS handshake.
+    let tls = Speaking::within(tls, HANDSHAKE);
     if let Err(error) = serve_until(served, tls, listening.limits, stopping.cancelled_owned()).await
     {
         report(&format!("serving {peer} failed: {error}"));
