@@ -39,7 +39,8 @@ simulated network (turmoil's, on paused clocks), through `Remote`, and loads thr
 held messages, and connectors that crash or stop and start again. `rdlt-certify` certifies a
 connector through the protocol, served in this process, spawned from its binary or listening at an
 endpoint: the source and destination clauses, and the protocol's own, as a library and as the
-`rdlt-certify` binary. The kill clauses come next.
+`rdlt-certify` binary. A destination that reads back what it published is certified in every
+destination clause from its binary alone. The kill clauses come next.
 
 ## Development
 
