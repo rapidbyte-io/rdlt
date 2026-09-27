@@ -23,8 +23,8 @@ pub(super) async fn run(
     use v1::read_control::Control;
     let limits = connection.options.limits;
     // A barrier raised before the read starts goes with its start, so a read too short to see a
-    // later control answers it, as in the engine's process; and as a control too, for a connector
-    // that knows no barrier in the start. A connector that knows both answers it once.
+    // later control answers it, as in the engine's process; and as a control before its credit,
+    // for a connector that knows no barrier in the start. One that knows both answers it once.
     let pending = sink.pending_barrier().unwrap_or(0);
     let (controls, mut frames) = start(connection, &request, pending).await?;
     let control = |control| v1::ReadControl {
@@ -35,7 +35,7 @@ pub(super) async fn run(
         limits,
         epoch: None,
     };
-    let (mut forwarded, mut stopping) = (0, false);
+    let (mut forwarded, mut stopping) = (pending, false);
     loop {
         tokio::select! {
             biased;
@@ -102,6 +102,15 @@ async fn start(
     };
     // The receiver is open until it is dropped with the call, so these sends succeed.
     controls.send(control(Control::Start(start))).await.ok();
+    // Asked again before any credit, for a connector that knows no barrier in the start: one with
+    // nothing to read may end at its first credit.
+    if barrier > 0 {
+        let asked = v1::CheckpointRequest { barrier };
+        controls
+            .send(control(Control::Checkpoint(asked)))
+            .await
+            .ok();
+    }
     controls
         .send(control(Control::Credit(v1::Credit { bytes: window })))
         .await
