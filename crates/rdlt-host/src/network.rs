@@ -269,15 +269,21 @@ fn not_found(reference: &ConnectorRef) -> ProviderError {
 
 /// Where a connector listens: a host name or IP address, and a port.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Endpoint {
-    pub(crate) host: String,
-    pub(crate) port: u16,
+pub struct Endpoint {
+    /// The host name or IP address, an IPv6 address without its brackets.
+    pub host: String,
+    /// The port.
+    pub port: u16,
 }
 
 impl Endpoint {
     /// The endpoint `grpcs://host:port`; anything else, a path or credentials included, is
     /// refused.
-    pub(crate) fn parse(endpoint: &str) -> std::io::Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// An [`std::io::ErrorKind::InvalidInput`] error saying what is wrong with `endpoint`.
+    pub fn parse(endpoint: &str) -> std::io::Result<Self> {
         let invalid = |why: &str| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

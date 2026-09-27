@@ -30,13 +30,26 @@ pub fn plain(report: &Report) -> String {
 fn shown(text: &str) -> String {
     let mut shown = String::with_capacity(text.len());
     for c in text.chars() {
-        if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+        if c.is_control() || reorders(c) {
             shown.extend(c.escape_debug());
         } else {
             shown.push(c);
         }
     }
     shown
+}
+
+/// Whether `c` reorders or breaks the text around it: the bidirectional marks, embeddings,
+/// overrides and isolates, and the line and paragraph separators.
+fn reorders(c: char) -> bool {
+    matches!(
+        c,
+        '\u{61c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// `report` as JSON: the connector, whether it passed, and each clause's outcome.

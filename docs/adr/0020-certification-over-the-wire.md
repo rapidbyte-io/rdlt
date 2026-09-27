@@ -63,13 +63,15 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
     so.
   - Plain output shows what the connector said, not obeys it (§19): its controls, line breaks
     among them, and the marks that reorder text are escaped. JSON output carries it verbatim.
+    A closed standard output ends quietly; one that cannot be written exits 74.
+  - A malformed endpoint is a wrong command line, and exits 64.
   - Its help and its reports are snapshots (§20.11), with `insta`.
 - **The clauses' documentation is generated from the registry**: `docs/certify/clauses.md`, which
   a test holds equal to `rdlt-certify --clauses`.
 - **What certification found**: a barrier pending when a read starts was forwarded after the
   read's start, so a read too short to see it never answered it, where in the engine's process it
   always does. `ReadStart` now carries the barrier pending at the start (`barrier`, field 5),
-  and the host still sends it as a control too. A connector that does not know the field reads 0
+  and the host still sends it as a control too, before the read's credit. A connector that does not know the field reads 0
   and answers the control, as before; one that knows both answers the barrier once.
 
 ## Consequences

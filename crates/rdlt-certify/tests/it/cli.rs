@@ -192,11 +192,24 @@ async fn a_listening_connector_is_certified_from_the_command_line() {
 
 #[tokio::test]
 async fn a_wrong_command_line_exits_sixty_four() {
-    let cases: [&[&str]; 4] = [
+    let tls = [
+        "--tls-cert",
+        "cert.pem",
+        "--tls-key",
+        "key.pem",
+        "--tls-ca",
+        "ca.pem",
+    ];
+    let no_port = ["grpcs://localhost"]
+        .into_iter()
+        .chain(tls)
+        .collect::<Vec<_>>();
+    let cases: [&[&str]; 5] = [
         &[],
         &["connector", "--config", "{not json"],
         &["grpcs://localhost:1"],
         &["connector", "--role", "sink"],
+        &no_port,
     ];
     for args in cases {
         let binary = example("serve_reference");
@@ -232,6 +245,40 @@ async fn a_connector_or_configuration_that_cannot_be_read_exits_seventy_four() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[tokio::test]
+async fn an_output_closed_before_it_is_written_ends_quietly() {
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let status = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+        .arg("--clauses")
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+        )
+        .stdout(writer)
+        .status()
+        .await
+        .expect("rdlt-certify runs");
+    assert_eq!(status.code(), Some(0));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_output_that_cannot_be_written_exits_seventy_four() {
+    let full = std::fs::File::create("/dev/full").expect("the full device opens");
+    let status = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+        .arg("--clauses")
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+        )
+        .stdout(full)
+        .status()
+        .await
+        .expect("rdlt-certify runs");
+    assert_eq!(status.code(), Some(74));
 }
 
 #[tokio::test]

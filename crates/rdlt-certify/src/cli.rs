@@ -10,7 +10,7 @@ use rdlt_certify::{
     Outcome, Report, Target, Unprobed, certify_destination, certify_source, json, markdown, plain,
 };
 use rdlt_connector::ConnectorId;
-use rdlt_host::{ConnectorRef, Identity, Local, Remote};
+use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote};
 
 /// Every clause passed, or was skipped.
 const PASSED: u8 = 0;
@@ -82,10 +82,12 @@ pub(crate) fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    if args.clauses {
-        return print(&markdown());
-    }
-    match run(&args) {
+    let ran = if args.clauses {
+        print(&markdown()).map(|()| PASSED)
+    } else {
+        run(&args)
+    };
+    match ran {
         Ok(code) => ExitCode::from(code),
         Err(Ended(code, message)) => {
             writeln!(std::io::stderr(), "rdlt-certify: {message}").ok();
@@ -125,7 +127,7 @@ fn run(args: &Args) -> Result<u8, Ended> {
             )
         }
     };
-    print(&text);
+    print(&text)?;
     if !reports.iter().any(ran) {
         return Err(Ended(
             FINDINGS,
@@ -165,6 +167,7 @@ fn target(args: &Args) -> Result<Target, Ended> {
     let id = ConnectorId::parse("rdlt.certify.target")
         .map_err(|error| Ended(USAGE, error.to_string()))?;
     if named.starts_with("grpcs://") {
+        Endpoint::parse(named).map_err(|error| Ended(USAGE, error.to_string()))?;
         let (Some(cert), Some(key), Some(ca)) = (&args.tls_cert, &args.tls_key, &args.tls_ca)
         else {
             return Err(Ended(
@@ -187,10 +190,18 @@ fn target(args: &Args) -> Result<Target, Ended> {
     Ok(Target::spawned(local, ConnectorRef::new(id).path(path)))
 }
 
-/// Prints `text` on standard output; a closed pipe ends quietly.
-fn print(text: &str) -> ExitCode {
+/// Prints `text` on standard output: a closed pipe ends quietly, and any other failure is an I/O
+/// error.
+fn print(text: &str) -> Result<(), Ended> {
     let mut stdout = std::io::stdout().lock();
-    stdout.write_all(text.as_bytes()).ok();
-    stdout.flush().ok();
-    ExitCode::SUCCESS
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(Ended(
+            IO,
+            format!("writing to standard output failed: {error}"),
+        )),
+        _ => Ok(()),
+    }
 }
