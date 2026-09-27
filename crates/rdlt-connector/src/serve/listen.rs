@@ -8,10 +8,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_wire::Limits;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::ServerConfig;
 use tokio_util::sync::CancellationToken;
 
 use super::args::{Failure, Listen};
@@ -31,6 +33,29 @@ const SESSIONS: usize = 256;
 /// How long accepting pauses after it fails, as when the process is out of file descriptors.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
+/// Where a listening connector takes its hosts' connections from: a TCP listener, or any other
+/// network's.
+pub trait Listener: Send + 'static {
+    /// A connection.
+    type Stream: AsyncRead + AsyncWrite + Send + Unpin + 'static;
+
+    /// The next connection, and its peer's address.
+    fn accept(
+        &mut self,
+    ) -> impl Future<Output = std::io::Result<(Self::Stream, SocketAddr)>> + Send;
+}
+
+impl Listener for TcpListener {
+    type Stream = TcpStream;
+
+    async fn accept(&mut self) -> std::io::Result<(TcpStream, SocketAddr)> {
+        let (stream, peer) = TcpListener::accept(self).await?;
+        // Frames are small and answered at once: batching them for the network only adds latency.
+        stream.set_nodelay(true).ok();
+        Ok((stream, peer))
+    }
+}
+
 /// Serves hosts connecting to `listen`'s address until `stop` ends, then stops taking new
 /// connections and ends when those in flight have.
 pub(super) async fn listen(
@@ -41,7 +66,6 @@ pub(super) async fn listen(
 ) -> Result<(), Failure> {
     let config = rdlt_wire::tls::server_config(&listen.identity, &listen.client_ca)
         .map_err(|error| failure("the TLS configuration", &error))?;
-    let acceptor = TlsAcceptor::from(Arc::new(config));
     let listener = TcpListener::bind(listen.address)
         .await
         .map_err(|error| failure(&format!("listening on {}", listen.address), &error))?;
@@ -49,8 +73,26 @@ pub(super) async fn listen(
         .local_addr()
         .map_err(|error| failure("the listening address", &error))?;
     announce(address)?;
+    serve_listener(served, listener, Arc::new(config), limits, stop).await;
+    Ok(())
+}
+
+/// Serves each host connecting through `listener` one session of the protocol, over mutual TLS
+/// with `tls`, until `stop` ends; then drops `listener`, stops taking connections, and ends when
+/// those in flight have.
+///
+/// A host has 10 s to complete its TLS handshake, and at most 1024 handshakes run at once. At
+/// most 256 sessions are served at once: a further host waits once it has handshaken. What
+/// happens to each connection is reported on standard error.
+pub async fn serve_listener<L: Listener>(
+    served: Arc<Served>,
+    mut listener: L,
+    tls: Arc<ServerConfig>,
+    limits: Limits,
+    stop: impl Future<Output = ()>,
+) {
     let listening = Arc::new(Listening {
-        acceptor,
+        acceptor: TlsAcceptor::from(tls),
         served,
         limits,
         stopping: CancellationToken::new(),
@@ -63,7 +105,11 @@ pub(super) async fn listen(
         let handshake = tokio::select! {
             biased;
             () = &mut stop => break,
-            permit = Arc::clone(&handshakes).acquire_owned() => permit.expect("the semaphore is never closed"),
+            // The semaphore is never closed.
+            permit = Arc::clone(&handshakes).acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break,
+            },
         };
         let (stream, peer) = tokio::select! {
             biased;
@@ -84,7 +130,6 @@ pub(super) async fn listen(
     drop(listener);
     listening.stopping.cancel();
     while connections.join_next().await.is_some() {}
-    Ok(())
 }
 
 /// What every connection of a listening connector shares.
@@ -99,14 +144,14 @@ struct Listening {
 
 /// Serves one host's connection: its handshake, holding `handshake`, then its session, once one
 /// is free, until it closes or the connector is stopping.
-async fn connection(
-    stream: TcpStream,
+async fn connection<S>(
+    stream: S,
     peer: SocketAddr,
     handshake: OwnedSemaphorePermit,
     listening: Arc<Listening>,
-) {
-    // Frames are small and answered at once: batching them for the network only adds latency.
-    stream.set_nodelay(true).ok();
+) where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let accepted = tokio::time::timeout(HANDSHAKE, listening.acceptor.accept(stream)).await;
     drop(handshake);
     let tls = match accepted {
