@@ -2,6 +2,7 @@
 //! print what it met.
 
 use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -174,8 +175,12 @@ fn target(args: &Args) -> Result<Target, Ended> {
     // Its id is learned from its handshake: the reference's is only a name for its output.
     let id = ConnectorId::parse("rdlt.certify.target")
         .map_err(|error| Ended(USAGE, error.to_string()))?;
+    let usage = |message: &str| Ended(USAGE, message.to_owned());
     if named.starts_with("grpcs://") {
         Endpoint::parse(named).map_err(|error| Ended(USAGE, error.to_string()))?;
+        if !args.env.is_empty() {
+            return Err(usage("--env is for a spawned connector, not an endpoint"));
+        }
         let (Some(cert), Some(key), Some(ca)) = (&args.tls_cert, &args.tls_key, &args.tls_ca)
         else {
             return Err(Ended(
@@ -190,9 +195,24 @@ fn target(args: &Args) -> Result<Target, Ended> {
         let reference = ConnectorRef::new(id).endpoint(named);
         return Ok(Target::listening(Remote::new(identity, ca), reference));
     }
+    if named.contains("://") {
+        return Err(usage("an endpoint is `grpcs://host:port`"));
+    }
+    // The command line takes the TLS flags all together or none.
+    if args.tls_cert.is_some() {
+        return Err(usage(
+            "--tls-cert, --tls-key and --tls-ca are for an endpoint",
+        ));
+    }
     let path = Path::new(named);
     if !path.is_file() {
         return Err(Ended(IO, format!("{named} is no connector binary")));
+    }
+    let executable = path
+        .metadata()
+        .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
+    if !executable {
+        return Err(Ended(IO, format!("{named} is not executable")));
     }
     let local = args.env.iter().fold(Local::new(), Local::env_passthrough);
     Ok(Target::spawned(local, ConnectorRef::new(id).path(path)))
