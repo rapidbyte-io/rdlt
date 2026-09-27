@@ -106,9 +106,9 @@ impl Target {
         self
     }
 
-    /// The largest configuration this host sends, in bytes.
-    pub(crate) fn config_bytes(&self) -> u64 {
-        self.options.limits.config_bytes
+    /// The limits this host enforces.
+    pub(crate) fn limits(&self) -> Limits {
+        self.options.limits
     }
 
     /// What the target is, for a report that could not learn the connector's id.

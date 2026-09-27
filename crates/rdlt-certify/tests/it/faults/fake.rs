@@ -1,15 +1,17 @@
 //! A source that keeps the protocol but for one fault, served over a socket in this process.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use arrow_array::{Array, Int64Array, RecordBatch};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use rdlt_connector::wire::{status, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_host::Stream;
-use rdlt_wire::PROTOCOL_MAJOR;
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
+use rdlt_wire::{PROTOCOL_MAJOR, PUBLISHED};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
@@ -41,6 +43,12 @@ pub(crate) enum Fault {
     Greedy,
     /// It declares a configuration limit beyond any this host sends, which breaks no clause.
     Vast,
+    /// It reads back what it published, as a destination, but each read-back fails.
+    ReadBackFails,
+    /// It reads back what it published, without end.
+    ReadBackEndless,
+    /// It reads back what it published, and ends without its done frame.
+    ReadBackUnfinished,
 }
 
 /// The clause each fault breaks.
@@ -96,6 +104,14 @@ impl Fake {
         self.fault != fault
     }
 
+    /// Whether it reads back what it published: then it serves the destination role too.
+    fn reads_back(&self) -> bool {
+        matches!(
+            self.fault,
+            Fault::ReadBackFails | Fault::ReadBackEndless | Fault::ReadBackUnfinished
+        )
+    }
+
     /// The kind of a refusal `mistyped` gets wrong.
     fn kind(&self, mistyped: Fault) -> ConnectorErrorKind {
         if self.keeps(mistyped) {
@@ -125,7 +141,10 @@ impl Connector for Fake {
         if request.config_json.len() > CONFIG_BYTES && self.keeps(Fault::Unlimited) {
             return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
         }
-        if request.role != v1::Role::Source as i32 && self.keeps(Fault::EveryRole) {
+        if request.role != v1::Role::Source as i32
+            && self.keeps(Fault::EveryRole)
+            && !self.reads_back()
+        {
             return Err(refused(self.kind(Fault::MistypedRole), "role"));
         }
         let config_bytes = if self.keeps(Fault::Vast) {
@@ -146,7 +165,13 @@ impl Connector for Fake {
                 source_capabilities: Some(v1::SourceCapabilities {}),
                 destination_capabilities: None,
             }),
-            accepted_features: Vec::new(),
+            accepted_features: if self.reads_back()
+                && request.features.iter().any(|feature| feature == PUBLISHED)
+            {
+                vec![PUBLISHED.to_owned()]
+            } else {
+                Vec::new()
+            },
             limits: self.keeps(Fault::Limitless).then_some(limits),
         }))
     }
@@ -241,7 +266,35 @@ impl Connector for Fake {
         &self,
         _: Request<v1::ReadPublishedRequest>,
     ) -> Result<Response<Self::ReadPublishedStream>, Status> {
-        Err(Status::unimplemented("read_published"))
+        use v1::read_frame::Frame;
+        let frame = |frame| Ok(v1::ReadFrame { frame: Some(frame) });
+        let mut encoder = rdlt_wire::Encoder::default();
+        let rows: Arc<dyn Array> = Arc::new(Int64Array::from(vec![7; 64 * 1024]));
+        let batch = RecordBatch::try_from_iter([("id", rows)]).expect("a batch");
+        let schema = Frame::Schema(v1::SchemaFrame {
+            schema_epoch: 1,
+            ipc_schema: encoder.schema(&batch.schema()),
+        });
+        let data = encoder.batch(&batch).expect("the batch encodes").remove(0);
+        let rows = Frame::Batch(v1::BatchFrame {
+            schema_epoch: 1,
+            kind: v1::BatchKind::Arrow as i32,
+            data_header: data.header,
+            data_body: data.body,
+        });
+        let frames: Answer<v1::ReadFrame> = match self.fault {
+            Fault::ReadBackEndless => Box::pin(tokio_stream::iter([frame(schema)]).chain(
+                tokio_stream::iter(std::iter::repeat_with(move || frame(rows.clone()))),
+            )),
+            Fault::ReadBackUnfinished => Box::pin(tokio_stream::iter([frame(schema), frame(rows)])),
+            _ => {
+                return Err(status(&ConnectorError::new(
+                    ConnectorErrorKind::Transient,
+                    "refused: the store is unreachable",
+                )));
+            }
+        };
+        Ok(Response::new(frames))
     }
 
     async fn committed(

@@ -7,7 +7,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
 use rdlt_certify::{
-    Outcome, Report, Target, Unprobed, certify_destination, certify_source, json, markdown, plain,
+    Outcome, Probe, Report, Target, Unprobed, certify_destination, certify_source, json, markdown,
+    plain, read_back,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote};
@@ -107,7 +108,14 @@ fn run(args: &Args) -> Result<u8, Ended> {
             reports.push(certify_source(&target, config.clone()).await);
         }
         if !matches!(args.role, Some(Role::Source)) {
-            reports.push(certify_destination(&target, config, &Unprobed).await);
+            // What the destination published is read back when it can be; else the clauses
+            // that read it are skipped.
+            let read_back = read_back(&target, &config).await;
+            let probe: &dyn Probe = match &read_back {
+                Some(read_back) => read_back,
+                None => &Unprobed,
+            };
+            reports.push(certify_destination(&target, config, probe).await);
         }
         reports
     });

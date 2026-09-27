@@ -1,6 +1,6 @@
 //! Connectors that break one rule of the protocol each: its clause fails, and the others hold.
 
-mod fake;
+pub(crate) mod fake;
 
 use rdlt_certify::{Outcome, PROTOCOL_CLAUSES, Target, certify_source};
 
