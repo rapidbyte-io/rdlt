@@ -36,8 +36,10 @@ against the reference connectors both ways. `rdlt-host`'s `Remote` reaches conne
 on the network over mutual TLS 1.3, redialing them when they are lost, and the integration suite
 runs against them too. The simulation also places its connectors on hosts of their own on a
 simulated network (turmoil's, on paused clocks), through `Remote`, and loads through partitions,
-held messages, and connectors that crash or stop and start again. The certification suite comes
-next.
+held messages, and connectors that crash or stop and start again. `rdlt-certify` certifies a
+connector through the protocol, served in this process, spawned from its binary or listening at an
+endpoint: the source and destination clauses, and the protocol's own, as a library and as the
+`rdlt-certify` binary. The kill clauses come next.
 
 ## Development
 
