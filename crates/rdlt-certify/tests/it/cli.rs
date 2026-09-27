@@ -240,12 +240,24 @@ async fn a_wrong_command_line_exits_sixty_four() {
         .into_iter()
         .chain(tls)
         .collect::<Vec<_>>();
-    let cases: [&[&str]; 5] = [
+    let tls_with_binary = ["connector"].into_iter().chain(tls).collect::<Vec<_>>();
+    let cert_with_binary = ["connector", "--tls-cert", "cert.pem"];
+    let key_with_binary = ["connector", "--tls-key", "key.pem"];
+    let env_with_endpoint = ["grpcs://localhost:1", "--env", "HOME"]
+        .into_iter()
+        .chain(tls)
+        .collect::<Vec<_>>();
+    let cases: [&[&str]; 10] = [
         &[],
         &["connector", "--config", "{not json"],
         &["grpcs://localhost:1"],
         &["connector", "--role", "sink"],
         &no_port,
+        &["https://localhost:1"],
+        &tls_with_binary,
+        &cert_with_binary,
+        &key_with_binary,
+        &env_with_endpoint,
     ];
     for args in cases {
         let binary = example("serve_reference");
@@ -268,9 +280,14 @@ async fn a_wrong_command_line_exits_sixty_four() {
 async fn a_connector_or_configuration_that_cannot_be_read_exits_seventy_four() {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
-    let cases: [&[&str]; 2] = [
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let unexecutable = directory.path().join("connector");
+    std::fs::write(&unexecutable, "not a program").expect("the file writes");
+    let unexecutable = unexecutable.to_str().expect("a UTF-8 path");
+    let cases: [&[&str]; 3] = [
         &["/nonexistent/connector"],
         &[binary, "--config-file", "/nonexistent/config.json"],
+        &[unexecutable],
     ];
     for args in cases {
         let output = certify(args).await;
