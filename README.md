@@ -34,7 +34,10 @@ with its socket on file descriptor 3, drains its output, keeps its last words fo
 stops it when done and respawns it when it is lost, and the engine's integration suite runs
 against the reference connectors both ways. `rdlt-host`'s `Remote` reaches connectors listening
 on the network over mutual TLS 1.3, redialing them when they are lost, and the integration suite
-runs against them too. A simulation of the host over an unreliable network comes next.
+runs against them too. The simulation also places its connectors on hosts of their own on a
+simulated network (turmoil's, on paused clocks), through `Remote`, and loads through partitions,
+held messages, and connectors that crash or stop and start again. The certification suite comes
+next.
 
 ## Development
 
