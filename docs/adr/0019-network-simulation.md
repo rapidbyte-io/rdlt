@@ -25,13 +25,17 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
   0018), so the whole engine runs on simulated time unchanged.
   - A seed places its connectors on the network one time in four (the swarm feature `network`).
     The source and the destination then listen on hosts of their own over mutual TLS, with a CA
-    made for the seed, and every run places them through `Remote`.
-  - The feature is drawn apart from the others, so a seed's workload and faults are the same over
-    either transport, and seeds found before keep their workload.
+    made for each run, and every run places them through `Remote`. Its keys come from the
+    operating system, so the TLS bytes differ between runs of a seed; what the connectors and the
+    engine do does not.
+  - The feature is drawn apart from the others, so a seed's workload is the same over either
+    transport, and seeds found before keep their workload.
   - Each seed draws its messages' latency, and the host's heartbeat, patience and connect deadline.
   - With faults, a fault driver disrupts the network while each faulty run lasts: partitions both
-    ways and one way, messages held and released late, and connectors that crash, dropping every
-    connection, or stop gracefully, then start again. Each fault lasts up to twice the host's
+    ways and one way, messages held and released late, and connectors that crash, dropping their
+    listener and every connection at once, or stop gracefully, then start again. A crash leaves
+    the calls a connector had begun to run to their end: turmoil's own crash of a host, which
+    would end them too, needs the simulation to step turmoil itself. Each fault lasts up to twice the host's
     patience, so the host notices some and not others. The network heals before the runs that
     must succeed.
   - The oracle is unchanged: the destination holds exactly what the model says, whatever the
@@ -46,6 +50,8 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
 - **`rdlt-sim` depends on `rdlt-host` and `rdlt-wire`.** The spec's crate map (§4) lists the
   engine and the connector contract; simulating the host needs the host. `rdlt-sim` stays a leaf,
   and the engine still links no gRPC.
+- **A run that breaks the wire protocol is a finding**, faults or not: a connector and a host that
+  keep to the protocol never answer out of turn, however the network or the connector fails.
 - **The simulation's coverage leaves out what it never runs**: generated wire code, process
   placement, and a served binary's entry points. Its floor stays 82 % of lines and 73 % of
   branches.

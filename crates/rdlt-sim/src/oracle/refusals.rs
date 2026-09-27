@@ -17,7 +17,7 @@ use super::arrivals::{Arrival, arrival, widest};
 use super::expected;
 use crate::workload::{Relaxed, SimStream};
 use crate::world::World;
-pub(super) use failures::{Failure, refused, relax, unexplained};
+pub(super) use failures::{Failure, refused, relax, unexplained, violation};
 use keys::key_outcome;
 
 /// The code of a refused change to a frozen schema.

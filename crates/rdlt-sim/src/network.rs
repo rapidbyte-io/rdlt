@@ -169,7 +169,8 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
         let serving = serve_listener(served, Sockets(listener), Arc::clone(&tls), limits, stop);
         tokio::select! {
             biased;
-            // Dropping the serving drops its connections at once, as a crashed process does.
+            // Dropping the serving drops its listener and every connection at once, as a crashed
+            // process does; calls it had begun run to their end.
             () = net.connectors.crashed(side, crashes) => {}
             () = serving => {}
         }

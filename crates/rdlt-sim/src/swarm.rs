@@ -78,7 +78,7 @@ impl Features {
     /// a coin, drift more often than not, and the network one time in four.
     ///
     /// The network is drawn apart from the rest, from the value the next draw takes but without
-    /// taking it, so a seed's workload and faults are the same over either transport.
+    /// taking it, so a seed's workload is the same over either transport.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let network = SplitMix64::new(rng.clone().next_u64() ^ NETWORK).chance(250);
         if rng.chance(125) {
