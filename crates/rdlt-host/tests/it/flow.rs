@@ -208,6 +208,19 @@ async fn a_failed_write_keeps_its_error_through_the_remote_writer() {
 }
 
 #[tokio::test]
+async fn a_writer_that_panics_fails_the_write_with_an_internal_error() {
+    let served = Served::new().with_destination(Writes::factory(Writing::Panics));
+    let mut writer = writer(served, Limits::default(), "flow_panics", Options::default()).await;
+    let error = write_until_failed(writer.as_mut(), &ids(10), 200).await;
+    // The panic fails the write as the connector's error, not as a write it ended out of turn.
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Internal, None)
+    );
+    assert!(error.to_string().contains("panicked"), "{error}");
+}
+
+#[tokio::test]
 async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
     let served = Served::new().with_destination(Writes::factory(Writing::Stalls));
     let options = Options {
