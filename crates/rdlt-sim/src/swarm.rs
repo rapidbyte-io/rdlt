@@ -49,7 +49,8 @@ pub struct Features {
     /// tasks of their own.
     pub perturb: bool,
     /// Connectors listening on hosts of their own on a simulated network, placed there over
-    /// mutual TLS rather than run in the engine's process.
+    /// mutual TLS rather than run in the engine's process; with faults, the network partitions
+    /// and holds messages, and the connectors crash and stop.
     pub network: bool,
 }
 

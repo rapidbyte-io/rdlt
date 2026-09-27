@@ -111,3 +111,23 @@ fn the_same_seed_leaves_the_destination_alike() {
         "different seeds leave different contents"
     );
 }
+
+#[test]
+fn a_seed_over_a_faulty_network_replays_alike() {
+    // The first few seeds whose connectors listen on the simulated network, with faults on it.
+    let networked: Vec<Seed> = (0..)
+        .filter(|seed| {
+            let features = rdlt_sim::Features::draw(&mut rdlt_sim::SplitMix64::new(*seed));
+            features.network && features.faults
+        })
+        .take(8)
+        .map(Seed::new)
+        .collect();
+    for seed in networked {
+        assert_eq!(
+            rdlt_sim::check_exactly_once(seed),
+            rdlt_sim::check_exactly_once(seed),
+            "seed {seed}"
+        );
+    }
+}
