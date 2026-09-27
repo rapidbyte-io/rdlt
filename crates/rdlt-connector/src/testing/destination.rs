@@ -31,6 +31,32 @@ use crate::types::{Field, LogicalType};
 pub trait Probe: Send + Sync {
     /// Every published batch of `table`.
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>>;
+
+    /// Whether this probe reads anything: [`Unprobed`] does not.
+    fn reads(&self) -> bool {
+        true
+    }
+}
+
+/// The probe of a destination whose published data cannot be read, as one reached only over the
+/// wire: the clauses that compare it with what was committed are skipped.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Unprobed;
+
+impl Probe for Unprobed {
+    fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
+        let message = format!("the published data of {} cannot be read", table.name);
+        Box::pin(async move {
+            Err(crate::ConnectorError::new(
+                ConnectorErrorKind::Unsupported,
+                message,
+            ))
+        })
+    }
+
+    fn reads(&self) -> bool {
+        false
+    }
 }
 
 /// Certifies destination connector `C` with `config`, reading published data through `probe`.
@@ -73,8 +99,10 @@ pub async fn certify_destination_factory(
                     started,
                     index,
                 };
+                let unread = !probe.reads() && clauses::PROBED.contains(&clause.id);
                 let outcome = match evolving::skipped(destination.as_ref(), clause.id) {
                     Some(reason) => Outcome::Skipped(reason.to_owned()),
+                    None if unread => Outcome::Skipped(UNREAD.to_owned()),
                     None => outcome(bench.check(clause.id).await),
                 };
                 results.push(ClauseResult {
@@ -94,6 +122,9 @@ pub async fn certify_destination_factory(
     };
     Report { connector, results }
 }
+
+/// Why a clause that reads published data is skipped without a probe that reads it.
+const UNREAD: &str = "the destination's published data cannot be read";
 
 /// When this run started: it names the run's pipelines and tables and times its load ids.
 fn started() -> SystemTime {

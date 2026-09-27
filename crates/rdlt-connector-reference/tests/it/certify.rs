@@ -1,5 +1,5 @@
 use arrow_array::RecordBatch;
-use rdlt_connector::testing::{Outcome, Probe, certify_destination, certify_source};
+use rdlt_connector::testing::{Outcome, Probe, Unprobed, certify_destination, certify_source};
 use rdlt_connector::{BoxFuture, Result, TableRef};
 use rdlt_connector_reference::{
     FilesDestination, FilesSource, GeneratorSource, MemoryDestination, MemorySource,
@@ -57,6 +57,23 @@ async fn the_generator_is_certified() {
     let report = certify_source::<GeneratorSource>(config).await;
     report.assert_passed();
     assert_eq!(report.outcome("S-BARRIER"), Some(&Outcome::Passed));
+}
+
+#[tokio::test]
+async fn a_destination_whose_published_data_cannot_be_read_skips_the_clauses_that_read_it() {
+    let report =
+        certify_destination::<MemoryDestination>(json!({ "store": "certify_unprobed" }), &Unprobed)
+            .await;
+    report.assert_passed();
+    for id in ["D-CHECK", "D-EPOCH", "D-STATE"] {
+        assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{report}");
+    }
+    let skipped = report
+        .results
+        .iter()
+        .filter(|result| matches!(result.outcome, Outcome::Skipped(_)))
+        .count();
+    assert_eq!(skipped, report.results.len() - 3, "{report}");
 }
 
 #[tokio::test]
