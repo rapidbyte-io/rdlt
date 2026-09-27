@@ -2,6 +2,8 @@
 //! TLS, and the engine places them there through the host's remote placement, all on turmoil's
 //! hosts, each a paused tokio clock the network steps together.
 
+mod connectors;
+mod faults;
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +29,8 @@ use crate::env::SimEnv;
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, report_failure};
 use crate::source::SimSource;
+use connectors::Connectors;
+use faults::{Healing, disrupt};
 
 /// The engine's host.
 const ENGINE: &str = "engine";
@@ -65,11 +69,12 @@ impl Side {
     }
 }
 
-/// The network one simulation runs on: its certificates.
+/// The network one simulation runs on: its certificates, and its listening connectors.
 pub(crate) struct Net {
     pki: Pki,
     server: Files,
     client: Files,
+    connectors: Connectors,
 }
 
 impl Net {
@@ -81,6 +86,7 @@ impl Net {
             pki,
             server,
             client,
+            connectors: Connectors::default(),
         }
     }
 }
@@ -142,21 +148,32 @@ where
 /// What the latency's draw mixes into the seed: "latency" in ASCII.
 const LATENCY: u64 = 0x006c_6174_656e_6379;
 
-/// Serves `side`'s connector on its host.
+/// Serves `side`'s connector on its host, again after each crash or stop, as the network's
+/// connectors say.
 async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
     let tls = rdlt_wire::tls::server_config(&identity(&net.server), &net.pki.ca())
         .map(Arc::new)
         .map_err(|error| error.to_string())?;
-    let listener = turmoil::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
-    let served = Arc::new(match side {
-        Side::Source => Served::new().with_source(source_factory::<SimSource>()),
-        Side::Destination => {
-            Served::new().with_destination(destination_factory::<SimDestination>())
+    loop {
+        net.connectors.up(side).await;
+        let crashes = net.connectors.crashes(side);
+        let listener = turmoil::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
+        let served = Arc::new(match side {
+            Side::Source => Served::new().with_source(source_factory::<SimSource>()),
+            Side::Destination => {
+                Served::new().with_destination(destination_factory::<SimDestination>())
+            }
+        });
+        let stop = net.connectors.stopping(side);
+        let limits = Limits::default();
+        let serving = serve_listener(served, Sockets(listener), Arc::clone(&tls), limits, stop);
+        tokio::select! {
+            biased;
+            // Dropping the serving drops its connections at once, as a crashed process does.
+            () = net.connectors.crashed(side, crashes) => {}
+            () = serving => {}
         }
-    });
-    let never = std::future::pending();
-    serve_listener(served, Sockets(listener), tls, Limits::default(), never).await;
-    Ok(())
+    }
 }
 
 /// A turmoil host's listening socket.
@@ -196,16 +213,36 @@ fn identity(files: &Files) -> Identity {
 
 /// Places the simulation's connectors on its network: the engine's side of it.
 pub(crate) struct Placing {
+    net: Arc<Net>,
     remote: Remote,
+    remote_options: Options,
 }
 
 impl Placing {
     /// Places connectors on `net`, running their connections with `options`.
-    pub(crate) fn new(net: &Net, options: Options) -> Self {
+    pub(crate) fn new(net: Arc<Net>, options: Options) -> Self {
         let remote = Remote::new(identity(&net.client), net.pki.ca())
             .network(Turmoil)
             .options(options);
-        Self { remote }
+        Self {
+            net,
+            remote,
+            remote_options: options,
+        }
+    }
+
+    /// Runs `work` while the network is disrupted as `rng` draws, then heals the network, however
+    /// `work` ends.
+    pub(crate) async fn disrupting<T>(&self, rng: SplitMix64, work: impl Future<Output = T>) -> T {
+        let _healing = Healing(&self.net);
+        let options = self.remote_options;
+        // Faults last up to twice the host's patience, so it notices some and not others.
+        let patience = options.heartbeat.saturating_mul(options.missed);
+        tokio::select! {
+            biased;
+            done = work => done,
+            never = disrupt(&self.net, rng, patience) => match never {},
+        }
     }
 
     /// The source, placed with `config`, trying again until it is reachable.

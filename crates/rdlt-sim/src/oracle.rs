@@ -66,7 +66,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
     let world = World::register(&name, &mut rng);
     env.perturb(world.workload.features.perturb);
     let engine = Engine::new(config(&mut rng), env);
-    let placing = net.map(|net| Placing::new(&net, network::options(&mut rng)));
+    let placing = net.map(|net| Placing::new(net, network::options(&mut rng)));
     let mut simulation = Simulation {
         seed,
         engine,
@@ -126,7 +126,12 @@ impl Simulation {
             };
             runs += 1;
             let clean = !(faulty && (features.faults || features.disruptions));
-            let ran = self.attempt(phase, scenario, clean, &mut reports).await;
+            // Drawn only where the network is, so every other seed draws as it always has.
+            let network = (faulty && features.faults && self.placing.is_some())
+                .then(|| SplitMix64::new(rng.next_u64()));
+            let ran = self
+                .attempt(phase, scenario, clean, network, &mut reports)
+                .await;
             for (pipeline, success) in ran.succeeded.iter().enumerate() {
                 succeeded[pipeline] |= success;
             }
@@ -146,12 +151,14 @@ impl Simulation {
     /// end, and checks their failures against the refusals the model predicts.
     ///
     /// A refusal an operator can relax is relaxed, and a `clean` run, with neither faults nor
-    /// disruptions, fails with nothing else.
+    /// disruptions, fails with nothing else. With `network` faults, drawn from it, the network is
+    /// disrupted while the runs last, and healed once they end.
     async fn attempt(
         &mut self,
         phase: usize,
         scenario: Scenario,
         clean: bool,
+        network: Option<SplitMix64>,
         reports: &mut Vec<Report>,
     ) -> Ran {
         let seed = self.seed;
@@ -161,7 +168,11 @@ impl Simulation {
             .map(|pipeline| plan(workload, &self.relaxed, pipeline))
             .collect();
         let placing = self.placing.as_ref();
-        let executed = execute_all(&self.engine, &plans, &self.name, placing, scenario).await;
+        let executing = execute_all(&self.engine, &plans, &self.name, placing, scenario);
+        let executed = match (placing, network) {
+            (Some(placing), Some(rng)) => placing.disrupting(rng, executing).await,
+            _ => executing.await,
+        };
         let mut failures = Vec::new();
         for (plan, executed) in plans.iter().zip(&executed) {
             let refused = plan
