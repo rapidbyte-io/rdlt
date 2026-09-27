@@ -1,12 +1,15 @@
 //! The credit's clause: a read sends nothing more once its credit is spent, and the rest once
 //! more is granted.
 
+#[cfg(test)]
+mod tests;
+
 use std::time::Duration;
 
 use rdlt_connector::Role;
 use rdlt_connector::wire::v1;
 use rdlt_host::remote::Client;
-use rdlt_wire::tonic::Status;
+use rdlt_wire::tonic::{Status, Streaming};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
@@ -53,32 +56,58 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
             .next()
             .await
             .ok_or(Violation::from("the read ended without a frame"))?
-            .map_err(|status| format!("the read failed: {}", super::error(&status)))?;
+            .map_err(|status| failed(&status))?;
         if matches!(first.frame, Some(v1::read_frame::Frame::Done(_))) {
             return Ok(Some("the read ended within its first credit".to_owned()));
         }
-        if let Ok(Some(_)) = tokio::time::timeout(QUIET, frames.next()).await {
+        waits_then_resumes(&controls, &mut frames).await?;
+        Ok(None)
+    };
+    checked.await.into()
+}
+
+/// Checks that a read whose credit is spent sends nothing more, and goes on once granted more;
+/// then stops it, since the rest of the partition, however long, need not be read.
+async fn waits_then_resumes(
+    controls: &mpsc::Sender<v1::ReadControl>,
+    frames: &mut Streaming<v1::ReadFrame>,
+) -> Result<(), Violation> {
+    match tokio::time::timeout(QUIET, frames.next()).await {
+        Ok(Some(Ok(_))) => {
             return Err(Violation::from(
                 "the read sent a frame after its credit was spent",
             ));
         }
-        send(
-            &controls,
-            v1::read_control::Control::Credit(v1::Credit { bytes: PLENTY }),
-        )
-        .await?;
-        while let Some(frame) = frames.next().await {
-            let frame =
-                frame.map_err(|status| format!("the read failed: {}", super::error(&status)))?;
-            if matches!(frame.frame, Some(v1::read_frame::Frame::Done(_))) {
-                return Ok(None);
-            }
+        Ok(Some(Err(status))) => return Err(failed(&status)),
+        Ok(None) => return Err(Violation::from("the read ended without its done frame")),
+        Err(_) => {}
+    }
+    send(
+        controls,
+        v1::read_control::Control::Credit(v1::Credit { bytes: PLENTY }),
+    )
+    .await?;
+    match frames.next().await {
+        Some(Ok(_)) => {
+            let stop = v1::Stop {
+                mode: v1::StopMode::Now as i32,
+            };
+            // A read already done takes no more controls.
+            send(controls, v1::read_control::Control::Stop(stop))
+                .await
+                .ok();
+            Ok(())
         }
-        Err(Violation::from(
+        Some(Err(status)) => Err(failed(&status)),
+        None => Err(Violation::from(
             "the read ended without its done frame once credit was granted",
-        ))
-    };
-    checked.await.into()
+        )),
+    }
+}
+
+/// A violation for a read that failed with `status`.
+fn failed(status: &Status) -> Violation {
+    Violation::from(format!("the read failed: {}", super::error(status)))
 }
 
 /// The first partition of the source's first stream, as it plans them from the beginning.

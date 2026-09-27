@@ -76,7 +76,7 @@ async fn a_connector_that_breaks_a_clause_exits_one_and_says_which() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_role_the_connector_does_not_serve_exits_one() {
-    let binary = example("serve_generator");
+    let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
     let output = certify(&[
         binary,
@@ -88,11 +88,26 @@ async fn a_role_the_connector_does_not_serve_exits_one() {
     .await;
     assert_eq!(code(&output), Some(1));
     assert!(!output.stderr.is_empty(), "it says why");
+    let json = certify(&[
+        binary,
+        "--role",
+        "destination",
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--output",
+        "json",
+    ])
+    .await;
+    assert_eq!(code(&json), Some(1));
+    let report: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("the report is JSON");
+    assert_eq!(report["passed"], false, "{report}");
+    assert_eq!(report["reports"][0]["passed"], false, "{report}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connector_serving_one_role_is_certified_in_it_alone() {
-    let binary = example("serve_generator");
+    let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
     let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
     let output = certify(&[binary, "--config", config, "--env", "LLVM_PROFILE_FILE"]).await;

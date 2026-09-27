@@ -99,7 +99,7 @@ fn run(args: &Args) -> Result<u8, Ended> {
     let target = target(args)?;
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
-    let reports = runtime.block_on(async {
+    let mut reports = runtime.block_on(async {
         let mut reports = Vec::new();
         if !matches!(args.role, Some(Role::Destination)) {
             reports.push(certify_source(&target, config.clone()).await);
@@ -109,6 +109,11 @@ fn run(args: &Args) -> Result<u8, Ended> {
         }
         reports
     });
+    // A role the connector does not serve skips every clause of it: unless it was asked for,
+    // its report is left out.
+    if args.role.is_none() && reports.iter().any(ran) {
+        reports.retain(ran);
+    }
     let passed = reports.iter().all(Report::passed);
     let text = match args.output {
         Output::Plain => reports.iter().map(plain).collect::<String>(),
@@ -121,18 +126,21 @@ fn run(args: &Args) -> Result<u8, Ended> {
         }
     };
     print(&text);
-    // A role the connector does not serve skips every clause of it.
-    let certified = reports
-        .iter()
-        .flat_map(|report| &report.results)
-        .any(|result| !matches!(result.outcome, Outcome::Skipped(_)));
-    if !certified {
+    if !reports.iter().any(ran) {
         return Err(Ended(
             FINDINGS,
             "the connector serves none of the roles asked, so nothing was certified".to_owned(),
         ));
     }
     Ok(if passed { PASSED } else { FINDINGS })
+}
+
+/// Whether a clause of `report` ran, rather than every one being skipped.
+fn ran(report: &Report) -> bool {
+    report
+        .results
+        .iter()
+        .any(|result| !matches!(result.outcome, Outcome::Skipped(_)))
 }
 
 /// The configuration the command line gives, as JSON.

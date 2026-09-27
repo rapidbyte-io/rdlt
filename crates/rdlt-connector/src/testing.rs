@@ -79,9 +79,14 @@ impl Report {
             .filter(|result| matches!(result.outcome, Outcome::Failed(_)))
     }
 
-    /// Whether no clause failed.
+    /// Whether no clause failed, and one passed at least: a report whose every clause was
+    /// skipped certified nothing.
     pub fn passed(&self) -> bool {
         self.failures().next().is_none()
+            && self
+                .results
+                .iter()
+                .any(|result| result.outcome == Outcome::Passed)
     }
 
     /// The outcome of the clause with `id`.
@@ -92,11 +97,11 @@ impl Report {
             .map(|result| &result.outcome)
     }
 
-    /// Panics with the whole report unless every clause passed or was skipped.
+    /// Panics with the whole report unless it [passed](Self::passed).
     ///
     /// # Panics
     ///
-    /// Panics when a clause failed.
+    /// Panics when a clause failed, or none passed.
     pub fn assert_passed(&self) {
         assert!(self.passed(), "{self}");
     }
@@ -158,5 +163,16 @@ async fn bounded_call<T>(
 ) -> Result<T, Violation> {
     bounded(what, call)
         .await?
-        .map_err(|error| Violation::from(error.to_string()))
+        .map_err(|error| Violation::from(described(&error)))
+}
+
+/// `error`, and each error that caused it, in turn.
+fn described(error: &dyn std::error::Error) -> String {
+    let mut described = error.to_string();
+    let mut cause = error.source();
+    while let Some(error) = cause {
+        described = format!("{described}: {error}");
+        cause = error.source();
+    }
+    described
 }
