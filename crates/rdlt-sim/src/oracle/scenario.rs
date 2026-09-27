@@ -10,6 +10,7 @@ use serde_json::json;
 
 use super::refusals::Failure;
 use crate::destination::SimDestination;
+use crate::network::Placing;
 use crate::rng::SplitMix64;
 use crate::source::SimSource;
 
@@ -43,9 +44,20 @@ pub(super) fn pick(rng: &mut SplitMix64) -> Scenario {
     }
 }
 
-/// Starts a run of `plan` against the world registered as `world`.
-async fn start(engine: &Engine, plan: &PipelinePlan, world: &str) -> RunHandle {
+/// Starts a run of `plan` against the world registered as `world`, its connectors placed by
+/// `placing` on a simulated network where there is one, and in this process otherwise.
+async fn start(
+    engine: &Engine,
+    plan: &PipelinePlan,
+    world: &str,
+    placing: Option<&Placing>,
+) -> RunHandle {
     let config = json!({ "world": world });
+    if let Some(placing) = placing {
+        let source = placing.source(&config).await;
+        let destination = placing.destination(&config).await;
+        return engine.run(plan.clone(), source, destination);
+    }
     let source = source_factory::<SimSource>()
         .connect(config.clone(), ConnectContext::new())
         .await
@@ -72,12 +84,13 @@ pub(super) async fn execute_all(
     engine: &Engine,
     plans: &[PipelinePlan],
     world: &str,
+    placing: Option<&Placing>,
     scenario: Scenario,
 ) -> Vec<Executed> {
-    let first = execute(engine, &plans[0], world, scenario);
+    let first = execute(engine, &plans[0], world, placing, scenario);
     let second = async {
         match plans.get(1) {
-            Some(plan) => Some(execute(engine, plan, world, scenario).await),
+            Some(plan) => Some(execute(engine, plan, world, placing, scenario).await),
             None => None,
         }
     };
@@ -90,12 +103,16 @@ async fn execute(
     engine: &Engine,
     plan: &PipelinePlan,
     world: &str,
+    placing: Option<&Placing>,
     scenario: Scenario,
 ) -> Executed {
     let (ended, dropped) = match scenario {
-        Scenario::Plain => (vec![bounded(start(engine, plan, world).await).await], false),
+        Scenario::Plain => (
+            vec![bounded(start(engine, plan, world, placing).await).await],
+            false,
+        ),
         Scenario::Crash(after) => {
-            let run = bounded(start(engine, plan, world).await);
+            let run = bounded(start(engine, plan, world, placing).await);
             tokio::select! {
                 biased;
                 ended = run => (vec![ended], false),
@@ -104,7 +121,7 @@ async fn execute(
             }
         }
         Scenario::Stop(after) | Scenario::StopNow(after) => {
-            let handle = start(engine, plan, world).await;
+            let handle = start(engine, plan, world, placing).await;
             let control = handle.control();
             let stop = async {
                 tokio::time::sleep(after).await;
@@ -117,10 +134,10 @@ async fn execute(
             (vec![ended], false)
         }
         Scenario::Concurrent(delay) => {
-            let first = bounded(start(engine, plan, world).await);
+            let first = bounded(start(engine, plan, world, placing).await);
             let second = async {
                 tokio::time::sleep(delay).await;
-                bounded(start(engine, plan, world).await).await
+                bounded(start(engine, plan, world, placing).await).await
             };
             let (first, second) = tokio::join!(first, second);
             (vec![first, second], false)

@@ -480,26 +480,29 @@ fn drift_nests_objects_in_arrays_and_arrays_in_arrays() {
     }
 }
 
+/// Every feature off.
+const NONE: Features = Features {
+    drift: false,
+    depth: 0,
+    encodings: false,
+    json: false,
+    normalize: false,
+    sliced: false,
+    faults: false,
+    disruptions: false,
+    narrow: false,
+    settings: false,
+    keys: false,
+    identifiers: false,
+    shared: false,
+    perturb: false,
+    network: false,
+};
+
 #[test]
 fn features_off_leave_their_parts_of_the_workload_out() {
-    let none = Features {
-        drift: false,
-        depth: 0,
-        encodings: false,
-        json: false,
-        normalize: false,
-        sliced: false,
-        faults: false,
-        disruptions: false,
-        narrow: false,
-        settings: false,
-        keys: false,
-        identifiers: false,
-        shared: false,
-        perturb: false,
-    };
     for seed in 0..100 {
-        for stream in Workload::generate(&mut SplitMix64::new(seed), none).streams {
+        for stream in Workload::generate(&mut SplitMix64::new(seed), NONE).streams {
             assert!(
                 stream.drift.is_empty() && !stream.json && !stream.sliced && !stream.normalized()
             );
@@ -515,7 +518,7 @@ fn features_off_leave_their_parts_of_the_workload_out() {
     }
     let unset = Features {
         drift: true,
-        ..none
+        ..NONE
     };
     for seed in 0..100 {
         let workload = Workload::generate(&mut SplitMix64::new(seed), unset);
@@ -528,7 +531,7 @@ fn features_off_leave_their_parts_of_the_workload_out() {
     }
     let scalars = Features {
         drift: true,
-        ..none
+        ..NONE
     };
     for seed in 0..100 {
         for stream in Workload::generate(&mut SplitMix64::new(seed), scalars).streams {

@@ -1,7 +1,8 @@
 //! Deterministic simulation harness for the rdlt engine.
 //!
 //! A simulation runs on one thread with a paused clock and a seeded [`SimEnv`], so a failing run
-//! replays exactly from its [`Seed`].
+//! replays exactly from its [`Seed`]. Some seeds place their connectors on hosts of their own on
+//! a simulated network, turmoil's, whose hosts' paused clocks step together.
 //!
 //! ```
 //! use std::time::Duration;
@@ -21,6 +22,7 @@
 
 mod destination;
 mod env;
+mod network;
 mod oracle;
 mod rng;
 mod seed;

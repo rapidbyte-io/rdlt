@@ -19,8 +19,10 @@ use rdlt_engine::{
 
 use crate::destination::{Digest, completions, reads_in_progress};
 use crate::env::SimEnv;
+use crate::network::{self, Net, Placing, run_networked};
 use crate::rng::SplitMix64;
 use crate::seed::{Seed, run, run_threaded};
+use crate::swarm::Features;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 use expected::Discards;
@@ -37,7 +39,13 @@ const FAULTY_RUNS: usize = 4;
 /// Panics, naming the seed, when the destination's contents differ from the reference model, an
 /// invariant breaks, a run hangs, or a task outlives its run.
 pub fn check_exactly_once(seed: Seed) -> Digest {
-    run(seed, |env| async move { simulate(seed, env).await })
+    if Features::draw(&mut SplitMix64::new(seed.value())).network {
+        run_networked(seed, move |env, net| async move {
+            simulate(seed, env, Some(net)).await
+        })
+    } else {
+        run(seed, |env| async move { simulate(seed, env, None).await })
+    }
 }
 
 /// Checks the exactly-once guarantee for the workload `seed` generates, run on many threads and
@@ -47,17 +55,22 @@ pub fn check_exactly_once(seed: Seed) -> Digest {
 ///
 /// Panics, naming the seed, as [`check_exactly_once`] does.
 pub fn stress(seed: Seed) {
-    run_threaded(seed, |env| async move { simulate(seed, env).await });
+    run_threaded(seed, |env| async move { simulate(seed, env, None).await });
 }
 
-async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
+/// Checks the exactly-once guarantee for the workload `seed` generates, with the connectors on
+/// `net` when there is one, and in this process otherwise.
+async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest {
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
     let world = World::register(&name, &mut rng);
     env.perturb(world.workload.features.perturb);
+    let engine = Engine::new(config(&mut rng), env);
+    let placing = net.map(|net| Placing::new(&net, network::options(&mut rng)));
     let mut simulation = Simulation {
         seed,
-        engine: Engine::new(config(&mut rng), env),
+        engine,
+        placing,
         relaxed: vec![Relaxed::default(); world.workload.streams.len()],
         world,
         name,
@@ -86,6 +99,8 @@ struct Simulation {
     name: String,
     world: Arc<World>,
     engine: Engine,
+    /// Where the connectors are placed, when they listen on a simulated network.
+    placing: Option<Placing>,
     relaxed: Vec<Relaxed>,
 }
 
@@ -128,9 +143,10 @@ impl Simulation {
     }
 
     /// Runs `scenario` in `phase` for every pipeline at once, keeping the reports of runs that
-    /// end, and checks their failures against the refusals the model predicts: a refusal an
-    /// operator can relax is relaxed, and a `clean` run, with neither faults nor disruptions,
-    /// fails with nothing else.
+    /// end, and checks their failures against the refusals the model predicts.
+    ///
+    /// A refusal an operator can relax is relaxed, and a `clean` run, with neither faults nor
+    /// disruptions, fails with nothing else.
     async fn attempt(
         &mut self,
         phase: usize,
@@ -144,7 +160,8 @@ impl Simulation {
         let plans: Vec<PipelinePlan> = (0..workload.pipelines)
             .map(|pipeline| plan(workload, &self.relaxed, pipeline))
             .collect();
-        let executed = execute_all(&self.engine, &plans, &self.name, scenario).await;
+        let placing = self.placing.as_ref();
+        let executed = execute_all(&self.engine, &plans, &self.name, placing, scenario).await;
         let mut failures = Vec::new();
         for (plan, executed) in plans.iter().zip(&executed) {
             let refused = plan

@@ -6,6 +6,9 @@ mod tests;
 
 use crate::rng::SplitMix64;
 
+/// What the network's draw mixes into the seed's generator: "network" in ASCII.
+const NETWORK: u64 = 0x006e_6574_776f_726b;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -45,6 +48,9 @@ pub struct Features {
     /// Tasks scheduled in orders the seed varies: sleeps a little longer, and compute jobs on
     /// tasks of their own.
     pub perturb: bool,
+    /// Connectors listening on hosts of their own on a simulated network, placed there over
+    /// mutual TLS rather than run in the engine's process.
+    pub network: bool,
 }
 
 impl Features {
@@ -64,13 +70,21 @@ impl Features {
         identifiers: true,
         shared: true,
         perturb: true,
+        network: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
-    /// a coin, drift more often than not.
+    /// a coin, drift more often than not, and the network one time in four.
+    ///
+    /// The network is drawn apart from the rest, from the value the next draw takes but without
+    /// taking it, so a seed's workload and faults are the same over either transport.
     pub fn draw(rng: &mut SplitMix64) -> Self {
+        let network = SplitMix64::new(rng.clone().next_u64() ^ NETWORK).chance(250);
         if rng.chance(125) {
-            return Self::ALL;
+            return Self {
+                network,
+                ..Self::ALL
+            };
         }
         Self {
             drift: rng.chance(800),
@@ -87,6 +101,7 @@ impl Features {
             identifiers: rng.chance(500),
             shared: rng.chance(500),
             perturb: rng.chance(500),
+            network,
         }
     }
 

@@ -156,6 +156,6 @@ where
     clippy::print_stderr,
     reason = "the seed must reach the test output to be replayable"
 )]
-fn report_failure(seed: Seed) {
+pub(crate) fn report_failure(seed: Seed) {
     eprintln!("rdlt-sim: failing seed {seed}; replay it with `just sim {seed}`");
 }

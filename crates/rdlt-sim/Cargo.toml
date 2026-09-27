@@ -13,13 +13,16 @@ arrow-array.workspace = true
 arrow-schema.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
-rdlt-connector.workspace = true
+rdlt-connector = { workspace = true, features = ["serve"] }
 rdlt-engine.workspace = true
+rdlt-host.workspace = true
 rdlt-testkit.workspace = true
+rdlt-wire = { workspace = true, features = ["tls"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+turmoil.workspace = true
 tokio = { workspace = true, features = [
   "macros",
   "rt",
