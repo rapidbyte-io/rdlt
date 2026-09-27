@@ -93,6 +93,7 @@ flatbuffers = "25.2.10" # the IPC header verifier's depth, and hand-built messag
 criterion = { version = "0.8.2", default-features = false, features = [
   "cargo_bench_support",
 ] } # throughput benchmarks
+insta = { version = "1.48.0", default-features = false } # snapshots of the certification's help and reports
 peak_alloc = "0.3.0" # the heap's peak size, for the engine's memory bound
 proptest = "1.11.0" # property tests
 rcgen = "0.14.10" # a certificate authority made at test time, for the protocol's TLS

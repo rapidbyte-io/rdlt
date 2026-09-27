@@ -7,7 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "rdlt-certify"
+path = "src/main.rs"
+
 [dependencies]
+clap.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing", "wire"] }
 rdlt-host.workspace = true
 rdlt-wire.workspace = true
@@ -20,6 +25,7 @@ arrow-array.workspace = true
 http.workspace = true
 hyper = { workspace = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
+insta.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-testkit.workspace = true
 rdlt-wire = { workspace = true, features = ["serve"] }

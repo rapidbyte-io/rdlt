@@ -18,12 +18,16 @@
 
 mod connect;
 mod protocol;
+mod registry;
+mod report;
 mod target;
 
 pub use protocol::PROTOCOL_CLAUSES;
 pub use rdlt_connector::testing::{
     Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, Unprobed,
 };
+pub use registry::{Family, clauses, markdown};
+pub use report::{json, plain};
 pub use target::Target;
 
 use rdlt_connector::Role;

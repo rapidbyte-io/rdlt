@@ -1,0 +1,23 @@
+---
+source: crates/rdlt-certify/tests/it/cli.rs
+expression: "String::from_utf8_lossy(&help.stdout)"
+---
+Certifies a connector against the protocol's conformance clauses
+
+Usage: rdlt-certify [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]  The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at
+
+Options:
+      --role <ROLE>                Certify this role alone; by default, every role the connector serves [possible values: source, destination]
+      --config <CONFIG>            The connector's configuration, as JSON [default: {}]
+      --config-file <CONFIG_FILE>  A file holding the connector's configuration, as JSON
+      --env <NAME>                 An environment variable a spawned connector keeps; it otherwise starts with none
+      --tls-cert <TLS_CERT>        The host's certificate chain, in PEM, for an endpoint
+      --tls-key <TLS_KEY>          The host's private key, in PEM, for an endpoint
+      --tls-ca <TLS_CA>            The CA bundle that issued the connector's certificate, in PEM, for an endpoint
+      --output <OUTPUT>            How to print the reports [default: plain] [possible values: plain, json]
+      --clauses                    Prints every clause, in Markdown, and exits
+  -h, --help                       Print help
+  -V, --version                    Print version
