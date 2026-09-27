@@ -9,6 +9,8 @@ pub mod network;
 pub mod provider;
 pub mod registry;
 pub mod remote;
+#[cfg(test)]
+mod sink;
 mod supervise;
 
 pub use local::{LastWords, Local};

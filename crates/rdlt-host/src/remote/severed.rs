@@ -2,6 +2,9 @@
 //! lost, reads and writes fail at once, so HTTP/2's task for it ends then, rather than when its
 //! pings time out, which on a network that stopped answering takes the heartbeat's patience.
 
+#[cfg(test)]
+mod tests;
+
 use std::future::Future as _;
 use std::pin::Pin;
 use std::task::{Context, Poll};
