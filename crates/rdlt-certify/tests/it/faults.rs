@@ -118,3 +118,22 @@ async fn a_connector_that_answers_no_heartbeat_is_certified_in_bounded_time() {
     let took = started.elapsed();
     assert!(took.as_secs() < 600, "certification took {took:?}");
 }
+
+#[tokio::test]
+async fn a_connector_that_refuses_a_feature_it_does_not_know_fails_its_handshake() {
+    let target = Target::connected(|| Box::pin(async { served(Fault::RefusesUnknownFeatures) }));
+    let report = certify_source(&target, serde_json::json!({})).await;
+    assert!(
+        matches!(report.outcome("P-HANDSHAKE"), Some(Outcome::Failed(_))),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn a_destination_of_short_identifiers_keeps_the_protocols_clauses() {
+    let target = Target::connected(|| Box::pin(async { served(Fault::ShortNames) }));
+    let report = certify_destination(&target, serde_json::json!({}), &Unprobed).await;
+    for id in ["P-MALFORMED", "P-LIMITS"] {
+        assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
+    }
+}

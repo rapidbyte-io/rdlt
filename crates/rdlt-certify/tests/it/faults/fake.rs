@@ -32,6 +32,10 @@ pub(crate) enum Fault {
     Limitless,
     /// It answers calls before its handshake, and a second handshake.
     Unordered,
+    /// It accepts every feature a handshake offers, those it does not know among them.
+    AcceptsAnyFeature,
+    /// It refuses a handshake that offers a feature it does not know.
+    RefusesUnknownFeatures,
     /// It answers a handshake as a destination, which it does not serve.
     EveryRole,
     /// It refuses a role it does not serve, but not as unsupported.
@@ -54,6 +58,8 @@ pub(crate) enum Fault {
     Lingering,
     /// It answers no heartbeat.
     Mute,
+    /// As a destination, it keeps to identifiers of 32 bytes, which breaks no clause.
+    ShortNames,
     /// As a destination, it takes a batch it cannot decode, or one beyond its frame limit.
     LenientFrames,
     /// As a destination, it refuses a batch it cannot decode, or one beyond its frame limit,
@@ -68,7 +74,7 @@ pub(crate) enum Fault {
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 11] = [
+pub(crate) const BROKEN: [(Fault, &str); 12] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -80,6 +86,7 @@ pub(crate) const BROKEN: [(Fault, &str); 11] = [
     (Fault::Lenient, "P-MALFORMED"),
     (Fault::Greedy, "P-CREDIT"),
     (Fault::LenientCursor, "P-LIMITS"),
+    (Fault::AcceptsAnyFeature, "P-HANDSHAKE"),
 ];
 
 /// Its configuration limit, in bytes.
@@ -137,7 +144,11 @@ impl Fake {
 
     /// Whether it serves the destination role too.
     fn writes(&self) -> bool {
-        self.reads_back() || matches!(self.fault, Fault::LenientFrames | Fault::MiscodedFrames)
+        self.reads_back()
+            || matches!(
+                self.fault,
+                Fault::ShortNames | Fault::LenientFrames | Fault::MiscodedFrames
+            )
     }
 
     /// The kind of a refusal `mistyped` gets wrong.
@@ -157,6 +168,10 @@ impl Connector for Fake {
         request: Request<v1::HandshakeRequest>,
     ) -> Result<Response<v1::HandshakeResponse>, Status> {
         let request = request.into_inner();
+        let unknown = request.features.iter().any(|feature| feature != PUBLISHED);
+        if unknown && !self.keeps(Fault::RefusesUnknownFeatures) {
+            return Err(refused(ConnectorErrorKind::Unsupported, "feature"));
+        }
         if request.protocol_major != PROTOCOL_MAJOR && self.keeps(Fault::AnyVersion) {
             return Err(refused(
                 self.kind(Fault::MistypedVersion),
@@ -193,7 +208,9 @@ impl Connector for Fake {
                 source_capabilities: Some(v1::SourceCapabilities {}),
                 destination_capabilities: None,
             }),
-            accepted_features: if self.reads_back()
+            accepted_features: if !self.keeps(Fault::AcceptsAnyFeature) {
+                request.features.clone()
+            } else if self.reads_back()
                 && request.features.iter().any(|feature| feature == PUBLISHED)
             {
                 vec![PUBLISHED.to_owned()]
@@ -351,8 +368,20 @@ impl Connector for Fake {
 
     async fn apply_schema(
         &self,
-        _: Request<v1::ApplySchemaRequest>,
+        request: Request<v1::ApplySchemaRequest>,
     ) -> Result<Response<v1::ApplySchemaResponse>, Status> {
+        let created = request
+            .into_inner()
+            .change
+            .and_then(|change| change.change)
+            .and_then(|change| match change {
+                v1::table_change::Change::Create(create) => create.table,
+                _ => None,
+            });
+        let longest = created.map_or(0, |table| table.name.len());
+        if longest > 32 && !self.keeps(Fault::ShortNames) {
+            return Err(refused(ConnectorErrorKind::Data, "identifier"));
+        }
         Ok(Response::new(v1::ApplySchemaResponse {}))
     }
 

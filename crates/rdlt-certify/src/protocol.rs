@@ -26,7 +26,8 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
     Clause {
         id: "P-HANDSHAKE",
         statement: "the handshake answers the protocol's major version with the connector's spec \
-                    and limits, and refuses another major version as unsupported",
+                    and limits, ignores features it does not know, and refuses another major \
+                    version as unsupported",
     },
     Clause {
         id: "P-ORDER",
@@ -149,12 +150,16 @@ async fn within(checking: impl Future<Output = Found>) -> Found {
         .unwrap_or_else(|_| Found::Broken(Violation(format!("took longer than {CLAUSE_TIME:?}"))))
 }
 
+/// A feature no host defines, which every handshake of certification offers.
+pub(crate) const UNKNOWN_FEATURE: &str = "rdlt.certify.unknown";
+
 /// A handshake as `role` with `config`, at `major`.
 pub(crate) fn request(role: Role, config: &str, major: u32) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: major,
         protocol_minor: PROTOCOL_MINOR,
-        features: Vec::new(),
+        // A connector takes the features it knows and ignores the rest (§12.7).
+        features: vec![UNKNOWN_FEATURE.to_owned()],
         role: wire_role(role) as i32,
         config_json: config.to_owned(),
         traceparent: String::new(),

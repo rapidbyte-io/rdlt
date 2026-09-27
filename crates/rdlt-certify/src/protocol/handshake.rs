@@ -5,7 +5,9 @@ use rdlt_connector::Role;
 use rdlt_connector::wire::v1;
 use rdlt_wire::PROTOCOL_MAJOR;
 
-use super::{Found, Violation, handshaken, refused_with, request, unsupported, wire_role};
+use super::{
+    Found, UNKNOWN_FEATURE, Violation, handshaken, refused_with, request, unsupported, wire_role,
+};
 use crate::target::Target;
 
 /// The code of a handshake at another major version.
@@ -21,6 +23,15 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
         if answer.spec.is_none() || answer.limits.is_none() {
             return Err(Violation::from(
                 "the handshake answered without the connector's spec or limits",
+            ));
+        }
+        if answer
+            .accepted_features
+            .iter()
+            .any(|feature| feature == UNKNOWN_FEATURE)
+        {
+            return Err(Violation::from(
+                "the handshake accepted a feature no host defines",
             ));
         }
         for major in OTHER_MAJORS {

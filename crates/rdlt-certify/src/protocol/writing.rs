@@ -98,7 +98,8 @@ async fn created(client: &mut Client) -> Result<(u64, TableRef), Violation> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let name = format!("certify_protocol_{run:x}");
+    // Short enough for any destination the destination clauses certify: 32 bytes and more.
+    let name = format!("certify_{run:x}_p");
     let opened = client
         .open(v1::OpenRequest {
             pipeline: name.clone(),

@@ -277,11 +277,7 @@ impl Bench<'_> {
     }
 
     async fn published_rows(&self) -> Result<usize, Violation> {
-        let batches = self
-            .probe
-            .published(&self.table())
-            .await
-            .map_err(|error| Violation::from(format!("probe: {error}")))?;
+        let batches = bounded_call("probe", self.probe.published(&self.table())).await?;
         Ok(batches.iter().map(RecordBatch::num_rows).sum())
     }
 
