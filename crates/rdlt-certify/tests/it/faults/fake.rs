@@ -235,6 +235,15 @@ impl Connector for Fake {
         Ok(Response::new(Box::pin(ReceiverStream::new(answer))))
     }
 
+    type ReadPublishedStream = Answer<v1::ReadFrame>;
+
+    async fn read_published(
+        &self,
+        _: Request<v1::ReadPublishedRequest>,
+    ) -> Result<Response<Self::ReadPublishedStream>, Status> {
+        Err(Status::unimplemented("read_published"))
+    }
+
     async fn committed(
         &self,
         _: Request<v1::CommittedRequest>,

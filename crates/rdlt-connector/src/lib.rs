@@ -95,8 +95,9 @@ pub use commit::{ChildTable, CommitMeta, Receipt, SegmentRange, SegmentSet, Unor
 pub use cursor::Cursor;
 pub use destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
-    MergeKey, OpenContext, Opened, OpenedSession, RootKey, Session, TableChange, TableRef,
-    TableWriter, WriteStats, destination_factory,
+    MergeKey, OpenContext, Opened, OpenedSession, PublishedReader, ReadBack, Reading, RootKey,
+    Session, TableChange, TableRef, TableWriter, WriteStats, destination_factory,
+    readable_destination_factory,
 };
 pub use emitter::Emitter;
 pub use error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result, ResultExt};
@@ -138,9 +139,10 @@ pub mod prelude {
     pub use crate::{
         Capabilities, Catalog, Checkpointing, CommitMeta, ConnectContext, ConnectorError,
         ConnectorErrorKind, Cursor, DestinationConnector, Emitter, LogicalType, OpenContext,
-        Opened, Partition, PartitionId, ReadMode, ReadStream, Receipt, Result, ResultExt, Secret,
-        Session, SourceConnector, StreamName, StreamSpec, StreamState, Streams, TableChange,
-        TableRef, TableSchema, TableWriter, WriteStats, destination_factory, source_factory,
+        Opened, Partition, PartitionId, ReadBack, ReadMode, ReadStream, Receipt, Result, ResultExt,
+        Secret, Session, SourceConnector, StreamName, StreamSpec, StreamState, Streams,
+        TableChange, TableRef, TableSchema, TableWriter, WriteStats, destination_factory,
+        readable_destination_factory, source_factory,
     };
     #[cfg(feature = "macros")]
     pub use crate::{destination, source};

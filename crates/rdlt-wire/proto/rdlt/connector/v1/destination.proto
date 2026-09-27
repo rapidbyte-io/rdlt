@@ -246,3 +246,9 @@ message CloseRequest {
 
 // The answer to a close.
 message CloseResponse {}
+
+// Asks a destination for every row it published to a table.
+message ReadPublishedRequest {
+  // The table.
+  TableRef table = 1;
+}

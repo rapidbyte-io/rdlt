@@ -60,7 +60,7 @@ fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
 }
 
 /// Frames waiting for credit, and what encodes them.
-struct Outbox {
+pub(super) struct Outbox {
     frames: VecDeque<v1::ReadFrame>,
     credit: i64,
     encoder: Encoder,
@@ -76,7 +76,24 @@ fn refused(refusal: rdlt_wire::Refusal) -> Status {
 }
 
 impl Outbox {
-    fn push(&mut self, frame: v1::read_frame::Frame) {
+    /// An empty outbox, whose frames keep within `host`'s limits.
+    pub(super) fn new(host: Limits) -> Self {
+        Self {
+            frames: VecDeque::new(),
+            credit: 0,
+            encoder: Encoder::default(),
+            schema: None,
+            epoch: 0,
+            host,
+        }
+    }
+
+    /// The frames queued, in order.
+    pub(super) fn into_frames(self) -> VecDeque<v1::ReadFrame> {
+        self.frames
+    }
+
+    pub(super) fn push(&mut self, frame: v1::read_frame::Frame) {
         self.frames.push_back(v1::ReadFrame { frame: Some(frame) });
     }
 
@@ -116,7 +133,7 @@ impl Outbox {
     }
 
     /// Queues `batch`, after a schema frame opening a new epoch if its schema differs.
-    fn batch(&mut self, batch: &RecordBatch, kind: v1::BatchKind) -> Result<(), Status> {
+    pub(super) fn batch(&mut self, batch: &RecordBatch, kind: v1::BatchKind) -> Result<(), Status> {
         use v1::read_frame::Frame;
         if self.schema.as_ref() != Some(&batch.schema()) {
             self.epoch += 1;
@@ -171,14 +188,7 @@ async fn pump(
         feed.request_checkpoint(barrier.get());
     }
     let mut reading = tokio::spawn(async move { source.read(request, sink).await });
-    let mut outbox = Outbox {
-        frames: VecDeque::new(),
-        credit: 0,
-        encoder: Encoder::default(),
-        schema: None,
-        epoch: 0,
-        host,
-    };
+    let mut outbox = Outbox::new(host);
     let mut done = false;
     loop {
         while let Some(frame) = outbox.frames.front() {

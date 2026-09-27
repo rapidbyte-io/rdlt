@@ -60,6 +60,22 @@ fn makes_the_connector_servable_by_its_type_in_its_role() {
 }
 
 #[test]
+fn serves_a_destination_that_reads_back_through_the_readable_factory() {
+    let expanded = expand(
+        quote!(id = "io.example.sink", read_back),
+        quote!(impl DestinationConnector for Sink {}),
+        Role::Destination,
+    );
+    assert!(
+        expanded.contains(
+            "RoleFactory :: Destination (:: rdlt_connector :: readable_destination_factory :: < \
+             Self > ())"
+        ),
+        "{expanded}"
+    );
+}
+
+#[test]
 fn accepts_a_path_qualified_trait() {
     let expanded = expand(
         quote!(id = "io.example.sink"),
@@ -92,6 +108,11 @@ fn rejects_misuse_with_a_message() {
             quote!(id = "io.x"),
             quote!(impl DestinationConnector for T {}),
             "impl SourceConnector for",
+        ),
+        (
+            quote!(id = "io.x", read_back),
+            quote!(impl SourceConnector for T {}),
+            "only a destination reads back",
         ),
         (
             quote!(id = "io.x"),

@@ -33,6 +33,9 @@ service Connector {
   rpc Close(CloseRequest) returns (CloseResponse);
   // Proves both ends are alive.
   rpc Heartbeat(stream Ping) returns (stream Pong);
+  // Reads back every row a destination published to a table, for certification; served when
+  // the handshake accepted the "published" feature. The engine never calls it.
+  rpc ReadPublished(ReadPublishedRequest) returns (stream ReadFrame);
 }
 
 // The side of a connection a connector serves.

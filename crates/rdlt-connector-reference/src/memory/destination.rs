@@ -248,7 +248,7 @@ impl Table {
     }
 }
 
-#[destination(id = "io.rapidbyte.memory")]
+#[destination(id = "io.rapidbyte.memory", read_back)]
 impl DestinationConnector for MemoryDestination {
     type Config = MemoryDestinationConfig;
     type Session = MemorySession;
@@ -430,5 +430,16 @@ impl TableWriter for MemoryWriter {
                 .push((self.generation, batch));
         }
         Ok(stats)
+    }
+}
+
+impl ReadBack for MemoryDestination {
+    async fn published(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
+        let store = self.store.lock();
+        Ok(store
+            .tables
+            .get(&*table.name)
+            .map(|table| table.published.clone())
+            .unwrap_or_default())
     }
 }

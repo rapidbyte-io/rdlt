@@ -44,7 +44,7 @@ pub struct FilesDestination {
     format: FileFormat,
 }
 
-#[destination(id = "io.rapidbyte.files")]
+#[destination(id = "io.rapidbyte.files", read_back)]
 impl DestinationConnector for FilesDestination {
     type Config = FilesDestinationConfig;
     type Session = FilesSession;
@@ -180,6 +180,13 @@ fn capabilities(format: FileFormat) -> Capabilities {
     };
     capabilities.max_parallel_writers = NonZeroU16::new(4).expect("4 is non-zero");
     capabilities
+}
+
+impl ReadBack for FilesDestination {
+    async fn published(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
+        let (root, name) = (self.root.to_path_buf(), table.name.clone());
+        blocking(move || published(root, &name)).await
+    }
 }
 
 /// Every published batch of `table` under `root`, over every pipeline's latest manifest.
