@@ -184,11 +184,14 @@ async fn a_dropped_connection_whose_network_is_gone_leaves_no_task_behind() {
     let source = RemoteSource::new(connection);
     abandoned_check(&source).await;
     drop(source);
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let alive = tokio::runtime::Handle::current()
-        .metrics()
-        .num_alive_tasks();
-    assert_eq!(alive, baseline, "tasks outlived the dropped connection");
+    let settled = tokio::time::timeout(Duration::from_secs(1), async {
+        let metrics = tokio::runtime::Handle::current().metrics();
+        while metrics.num_alive_tasks() != baseline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(settled.is_ok(), "tasks outlived the dropped connection");
     runtime.shutdown_background();
 }
 
