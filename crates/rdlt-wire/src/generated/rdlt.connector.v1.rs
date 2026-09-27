@@ -1497,6 +1497,13 @@ pub struct CloseRequest {
 /// The answer to a close.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CloseResponse {}
+/// Asks a destination for every row it published to a table.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadPublishedRequest {
+    /// The table.
+    #[prost(message, optional, tag = "1")]
+    pub table: ::core::option::Option<TableRef>,
+}
 /// The limits each end enforces on what it receives. A limit left 0, as a peer from before that
 /// limit existed leaves it, is the protocol's default.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1917,6 +1924,28 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Heartbeat"));
             self.inner.streaming(req, path, codec).await
         }
+        /// Reads back every row a destination published to a table, for certification; served when
+        /// the handshake accepted the "published" feature. The engine never calls it.
+        pub async fn read_published(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReadPublishedRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::ReadFrame>>,
+            tonic::Status,
+        > {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/ReadPublished");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "rdlt.connector.v1.Connector",
+                "ReadPublished",
+            ));
+            self.inner.server_streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2007,6 +2036,17 @@ pub mod connector_server {
             &self,
             request: tonic::Request<tonic::Streaming<super::Ping>>,
         ) -> std::result::Result<tonic::Response<Self::HeartbeatStream>, tonic::Status>;
+        /// Server streaming response type for the ReadPublished method.
+        type ReadPublishedStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::ReadFrame, tonic::Status>,
+            > + std::marker::Send
+            + 'static;
+        /// Reads back every row a destination published to a table, for certification; served when
+        /// the handshake accepted the "published" feature. The engine never calls it.
+        async fn read_published(
+            &self,
+            request: tonic::Request<super::ReadPublishedRequest>,
+        ) -> std::result::Result<tonic::Response<Self::ReadPublishedStream>, tonic::Status>;
     }
     /// A connector, serving every role it supports.
     #[derive(Debug)]
@@ -2535,6 +2575,50 @@ pub mod connector_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/ReadPublished" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReadPublishedSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector>
+                        tonic::server::ServerStreamingService<super::ReadPublishedRequest>
+                        for ReadPublishedSvc<T>
+                    {
+                        type Response = super::ReadFrame;
+                        type ResponseStream = T::ReadPublishedStream;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReadPublishedRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Connector>::read_published(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReadPublishedSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

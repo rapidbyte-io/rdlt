@@ -6,6 +6,7 @@ use std::sync::Arc;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 
 use super::service::{Connected, Service};
+use crate::destination::{Destination, DestinationFactory};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 use crate::spec::ConnectContext;
 use crate::wire::v1;
@@ -58,11 +59,14 @@ impl Service {
                     .destination
                     .as_ref()
                     .ok_or_else(|| unserved("destination"))?;
-                let destination = factory.connect(config, context).await?;
-                (
-                    factory.spec(),
-                    Connected::Destination(Arc::from(destination)),
-                )
+                let offered = request
+                    .features
+                    .iter()
+                    .any(|feature| feature == rdlt_wire::PUBLISHED);
+                let destination = self
+                    .connect_destination(factory.as_ref(), offered, config)
+                    .await?;
+                (factory.spec(), Connected::Destination(destination))
             }
             Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
         };
@@ -72,6 +76,24 @@ impl Service {
             return Err(repeated());
         }
         Ok(spec)
+    }
+
+    /// Connects `factory`'s destination with `config`, reading back what it published when the
+    /// host `offered` that and it can.
+    async fn connect_destination(
+        &self,
+        factory: &dyn DestinationFactory,
+        offered: bool,
+        config: serde_json::Value,
+    ) -> Result<Arc<dyn Destination>, ConnectorError> {
+        let context = ConnectContext::new();
+        if !(offered && factory.reads_back()) {
+            return Ok(Arc::from(factory.connect(config, context).await?));
+        }
+        let (destination, reader) = factory.connect_reading(config, context).await?;
+        // Set once: a handshake that ran beside this one is refused once connected.
+        self.reader.set(reader).ok();
+        Ok(destination)
     }
 
     /// The spec the handshake answers with: the connector's, the roles the binary serves, and

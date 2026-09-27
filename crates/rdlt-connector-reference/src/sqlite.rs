@@ -41,7 +41,7 @@ pub struct SqliteDestination {
     planner: Arc<SqlPlanner<Sqlite>>,
 }
 
-#[destination(id = "io.rapidbyte.sqlite")]
+#[destination(id = "io.rapidbyte.sqlite", read_back)]
 impl DestinationConnector for SqliteDestination {
     type Config = SqliteDestinationConfig;
     type Session = SqliteSession;
@@ -119,6 +119,13 @@ fn capabilities() -> Capabilities {
         reserved_table_prefixes: [TABLE_PREFIX, "sqlite_"].map(str::to_owned).into(),
     };
     capabilities
+}
+
+impl ReadBack for SqliteDestination {
+    async fn published(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
+        let (path, name) = (self.path.clone(), table.name.clone());
+        crate::blocking::blocking(move || published(path, &name)).await
+    }
 }
 
 /// Every row of `table` in the database at `path`, as one batch; none when the table is missing.

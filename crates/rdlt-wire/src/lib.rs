@@ -41,3 +41,7 @@ pub const PROTOCOL_MAJOR: u32 = 1;
 /// The protocol's minor version: a peer of another minor version is served, with the features
 /// both ends know.
 pub const PROTOCOL_MINOR: u32 = 0;
+
+/// The handshake's feature a host offers to read back what a destination published, and a
+/// destination that can accepts: then it serves `ReadPublished`.
+pub const PUBLISHED: &str = "published";

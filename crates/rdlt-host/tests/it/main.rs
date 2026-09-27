@@ -8,6 +8,7 @@ mod network;
 mod networks;
 mod process;
 mod protocol;
+mod published;
 mod reads;
 mod redial;
 mod sessions;

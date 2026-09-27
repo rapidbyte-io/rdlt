@@ -16,8 +16,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::handshake::unsupported;
 use super::until::Until;
-use super::{Served, read, write};
-use crate::destination::{Destination, DestinationSession, OpenContext, TableChange};
+use super::{Served, published, read, write};
+use crate::destination::{
+    Destination, DestinationSession, OpenContext, PUBLISHED_CODE, PublishedReader, TableChange,
+    TableRef,
+};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::{PartitionId, PipelineId, StreamName};
 use crate::source::Source;
@@ -39,6 +42,8 @@ pub(super) struct Service {
     pub(super) served: Arc<Served>,
     pub(super) limits: Limits,
     pub(super) connected: OnceCell<Connected>,
+    /// What reads back what the destination published, when the handshake accepted that.
+    pub(super) reader: OnceCell<Arc<dyn PublishedReader>>,
     /// The host's limits, which what this end sends must keep within.
     pub(super) host: OnceCell<Limits>,
     pub(super) sessions: Mutex<BTreeMap<u64, SessionSlot>>,
@@ -53,6 +58,7 @@ impl Service {
             served,
             limits,
             connected: OnceCell::new(),
+            reader: OnceCell::new(),
             host: OnceCell::new(),
             sessions: Mutex::new(BTreeMap::new()),
             next_session: AtomicU64::new(1),
@@ -124,9 +130,14 @@ impl Connector for Service {
             .connect(request.into_inner())
             .await
             .map_err(|error| status(&error))?;
+        let accepted_features = self
+            .reader
+            .get()
+            .map(|_| vec![rdlt_wire::PUBLISHED.to_owned()])
+            .unwrap_or_default();
         Ok(Response::new(v1::HandshakeResponse {
             spec: Some(spec),
-            accepted_features: Vec::new(),
+            accepted_features,
             limits: Some(self.limits.into()),
         }))
     }
@@ -191,6 +202,26 @@ impl Connector for Service {
         let host = self.host.get().copied().unwrap_or_default();
         let frames = read::serve(self.source()?, self.limits, host, request.into_inner()).await?;
         Ok(Response::new(frames))
+    }
+
+    type ReadPublishedStream = Answer<v1::ReadFrame>;
+
+    async fn read_published(
+        &self,
+        request: Request<v1::ReadPublishedRequest>,
+    ) -> Result<Response<Self::ReadPublishedStream>, Status> {
+        let reader = self.reader.get().cloned().ok_or_else(|| {
+            let message = "reading back what was published needs its feature in the handshake";
+            status(&unsupported(message, PUBLISHED_CODE))
+        })?;
+        let table = request
+            .into_inner()
+            .table
+            .ok_or(Invalid::Missing("table"))
+            .and_then(TableRef::try_from)
+            .map_err(|e| invalid(&e))?;
+        let host = self.host.get().copied().unwrap_or_default();
+        Ok(Response::new(published::serve(reader, table, host).await?))
     }
 
     async fn committed(
@@ -338,7 +369,7 @@ impl Service {
     pub(super) async fn writer(
         &self,
         id: u64,
-        table: &crate::destination::TableRef,
+        table: &TableRef,
     ) -> Result<Box<dyn crate::destination::DestinationWriter>, Status> {
         let slot = self.session(id).await?;
         let mut session = slot.lock().await;

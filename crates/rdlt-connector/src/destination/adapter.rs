@@ -2,12 +2,14 @@
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 
 use super::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
-    OpenContext, Opened, OpenedSession, Session, TableChange, TableRef, TableWriter, WriteStats,
+    OpenContext, Opened, OpenedSession, PublishedReader, ReadBack, Reading, Session, TableChange,
+    TableRef, TableWriter, WriteStats,
 };
 use crate::capabilities::Capabilities;
 use crate::commit::{CommitMeta, Receipt};
@@ -17,8 +19,17 @@ use crate::id::{ConnectorId, SegmentId};
 use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 
 struct DestinationAdapter<C> {
-    connector: C,
+    connector: Arc<C>,
     capabilities: Capabilities,
+}
+
+/// What reads back what connector `C` published.
+struct ReaderAdapter<C>(Arc<C>);
+
+impl<C: ReadBack> PublishedReader for ReaderAdapter<C> {
+    fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
+        Box::pin(self.0.published(table))
+    }
 }
 
 impl<C: DestinationConnector> Destination for DestinationAdapter<C> {
@@ -120,13 +131,58 @@ impl<C: DestinationConnector> DestinationFactory for Factory<C> {
         context: ConnectContext,
     ) -> BoxFuture<'_, Result<Box<dyn Destination>>> {
         Box::pin(async move {
-            let config = config::parse::<C::Config>(config)?;
-            let connector = C::connect(config, &context).await?;
-            let capabilities = connector.capabilities();
-            Ok(Box::new(DestinationAdapter {
-                connector,
-                capabilities,
-            }) as Box<dyn Destination>)
+            let adapter = adapted::<C>(config, &context).await?;
+            Ok(Box::new(adapter) as Box<dyn Destination>)
+        })
+    }
+}
+
+/// Connects `C` with `config`, as the engine drives it.
+async fn adapted<C: DestinationConnector>(
+    config: serde_json::Value,
+    context: &ConnectContext,
+) -> Result<DestinationAdapter<C>> {
+    let config = config::parse::<C::Config>(config)?;
+    let connector = C::connect(config, context).await?;
+    let capabilities = connector.capabilities();
+    Ok(DestinationAdapter {
+        connector: Arc::new(connector),
+        capabilities,
+    })
+}
+
+/// [`Factory`], for a connector that can read back what it published.
+struct ReadableFactory<C>(Factory<C>);
+
+impl<C: ReadBack> DestinationFactory for ReadableFactory<C> {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Box<dyn Destination>>> {
+        self.0.connect(config, context)
+    }
+
+    fn reads_back(&self) -> bool {
+        true
+    }
+
+    fn connect_reading(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Reading>> {
+        Box::pin(async move {
+            let adapter = adapted::<C>(config, &context).await?;
+            let reader = ReaderAdapter(Arc::clone(&adapter.connector));
+            Ok((
+                Arc::new(adapter) as Arc<dyn Destination>,
+                Arc::new(reader) as Arc<dyn PublishedReader>,
+            ))
         })
     }
 }
@@ -138,14 +194,29 @@ impl<C: DestinationConnector> DestinationFactory for Factory<C> {
 /// Panics if `C::ID` is not a valid [`ConnectorId`]; the `#[destination]` attribute checks it at
 /// compile time.
 pub fn destination_factory<C: DestinationConnector>() -> Box<dyn DestinationFactory> {
+    Box::new(factory::<C>())
+}
+
+/// The engine-facing factory for destination connector `C`, which also reads back what `C`
+/// published, for certification.
+///
+/// # Panics
+///
+/// Panics if `C::ID` is not a valid [`ConnectorId`]; the `#[destination]` attribute checks it at
+/// compile time.
+pub fn readable_destination_factory<C: ReadBack>() -> Box<dyn DestinationFactory> {
+    Box::new(ReadableFactory(factory::<C>()))
+}
+
+fn factory<C: DestinationConnector>() -> Factory<C> {
     let spec = ConnectorSpec {
         id: ConnectorId::parse(C::ID).expect("the connector's ID is a valid connector id"),
         version: C::VERSION.to_owned(),
         role: Role::Destination,
         config_schema: config::schema::<C::Config>(),
     };
-    Box::new(Factory::<C> {
+    Factory::<C> {
         spec,
         connector: PhantomData,
-    })
+    }
 }
