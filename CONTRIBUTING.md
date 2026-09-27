@@ -124,7 +124,7 @@ and durations are `Duration`, never integer milliseconds.
 - One test per behavior; inputs that differ only in data go in a table-driven test.
 - Law-like code (lattices, codecs, naming) gets property tests. Anything persisted or evolved is
   tested across at least two runs.
-- Simulation tests use `rdlt_sim::seeds`; a failing seed replays with `just sim <seed>`.
+- Simulation tests use `rdlt_sim::seeds`; a failing seed replays with `just sim <seed>`, and `just sim "" <count> <first>` runs `<count>` seeds from `<first>`, as each nightly shard does.
 
 ## Definition of done
 

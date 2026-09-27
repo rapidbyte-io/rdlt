@@ -37,7 +37,7 @@ pub use destination::{
 pub use env::{InlinePool, SimEnv};
 pub use oracle::{check_exactly_once, stress};
 pub use rng::SplitMix64;
-pub use seed::{SEED_VAR, SEEDS_VAR, Seed, SeedVarError, run, run_threaded, seeds};
+pub use seed::{SEED_VAR, SEEDS_FROM_VAR, SEEDS_VAR, Seed, SeedVarError, run, run_threaded, seeds};
 pub use source::{SimCursor, SimSource, SimSourceConfig, schema};
 pub use swarm::Features;
 pub use workload::{Drift, Level, PHASES, Relaxed, Resolved, Row, SimStream, Workload};

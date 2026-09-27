@@ -16,6 +16,10 @@ pub const SEED_VAR: &str = "RDLT_SIM_SEED";
 /// Environment variable setting how many seeds a simulation suite covers.
 pub const SEEDS_VAR: &str = "RDLT_SIM_SEEDS";
 
+/// Environment variable setting the first of the seeds a simulation suite covers, so a large run
+/// can be split into shards.
+pub const SEEDS_FROM_VAR: &str = "RDLT_SIM_SEEDS_FROM";
+
 /// The single value a simulation run derives from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seed(u64);
@@ -61,8 +65,9 @@ impl SeedRange {
 
 /// The seeds a simulation test covers.
 ///
-/// A non-empty `RDLT_SIM_SEED` selects exactly that seed. Otherwise the test covers seeds `0..n`,
-/// where `n` is `RDLT_SIM_SEEDS` when it is set and non-empty, else `default_count`.
+/// A non-empty `RDLT_SIM_SEED` selects exactly that seed. Otherwise the test covers `n` seeds from
+/// `RDLT_SIM_SEEDS_FROM` (0 when it is unset or empty), where `n` is `RDLT_SIM_SEEDS` when it is
+/// set and non-empty, else `default_count`.
 ///
 /// # Panics
 ///
@@ -70,7 +75,13 @@ impl SeedRange {
 pub fn seeds(default_count: u64) -> impl Iterator<Item = Seed> {
     let single = std::env::var(SEED_VAR).ok();
     let count = std::env::var(SEEDS_VAR).ok();
-    match select(single.as_deref(), count.as_deref(), default_count) {
+    let from = std::env::var(SEEDS_FROM_VAR).ok();
+    match select(
+        single.as_deref(),
+        count.as_deref(),
+        from.as_deref(),
+        default_count,
+    ) {
         Ok(range) => range.seeds(),
         Err(error) => panic!("{error}"),
     }
@@ -79,6 +90,7 @@ pub fn seeds(default_count: u64) -> impl Iterator<Item = Seed> {
 fn select(
     single: Option<&str>,
     count: Option<&str>,
+    from: Option<&str>,
     default_count: u64,
 ) -> Result<SeedRange, SeedVarError> {
     if let Some(value) = single.filter(|value| !value.is_empty()) {
@@ -91,7 +103,11 @@ fn select(
         Some(value) => parse(SEEDS_VAR, value)?,
         None => default_count,
     };
-    Ok(SeedRange { start: 0, count })
+    let start = match from.filter(|value| !value.is_empty()) {
+        Some(value) => parse(SEEDS_FROM_VAR, value)?,
+        None => 0,
+    };
+    Ok(SeedRange { start, count })
 }
 
 fn parse(variable: &'static str, value: &str) -> Result<u64, SeedVarError> {
