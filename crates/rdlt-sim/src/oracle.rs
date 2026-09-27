@@ -192,6 +192,7 @@ impl Simulation {
             failures.extend(executed.failures);
             reports.extend(executed.reports);
         }
+        kept_to_the_protocol(&failures, seed, phase);
         let refused = refusals::refused(&failures, &prediction)
             .unwrap_or_else(|finding| panic!("seed {seed}: phase {phase}: {finding}"));
         if let Some(failure) = refusals::unexplained(&failures, &prediction).filter(|_| clean) {
@@ -214,6 +215,16 @@ impl Simulation {
             failure,
             stopped,
         }
+    }
+}
+
+/// Checks that none of `failures` breaks the wire protocol, which no fault excuses.
+fn kept_to_the_protocol(failures: &[refusals::Failure], seed: Seed, phase: usize) {
+    if let Some(broken) = refusals::violation(failures) {
+        panic!(
+            "seed {seed}: phase {phase}: a run broke the wire protocol: {}",
+            broken.text
+        );
     }
 }
 
