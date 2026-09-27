@@ -1,9 +1,13 @@
 //! Destination clauses.
 
+mod checks;
 mod children;
 mod clauses;
 mod encoding;
 mod evolving;
+mod fence;
+mod lanes;
+mod names;
 mod tables;
 
 use std::sync::Arc;
@@ -145,7 +149,7 @@ struct Bench<'a> {
 impl Bench<'_> {
     async fn check(&self, id: &str) -> Result<(), Violation> {
         match id {
-            "D-CHECK" => bounded_call("check", self.destination.check()).await,
+            "D-CHECK" => self.check_agrees_with_open().await,
             "D-EPOCH" => self.epochs_increase().await,
             "D-STAGING" => self.staging_is_invisible().await,
             "D-COMMIT" => self.commits_publish().await,
@@ -158,6 +162,8 @@ impl Bench<'_> {
             "D-CHILDREN" => self.children_follow_their_roots().await,
             "D-ENCODING" => self.dictionaries_publish_their_values().await,
             "D-TABLES" => self.segments_span_tables().await,
+            "D-NAMES" => self.names_are_kept().await,
+            "D-LANES" => self.writers_stage_at_once().await,
             _ => self.stale_sessions_are_fenced().await,
         }
     }
@@ -410,24 +416,6 @@ impl Bench<'_> {
         };
         drop(bounded("commit", latest.session.commit(&orphan)).await?);
         expect_rows(self.published_rows().await?, 3)
-    }
-
-    /// A worker's session is fenced by an open through another connection.
-    async fn stale_sessions_are_fenced(&self) -> Result<(), Violation> {
-        let mut stale = self.staged(self.destination, 1, &[1]).await?;
-        let _latest = self.open(self.peer, 2).await?;
-        let meta = meta(self.load_id(1), stale.epoch, &[1], Vec::new());
-        match bounded("commit", stale.session.commit(&meta)).await? {
-            Err(error) if error.kind() == ConnectorErrorKind::Fenced => {
-                expect_rows(self.published_rows().await?, 0)
-            }
-            Err(error) => Err(format!(
-                "the stale commit failed with {:?}, not Fenced: {error}",
-                error.kind()
-            )
-            .into()),
-            Ok(_) => Err("a session opened before the latest one committed".into()),
-        }
     }
 }
 

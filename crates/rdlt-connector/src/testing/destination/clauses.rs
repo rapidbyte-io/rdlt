@@ -6,7 +6,8 @@ use crate::testing::Clause;
 pub const DESTINATION_CLAUSES: &[Clause] = &[
     Clause {
         id: "D-CHECK",
-        statement: "check succeeds for a valid configuration",
+        statement: "check succeeds exactly when opening a session does, and both do for a valid \
+                    configuration",
     },
     Clause {
         id: "D-EPOCH",
@@ -60,6 +61,16 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
                     table's rows",
     },
     Clause {
+        id: "D-NAMES",
+        statement: "identifiers at the edges of the destination's own rules are published under \
+                    their names",
+    },
+    Clause {
+        id: "D-LANES",
+        statement: "writers of one table, as many as the destination runs at once, stage at the \
+                    same time, and a commit publishes what each staged",
+    },
+    Clause {
         id: "D-FENCE",
         statement: "a session opened before the latest one cannot commit",
     },
@@ -67,7 +78,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
 
 /// The clauses that read what the destination published, which a probe that reads nothing
 /// cannot check.
-pub(super) const PROBED: [&str; 11] = [
+pub(super) const PROBED: [&str; 13] = [
     "D-STAGING",
     "D-COMMIT",
     "D-IDEMPOTENT",
@@ -78,5 +89,7 @@ pub(super) const PROBED: [&str; 11] = [
     "D-CHILDREN",
     "D-ENCODING",
     "D-TABLES",
+    "D-NAMES",
+    "D-LANES",
     "D-FENCE",
 ];

@@ -322,6 +322,12 @@ pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'stati
         {
             Some("the destination declares no schema change the clause checks")
         }
+        "D-LANES" if capabilities.max_parallel_writers.get() < 2 => {
+            Some("the destination runs one writer at a time")
+        }
+        "D-NAMES" if capabilities.identifiers.max_len.get() < super::names::SHORTEST => {
+            Some("the destination's identifiers are shorter than certification's names")
+        }
         _ => None,
     }
 }
