@@ -111,7 +111,9 @@ async fn connector_writing_unbroken_stdout_keeps_the_host_bounded() {
     let source = spawned(&local(), script).await;
     let before = peak_kib();
     source.check().await.expect("the check passes");
-    let grown = peak_kib() - before;
+    // The kernel counts resident memory per CPU and sums it roughly, so a later peak can read
+    // lower than an earlier one.
+    let grown = peak_kib().saturating_sub(before);
     // Far less than the 256 MiB written: the host keeps a bounded piece of each line.
     assert!(grown < 64 * 1024, "the host's peak grew by {grown} KiB");
 }
