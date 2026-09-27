@@ -12,6 +12,7 @@ name = "rdlt-certify"
 path = "src/main.rs"
 
 [dependencies]
+arrow-array.workspace = true
 clap.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing", "wire"] }
 rdlt-host.workspace = true
@@ -21,7 +22,6 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "syn
 tokio-stream.workspace = true
 
 [dev-dependencies]
-arrow-array.workspace = true
 http.workspace = true
 hyper = { workspace = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }

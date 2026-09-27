@@ -3,6 +3,7 @@
 mod cli;
 mod faults;
 mod listening;
+mod read_back;
 mod served;
 mod spawned;
 mod unmet;

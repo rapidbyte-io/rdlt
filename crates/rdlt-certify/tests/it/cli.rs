@@ -159,6 +159,42 @@ async fn the_help_and_the_reports_read_as_they_did() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_destination_binary_that_reads_back_is_certified_in_every_clause() {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let config = serde_json::json!({ "path": directory.path().join("store.db") }).to_string();
+    let output = certify(&[
+        binary,
+        "--role",
+        "destination",
+        "--config",
+        &config,
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--output",
+        "json",
+    ])
+    .await;
+    assert_eq!(
+        code(&output),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    let clauses = report["reports"][0]["clauses"]
+        .as_array()
+        .expect("the clauses");
+    let committed = clauses
+        .iter()
+        .find(|clause| clause["id"] == "D-COMMIT")
+        .expect("D-COMMIT");
+    assert_eq!(committed["outcome"], "passed", "{report}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_listening_connector_is_certified_from_the_command_line() {
     let pki = Pki::new("ca");
     let (_connector, endpoint) = listening(&pki).await;

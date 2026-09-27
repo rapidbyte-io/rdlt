@@ -147,7 +147,7 @@ async fn within(checking: impl Future<Output = Found>) -> Found {
 }
 
 /// A handshake as `role` with `config`, at `major`.
-fn request(role: Role, config: &str, major: u32) -> v1::HandshakeRequest {
+pub(crate) fn request(role: Role, config: &str, major: u32) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: major,
         protocol_minor: PROTOCOL_MINOR,

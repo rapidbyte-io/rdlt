@@ -87,7 +87,7 @@ pub(super) async fn limited(target: &Target, role: Role, config: &str) -> Found 
         let limit = answer.limits.map_or(0, |limits| limits.config_bytes);
         // A host never sends a configuration beyond its own limit, so a connector's beyond it is
         // never met, and exceeding it would only cost this process the memory.
-        let host = target.config_bytes();
+        let host = target.limits().config_bytes;
         let Some(beyond) = Some(limit)
             .filter(|limit| (1..=host).contains(limit))
             .and_then(|limit| usize::try_from(limit).ok())
