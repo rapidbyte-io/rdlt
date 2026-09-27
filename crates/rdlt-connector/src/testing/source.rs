@@ -23,7 +23,8 @@ const RESUME_SAMPLES: usize = 5;
 pub const SOURCE_CLAUSES: &[Clause] = &[
     Clause {
         id: "S-CHECK",
-        statement: "check succeeds for a valid configuration",
+        statement: "check succeeds exactly when a read does, and both do for a valid \
+                    configuration",
     },
     Clause {
         id: "S-DISCOVER",
@@ -77,7 +78,7 @@ async fn check_all(source: &dyn Source) -> Vec<ClauseResult> {
     let mut results = Vec::new();
     for clause in SOURCE_CLAUSES {
         let outcome = match (&catalog, clause.id) {
-            (_, "S-CHECK") => outcome(bounded_call("check", source.check()).await),
+            (_, "S-CHECK") => outcome(check_agrees_with_read(source, catalog.as_ref()).await),
             (_, "S-DISCOVER") => outcome(discover_is_stable(source, catalog.as_ref().ok()).await),
             (Err(Violation(reason)), _) => Outcome::Failed(format!("discover failed: {reason}")),
             (Ok(catalog), "S-PLAN") => outcome(plans_are_valid(source, catalog).await),
@@ -230,6 +231,56 @@ async fn resumes_are_exact(source: &dyn Source, catalog: &Catalog) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// Checks the source, and starts a read of its first stream's first partition; they must agree.
+async fn check_agrees_with_read(
+    source: &dyn Source,
+    catalog: Result<&Catalog, &Violation>,
+) -> Result<(), Violation> {
+    let checked = bounded_call("check", source.check()).await;
+    let read = match catalog {
+        Ok(catalog) => read_starts(source, catalog).await,
+        Err(Violation(reason)) => Err(format!("discover failed: {reason}").into()),
+    };
+    match (checked, read) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(Violation(reason)), Ok(())) => {
+            Err(format!("check failed ({reason}), yet a read succeeded").into())
+        }
+        (Ok(()), Err(Violation(reason))) => {
+            Err(format!("check succeeded, yet a read failed: {reason}").into())
+        }
+        (Err(Violation(reason)), Err(_)) => Err(format!("check failed: {reason}").into()),
+    }
+}
+
+/// Reads the first partition of `catalog`'s first stream until its first event, or its end,
+/// and stops it there.
+async fn read_starts(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {
+    let Some(stream) = catalog.iter().next() else {
+        return Ok(());
+    };
+    let Some(partition) = plan(source, stream.name()).await?.into_iter().next() else {
+        return Ok(());
+    };
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("64 is non-zero"));
+    let request = ReadRequest {
+        stream: stream.name().clone(),
+        partition: partition.clone(),
+        cursor: None,
+    };
+    let first = async {
+        feed.recv().await;
+        feed.stop();
+        while feed.recv().await.is_some() {}
+    };
+    let what = format!("reading {} partition {}", stream.name(), partition.id());
+    let (read, ()) = bounded(&what, async {
+        tokio::join!(source.read(request, sink), first)
+    })
+    .await?;
+    read.map_err(|error| Violation::from(format!("{what}: {error}")))
 }
 
 async fn stops_are_prompt(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {

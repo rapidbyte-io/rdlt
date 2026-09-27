@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -23,7 +23,7 @@ use crate::destination::{
     TableWriter, WriteStats,
 };
 use crate::emitter::Emitter;
-use crate::error::{ConnectorError, Result};
+use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{
     CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StreamName, TablePath,
 };
@@ -54,6 +54,10 @@ struct PagesConfig {
     repeat_partitions: bool,
     fail_on_stop: bool,
     refuse_connect: bool,
+    /// Fails its check, though it reads.
+    refuse_check: bool,
+    /// Fails every read, though it checks.
+    refuse_reads: bool,
     /// The call that never returns: `connect`, `check`, `discover` or `plan`.
     hang: String,
 }
@@ -70,6 +74,8 @@ impl Default for PagesConfig {
             repeat_partitions: false,
             fail_on_stop: false,
             refuse_connect: false,
+            refuse_check: false,
+            refuse_reads: false,
             hang: String::new(),
         }
     }
@@ -108,6 +114,9 @@ impl SourceConnector for Pages {
 
     async fn check(&self) -> Result<()> {
         self.config.hang_in("check").await;
+        if self.config.refuse_check {
+            return Err(ConnectorError::config("refused"));
+        }
         Ok(())
     }
 
@@ -165,6 +174,12 @@ impl ReadStream<Pages> for Page {
         cursor: u32,
         out: &mut Emitter<u32>,
     ) -> Result<()> {
+        if source.config.refuse_reads {
+            return Err(ConnectorError::new(
+                ConnectorErrorKind::Transient,
+                "the pages are gone",
+            ));
+        }
         let start = if source.config.ignore_cursor {
             0
         } else {
@@ -234,6 +249,7 @@ async fn each_broken_source_behavior_fails_exactly_its_clause() {
         ("empty_catalog", "S-DISCOVER"),
         ("repeat_partitions", "S-PLAN"),
         ("fail_on_stop", "S-STOP"),
+        ("refuse_check", "S-CHECK"),
     ];
     for (flag, clause) in cases {
         let report = certify_source::<Pages>(json!({ flag: true })).await;
@@ -249,13 +265,19 @@ async fn within_a_day<T>(certification: impl Future<Output = T>) -> T {
         .expect("certification ended")
 }
 
+#[tokio::test]
+async fn a_source_that_checks_but_cannot_read_fails_its_check() {
+    let report = certify_source::<Pages>(json!({ "refuse_reads": true })).await;
+    assert!(failed(&report).contains(&"S-CHECK"), "{report}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_source_call_that_never_returns_fails_instead_of_hanging() {
     let cases = [
         ("connect", SOURCE_CLAUSES.len()),
         ("check", 1),
-        ("discover", SOURCE_CLAUSES.len() - 1),
-        ("plan", 4),
+        ("discover", SOURCE_CLAUSES.len()),
+        ("plan", 5),
     ];
     for (call, failures) in cases {
         let report = within_a_day(certify_source::<Pages>(json!({ "hang": call }))).await;
@@ -359,6 +381,16 @@ struct VaultConfig {
     ignore_child_tables: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
+    /// Publishes its columns under lower-case names, though it declares it keeps case.
+    fold_names: bool,
+    /// Keeps only the staging of the table's writer that wrote last, of all its writers.
+    lose_lanes: bool,
+    /// Fails its check, though sessions open.
+    refuse_check: bool,
+    /// The writers it declares it runs at once, when not the default.
+    writers: u16,
+    /// The longest identifier it declares, when not the default.
+    identifier_len: u16,
 }
 
 #[derive(Default)]
@@ -380,10 +412,14 @@ struct VaultStore {
     columns: BTreeMap<String, BTreeMap<String, LogicalType>>,
 }
 
+/// Every vault writer made, so each is told from the others.
+static WRITERS: AtomicU64 = AtomicU64::new(0);
+
 /// A batch staged for a table, a replace generation of it, or a merge into it.
 #[derive(Clone)]
 struct Staged {
     table: String,
+    writer: u64,
     generation: Option<GenerationId>,
     merge: Option<MergeKey>,
     batch: RecordBatch,
@@ -437,6 +473,8 @@ struct VaultSession {
 }
 
 struct VaultWriter {
+    /// Tells this writer's staging from its table's other writers'.
+    id: u64,
     config: Arc<VaultConfig>,
     stores: VaultStores,
     pipeline: PipelineId,
@@ -458,6 +496,13 @@ impl DestinationConnector for Vault {
             capabilities.write_modes.replace = true;
             capabilities.write_modes.merge = true;
             capabilities.schema_changes = SchemaChanges::all();
+            capabilities.max_parallel_writers = std::num::NonZeroU16::new(4).expect("not zero");
+        }
+        if let Some(writers) = std::num::NonZeroU16::new(self.config.writers) {
+            capabilities.max_parallel_writers = writers;
+        }
+        if let Some(longest) = std::num::NonZeroU16::new(self.config.identifier_len) {
+            capabilities.identifiers.max_len = longest;
         }
         if self.config.fixed_schema {
             capabilities.schema_changes = SchemaChanges::default();
@@ -484,6 +529,9 @@ impl DestinationConnector for Vault {
     }
 
     async fn check(&self) -> Result<()> {
+        if self.config.refuse_check {
+            return Err(ConnectorError::config("refused"));
+        }
         Ok(())
     }
 
@@ -673,6 +721,18 @@ impl Session for VaultSession {
     type Writer = VaultWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
+        // It keeps to the identifiers it declares: ASCII word characters.
+        if let TableChange::Create { schema, .. } = change
+            && let Some(field) = schema.fields().iter().find(|field| {
+                !field
+                    .name()
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        {
+            let message = format!("column {} breaks the identifier rules", field.name());
+            return Err(ConnectorError::data(message));
+        }
         let mut store = self.stores.shared.lock().unwrap();
         let first = store.changes.insert(format!("{change:?}"));
         let alters = !matches!(change, TableChange::Create { .. });
@@ -711,6 +771,7 @@ impl Session for VaultSession {
             .tables
             .insert(table.path.clone(), table.name.to_string());
         Ok(VaultWriter {
+            id: WRITERS.fetch_add(1, Ordering::SeqCst),
             config: Arc::clone(&self.config),
             stores: self.stores.clone(),
             pipeline: self.pipeline.clone(),
@@ -813,6 +874,39 @@ impl VaultConfig {
     }
 }
 
+impl VaultWriter {
+    /// `batch`, as the flags that break names and lanes stage it in `store`.
+    fn faulted(&self, store: &mut VaultStore, batch: RecordBatch) -> RecordBatch {
+        if self.config.lose_lanes {
+            for ((pipeline, _), staged) in &mut store.staged {
+                if *pipeline == self.pipeline {
+                    staged.retain(|staged| {
+                        staged.table != self.table
+                            || staged.generation != self.generation
+                            || staged.writer == self.id
+                    });
+                }
+            }
+        }
+        if !self.config.fold_names {
+            return batch;
+        }
+        let fields: Vec<_> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| {
+                field
+                    .as_ref()
+                    .clone()
+                    .with_name(field.name().to_lowercase())
+            })
+            .collect();
+        let schema = Arc::new(arrow_schema::Schema::new(fields));
+        RecordBatch::try_new(schema, batch.columns().to_vec()).expect("same columns")
+    }
+}
+
 impl TableWriter for VaultWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
         let mut store = self.stores.shared.lock().unwrap();
@@ -841,7 +935,10 @@ impl TableWriter for VaultWriter {
         let kept: Vec<usize> = (0..batch.num_columns())
             .filter(|index| !dropped.contains(index))
             .collect();
-        let batch = batch.project(&kept).expect("kept columns exist");
+        let batch = self.faulted(
+            &mut store,
+            batch.project(&kept).expect("kept columns exist"),
+        );
         if self.config.publish_on_write {
             store
                 .published
@@ -858,6 +955,7 @@ impl TableWriter for VaultWriter {
         }
         staged.push(Staged {
             table: self.table.clone(),
+            writer: self.id,
             generation: self.generation,
             merge: self.merge.clone(),
             batch,
@@ -1039,14 +1137,42 @@ async fn certify_vault(name: &str, flag: Option<&str>) -> Report {
 }
 
 #[tokio::test]
+async fn the_lanes_and_names_clauses_skip_only_what_a_destination_declares_it_cannot_do() {
+    let cases = [
+        (json!({ "writers": 1 }), "D-LANES", false),
+        (json!({ "writers": 2 }), "D-LANES", true),
+        (json!({ "identifier_len": 31 }), "D-NAMES", false),
+        (json!({ "identifier_len": 32 }), "D-NAMES", true),
+    ];
+    for (mut config, clause, runs) in cases {
+        config["store"] = json!(format!("{clause}_{runs}"));
+        let store = config["store"].as_str().expect("a store name").to_owned();
+        let report = certify_destination::<Vault>(config, &VaultProbe(vault(&store))).await;
+        let expected = if runs {
+            matches!(report.outcome(clause), Some(Outcome::Passed))
+        } else {
+            matches!(report.outcome(clause), Some(Outcome::Skipped(_)))
+        };
+        assert!(expected, "{clause} runs: {runs}: {report}");
+    }
+}
+
+#[tokio::test]
 async fn a_correct_destination_passes_every_clause() {
-    certify_vault("correct", None).await.assert_passed();
+    let report = certify_vault("correct", None).await;
+    report.assert_passed();
+    for id in ["D-NAMES", "D-LANES"] {
+        assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
+    }
 }
 
 #[tokio::test]
 async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
     let cases = [
         ("static_epoch", &["D-EPOCH"][..]),
+        ("fold_names", &["D-NAMES"][..]),
+        ("refuse_check", &["D-CHECK"][..]),
+        ("lose_lanes", &["D-LANES"][..]),
         ("miscount", &["D-COMMIT"][..]),
         ("republish", &["D-IDEMPOTENT"][..]),
         ("forget_state", &["D-STATE"][..]),
@@ -1119,6 +1245,8 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-SCHEMA",
             "D-ENCODING",
             "D-TABLES",
+            "D-NAMES",
+            "D-LANES",
             "D-FENCE"
         ],
         "{report}"
