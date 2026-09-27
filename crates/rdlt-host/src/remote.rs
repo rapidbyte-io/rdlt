@@ -3,6 +3,7 @@
 
 mod destination;
 mod read;
+mod severed;
 mod source;
 mod write;
 
@@ -140,7 +141,7 @@ impl Connection {
             let spent = lost.child_token();
             (lost, spent)
         };
-        let slot = Arc::new(Mutex::new(Some(io)));
+        let slot = Arc::new(Mutex::new(Some(severed::Severed::new(io, lost.clone()))));
         let reconnecting = spent.clone();
         let connector = tower::service_fn(move |_| {
             let io = slot.lock().map(|mut slot| slot.take()).ok().flatten();

@@ -13,6 +13,35 @@ use rdlt_connector_reference::MemoryDestination;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// How often [`Counted`]'s check has been called.
+pub(crate) static CHECKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Configuration of [`Counted`]: none.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct CountedConfig {}
+
+/// A source of no streams that counts its checks in [`CHECKS`].
+#[derive(Debug)]
+pub(crate) struct Counted;
+
+#[source(id = "test.counted")]
+impl SourceConnector for Counted {
+    type Config = CountedConfig;
+
+    async fn connect(_config: CountedConfig, _context: &ConnectContext) -> Result<Self> {
+        Ok(Self)
+    }
+
+    async fn check(&self) -> Result<()> {
+        CHECKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn streams(&self) -> Streams<Self> {
+        Streams::new()
+    }
+}
+
 /// Configuration of [`Ticks`].
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub(crate) struct TicksConfig {
