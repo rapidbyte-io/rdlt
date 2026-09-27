@@ -36,9 +36,10 @@ test *args:
     cargo nextest run --workspace --all-features {{ args }}
     cargo test --workspace --all-features --doc
 
-# Run the simulation suite; pass a seed to replay one run, or an empty seed and a count
-sim seed="" seeds="1000":
-    RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim
+# Run the simulation suite; pass a seed to replay one run, or an empty seed, a count and the first
+# seed of a shard
+sim seed="" seeds="1000" from="0":
+    RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim
 
 # Run the simulation on many threads and the real clock, where races the paused single thread
 # never meets can happen; its failures name their seed but do not replay exactly
