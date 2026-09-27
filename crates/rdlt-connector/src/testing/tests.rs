@@ -12,8 +12,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, certify_destination,
-    certify_source,
+    Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES,
+    certify_destination, certify_source,
 };
 use crate::capabilities::{Capabilities, SchemaChanges};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
@@ -97,7 +97,8 @@ impl SourceConnector for Pages {
     async fn connect(config: PagesConfig, _context: &ConnectContext) -> Result<Self> {
         config.hang_in("connect").await;
         if config.refuse_connect {
-            return Err(ConnectorError::config("refused"));
+            return Err(ConnectorError::config("refused")
+                .with_source(std::io::Error::other("the vault is sealed")));
         }
         Ok(Self {
             config,
@@ -195,6 +196,23 @@ async fn a_correct_source_passes_every_clause() {
     );
 }
 
+#[test]
+fn a_report_whose_every_clause_was_skipped_certified_nothing_and_did_not_pass() {
+    let skipped = |id| ClauseResult {
+        clause: Clause {
+            id,
+            statement: "a statement",
+        },
+        outcome: Outcome::Skipped("not served".to_owned()),
+    };
+    let report = Report {
+        connector: "test.skipped".to_owned(),
+        results: vec![skipped("S-CHECK"), skipped("S-PLAN")],
+    };
+    assert!(!report.passed(), "{report}");
+    assert!(std::panic::catch_unwind(|| report.assert_passed()).is_err());
+}
+
 #[tokio::test]
 async fn natural_checkpointing_skips_the_barrier_clause() {
     let report = certify_source::<Pages>(json!({ "natural": true })).await;
@@ -262,6 +280,13 @@ async fn a_source_that_cannot_connect_fails_every_clause() {
     assert!(report.results.iter().all(
         |result| matches!(&result.outcome, Outcome::Failed(reason) if reason.contains("connect"))
     ));
+    assert!(
+        report.results.iter().all(|result| matches!(
+            &result.outcome,
+            Outcome::Failed(reason) if reason.contains("the vault is sealed")
+        )),
+        "each failure says what caused it: {report}"
+    );
     let rendered = report.to_string();
     assert!(rendered.contains("FAIL S-CHECK"), "{rendered}");
     assert!(std::panic::catch_unwind(|| report.assert_passed()).is_err());
@@ -445,7 +470,8 @@ impl DestinationConnector for Vault {
             std::future::pending::<()>().await;
         }
         if config.refuse_connect {
-            return Err(ConnectorError::config("refused"));
+            return Err(ConnectorError::config("refused")
+                .with_source(std::io::Error::other("the vault is sealed")));
         }
         let stores = VaultStores {
             shared: vault(&config.store),

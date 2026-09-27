@@ -85,13 +85,17 @@ pub(super) async fn limited(target: &Target, role: Role, config: &str) -> Found 
     let checked = async {
         let (_, answer) = handshaken(target, role, config).await?;
         let limit = answer.limits.map_or(0, |limits| limits.config_bytes);
-        let Some(beyond) = usize::try_from(limit)
-            .ok()
-            .filter(|limit| *limit > 0)
+        // A host never sends a configuration beyond its own limit, so a connector's beyond it is
+        // never met, and exceeding it would only cost this process the memory.
+        let host = target.config_bytes();
+        let Some(beyond) = Some(limit)
+            .filter(|limit| (1..=host).contains(limit))
+            .and_then(|limit| usize::try_from(limit).ok())
             .and_then(|limit| limit.checked_add(1))
         else {
             return Ok(Some(format!(
-                "the connector declares no configuration limit this host can exceed ({limit})"
+                "the connector declares no configuration limit this host can exceed ({limit} \
+                 bytes; this host sends at most {host})"
             )));
         };
         let padded = format!("{{\"padding\":\"{}\"}}", "x".repeat(beyond));

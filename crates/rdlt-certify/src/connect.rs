@@ -30,7 +30,7 @@ impl Unmet {
     pub(crate) fn report(&self, target: &Target, families: &[&[Clause]]) -> Report {
         let outcome = match self {
             Self::Unserved(error) => Outcome::Skipped(error.to_string()),
-            Self::Failed(error) => Outcome::Failed(format!("connect failed: {error}")),
+            Self::Failed(error) => Outcome::Failed(format!("connect failed: {}", described(error))),
         };
         Report {
             connector: target.describe(),
@@ -100,4 +100,15 @@ impl DestinationFactory for Factory<'_> {
             Ok(Box::new(RemoteDestination::new(connection)?) as Box<dyn Destination>)
         })
     }
+}
+
+/// `error`, and each error that caused it, in turn.
+fn described(error: &dyn std::error::Error) -> String {
+    let mut described = error.to_string();
+    let mut cause = error.source();
+    while let Some(error) = cause {
+        described = format!("{described}: {error}");
+        cause = error.source();
+    }
+    described
 }

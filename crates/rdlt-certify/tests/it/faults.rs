@@ -4,7 +4,7 @@ mod fake;
 
 use rdlt_certify::{Outcome, PROTOCOL_CLAUSES, Target, certify_source};
 
-use fake::{BROKEN, served};
+use fake::{BROKEN, Fault, served};
 
 #[tokio::test]
 async fn each_protocol_clause_fails_a_connector_that_breaks_it_and_only_that() {
@@ -27,4 +27,14 @@ async fn each_protocol_clause_fails_a_connector_that_breaks_it_and_only_that() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn a_configuration_limit_beyond_any_this_host_sends_is_not_exceeded() {
+    let target = Target::connected(|| Box::pin(async { served(Fault::Vast) }));
+    let report = certify_source(&target, serde_json::json!({})).await;
+    assert!(
+        matches!(report.outcome("P-LIMITS"), Some(Outcome::Skipped(_))),
+        "{report}"
+    );
 }

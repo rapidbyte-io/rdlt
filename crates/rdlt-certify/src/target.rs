@@ -2,12 +2,17 @@
 //! listening at an endpoint.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rdlt_connector::serve::{Served, serve_connection};
+use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, Role};
-use rdlt_host::remote::{Client, client};
-use rdlt_host::{Connection, ConnectorRef, Local, Options, Remote, Stream};
+use rdlt_host::remote::{CONNECTOR_LOST, Client, client};
+use rdlt_host::{Connection, ConnectorRef, Local, Options, Remote, Stream, Witness};
 use rdlt_wire::Limits;
+
+/// How long a failed connection waits for a spawned connector's standard error to close.
+const LAST_WORDS: Duration = Duration::from_secs(1);
 
 /// A connector to certify, and how to reach it.
 #[derive(Debug)]
@@ -101,6 +106,11 @@ impl Target {
         self
     }
 
+    /// The largest configuration this host sends, in bytes.
+    pub(crate) fn config_bytes(&self) -> u64 {
+        self.options.limits.config_bytes
+    }
+
     /// What the target is, for a report that could not learn the connector's id.
     pub fn describe(&self) -> String {
         match &self.reach {
@@ -118,6 +128,11 @@ impl Target {
 
     /// A fresh raw connection to the connector.
     pub(crate) async fn wire(&self) -> Result<Box<dyn Stream>, ConnectorError> {
+        self.witnessed().await.map(|(wire, _)| wire)
+    }
+
+    /// A fresh raw connection to the connector, and a witness to how it ends when spawned.
+    async fn witnessed(&self) -> Result<(Box<dyn Stream>, Option<Witness>), ConnectorError> {
         let unreachable = |error: &dyn std::fmt::Display| {
             ConnectorError::new(
                 ConnectorErrorKind::Transient,
@@ -125,15 +140,21 @@ impl Target {
             )
         };
         match &self.reach {
-            Reach::Connected(connect) => connect().await.map_err(|error| unreachable(&error)),
+            Reach::Connected(connect) => connect()
+                .await
+                .map(|wire| (wire, None))
+                .map_err(|error| unreachable(&error)),
             Reach::Spawned { local, reference } => local
                 .wire(reference)
-                .map(|wire| Box::new(wire) as Box<dyn Stream>)
+                .map(|wire| {
+                    let witness = wire.witness();
+                    (Box::new(wire) as Box<dyn Stream>, witness)
+                })
                 .map_err(|error| unreachable(&error)),
             Reach::Listening { remote, reference } => remote
                 .wire(reference)
                 .await
-                .map(|wire| Box::new(wire) as Box<dyn Stream>)
+                .map(|wire| (Box::new(wire) as Box<dyn Stream>, None))
                 .map_err(|error| unreachable(&error)),
         }
     }
@@ -144,7 +165,17 @@ impl Target {
         role: Role,
         config: &serde_json::Value,
     ) -> Result<Arc<Connection>, ConnectorError> {
-        Connection::connect(self.wire().await?, role, config, self.options).await
+        let (wire, witness) = self.witnessed().await?;
+        let connected = Connection::connect(wire, role, config, self.options).await;
+        match (connected, witness) {
+            // A spawned connector whose transport failed most likely ended: say what it said.
+            (Err(error), Some(witness))
+                if matches!(error.code(), Some(CONNECTOR_LOST | TRANSPORT)) =>
+            {
+                Err(error.with_source(witness.last_words(LAST_WORDS).await))
+            }
+            (connected, _) => connected,
+        }
     }
 
     /// A fresh client of the protocol, with no handshake yet.

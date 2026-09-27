@@ -8,8 +8,9 @@ use rdlt_certify::{
     certify_destination, certify_source,
 };
 use rdlt_connector::serve::Served;
-use rdlt_connector::source_factory;
+use rdlt_connector::{ConnectorId, source_factory};
 use rdlt_connector_reference::MemorySource;
+use rdlt_host::{ConnectorRef, Local};
 use rdlt_testkit::tls::Pki;
 use serde_json::json;
 
@@ -76,7 +77,7 @@ async fn a_role_the_connector_does_not_serve_skips_every_clause() {
             .all(|result| matches!(result.outcome, Outcome::Skipped(_))),
         "{report}"
     );
-    assert!(report.passed(), "{report}");
+    assert!(!report.passed(), "nothing was certified: {report}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -90,4 +91,26 @@ async fn a_connector_no_trusted_authority_vouches_for_fails_every_clause() {
             .all(|result| failed(Some(&result.outcome))),
         "{report}"
     );
+}
+
+#[tokio::test]
+async fn a_spawned_connector_that_ends_at_once_is_heard_in_every_failure() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let script = directory.path().join("connector");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho 'error: DATABASE_URL is not set' >&2\nexit 3\n",
+    )
+    .expect("the script writes");
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the script is executable");
+    let id = ConnectorId::parse("test.ends").expect("a valid id");
+    let target = Target::spawned(Local::new(), ConnectorRef::new(id).path(&script));
+    let report = certify_source(&target, json!({})).await;
+    for id in SOURCE_CLAUSES.iter().map(|clause| clause.id) {
+        let Some(Outcome::Failed(reason)) = report.outcome(id) else {
+            panic!("{id} did not fail: {report}");
+        };
+        assert!(reason.contains("DATABASE_URL is not set"), "{id}: {reason}");
+    }
 }

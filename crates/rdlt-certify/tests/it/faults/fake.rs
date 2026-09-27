@@ -39,6 +39,8 @@ pub(crate) enum Fault {
     Lenient,
     /// Its reads send every frame, whatever the credit.
     Greedy,
+    /// It declares a configuration limit beyond any this host sends, which breaks no clause.
+    Vast,
 }
 
 /// The clause each fault breaks.
@@ -126,8 +128,13 @@ impl Connector for Fake {
         if request.role != v1::Role::Source as i32 && self.keeps(Fault::EveryRole) {
             return Err(refused(self.kind(Fault::MistypedRole), "role"));
         }
+        let config_bytes = if self.keeps(Fault::Vast) {
+            CONFIG_BYTES as u64
+        } else {
+            u64::MAX - 1
+        };
         let limits = v1::Limits {
-            config_bytes: CONFIG_BYTES as u64,
+            config_bytes,
             ..rdlt_wire::Limits::default().into()
         };
         Ok(Response::new(v1::HandshakeResponse {
