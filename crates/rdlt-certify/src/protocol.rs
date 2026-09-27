@@ -4,7 +4,9 @@
 mod credit;
 mod handshake;
 mod heartbeat;
+mod limits;
 mod malformed;
+mod writing;
 
 use std::future::Future;
 use std::time::Duration;
@@ -13,7 +15,7 @@ use rdlt_connector::testing::{Clause, ClauseResult, Outcome};
 use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorError, Role};
 use rdlt_host::remote::Client;
-use rdlt_wire::tonic::Status;
+use rdlt_wire::tonic::{Response, Status, Streaming};
 use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 
 use crate::target::Target;
@@ -37,7 +39,8 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "P-LIMITS",
-        statement: "a configuration beyond the connector's limit is refused with `limit_exceeded`",
+        statement: "a configuration, a source's cursor or a destination's batch frame beyond the \
+                    connector's limit is refused with `limit_exceeded`",
     },
     Clause {
         id: "P-HEARTBEAT",
@@ -45,8 +48,8 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "P-MALFORMED",
-        statement: "a call the connector cannot read is refused with a typed error, and the \
-                    connection serves on",
+        statement: "a call the connector cannot read, or a frame it cannot decode, is refused \
+                    with a typed error, and the connection serves on",
     },
     Clause {
         id: "P-CREDIT",
@@ -120,7 +123,7 @@ pub(crate) async fn check(
                 "P-HANDSHAKE" => handshake::answered(target, role, &config).await,
                 "P-ORDER" => handshake::ordered(target, role, &config).await,
                 "P-ROLE" => handshake::roles(target, role, &config).await,
-                "P-LIMITS" => handshake::limited(target, role, &config).await,
+                "P-LIMITS" => limits::kept(target, role, &config).await,
                 "P-HEARTBEAT" => heartbeat::echoed(target, role, &config).await,
                 "P-MALFORMED" => malformed::refused(target, role, &config).await,
                 _ => credit::respected(target, role, &config).await,
@@ -206,6 +209,13 @@ fn refused_with<T>(
             }
         }
     }
+}
+
+/// How a streaming call ended, when it was refused: before its answer's headers, or as the first
+/// message of its answer.
+async fn first_refusal<T>(result: Result<Response<Streaming<T>>, Status>) -> Result<(), Status> {
+    let mut answer = result?.into_inner();
+    answer.message().await.map(drop)
 }
 
 /// Whether `error` is refused as unsupported; `what` names the call.

@@ -1,4 +1,7 @@
-//! A source that keeps the protocol but for one fault, served over a socket in this process.
+//! A source that keeps the protocol but for one fault, served over a socket in this process; for
+//! the faults of a destination's frames, a destination too.
+
+mod writes;
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -41,8 +44,21 @@ pub(crate) enum Fault {
     Lenient,
     /// Its reads send every frame, whatever the credit.
     Greedy,
-    /// It declares a configuration limit beyond any this host sends, which breaks no clause.
+    /// It declares configuration and cursor limits beyond any this host sends, which breaks no
+    /// clause.
     Vast,
+    /// It reads from a cursor beyond its limit.
+    LenientCursor,
+    /// It answers each heartbeat, and keeps its answers' stream open after the pings end, which
+    /// breaks no clause.
+    Lingering,
+    /// It answers no heartbeat.
+    Mute,
+    /// As a destination, it takes a batch it cannot decode, or one beyond its frame limit.
+    LenientFrames,
+    /// As a destination, it refuses a batch it cannot decode, or one beyond its frame limit,
+    /// with a code of its own.
+    MiscodedFrames,
     /// It reads back what it published, as a destination, but each read-back fails.
     ReadBackFails,
     /// It reads back what it published, without end.
@@ -52,7 +68,7 @@ pub(crate) enum Fault {
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 10] = [
+pub(crate) const BROKEN: [(Fault, &str); 11] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -63,10 +79,17 @@ pub(crate) const BROKEN: [(Fault, &str); 10] = [
     (Fault::EchoAhead, "P-HEARTBEAT"),
     (Fault::Lenient, "P-MALFORMED"),
     (Fault::Greedy, "P-CREDIT"),
+    (Fault::LenientCursor, "P-LIMITS"),
 ];
 
 /// Its configuration limit, in bytes.
 const CONFIG_BYTES: usize = 1024;
+
+/// Its cursor limit, in bytes.
+const CURSOR_BYTES: usize = 1024;
+
+/// Its frame limit, in bytes.
+const FRAME_BYTES: u64 = 64 * 1024;
 
 /// A connection's fake, keeping the protocol but for `fault`.
 pub(crate) struct Fake {
@@ -112,6 +135,11 @@ impl Fake {
         )
     }
 
+    /// Whether it serves the destination role too.
+    fn writes(&self) -> bool {
+        self.reads_back() || matches!(self.fault, Fault::LenientFrames | Fault::MiscodedFrames)
+    }
+
     /// The kind of a refusal `mistyped` gets wrong.
     fn kind(&self, mistyped: Fault) -> ConnectorErrorKind {
         if self.keeps(mistyped) {
@@ -141,19 +169,19 @@ impl Connector for Fake {
         if request.config_json.len() > CONFIG_BYTES && self.keeps(Fault::Unlimited) {
             return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
         }
-        if request.role != v1::Role::Source as i32
-            && self.keeps(Fault::EveryRole)
-            && !self.reads_back()
+        if request.role != v1::Role::Source as i32 && self.keeps(Fault::EveryRole) && !self.writes()
         {
             return Err(refused(self.kind(Fault::MistypedRole), "role"));
         }
-        let config_bytes = if self.keeps(Fault::Vast) {
-            CONFIG_BYTES as u64
+        let (config_bytes, cursor_bytes) = if self.keeps(Fault::Vast) {
+            (CONFIG_BYTES as u64, CURSOR_BYTES as u64)
         } else {
-            u64::MAX - 1
+            (u64::MAX - 1, u64::MAX - 1)
         };
         let limits = v1::Limits {
             config_bytes,
+            cursor_bytes,
+            frame_bytes: FRAME_BYTES,
             ..rdlt_wire::Limits::default().into()
         };
         Ok(Response::new(v1::HandshakeResponse {
@@ -224,6 +252,12 @@ impl Connector for Fake {
             .and_then(|control| control.control);
         if !matches!(first, Some(Control::Start(_))) && self.keeps(Fault::Lenient) {
             return Err(refused(ConnectorErrorKind::Internal, "invalid_message"));
+        }
+        if let Some(Control::Start(start)) = &first {
+            let cursor = start.cursor.as_ref().map_or(0, |cursor| cursor.bytes.len());
+            if cursor > CURSOR_BYTES && self.keeps(Fault::LenientCursor) {
+                return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
+            }
         }
         let greedy = !self.keeps(Fault::Greedy);
         let (frames, answer) = mpsc::channel(64);
@@ -308,23 +342,30 @@ impl Connector for Fake {
         &self,
         _: Request<v1::OpenRequest>,
     ) -> Result<Response<v1::OpenResponse>, Status> {
-        Err(Status::unimplemented("open"))
+        Ok(Response::new(v1::OpenResponse {
+            session: 1,
+            epoch: 1,
+            state: Vec::new(),
+        }))
     }
 
     async fn apply_schema(
         &self,
         _: Request<v1::ApplySchemaRequest>,
     ) -> Result<Response<v1::ApplySchemaResponse>, Status> {
-        Err(Status::unimplemented("apply_schema"))
+        Ok(Response::new(v1::ApplySchemaResponse {}))
     }
 
     type WriteStream = Answer<v1::WriteAck>;
 
     async fn write(
         &self,
-        _: Request<Streaming<v1::WriteFrame>>,
+        request: Request<Streaming<v1::WriteFrame>>,
     ) -> Result<Response<Self::WriteStream>, Status> {
-        Err(Status::unimplemented("write"))
+        Ok(Response::new(writes::write(
+            self.fault,
+            request.into_inner(),
+        )))
     }
 
     async fn commit(&self, _: Request<v1::CommitRequest>) -> Result<Response<v1::Receipt>, Status> {
@@ -350,6 +391,11 @@ impl Connector for Fake {
                 seq: ping.seq + ahead,
             })
         });
-        Ok(Response::new(Box::pin(pongs)))
+        let answers: Answer<v1::Pong> = match self.fault {
+            Fault::Lingering => Box::pin(pongs.chain(tokio_stream::pending())),
+            Fault::Mute => Box::pin(tokio_stream::pending()),
+            _ => Box::pin(pongs),
+        };
+        Ok(Response::new(answers))
     }
 }
