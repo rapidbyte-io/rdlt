@@ -23,10 +23,17 @@ async fn a_connector_that_cannot_be_reached_fails_every_clause_and_is_named_as_g
         key: host.key,
     };
     let endpoint = "grpcs://127.0.0.1:1";
+    // A binary that exits at once, serving nothing, wherever the platform keeps its own.
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let exits = directory.path().join("exits");
+    std::fs::write(&exits, "#!/bin/sh\nexit 0\n").expect("the script writes");
+    std::fs::set_permissions(&exits, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the script is executable");
+    let named = exits.display().to_string();
     let targets = [
         (
-            Target::spawned(Local::new(), reference().path("/bin/true")),
-            "/bin/true",
+            Target::spawned(Local::new(), reference().path(&exits)),
+            named.as_str(),
             "Spawned",
         ),
         (
