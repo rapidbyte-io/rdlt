@@ -23,7 +23,8 @@ pub(super) async fn run(
     use v1::read_control::Control;
     let limits = connection.options.limits;
     // A barrier raised before the read starts goes with its start, so a read too short to see a
-    // later control answers it, as in the engine's process.
+    // later control answers it, as in the engine's process; and as a control too, for a connector
+    // that knows no barrier in the start. A connector that knows both answers it once.
     let pending = sink.pending_barrier().unwrap_or(0);
     let (controls, mut frames) = start(connection, &request, pending).await?;
     let control = |control| v1::ReadControl {
@@ -34,7 +35,7 @@ pub(super) async fn run(
         limits,
         epoch: None,
     };
-    let (mut forwarded, mut stopping) = (pending, false);
+    let (mut forwarded, mut stopping) = (0, false);
     loop {
         tokio::select! {
             biased;

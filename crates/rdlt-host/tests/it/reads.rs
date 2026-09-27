@@ -11,7 +11,7 @@ use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 
 use crate::support::connectors::{COMMITTED, Ticks};
-use crate::support::{engine, memory_destination, served};
+use crate::support::{Fake, Fault, engine, memory_destination, serve_fake, served};
 
 /// The ticks source, served, with `config`.
 async fn ticks(config: serde_json::Value) -> RemoteSource {
@@ -176,5 +176,38 @@ async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
             answered.extend(answers);
         }
     }
-    assert!(answered.contains(&1), "{answered:?}");
+    assert_eq!(answered, [1], "answered once");
+}
+
+#[tokio::test]
+async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_barrier_in_its_start()
+ {
+    let io = serve_fake(Fake(Fault::Unstarted));
+    let connection =
+        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
+            .await
+            .expect("the fake handshakes");
+    let source = RemoteSource::new(connection);
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+    // Raised before the read starts: a connector that reads no barrier in the start still gets it.
+    feed.request_checkpoint(1);
+    let request = ReadRequest {
+        stream: StreamName::new("events").expect("a valid stream name"),
+        partition: Partition::single(),
+        cursor: None,
+    };
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        source.read(request, sink),
+    )
+    .await
+    .expect("the connector answers the barrier and ends the read");
+    read.expect("the read succeeds");
+    let mut answered = Vec::new();
+    while let Some(event) = feed.recv().await {
+        if let SourceEvent::Checkpoint { answers, .. } = event {
+            answered.extend(answers);
+        }
+    }
+    assert_eq!(answered, [1]);
 }
