@@ -46,6 +46,9 @@ message ReadStart {
   // The contract's read carries no mode: the stream's committed state and the cursor say how.
   reserved 4;
   reserved "mode";
+  // The newest barrier pending when the read starts, which the source answers as one requested
+  // during the read; 0 for none.
+  uint64 barrier = 5;
 }
 
 // Asks for a checkpoint answering a barrier.
