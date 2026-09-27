@@ -911,6 +911,10 @@ pub struct ReadStart {
     /// Where to resume; absent reads from the start.
     #[prost(message, optional, tag = "3")]
     pub cursor: ::core::option::Option<Cursor>,
+    /// The newest barrier pending when the read starts, which the source answers as one requested
+    /// during the read; 0 for none.
+    #[prost(uint64, tag = "5")]
+    pub barrier: u64,
 }
 /// Asks for a checkpoint answering a barrier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

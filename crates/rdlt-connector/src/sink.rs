@@ -203,7 +203,7 @@ impl PartitionSink {
     }
 
     /// The newest barrier no checkpoint has answered yet.
-    pub(crate) fn pending_barrier(&self) -> Option<u64> {
+    pub fn pending_barrier(&self) -> Option<u64> {
         let requested = *self.barrier.borrow();
         (requested > self.answered).then_some(requested)
     }

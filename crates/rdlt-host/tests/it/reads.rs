@@ -6,7 +6,7 @@ use rdlt_connector::{
     ConnectorErrorKind, LogLevel, Partition, PartitionId, PipelineId, ReadRequest, Role,
     Source as _, SourceEvent, StreamName, partition_channel, source_factory,
 };
-use rdlt_connector_reference::published;
+use rdlt_connector_reference::{GeneratorSource, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 
@@ -142,4 +142,39 @@ async fn committed_cursors_reach_the_source() {
         .await
         .unwrap();
     assert_eq!(COMMITTED.lock().unwrap().as_slice(), [3]);
+}
+
+#[tokio::test]
+async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
+    let io = served(Served::new().with_source(source_factory::<GeneratorSource>()));
+    let config = serde_json::json!({
+        "seed": 7,
+        "streams": [{ "name": "events", "rows": 20, "partitions": 1, "batch_rows": 5 }],
+    });
+    let connection = Connection::connect(io, Role::Source, &config, Options::default())
+        .await
+        .expect("the source handshakes");
+    let source = RemoteSource::new(connection);
+    let stream = StreamName::new("events").expect("a valid stream name");
+    let partition = source
+        .plan(&stream, &rdlt_connector::StreamState::default())
+        .await
+        .expect("the source plans")
+        .remove(0);
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+    // Raised before the read starts, as the engine raises one for a partition yet to start.
+    feed.request_checkpoint(1);
+    let request = ReadRequest {
+        stream,
+        partition,
+        cursor: None,
+    };
+    source.read(request, sink).await.expect("the read succeeds");
+    let mut answered = Vec::new();
+    while let Some(event) = feed.recv().await {
+        if let SourceEvent::Checkpoint { answers, .. } = event {
+            answered.extend(answers);
+        }
+    }
+    assert!(answered.contains(&1), "{answered:?}");
 }

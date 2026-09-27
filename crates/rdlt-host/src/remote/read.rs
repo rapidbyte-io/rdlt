@@ -22,7 +22,10 @@ pub(super) async fn run(
 ) -> rdlt_connector::Result<()> {
     use v1::read_control::Control;
     let limits = connection.options.limits;
-    let (controls, mut frames) = start(connection, &request).await?;
+    // A barrier raised before the read starts goes with its start, so a read too short to see a
+    // later control answers it, as in the engine's process.
+    let pending = sink.pending_barrier().unwrap_or(0);
+    let (controls, mut frames) = start(connection, &request, pending).await?;
     let control = |control| v1::ReadControl {
         control: Some(control),
     };
@@ -31,7 +34,7 @@ pub(super) async fn run(
         limits,
         epoch: None,
     };
-    let (mut forwarded, mut stopping) = (0, false);
+    let (mut forwarded, mut stopping) = (pending, false);
     loop {
         tokio::select! {
             biased;
@@ -79,6 +82,7 @@ pub(super) async fn run(
 async fn start(
     connection: &Connection,
     request: &ReadRequest,
+    barrier: u64,
 ) -> rdlt_connector::Result<(
     mpsc::Sender<v1::ReadControl>,
     tonic::Streaming<v1::ReadFrame>,
@@ -90,6 +94,7 @@ async fn start(
         stream: Some(v1::StreamName::from(&request.stream)),
         partition: request.partition.id().as_str().to_owned(),
         cursor: request.cursor.as_ref().map(v1::Cursor::from),
+        barrier,
     };
     let control = |control| v1::ReadControl {
         control: Some(control),

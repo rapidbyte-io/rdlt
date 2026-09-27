@@ -36,9 +36,10 @@ pub(super) async fn serve(
     else {
         return Err(invalid(&Invalid::Missing("read start")));
     };
+    let barrier = start.barrier;
     let request = request(start).map_err(|error| invalid(&error))?;
     let (frames, answer) = mpsc::channel(EVENTS.get());
-    tokio::spawn(pump(source, request, controls, frames, host));
+    tokio::spawn(pump(source, request, barrier, controls, frames, host));
     Ok(Box::pin(ReceiverStream::new(answer)))
 }
 
@@ -154,11 +155,16 @@ fn log_level(level: LogLevel) -> v1::LogLevel {
 async fn pump(
     source: Arc<dyn Source>,
     request: ReadRequest,
+    barrier: u64,
     mut controls: Streaming<v1::ReadControl>,
     frames: mpsc::Sender<Result<v1::ReadFrame, Status>>,
     host: Limits,
 ) {
     let (sink, mut feed) = partition_channel(EVENTS);
+    // A barrier pending when the read started is the source's to answer from its first push.
+    if let Some(barrier) = std::num::NonZeroU64::new(barrier) {
+        feed.request_checkpoint(barrier.get());
+    }
     let mut reading = tokio::spawn(async move { source.read(request, sink).await });
     let mut outbox = Outbox {
         frames: VecDeque::new(),
