@@ -1,7 +1,7 @@
 use rdlt_sim::{Seed, check_exactly_once, seeds};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 4] = [
+const FOUND: [u64; 6] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -12,6 +12,12 @@ const FOUND: [u64; 4] = [
     // A batch of a normalized merge stream whose every row a new array dropped: its key's type
     // was never resolved, so it met no refusal.
     163_723,
+    // Over the network: a dropped connection's HTTP/2 task outlived it until its pings timed out
+    // (rdlt-host's liveness tests guard it).
+    157_941,
+    // Over the network: a commit held until the network healed landed after the runs were judged
+    // (the network's tests guard it).
+    386_903,
 ];
 
 #[test]
