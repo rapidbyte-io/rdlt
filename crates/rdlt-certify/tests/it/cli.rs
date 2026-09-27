@@ -106,6 +106,22 @@ async fn a_role_the_connector_does_not_serve_exits_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_connector_serving_no_role_is_reported_as_certifying_nothing() {
+    let binary = example("serve_nothing");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let output = certify(&[binary, "--env", "LLVM_PROFILE_FILE", "--output", "json"]).await;
+    assert_eq!(code(&output), Some(1));
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the report is JSON");
+    assert_eq!(report["passed"], false, "{report}");
+    assert_eq!(
+        report["reports"].as_array().map(Vec::len),
+        Some(2),
+        "{report}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_connector_serving_one_role_is_certified_in_it_alone() {
     let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");

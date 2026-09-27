@@ -3,8 +3,9 @@
 use std::path::PathBuf;
 
 use rdlt_certify::{Outcome, Probe, Target, Unprobed, certify_destination, certify_source};
-use rdlt_connector::{BoxFuture, ConnectorId, TableRef};
-use rdlt_connector_reference::sqlite;
+use rdlt_connector::serve::Served;
+use rdlt_connector::{BoxFuture, ConnectorId, TableRef, source_factory};
+use rdlt_connector_reference::{MemorySource, sqlite};
 use rdlt_host::{ConnectorRef, Local};
 use serde_json::json;
 
@@ -81,4 +82,14 @@ async fn a_destination_nothing_can_read_skips_the_clauses_that_read_what_it_publ
         matches!(report.outcome("D-COMMIT"), Some(Outcome::Skipped(_))),
         "{report}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spawned_connector_refusing_its_configuration_fails_as_it_does_in_process() {
+    let refused = serde_json::json!({ "streams": 5 });
+    let served = Target::served(Served::new().with_source(source_factory::<MemorySource>()));
+    let in_process = certify_source(&served, refused.clone()).await;
+    let spawned = certify_source(&reference(), refused).await;
+    // A connector that refused, rather than ended, is not said to have ended.
+    assert_eq!(spawned.outcome("S-CHECK"), in_process.outcome("S-CHECK"));
 }
