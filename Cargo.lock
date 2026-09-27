@@ -1927,6 +1927,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-certify"
+version = "0.0.0"
+dependencies = [
+ "arrow-array",
+ "http",
+ "hyper",
+ "hyper-util",
+ "rdlt-connector",
+ "rdlt-connector-reference",
+ "rdlt-host",
+ "rdlt-testkit",
+ "rdlt-wire",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
+]
+
+[[package]]
 name = "rdlt-connector"
 version = "0.0.0"
 dependencies = [

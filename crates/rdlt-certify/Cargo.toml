@@ -1,0 +1,32 @@
+[package]
+name = "rdlt-certify"
+description = "Conformance clauses for rdlt connectors over the wire protocol: a library, and the rdlt-certify binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdlt-connector = { workspace = true, features = ["serve", "testing", "wire"] }
+rdlt-host.workspace = true
+rdlt-wire.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-stream.workspace = true
+
+[dev-dependencies]
+arrow-array.workspace = true
+http.workspace = true
+hyper = { workspace = true, features = ["http2", "server"] }
+hyper-util = { workspace = true, features = ["service", "tokio"] }
+rdlt-connector-reference.workspace = true
+rdlt-testkit.workspace = true
+rdlt-wire = { workspace = true, features = ["serve"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tonic = { workspace = true, features = ["server"] }
+tower.workspace = true
+
+[lints]
+workspace = true
