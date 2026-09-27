@@ -12,7 +12,7 @@ pub mod remote;
 mod supervise;
 
 pub use local::{LastWords, Local};
-pub use network::Remote;
+pub use network::{Network, Remote, Stream, Tcp};
 pub use provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
 pub use rdlt_wire::tls::Identity;
 pub use registry::Registry;

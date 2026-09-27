@@ -1,6 +1,7 @@
 //! Remote placement: connectors listening on the network, reached over mutual TLS at a `grpcs`
 //! endpoint, and redialed when they are lost.
 
+mod rewound;
 #[cfg(test)]
 mod tests;
 
@@ -13,13 +14,54 @@ use rdlt_connector::{BoxFuture, Destination, Role, Source};
 use rdlt_wire::tls::Identity;
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
+pub(crate) use rewound::Rewound;
+
 use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
 use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
+
+/// A byte stream to a connector, over whatever network reached it.
+pub trait Stream: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
+
+impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> Stream for T {}
+
+/// How the host reaches a connector's endpoint: the operating system's TCP, or another network.
+pub trait Network: fmt::Debug + Send + Sync + 'static {
+    /// A stream to `port` on `host`, a host name or IP address.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error connecting failed with.
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> BoxFuture<'a, std::io::Result<Box<dyn Stream>>>;
+}
+
+/// The operating system's TCP.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Tcp;
+
+impl Network for Tcp {
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> BoxFuture<'a, std::io::Result<Box<dyn Stream>>> {
+        Box::pin(async move {
+            let stream = TcpStream::connect((host, port)).await?;
+            // Frames are small and answered at once: batching them only adds latency.
+            stream.set_nodelay(true)?;
+            Ok(Box::new(stream) as Box<dyn Stream>)
+        })
+    }
+}
 
 /// Places connectors a reference gives an endpoint for, over mutual TLS: the host presents
 /// `identity`, and verifies each connector's certificate against the CA bundle `ca` and the
@@ -27,6 +69,7 @@ use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, 
 pub struct Remote {
     identity: Identity,
     ca: PathBuf,
+    network: Arc<dyn Network>,
     options: Options,
     fallback: Option<Box<dyn Provider>>,
 }
@@ -37,6 +80,7 @@ impl fmt::Debug for Remote {
             .debug_struct("Remote")
             .field("identity", &self.identity)
             .field("ca", &self.ca)
+            .field("network", &self.network)
             .field("options", &self.options)
             .field("fallback", &self.fallback.is_some())
             .finish()
@@ -50,9 +94,17 @@ impl Remote {
         Self {
             identity,
             ca: ca.into(),
+            network: Arc::new(Tcp),
             options: Options::default(),
             fallback: None,
         }
+    }
+
+    /// Reaches endpoints over `network`, not the operating system's TCP.
+    #[must_use]
+    pub fn network(mut self, network: impl Network) -> Self {
+        self.network = Arc::new(network);
+        self
     }
 
     /// Runs each connection with `options`.
@@ -92,6 +144,7 @@ impl Remote {
             .map_err(|error| tls(Box::new(error)))?;
         let dial = Dial {
             endpoint: address,
+            network: Arc::clone(&self.network),
             tls: Arc::new(config_tls),
         };
         let supervisor = Supervisor::start(Start::Dial(dial), role, config.clone(), self.options)
@@ -235,15 +288,16 @@ impl Endpoint {
     }
 }
 
-/// How to reach a connector: its endpoint, and the TLS to speak there.
+/// How to reach a connector: its endpoint, the network it is on, and the TLS to speak there.
 pub(crate) struct Dial {
     pub(crate) endpoint: Endpoint,
+    pub(crate) network: Arc<dyn Network>,
     pub(crate) tls: Arc<ClientConfig>,
 }
 
 /// Connects to `dial`'s endpoint, completes the TLS handshake and waits for the connector to
 /// accept it, all within `deadline`.
-pub(crate) async fn dial(dial: &Dial, deadline: Duration) -> Result<TlsStream<TcpStream>, Spawned> {
+pub(crate) async fn dial(dial: &Dial, deadline: Duration) -> Result<Dialed, Spawned> {
     let timed_out = || {
         let Endpoint { host, port } = &dial.endpoint;
         Spawned::Unreachable(std::io::Error::new(
@@ -251,72 +305,58 @@ pub(crate) async fn dial(dial: &Dial, deadline: Duration) -> Result<TlsStream<Tc
             format!("{host}:{port} did not answer within {deadline:?}"),
         ))
     };
-    let dialed = async {
-        let mut stream = connect(dial).await?;
-        accepted(&mut stream).await?;
-        Ok(stream)
-    };
+    let dialed = async { accepted(connect(dial).await?).await };
     tokio::time::timeout(deadline, dialed)
         .await
         .map_err(|_| timed_out())?
 }
+
+/// A connection to a connector that accepted the host's certificate.
+pub(crate) type Dialed = Rewound<TlsStream<Box<dyn Stream>>>;
 
 /// Waits until the connector has accepted the host's certificate.
 ///
 /// In TLS 1.3 the host's handshake completes before the connector has checked the host's
 /// certificate: a refusal arrives as an alert afterwards, and the host's first write would only
 /// find the connection closed. An HTTP/2 server speaks first, so the connector's first bytes, or
-/// its alert, are its verdict; bytes read here stay buffered for the protocol.
-async fn accepted(stream: &mut TlsStream<TcpStream>) -> Result<(), Spawned> {
-    loop {
-        let (tcp, tls) = stream.get_mut();
-        let state = tls.process_new_packets().map_err(refused)?;
-        if state.plaintext_bytes_to_read() > 0 {
-            return Ok(());
+/// its alert, are its verdict; the bytes are read again by the protocol.
+async fn accepted(mut stream: TlsStream<Box<dyn Stream>>) -> Result<Dialed, Spawned> {
+    let mut first = vec![0; FIRST_BYTES];
+    match stream.read(&mut first).await {
+        // Closed with no alert: no certificate was refused, and the connector may listen again.
+        Ok(0) => Err(Spawned::Unreachable(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the connector closed the connection after its handshake",
+        ))),
+        Ok(read) => {
+            first.truncate(read);
+            Ok(Rewound::new(first, stream))
         }
-        tcp.readable().await.map_err(Spawned::Unreachable)?;
-        match tls.read_tls(&mut Ready(tcp)) {
-            // Closed with no alert: no certificate was refused, and the connector may listen
-            // again.
-            Ok(0) => {
-                let closed = std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "the connector closed the connection after its handshake",
-                );
-                return Err(Spawned::Unreachable(closed));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(Spawned::Unreachable(error)),
+        Err(error)
+            if error
+                .get_ref()
+                .is_some_and(<dyn std::error::Error + Send + Sync>::is::<rustls::Error>) =>
+        {
+            Err(Spawned::Tls(error))
         }
+        Err(error) => Err(Spawned::Unreachable(error)),
     }
 }
 
-/// The TLS error `error`, as a refusal to start.
-fn refused(error: rustls::Error) -> Spawned {
-    Spawned::Tls(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-}
+/// The most of the connector's first bytes read before the protocol takes the connection.
+const FIRST_BYTES: usize = 16_384;
 
-/// A TCP stream read as far as it is ready, without waiting.
-struct Ready<'a>(&'a TcpStream);
-
-impl std::io::Read for Ready<'_> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        self.0.try_read(buffer)
-    }
-}
-
-/// Connects to `dial`'s endpoint and completes the TLS handshake.
-async fn connect(dial: &Dial) -> Result<TlsStream<TcpStream>, Spawned> {
+/// Connects to `dial`'s endpoint over its network and completes the TLS handshake.
+async fn connect(dial: &Dial) -> Result<TlsStream<Box<dyn Stream>>, Spawned> {
     let Endpoint { host, port } = &dial.endpoint;
     let name = ServerName::try_from(host.clone()).map_err(|error| {
         Spawned::Unreachable(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
     })?;
-    let stream = TcpStream::connect((host.as_str(), *port))
+    let stream = dial
+        .network
+        .connect(host, *port)
         .await
         .map_err(Spawned::Unreachable)?;
-    // Frames are small and answered at once: batching them for the network only adds latency.
-    stream.set_nodelay(true).map_err(Spawned::Unreachable)?;
     TlsConnector::from(Arc::clone(&dial.tls))
         .connect(name, stream)
         .await
