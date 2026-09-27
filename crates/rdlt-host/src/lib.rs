@@ -14,7 +14,7 @@ mod sink;
 mod supervise;
 mod wire;
 
-pub use local::{LastWords, Local};
+pub use local::{LastWords, Local, Witness};
 pub use network::{Network, Remote, Stream, Tcp};
 pub use provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
 pub use rdlt_wire::tls::Identity;

@@ -13,7 +13,7 @@ use rdlt_connector::{
 use sha2::Digest as _;
 
 use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
-pub use process::LastWords;
+pub use process::{LastWords, Witness};
 use process::{Launch, Process, executable};
 
 use crate::provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};

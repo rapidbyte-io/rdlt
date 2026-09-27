@@ -23,6 +23,9 @@ pub(crate) enum Fault {
     Silent,
     /// Its reads send the same schema epoch twice.
     StaleEpoch,
+    /// Its reads know no barrier in their start, as a connector built before it could carry one:
+    /// each answers the first barrier its controls ask for, and ends.
+    Unstarted,
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -95,8 +98,11 @@ impl Connector for Fake {
 
     async fn read(
         &self,
-        _: Request<Streaming<v1::ReadControl>>,
+        request: Request<Streaming<v1::ReadControl>>,
     ) -> Result<Response<Self::ReadStream>, Status> {
+        if matches!(self.0, Fault::Unstarted) {
+            return Ok(Response::new(Box::pin(answering(request.into_inner()))));
+        }
         let schema = |ipc_schema| v1::ReadFrame {
             frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
                 schema_epoch: 1,
@@ -181,4 +187,35 @@ impl Connector for Fake {
         });
         Ok(Response::new(Box::pin(pongs)))
     }
+}
+
+/// A read that answers the first barrier `controls` ask for with a checkpoint, and ends.
+fn answering(
+    mut controls: Streaming<v1::ReadControl>,
+) -> impl Stream<Item = Result<v1::ReadFrame, Status>> + Send {
+    let (frames, sent) = tokio::sync::mpsc::channel(2);
+    tokio::spawn(async move {
+        while let Some(Ok(control)) = controls.next().await {
+            if let Some(v1::read_control::Control::Checkpoint(asked)) = control.control {
+                let checkpoint = v1::CheckpointFrame {
+                    cursor: Some(v1::Cursor {
+                        version: 1,
+                        bytes: Bytes::new(),
+                    }),
+                    barrier: Some(asked.barrier),
+                };
+                for frame in [
+                    v1::read_frame::Frame::Checkpoint(checkpoint),
+                    v1::read_frame::Frame::Done(v1::Done {}),
+                ] {
+                    let frame = v1::ReadFrame { frame: Some(frame) };
+                    if frames.send(Ok(frame)).await.is_err() {
+                        return;
+                    }
+                }
+                return;
+            }
+        }
+    });
+    tokio_stream::wrappers::ReceiverStream::new(sent)
 }

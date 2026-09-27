@@ -135,6 +135,31 @@ impl Process {
     /// What the connector left on its standard error, and how it exited, once it has: waits
     /// `patience` for it to exit and its standard error to close, as a failed transport suggests.
     pub(crate) async fn last_words(&self, patience: Duration) -> LastWords {
+        self.witness().last_words(patience).await
+    }
+
+    /// A witness to how the process ends, which outlives it.
+    pub(crate) fn witness(&self) -> Witness {
+        Witness {
+            exit: self.exit.clone(),
+            stderr_closed: self.stderr_closed.clone(),
+            tail: Arc::clone(&self.tail),
+        }
+    }
+}
+
+/// A witness to how a spawned connector ends: its exit, and the last bytes of its standard error.
+#[derive(Clone, Debug)]
+pub struct Witness {
+    exit: watch::Receiver<Option<ExitStatus>>,
+    stderr_closed: watch::Receiver<bool>,
+    tail: Arc<Tail>,
+}
+
+impl Witness {
+    /// What the connector left on its standard error, and how it exited, once it has: waits
+    /// `patience` for it to exit and its standard error to close, as a failed transport suggests.
+    pub async fn last_words(&self, patience: Duration) -> LastWords {
         let (mut closed, mut exit) = (self.stderr_closed.clone(), self.exit.clone());
         let ended = async {
             closed.wait_for(|closed| *closed).await.ok();

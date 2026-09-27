@@ -9,7 +9,7 @@ use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::local::process::Process;
+use crate::local::process::{Process, Witness};
 use crate::network::Stream;
 
 /// A raw connection to a connector, before its handshake: a stream whose other end serves the
@@ -32,6 +32,12 @@ impl std::fmt::Debug for Wire {
 impl Wire {
     pub(crate) fn new(stream: Box<dyn Stream>, process: Option<Process>) -> Self {
         Self { stream, process }
+    }
+
+    /// A witness to how the connector ends, when this process spawned it: what it last said, for
+    /// the errors of a transport that failed.
+    pub fn witness(&self) -> Option<Witness> {
+        self.process.as_ref().map(Process::witness)
     }
 }
 
