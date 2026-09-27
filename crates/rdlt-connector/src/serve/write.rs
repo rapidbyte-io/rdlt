@@ -11,7 +11,7 @@ use super::service::{Answer, Service, invalid};
 use crate::destination::{DestinationWriter, TableRef};
 use crate::error::ConnectorError;
 use crate::id::SegmentId;
-use crate::wire::{Invalid, frame_error, v1};
+use crate::wire::{Invalid, frame_error, status, v1};
 
 /// Starts serving the write the engine's first frame asks for.
 pub(super) async fn serve(
@@ -32,7 +32,18 @@ pub(super) async fn serve(
         .map_err(|error| invalid(&error))?;
     let writer = service.writer(start.session, &table).await?;
     let (acks, answer) = mpsc::channel(16);
-    tokio::spawn(pump(writer, frames, acks, limits));
+    let pumping = tokio::spawn(pump(writer, frames, acks.clone(), limits));
+    tokio::spawn(async move {
+        // A writer that panics fails the write with the panic, as a read's panic fails the read,
+        // rather than ending the write as though it were done.
+        if let Err(join) = pumping.await {
+            let error = ConnectorError::new(
+                crate::error::ConnectorErrorKind::Internal,
+                format!("the write failed: {join}"),
+            );
+            acks.send(Err(status(&error))).await.ok();
+        }
+    });
     Ok(Box::pin(ReceiverStream::new(answer)))
 }
 

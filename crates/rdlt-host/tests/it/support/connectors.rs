@@ -253,6 +253,8 @@ pub(crate) enum Writing {
     Fails,
     /// No write ever finishes.
     Stalls,
+    /// Each write panics.
+    Panics,
 }
 
 /// The memory destination, whose writers go wrong as `writing` says.
@@ -359,6 +361,7 @@ impl DestinationWriter for WrongWriter {
             match writing {
                 Writing::Fails => Err(ConnectorError::data("the write was refused")),
                 Writing::Stalls => std::future::pending().await,
+                Writing::Panics => panic!("the writer panicked"),
             }
         })
     }
