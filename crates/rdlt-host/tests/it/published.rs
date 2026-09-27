@@ -72,6 +72,10 @@ async fn a_read_back_the_handshake_did_not_accept_is_refused_as_unsupported() {
             &[][..],
         ),
         (
+            Served::new().with_destination(readable_destination_factory::<MemoryDestination>()),
+            &["another"][..],
+        ),
+        (
             Served::new().with_destination(destination_factory::<MemoryDestination>()),
             &[PUBLISHED][..],
         ),
