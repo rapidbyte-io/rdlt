@@ -15,28 +15,68 @@ use rdlt_wire::{Decoder, IpcFrame, Limits, PUBLISHED};
 use crate::protocol::request;
 use crate::target::Target;
 
+/// The longest a read-back of one table takes: one that takes longer fails the clause, rather
+/// than hold the certification.
+const READ_BACK_TIME: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The most a read-back decodes of one table, in bytes: a destination that sends more fails the
 /// clause, rather than size this process's memory.
 const PUBLISHED_BYTES: usize = 64 << 20;
 
 /// What reads back what the destination `target` reaches published, with `config`.
 #[derive(Debug)]
-pub struct ReadBack<'a> {
+pub struct ReadBackProbe<'a> {
     target: &'a Target,
     config: String,
+    /// Why the handshake offering the read-back failed, when it did: each read-back fails so.
+    failed: Option<String>,
 }
 
-/// A probe reading back what the destination `target` reaches published, with `config`, when it
-/// accepts the handshake's `published` feature; `None` when it does not, or cannot be reached.
-pub async fn read_back<'a>(target: &'a Target, config: &serde_json::Value) -> Option<ReadBack<'a>> {
+/// A probe reading back what the destination `target` reaches published, with `config`; `None`
+/// when a handshake offering the `published` feature succeeds without accepting it.
+///
+/// A handshake that fails gives a probe whose every read-back fails, so the clauses that read
+/// published data fail rather than be skipped.
+pub async fn read_back<'a>(
+    target: &'a Target,
+    config: &serde_json::Value,
+) -> Option<ReadBackProbe<'a>> {
     let config = config.to_string();
-    let (_, accepted) = handshaken(target, &config).await.ok()?;
-    accepted.then_some(ReadBack { target, config })
+    let failed = match handshaken(target, &config).await {
+        Ok((_, false)) => return None,
+        Ok((_, true)) => None,
+        Err(error) => Some(error.to_string()),
+    };
+    Some(ReadBackProbe {
+        target,
+        config,
+        failed,
+    })
 }
 
-impl Probe for ReadBack<'_> {
+impl Probe for ReadBackProbe<'_> {
     fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
         Box::pin(async move {
+            tokio::time::timeout(READ_BACK_TIME, self.read(table))
+                .await
+                .unwrap_or_else(|_| {
+                    let message =
+                        format!("the destination's read-back took longer than {READ_BACK_TIME:?}");
+                    Err(ConnectorError::new(ConnectorErrorKind::Transient, message)
+                        .with_code("published_time"))
+                })
+        })
+    }
+}
+
+impl ReadBackProbe<'_> {
+    /// What the destination published to `table`, read back.
+    async fn read(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
+        if let Some(failed) = &self.failed {
+            let message = format!("the handshake offering the read-back failed: {failed}");
+            return Err(ConnectorError::new(ConnectorErrorKind::Transient, message));
+        }
+        {
             let (mut client, accepted) = handshaken(self.target, &self.config).await?;
             if !accepted {
                 let message = "the destination no longer reads back what it published";
@@ -54,7 +94,7 @@ impl Probe for ReadBack<'_> {
                 .map_err(|status| error(&status))?
                 .into_inner();
             decoded(frames, self.target.limits()).await
-        })
+        }
     }
 }
 

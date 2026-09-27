@@ -24,7 +24,7 @@ mod report;
 mod target;
 
 pub use protocol::PROTOCOL_CLAUSES;
-pub use published::{ReadBack, read_back};
+pub use published::{ReadBackProbe, read_back};
 pub use rdlt_connector::testing::{
     Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, Unprobed,
 };

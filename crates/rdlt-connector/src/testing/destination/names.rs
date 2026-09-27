@@ -12,7 +12,7 @@ use crate::capabilities::{IdentifierCase, IdentifierChars, IdentifierRules};
 use crate::destination::{TableChange, TableRef};
 use crate::id::{SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
-use crate::testing::Violation;
+use crate::testing::{Violation, bounded_call};
 use crate::types::{Field, LogicalType};
 
 /// The shortest identifiers the clause fits its names in.
@@ -63,11 +63,7 @@ impl Bench<'_> {
             &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
         )
         .await?;
-        let published = self
-            .probe
-            .published(&table)
-            .await
-            .map_err(|error| Violation::from(format!("probe: {error}")))?;
+        let published = bounded_call("probe", self.probe.published(&table)).await?;
         let rows: usize = published.iter().map(RecordBatch::num_rows).sum();
         if rows != 3 {
             return Err(format!("table {identifier} published {rows} rows, not 3").into());

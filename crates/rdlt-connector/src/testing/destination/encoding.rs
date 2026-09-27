@@ -14,7 +14,7 @@ use super::{Bench, commit, meta};
 use crate::destination::TableChange;
 use crate::id::SegmentId;
 use crate::schema::TableSchema;
-use crate::testing::{Violation, bounded};
+use crate::testing::{Violation, bounded, bounded_call};
 use crate::types::{Field, LogicalType, TimeUnit, TypeKind};
 
 /// The load start every row carries, in microseconds since the epoch.
@@ -63,11 +63,7 @@ impl Bench<'_> {
             &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
         )
         .await?;
-        let batches = self
-            .probe
-            .published(&table)
-            .await
-            .map_err(|error| Violation::from(format!("probe: {error}")))?;
+        let batches = bounded_call("probe", self.probe.published(&table)).await?;
         let mut rows = batches
             .iter()
             .map(|batch| rows(batch, &fields))

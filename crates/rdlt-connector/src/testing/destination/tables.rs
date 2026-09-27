@@ -3,7 +3,7 @@
 use super::{Bench, commit, meta, rows};
 use crate::destination::TableRef;
 use crate::id::{SchemaVersion, SegmentId, TablePath};
-use crate::testing::Violation;
+use crate::testing::{Violation, bounded_call};
 
 impl Bench<'_> {
     /// Stages three rows in one segment through writers of two tables, as a stream and its child
@@ -29,11 +29,8 @@ impl Bench<'_> {
         )
         .await?;
         for table in [self.table(), child] {
-            let published: usize = self
-                .probe
-                .published(&table)
-                .await
-                .map_err(|error| Violation::from(format!("probe: {error}")))?
+            let published: usize = bounded_call("probe", self.probe.published(&table))
+                .await?
                 .iter()
                 .map(arrow_array::RecordBatch::num_rows)
                 .sum();
