@@ -1,6 +1,11 @@
-//! Connectors that cannot be reached.
+//! Connectors that cannot be reached, or whose clauses the registry lists.
 
-use rdlt_certify::{Outcome, PROTOCOL_CLAUSES, SOURCE_CLAUSES, Target, certify_source};
+use std::collections::BTreeSet;
+
+use rdlt_certify::{
+    DESTINATION_CLAUSES, Family, Outcome, PROTOCOL_CLAUSES, SOURCE_CLAUSES, Target, certify_source,
+    clauses, markdown,
+};
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Identity, Local, Remote};
 use rdlt_testkit::tls::Pki;
@@ -61,5 +66,25 @@ async fn a_connector_that_cannot_be_reached_fails_every_clause_and_is_named_as_g
                 .all(|result| matches!(result.outcome, Outcome::Failed(_))),
             "{report}"
         );
+    }
+}
+
+#[test]
+fn every_clause_is_registered_once_under_its_family() {
+    let registered: Vec<_> = clauses().collect();
+    assert_eq!(
+        registered.len(),
+        PROTOCOL_CLAUSES.len() + SOURCE_CLAUSES.len() + DESTINATION_CLAUSES.len()
+    );
+    let ids: BTreeSet<&str> = registered.iter().map(|(_, clause)| clause.id).collect();
+    assert_eq!(ids.len(), registered.len(), "clause ids are distinct");
+    for (family, clause) in registered {
+        let prefix = match family {
+            Family::Protocol => "P-",
+            Family::Source => "S-",
+            Family::Destination => "D-",
+        };
+        assert!(clause.id.starts_with(prefix), "{family:?} {}", clause.id);
+        assert!(markdown().contains(&format!("| `{}` |", clause.id)));
     }
 }

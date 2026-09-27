@@ -125,6 +125,7 @@ and durations are `Duration`, never integer milliseconds.
 - Law-like code (lattices, codecs, naming) gets property tests. Anything persisted or evolved is
   tested across at least two runs.
 - Simulation tests use `rdlt_sim::seeds`; a failing seed replays with `just sim <seed>`, and `just sim "" <count> <first>` runs `<count>` seeds from `<first>`, as each nightly shard does.
+- Snapshot tests (`insta`) hold output a person reads, such as `rdlt-certify`'s help and reports. When it changes on purpose, record it again with `INSTA_UPDATE=always`, and review the snapshots' diff before committing.
 
 ## Definition of done
 

@@ -1,0 +1,18 @@
+---
+source: crates/rdlt-certify/tests/it/cli.rs
+expression: "String::from_utf8_lossy(&certified.stdout)"
+---
+certification of io.rapidbyte.memory
+  pass P-HANDSHAKE
+  pass P-ORDER
+  skip P-ROLE: the connector serves the destination role too
+  pass P-LIMITS
+  pass P-HEARTBEAT
+  pass P-MALFORMED
+  pass P-CREDIT
+  pass S-CHECK
+  pass S-DISCOVER
+  pass S-PLAN
+  pass S-RESUME
+  pass S-STOP
+  skip S-BARRIER: no stream checkpoints on demand
