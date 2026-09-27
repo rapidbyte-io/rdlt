@@ -47,6 +47,12 @@ const LIMIT: Duration = Duration::from_secs(10_000_000);
 /// How many times placing a connector is tried before the simulation calls it unreachable.
 const PLACEMENTS: u32 = 600;
 
+/// How long a healed network takes to deliver what it held, and its connectors to act on it.
+///
+/// A message's latency and a destination's pause are at most 70 ms together. It is shorter than any
+/// patience a run draws, so a connection that outlives its run until its pings time out shows.
+const DRAIN: Duration = Duration::from_millis(80);
+
 /// How long placing a connector waits before trying again.
 const REPLACE: Duration = Duration::from_millis(100);
 
@@ -235,15 +241,20 @@ impl Placing {
     /// Runs `work` while the network is disrupted as `rng` draws, then heals the network, however
     /// `work` ends.
     pub(crate) async fn disrupting<T>(&self, rng: SplitMix64, work: impl Future<Output = T>) -> T {
-        let _healing = Healing(&self.net);
+        let healing = Healing(&self.net);
         let options = self.remote_options;
         // Faults last up to twice the host's patience, so it notices some and not others.
         let patience = options.heartbeat.saturating_mul(options.missed);
-        tokio::select! {
+        let done = tokio::select! {
             biased;
             done = work => done,
             never = disrupt(&self.net, rng, patience) => match never {},
-        }
+        };
+        drop(healing);
+        // What the network held lands once it heals, a commit among them: the runs' effects are
+        // judged once it has.
+        tokio::time::sleep(DRAIN).await;
+        done
     }
 
     /// The source, placed with `config`, trying again until it is reachable.
