@@ -141,36 +141,7 @@ impl Connection {
             let spent = lost.child_token();
             (lost, spent)
         };
-        let slot = Arc::new(Mutex::new(Some(severed::Severed::new(io, lost.clone()))));
-        let reconnecting = spent.clone();
-        let connector = tower::service_fn(move |_| {
-            let io = slot.lock().map(|mut slot| slot.take()).ok().flatten();
-            // The channel reconnects once its one connection has closed: the connection is spent.
-            if io.is_none() {
-                reconnecting.cancel();
-            }
-            async move {
-                io.map(TokioIo::new).ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::NotConnected, "the connection is spent")
-                })
-            }
-        });
-        // HTTP/2's own pings notice a connection the network dropped silently (§12.6), beside
-        // the protocol's heartbeat, which notices a connector that stopped answering.
-        let patience = options.heartbeat.saturating_mul(options.missed.max(1));
-        let channel = Endpoint::from_static("http://connector")
-            .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
-            .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
-            .http2_keep_alive_interval(options.heartbeat)
-            .keep_alive_timeout(patience)
-            .keep_alive_while_idle(true)
-            .connect_with_connector(connector)
-            .await
-            .map_err(|error| lost_because(format!("connecting failed: {error}")))?;
-        let bytes = options.limits.message_bytes();
-        let mut client = ConnectorClient::new(channel)
-            .max_decoding_message_size(bytes)
-            .max_encoding_message_size(bytes);
+        let mut client = channel(io, options, lost.clone(), spent.clone()).await?;
         let request = v1::HandshakeRequest {
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: PROTOCOL_MINOR,
@@ -197,6 +168,18 @@ impl Connection {
         Ok(connection)
     }
 
+    /// The contract's spec of the connector, in `role`, from what its handshake answered.
+    ///
+    /// # Errors
+    ///
+    /// An internal error when the connector's id or configuration schema is malformed.
+    pub fn connector_spec(
+        &self,
+        role: Role,
+    ) -> Result<rdlt_connector::ConnectorSpec, ConnectorError> {
+        contract_spec(&self.spec, role)
+    }
+
     /// The connector's spec, as its handshake answered.
     pub fn spec(&self) -> &v1::ConnectorSpec {
         &self.spec
@@ -221,6 +204,72 @@ impl Connection {
             answer = within(deadline, what, call) => answer,
         }
     }
+}
+
+/// A client of the protocol over `io`, with no handshake yet: for clients that speak the protocol
+/// themselves, as a certification suite does.
+///
+/// It runs as a connection does, with `options`' limits and HTTP/2 pings.
+///
+/// # Errors
+///
+/// A transient error when the transport fails.
+pub async fn client<IO>(io: IO, options: Options) -> Result<Client, ConnectorError>
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    channel(
+        io,
+        options,
+        CancellationToken::new(),
+        CancellationToken::new(),
+    )
+    .await
+}
+
+/// A client of the protocol, over one connection.
+pub type Client = ConnectorClient<Channel>;
+
+/// A client over `io`, which fails once `cut` is cancelled, and whose one connection, once closed,
+/// cancels `spent`.
+async fn channel<IO>(
+    io: IO,
+    options: Options,
+    cut: CancellationToken,
+    spent: CancellationToken,
+) -> Result<Client, ConnectorError>
+where
+    IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let slot = Arc::new(Mutex::new(Some(severed::Severed::new(io, cut))));
+    let connector = tower::service_fn(move |_| {
+        let io = slot.lock().map(|mut slot| slot.take()).ok().flatten();
+        // The channel reconnects once its one connection has closed: the connection is spent.
+        if io.is_none() {
+            spent.cancel();
+        }
+        async move {
+            io.map(TokioIo::new).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotConnected, "the connection is spent")
+            })
+        }
+    });
+    // HTTP/2's own pings notice a connection the network dropped silently (§12.6), beside the
+    // protocol's heartbeat, which notices a connector that stopped answering.
+    let patience = options.heartbeat.saturating_mul(options.missed.max(1));
+    let channel = Endpoint::from_static("http://connector")
+        .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
+        .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
+        .http2_keep_alive_interval(options.heartbeat)
+        .keep_alive_timeout(patience)
+        .keep_alive_while_idle(true)
+        .connect_with_connector(connector)
+        .await
+        .map_err(|error| lost_because(format!("connecting failed: {error}")))?;
+    let bytes = options.limits.message_bytes();
+    Ok(ConnectorClient::new(channel)
+        .max_decoding_message_size(bytes)
+        .max_encoding_message_size(bytes))
 }
 
 /// The contract's spec of the connector the handshake's `spec` describes, in `role`.

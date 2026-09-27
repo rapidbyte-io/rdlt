@@ -229,10 +229,7 @@ async fn spawn(
     config: &serde_json::Value,
     options: Options,
 ) -> Result<Running, Spawned> {
-    let (host, connector) = std::os::unix::net::UnixStream::pair().map_err(Spawned::Io)?;
-    let process = Process::spawn(launch, connector.into()).map_err(Spawned::Io)?;
-    host.set_nonblocking(true).map_err(Spawned::Io)?;
-    let io = tokio::net::UnixStream::from_std(host).map_err(Spawned::Io)?;
+    let (io, process) = Process::launched(launch).map_err(Spawned::Io)?;
     let connection = match Connection::connect(io, role, config, options).await {
         Ok(connection) => connection,
         Err(error) => {

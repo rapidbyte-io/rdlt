@@ -14,10 +14,11 @@ use sha2::Digest as _;
 
 use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
 pub use process::LastWords;
-use process::{Launch, executable};
+use process::{Launch, Process, executable};
 
 use crate::provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
+use crate::wire::Wire;
 
 /// Places connectors in processes of their own.
 #[derive(Clone, Debug)]
@@ -107,6 +108,33 @@ impl Local {
             .and_then(|found| absolute(&found))
     }
 
+    /// A raw connection to the connector `reference` names, before its handshake: its binary,
+    /// spawned with the connection's other end on file descriptor 3, stops once the wire is
+    /// dropped.
+    ///
+    /// Call it within a tokio runtime, which drains and reaps the process.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::NotFound`] when the binary cannot be found, and
+    /// [`ProviderError::SpawnFailed`] when it cannot be spawned.
+    pub fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
+        let path = self.resolve(reference)?;
+        let launch = self.launch(reference, &path);
+        let (stream, process) =
+            Process::launched(&launch).map_err(|source| spawn_failed(reference, &path, source))?;
+        Ok(Wire::new(Box::new(stream), Some(process)))
+    }
+
+    fn launch(&self, reference: &ConnectorRef, path: &Path) -> Launch {
+        Launch {
+            id: reference.id.clone(),
+            path: path.to_owned(),
+            env_passthrough: self.env_passthrough.clone(),
+            grace: self.grace,
+        }
+    }
+
     /// Spawns the connector `reference` names as `role`, and checks it is that connector.
     async fn start(
         &self,
@@ -118,12 +146,7 @@ impl Local {
         let digest = digest(&path)
             .await
             .map_err(|source| spawn_failed(reference, &path, source))?;
-        let launch = Launch {
-            id: reference.id.clone(),
-            path: path.clone(),
-            env_passthrough: self.env_passthrough.clone(),
-            grace: self.grace,
-        };
+        let launch = self.launch(reference, &path);
         let supervisor =
             Supervisor::start(Start::Spawn(launch), role, config.clone(), self.options)
                 .await

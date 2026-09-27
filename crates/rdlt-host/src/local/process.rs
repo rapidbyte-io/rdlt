@@ -123,6 +123,15 @@ impl Process {
         })
     }
 
+    /// Spawns `launch`'s binary serving one end of a new socket pair; the other end, and the
+    /// process.
+    pub(crate) fn launched(launch: &Launch) -> std::io::Result<(tokio::net::UnixStream, Self)> {
+        let (host, connector) = std::os::unix::net::UnixStream::pair()?;
+        let process = Self::spawn(launch, connector.into())?;
+        host.set_nonblocking(true)?;
+        Ok((tokio::net::UnixStream::from_std(host)?, process))
+    }
+
     /// What the connector left on its standard error, and how it exited, once it has: waits
     /// `patience` for it to exit and its standard error to close, as a failed transport suggests.
     pub(crate) async fn last_words(&self, patience: Duration) -> LastWords {

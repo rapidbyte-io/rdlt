@@ -24,6 +24,7 @@ pub(crate) use rewound::Rewound;
 use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
 use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
+use crate::wire::Wire;
 
 /// A byte stream to a connector, over whatever network reached it.
 pub trait Stream: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
@@ -129,35 +130,67 @@ impl Remote {
         role: Role,
         config: &serde_json::Value,
     ) -> Result<Supervisor, ProviderError> {
-        let unreachable = |source| ProviderError::Unreachable {
-            id: reference.id.clone(),
-            endpoint: endpoint.to_owned(),
-            source,
-        };
-        let tls = |source: Box<dyn std::error::Error + Send + Sync>| ProviderError::Tls {
-            id: reference.id.clone(),
-            endpoint: endpoint.to_owned(),
-            source,
-        };
-        let address = Endpoint::parse(endpoint).map_err(unreachable)?;
-        let config_tls = rdlt_wire::tls::client_config(&self.identity, &self.ca)
-            .map_err(|error| tls(Box::new(error)))?;
-        let dial = Dial {
+        let dialing = self.dialing(reference, endpoint)?;
+        Supervisor::start(Start::Dial(dialing), role, config.clone(), self.options)
+            .await
+            .map_err(|spawned| refused(reference, endpoint, spawned))
+    }
+
+    /// How to reach `endpoint`, for the connector `reference` names.
+    fn dialing(&self, reference: &ConnectorRef, endpoint: &str) -> Result<Dial, ProviderError> {
+        let address = Endpoint::parse(endpoint)
+            .map_err(|source| refused(reference, endpoint, Spawned::Unreachable(source)))?;
+        let tls = rdlt_wire::tls::client_config(&self.identity, &self.ca).map_err(|error| {
+            ProviderError::Tls {
+                id: reference.id.clone(),
+                endpoint: endpoint.to_owned(),
+                source: Box::new(error),
+            }
+        })?;
+        Ok(Dial {
             endpoint: address,
             network: Arc::clone(&self.network),
-            tls: Arc::new(config_tls),
+            tls: Arc::new(tls),
+        })
+    }
+
+    /// A raw connection to the connector at `reference`'s endpoint, before its handshake: over
+    /// mutual TLS, within the connect deadline, once the connector has accepted the host's
+    /// certificate.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::NotFound`] when `reference` names no endpoint;
+    /// [`ProviderError::Unreachable`] or [`ProviderError::Tls`] when the dial fails.
+    pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
+        let Some(endpoint) = &reference.endpoint else {
+            return Err(not_found(reference));
         };
-        let supervisor = Supervisor::start(Start::Dial(dial), role, config.clone(), self.options)
+        let dialing = self.dialing(reference, endpoint)?;
+        let stream = dial(&dialing, self.options.deadlines.connect)
             .await
-            .map_err(|spawned| match spawned {
-                Spawned::Io(source) | Spawned::Unreachable(source) => unreachable(source),
-                Spawned::Tls(source) => tls(Box::new(source)),
-                Spawned::Connect(source) => ProviderError::HandshakeFailed {
-                    id: reference.id.clone(),
-                    source: Box::new(source),
-                },
-            })?;
-        Ok(supervisor)
+            .map_err(|spawned| refused(reference, endpoint, spawned))?;
+        Ok(Wire::new(Box::new(stream), None))
+    }
+}
+
+/// The provider's error for a dial of `endpoint` that failed as `spawned` says.
+fn refused(reference: &ConnectorRef, endpoint: &str, spawned: Spawned) -> ProviderError {
+    match spawned {
+        Spawned::Io(source) | Spawned::Unreachable(source) => ProviderError::Unreachable {
+            id: reference.id.clone(),
+            endpoint: endpoint.to_owned(),
+            source,
+        },
+        Spawned::Tls(source) => ProviderError::Tls {
+            id: reference.id.clone(),
+            endpoint: endpoint.to_owned(),
+            source: Box::new(source),
+        },
+        Spawned::Connect(source) => ProviderError::HandshakeFailed {
+            id: reference.id.clone(),
+            source: Box::new(source),
+        },
     }
 }
 
