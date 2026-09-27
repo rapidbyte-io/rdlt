@@ -211,3 +211,27 @@ async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_
     }
     assert_eq!(answered, [1]);
 }
+
+#[tokio::test]
+async fn a_read_with_no_barrier_pending_asks_for_none() {
+    let io = serve_fake(Fake(Fault::Unstarted));
+    let connection =
+        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
+            .await
+            .expect("the fake handshakes");
+    let source = RemoteSource::new(connection);
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+    let request = ReadRequest {
+        stream: StreamName::new("events").expect("a valid stream name"),
+        partition: Partition::single(),
+        cursor: None,
+    };
+    source.read(request, sink).await.expect("the read succeeds");
+    let mut answered = Vec::new();
+    while let Some(event) = feed.recv().await {
+        if let SourceEvent::Checkpoint { answers, .. } = event {
+            answered.extend(answers);
+        }
+    }
+    assert!(answered.is_empty(), "{answered:?}");
+}

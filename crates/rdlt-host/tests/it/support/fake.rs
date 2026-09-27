@@ -23,8 +23,9 @@ pub(crate) enum Fault {
     Silent,
     /// Its reads send the same schema epoch twice.
     StaleEpoch,
-    /// Its reads know no barrier in their start, as a connector built before it could carry one:
-    /// each answers the first barrier its controls ask for, and ends.
+    /// Its reads know no barrier in their start, as a connector built before it could carry one,
+    /// and have nothing to read: each answers a barrier its controls ask for before its first
+    /// credit, and ends at that credit.
     Unstarted,
 }
 
@@ -189,30 +190,33 @@ impl Connector for Fake {
     }
 }
 
-/// A read that answers the first barrier `controls` ask for with a checkpoint, and ends.
+/// A read with nothing to read: it answers a barrier `controls` ask for before its first credit
+/// with a checkpoint, and ends at that credit.
 fn answering(
     mut controls: Streaming<v1::ReadControl>,
 ) -> impl Stream<Item = Result<v1::ReadFrame, Status>> + Send {
     let (frames, sent) = tokio::sync::mpsc::channel(2);
     tokio::spawn(async move {
+        let mut answered = Vec::new();
         while let Some(Ok(control)) = controls.next().await {
-            if let Some(v1::read_control::Control::Checkpoint(asked)) = control.control {
-                let checkpoint = v1::CheckpointFrame {
-                    cursor: Some(v1::Cursor {
-                        version: 1,
-                        bytes: Bytes::new(),
-                    }),
-                    barrier: Some(asked.barrier),
-                };
-                for frame in [
-                    v1::read_frame::Frame::Checkpoint(checkpoint),
-                    v1::read_frame::Frame::Done(v1::Done {}),
-                ] {
-                    let frame = v1::ReadFrame { frame: Some(frame) };
-                    if frames.send(Ok(frame)).await.is_err() {
-                        return;
-                    }
+            match control.control {
+                Some(v1::read_control::Control::Checkpoint(asked)) => {
+                    answered.push(v1::read_frame::Frame::Checkpoint(v1::CheckpointFrame {
+                        cursor: Some(v1::Cursor {
+                            version: 1,
+                            bytes: Bytes::new(),
+                        }),
+                        barrier: Some(asked.barrier),
+                    }));
                 }
+                Some(v1::read_control::Control::Credit(_)) => break,
+                _ => {}
+            }
+        }
+        answered.push(v1::read_frame::Frame::Done(v1::Done {}));
+        for frame in answered {
+            let frame = v1::ReadFrame { frame: Some(frame) };
+            if frames.send(Ok(frame)).await.is_err() {
                 return;
             }
         }
