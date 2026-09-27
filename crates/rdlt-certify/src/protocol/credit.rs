@@ -111,7 +111,7 @@ fn failed(status: &Status) -> Violation {
 }
 
 /// The first partition of the source's first stream, as it plans them from the beginning.
-async fn first_partition(
+pub(super) async fn first_partition(
     client: &mut Client,
 ) -> Result<Option<(v1::StreamName, String)>, Violation> {
     let failed = |what: &str, status: &Status| format!("{what} failed: {}", super::error(status));

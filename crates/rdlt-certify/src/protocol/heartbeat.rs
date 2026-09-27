@@ -15,7 +15,8 @@ const PINGS: u64 = 5;
 pub(super) async fn echoed(target: &Target, role: Role, config: &str) -> Found {
     let checked = async {
         let (mut client, _) = handshaken(target, role, config).await?;
-        let sent = tokio_stream::iter((1..=PINGS).map(|seq| v1::Ping { seq }));
+        let expected: Vec<u64> = (1..=PINGS).collect();
+        let sent = tokio_stream::iter(expected.clone().into_iter().map(|seq| v1::Ping { seq }));
         let failed =
             |status: &Status| Violation(format!("the heartbeat failed: {}", super::error(status)));
         let mut pongs = client
@@ -23,12 +24,14 @@ pub(super) async fn echoed(target: &Target, role: Role, config: &str) -> Found {
             .await
             .map_err(|status| failed(&status))?
             .into_inner();
-        // The pings end with their stream, and so must the answers.
+        // One answer per ping; the answers' stream may stay open after them.
         let mut answered = Vec::new();
-        while let Some(pong) = pongs.next().await {
+        while answered.len() < expected.len() {
+            let Some(pong) = pongs.next().await else {
+                break;
+            };
             answered.push(pong.map_err(|status| failed(&status))?.seq);
         }
-        let expected: Vec<u64> = (1..=PINGS).collect();
         if answered == expected {
             Ok(())
         } else {

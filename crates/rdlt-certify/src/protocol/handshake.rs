@@ -4,7 +4,6 @@
 use rdlt_connector::Role;
 use rdlt_connector::wire::v1;
 use rdlt_wire::PROTOCOL_MAJOR;
-use rdlt_wire::limits::LIMIT_EXCEEDED;
 
 use super::{Found, Violation, handshaken, refused_with, request, unsupported, wire_role};
 use crate::target::Target;
@@ -74,44 +73,6 @@ pub(super) async fn roles(target: &Target, role: Role, config: &str) -> Found {
         unsupported(
             &refused_with(refused, crate::connect::UNSERVED, what)?,
             what,
-        )?;
-        Ok(None)
-    };
-    checked.await.into()
-}
-
-/// Checks `P-LIMITS`.
-pub(super) async fn limited(target: &Target, role: Role, config: &str) -> Found {
-    let checked = async {
-        let (_, answer) = handshaken(target, role, config).await?;
-        let limit = answer.limits.map_or(0, |limits| limits.config_bytes);
-        // A host never sends a configuration beyond its own limit, so a connector's beyond it is
-        // never met, and exceeding it would only cost this process the memory.
-        let host = target.limits().config_bytes;
-        let Some(beyond) = Some(limit)
-            .filter(|limit| (1..=host).contains(limit))
-            .and_then(|limit| usize::try_from(limit).ok())
-            .and_then(|limit| limit.checked_add(1))
-        else {
-            return Ok(Some(format!(
-                "the connector declares no configuration limit this host can exceed ({limit} \
-                 bytes; this host sends at most {host})"
-            )));
-        };
-        let padded = format!("{{\"padding\":\"{}\"}}", "x".repeat(beyond));
-        // This end sends whatever the configuration's size: what refuses it is the connector's.
-        let mut client = target
-            .client()
-            .await
-            .map_err(Violation::of)?
-            .max_encoding_message_size(usize::MAX);
-        let over = client
-            .handshake(request(role, &padded, PROTOCOL_MAJOR))
-            .await;
-        refused_with(
-            over,
-            LIMIT_EXCEEDED,
-            "a handshake beyond the configuration limit",
         )?;
         Ok(None)
     };
