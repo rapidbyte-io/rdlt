@@ -12,6 +12,7 @@ pub mod remote;
 #[cfg(test)]
 mod sink;
 mod supervise;
+mod wire;
 
 pub use local::{LastWords, Local};
 pub use network::{Network, Remote, Stream, Tcp};
@@ -23,3 +24,4 @@ pub use remote::{
     RemoteSource,
 };
 pub use supervise::TLS;
+pub use wire::Wire;
