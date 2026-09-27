@@ -26,7 +26,7 @@ use std::future::Future;
 use std::time::Duration;
 
 pub use destination::{
-    DESTINATION_CLAUSES, Probe, certify_destination, certify_destination_factory,
+    DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
 };
 pub use source::{SOURCE_CLAUSES, certify_source, certify_source_factory};
 

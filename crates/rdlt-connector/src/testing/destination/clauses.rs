@@ -64,3 +64,19 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
         statement: "a session opened before the latest one cannot commit",
     },
 ];
+
+/// The clauses that read what the destination published, which a probe that reads nothing
+/// cannot check.
+pub(super) const PROBED: [&str; 11] = [
+    "D-STAGING",
+    "D-COMMIT",
+    "D-IDEMPOTENT",
+    "D-DISCARD",
+    "D-REPLACE",
+    "D-SCHEMA",
+    "D-MERGE",
+    "D-CHILDREN",
+    "D-ENCODING",
+    "D-TABLES",
+    "D-FENCE",
+];
