@@ -93,29 +93,45 @@ async fn connector_writing_stdout_keeps_running() {
     }
 }
 
-/// The most memory this process has held, in KiB.
+/// The memory this process holds, in KiB, counted page by page: exact, where the kernel sums its
+/// peak roughly from per-CPU counters, so that a later peak can read lower than an earlier one.
 #[cfg(target_os = "linux")]
-fn peak_kib() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").expect("the status reads");
-    status
+fn resident_kib() -> u64 {
+    let rollup = std::fs::read_to_string("/proc/self/smaps_rollup").expect("the rollup reads");
+    rollup
         .lines()
-        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .find_map(|line| line.strip_prefix("Rss:"))
         .and_then(|value| value.trim().trim_end_matches(" kB").parse().ok())
-        .expect("the status holds VmHWM")
+        .expect("the rollup holds Rss")
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn connector_writing_unbroken_stdout_keeps_the_host_bounded() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let script = serde_json::json!({ "stdout_unbroken_bytes": 256 * 1024 * 1024 });
     let source = spawned(&local(), script).await;
-    let before = peak_kib();
+    let before = resident_kib();
+    // The most the host holds while the connector writes, sampled each millisecond.
+    let done = Arc::new(AtomicBool::new(false));
+    let sampling = std::thread::spawn({
+        let done = Arc::clone(&done);
+        move || {
+            let mut most = resident_kib();
+            while !done.load(Ordering::SeqCst) {
+                most = most.max(resident_kib());
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            most
+        }
+    });
     source.check().await.expect("the check passes");
-    // The kernel counts resident memory per CPU and sums it roughly, so a later peak can read
-    // lower than an earlier one.
-    let grown = peak_kib().saturating_sub(before);
+    done.store(true, Ordering::SeqCst);
+    let most = sampling.join().expect("the sampling ends");
+    let grown = most.saturating_sub(before);
     // Far less than the 256 MiB written: the host keeps a bounded piece of each line.
-    assert!(grown < 64 * 1024, "the host's peak grew by {grown} KiB");
+    assert!(grown < 64 * 1024, "the host grew by {grown} KiB");
 }
 
 #[tokio::test]
