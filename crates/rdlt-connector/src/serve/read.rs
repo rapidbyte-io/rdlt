@@ -24,9 +24,11 @@ use crate::wire::{Invalid, frame_error, status, v1};
 /// Events the source may send ahead of the frames waiting for credit.
 const EVENTS: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
 
-/// Starts serving the read the host's first message asks for.
+/// Starts serving the read the host's first message asks for, whose cursor keeps within `own`,
+/// this end's limits; what it sends keeps within `host`, the host's.
 pub(super) async fn serve(
     source: Arc<dyn Source>,
+    own: Limits,
     host: Limits,
     mut controls: Streaming<v1::ReadControl>,
 ) -> Result<Answer<v1::ReadFrame>, Status> {
@@ -36,6 +38,9 @@ pub(super) async fn serve(
     else {
         return Err(invalid(&Invalid::Missing("read start")));
     };
+    if let Some(cursor) = &start.cursor {
+        own.admit_cursor(cursor.bytes.len()).map_err(refused)?;
+    }
     let barrier = start.barrier;
     let request = request(start).map_err(|error| invalid(&error))?;
     let (frames, answer) = mpsc::channel(EVENTS.get());

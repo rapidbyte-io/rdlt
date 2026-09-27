@@ -189,7 +189,7 @@ impl Connector for Service {
         request: Request<Streaming<v1::ReadControl>>,
     ) -> Result<Response<Self::ReadStream>, Status> {
         let host = self.host.get().copied().unwrap_or_default();
-        let frames = read::serve(self.source()?, host, request.into_inner()).await?;
+        let frames = read::serve(self.source()?, self.limits, host, request.into_inner()).await?;
         Ok(Response::new(frames))
     }
 
