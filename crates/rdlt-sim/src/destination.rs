@@ -102,10 +102,7 @@ impl Session for SimSession {
         let table = change.table();
         {
             let mut store = self.world.store.lock();
-            store
-                .names
-                .insert(table.path.clone(), table.name.to_string());
-            let entry = store.tables.entry(table.name.to_string()).or_default();
+            let entry = store.claim(&self.pipeline, table)?;
             columns::apply(&mut entry.columns, change)?;
         }
         match self.world.fault(FaultPoint::ApplyAfter) {
@@ -118,10 +115,7 @@ impl Session for SimSession {
         if let Some(fault) = self.world.fault(FaultPoint::Writer) {
             return Err(fault);
         }
-        let mut store = self.world.store.lock();
-        store
-            .names
-            .insert(table.path.clone(), table.name.to_string());
+        self.world.store.lock().claim(&self.pipeline, table)?;
         Ok(SimWriter {
             world: Arc::clone(&self.world),
             pipeline: self.pipeline.clone(),

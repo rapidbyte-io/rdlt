@@ -9,7 +9,15 @@ use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, TablePath};
 use crate::state::StateChange;
 
 /// The catalog tables, which destination tables must not be named after.
-pub const CATALOG_TABLES: &[&str] = &[EPOCHS, STATE, RECEIPTS, TABLES, GENERATIONS, SEGMENTS];
+pub const CATALOG_TABLES: &[&str] = &[
+    EPOCHS,
+    STATE,
+    RECEIPTS,
+    TABLES,
+    GENERATIONS,
+    SEGMENTS,
+    OWNERS,
+];
 
 const EPOCHS: &str = "_rdlt_epochs";
 const STATE: &str = "_rdlt_state";
@@ -17,6 +25,7 @@ const RECEIPTS: &str = "_rdlt_receipts";
 const TABLES: &str = "_rdlt_tables";
 pub(super) const GENERATIONS: &str = "_rdlt_generations";
 pub(super) const SEGMENTS: &str = "_rdlt_segments";
+const OWNERS: &str = "_rdlt_owners";
 
 impl<D: SqlDialect> SqlPlanner<D> {
     /// Creates the catalog tables where they are missing.
@@ -35,6 +44,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                  PRIMARY KEY (pipeline, load_id, commit_seq))"
             ),
             format!("{TABLES} (path {text} PRIMARY KEY, name {text} NOT NULL)"),
+            format!("{OWNERS} (name {text} PRIMARY KEY, pipeline {text} NOT NULL)"),
             format!(
                 "{GENERATIONS} (name {text} PRIMARY KEY, base {text} NOT NULL, \
                  generation {integer} NOT NULL)"
@@ -201,6 +211,32 @@ impl<D: SqlDialect> SqlPlanner<D> {
             statements.push(sql.finish());
         }
         statements
+    }
+
+    /// The statement claiming the table `name` for `pipeline` where no pipeline owns it yet;
+    /// [`SqlPlanner::owner`] then reads who does.
+    pub fn claim(&self, pipeline: &PipelineId, name: &str) -> Statement {
+        let mut sql = self.sql();
+        let values = [
+            SqlValue::Text(name.to_owned()),
+            SqlValue::Text(pipeline.to_string()),
+        ]
+        .map(|value| sql.bind(value));
+        sql.push(&format!(
+            "INSERT INTO {OWNERS} (name, pipeline) VALUES ({}) ON CONFLICT (name) DO NOTHING",
+            values.join(", ")
+        ));
+        sql.finish()
+    }
+
+    /// The query returning the pipeline that owns the table `name`: the first to claim it.
+    pub fn owner(&self, name: &str) -> Statement {
+        let mut sql = self.sql();
+        let name = sql.bind(SqlValue::Text(name.to_owned()));
+        sql.push(&format!(
+            "SELECT pipeline FROM {OWNERS} WHERE name = {name}"
+        ));
+        sql.finish()
     }
 
     /// The query returning the identifier of every registered table.

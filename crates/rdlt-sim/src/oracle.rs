@@ -4,6 +4,7 @@
 mod arrivals;
 mod changes;
 mod expected;
+mod intruder;
 mod names;
 mod refusals;
 mod rows;
@@ -86,6 +87,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
         if stopped {
             break;
         }
+        simulation.intrude(seed, phase).await;
+        settle(seed).await;
     }
     let violations = simulation.world.violations();
     let digest = simulation.world.store.lock().digest();

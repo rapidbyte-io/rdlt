@@ -250,9 +250,14 @@ pub trait Session: Send + 'static {
     /// A change the table already reflects succeeds and changes nothing; a change that conflicts
     /// with the table's columns fails as [`TableChange`] describes. Writers created before a
     /// change receive batches with the new columns after it.
+    ///
+    /// A table belongs to the pipeline that first created it: a change from another pipeline's
+    /// session fails with a `Config` error coded `table_owned` and changes nothing, so no
+    /// pipeline's replace or merge reaches rows another pipeline loaded (clause `D-OWNED`).
     fn apply_schema(&mut self, change: &TableChange) -> impl Future<Output = Result<()>> + Send;
 
-    /// A writer for `table`.
+    /// A writer for `table`; a table another pipeline owns fails as
+    /// [`apply_schema`](Self::apply_schema) does.
     fn writer(&mut self, table: &TableRef) -> impl Future<Output = Result<Self::Writer>> + Send;
 
     /// Removes the unpublished segments that sessions of the pipeline older than this one staged;

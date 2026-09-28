@@ -119,6 +119,12 @@ impl ConnectorError {
         }
     }
 
+    /// The [`ConnectorErrorKind::Config`] error coded `table_owned` a destination answers when a
+    /// pipeline refers to `table`, which the pipeline `owner` created.
+    pub fn table_owned(table: &str, owner: &str) -> Self {
+        Self::config(format!("table {table} belongs to pipeline {owner}")).with_code("table_owned")
+    }
+
     /// Attaches a stable machine code, such as `pg.permission_denied`.
     #[must_use]
     pub fn with_code(mut self, code: impl Into<Arc<str>>) -> Self {

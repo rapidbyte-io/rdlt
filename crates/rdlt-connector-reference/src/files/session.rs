@@ -10,7 +10,7 @@ use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    ChildTable, Epoch, GenerationId, LoadId, MergeKey, RootKey, SegmentId, TablePath,
+    ChildTable, Epoch, GenerationId, LoadId, MergeKey, PipelineId, RootKey, SegmentId, TablePath,
 };
 
 use super::format::FileFormat;
@@ -23,6 +23,8 @@ use crate::columns::changed;
 #[derive(Clone, Debug)]
 pub(super) struct Location {
     pub(super) root: Arc<Path>,
+    /// The pipeline the session belongs to, which owns the tables it creates.
+    pub(super) pipeline: PipelineId,
     pub(super) dir: PathBuf,
     pub(super) format: FileFormat,
     pub(super) epoch: Epoch,
@@ -76,8 +78,12 @@ impl Session for FilesSession {
     type Writer = FilesWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
-        self.learn(change.table());
         let (root, change) = (Arc::clone(&self.location.root), change.clone());
+        let pipeline = self.location.pipeline.clone();
+        let claimed = change.clone();
+        blocking(move || tables::claim(&root, &claimed.table().name, &pipeline)).await?;
+        self.learn(change.table());
+        let root = Arc::clone(&self.location.root);
         blocking(move || {
             tables::update(&root, &change.table().name, |current| {
                 let next = changed(current, &change)?;
@@ -88,6 +94,12 @@ impl Session for FilesSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<FilesWriter> {
+        let (root, pipeline, name) = (
+            Arc::clone(&self.location.root),
+            self.location.pipeline.clone(),
+            table.name.clone(),
+        );
+        blocking(move || tables::claim(&root, &name, &pipeline)).await?;
         self.learn(table);
         Ok(FilesWriter {
             location: self.location.clone(),

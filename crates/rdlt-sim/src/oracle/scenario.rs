@@ -17,7 +17,7 @@ use crate::source::SimSource;
 use crate::world::World;
 
 /// The longest a single run may take in virtual time before the oracle calls it hung.
-const RUN_LIMIT: Duration = Duration::from_secs(3600);
+pub(super) const RUN_LIMIT: Duration = Duration::from_secs(3600);
 
 /// How one run of a phase goes.
 #[derive(Clone, Copy, Debug)]
@@ -48,7 +48,7 @@ pub(super) fn pick(rng: &mut SplitMix64) -> Scenario {
 
 /// Starts a run of `plan` against the world registered as `world`, its connectors placed by
 /// `placing` on a simulated network where there is one, and in this process otherwise.
-async fn start(
+pub(super) async fn start(
     engine: &Engine,
     plan: &PipelinePlan,
     world: &str,

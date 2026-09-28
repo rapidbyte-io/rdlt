@@ -424,6 +424,8 @@ struct VaultConfig {
     identifier_len: u16,
     /// Never finishes a flush.
     hang_flush: bool,
+    /// Lets any pipeline write into any table, whichever pipeline created it.
+    share_tables: bool,
 }
 
 #[derive(Default)]
@@ -443,6 +445,24 @@ struct VaultStore {
     ignored: BTreeSet<(String, String)>,
     /// Each table's columns and their types, as schema changes left them.
     columns: BTreeMap<String, BTreeMap<String, LogicalType>>,
+    /// The pipeline each table belongs to: the first to refer to it.
+    owners: BTreeMap<String, PipelineId>,
+}
+
+impl VaultStore {
+    /// Claims `table` for `pipeline` where no pipeline owns it yet; another pipeline's table is
+    /// refused as `table_owned`, unless `shared`.
+    fn claim(&mut self, pipeline: &PipelineId, table: &str, shared: bool) -> Result<()> {
+        let owner = self
+            .owners
+            .entry(table.to_owned())
+            .or_insert_with(|| pipeline.clone());
+        if owner == pipeline || shared {
+            Ok(())
+        } else {
+            Err(ConnectorError::table_owned(table, owner.as_str()))
+        }
+    }
 }
 
 /// Every vault writer made, so each is told from the others.
@@ -777,6 +797,11 @@ impl Session for VaultSession {
             return Err(ConnectorError::data(message));
         }
         let mut store = self.stores.shared.lock().unwrap();
+        store.claim(
+            &self.pipeline,
+            &change.table().name,
+            self.config.share_tables,
+        )?;
         let first = store.changes.insert(format!("{change:?}"));
         let alters = !matches!(change, TableChange::Create { .. });
         if self.config.refuse_repeated_changes && alters && !first {
@@ -807,12 +832,13 @@ impl Session for VaultSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
-        self.stores
-            .shared
-            .lock()
-            .unwrap()
-            .tables
-            .insert(table.path.clone(), table.name.to_string());
+        {
+            let mut store = self.stores.shared.lock().unwrap();
+            store.claim(&self.pipeline, &table.name, self.config.share_tables)?;
+            store
+                .tables
+                .insert(table.path.clone(), table.name.to_string());
+        }
         Ok(VaultWriter {
             id: WRITERS.fetch_add(1, Ordering::SeqCst),
             config: Arc::clone(&self.config),
@@ -1244,6 +1270,7 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
         ("fold_names", &["D-NAMES"][..]),
         ("refuse_check", &["D-CHECK"][..]),
         ("lose_lanes", &["D-LANES"][..]),
+        ("share_tables", &["D-OWNED"][..]),
         ("miscount", &["D-COMMIT"][..]),
         ("republish", &["D-IDEMPOTENT"][..]),
         ("forget_state", &["D-STATE"][..]),
@@ -1324,6 +1351,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-TABLES",
             "D-NAMES",
             "D-LANES",
+            "D-OWNED",
             "D-FENCE"
         ],
         "{report}"

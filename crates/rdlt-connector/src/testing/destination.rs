@@ -8,6 +8,7 @@ mod evolving;
 mod fence;
 mod lanes;
 mod names;
+mod owned;
 mod rows;
 mod tables;
 
@@ -165,6 +166,7 @@ impl Bench<'_> {
             "D-TABLES" => self.segments_span_tables().await,
             "D-NAMES" => self.names_are_kept().await,
             "D-LANES" => self.writers_stage_at_once().await,
+            "D-OWNED" => self.tables_belong_to_their_pipeline().await,
             _ => self.stale_sessions_are_fenced().await,
         }
     }

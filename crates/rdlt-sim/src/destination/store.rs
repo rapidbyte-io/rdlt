@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, MergeKey, PartitionId, PipelineId, Receipt,
-    SegmentId, StateChange, StateEntry, StateRecord, StreamName, TablePath,
+    CommitMeta, CommitSeq, ConnectorError, Epoch, GenerationId, LoadId, MergeKey, PartitionId,
+    PipelineId, Receipt, Result, SegmentId, StateChange, StateEntry, StateRecord, StreamName,
+    TablePath, TableRef,
 };
 
 use super::read::{names, next_offset};
@@ -46,6 +47,8 @@ pub(super) struct Staged {
 
 #[derive(Debug, Default)]
 pub(super) struct Table {
+    /// The pipeline the table belongs to: the first to refer to it.
+    pub(super) owner: Option<PipelineId>,
     pub(super) columns: columns::Columns,
     pub(super) published: Vec<Stored>,
     pub(super) generations: BTreeMap<GenerationId, Vec<Stored>>,
@@ -60,19 +63,51 @@ impl Store {
     /// A digest of everything the store holds.
     pub(crate) fn digest(&self) -> Digest {
         let mut hasher = DefaultHasher::new();
-        for (name, table) in &self.tables {
-            name.hash(&mut hasher);
-            format!("{:?}", table.columns).hash(&mut hasher);
-            for row in &table.published {
-                format!("{:?}", row.cells).hash(&mut hasher);
-            }
-        }
+        self.hash_tables(&mut hasher);
         for (pipeline, store) in &self.pipelines {
             pipeline.to_string().hash(&mut hasher);
             format!("{:?}", store.state).hash(&mut hasher);
         }
         format!("{:?}", self.receipts).hash(&mut hasher);
         Digest(hasher.finish())
+    }
+
+    /// A digest of the tables alone: their columns and published rows.
+    pub(crate) fn tables_digest(&self) -> Digest {
+        let mut hasher = DefaultHasher::new();
+        self.hash_tables(&mut hasher);
+        Digest(hasher.finish())
+    }
+
+    fn hash_tables(&self, hasher: &mut DefaultHasher) {
+        for (name, table) in &self.tables {
+            name.hash(hasher);
+            format!("{:?}", table.columns).hash(hasher);
+            for row in &table.published {
+                format!("{:?}", row.cells).hash(hasher);
+            }
+        }
+    }
+
+    /// Whether the table of `stream` exists.
+    pub(crate) fn has_table(&self, stream: &str) -> bool {
+        TablePath::new([stream])
+            .ok()
+            .and_then(|path| self.names.get(&path))
+            .is_some_and(|name| self.tables.contains_key(name))
+    }
+
+    /// The table `table` refers to, claimed for `pipeline` where no pipeline owns it yet, its
+    /// name recorded for its path; another pipeline's table is refused as `table_owned`.
+    pub(super) fn claim(&mut self, pipeline: &PipelineId, table: &TableRef) -> Result<&mut Table> {
+        let entry = self.tables.entry(table.name.to_string()).or_default();
+        let owner = entry.owner.get_or_insert_with(|| pipeline.clone());
+        if owner != pipeline {
+            return Err(ConnectorError::table_owned(&table.name, owner.as_str()));
+        }
+        self.names
+            .insert(table.path.clone(), table.name.to_string());
+        Ok(entry)
     }
 
     /// The rows published to the table of `stream`.
