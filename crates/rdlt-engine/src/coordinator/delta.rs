@@ -42,6 +42,11 @@ impl Coordinator {
                 counts.discarded_rows += seal.discarded_rows;
                 counts.discarded_values += seal.discarded_values;
             }
+            if seal.deletes_ignored > 0 || seal.truncates_ignored > 0 {
+                let counts = collected.streams.entry(stream).or_default();
+                counts.deletes_ignored += seal.deletes_ignored;
+                counts.truncates_ignored += seal.truncates_ignored;
+            }
             collected.positions.insert(seal.partition, seal.state);
         }
         collected

@@ -5,6 +5,8 @@
     reason = "tests drive tokio's paused clock directly"
 )]
 
+mod change_limits;
+mod changes;
 mod destinations;
 mod engine;
 mod json;
@@ -12,6 +14,7 @@ mod ledger;
 mod merge;
 mod normalize;
 mod normalized;
+mod phases;
 mod placement;
 mod schema;
 mod support;

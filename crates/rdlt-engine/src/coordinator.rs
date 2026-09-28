@@ -6,6 +6,7 @@
 //! partitions keep reading while it runs.
 
 mod delta;
+mod phases;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +31,7 @@ use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
 use crate::table::Tables;
 use crate::watch;
+pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher};
 
 /// A stream as one attempt loads it.
 #[derive(Debug)]
@@ -44,6 +46,8 @@ pub(crate) struct StreamRun {
     pub(crate) remaining: usize,
     /// Whether any partition stopped before its end.
     pub(crate) stopped: bool,
+    /// For a stream read in phases, its place in them.
+    pub(crate) phases: Option<Phases>,
 }
 
 /// A full read of a stream, from its first partition to its last; a replace stream fills the
@@ -126,6 +130,8 @@ pub(crate) struct CoordinatorParts {
     /// Fires when the attempt is cancelled.
     pub(crate) cancel: CancellationToken,
     pub(crate) log: Arc<Mutex<AttemptLog>>,
+    /// Starts the partitions of a stream's next phase.
+    pub(crate) launcher: Launcher,
 }
 
 pub(crate) struct Coordinator {
@@ -152,9 +158,29 @@ impl Coordinator {
         }
     }
 
-    /// Commits as the policy says until every partition has ended, then commits what is left
-    /// and closes the session.
+    /// Commits as the policy says until every partition has ended and no stream starts another
+    /// phase, then closes the session.
     pub(crate) async fn run(mut self) -> Result<(), Error> {
+        loop {
+            self.load().await?;
+            self.commit().await?;
+            self.advance_phases().await?;
+            if self.all_ended() {
+                break;
+            }
+        }
+        let end = if self.stopping {
+            AttemptEnd::Stopped
+        } else {
+            AttemptEnd::Exhausted
+        };
+        self.parts.tables.session().close().await?;
+        self.parts.log.lock().end = Some(end);
+        Ok(())
+    }
+
+    /// Commits as the policy says until every partition has ended.
+    async fn load(&mut self) -> Result<(), Error> {
         let mut timer = self.timer();
         while !self.all_ended() {
             tokio::select! {
@@ -171,6 +197,7 @@ impl Coordinator {
                 () = &mut timer => {
                     self.raise_barrier().await?;
                     self.commit().await?;
+                    self.advance_phases().await?;
                     timer = self.timer();
                 }
                 progress = self.parts.progress.recv() => {
@@ -178,19 +205,12 @@ impl Coordinator {
                     if self.parts.policy.is_due(self.pending_rows, self.pending_bytes) {
                         self.raise_barrier().await?;
                         self.commit().await?;
+                        self.advance_phases().await?;
                         timer = self.timer();
                     }
                 }
             }
         }
-        self.commit().await?;
-        let end = if self.stopping {
-            AttemptEnd::Stopped
-        } else {
-            AttemptEnd::Exhausted
-        };
-        self.parts.tables.session().close().await?;
-        self.parts.log.lock().end = Some(end);
         Ok(())
     }
 
@@ -266,7 +286,9 @@ impl Coordinator {
             .filter(|index| self.parts.streams[*index].completes())
             .collect();
         let tables = self.parts.tables.delta();
-        let mut delta = self.state_delta(&collected.positions, &completing);
+        // A new phase's stale entries go before its partitions' positions, which may reuse ids.
+        let mut delta = self.phase_delta();
+        delta.extend(self.state_delta(&collected.positions, &completing));
         delta.extend(tables.changes);
         let finish_generations = self.finish_generations(&completing);
         if collected.segments.is_empty() && delta.is_empty() {
@@ -302,6 +324,7 @@ impl Coordinator {
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
         self.parts.tables.recorded(&tables.versions);
         self.record(receipt, streams, &completing);
+        self.record_positions(&collected.positions);
         self.acknowledge(collected.positions).await
     }
 

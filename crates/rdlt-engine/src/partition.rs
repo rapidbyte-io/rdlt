@@ -74,6 +74,10 @@ pub(crate) struct Seal {
     pub(crate) discarded_rows: u64,
     /// Values the schema policy nulled in the segment.
     pub(crate) discarded_values: u64,
+    /// Deletes the stream ignores, dropped from the segment.
+    pub(crate) deletes_ignored: u64,
+    /// Truncates the stream ignores, dropped from the segment.
+    pub(crate) truncates_ignored: u64,
 }
 
 /// One partition to read.
@@ -91,6 +95,19 @@ pub(crate) struct PartitionJob {
     pub(crate) cursor: Option<Cursor>,
     /// Whether the partition checkpoints when asked, so barriers are forwarded to it.
     pub(crate) on_demand: bool,
+    /// How a change stream's pushes load; `None` for a stream not read as changes.
+    pub(crate) changes: Option<ChangeMode>,
+}
+
+/// How a change stream's pushes load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChangeMode {
+    /// Whether its table merges by key; otherwise it is a log of every change.
+    pub(crate) merge: bool,
+    pub(crate) deletes: crate::plan::DeleteMode,
+    pub(crate) truncates: crate::plan::OnTruncate,
+    /// Whether the destination keeps a column's value an update flags unchanged.
+    pub(crate) partial_updates: bool,
 }
 
 /// Everything the partitions of an attempt share.
@@ -249,6 +266,9 @@ struct OpenSegment {
     received: u64,
     discarded_rows: u64,
     discarded_values: u64,
+    /// Deletes and truncates the stream ignores, dropped from the segment.
+    deletes_ignored: u64,
+    truncates_ignored: u64,
 }
 
 impl OpenSegment {
@@ -269,6 +289,8 @@ impl OpenSegment {
             answers,
             discarded_rows: self.discarded_rows,
             discarded_values: self.discarded_values,
+            deletes_ignored: self.deletes_ignored,
+            truncates_ignored: self.truncates_ignored,
         }
     }
 }
@@ -374,18 +396,27 @@ impl Ingested {
         permit: Option<Permit>,
     ) -> Result<(), Error> {
         let pushed = match event {
+            SourceEvent::Push(Push::Arrow(_) | Push::Json(_)) if job.changes.is_some() => {
+                return Err(pushed_wrongly(job, "rows, where it is read as changes"));
+            }
             SourceEvent::Push(Push::Arrow(batch)) => Pushed::Arrow(batch),
             SourceEvent::Push(Push::Json(json)) => Pushed::Json(json),
-            SourceEvent::Push(Push::Changes(_)) => {
-                return Err(Error::new(
-                    ErrorKind::Source,
-                    format!(
-                        "stream {} pushed changes, which the engine does not load yet",
-                        job.stream
-                    ),
-                )
-                .with_code("push_unsupported")
-                .with_stream(&job.stream));
+            SourceEvent::Push(Push::Changes(_)) if job.changes.is_none() => {
+                return Err(pushed_wrongly(
+                    job,
+                    "changes, where it is not read as changes",
+                ));
+            }
+            SourceEvent::Push(Push::Changes(batch)) => {
+                rdlt_connector::validate_change_batch(&batch).map_err(|error| {
+                    Error::connector(
+                        Side::Source,
+                        format!("reading stream {}", job.stream),
+                        error,
+                    )
+                    .with_stream(&job.stream)
+                })?;
+                Pushed::Arrow(batch)
             }
             SourceEvent::Checkpoint { cursor, answers } => {
                 // Coalescing never carries rows past a checkpoint, so segments are never split.
@@ -413,4 +444,14 @@ impl Ingested {
             None => Ok(()),
         }
     }
+}
+
+/// The error for a push the stream's read mode does not take: `what` it pushed, and why not.
+fn pushed_wrongly(job: &PartitionJob, what: &str) -> Error {
+    Error::new(
+        ErrorKind::Source,
+        format!("stream {} pushed {what}", job.stream),
+    )
+    .with_code("push_unexpected")
+    .with_stream(&job.stream)
 }

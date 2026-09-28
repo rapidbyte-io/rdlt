@@ -9,7 +9,7 @@ use rdlt_engine::RunStatus;
 
 use crate::support::targets::Target;
 use crate::support::{commit_every, each, engine, every_id, pipeline, spawned_generator, stream};
-use crate::{destinations, merge, normalized};
+use crate::{changes, destinations, merge, normalized};
 
 #[tokio::test]
 async fn publishes_every_row_once() {
@@ -182,4 +182,21 @@ async fn a_spawned_source_loads_every_row_once() {
             "{target:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn merges_changes_read_from_a_spawned_source() {
+    each(
+        [
+            Target::SpawnedJsonl,
+            Target::SpawnedArrow,
+            Target::RemoteJsonl,
+            Target::RemoteArrow,
+        ],
+        |target| async move {
+            let source = changes::spawned_changes(8, &changes::orders(&[90])).await;
+            changes::merges_changes(target, source).await;
+        },
+    )
+    .await;
 }

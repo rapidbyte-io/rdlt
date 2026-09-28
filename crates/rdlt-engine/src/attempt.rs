@@ -19,12 +19,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
 use crate::config::EngineConfig;
-use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun};
+use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun, launcher};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
 use crate::naming::Naming;
-use crate::partition::{self, PartitionContext, PartitionJob};
+use crate::partition::{self, ChangeMode, PartitionContext, PartitionJob};
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
@@ -52,6 +52,8 @@ pub(crate) struct RunContext {
 struct Planned {
     stream: StreamRun,
     on_demand: bool,
+    /// How a change stream's pushes load; `None` for other streams.
+    changes: Option<ChangeMode>,
     partitions: Vec<(Partition, Option<Cursor>)>,
 }
 
@@ -172,8 +174,11 @@ async fn launch(
         env: Arc::clone(&context.env),
         batch: *context.config.batch(),
     };
-    // Only the partitions may keep the progress channel open, so the coordinator sees them end.
-    let (streams, partitions) = spawn_partitions(&mut scope, planned, partition_context);
+    let (tasks, spawned) = mpsc::unbounded_channel();
+    let launcher = launcher(partition_context.clone(), tasks);
+    let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
+    // Only the partitions and the launcher may keep the lanes and the progress channel open.
+    drop(partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
         env: Arc::clone(&context.env),
         policy: *context.config.commit(),
@@ -191,9 +196,11 @@ async fn launch(
         stop: context.stop.clone(),
         cancel,
         log,
+        launcher,
     });
     scope.spawn(coordinator.run());
-    scope.join().await
+    // The coordinator starts the partitions of streams' next phases as it runs.
+    scope.join_spawning(spawned).await
 }
 
 /// Starts a task per partition to read, and returns the streams and partitions as the
@@ -201,11 +208,11 @@ async fn launch(
 fn spawn_partitions(
     scope: &mut TaskScope<Error>,
     planned: Vec<Planned>,
-    context: PartitionContext,
+    context: &PartitionContext,
 ) -> (Vec<StreamRun>, Vec<PartitionRun>) {
     let mut streams = Vec::with_capacity(planned.len());
     let mut partitions = Vec::new();
-    for (index, stream) in planned.into_iter().enumerate() {
+    for (index, mut stream) in planned.into_iter().enumerate() {
         for (partition, cursor) in stream.partitions {
             let id = partition.id().clone();
             let job = PartitionJob {
@@ -215,14 +222,16 @@ fn spawn_partitions(
                 partition,
                 cursor,
                 on_demand: stream.on_demand,
+                changes: stream.changes,
             };
+            if let Some(phases) = stream.stream.phases.as_mut() {
+                phases.reading.push(partitions.len());
+            }
             partitions.push(PartitionRun::new(index, id, stream.on_demand));
             scope.spawn(partition::run(job, context.clone()));
         }
         streams.push(stream.stream);
     }
-    // The context's progress sender must not outlive the partitions.
-    drop(context);
     (streams, partitions)
 }
 

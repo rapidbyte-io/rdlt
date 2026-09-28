@@ -57,6 +57,8 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
         received: 9,
         discarded_rows: 2,
         discarded_values: 1,
+        deletes_ignored: 0,
+        truncates_ignored: 0,
     };
     let seal = open.seal(2, PartitionState::Done, Some(3));
     assert_eq!(

@@ -37,10 +37,6 @@ pub(crate) enum ChangeLayout {
     Log,
     /// Merged by key: the op and unchanged columns only direct the merge, and a soft delete
     /// records when it removed a row.
-    #[expect(
-        dead_code,
-        reason = "change streams reach the lowering once the engine reads them"
-    )]
     Merge {
         /// Whether deletes keep their rows, recording when they removed them.
         soft: bool,
