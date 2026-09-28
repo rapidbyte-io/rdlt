@@ -7,7 +7,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Int8Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
 use rdlt_connector::{ConnectContext, ReadMode, Source, source_factory};
-use rdlt_connector_reference::changes::{ChangedStream, Row, expected};
+use rdlt_connector_reference::changes::{ChangedStream, Row, expected, snapshot};
 use rdlt_connector_reference::{ChangesSource, published};
 use rdlt_engine::{DeleteMode, OnTruncate, RunStatus, WriteMode};
 use serde_json::json;
@@ -23,6 +23,7 @@ pub(crate) fn orders(truncates: &[u64]) -> ChangedStream {
         changes: 200,
         batch_rows: 7,
         truncates: truncates.to_vec(),
+        captured: 0,
     }
 }
 
@@ -35,6 +36,7 @@ fn config(seed: u64, streams: &[ChangedStream]) -> serde_json::Value {
                 "name": stream.name, "keys": stream.keys,
                 "snapshot_partitions": stream.snapshot_partitions, "changes": stream.changes,
                 "batch_rows": stream.batch_rows, "truncates": stream.truncates,
+                "captured": stream.captured,
             })
         })
         .collect();
@@ -139,13 +141,12 @@ async fn a_snapshot_and_its_changes_merge_into_the_table_the_source_holds() {
 
 #[tokio::test]
 async fn a_second_run_reads_only_the_changes_the_first_left() {
-    let stream_spec = orders(&[]);
+    // Logged, a change read twice lands twice; captured, the snapshot holds the first changes.
+    let mut stream_spec = orders(&[]);
+    stream_spec.captured = 15;
     let store = "changes_again";
     for _ in 0..2 {
-        let plan = pipeline(
-            "changes",
-            [stream("orders").read(ReadMode::Cdc).write(WriteMode::Merge)],
-        );
+        let plan = pipeline("changes", [stream("orders").read(ReadMode::Cdc)]);
         let outcome = engine(commit_every(16))
             .run(plan, changes(4, &stream_spec).await, memory(store).await)
             .await;
@@ -156,7 +157,34 @@ async fn a_second_run_reads_only_the_changes_the_first_left() {
             outcome.error
         );
     }
-    assert_eq!(rows(store, "orders"), expected(4, &stream_spec));
+    assert_eq!(logged(store, "orders"), log(4, &stream_spec));
+}
+
+/// The positions a change log in `store` holds, sorted.
+pub(crate) fn logged(store: &str, table: &str) -> Vec<u64> {
+    let mut positions = Vec::new();
+    for batch in published(store, table) {
+        let seqs = batch
+            .column_by_name("_rdlt_seq")
+            .expect("a sequence column");
+        let seqs =
+            arrow_cast::cast(seqs, &arrow_schema::DataType::Binary).expect("sequences are binary");
+        for seq in seqs.as_binary::<i32>().iter().flatten() {
+            let position = seq[8..].try_into().expect("a sequence has 16 bytes");
+            positions.push(u64::from_be_bytes(position));
+        }
+    }
+    positions.sort_unstable();
+    positions
+}
+
+/// The positions `stream`'s log holds once read: a row at the captured position for each row of
+/// the snapshot, then each change after it once.
+pub(crate) fn log(seed: u64, stream: &ChangedStream) -> Vec<u64> {
+    let snapshotted = snapshot(seed, stream).len();
+    let mut positions = vec![stream.captured; snapshotted];
+    positions.extend(stream.captured + 1..=stream.changes);
+    positions
 }
 
 #[tokio::test]

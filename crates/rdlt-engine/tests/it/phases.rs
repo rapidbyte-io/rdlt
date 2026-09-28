@@ -30,6 +30,8 @@ struct Recorded {
     inner: Arc<dyn Source>,
     plans: Mutex<Vec<(String, Planned)>>,
     stop: Mutex<Option<(Stop, RunControl)>>,
+    /// The plan of a stream that fails, if one does.
+    fails: Option<usize>,
 }
 
 /// When [`Recorded`] stops its run.
@@ -43,10 +45,16 @@ enum Stop {
 
 impl Recorded {
     fn new(inner: Arc<dyn Source>) -> Arc<Self> {
+        Self::failing(inner, None)
+    }
+
+    /// A source whose streams' `fails`th plan fails, if any does.
+    fn failing(inner: Arc<dyn Source>, fails: Option<usize>) -> Arc<Self> {
         Arc::new(Self {
             inner,
             plans: Mutex::new(Vec::new()),
             stop: Mutex::new(None),
+            fails,
         })
     }
 
@@ -62,9 +70,19 @@ impl Recorded {
 
     /// Runs the pipeline of `orders`, merged, from `source` into `store`.
     async fn run(self: &Arc<Self>, store: &str, stop: Option<Stop>) -> RunOutcome {
+        self.run_as(WriteMode::Merge, store, stop).await
+    }
+
+    /// Runs the pipeline of `orders`, written as `write` says, from `source` into `store`.
+    async fn run_as(
+        self: &Arc<Self>,
+        write: WriteMode,
+        store: &str,
+        stop: Option<Stop>,
+    ) -> RunOutcome {
         let plan = pipeline(
             "phases",
-            [stream("orders").read(ReadMode::Cdc).write(WriteMode::Merge)],
+            [stream("orders").read(ReadMode::Cdc).write(write)],
         );
         let engine = engine(commit_every(10_000));
         let run = engine.run(
@@ -116,7 +134,7 @@ impl Source for Recorded {
                 plans.iter().filter(|(planned, _)| *planned == name).count()
             };
             self.stop_at(Stop::Planned(planned));
-            if planned > PLANS {
+            if planned > PLANS || self.fails == Some(planned) {
                 return Err(ConnectorError::internal(format!(
                     "{stream} planned {planned} times"
                 )));
@@ -149,6 +167,7 @@ fn small(name: &str) -> ChangedStream {
         changes: 5,
         batch_rows: 3,
         truncates: Vec::new(),
+        captured: 0,
     }
 }
 
@@ -278,17 +297,22 @@ async fn a_run_stopped_as_its_phase_ends_is_stopped_rather_than_done() {
 #[tokio::test]
 async fn a_phase_begun_as_its_run_stops_starts_where_its_plan_said() {
     // The run stops as the changes are planned, before they are read, yet state records where
-    // they start.
-    let source = Recorded::new(changes_of(11, &[orders(&[])]).await);
-    let outcome = source.run("phases_begun", Some(Stop::Planned(2))).await;
+    // they start: after the changes the snapshot holds, which a log would otherwise repeat.
+    let mut stream_spec = orders(&[]);
+    stream_spec.captured = 20;
+    let streams = std::slice::from_ref(&stream_spec);
+    let source = Recorded::new(changes_of(11, streams).await);
+    let outcome = source
+        .run_as(WriteMode::Append, "phases_begun", Some(Stop::Planned(2)))
+        .await;
     assert_eq!(
         outcome.report.status,
         RunStatus::Stopped,
         "{:?}",
         outcome.error
     );
-    let again = Recorded::new(changes_of(11, &[orders(&[])]).await);
-    let outcome = again.run("phases_begun", None).await;
+    let again = Recorded::new(changes_of(11, streams).await);
+    let outcome = again.run_as(WriteMode::Append, "phases_begun", None).await;
     assert_eq!(
         outcome.report.status,
         RunStatus::Succeeded,
@@ -296,4 +320,35 @@ async fn a_phase_begun_as_its_run_stops_starts_where_its_plan_said() {
         outcome.error
     );
     assert_eq!(again.plans("orders")[0], changes_read());
+    assert_eq!(
+        crate::changes::logged("phases_begun", "orders"),
+        crate::changes::log(11, &stream_spec)
+    );
+}
+
+#[tokio::test]
+async fn a_phase_a_new_run_begins_starts_where_its_plan_said() {
+    // The first run fails as it plans the changes, so the next begins them as it starts.
+    let mut stream_spec = orders(&[]);
+    stream_spec.captured = 20;
+    let streams = std::slice::from_ref(&stream_spec);
+    let source = Recorded::failing(changes_of(12, streams).await, Some(2));
+    let outcome = source
+        .run_as(WriteMode::Append, "phases_new_run", None)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let again = Recorded::new(changes_of(12, streams).await);
+    let outcome = again
+        .run_as(WriteMode::Append, "phases_new_run", None)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(
+        crate::changes::logged("phases_new_run", "orders"),
+        crate::changes::log(12, &stream_spec)
+    );
 }

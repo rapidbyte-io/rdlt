@@ -49,6 +49,10 @@ pub struct ChangedStream {
     /// The positions of changes that truncate the table.
     #[serde(default)]
     pub truncates: Vec<u64>,
+    /// How many changes the snapshot holds: it is taken at position `captured`, its rows carry
+    /// that position, and the changes after it are read.
+    #[serde(default)]
+    pub captured: u64,
 }
 
 fn one() -> u64 {
@@ -175,25 +179,40 @@ pub struct Row {
 /// The table `stream` holds, by key, once its snapshot and every change apply with deletes
 /// removing rows.
 pub fn expected(seed: u64, stream: &ChangedStream) -> BTreeMap<i64, Row> {
+    let mut table = snapshot(seed, stream);
+    for position in stream.captured + 1..=stream.changes {
+        apply(&mut table, change(seed, stream, position));
+    }
+    table
+}
+
+/// The table `stream`'s snapshot holds, by key: its `keys` rows once the first `captured`
+/// changes applied.
+pub fn snapshot(seed: u64, stream: &ChangedStream) -> BTreeMap<i64, Row> {
     let mut table: BTreeMap<i64, Row> = (0..stream.keys)
         .map(|key| {
             let id = i64::try_from(key).unwrap_or(i64::MAX);
             (id, snapshot_row(id))
         })
         .collect();
-    for position in 1..=stream.changes {
-        match change(seed, stream, position) {
-            Change::Upsert { id, value, n } => {
-                let value = value.or_else(|| table.get(&id).and_then(|row| row.value.clone()));
-                table.insert(id, Row { value, n });
-            }
-            Change::Delete { id } => {
-                table.remove(&id);
-            }
-            Change::Truncate => table.clear(),
-        }
+    for position in 1..=stream.captured.min(stream.changes) {
+        apply(&mut table, change(seed, stream, position));
     }
     table
+}
+
+/// Applies `change` to `table`, deletes removing rows.
+fn apply(table: &mut BTreeMap<i64, Row>, change: Change) {
+    match change {
+        Change::Upsert { id, value, n } => {
+            let value = value.or_else(|| table.get(&id).and_then(|row| row.value.clone()));
+            table.insert(id, Row { value, n });
+        }
+        Change::Delete { id } => {
+            table.remove(&id);
+        }
+        Change::Truncate => table.clear(),
+    }
 }
 
 fn snapshot_row(id: i64) -> Row {
@@ -264,7 +283,7 @@ impl ReadStream<ChangesSource> for Changed {
         let start = Cursor::encode(
             1,
             &Position {
-                next: 1,
+                next: self.0.captured + 1,
                 done: false,
             },
         )?;
@@ -295,38 +314,37 @@ impl ReadStream<ChangesSource> for Changed {
                 ConnectorError::data(format!("stream {} has no partition {id}", self.0.name))
             })?;
         let stride = self.0.snapshot_partitions;
-        let mut next = if cursor == Position::default() {
-            index
-        } else {
-            cursor.next
-        };
-        while next < self.0.keys {
-            let keys: Vec<u64> = (next..self.0.keys)
-                .step_by(usize::try_from(stride).unwrap_or(usize::MAX))
-                .take(usize::try_from(self.0.batch_rows).unwrap_or(usize::MAX))
-                .collect();
-            next = keys.last().map_or(self.0.keys, |last| last + stride);
-            let rows = keys
+        // The partition's rows, by key; the cursor counts those read.
+        let rows: Vec<(i64, Row)> = snapshot(source.seed, &self.0)
+            .into_iter()
+            .filter(|(id, _)| id.unsigned_abs() % stride == index)
+            .collect();
+        let total = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+        let mut next = cursor.next;
+        while next < total {
+            let last = (next + self.0.batch_rows).min(total);
+            let batch = rows[to_index(next)..to_index(last)]
                 .iter()
-                .map(|key| {
-                    let id = i64::try_from(*key).unwrap_or(i64::MAX);
+                .map(|(id, row)| {
+                    let (value, n) = (row.value.clone(), Some(row.n));
                     (
                         ChangeOp::Insert,
-                        0,
-                        Some(id),
-                        snapshot_row(id).value,
-                        Some(0),
+                        self.0.captured,
+                        Some(*id),
+                        value,
+                        n,
                         false,
                     )
                 })
                 .collect::<Vec<_>>();
-            out.changes(changes_batch(&rows)?).await?;
-            let done = next >= self.0.keys;
+            out.changes(changes_batch(&batch)?).await?;
+            next = last;
+            let done = next >= total;
             out.checkpoint(&Position { next, done }).await?;
         }
-        if cursor == Position::default() && self.0.keys <= index {
+        if cursor == Position::default() && total == 0 {
             out.checkpoint(&Position {
-                next: self.0.keys,
+                next: 0,
                 done: true,
             })
             .await?;
@@ -409,4 +427,8 @@ fn changes_batch(rows: &[ChangeRow]) -> Result<RecordBatch> {
         (UNCHANGED_COLUMN, Arc::new(unchanged.finish()) as ArrayRef),
     ])
     .internal("building a change batch")
+}
+
+fn to_index(position: u64) -> usize {
+    usize::try_from(position).unwrap_or(usize::MAX)
 }
