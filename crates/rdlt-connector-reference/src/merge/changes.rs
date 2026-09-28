@@ -53,7 +53,7 @@ impl Table {
     }
 
     /// Removes every row sequenced before `change`, a truncate, or marks it deleted.
-    fn truncate(&mut self, change: &Change, columns: &Columns) {
+    fn truncate(&mut self, change: &Change, columns: &Columns, sources: &Sources<'_>) {
         let cell = Cell::Incoming(change.batch, change.row);
         for merged in &mut self.rows {
             if merged
@@ -64,9 +64,7 @@ impl Table {
             }
             match (columns.at, merged.as_mut()) {
                 (Some(at), Some(kept)) => {
-                    kept.seq.clone_from(&change.seq);
-                    kept.cells[columns.seq] = cell;
-                    kept.cells[at] = cell;
+                    mark_deleted(kept, change, cell, columns.seq, at, sources);
                 }
                 _ => *merged = None,
             }
@@ -77,7 +75,14 @@ impl Table {
 
     /// Applies `change` to the row with `key`, when it is sequenced past it: an insert or
     /// update keeping the columns `flags` names, or a delete.
-    fn apply(&mut self, key: Vec<u8>, change: Change, flags: &[usize], columns: &Columns) {
+    fn apply(
+        &mut self,
+        key: Vec<u8>,
+        change: Change,
+        flags: &[usize],
+        columns: &Columns,
+        sources: &Sources<'_>,
+    ) {
         let current = self.get(&key);
         if current.is_some_and(|current| current.seq >= change.seq) {
             return;
@@ -87,11 +92,12 @@ impl Table {
             match (columns.at, current) {
                 (None, _) => self.remove(&key),
                 (Some(at), Some(current)) => {
-                    let mut cells = current.cells.clone();
-                    cells[columns.seq] = cell;
-                    cells[at] = cell;
-                    let seq = change.seq;
-                    self.put(key, Merged { seq, cells });
+                    let mut kept = Merged {
+                        seq: current.seq.clone(),
+                        cells: current.cells.clone(),
+                    };
+                    mark_deleted(&mut kept, &change, cell, columns.seq, at, sources);
+                    self.put(key, kept);
                 }
                 (Some(_), None) => {}
             }
@@ -116,6 +122,40 @@ impl Table {
     fn remove(&mut self, key: &[u8]) {
         if let Some(index) = self.by_key.remove(key) {
             self.rows[index] = None;
+        }
+    }
+}
+
+/// Marks `kept` deleted by `change`, whose row is `cell`: it takes the change's sequence, and
+/// the deletion time in column `at` unless it was deleted already, so it keeps when that was.
+fn mark_deleted(
+    kept: &mut Merged,
+    change: &Change,
+    cell: Cell,
+    seq: usize,
+    at: usize,
+    sources: &Sources<'_>,
+) {
+    kept.seq.clone_from(&change.seq);
+    kept.cells[seq] = cell;
+    if sources.is_null(kept.cells[at], at) {
+        kept.cells[at] = cell;
+    }
+}
+
+/// The batches a merged row's cells come from.
+struct Sources<'a> {
+    published: &'a RecordBatch,
+    aligned: &'a [RecordBatch],
+}
+
+impl Sources<'_> {
+    /// Whether `cell` of `column` is null.
+    fn is_null(&self, cell: Cell, column: usize) -> bool {
+        match cell {
+            Cell::Published(row) => self.published.column(column).is_null(row),
+            Cell::Incoming(batch, row) => self.aligned[batch].column(column).is_null(row),
+            Cell::Null => true,
         }
     }
 }
@@ -181,14 +221,7 @@ pub(crate) fn merge_changes(
         };
         table.put(published_keys.row(row).as_ref().to_vec(), merged);
     }
-    // A truncate names no key, so incoming rows align to the schema with every column nullable.
-    let nullable: SchemaRef = Arc::new(Schema::new(
-        schema
-            .fields()
-            .iter()
-            .map(|field| field.as_ref().clone().with_nullable(true))
-            .collect::<Vec<_>>(),
-    ));
+    let nullable = nullable(&schema);
     let aligned = incoming
         .iter()
         .map(|batch| align(batch, &nullable))
@@ -209,20 +242,35 @@ pub(crate) fn merge_changes(
         at,
         count: schema.fields().len(),
     };
+    let sources = Sources {
+        published: &published,
+        aligned: &aligned,
+    };
     for change in rows {
         if change.op == ChangeOp::Truncate {
-            table.truncate(&change, &columns);
+            table.truncate(&change, &columns, &sources);
             continue;
         }
         let row_key = keys[change.batch].row(change.row).as_ref().to_vec();
         let flags = unchanged(&incoming[change.batch], &schema, changes, change.row)?;
-        table.apply(row_key, change, &flags, &columns);
+        table.apply(row_key, change, &flags, &columns, &sources);
     }
     let merged = assemble(&schema, &published, &aligned, &table)?;
     Ok([merged]
         .into_iter()
         .filter(|batch| batch.num_rows() > 0)
         .collect())
+}
+
+/// `schema` with every column nullable, as incoming rows align to it: a truncate names no key.
+fn nullable(schema: &SchemaRef) -> SchemaRef {
+    Arc::new(Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone().with_nullable(true))
+            .collect::<Vec<_>>(),
+    ))
 }
 
 /// Every row of `incoming`, with its op and sequence.

@@ -224,6 +224,21 @@ fn a_truncate_removes_every_row_before_it_and_none_after() {
 }
 
 #[test]
+fn a_row_already_deleted_keeps_when_it_was_deleted() {
+    let published = apply(&[], &[&[row(1, "a", 1), row(2, "b", 2)]], soft());
+    let deleted = apply(&published, &[&[delete(1, 3, 100)]], soft());
+    // A later delete of the row, and a truncate, move its sequence but not its deletion.
+    let merged = apply(&deleted, &[&[delete(1, 4, 200), truncate(5, 300)]], soft());
+    assert_eq!(
+        rows(&merged),
+        [
+            (1, Some("a".into()), 5, Some(100)),
+            (2, Some("b".into()), 5, Some(300))
+        ]
+    );
+}
+
+#[test]
 fn an_update_keeps_the_published_value_of_each_column_it_flags_unchanged() {
     let published = apply(&[], &[&[row(1, "kept", 1)]], Deletion::Hard);
     let partial = |id, seq| Row {

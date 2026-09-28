@@ -111,7 +111,7 @@ pub(crate) fn merge_changes(
                 Some(at) => {
                     for stored in published.iter_mut() {
                         if text(stored, &key.seq) < seq {
-                            *stored = with(stored, &row, &[&key.seq, at], changes);
+                            *stored = deleted(stored, &row, &key.seq, at, changes);
                         }
                     }
                 }
@@ -130,7 +130,7 @@ pub(crate) fn merge_changes(
                 published.remove(index);
             }
             (Some(ChangeOp::Delete), Some(at), Some(index)) => {
-                published[index] = with(&published[index], &row, &[&key.seq, at], changes);
+                published[index] = deleted(&published[index], &row, &key.seq, at, changes);
             }
             (Some(ChangeOp::Delete), _, None) => {}
             _ => {
@@ -189,6 +189,14 @@ fn unchanged(row: &Stored, changes: &ChangeColumns) -> Vec<String> {
         })
         .map(|(_, field)| field.name().clone())
         .collect()
+}
+
+/// `stored` marked deleted by `row`: it takes the row's sequence in `seq`, and its deletion time
+/// in `at` unless it was deleted already, so it keeps when that was.
+fn deleted(stored: &Stored, row: &Stored, seq: &str, at: &str, changes: &ChangeColumns) -> Stored {
+    let before = !matches!(stored.cells.get(at), None | Some(Canon::Null));
+    let columns: &[&str] = if before { &[seq] } else { &[seq, at] };
+    with(stored, row, columns, changes)
 }
 
 /// `stored` with the cells of `columns` taken from `row`, without the columns that direct a
