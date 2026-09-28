@@ -107,7 +107,7 @@ pub async fn certify_destination_factory(
                 let outcome = match evolving::skipped(destination.as_ref(), clause.id) {
                     Some(reason) => Outcome::Skipped(reason.to_owned()),
                     None if unread => Outcome::Skipped(UNREAD.to_owned()),
-                    None => outcome(bench.check(clause.id).await),
+                    None => outcome(super::timed(bench.check(clause.id)).await),
                 };
                 results.push(ClauseResult {
                     clause: *clause,

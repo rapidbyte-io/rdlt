@@ -42,3 +42,15 @@ fn a_name_is_lengthened_to_the_longest_and_never_cut() {
     assert_eq!(padded("ab".to_owned(), 2, 'x'), "ab");
     assert_eq!(padded("abcdef".to_owned(), 3, 'x'), "abcdef");
 }
+
+#[test]
+fn the_names_keep_clear_of_the_destinations_reserved_words() {
+    let mut reserved = rules(IdentifierCase::Upper, IdentifierChars::AsciiWord);
+    reserved.reserved = ["ID".to_owned(), "ID_".to_owned()].into();
+    let names = names(&reserved);
+    assert!(
+        names.iter().all(|name| !reserved.reserved.contains(name)),
+        "{names:?}"
+    );
+    assert_eq!(names[0], "ID__");
+}

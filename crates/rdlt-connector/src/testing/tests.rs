@@ -58,6 +58,8 @@ struct PagesConfig {
     refuse_check: bool,
     /// Fails every read, though it checks.
     refuse_reads: bool,
+    /// Its reads wait for data that never comes, as a quiet stream's do.
+    idle: bool,
     /// The call that never returns: `connect`, `check`, `discover` or `plan`.
     hang: String,
 }
@@ -76,6 +78,7 @@ impl Default for PagesConfig {
             refuse_connect: false,
             refuse_check: false,
             refuse_reads: false,
+            idle: false,
             hang: String::new(),
         }
     }
@@ -180,6 +183,9 @@ impl ReadStream<Pages> for Page {
                 "the pages are gone",
             ));
         }
+        if source.config.idle {
+            std::future::pending::<()>().await;
+        }
         let start = if source.config.ignore_cursor {
             0
         } else {
@@ -265,6 +271,16 @@ async fn within_a_day<T>(certification: impl Future<Output = T>) -> T {
         .expect("certification ended")
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_source_whose_read_waits_for_data_passes_its_check() {
+    let report = within_a_day(certify_source::<Pages>(json!({ "idle": true }))).await;
+    assert_eq!(
+        report.outcome("S-CHECK"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
 #[tokio::test]
 async fn a_source_that_checks_but_cannot_read_fails_its_check() {
     let report = certify_source::<Pages>(json!({ "refuse_reads": true })).await;
@@ -287,6 +303,15 @@ async fn a_source_call_that_never_returns_fails_instead_of_hanging() {
             "{call}: {report}"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_whose_flushes_never_end_fails_instead_of_hanging() {
+    let report = within_a_day(certify_vault("hang_flush", Some("hang_flush"))).await;
+    assert!(
+        matches!(report.outcome("D-LANES"), Some(Outcome::Failed(_))),
+        "{report}"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -391,6 +416,8 @@ struct VaultConfig {
     writers: u16,
     /// The longest identifier it declares, when not the default.
     identifier_len: u16,
+    /// Never finishes a flush.
+    hang_flush: bool,
 }
 
 #[derive(Default)]
@@ -964,6 +991,9 @@ impl TableWriter for VaultWriter {
     }
 
     async fn flush(&mut self) -> Result<WriteStats> {
+        if self.config.hang_flush {
+            std::future::pending::<()>().await;
+        }
         Ok(WriteStats::default())
     }
 }

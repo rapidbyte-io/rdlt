@@ -33,6 +33,17 @@ pub use source::{SOURCE_CLAUSES, certify_source, certify_source_factory};
 /// How long any single connector call may take during certification.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The longest one clause takes, all its calls together: one that takes longer fails, rather
+/// than hold the certification, whichever of its awaits never ends.
+const CLAUSE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Runs a clause for at most [`CLAUSE_TIMEOUT`].
+async fn timed(check: impl Future<Output = Result<(), Violation>>) -> Result<(), Violation> {
+    tokio::time::timeout(CLAUSE_TIMEOUT, check)
+        .await
+        .unwrap_or_else(|_| Err(format!("the clause took longer than {CLAUSE_TIMEOUT:?}").into()))
+}
+
 /// One conformance clause.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clause {

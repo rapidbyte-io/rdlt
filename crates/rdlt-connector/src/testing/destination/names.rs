@@ -85,16 +85,28 @@ impl Bench<'_> {
 fn names(rules: &IdentifierRules) -> Vec<String> {
     let longest = usize::from(rules.max_len.get());
     let mut names = vec![
-        folded(rules, "id"),
+        unreserved(rules, folded(rules, "id")),
         folded(rules, &padded("long_".to_owned(), longest, 'g')),
     ];
     if rules.chars == IdentifierChars::Any {
-        names.push(folded(rules, "données_名前"));
+        names.push(unreserved(rules, folded(rules, "données_名前")));
     }
     if rules.case == IdentifierCase::Preserve {
-        names.push("MixedCase".to_owned());
+        names.push(unreserved(rules, "MixedCase".to_owned()));
     }
     names
+}
+
+/// `name`, lengthened with `_` until no word `rules` reserve is it, after case folding.
+fn unreserved(rules: &IdentifierRules, mut name: String) -> String {
+    while rules
+        .reserved
+        .iter()
+        .any(|word| folded(rules, word) == name)
+    {
+        name.push('_');
+    }
+    name
 }
 
 /// A table of `names`' columns, the first an id and the rest strings, and three rows of it.
