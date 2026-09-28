@@ -128,6 +128,8 @@ data is replayed from the source.
 - A remote destination built before M5a would drop `MergeKey.changes` as an unknown field and
   upsert change rows as data. Nothing is published, so M5b settles it with a capability for
   change merges when the SQL destinations learn them.
+- State written by this build can hold `Sequences` entries, which a build before it cannot read:
+  a pipeline's state moves forward only. Nothing is published, so no deployed build meets it.
 - Switching an existing merge table to CDC needs a new table; a reset that clears a stream's
   table and state is owed with M5d's retention reset.
 - The WAL cannot survive the loss of a worker's disk. That costs a re-read from the source, or,

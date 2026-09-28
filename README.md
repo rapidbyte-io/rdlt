@@ -44,8 +44,9 @@ destination clause from its binary alone. The kill clauses load through an engin
 connector is killed, a spawned one outright and any other by cutting its connections, and check
 that the load converges exactly once; they need the `kill` feature, which the binary has.
 Change streams load through the engine: a CDC source reads a snapshot, then its changes, in phases
-the engine advances within a run, and its inserts, updates, partial updates, deletes and truncates
-merge by key under the seq guard, with deletes hard, soft or ignored, or append as a change log.
+the engine advances within a run. Its inserts, updates, partial updates and deletes merge by key
+under the seq guard, with deletes hard, soft or ignored; a truncate, which names no key, removes or
+marks deleted every row sequenced before it. A change log appends every change instead.
 The memory, JSON lines and Arrow IPC destinations merge them; the simulation checks every merged
 table and log against a model of a seeded change workload, through faults, crashes and racing runs.
 
