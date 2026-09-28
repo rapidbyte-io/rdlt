@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, StringArray};
+use arrow_array::{ArrayRef, Decimal128Array, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::WriteModes;
 use rdlt_engine::{ErrorKind, RunStatus, WriteMode};
 use serde_json::json;
@@ -257,6 +257,93 @@ pub(crate) async fn merges_into_a_table_it_appended_to_and_appends_again(target:
     assert_eq!(target.rows(store, "events"), 3, "{target:?}");
 }
 
+fn decimals(values: &[i128], precision: u8, scale: i8) -> ArrayRef {
+    Arc::new(
+        Decimal128Array::from(values.to_vec())
+            .with_precision_and_scale(precision, scale)
+            .expect("a valid decimal"),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_whose_stored_rendering_its_new_type_changes_is_refused() {
+    // SQLite stores decimals as text, so 1.50 at scale 4 would store as 1.5000 and match nothing.
+    let target = Target::Sqlite;
+    let store = target.name("merge_key_widened");
+    let run = |pushed| {
+        let store = store.clone();
+        async move {
+            let keyed = BatchStream::new("events", vec![pushed]).primary_key(&["k"]);
+            engine(commit_every(1))
+                .run(
+                    pipeline("merge-key-widened", [merging("events")]),
+                    batches(&store, vec![keyed]).await,
+                    target.destination("merge_key_widened").await,
+                )
+                .await
+        }
+    };
+    let first = run(batch(vec![
+        ("k", decimals(&[150], 10, 2)),
+        ("v", ints(&[1])),
+    ]))
+    .await;
+    assert_eq!(
+        first.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        first.error
+    );
+    let second = run(batch(vec![
+        ("k", decimals(&[15_000], 12, 4)),
+        ("v", ints(&[2])),
+    ]))
+    .await;
+    assert_eq!(second.report.status, RunStatus::Failed);
+    let error = second.error.expect("the run failed");
+    assert_eq!(error.kind(), ErrorKind::Schema, "{error}");
+    assert_eq!(error.code(), Some("merge_key_changed"), "{error}");
+    assert_eq!(target.json("merge_key_widened", "events").len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_stored_by_value_widens_and_keeps_one_row_per_key() {
+    // Integers store alike at any width, and the memory destination keeps decimals as decimals.
+    let run = |pushed, store: &'static str| async move {
+        let keyed = BatchStream::new("events", vec![pushed]).primary_key(&["k"]);
+        engine(commit_every(1))
+            .run(
+                pipeline("merge-key-kept", [merging("events")]),
+                batches(store, vec![keyed]).await,
+                memory(store).await,
+            )
+            .await
+    };
+    let narrow: ArrayRef = Arc::new(arrow_array::Int32Array::from(vec![7]));
+    let wide: ArrayRef = Arc::new(Int64Array::from(vec![7]));
+    let scaled = [decimals(&[150], 10, 2), decimals(&[15_000], 12, 4)];
+    for (store, [before, after]) in [
+        ("merge_key_ints", [narrow, wide]),
+        ("merge_key_decimals", scaled),
+    ] {
+        let first = run(batch(vec![("k", before), ("v", ints(&[1]))]), store).await;
+        assert_eq!(
+            first.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            first.error
+        );
+        let second = run(batch(vec![("k", after), ("v", ints(&[2]))]), store).await;
+        assert_eq!(
+            second.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            second.error
+        );
+        assert_eq!(published_json(store, "events").len(), 1, "{store}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_column_named_as_the_merge_ranks_its_rows_keeps_every_key_on_sqlite() {
     let target = Target::Sqlite;
@@ -280,4 +367,67 @@ async fn a_column_named_as_the_merge_ranks_its_rows_keeps_every_key_on_sqlite() 
         outcome.error
     );
     assert_eq!(target.ids("merge_rank_column", "events"), [1, 2, 3]);
+}
+
+/// Runs `pushed`, keyed by `k`, into the SQLite store `store`, merged.
+async fn sqlite_keyed(store: &'static str, pushed: RecordBatch) -> rdlt_engine::RunOutcome {
+    let target = Target::Sqlite;
+    let keyed = BatchStream::new("events", vec![pushed]).primary_key(&["k"]);
+    engine(commit_every(1))
+        .run(
+            pipeline(store, [merging("events")]),
+            batches(&target.name(store), vec![keyed]).await,
+            target.destination(store).await,
+        )
+        .await
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_integer_key_widens_on_sqlite_to_a_wider_integer() {
+    let narrow: ArrayRef = Arc::new(arrow_array::Int32Array::from(vec![7]));
+    let first = sqlite_keyed(
+        "key_int_wider",
+        batch(vec![("k", narrow), ("v", ints(&[1]))]),
+    )
+    .await;
+    assert_eq!(
+        first.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        first.error
+    );
+    let wide: ArrayRef = Arc::new(Int64Array::from(vec![7]));
+    let wider = sqlite_keyed("key_int_wider", batch(vec![("k", wide), ("v", ints(&[2]))])).await;
+    assert_eq!(
+        wider.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        wider.error
+    );
+    assert_eq!(Target::Sqlite.json("key_int_wider", "events").len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_integer_key_never_changes_on_sqlite_to_a_type_it_cannot_widen_to_or_renders() {
+    // A decimal SQLite stores as text; a float it stores by value, but cannot widen to.
+    let changed = [
+        ("key_int_decimal", decimals(&[70_000], 12, 4)),
+        (
+            "key_int_float",
+            Arc::new(arrow_array::Float64Array::from(vec![7.5])) as ArrayRef,
+        ),
+    ];
+    for (store, after) in changed {
+        let int: ArrayRef = Arc::new(arrow_array::Int32Array::from(vec![7]));
+        let first = sqlite_keyed(store, batch(vec![("k", int), ("v", ints(&[1]))])).await;
+        assert_eq!(
+            first.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            first.error
+        );
+        let second = sqlite_keyed(store, batch(vec![("k", after), ("v", ints(&[2]))])).await;
+        let error = second.error.expect("the run failed");
+        assert_eq!(error.code(), Some("merge_key_changed"), "{store}: {error}");
+    }
 }
