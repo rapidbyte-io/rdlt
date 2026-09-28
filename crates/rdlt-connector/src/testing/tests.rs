@@ -373,6 +373,8 @@ struct VaultConfig {
     refuse_connect: bool,
     forget_receipts: bool,
     publish_all: bool,
+    /// Publishes, for each segment a commit lists, one it staged and the commit does not list.
+    publish_other: bool,
     local_epoch: bool,
     local_state: bool,
     stale_writes: bool,
@@ -380,6 +382,10 @@ struct VaultConfig {
     hang_connect: bool,
     replace_early: bool,
     merge_appends: bool,
+    /// Keeps the first row of each key a merge meets, whatever its sequence.
+    merge_keeps_first: bool,
+    /// Keeps the last row of each key a merge meets, whatever its sequence.
+    merge_keeps_last: bool,
     refuse_repeated_changes: bool,
     ignore_added_columns: bool,
     refuse_widening: bool,
@@ -711,7 +717,7 @@ impl VaultSession {
                     let root_rows = root_rows.unwrap_or_default();
                     replace_children(published, &incoming, &root, &root_rows, &key);
                 }
-                _ => merge(published, incoming),
+                _ => merge(published, incoming, self.config.winner()),
             }
         }
     }
@@ -731,13 +737,23 @@ impl VaultSession {
 
     /// The segments `meta` commits, or with `publish_all` every segment the pipeline staged.
     fn segments_to_publish(&self, store: &VaultStore, meta: &CommitMeta) -> Vec<SegmentId> {
+        let staged = store
+            .staged
+            .keys()
+            .filter(|(staged, _)| *staged == self.pipeline)
+            .map(|(_, segment)| *segment);
         if self.config.publish_all {
-            store
-                .staged
-                .keys()
-                .filter(|(staged, _)| *staged == self.pipeline)
-                .map(|(_, segment)| *segment)
-                .collect()
+            staged.collect()
+        } else if self.config.publish_other {
+            let others: Vec<SegmentId> = staged
+                .filter(|segment| !meta.segments.contains(*segment))
+                .collect();
+            if others.is_empty() {
+                meta.segments.iter().collect()
+            } else {
+                let listed = usize::try_from(meta.segments.len()).unwrap_or(usize::MAX);
+                others.into_iter().take(listed).collect()
+            }
         } else {
             meta.segments.iter().collect()
         }
@@ -1047,9 +1063,32 @@ fn replace_children(
     *published = kept;
 }
 
+/// Which of a key's incoming rows a merge keeps.
+#[derive(Clone, Copy)]
+enum Winner {
+    /// The greatest sequence's, as a merge must.
+    Newest,
+    /// The first met.
+    First,
+    /// The last met.
+    Last,
+}
+
+impl VaultConfig {
+    fn winner(&self) -> Winner {
+        if self.merge_keeps_first {
+            Winner::First
+        } else if self.merge_keeps_last {
+            Winner::Last
+        } else {
+            Winner::Newest
+        }
+    }
+}
+
 /// Merges `incoming` into `published` a row at a time: an incoming row replaces the published
-/// row with its key, and among incoming rows of one key the greatest sequence wins.
-fn merge(published: &mut Vec<RecordBatch>, incoming: Vec<(MergeKey, RecordBatch)>) {
+/// row with its key, and among incoming rows of one key `winner` says which wins.
+fn merge(published: &mut Vec<RecordBatch>, incoming: Vec<(MergeKey, RecordBatch)>, winner: Winner) {
     let Some(key) = incoming.first().map(|(key, _)| key.clone()) else {
         return;
     };
@@ -1079,11 +1118,13 @@ fn merge(published: &mut Vec<RecordBatch>, incoming: Vec<(MergeKey, RecordBatch)
     let mut winners: BTreeMap<Vec<String>, RecordBatch> = BTreeMap::new();
     let batches: Vec<RecordBatch> = incoming.into_iter().map(|(_, batch)| batch).collect();
     for row in rows(&batches) {
-        match winners.get(&key_of(&row)) {
-            Some(best) if seq_of(best) >= seq_of(&row) => {}
-            _ => {
-                winners.insert(key_of(&row), row);
-            }
+        let kept = winners.get(&key_of(&row)).is_some_and(|best| match winner {
+            Winner::Newest => seq_of(best) >= seq_of(&row),
+            Winner::First => true,
+            Winner::Last => false,
+        });
+        if !kept {
+            winners.insert(key_of(&row), row);
         }
     }
     let mut kept: Vec<RecordBatch> = rows(published)
@@ -1212,10 +1253,16 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
         ("wrong_fence_kind", &["D-FENCE"][..]),
         ("forget_receipts", &["D-IDEMPOTENT"][..]),
         ("publish_all", &["D-COMMIT"][..]),
+        (
+            "publish_other",
+            &["D-COMMIT", "D-REPLACE", "D-MERGE", "D-CHILDREN"][..],
+        ),
         ("local_state", &["D-STATE"][..]),
         ("stale_writes", &["D-DISCARD"][..]),
         ("replace_early", &["D-REPLACE"][..]),
         ("merge_appends", &["D-MERGE", "D-CHILDREN"][..]),
+        ("merge_keeps_first", &["D-MERGE"][..]),
+        ("merge_keeps_last", &["D-MERGE"][..]),
         ("refuse_repeated_changes", &["D-SCHEMA"][..]),
         ("ignore_added_columns", &["D-SCHEMA"][..]),
         ("accept_conflicts", &["D-SCHEMA"][..]),
