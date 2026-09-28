@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use rdlt_connector::{
-    ColumnKey, Field, LogicalType, MergeKey, SchemaVersion, TableRef, TableSchema,
+    ChangeColumns, ColumnKey, Deletion, Field, LogicalType, MergeKey, SchemaVersion, TableRef,
+    TableSchema,
 };
 
 #[cfg(test)]
@@ -79,7 +80,7 @@ impl TableView {
             .filter_map(|path| model.names.get(&ColumnKey::Source(path.clone())))
             .collect();
         let merge = merge_key(resolver, &key_names);
-        let key = key_names
+        let key: Vec<usize> = key_names
             .iter()
             .filter_map(|name| {
                 model
@@ -94,7 +95,11 @@ impl TableView {
                 merge,
                 ..table.clone()
             },
-            schema: lower::prepared_schema(&physical, &logical, model.columns.len()),
+            schema: with_directives(
+                &lower::prepared_schema(&physical, &logical, model.columns.len()),
+                &resolver.meta,
+                &key,
+            ),
             lowered,
             physical,
             meta: resolver.meta.clone(),
@@ -120,10 +125,52 @@ impl TableView {
     }
 }
 
+/// `schema`, the stored columns of prepared batches, with the columns that only direct a merge
+/// after them; a change stream's merge batches may hold a null in its `key` columns, where a
+/// truncate names no key.
+fn with_directives(schema: &SchemaRef, meta: &MetaNames, key: &[usize]) -> SchemaRef {
+    let directives = lower::directive_fields(meta);
+    if directives.is_empty() {
+        return Arc::clone(schema);
+    }
+    let fields: Vec<_> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let field = field.as_ref().clone();
+            if key.contains(&index) {
+                field.with_nullable(true)
+            } else {
+                field
+            }
+        })
+        .chain(directives)
+        .collect();
+    Arc::new(arrow_schema::Schema::new(fields))
+}
+
 /// How a table of `resolver`'s merges, if it does: by the columns `key_names`, or, for a child
-/// table of a merge stream, by its rows' root id, following its root.
+/// table of a merge stream, by its rows' root id, following its root; a change stream's merge
+/// table says what each row does.
 fn merge_key(resolver: &Resolver, key_names: &[&str]) -> Option<MergeKey> {
+    if resolver.root.is_none() && resolver.settings.key.is_empty() {
+        return None;
+    }
     let seq = resolver.meta.seq.as_ref()?;
+    let changes = resolver
+        .meta
+        .changes
+        .as_ref()
+        .filter(|changes| !changes.stored)
+        .map(|changes| ChangeColumns {
+            op: Arc::clone(&changes.op),
+            unchanged: Some(Arc::clone(&changes.unchanged)),
+            deletion: match &changes.deleted_at {
+                Some(at) => Deletion::Soft { at: Arc::clone(at) },
+                None => Deletion::Hard,
+            },
+        });
     Some(match (&resolver.root, &resolver.meta.parent) {
         (Some(root), Some([_, root_id, _])) => MergeKey {
             columns: vec![Arc::clone(root_id)],
@@ -135,7 +182,7 @@ fn merge_key(resolver: &Resolver, key_names: &[&str]) -> Option<MergeKey> {
             columns: key_names.iter().map(|name| (*name).into()).collect(),
             seq: Arc::clone(seq),
             root: None,
-            changes: None,
+            changes,
         },
     })
 }

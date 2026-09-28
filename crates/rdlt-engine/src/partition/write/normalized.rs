@@ -218,7 +218,7 @@ fn pruning_failed(job: &PartitionJob, error: &ArrowError) -> Error {
 fn lower_unit(unit: PlannedParts, stamp: &Stamp) -> Result<Vec<(usize, Prepared)>, Error> {
     unit.into_iter()
         .map(|(table, part, plan)| {
-            let prepared = plan.prepare(&part.batch, Some(&part.lineage), stamp)?;
+            let prepared = plan.prepare(&part.batch, Some(&part.lineage), stamp, None)?;
             Ok((table, prepared))
         })
         .collect()
