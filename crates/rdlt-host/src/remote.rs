@@ -8,6 +8,7 @@ mod source;
 mod write;
 
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -74,10 +75,10 @@ impl Default for Deadlines {
 /// How a connection runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// How often a heartbeat is sent.
+    /// How often a heartbeat is sent; above zero, as [`Connection::connect`] requires.
     pub heartbeat: Duration,
     /// How many heartbeats may go unanswered before the connector counts as lost.
-    pub missed: u32,
+    pub missed: NonZeroU32,
     /// Each call's deadline.
     pub deadlines: Deadlines,
     /// The limits this end enforces on what it receives.
@@ -90,7 +91,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             heartbeat: Duration::from_secs(5),
-            missed: 6,
+            missed: NonZeroU32::new(6).unwrap_or(NonZeroU32::MIN),
             deadlines: Deadlines::default(),
             limits: Limits::default(),
             read_window: rdlt_wire::limits::CREDIT_WINDOW,
@@ -125,8 +126,8 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// The connector's error when the handshake fails, or a transient error when the transport
-    /// does.
+    /// A `Config` error coded `options_invalid` for a zero heartbeat interval, the connector's
+    /// error when the handshake fails, or a transient error when the transport does.
     pub async fn connect<IO>(
         io: IO,
         role: Role,
@@ -136,6 +137,10 @@ impl Connection {
     where
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
+        if options.heartbeat.is_zero() {
+            return Err(ConnectorError::config("the heartbeat interval is zero")
+                .with_code("options_invalid"));
+        }
         let (lost, spent) = {
             let lost = CancellationToken::new();
             let spent = lost.child_token();
@@ -256,7 +261,7 @@ where
     });
     // HTTP/2's own pings notice a connection the network dropped silently (§12.6), beside the
     // protocol's heartbeat, which notices a connector that stopped answering.
-    let patience = options.heartbeat.saturating_mul(options.missed.max(1));
+    let patience = options.heartbeat.saturating_mul(options.missed.get());
     let channel = Endpoint::from_static("http://connector")
         .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
         .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
@@ -357,7 +362,7 @@ async fn heartbeat(
                 Err(_) => break,
             },
             _ = ticks.tick() => {
-                if sent - answered >= u64::from(options.missed) {
+                if sent - answered >= u64::from(options.missed.get()) {
                     break;
                 }
                 sent += 1;

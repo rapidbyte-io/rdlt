@@ -183,7 +183,13 @@ impl World {
             }
             1 | 2 => ConnectorError::new(ConnectorErrorKind::Data, message),
             3..=7 => {
-                let after = Duration::from_millis(1 + rng.below(500));
+                // Now and then a connector asks for years: the engine waits no longer than its
+                // policy's longest delay, or the run would outlast the simulation's limit.
+                let after = if rng.chance(100) {
+                    Duration::from_hours(87_600)
+                } else {
+                    Duration::from_millis(1 + rng.below(500))
+                };
                 ConnectorError::rate_limited(message, Some(after))
             }
             _ => ConnectorError::new(ConnectorErrorKind::Transient, message),

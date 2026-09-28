@@ -211,3 +211,30 @@ async fn a_forwarded_read_does_not_ask_for_a_barrier_its_checkpoint_answered() {
     feed.stop();
     assert_eq!(sink.requested(0).await, Requested::Stop);
 }
+
+#[tokio::test]
+async fn a_checkpoint_answering_a_barrier_never_requested_is_refused() {
+    let (mut sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
+    feed.request_checkpoint(2);
+    let cursor = || Cursor::new(1, Bytes::from_static(b"c")).expect("a small cursor");
+    let refused = sink
+        .send(SourceEvent::Checkpoint {
+            cursor: cursor(),
+            answers: Some(u64::MAX),
+        })
+        .await
+        .expect_err("no such barrier was requested");
+    assert_eq!(refused.kind(), ConnectorErrorKind::Internal);
+    assert_eq!(refused.code(), Some("barrier_unrequested"));
+    // An answer to an older barrier after a newer one leaves the newer answered.
+    for answers in [2, 1] {
+        sink.send(SourceEvent::Checkpoint {
+            cursor: cursor(),
+            answers: Some(answers),
+        })
+        .await
+        .expect("the send goes");
+        feed.recv().await.expect("the checkpoint arrives");
+    }
+    assert_eq!(sink.pending_barrier(), None);
+}

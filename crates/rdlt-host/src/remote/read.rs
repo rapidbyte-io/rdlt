@@ -68,6 +68,12 @@ pub(super) async fn run(
                     // A send fails only once the engine has stopped the read, even one that
                     // waited for room; the next turn forwards the stop, and the read drains.
                     Read::Event(event) => {
+                        // A checkpoint may answer only a barrier the host forwarded.
+                        if let SourceEvent::Checkpoint { answers: Some(barrier), .. } = &event
+                            && *barrier > forwarded
+                        {
+                            return Err(invalid(&Invalid::OutOfRange("checkpoint barrier")));
+                        }
                         sink.send(event).await.ok();
                     }
                     Read::Nothing => {}

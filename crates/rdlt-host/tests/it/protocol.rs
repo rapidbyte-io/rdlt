@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use rdlt_connector::serve::Served;
@@ -21,7 +22,7 @@ use crate::support::{
 fn quick() -> Options {
     Options {
         heartbeat: Duration::from_millis(20),
-        missed: 3,
+        missed: NonZeroU32::new(3).expect("not zero"),
         ..Options::default()
     }
 }
@@ -171,6 +172,38 @@ async fn a_malformed_frame_from_the_connector_is_refused_typed() {
     assert_eq!(
         (error.kind(), error.code()),
         (ConnectorErrorKind::Internal, Some("malformed_frame"))
+    );
+}
+
+#[tokio::test]
+async fn a_checkpoint_answering_a_barrier_never_asked_for_is_refused_typed() {
+    let io = serve_fake(Fake(Fault::AnswersAhead));
+    let connection =
+        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
+            .await
+            .unwrap();
+    let error = read_items(&RemoteSource::new(connection))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Internal, Some("invalid_message"))
+    );
+}
+
+#[tokio::test]
+async fn a_zero_heartbeat_interval_is_refused_before_connecting() {
+    let io = serve_fake(Fake(Fault::Silent));
+    let options = Options {
+        heartbeat: Duration::ZERO,
+        ..Options::default()
+    };
+    let error = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Config, Some("options_invalid"))
     );
 }
 

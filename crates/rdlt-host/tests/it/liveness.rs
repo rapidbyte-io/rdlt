@@ -1,5 +1,6 @@
 //! The heartbeat's verdict against connectors that answer it wrongly, and hosts that stall.
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use rdlt_connector::serve::Served;
@@ -14,7 +15,7 @@ use crate::support::{Fake, Fault, serve_fake, served};
 fn quick() -> Options {
     Options {
         heartbeat: Duration::from_millis(20),
-        missed: 3,
+        missed: NonZeroU32::new(3).expect("not zero"),
         ..Options::default()
     }
 }
@@ -153,7 +154,7 @@ async fn across(
     // A patience far longer than any wait here: only a drop may end the connection's tasks.
     let options = Options {
         heartbeat: Duration::from_secs(1),
-        missed: 60,
+        missed: NonZeroU32::new(60).expect("not zero"),
         ..Options::default()
     };
     let connection = Connection::connect(io, Role::Source, config, options)
