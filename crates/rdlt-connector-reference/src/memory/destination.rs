@@ -9,8 +9,8 @@ use arrow_schema::SchemaRef;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitSeq, Epoch, GenerationId, LoadId, MergeKey, PipelineId, RootKey, SchemaChanges,
-    SegmentId, StateChange, StateRecord, TablePath, TypeKind,
+    CommitSeq, DeleteModes, Epoch, GenerationId, LoadId, MergeKey, PipelineId, RootKey,
+    SchemaChanges, SegmentId, StateChange, StateRecord, TablePath, TypeKind,
 };
 
 use crate::columns::changed;
@@ -264,6 +264,11 @@ impl DestinationConnector for MemoryDestination {
         let mut capabilities = Capabilities::minimal();
         capabilities.write_modes.replace = true;
         capabilities.write_modes.merge = true;
+        capabilities.delete_modes = DeleteModes {
+            hard: true,
+            soft: true,
+        };
+        capabilities.partial_updates = true;
         capabilities.schema_changes = SchemaChanges::all();
         capabilities.nested.structs = true;
         capabilities.nested.lists = true;

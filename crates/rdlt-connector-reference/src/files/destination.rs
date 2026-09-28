@@ -9,8 +9,8 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitKind, Epoch, IdentifierCase, IdentifierChars, IdentifierRules, NestedSupport,
-    SchemaChanges, TypeKind, WriteModes,
+    CommitKind, DeleteModes, Epoch, IdentifierCase, IdentifierChars, IdentifierRules,
+    NestedSupport, SchemaChanges, TypeKind, WriteModes,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -164,6 +164,11 @@ fn capabilities(format: FileFormat) -> Capabilities {
         merge: true,
         history: false,
     };
+    capabilities.delete_modes = DeleteModes {
+        hard: true,
+        soft: true,
+    };
+    capabilities.partial_updates = true;
     capabilities.nested = NestedSupport {
         structs: true,
         lists: true,
