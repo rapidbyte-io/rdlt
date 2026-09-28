@@ -300,6 +300,49 @@ fn integers_beyond_the_unsigned_range_read_exactly_as_decimals_and_negative_zero
 }
 
 #[test]
+fn a_number_reads_alike_whether_or_not_its_chunk_is_parsed_exactly() {
+    // The integer beyond 64 bits sends its chunk, from its record on, through the exact parse.
+    let exact = "18446744073709551616";
+    for number in [
+        "0",
+        "-0",
+        "-0.0",
+        "-0e0",
+        "1.5",
+        "1E2",
+        "1e19",
+        "-1e19",
+        "1e-400",
+        "4.9e-324",
+        "1e400",
+        "-1e400",
+        "1.8e308",
+        "12345678901234567890",
+        "-9223372036854775809",
+    ] {
+        let fast = shredded(&[Bytes::from(format!("{{\"n\":{number}}}"))], 1 << 20);
+        let beside = shredded(
+            &[Bytes::from(format!(
+                "{{\"big\":{exact}}}\n{{\"n\":{number}}}"
+            ))],
+            1 << 20,
+        );
+        match (fast, beside) {
+            (Ok(fast), Ok(beside)) => {
+                let (fast, beside) = (fast.expect("a row"), beside.expect("a row"));
+                assert_eq!(types(&fast)[0].1, types(&beside)[1].1, "{number}");
+                assert_eq!(
+                    fast.column(0).to_data(),
+                    beside.column(1).slice(1, 1).to_data(),
+                    "{number}"
+                );
+            }
+            (fast, beside) => assert_eq!(fast.err(), beside.err(), "{number}"),
+        }
+    }
+}
+
+#[test]
 fn nested_objects_and_arrays_become_structs_and_lists_with_their_items_joined() {
     let batch = batch_of(
         &[r#"{"o":{"x":1,"l":[1,2.5]},"e":{}}
