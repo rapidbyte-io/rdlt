@@ -25,11 +25,11 @@ pub(crate) fn example(name: &str) -> PathBuf {
 }
 
 /// Places connectors in processes of their own, whose coverage, when measured, is kept.
-fn local() -> Local {
+pub(crate) fn local() -> Local {
     Local::new().env_passthrough("LLVM_PROFILE_FILE")
 }
 
-fn scripted() -> ConnectorRef {
+pub(crate) fn scripted() -> ConnectorRef {
     let id = ConnectorId::parse("test.scripted").expect("a valid id");
     ConnectorRef::new(id).path(example("scripted_connector"))
 }
@@ -50,7 +50,7 @@ fn gone(pid: i32) -> bool {
 }
 
 /// Waits up to `patience` for process `pid` to be gone.
-async fn wait_gone(pid: i32, patience: Duration) -> bool {
+pub(crate) async fn wait_gone(pid: i32, patience: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + patience;
     while tokio::time::Instant::now() < deadline {
         if gone(pid) {

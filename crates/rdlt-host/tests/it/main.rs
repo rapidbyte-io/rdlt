@@ -1,6 +1,7 @@
 //! The engine loading through connectors served over sockets.
 
 mod flow;
+mod kills;
 mod limits;
 mod liveness;
 mod loads;
