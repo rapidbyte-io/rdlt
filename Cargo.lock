@@ -1968,6 +1968,7 @@ name = "rdlt-connector"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-cast",
  "arrow-schema",
  "base64 0.22.1",

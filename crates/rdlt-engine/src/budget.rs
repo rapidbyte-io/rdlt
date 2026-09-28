@@ -45,6 +45,14 @@ impl Ledger {
     fn reserve(&mut self, bytes: u64) {
         self.reserved = self.reserved.saturating_add(bytes);
         self.peak = self.peak.max(self.reserved);
+        self.press();
+    }
+
+    /// Signals pressure while a request waits or charges exceed the budget: either way, whoever
+    /// holds bytes it could release early should.
+    fn press(&self) {
+        let pressed = !self.waiting.is_empty() || self.reserved > self.capacity;
+        self.pressed.send_replace(pressed);
     }
 }
 
@@ -73,7 +81,7 @@ impl MemoryBudget {
             }
             let (sender, receiver) = oneshot::channel();
             ledger.waiting.push_back((bytes, sender));
-            ledger.pressed.send_replace(true);
+            ledger.press();
             receiver
         };
         receiver
@@ -88,8 +96,8 @@ impl MemoryBudget {
         self.reservation(bytes)
     }
 
-    /// Completes once a request is waiting for bytes: whoever holds bytes it could release early
-    /// should.
+    /// Completes once a request is waiting for bytes or charges exceed the budget: whoever holds
+    /// bytes it could release early should.
     pub(crate) fn pressed(&self) -> impl Future<Output = ()> + Send + 'static {
         let mut pressed = self.shared.lock().pressed.subscribe();
         async move {
@@ -197,7 +205,5 @@ fn admit_waiting(shared: &Arc<Mutex<Ledger>>, ledger: &mut Ledger) {
             }
         }
     }
-    if ledger.waiting.is_empty() {
-        ledger.pressed.send_replace(false);
-    }
+    ledger.press();
 }

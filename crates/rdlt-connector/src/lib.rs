@@ -118,7 +118,7 @@ pub use secret::Secret;
 pub use serve::serve;
 pub use sink::{
     Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
-    admitted_partition_channel, decoded_bytes, partition_channel,
+    admitted_partition_channel, decoded_bytes, decoded_rows, partition_channel,
 };
 pub use source::{
     Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory,

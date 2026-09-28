@@ -6,7 +6,7 @@ mod tests;
 
 use arrow_array::RecordBatch;
 
-use rdlt_connector::decoded_bytes;
+use rdlt_connector::{decoded_bytes, decoded_rows};
 
 use super::{Held, LOWERING_WINDOW};
 use crate::budget::MemoryBudget;
@@ -19,6 +19,22 @@ const MIN_SLICE: u64 = 64 << 10;
 pub(super) fn slice_bytes(budget: &MemoryBudget) -> u64 {
     let window = u64::try_from(2 * LOWERING_WINDOW).unwrap_or(u64::MAX);
     (budget.capacity() / window).max(MIN_SLICE)
+}
+
+/// The memory `batch`'s own rows hold: a piece cut from a larger batch shares its buffers, so it
+/// counts its rows alone, and an encoded column counts what it holds, not what it would decode to.
+pub(super) fn held_bytes(batch: &RecordBatch) -> u64 {
+    batch
+        .columns()
+        .iter()
+        .map(|column| {
+            let bytes = column
+                .to_data()
+                .get_slice_memory_size()
+                .unwrap_or_else(|_| column.get_array_memory_size());
+            u64::try_from(bytes).unwrap_or(u64::MAX)
+        })
+        .fold(0, u64::saturating_add)
 }
 
 /// `units` cut into pieces of at most `max` decoded bytes, or of one row where a row is larger.
@@ -64,15 +80,24 @@ pub(super) fn sliced(
     pieces
 }
 
-/// `batch` in slices of its rows of at most `max` decoded bytes each, or of one row; a batch
-/// within `max`, or without rows, is one slice of itself.
+/// `batch` in slices of its rows of at most `max` decoded bytes each, or of one row where a row
+/// takes more; a batch within `max`, or without rows, is one slice of itself.
+///
+/// Rows are cut where their own values say, so a run or key skewed toward one large value is
+/// cut as finely as that value needs.
 fn rows(batch: &RecordBatch, max: u64) -> Vec<RecordBatch> {
-    let count = batch.num_rows();
-    let rows = u64::try_from(count.max(1)).unwrap_or(u64::MAX);
-    let per_row = decoded_bytes(batch).div_ceil(rows).max(1);
-    let step = usize::try_from(max / per_row).unwrap_or(usize::MAX).max(1);
-    (0..count.max(1))
-        .step_by(step)
-        .map(|first| batch.slice(first, step.min(count - first)))
-        .collect()
+    if decoded_bytes(batch) <= max {
+        return vec![batch.clone()];
+    }
+    let mut slices = Vec::new();
+    let (mut first, mut bytes) = (0, 0_u64);
+    for (row, cost) in decoded_rows(batch).into_iter().enumerate() {
+        if row > first && bytes.saturating_add(cost) > max {
+            slices.push(batch.slice(first, row - first));
+            (first, bytes) = (row, 0);
+        }
+        bytes = bytes.saturating_add(cost);
+    }
+    slices.push(batch.slice(first, batch.num_rows() - first));
+    slices
 }

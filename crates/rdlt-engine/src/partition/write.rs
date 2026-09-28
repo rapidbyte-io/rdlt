@@ -191,8 +191,10 @@ fn windows<T>(items: Vec<T>) -> Vec<Vec<T>> {
 
 /// `held` with the growth of `prepared` beyond it charged: the permits then hold the lowered
 /// batch's bytes, or the shredded batch's where lowering shrank it.
+///
+/// A lowered piece of a larger batch may share its buffers, so it is charged for its own rows.
 fn charge_growth(budget: &MemoryBudget, prepared: &Prepared, mut held: Held) -> Held {
-    let bytes = u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX);
+    let bytes = slices::held_bytes(&prepared.batch);
     held.permits
         .push(Box::new(budget.charge(bytes.saturating_sub(held.bytes))));
     held.bytes = held.bytes.max(bytes);
@@ -291,7 +293,7 @@ async fn queue(
     if rows == 0 {
         return Ok(());
     }
-    let bytes = u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX);
+    let bytes = slices::held_bytes(&prepared.batch);
     let lane = context.lanes.route(table, job.partition.id());
     context
         .lanes

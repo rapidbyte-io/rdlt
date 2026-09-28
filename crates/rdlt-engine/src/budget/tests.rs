@@ -175,3 +175,17 @@ async fn pressure_is_felt_while_a_request_waits_and_eases_once_it_is_admitted() 
     assert!(!felt(&budget).await, "the request was admitted");
     drop(admitted);
 }
+
+#[tokio::test(start_paused = true)]
+async fn pressure_is_felt_while_charges_exceed_the_budget_and_eases_once_they_fit() {
+    let budget = MemoryBudget::new(100);
+    let admitted = budget.acquire(60).await;
+    let growth = budget.charge(40);
+    assert!(!felt(&budget).await, "the budget is full, not exceeded");
+    let beyond = budget.charge(1);
+    assert!(felt(&budget).await, "charges exceed the budget");
+    drop(growth);
+    assert!(!felt(&budget).await, "the charges fit again");
+    drop(beyond);
+    drop(admitted);
+}

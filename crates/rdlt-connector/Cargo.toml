@@ -33,6 +33,7 @@ sqlgen = []
 
 [dependencies]
 arrow-array.workspace = true
+arrow-buffer.workspace = true
 arrow-cast = { workspace = true, optional = true }
 arrow-schema.workspace = true
 base64.workspace = true
