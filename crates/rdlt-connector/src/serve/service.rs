@@ -1,5 +1,5 @@
-//! The protocol's calls, served for one connection: the handshake connects the connector for a
-//! role, and every later call works on it.
+//! The protocol's calls, served for one connection: the handshake agrees a role, the
+//! configuration connects the connector for it, and every later call works on it.
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, OnceCell};
 use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
-use super::handshake::unsupported;
+use super::handshake::{Agreed, no_handshake, not_configured, unsupported};
 use super::until::Until;
 use super::{Served, published, read, write};
 use crate::destination::{
@@ -41,6 +41,8 @@ pub(super) type SessionSlot = Arc<Mutex<Option<Box<dyn DestinationSession>>>>;
 pub(super) struct Service {
     pub(super) served: Arc<Served>,
     pub(super) limits: Limits,
+    /// What the handshake agreed.
+    pub(super) agreed: OnceCell<Agreed>,
     pub(super) connected: OnceCell<Connected>,
     /// What reads back what the destination published, when the handshake accepted that.
     pub(super) reader: OnceCell<Arc<dyn PublishedReader>>,
@@ -57,6 +59,7 @@ impl Service {
         Self {
             served,
             limits,
+            agreed: OnceCell::new(),
             connected: OnceCell::new(),
             reader: OnceCell::new(),
             host: OnceCell::new(),
@@ -68,13 +71,12 @@ impl Service {
 
     fn connected(&self) -> Result<&Connected, Status> {
         self.connected.get().ok_or_else(|| {
-            status(
-                &ConnectorError::new(
-                    ConnectorErrorKind::Internal,
-                    "the connection has had no handshake",
-                )
-                .with_code("no_handshake"),
-            )
+            let error = if self.agreed.initialized() {
+                not_configured()
+            } else {
+                no_handshake()
+            };
+            status(&error)
         })
     }
 
@@ -127,12 +129,12 @@ impl Connector for Service {
         request: Request<v1::HandshakeRequest>,
     ) -> Result<Response<v1::HandshakeResponse>, Status> {
         let spec = self
-            .connect(request.into_inner())
-            .await
+            .agree(&request.into_inner())
             .map_err(|error| status(&error))?;
         let accepted_features = self
-            .reader
+            .agreed
             .get()
+            .filter(|agreed| agreed.published())
             .map(|_| vec![rdlt_wire::PUBLISHED.to_owned()])
             .unwrap_or_default();
         Ok(Response::new(v1::HandshakeResponse {
@@ -140,6 +142,17 @@ impl Connector for Service {
             accepted_features,
             limits: Some(self.limits.into()),
         }))
+    }
+
+    async fn configure(
+        &self,
+        request: Request<v1::ConfigureRequest>,
+    ) -> Result<Response<v1::ConfigureResponse>, Status> {
+        let spec = self
+            .connect(request.into_inner())
+            .await
+            .map_err(|error| status(&error))?;
+        Ok(Response::new(v1::ConfigureResponse { spec: Some(spec) }))
     }
 
     async fn check(

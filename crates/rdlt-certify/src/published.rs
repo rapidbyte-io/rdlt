@@ -12,7 +12,7 @@ use rdlt_host::remote::Client;
 use rdlt_wire::tonic::Streaming;
 use rdlt_wire::{Decoder, IpcFrame, Limits, PUBLISHED};
 
-use crate::protocol::request;
+use crate::protocol::{configure_request, request};
 use crate::target::Target;
 
 /// The longest a read-back of one table takes: one that takes longer fails the clause, rather
@@ -102,13 +102,17 @@ impl ReadBackProbe<'_> {
 /// offered, and whether it accepted the feature.
 async fn handshaken(target: &Target, config: &str) -> Result<(Client, bool)> {
     let mut client = target.client().await?;
-    let mut offered = request(Role::Destination, config, rdlt_wire::PROTOCOL_MAJOR);
+    let mut offered = request(Role::Destination, rdlt_wire::PROTOCOL_MAJOR);
     offered.features.push(PUBLISHED.to_owned());
     let answer = client
         .handshake(offered)
         .await
         .map_err(|status| error(&status))?
         .into_inner();
+    client
+        .configure(configure_request(config))
+        .await
+        .map_err(|status| error(&status))?;
     let accepted = answer
         .accepted_features
         .iter()

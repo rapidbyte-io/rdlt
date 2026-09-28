@@ -19,9 +19,14 @@ fn handshake(features: &[&str]) -> v1::HandshakeRequest {
             .map(|feature| (*feature).to_owned())
             .collect(),
         role: v1::Role::Destination as i32,
-        config_json: r#"{"store": "host_published"}"#.to_owned(),
         traceparent: String::new(),
         limits: None,
+    }
+}
+
+fn configure() -> v1::ConfigureRequest {
+    v1::ConfigureRequest {
+        config_json: r#"{"store": "host_published"}"#.to_owned(),
     }
 }
 
@@ -49,6 +54,10 @@ async fn a_destination_that_reads_back_accepts_the_feature_when_offered_and_serv
         .expect("the handshake succeeds")
         .into_inner();
     assert_eq!(answer.accepted_features, [PUBLISHED]);
+    client
+        .configure(configure())
+        .await
+        .expect("the configuration succeeds");
     let mut frames = client
         .read_published(table())
         .await
@@ -88,6 +97,10 @@ async fn a_read_back_the_handshake_did_not_accept_is_refused_as_unsupported() {
             .expect("the handshake succeeds")
             .into_inner();
         assert!(answer.accepted_features.is_empty(), "{offered:?}");
+        client
+            .configure(configure())
+            .await
+            .expect("the configuration succeeds");
         let refused = client
             .read_published(table())
             .await

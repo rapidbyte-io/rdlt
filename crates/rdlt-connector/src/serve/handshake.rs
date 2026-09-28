@@ -1,5 +1,5 @@
-//! The handshake: it connects the connector for the host's role, with the host's configuration,
-//! once per connection.
+//! The handshake and the configuration: the handshake agrees the role and answers who the
+//! connector is, and only then, once the host has checked that, does the configuration connect it.
 
 use std::sync::Arc;
 
@@ -11,14 +11,30 @@ use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 use crate::spec::ConnectContext;
 use crate::wire::v1;
 
+/// What a handshake agreed: the role to configure, and whether the destination reads back what it
+/// published.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Agreed {
+    role: v1::Role,
+    published: bool,
+}
+
+impl Agreed {
+    /// Whether the handshake accepted reading back what the destination published.
+    pub(super) fn published(self) -> bool {
+        self.published
+    }
+}
+
 impl Service {
-    /// Connects the connector for `request`'s role, once.
-    pub(super) async fn connect(
+    /// Agrees `request`'s protocol version and role, once, and answers the connector's spec
+    /// without what its configuration decides; nothing is connected yet.
+    pub(super) fn agree(
         &self,
-        request: v1::HandshakeRequest,
+        request: &v1::HandshakeRequest,
     ) -> Result<v1::ConnectorSpec, ConnectorError> {
-        // A repeated handshake is refused before it does any work, let alone connects again.
-        if self.connected.initialized() {
+        // A repeated handshake is refused before it does any work.
+        if self.agreed.initialized() {
             return Err(repeated());
         }
         if request.protocol_major != PROTOCOL_MAJOR {
@@ -27,6 +43,54 @@ impl Service {
                 request.protocol_major
             );
             return Err(unsupported(message, "protocol_version"));
+        }
+        let (role, spec, published) = match v1::Role::try_from(request.role) {
+            Ok(v1::Role::Source) => {
+                let factory = self
+                    .served
+                    .source
+                    .as_ref()
+                    .ok_or_else(|| unserved("source"))?;
+                (v1::Role::Source, factory.spec(), false)
+            }
+            Ok(v1::Role::Destination) => {
+                let factory = self
+                    .served
+                    .destination
+                    .as_ref()
+                    .ok_or_else(|| unserved("destination"))?;
+                let offered = request
+                    .features
+                    .iter()
+                    .any(|feature| feature == rdlt_wire::PUBLISHED);
+                let published = offered && factory.reads_back();
+                (v1::Role::Destination, factory.spec(), published)
+            }
+            Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
+        };
+        let spec = self.spec(spec, None);
+        // A handshake that ran beside this one agreed first.
+        if self.agreed.set(Agreed { role, published }).is_err() {
+            return Err(repeated());
+        }
+        let _ = self
+            .host
+            .set(Limits::from(request.limits.unwrap_or_default()));
+        Ok(spec)
+    }
+
+    /// Connects the connector for the role the handshake agreed, with `request`'s configuration,
+    /// once; answers its spec with what the connected role declares.
+    pub(super) async fn connect(
+        &self,
+        request: v1::ConfigureRequest,
+    ) -> Result<v1::ConnectorSpec, ConnectorError> {
+        let Some(agreed) = self.agreed.get().copied() else {
+            return Err(no_handshake());
+        };
+        // A repeated configuration is refused before it connects again.
+        if self.connected.initialized() {
+            return Err(configured());
         }
         if let Err(refusal) = self.limits.admit_config(request.config_json.len()) {
             return Err(ConnectorError::exceeds(LimitExceeded {
@@ -39,41 +103,23 @@ impl Service {
             serde_json::from_str(&request.config_json).map_err(|error| {
                 ConnectorError::config(format!("the configuration is not JSON: {error}"))
             })?;
-        let _ = self
-            .host
-            .set(Limits::from(request.limits.unwrap_or_default()));
-        let context = ConnectContext::new();
-        let (spec, connected) = match v1::Role::try_from(request.role) {
-            Ok(v1::Role::Source) => {
-                let factory = self
-                    .served
-                    .source
-                    .as_ref()
-                    .ok_or_else(|| unserved("source"))?;
-                let source = factory.connect(config, context).await?;
+        let (spec, connected) = match (agreed.role, &self.served.source, &self.served.destination) {
+            (v1::Role::Source, Some(factory), _) => {
+                let source = factory.connect(config, ConnectContext::new()).await?;
                 (factory.spec(), Connected::Source(Arc::from(source)))
             }
-            Ok(v1::Role::Destination) => {
-                let factory = self
-                    .served
-                    .destination
-                    .as_ref()
-                    .ok_or_else(|| unserved("destination"))?;
-                let offered = request
-                    .features
-                    .iter()
-                    .any(|feature| feature == rdlt_wire::PUBLISHED);
+            (v1::Role::Destination, _, Some(factory)) => {
                 let destination = self
-                    .connect_destination(factory.as_ref(), offered, config)
+                    .connect_destination(factory.as_ref(), agreed.published, config)
                     .await?;
                 (factory.spec(), Connected::Destination(destination))
             }
-            Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
+            _ => return Err(no_handshake()),
         };
-        let spec = self.spec(spec, &connected);
-        // A handshake that ran beside this one connected first.
+        let spec = self.spec(spec, Some(&connected));
+        // A configuration that ran beside this one connected first.
         if self.connected.set(connected).is_err() {
-            return Err(repeated());
+            return Err(configured());
         }
         Ok(spec)
     }
@@ -96,9 +142,13 @@ impl Service {
         Ok(destination)
     }
 
-    /// The spec the handshake answers with: the connector's, the roles the binary serves, and
-    /// what the connected role declares.
-    fn spec(&self, spec: &crate::spec::ConnectorSpec, connected: &Connected) -> v1::ConnectorSpec {
+    /// The spec the handshake and the configuration answer with: the connector's, the roles the
+    /// binary serves, and, once connected, what the connected role declares.
+    fn spec(
+        &self,
+        spec: &crate::spec::ConnectorSpec,
+        connected: Option<&Connected>,
+    ) -> v1::ConnectorSpec {
         let mut roles = Vec::new();
         if self.served.source.is_some() {
             roles.push(v1::Role::Source as i32);
@@ -107,8 +157,9 @@ impl Service {
             roles.push(v1::Role::Destination as i32);
         }
         let (source_capabilities, destination_capabilities) = match connected {
-            Connected::Source(_) => (Some(v1::SourceCapabilities {}), None),
-            Connected::Destination(destination) => (
+            None => (None, None),
+            Some(Connected::Source(_)) => (Some(v1::SourceCapabilities {}), None),
+            Some(Connected::Destination(destination)) => (
                 None,
                 Some(v1::Capabilities::from(destination.capabilities())),
             ),
@@ -143,4 +194,31 @@ fn repeated() -> ConnectorError {
         "the connection already had its handshake",
     )
     .with_code("handshake_repeated")
+}
+
+/// The error of a call before the handshake.
+pub(super) fn no_handshake() -> ConnectorError {
+    ConnectorError::new(
+        ConnectorErrorKind::Internal,
+        "the connection has had no handshake",
+    )
+    .with_code("no_handshake")
+}
+
+/// The error of a call before the connector is configured.
+pub(super) fn not_configured() -> ConnectorError {
+    ConnectorError::new(
+        ConnectorErrorKind::Internal,
+        "the connector has not been configured",
+    )
+    .with_code("not_configured")
+}
+
+/// The error of a configuration on a connection already configured.
+fn configured() -> ConnectorError {
+    ConnectorError::new(
+        ConnectorErrorKind::Internal,
+        "the connection was already configured",
+    )
+    .with_code("configure_repeated")
 }

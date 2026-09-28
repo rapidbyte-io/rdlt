@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
-use rdlt_connector::wire::{error as status_error, v1};
+use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
 use rdlt_wire::v1::connector_client::ConnectorClient;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
@@ -122,18 +122,39 @@ impl Drop for Connection {
 }
 
 impl Connection {
-    /// Connects over `io` to a connector served on its other end, as `role`, with `config`.
+    /// Connects over `io` to a connector served on its other end, as `role`, with `config`,
+    /// whatever connector it is: [`Connection::handshake`] checks who it is first.
     ///
     /// # Errors
     ///
-    /// A `Config` error coded `options_invalid` for a zero heartbeat interval, the connector's
-    /// error when the handshake fails, or a transient error when the transport does.
+    /// As [`Connection::handshake`] and [`Handshaken::configure`] fail.
     pub async fn connect<IO>(
         io: IO,
         role: Role,
         config: &serde_json::Value,
         options: Options,
     ) -> Result<Arc<Self>, ConnectorError>
+    where
+        IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        Self::handshake(io, role, options)
+            .await?
+            .configure(config)
+            .await
+    }
+
+    /// Handshakes over `io` with a connector served on its other end, as `role`: its answer says
+    /// who the connector is, which the host checks before configuring it.
+    ///
+    /// # Errors
+    ///
+    /// A `Config` error coded `options_invalid` for a zero heartbeat interval, the connector's
+    /// error when the handshake fails, or a transient error when the transport does.
+    pub async fn handshake<IO>(
+        io: IO,
+        role: Role,
+        options: Options,
+    ) -> Result<Handshaken, ConnectorError>
     where
         IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
@@ -155,22 +176,24 @@ impl Connection {
                 Role::Source => v1::Role::Source,
                 Role::Destination => v1::Role::Destination,
             } as i32,
-            config_json: config.to_string(),
             traceparent: String::new(),
             limits: Some(options.limits.into()),
         };
+        // Cuts the connection if the handshake fails.
+        let mut handshaken = Handshaken {
+            client: client.clone(),
+            spec: v1::ConnectorSpec::default(),
+            peer: Limits::default(),
+            options,
+            lost,
+            spent,
+            armed: true,
+        };
         let deadline = options.deadlines.connect;
         let response = within(deadline, "the handshake", client.handshake(request)).await?;
-        let connection = Arc::new(Self {
-            client,
-            spec: response.spec.unwrap_or_default(),
-            peer: response.limits.map(Limits::from).unwrap_or_default(),
-            options,
-            lost: lost.clone(),
-            spent: spent.clone(),
-        });
-        tokio::spawn(heartbeat(connection.client.clone(), options, lost, spent));
-        Ok(connection)
+        handshaken.spec = response.spec.unwrap_or_default();
+        handshaken.peer = response.limits.map(Limits::from).unwrap_or_default();
+        Ok(handshaken)
     }
 
     /// The contract's spec of the connector, in `role`, from what its handshake answered.
@@ -208,6 +231,89 @@ impl Connection {
             () = self.lost.cancelled() => Err(lost_error()),
             answer = within(deadline, what, call) => answer,
         }
+    }
+}
+
+/// A connection whose handshake agreed a role, before the connector is configured: its spec says
+/// who the connector is, which the host checks before the connector sees any configuration.
+///
+/// Dropped unconfigured, it cuts the connection.
+#[derive(Debug)]
+pub struct Handshaken {
+    client: ConnectorClient<Channel>,
+    spec: v1::ConnectorSpec,
+    peer: Limits,
+    options: Options,
+    lost: CancellationToken,
+    spent: CancellationToken,
+    /// Whether dropping it cuts the connection: until configured.
+    armed: bool,
+}
+
+impl Drop for Handshaken {
+    fn drop(&mut self) {
+        if self.armed {
+            self.lost.cancel();
+        }
+    }
+}
+
+impl Handshaken {
+    /// The connector's spec, as its handshake answered: who it is, without what its
+    /// configuration decides.
+    pub fn spec(&self) -> &v1::ConnectorSpec {
+        &self.spec
+    }
+
+    /// Configures the connector with `config`, for the role the handshake agreed.
+    ///
+    /// # Errors
+    ///
+    /// The connector's error when its configuration fails, an internal error coded
+    /// `invalid_message` when it answers as another connector than it handshook as, or a transient
+    /// error when the transport fails.
+    pub async fn configure(
+        mut self,
+        config: &serde_json::Value,
+    ) -> Result<Arc<Connection>, ConnectorError> {
+        let request = v1::ConfigureRequest {
+            config_json: config.to_string(),
+        };
+        let deadline = self.options.deadlines.connect;
+        let mut client = self.client.clone();
+        let configured = tokio::select! {
+            biased;
+            () = self.lost.cancelled() => return Err(lost_error()),
+            answer = within(deadline, "the configuration", client.configure(request)) => answer?,
+        };
+        let spec = configured.spec.unwrap_or_default();
+        if (spec.id.as_str(), spec.version.as_str())
+            != (self.spec.id.as_str(), self.spec.version.as_str())
+        {
+            return Err(source::invalid(&Invalid::Rejected {
+                what: "configured spec",
+                source: format!(
+                    "the connector handshook as `{}` {} and configured as `{}` {}",
+                    self.spec.id, self.spec.version, spec.id, spec.version
+                )
+                .into(),
+            }));
+        }
+        self.armed = false;
+        tokio::spawn(heartbeat(
+            self.client.clone(),
+            self.options,
+            self.lost.clone(),
+            self.spent.clone(),
+        ));
+        Ok(Arc::new(Connection {
+            client: self.client.clone(),
+            spec,
+            peer: self.peer,
+            options: self.options,
+            lost: self.lost.clone(),
+            spent: self.spent.clone(),
+        }))
     }
 }
 

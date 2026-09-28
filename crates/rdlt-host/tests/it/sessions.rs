@@ -18,13 +18,12 @@ use tonic::transport::Channel;
 use crate::support::connectors::{Writes, Writing};
 use crate::support::{Fake, Fault, raw_client, serve_fake, served_within};
 
-fn handshake(role: v1::Role, config: &serde_json::Value) -> v1::HandshakeRequest {
+fn handshake(role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
         protocol_minor: PROTOCOL_MINOR,
         features: Vec::new(),
         role: role as i32,
-        config_json: config.to_string(),
         traceparent: String::new(),
         limits: None,
     }
@@ -61,9 +60,15 @@ async fn raw_session(served: Served, store: &str) -> (ConnectorClient<Channel>, 
     let mut client = raw_client(crate::support::served(served)).await;
     let config = serde_json::json!({ "store": store });
     client
-        .handshake(handshake(v1::Role::Destination, &config))
+        .handshake(handshake(v1::Role::Destination))
         .await
         .expect("the destination handshakes");
+    client
+        .configure(v1::ConfigureRequest {
+            config_json: config.to_string(),
+        })
+        .await
+        .expect("the destination is configured");
     let context = context();
     let open = v1::OpenRequest {
         pipeline: context.pipeline.as_str().to_owned(),

@@ -9,7 +9,7 @@ use crate::kills::Kills;
 use crate::network::Stream;
 use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
-use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
+use crate::supervise::{Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
 
 /// Opens a stream to a connector.
 pub type Open = Arc<dyn Fn() -> BoxFuture<'static, std::io::Result<Box<dyn Stream>>> + Send + Sync>;
@@ -70,9 +70,14 @@ impl Connect {
         config: &serde_json::Value,
     ) -> Result<Supervisor, ProviderError> {
         let start = Start::Connect(Arc::clone(&self.open));
-        let supervisor = Supervisor::start(start, role, config.clone(), self.options)
+        let gate = Gate {
+            reference,
+            found_at: CONNECTED,
+        };
+        let supervisor = Supervisor::start(start, role, config.clone(), self.options, &gate)
             .await
             .map_err(|spawned| match spawned {
+                Spawned::Refused(refused) => refused,
                 Spawned::Connect(source) => ProviderError::HandshakeFailed {
                     id: reference.id.clone(),
                     source: Box::new(source),
@@ -100,7 +105,7 @@ impl Provider for Connect {
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Source>>, ProviderError>> {
         Box::pin(async move {
             let supervisor = self.start(reference, Role::Source, config).await?;
-            let spec = supervisor.checked_spec(reference, CONNECTED).await?;
+            let spec = supervisor.spec();
             Ok(Placed {
                 connector: Box::new(SupervisedSource(Arc::new(supervisor))) as Box<dyn Source>,
                 spec,
@@ -117,7 +122,7 @@ impl Provider for Connect {
     ) -> BoxFuture<'a, Result<Placed<Box<dyn Destination>>, ProviderError>> {
         Box::pin(async move {
             let supervisor = self.start(reference, Role::Destination, config).await?;
-            let spec = supervisor.checked_spec(reference, CONNECTED).await?;
+            let spec = supervisor.spec();
             let capabilities = supervisor.capabilities().await.map_err(|source| {
                 ProviderError::HandshakeFailed {
                     id: reference.id.clone(),

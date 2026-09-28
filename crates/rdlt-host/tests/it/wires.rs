@@ -15,14 +15,13 @@ fn scripted() -> ConnectorRef {
     ConnectorRef::new(ConnectorId::parse("test.scripted").expect("a valid id"))
 }
 
-/// A handshake as a source, with an empty configuration.
+/// A handshake as a source.
 fn handshake() -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
         protocol_minor: PROTOCOL_MINOR,
         features: Vec::new(),
         role: v1::Role::Source as i32,
-        config_json: "{}".to_owned(),
         traceparent: String::new(),
         limits: None,
     }

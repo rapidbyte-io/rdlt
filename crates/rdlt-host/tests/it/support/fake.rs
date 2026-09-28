@@ -19,6 +19,8 @@ pub(crate) enum Fault {
     AnswersAhead,
     /// It answers each heartbeat with a sequence number the host never sent.
     EchoAhead,
+    /// Its configuration answers as another connector than its handshake did.
+    Impostor,
     /// Its reads send a schema that is no IPC message.
     GarbageSchema,
     /// It never answers a heartbeat, and its checks never end.
@@ -52,24 +54,42 @@ pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
     host
 }
 
+/// The fake's spec, as `id`.
+fn spec(id: &str) -> v1::ConnectorSpec {
+    v1::ConnectorSpec {
+        id: id.to_owned(),
+        version: "0.0.0".to_owned(),
+        roles: vec![v1::Role::Source as i32],
+        config_schema_json: "{}".to_owned(),
+        source_capabilities: Some(v1::SourceCapabilities {}),
+        destination_capabilities: None,
+    }
+}
+
 #[tonic::async_trait]
 impl Connector for Fake {
     async fn handshake(
         &self,
         _: Request<v1::HandshakeRequest>,
     ) -> Result<Response<v1::HandshakeResponse>, Status> {
-        let spec = v1::ConnectorSpec {
-            id: "test.fake".to_owned(),
-            version: "0.0.0".to_owned(),
-            roles: vec![v1::Role::Source as i32],
-            config_schema_json: "{}".to_owned(),
-            source_capabilities: Some(v1::SourceCapabilities {}),
-            destination_capabilities: None,
-        };
         Ok(Response::new(v1::HandshakeResponse {
-            spec: Some(spec),
+            spec: Some(spec("test.fake")),
             accepted_features: Vec::new(),
             limits: None,
+        }))
+    }
+
+    async fn configure(
+        &self,
+        _: Request<v1::ConfigureRequest>,
+    ) -> Result<Response<v1::ConfigureResponse>, Status> {
+        let id = if matches!(self.0, Fault::Impostor) {
+            "test.impostor"
+        } else {
+            "test.fake"
+        };
+        Ok(Response::new(v1::ConfigureResponse {
+            spec: Some(spec(id)),
         }))
     }
 

@@ -13,7 +13,7 @@ use rdlt_connector::{
 use sha2::Digest as _;
 
 use crate::kills::Kills;
-use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
+use crate::supervise::{Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
 pub use process::{LastWords, Witness};
 use process::{Launch, Process, executable};
 
@@ -158,18 +158,27 @@ impl Local {
             .await
             .map_err(|source| spawn_failed(reference, &path, source))?;
         let launch = self.launch(reference, &path);
-        let supervisor =
-            Supervisor::start(Start::Spawn(launch), role, config.clone(), self.options)
-                .await
-                .map_err(|spawned| match spawned {
-                    Spawned::Io(source) | Spawned::Unreachable(source) | Spawned::Tls(source) => {
-                        spawn_failed(reference, &path, source)
-                    }
-                    Spawned::Connect(source) => handshake_failed(reference, source),
-                })?;
-        let spec = supervisor
-            .checked_spec(reference, &path.display().to_string())
-            .await?;
+        let found_at = path.display().to_string();
+        let gate = Gate {
+            reference,
+            found_at: &found_at,
+        };
+        let supervisor = Supervisor::start(
+            Start::Spawn(launch),
+            role,
+            config.clone(),
+            self.options,
+            &gate,
+        )
+        .await
+        .map_err(|spawned| match spawned {
+            Spawned::Io(source) | Spawned::Unreachable(source) | Spawned::Tls(source) => {
+                spawn_failed(reference, &path, source)
+            }
+            Spawned::Connect(source) => handshake_failed(reference, source),
+            Spawned::Refused(refused) => refused,
+        })?;
+        let spec = supervisor.spec();
         Ok((supervisor, spec, path, digest))
     }
 }

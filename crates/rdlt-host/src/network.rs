@@ -24,7 +24,7 @@ pub(crate) use rewound::Rewound;
 use crate::kills::{Kills, Severing};
 use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
-use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
+use crate::supervise::{Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
 use crate::wire::Wire;
 
 /// A byte stream to a connector, over whatever network reached it.
@@ -143,9 +143,19 @@ impl Remote {
         config: &serde_json::Value,
     ) -> Result<Supervisor, ProviderError> {
         let dialing = self.dialing(reference, endpoint)?;
-        Supervisor::start(Start::Dial(dialing), role, config.clone(), self.options)
-            .await
-            .map_err(|spawned| refused(reference, endpoint, spawned))
+        let gate = Gate {
+            reference,
+            found_at: endpoint,
+        };
+        Supervisor::start(
+            Start::Dial(dialing),
+            role,
+            config.clone(),
+            self.options,
+            &gate,
+        )
+        .await
+        .map_err(|spawned| refused(reference, endpoint, spawned))
     }
 
     /// How to reach `endpoint`, for the connector `reference` names.
@@ -203,6 +213,7 @@ fn refused(reference: &ConnectorRef, endpoint: &str, spawned: Spawned) -> Provid
             id: reference.id.clone(),
             source: Box::new(source),
         },
+        Spawned::Refused(refused) => refused,
     }
 }
 
@@ -222,7 +233,7 @@ impl Provider for Remote {
             let supervisor = self
                 .start(reference, endpoint, Role::Source, config)
                 .await?;
-            let spec = supervisor.checked_spec(reference, endpoint).await?;
+            let spec = supervisor.spec();
             Ok(Placed {
                 connector: Box::new(SupervisedSource(Arc::new(supervisor))) as Box<dyn Source>,
                 spec,
@@ -249,7 +260,7 @@ impl Provider for Remote {
             let supervisor = self
                 .start(reference, endpoint, Role::Destination, config)
                 .await?;
-            let spec = supervisor.checked_spec(reference, endpoint).await?;
+            let spec = supervisor.spec();
             let capabilities = supervisor.capabilities().await.map_err(|source| {
                 ProviderError::HandshakeFailed {
                     id: reference.id.clone(),

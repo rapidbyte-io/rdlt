@@ -24,8 +24,8 @@ pub use provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderEr
 pub use rdlt_wire::tls::Identity;
 pub use registry::Registry;
 pub use remote::{
-    CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteDestination,
-    RemoteSource,
+    CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Handshaken, Options,
+    RemoteDestination, RemoteSource,
 };
 pub use supervise::TLS;
 pub use wire::Wire;

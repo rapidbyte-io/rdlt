@@ -26,13 +26,14 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
     Clause {
         id: "P-HANDSHAKE",
         statement: "the handshake answers the protocol's major version with the connector's spec \
-                    and limits, ignores features it does not know, and refuses another major \
-                    version as unsupported",
+                    and limits before any configuration, ignores features it does not know, and \
+                    refuses another major version as unsupported; the configuration answers the \
+                    same connector's spec",
     },
     Clause {
         id: "P-ORDER",
-        statement: "a call before the handshake, and a second handshake, are refused with typed \
-                    errors",
+        statement: "a call before the handshake or before the configuration, and a second \
+                    handshake or configuration, are refused with typed errors",
     },
     Clause {
         id: "P-ROLE",
@@ -153,15 +154,14 @@ async fn within(checking: impl Future<Output = Found>) -> Found {
 /// A feature no host defines, which every handshake of certification offers.
 pub(crate) const UNKNOWN_FEATURE: &str = "rdlt.certify.unknown";
 
-/// A handshake as `role` with `config`, at `major`.
-pub(crate) fn request(role: Role, config: &str, major: u32) -> v1::HandshakeRequest {
+/// A handshake as `role`, at `major`.
+pub(crate) fn request(role: Role, major: u32) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: major,
         protocol_minor: PROTOCOL_MINOR,
         // A connector takes the features it knows and ignores the rest (§12.7).
         features: vec![UNKNOWN_FEATURE.to_owned()],
         role: wire_role(role) as i32,
-        config_json: config.to_owned(),
         traceparent: String::new(),
         limits: Some(rdlt_wire::Limits::default().into()),
     }
@@ -174,7 +174,8 @@ fn wire_role(role: Role) -> v1::Role {
     }
 }
 
-/// A client of `target`, handshaken as `role` with `config`, and the connector's answer.
+/// A client of `target`, handshaken as `role` and configured with `config`, and the connector's
+/// answer to the handshake.
 async fn handshaken(
     target: &Target,
     role: Role,
@@ -182,10 +183,21 @@ async fn handshaken(
 ) -> Result<(Client, v1::HandshakeResponse), Violation> {
     let mut client = target.client().await.map_err(Violation::of)?;
     let answer = client
-        .handshake(request(role, config, PROTOCOL_MAJOR))
+        .handshake(request(role, PROTOCOL_MAJOR))
         .await
         .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
+    client
+        .configure(configure_request(config))
+        .await
+        .map_err(|status| format!("the configuration failed: {}", error(&status)))?;
     Ok((client, answer.into_inner()))
+}
+
+/// The configuration `config`, as sent.
+pub(crate) fn configure_request(config: &str) -> v1::ConfigureRequest {
+    v1::ConfigureRequest {
+        config_json: config.to_owned(),
+    }
 }
 
 /// The error a status carries.

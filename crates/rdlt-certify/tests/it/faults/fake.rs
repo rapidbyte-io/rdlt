@@ -30,7 +30,8 @@ pub(crate) enum Fault {
     MistypedVersion,
     /// It answers its handshake without its limits.
     Limitless,
-    /// It answers calls before its handshake, and a second handshake.
+    /// It answers calls before its handshake or configuration, and a second handshake or
+    /// configuration.
     Unordered,
     /// It accepts every feature a handshake offers, those it does not know among them.
     AcceptsAnyFeature,
@@ -102,6 +103,7 @@ const FRAME_BYTES: u64 = 64 * 1024;
 pub(crate) struct Fake {
     fault: Fault,
     handshaken: AtomicBool,
+    configured: AtomicBool,
 }
 
 type Answer<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send>>;
@@ -112,6 +114,7 @@ pub(crate) fn served(fault: Fault) -> std::io::Result<Box<dyn Stream>> {
     let fake = Fake {
         fault,
         handshaken: AtomicBool::new(false),
+        configured: AtomicBool::new(false),
     };
     let service =
         ConnectorServer::new(fake).map_request(|request: http::Request<hyper::body::Incoming>| {
@@ -161,6 +164,18 @@ impl Fake {
     }
 }
 
+/// The fake's spec.
+fn spec() -> v1::ConnectorSpec {
+    v1::ConnectorSpec {
+        id: "test.fake".to_owned(),
+        version: "0.0.0".to_owned(),
+        roles: vec![v1::Role::Source as i32],
+        config_schema_json: "{}".to_owned(),
+        source_capabilities: Some(v1::SourceCapabilities {}),
+        destination_capabilities: None,
+    }
+}
+
 #[tonic::async_trait]
 impl Connector for Fake {
     async fn handshake(
@@ -181,9 +196,6 @@ impl Connector for Fake {
         if self.handshaken.swap(true, Ordering::SeqCst) && self.keeps(Fault::Unordered) {
             return Err(refused(ConnectorErrorKind::Internal, "handshake_repeated"));
         }
-        if request.config_json.len() > CONFIG_BYTES && self.keeps(Fault::Unlimited) {
-            return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
-        }
         if request.role != v1::Role::Source as i32 && self.keeps(Fault::EveryRole) && !self.writes()
         {
             return Err(refused(self.kind(Fault::MistypedRole), "role"));
@@ -200,14 +212,7 @@ impl Connector for Fake {
             ..rdlt_wire::Limits::default().into()
         };
         Ok(Response::new(v1::HandshakeResponse {
-            spec: Some(v1::ConnectorSpec {
-                id: "test.fake".to_owned(),
-                version: "0.0.0".to_owned(),
-                roles: vec![v1::Role::Source as i32],
-                config_schema_json: "{}".to_owned(),
-                source_capabilities: Some(v1::SourceCapabilities {}),
-                destination_capabilities: None,
-            }),
+            spec: Some(spec()),
             accepted_features: if !self.keeps(Fault::AcceptsAnyFeature) {
                 request.features.clone()
             } else if self.reads_back()
@@ -221,12 +226,33 @@ impl Connector for Fake {
         }))
     }
 
+    async fn configure(
+        &self,
+        request: Request<v1::ConfigureRequest>,
+    ) -> Result<Response<v1::ConfigureResponse>, Status> {
+        if !self.handshaken.load(Ordering::SeqCst) && self.keeps(Fault::Unordered) {
+            return Err(refused(ConnectorErrorKind::Internal, "no_handshake"));
+        }
+        if self.configured.swap(true, Ordering::SeqCst) && self.keeps(Fault::Unordered) {
+            return Err(refused(ConnectorErrorKind::Internal, "configure_repeated"));
+        }
+        if request.into_inner().config_json.len() > CONFIG_BYTES && self.keeps(Fault::Unlimited) {
+            return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
+        }
+        Ok(Response::new(v1::ConfigureResponse { spec: Some(spec()) }))
+    }
+
     async fn check(
         &self,
         _: Request<v1::CheckRequest>,
     ) -> Result<Response<v1::CheckResponse>, Status> {
-        if !self.handshaken.load(Ordering::SeqCst) && self.keeps(Fault::Unordered) {
-            return Err(refused(ConnectorErrorKind::Internal, "no_handshake"));
+        if self.keeps(Fault::Unordered) {
+            if !self.handshaken.load(Ordering::SeqCst) {
+                return Err(refused(ConnectorErrorKind::Internal, "no_handshake"));
+            }
+            if !self.configured.load(Ordering::SeqCst) {
+                return Err(refused(ConnectorErrorKind::Internal, "not_configured"));
+            }
         }
         Ok(Response::new(v1::CheckResponse {}))
     }

@@ -14,7 +14,9 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::credit::first_partition;
 use super::writing::Writing;
-use super::{Found, Violation, first_refusal, handshaken, refused_with, request};
+use super::{
+    Found, Violation, configure_request, error, first_refusal, handshaken, refused_with, request,
+};
 use crate::target::Target;
 
 /// Checks `P-LIMITS`.
@@ -58,7 +60,7 @@ fn unexceeded(what: &str, declared: u64, host: u64) -> String {
     )
 }
 
-/// A handshake with a configuration beyond the connector's limit.
+/// A configuration beyond the connector's limit.
 async fn configuration(
     target: &Target,
     role: Role,
@@ -75,13 +77,15 @@ async fn configuration(
         .await
         .map_err(Violation::of)?
         .max_encoding_message_size(usize::MAX);
-    let refused = client
-        .handshake(request(role, &padded, PROTOCOL_MAJOR))
-        .await;
+    client
+        .handshake(request(role, PROTOCOL_MAJOR))
+        .await
+        .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
+    let refused = client.configure(configure_request(&padded)).await;
     refused_with(
         refused,
         LIMIT_EXCEEDED,
-        "a handshake beyond the configuration limit",
+        "a configuration beyond the configuration limit",
     )?;
     Ok(None)
 }
