@@ -327,6 +327,61 @@ async fn memory_stays_within_the_budget() {
     );
 }
 
+/// Encoded columns stay within the budget once decoded: a run of one 2 KB value over fifty
+/// thousand rows is a few hundred bytes pushed and 100 MB decoded.
+#[tokio::test(start_paused = true)]
+async fn encoded_pushes_stay_within_the_budget_once_decoded() {
+    use arrow_array::types::Int32Type;
+    use arrow_array::{ArrayRef, DictionaryArray, Int32Array, Int64Array, RunArray, StringArray};
+    const BUDGET: u64 = 4 << 20;
+    const ROWS: i32 = 50_000;
+    let value = "x".repeat(2_000);
+    let pushes = |id: i64| {
+        let rows = usize::try_from(ROWS).expect("positive");
+        let runs = RunArray::<Int32Type>::try_new(
+            &Int32Array::from(vec![ROWS]),
+            &StringArray::from(vec![value.as_str()]),
+        )
+        .expect("a valid run array");
+        let keys = Int32Array::from(vec![0; rows]);
+        let words = DictionaryArray::<Int32Type>::try_new(
+            keys,
+            Arc::new(StringArray::from(vec![value.as_str()])),
+        )
+        .expect("a valid dictionary");
+        let ids: ArrayRef = Arc::new(Int64Array::from(vec![id; rows]));
+        batch(vec![
+            ("id", ids),
+            ("runs", Arc::new(runs) as ArrayRef),
+            ("words", Arc::new(words) as ArrayRef),
+        ])
+    };
+    let source = batches(
+        "encoded_budget",
+        vec![BatchStream::new("blobs", (0..4).map(pushes).collect())],
+    )
+    .await;
+    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(pipeline("encoded", [stream("blobs")]), source, null().await)
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 200_000);
+    let bound = BUDGET * 12 / 10 + (32 << 20);
+    assert!(
+        u64::try_from(peak).unwrap() <= bound,
+        "peak {peak} bytes; bound {bound}"
+    );
+}
+
 fn column_names(store: &str, table: &str) -> Vec<(String, LogicalType)> {
     schema(store, table)
         .expect("the table exists")

@@ -22,10 +22,12 @@ async fn requests_that_fit_are_admitted_at_once() {
 }
 
 #[tokio::test]
-async fn a_request_larger_than_the_budget_is_admitted_when_nothing_is_reserved() {
+async fn a_request_larger_than_the_budget_takes_all_of_it_when_nothing_is_reserved() {
+    // The engine works through such a request a slice at a time, within the budget.
     let budget = MemoryBudget::new(100);
     let huge = budget.acquire(1_000).await;
-    assert_eq!(budget.reserved(), 1_000);
+    assert_eq!(budget.reserved(), 100);
+    assert_eq!(budget.peak(), 100);
     drop(huge);
     assert_eq!(budget.reserved(), 0);
 }

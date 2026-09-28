@@ -17,7 +17,8 @@ use crate::watch;
 /// Bytes the engine may hold in flight, shared by everything that reserves them.
 ///
 /// A request is admitted when it fits beside the bytes already reserved, or when nothing is
-/// reserved at all, so a single request larger than the whole budget still makes progress.
+/// reserved at all, so a single request larger than the whole budget still makes progress: it
+/// takes the whole budget, not more, since the engine works through it a slice at a time.
 /// Requests are admitted in arrival order. Acquiring is the only operation that waits: growth of a
 /// batch already admitted is charged at once, beyond the budget if need be, and later requests
 /// wait until it is released. Reservations are released by dropping them, so every wait ends once
@@ -65,6 +66,7 @@ impl MemoryBudget {
     pub(crate) async fn acquire(&self, bytes: u64) -> Reservation {
         let receiver = {
             let mut ledger = self.shared.lock();
+            let bytes = bytes.min(ledger.capacity);
             if ledger.waiting.is_empty() && ledger.admits(bytes) {
                 ledger.reserve(bytes);
                 return self.reservation(bytes);
@@ -96,6 +98,11 @@ impl MemoryBudget {
                 std::future::pending::<()>().await;
             }
         }
+    }
+
+    /// The bytes the budget holds.
+    pub(crate) fn capacity(&self) -> u64 {
+        self.shared.lock().capacity
     }
 
     /// Bytes reserved now.

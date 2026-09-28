@@ -70,10 +70,12 @@ impl Coalescer {
         }
         // A JSON push's rows are only known once it is shredded, so JSON counts by its bytes.
         let (bytes, rows) = match &pushed {
-            Pushed::Json(json) => (json.len(), 0),
-            Pushed::Arrow(batch) => (batch.get_array_memory_size(), batch.num_rows()),
+            Pushed::Json(json) => (count(json.len()), 0),
+            Pushed::Arrow(batch) => (
+                rdlt_connector::decoded_bytes(batch),
+                count(batch.num_rows()),
+            ),
         };
-        let (bytes, rows) = (count(bytes), count(rows));
         let pending = self.pending.get_or_insert_with(|| Pending {
             flushed: Flushed {
                 unit: match pushed {

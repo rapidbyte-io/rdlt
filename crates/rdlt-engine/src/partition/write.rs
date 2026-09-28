@@ -2,6 +2,7 @@
 //! it and queueing it on its lane with the memory it holds.
 
 mod normalized;
+mod slices;
 #[cfg(test)]
 mod tests;
 
@@ -100,6 +101,8 @@ async fn write(
     open: &mut OpenSegment,
     units: Vec<(Vec<RecordBatch>, Held)>,
 ) -> Result<(), Error> {
+    // A few bytes of encoded columns may decode to far more, so large units lower in slices.
+    let units = slices::sliced(units, slices::slice_bytes(&context.budget));
     if let Some(shape) = context.tables.shape(job.table) {
         return normalized::write_normalized(job, context, open, units, &shape).await;
     }

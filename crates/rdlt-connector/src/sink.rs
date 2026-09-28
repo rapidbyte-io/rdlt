@@ -1,5 +1,6 @@
 //! The channel between one partition's read and the engine.
 
+mod decoded;
 #[cfg(test)]
 mod tests;
 
@@ -12,6 +13,8 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
+
+pub use decoded::decoded_bytes;
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, Result};
@@ -29,10 +32,11 @@ pub enum Push {
 }
 
 impl Push {
-    /// The push's size in memory, as it is charged against a budget.
+    /// The push's size in memory, as it is charged against a budget: a batch's once its encoded
+    /// columns are decoded, as the engine decodes them.
     pub fn bytes(&self) -> u64 {
         let bytes = match self {
-            Self::Arrow(batch) | Self::Changes(batch) => batch.get_array_memory_size(),
+            Self::Arrow(batch) | Self::Changes(batch) => return decoded_bytes(batch),
             Self::Json(json) => json.len(),
         };
         u64::try_from(bytes).unwrap_or(u64::MAX)
