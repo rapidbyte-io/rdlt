@@ -72,11 +72,11 @@ impl FileFormat {
         types
     }
 
-    /// Writes `batch` to a new file at `path`, durably; returns the file's size in bytes.
+    /// Writes `batch` to a new file at `path`, durably, with its directory entry and every
+    /// directory created for it; returns the file's size in bytes.
     pub(super) fn write(self, path: &Path, batch: &RecordBatch) -> Result<u64> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(io::failed("creating a directory", parent))?;
-        }
+        let parent = path.parent().unwrap_or(Path::new("."));
+        io::create_dirs(parent)?;
         let file = fs::File::create_new(path).map_err(io::failed("creating", path))?;
         let encoded = |error: arrow_schema::ArrowError| {
             ConnectorError::data(format!("writing {}: {error}", path.display()))
@@ -102,6 +102,7 @@ impl FileFormat {
         let mut file = file.map_err(|error| io::failed("writing", path)(error.into_error()))?;
         file.flush().map_err(io::failed("writing", path))?;
         file.sync_all().map_err(io::failed("syncing", path))?;
+        io::sync_dir(parent)?;
         file.metadata()
             .map(|metadata| metadata.len())
             .map_err(io::failed("reading the size of", path))
@@ -109,7 +110,7 @@ impl FileFormat {
 
     /// The rows of the file at `path`; JSON lines are read as `schema`, Arrow files as written.
     pub(super) fn read(self, path: &Path, schema: &SchemaRef) -> Result<Vec<RecordBatch>> {
-        let file = fs::File::open(path).map_err(io::failed("opening", path))?;
+        let file = fs::File::open(path).map_err(io::listed("opening", path))?;
         let decoded = |error: arrow_schema::ArrowError| {
             ConnectorError::data(format!("reading {}: {error}", path.display()))
         };

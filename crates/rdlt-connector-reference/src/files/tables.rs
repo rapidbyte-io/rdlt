@@ -79,26 +79,32 @@ fn latest(root: &Path, name: &str) -> Result<Option<(u64, TableSchema)>> {
 /// Creates catalog `version` of the table `name` with `schema`, unless it exists; returns whether
 /// it did.
 fn create(root: &Path, name: &str, version: u64, schema: &TableSchema) -> Result<bool> {
-    static WRITES: AtomicU64 = AtomicU64::new(0);
     let dir = catalog(root, name);
-    fs::create_dir_all(&dir).map_err(io::failed("creating a directory", &dir))?;
+    io::create_dirs(&dir)?;
+    let json = serde_json::to_vec_pretty(schema).expect("schemas serialize to JSON");
+    publish(&dir, &format!("{version:020}.json"), &json)
+}
+
+/// Creates the file `file` in `dir` holding `bytes`, durably, unless it exists; returns whether
+/// it did.
+fn publish(dir: &Path, file: &str, bytes: &[u8]) -> Result<bool> {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
     let temporary = dir.join(format!(
-        ".{version}-{}-{}.tmp",
+        ".{file}-{}-{}.tmp",
         std::process::id(),
         WRITES.fetch_add(1, Ordering::Relaxed)
     ));
-    let json = serde_json::to_vec_pretty(schema).expect("schemas serialize to JSON");
     let written = (|| {
-        let mut file = fs::File::create_new(&temporary)?;
-        file.write_all(&json)?;
-        file.sync_all()
+        let mut created = fs::File::create_new(&temporary)?;
+        created.write_all(bytes)?;
+        created.sync_all()
     })();
     written.map_err(io::failed("writing", &temporary))?;
-    let path = dir.join(format!("{version:020}.json"));
+    let path = dir.join(file);
     let linked = fs::hard_link(&temporary, &path);
     drop(fs::remove_file(&temporary));
     match linked {
-        Ok(()) => io::sync_dir(&dir).map(|()| true),
+        Ok(()) => io::sync_dir(dir).map(|()| true),
         Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
         Err(error) => Err(io::failed("publishing", &path)(error)),
     }
