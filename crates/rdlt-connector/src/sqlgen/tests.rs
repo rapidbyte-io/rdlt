@@ -5,8 +5,8 @@ use rusqlite::Connection;
 use rusqlite::types::Value;
 
 use super::{
-    CATALOG_TABLES, Column, SqlDialect, SqlPlanner, SqlValue, Sqlite, Staged, Statement,
-    generation_table, micros, receipt, staging_table,
+    CATALOG_TABLES, Column, SqlDialect, SqlPlanner, SqlValue, Sqlite, Staged, Statement, micros,
+    receipt,
 };
 use crate::commit::SegmentSet;
 use crate::destination::{MergeKey, RootKey, TableChange, TableRef};
@@ -65,6 +65,57 @@ impl SqlDialect for Bytesless {
     fn columns(&self, table: &str) -> Statement {
         Sqlite.columns(table)
     }
+}
+
+/// SQLite whose identifiers are at most 24 bytes.
+#[derive(Debug)]
+struct Short;
+
+impl SqlDialect for Short {
+    fn placeholder(&self, index: usize) -> String {
+        Sqlite.placeholder(index)
+    }
+
+    fn column_type(&self, logical: &LogicalType) -> Option<String> {
+        Sqlite.column_type(logical)
+    }
+
+    fn columns(&self, table: &str) -> Statement {
+        Sqlite.columns(table)
+    }
+
+    fn max_identifier(&self) -> Option<usize> {
+        Some(24)
+    }
+}
+
+#[test]
+fn derived_tables_fit_the_dialect_s_identifiers_and_stay_distinct() {
+    let planner = SqlPlanner::try_new(Short).unwrap();
+    let long = ["orders_by_region_north", "orders_by_region_south"];
+    let staging = long.map(|name| planner.staging_table(name));
+    let generations = long.map(|name| planner.generation_table(name, GenerationId(12_345)));
+    for name in staging.iter().chain(&generations) {
+        assert!(name.len() <= 24, "{name}");
+        assert!(name.starts_with("_rdlt_"), "{name}");
+    }
+    assert_ne!(staging[0], staging[1]);
+    assert_ne!(generations[0], generations[1]);
+    // The hash is FNV-1a of the whole name, so a name derives alike in every build.
+    assert_eq!(staging[0], "_rdlt_staging___5ee09790");
+    // A cut inside a character keeps the whole character out.
+    let index = planner.fitted("ßßßßßßßßßßßß__rdlt_root".to_owned());
+    assert!(index.len() <= 24, "{index}");
+    assert!(index.starts_with("ßßßßßßß_"), "{index}");
+    let accented = planner.staging_table("ßßßßßßßßßßßßßßßßßß");
+    assert!(accented.len() <= 24, "{accented}");
+    assert!(accented.starts_with("_rdlt_staging__"), "{accented}");
+    // Names that fit are derived as always.
+    assert_eq!(planner.staging_table("t"), "_rdlt_staging__t");
+    assert_eq!(
+        SqlPlanner::try_new(Sqlite).unwrap().staging_table(long[0]),
+        format!("_rdlt_staging__{}", long[0])
+    );
 }
 
 fn database() -> (Connection, SqlPlanner<Sqlite>) {
@@ -181,7 +232,11 @@ fn apply(
     change: &TableChange,
 ) -> crate::error::Result<Vec<Statement>> {
     let target = columns(connection, planner, &planner.target(change.table()));
-    let staging = columns(connection, planner, &staging_table(&change.table().name));
+    let staging = columns(
+        connection,
+        planner,
+        &planner.staging_table(&change.table().name),
+    );
     let plan = planner.change(change, &target, &staging)?;
     run_all(connection, &plan);
     Ok(plan)
@@ -362,7 +417,7 @@ fn a_create_makes_the_table_and_its_staging_table_and_applying_it_again_plans_no
         },
     ];
     assert_eq!(columns(&connection, &planner, "orders"), expected);
-    let staging: Vec<String> = columns(&connection, &planner, &staging_table("orders"))
+    let staging: Vec<String> = columns(&connection, &planner, &planner.staging_table("orders"))
         .into_iter()
         .map(|column| column.name)
         .collect();
@@ -408,7 +463,9 @@ fn a_create_on_existing_tables_adds_only_the_columns_they_lack() {
             .collect()
     };
     assert_eq!(names("orders"), ["id", "name"]);
-    assert!(names(&staging_table("orders")).ends_with(&["id".to_owned(), "name".to_owned()]));
+    assert!(
+        names(&planner.staging_table("orders")).ends_with(&["id".to_owned(), "name".to_owned()])
+    );
     connection
         .execute("INSERT INTO orders (id) VALUES (1)", [])
         .expect("added columns are nullable");
@@ -425,14 +482,17 @@ fn a_staging_table_lost_beside_its_table_is_created_again_with_every_column() {
     )
     .unwrap();
     connection
-        .execute(&format!("DROP TABLE \"{}\"", staging_table("orders")), [])
+        .execute(
+            &format!("DROP TABLE \"{}\"", planner.staging_table("orders")),
+            [],
+        )
         .unwrap();
     let add = TableChange::AddColumn {
         table: orders,
         field: Field::new("name", LogicalType::Utf8, true),
     };
     apply(&connection, &planner, &add).unwrap();
-    let staging: Vec<String> = columns(&connection, &planner, &staging_table("orders"))
+    let staging: Vec<String> = columns(&connection, &planner, &planner.staging_table("orders"))
         .into_iter()
         .map(|column| column.name)
         .skip(4)
@@ -460,7 +520,7 @@ fn columns_declared_at_types_they_do_not_hold_conflict_and_plan_nothing() {
         .execute(
             &format!(
                 "ALTER TABLE \"{}\" ADD COLUMN extra TEXT",
-                staging_table("orders")
+                planner.staging_table("orders")
             ),
             [],
         )
@@ -767,7 +827,7 @@ fn a_commit_publishes_exactly_the_rows_its_pipeline_staged_at_its_epoch_in_its_s
         .map(|row| row.0)
         .collect();
     assert_eq!(published, [1, 2, 5]);
-    let left: Vec<i64> = rows_of(&connection, &staging_table("orders"))
+    let left: Vec<i64> = rows_of(&connection, &planner.staging_table("orders"))
         .iter()
         .map(|row| row.0)
         .collect();
@@ -799,7 +859,7 @@ fn a_generation_publishes_into_its_own_table() {
         (&mine, 1, 1),
         &[(1, "new")],
     );
-    let target = generation_table("orders", GenerationId(3));
+    let target = planner.generation_table("orders", GenerationId(3));
     assert_eq!(planner.target(&generation), target);
     let columns = columns(&connection, &planner, &target);
     let plan = planner.publish(
@@ -1129,6 +1189,54 @@ fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
 }
 
 #[test]
+fn a_merge_ranks_rows_under_a_name_no_column_of_the_table_has() {
+    let (connection, planner) = database();
+    // The table's own columns take the names a merge could rank its rows under.
+    let ranked = TableRef {
+        merge: Some(MergeKey {
+            columns: vec!["id".into()],
+            seq: "seq".into(),
+            root: None,
+            changes: None,
+        }),
+        ..table("ranked")
+    };
+    let fields = [
+        ("id", LogicalType::Int64, false),
+        ("seq", LogicalType::Int64, false),
+        ("_rdlt_rank", LogicalType::Int64, true),
+        ("_RDLT_RANK_", LogicalType::Int64, true),
+    ];
+    apply(&connection, &planner, &create(&ranked, &fields)).unwrap();
+    let mine = pipeline("mine");
+    let names = ["id", "seq", "_rdlt_rank", "_RDLT_RANK_"];
+    let statement = planner.stage(&ranked, &mine, Epoch(1), SegmentId(1), &names);
+    for (id, rank) in [(1, 7), (2, 1), (3, 5)] {
+        let mut values: Vec<Value> = statement.params.iter().map(value).collect();
+        values.extend([id, 1, rank, rank].map(Value::Integer));
+        connection
+            .execute(&statement.sql, rusqlite::params_from_iter(values))
+            .unwrap();
+    }
+    let columns = columns(&connection, &planner, "ranked");
+    let merge = staged("ranked", None, ranked.merge.clone());
+    run_all(
+        &connection,
+        &planner
+            .publish(&merge, &columns, &mine, Epoch(1), &segments(&[1]))
+            .unwrap(),
+    );
+    let ids = query(
+        &connection,
+        &Statement {
+            sql: "SELECT id FROM ranked ORDER BY id".to_owned(),
+            params: Vec::new(),
+        },
+    );
+    assert_eq!(ids, [1, 2, 3].map(|id| [Value::Integer(id)]));
+}
+
+#[test]
 fn registered_tables_are_found_by_path_with_their_generations() {
     let (connection, planner) = database();
     let orders = keyed("orders");
@@ -1152,7 +1260,7 @@ fn registered_tables_are_found_by_path_with_their_generations() {
     assert_eq!(
         generations,
         [[
-            text(&generation_table("events", GenerationId(4))),
+            text(&planner.generation_table("events", GenerationId(4))),
             Value::Integer(4)
         ]]
     );
@@ -1182,7 +1290,7 @@ fn a_swap_replaces_the_table_with_its_generation_and_drops_the_others() {
         .execute(
             &format!(
                 "INSERT INTO \"{}\" VALUES (2, 'new')",
-                generation_table("orders", GenerationId(2))
+                planner.generation_table("orders", GenerationId(2))
             ),
             [],
         )
@@ -1194,7 +1302,7 @@ fn a_swap_replaces_the_table_with_its_generation_and_drops_the_others() {
     );
     assert_eq!(rows_of(&connection, "orders"), [(2, "new".to_owned())]);
     for generation in [1, 2] {
-        let name = generation_table("orders", GenerationId(generation));
+        let name = planner.generation_table("orders", GenerationId(generation));
         assert!(columns_of_missing(&connection, &planner, &name), "{name}");
     }
     assert!(query(&connection, &planner.generations("orders")).is_empty());
@@ -1278,7 +1386,7 @@ fn discarding_removes_only_what_older_sessions_of_the_pipeline_staged() {
     let names = ["orders".to_owned(), "users".to_owned()];
     run_all(&connection, &planner.discard(&mine, Epoch(2), &names));
     for name in ["orders", "users"] {
-        let left: Vec<i64> = rows_of(&connection, &staging_table(name))
+        let left: Vec<i64> = rows_of(&connection, &planner.staging_table(name))
             .iter()
             .map(|row| row.0)
             .collect();
@@ -1334,7 +1442,7 @@ fn a_generation_never_created_starts_with_its_base_tables_columns() {
         &connection,
         &planner.generation(&generation, &columns_of_base),
     );
-    let name = generation_table("orders", GenerationId(5));
+    let name = planner.generation_table("orders", GenerationId(5));
     let names: Vec<String> = columns(&connection, &planner, &name)
         .into_iter()
         .map(|column| column.name)
@@ -1406,7 +1514,7 @@ fn ids_beyond_the_signed_range_keep_their_value() {
     assert_eq!(super::unsigned(stored), large.0);
     assert_eq!(
         generations_of(&connection, &planner, "orders"),
-        [(generation_table("orders", large), large)]
+        [(planner.generation_table("orders", large), large)]
     );
 }
 

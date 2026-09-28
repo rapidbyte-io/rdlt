@@ -256,3 +256,28 @@ pub(crate) async fn merges_into_a_table_it_appended_to_and_appends_again(target:
     load_into(target, store, &[r#"{"id":1,"v":"e"}"#], stream("events")).await;
     assert_eq!(target.rows(store, "events"), 3, "{target:?}");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_column_named_as_the_merge_ranks_its_rows_keeps_every_key_on_sqlite() {
+    let target = Target::Sqlite;
+    let store = target.name("merge_rank_column");
+    let pushed = batch(vec![
+        ("id", ints(&[1, 2, 3])),
+        ("_rdlt_rank", ints(&[7, 1, 5])),
+    ]);
+    let keyed = BatchStream::new("events", vec![pushed]).primary_key(&["id"]);
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline("merge-rank-column", [merging("events")]),
+            batches(&store, vec![keyed]).await,
+            target.destination("merge_rank_column").await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(target.ids("merge_rank_column", "events"), [1, 2, 3]);
+}

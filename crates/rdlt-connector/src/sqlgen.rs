@@ -30,7 +30,7 @@ use crate::types::LogicalType;
 pub use catalog::{CATALOG_TABLES, micros, receipt};
 pub use publish::{Staged, merge_key};
 pub use sqlite::Sqlite;
-pub use tables::{STAGING_COLUMNS, TABLE_PREFIX, generation_table, staging_table};
+pub use tables::{STAGING_COLUMNS, TABLE_PREFIX};
 
 /// A value a statement binds to one of its placeholders.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +91,12 @@ pub trait SqlDialect: Send + Sync {
     /// The query listing `table`'s columns as rows of identifier and declared type, in order; it
     /// returns no rows when the table does not exist.
     fn columns(&self, table: &str) -> Statement;
+
+    /// The most bytes an identifier may have, where the database limits them; the tables and
+    /// indexes the planner derives from a table's name keep within it.
+    fn max_identifier(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Plans the statements of a SQL destination for dialect `D`.

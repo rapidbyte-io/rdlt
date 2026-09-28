@@ -1,8 +1,12 @@
 //! Staging rows, publishing the segments a commit names, swapping generations in, and discarding
 //! staging.
 
+mod keyed;
+
+use keyed::Of;
+
 use super::catalog::{GENERATIONS, SEGMENTS};
-use super::tables::{STAGING_COLUMNS, staging_table};
+use super::tables::STAGING_COLUMNS;
 use super::{Column, Sql, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
 use crate::commit::SegmentSet;
 use crate::destination::{MergeKey, RootKey, TableRef};
@@ -56,7 +60,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             .collect();
         sql.push(&format!(
             "INSERT INTO {} ({}) VALUES ({})",
-            self.quote(&staging_table(&table.name)),
+            self.quote(&self.staging_table(&table.name)),
             names.join(", "),
             values.join(", ")
         ));
@@ -139,7 +143,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         segments: &SegmentSet,
     ) -> Result<Vec<Statement>> {
         let name = match staged.generation {
-            Some(generation) => super::tables::generation_table(&staged.name, generation),
+            Some(generation) => self.generation_table(&staged.name, generation),
             None => staged.name.clone(),
         };
         if columns.is_empty() {
@@ -152,7 +156,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             .map(|column| self.quote(&column.name))
             .collect();
         let names = names.join(", ");
-        let staging = self.quote(&staging_table(&staged.name));
+        let staging = self.quote(&self.staging_table(&staged.name));
         let target = self.quote(&name);
         let mut plan = Vec::new();
         let mut insert = self.sql();
@@ -173,23 +177,16 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 self.of_winning_roots(&mut insert, staged, key, pipeline, epoch, segments)?;
             }
             Some(key) => {
-                let keys: Vec<String> = key.columns.iter().map(|c| self.quote(c)).collect();
-                let keys = keys.join(", ");
-                let mut replaced = self.sql();
-                replaced.push(&format!(
-                    "DELETE FROM {target} WHERE ({keys}) IN (SELECT {keys} FROM {staging} WHERE "
-                ));
-                self.rows_of(&mut replaced, staged, pipeline, epoch, segments);
-                replaced.push(")");
+                let of = Of {
+                    staged,
+                    pipeline,
+                    epoch,
+                    segments,
+                };
+                let [replaced, merged] =
+                    self.merged([&target, &staging, &names], key, columns, &of);
                 plan.push(replaced.finish());
-                insert.push(&format!(
-                    "INSERT INTO {target} ({names}) SELECT {names} FROM (SELECT {names}, \
-                     ROW_NUMBER() OVER (PARTITION BY {keys} ORDER BY {} DESC) AS _rdlt_rank \
-                     FROM {staging} WHERE ",
-                    self.quote(&key.seq)
-                ));
-                self.rows_of(&mut insert, staged, pipeline, epoch, segments);
-                insert.push(") AS _rdlt_ranked WHERE _rdlt_rank = 1");
+                insert = merged;
             }
         }
         plan.push(insert.finish());
@@ -206,7 +203,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         Ok(Statement {
             sql: format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
-                self.quote(&format!("{target}__rdlt_root")),
+                self.quote(&self.fitted(format!("{target}__rdlt_root"))),
                 self.quote(target),
                 self.quote(owner)
             ),
@@ -228,7 +225,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let (owner, root) = child_key(key)?;
         // Root columns are qualified, so one the root staging lacks is an error rather than the
         // child table's column of that name.
-        let staging = self.quote(&staging_table(&root.table));
+        let staging = self.quote(&self.staging_table(&root.table));
         let mut sql = self.sql();
         sql.push(&format!(
             "DELETE FROM {target} WHERE {} IN (SELECT {staging}.{} FROM {staging} WHERE ",
@@ -258,7 +255,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         segments: &SegmentSet,
     ) -> Result<()> {
         let (owner, root) = child_key(key)?;
-        let staging = self.quote(&staging_table(&root.table));
+        let staging = self.quote(&self.staging_table(&root.table));
         let id = format!("{staging}.{}", self.quote(&root.id));
         sql.push(&format!(
             " AND ({}, {}) IN (SELECT {id}, MAX({staging}.{}) FROM {staging} WHERE ",
@@ -345,7 +342,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let staging = [STAGING_COLUMNS[0], STAGING_COLUMNS[1]].map(|column| self.quote(column));
         let mut plan: Vec<Statement> = names
             .iter()
-            .map(|name| older(self.quote(&staging_table(name)), staging.clone()))
+            .map(|name| older(self.quote(&self.staging_table(name)), staging.clone()))
             .collect();
         plan.push(older(
             SEGMENTS.to_owned(),
