@@ -12,6 +12,12 @@ name = "rdlt-certify"
 path = "src/main.rs"
 required-features = ["kill"]
 
+# The suite certifies the kill clauses, and runs the binary.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+required-features = ["kill"]
+
 [features]
 # The kill clauses, which load through an engine, killing the connector as it does.
 kill = ["dep:arrow-cast", "dep:arrow-schema", "dep:rdlt-connector-reference", "dep:rdlt-engine"]
