@@ -29,13 +29,14 @@ pub(crate) struct Schedule {
 }
 
 impl Schedule {
-    /// The points `seed` draws, with a lost answer when `answers`: early enough that a load
-    /// committing a few times reaches them.
+    /// The points `seed` draws, with a lost answer when `answers`: each after a commit that
+    /// published rows, as a load's first commit may publish none, and early enough that a load
+    /// committing a few times reaches it.
     pub(crate) fn seeded(seed: u64, answers: bool) -> Self {
         Self {
-            settled: 1 + seed % 2,
-            commit: 2 + (seed >> 8) % 3,
-            answer: answers.then_some(1 + (seed >> 16) % 3),
+            settled: 2 + seed % 2,
+            commit: 3 + (seed >> 8) % 3,
+            answer: answers.then_some(2 + (seed >> 16) % 3),
         }
     }
 }

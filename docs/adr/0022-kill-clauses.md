@@ -32,18 +32,24 @@ through the connector, and a host that can kill what it placed. The owner ruled 
   once. It is skipped when nothing reads back what the destination published, and when the
   destination does not append.
 - **Where the kills land.** A seed draws three points, counted in commits across the loads: at
-  the first write after the first or second commit, before the second to fourth commit, and,
-  for a destination, after the first to third commit, reporting its answer lost as a kill
-  between a commit and its answer does. Each point follows a commit, so a load killed there
-  resumes from what it recorded. The seed is the time unless one is chosen
-  (`Target::kill_seed`, `--kill-seed`); a failure reports it, so it can be replayed.
+  the first write after the second or third commit, before the third to fifth commit, and, for
+  a destination, after the second to fourth commit, reporting its answer lost as a kill between
+  a commit and its answer does. Each point follows a commit that published rows (a load's first
+  commit may publish none), so a load killed there resumes from what it recorded, and a
+  connector that breaks exactly-once only across a commit's rows is caught at every schedule:
+  the tests run all eighteen against a destination that records state before rows, and all six
+  of a source's against one that loses what it resumes.
+- **The seed** is the time, mixed as SplitMix64 mixes, so a clock that ticks in microseconds, as
+  macOS's does, still draws every point; or one chosen (`Target::kill_seed`, `--kill-seed`). A
+  failure reports it, so it can be replayed.
 - **The loads are shaped so the kills land in flight**: batches of 8 rows, a commit every 16
   rows, 1 MiB of engine memory, one event of partition buffer, one write in flight per lane, and
   64 KiB of read credit, so a source runs little ahead of the commits. A load retries 20 times,
   quickly, and up to three loads run until one succeeds.
 - **A clause passes only on evidence.** When no kill interrupted a load (the load ended first,
   as a source smaller than about one credit window does), the clause is skipped with the seed,
-  not passed. A clause takes at most 300 s.
+  not passed. A clause takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`)
+  gives it: a connector slower than about two seconds a commit needs more.
 - **`S-ARROW-JSON` waits for M8.** The engine infers the types of JSON pushes where Arrow pushes
   carry their own, so the same data rendered both ways publishes the same values only once a
   schema pins both; certification has no way to ask a source for both renderings. The Python
@@ -58,6 +64,7 @@ through the connector, and a host that can kill what it placed. The owner ruled 
     listening (`rdlt-certify/tests/it`);
   - P1–P4 and L3 are pinned by `rdlt-host/tests/it/process.rs` and `protocol.rs`.
 - A connector author learns from the binary whether the connector survives being killed. A
-  source must hold enough data for a kill to land mid-read, or the clause is skipped.
+  source must hold enough data for a kill to land mid-read, or the clause is skipped, and must
+  read the same data both times, as a fixture does: `K-SOURCE` compares two loads.
 - A killed spawned connector writes no coverage profile, so its killed runs go unmeasured; the
   processes that start again are measured.

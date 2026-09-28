@@ -5,6 +5,7 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
 use rdlt_certify::{
@@ -55,6 +56,10 @@ struct Args {
     /// reproduce the failure.
     #[arg(long, value_name = "SEED")]
     kill_seed: Option<u64>,
+    /// Gives each kill clause this many seconds for all its loads, rather than 300: a connector
+    /// slower than about two seconds a commit needs more.
+    #[arg(long, value_name = "SECONDS")]
+    kill_timeout: Option<u64>,
     /// How to print the reports.
     #[arg(long, value_enum, default_value_t = Output::Plain)]
     output: Output,
@@ -107,6 +112,10 @@ fn run(args: &Args) -> Result<u8, Ended> {
     let target = target(args)?;
     let target = match args.kill_seed {
         Some(seed) => target.kill_seed(seed),
+        None => target,
+    };
+    let target = match args.kill_timeout {
+        Some(seconds) => target.kill_timeout(Duration::from_secs(seconds)),
         None => target,
     };
     let runtime = tokio::runtime::Runtime::new()

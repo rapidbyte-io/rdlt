@@ -5,7 +5,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
 use super::rows::{Parted, parted, rendered};
-use super::{Loaded, unproven};
+use super::{Loaded, drawn, unproven};
 
 fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     RecordBatch::try_from_iter(columns).expect("a valid batch")
@@ -20,20 +20,37 @@ fn ids(values: &[i64]) -> RecordBatch {
     batch(vec![("id", Arc::new(Int64Array::from(values.to_vec())))])
 }
 
-#[test]
-fn every_seed_schedules_kills_early_in_a_load() {
-    for seed in (0..100_000_u64).map(|seed| seed.wrapping_mul(0x9e37_79b9_7f4a_7c15)) {
-        let schedule = Schedule::seeded(seed, true);
-        assert!((1..=2).contains(&schedule.settled), "{schedule:?}");
-        assert!((2..=4).contains(&schedule.commit), "{schedule:?}");
-        assert!(
-            schedule
+/// Whether `schedules` draw every point of each range, and none outside it: each after a
+/// commit that published rows, and early enough that a load committing a few times reaches it.
+fn draw_every_point(schedules: &[Schedule]) -> bool {
+    let within = schedules.iter().all(|schedule| {
+        (2..=3).contains(&schedule.settled)
+            && (3..=5).contains(&schedule.commit)
+            && schedule
                 .answer
-                .is_some_and(|answer| (1..=3).contains(&answer)),
-            "{schedule:?}"
-        );
-        assert_eq!(Schedule::seeded(seed, false).answer, None);
-    }
+                .is_some_and(|answer| (2..=4).contains(&answer))
+    });
+    let settled =
+        (2..=3).all(|settled| schedules.iter().any(|schedule| schedule.settled == settled));
+    let commit = (3..=5).all(|commit| schedules.iter().any(|schedule| schedule.commit == commit));
+    let answer = (2..=4).all(|answer| {
+        schedules
+            .iter()
+            .any(|schedule| schedule.answer == Some(answer))
+    });
+    within && settled && commit && answer
+}
+
+#[test]
+fn seeds_draw_every_point_of_each_range_and_none_beyond() {
+    let schedules: Vec<Schedule> = (0..4096)
+        .map(|seed| Schedule::seeded(seed * 257, true))
+        .collect();
+    assert!(draw_every_point(&schedules));
+    assert!(
+        (0..4096).all(|seed| Schedule::seeded(seed, false).answer.is_none()),
+        "a source's loads lose no answer"
+    );
 }
 
 #[test]
@@ -43,29 +60,24 @@ fn a_seed_draws_each_point_from_bits_of_its_own() {
         commit,
         answer,
     };
-    assert_eq!(Schedule::seeded(1, true), drawn(2, 2, Some(1)));
-    assert_eq!(Schedule::seeded(515, true), drawn(2, 4, Some(1)));
-    assert_eq!(Schedule::seeded(0x0002_0100, true), drawn(1, 2, Some(3)));
+    assert_eq!(Schedule::seeded(1, true), drawn(3, 3, Some(2)));
+    assert_eq!(Schedule::seeded(515, true), drawn(3, 5, Some(2)));
+    assert_eq!(Schedule::seeded(0x0002_0100, true), drawn(2, 3, Some(4)));
 }
 
 #[test]
-fn seeds_draw_every_point_of_each_range() {
-    let schedules: Vec<Schedule> = (0..4096)
-        .map(|seed| Schedule::seeded(seed * 257, true))
+fn a_clock_that_ticks_in_microseconds_still_draws_every_point() {
+    let schedules: Vec<Schedule> = (0..600_u64)
+        .map(|tick| Schedule::seeded(drawn(None, tick * 1000), true))
         .collect();
-    for settled in 1..=2 {
-        assert!(schedules.iter().any(|schedule| schedule.settled == settled));
-    }
-    for commit in 2..=4 {
-        assert!(schedules.iter().any(|schedule| schedule.commit == commit));
-    }
-    for answer in 1..=3 {
-        assert!(
-            schedules
-                .iter()
-                .any(|schedule| schedule.answer == Some(answer))
-        );
-    }
+    assert!(draw_every_point(&schedules));
+}
+
+#[test]
+fn a_chosen_seed_is_drawn_as_chosen_and_the_clock_mixed() {
+    assert_eq!(drawn(Some(515), 7), 515);
+    assert_eq!(drawn(None, 0), 0xe220_a839_7b1d_cdaf);
+    assert_eq!(drawn(None, 1), 0x910a_2dec_8902_5cc1);
 }
 
 #[test]

@@ -63,7 +63,7 @@ pub(crate) async fn source(
     config: &serde_json::Value,
 ) -> ClauseResult {
     #[cfg(feature = "kill")]
-    let outcome = within(source::resumed(target, id, config)).await;
+    let outcome = within(source::resumed(target, id, config), target.chosen_timeout()).await;
     #[cfg(not(feature = "kill"))]
     let outcome = {
         let _ = (target, id, config);
@@ -91,7 +91,10 @@ pub(crate) async fn destination(
     probe: &dyn Probe,
 ) -> ClauseResult {
     #[cfg(feature = "kill")]
-    let outcome = within(destination::exactly_once(target, id, config, probe)).await;
+    let outcome = {
+        let checking = destination::exactly_once(target, id, config, probe);
+        within(checking, target.chosen_timeout()).await
+    };
     #[cfg(not(feature = "kill"))]
     let outcome = {
         let _ = (target, id, config, probe);
@@ -108,7 +111,7 @@ pub(crate) async fn destination(
 const UNBUILT: &str = "rdlt-certify was built without its `kill` feature";
 
 #[cfg(feature = "kill")]
-pub(crate) use running::{Loaded, converged, run, unproven, within};
+pub(crate) use running::{Loaded, converged, drawn, run, unproven, within};
 
 #[cfg(feature = "kill")]
 mod running {
@@ -127,7 +130,7 @@ mod running {
     };
     use rdlt_host::Kills;
 
-    /// The longest a kill clause takes, all its loads together.
+    /// The longest a kill clause takes, all its loads together, unless the target chooses.
     const KILL_TIME: Duration = Duration::from_secs(300);
 
     /// The most loads a clause runs until one succeeds: a kill that lands as a load opens, or as
@@ -158,13 +161,20 @@ mod running {
         Inapplicable(String),
     }
 
-    /// `clause`'s outcome, or a failure once it takes longer than [`KILL_TIME`].
-    pub(crate) async fn within(clause: impl Future<Output = Loaded>) -> Outcome {
-        match tokio::time::timeout(KILL_TIME, clause).await {
+    /// `clause`'s outcome, or a failure once it takes longer than `chosen`, or [`KILL_TIME`].
+    pub(crate) async fn within(
+        clause: impl Future<Output = Loaded>,
+        chosen: Option<Duration>,
+    ) -> Outcome {
+        let bound = chosen.unwrap_or(KILL_TIME);
+        match tokio::time::timeout(bound, clause).await {
             Ok(Loaded::Kept) => Outcome::Passed,
             Ok(Loaded::Broken(reason)) => Outcome::Failed(reason),
             Ok(Loaded::Inapplicable(reason)) => Outcome::Skipped(reason),
-            Err(_) => Outcome::Failed(format!("the clause took longer than {KILL_TIME:?}")),
+            Err(_) => Outcome::Failed(format!(
+                "the loads took longer than {bound:?}; a connector this slow needs a longer \
+                 --kill-timeout"
+            )),
         }
     }
 
@@ -176,6 +186,21 @@ mod running {
             .unwrap_or_default()
             .as_nanos();
         u64::try_from(nanos).unwrap_or(u64::MAX)
+    }
+
+    /// The seed a clause draws its kill points from: `chosen`, or else `run` mixed, so a clock
+    /// that ticks coarser than nanoseconds still draws every point.
+    pub(crate) fn drawn(chosen: Option<u64>, run: u64) -> u64 {
+        chosen.unwrap_or_else(|| mixed(run))
+    }
+
+    /// `value` mixed as `SplitMix64` mixes its state, so every bit of the result follows every bit
+    /// of `value`.
+    fn mixed(value: u64) -> u64 {
+        let mut mixed = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        mixed ^ (mixed >> 31)
     }
 
     /// Why a load proves nothing of the connector, drawn from `seed`, when `kills` killed nothing
