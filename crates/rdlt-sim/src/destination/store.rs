@@ -75,6 +75,21 @@ impl Store {
         Digest(hasher.finish())
     }
 
+    /// The rows published to the table of `stream`.
+    pub(crate) fn published(&self, stream: &str) -> Vec<Stored> {
+        TablePath::new([stream])
+            .ok()
+            .and_then(|path| self.names.get(&path))
+            .and_then(|name| self.tables.get(name))
+            .map(|table| table.published.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every pipeline's state records.
+    pub(crate) fn states(&self) -> impl Iterator<Item = &BTreeMap<String, StateRecord>> {
+        self.pipelines.values().map(|store| &store.state)
+    }
+
     /// The epoch of `pipeline`'s newest session.
     pub(super) fn epoch(&self, pipeline: &PipelineId) -> Epoch {
         self.pipelines
@@ -126,9 +141,10 @@ impl Store {
             .collect();
         for (name, (key, rows)) in merging {
             let published = &mut self.tables.entry(name).or_default().published;
-            match &key.root {
-                None => cells::merge(published, rows, &key),
-                Some(root) => {
+            match (&key.root, &key.changes) {
+                (None, Some(changes)) => cells::merge_changes(published, rows, &key, changes),
+                (None, None) => cells::merge(published, rows, &key),
+                (Some(root), _) => {
                     let roots = roots
                         .get(root.table.as_ref())
                         .map_or(&[][..], Vec::as_slice);
@@ -201,6 +217,10 @@ impl Store {
         let Some(store) = self.pipelines.get(pipeline) else {
             return;
         };
+        // A change stream's rows carry positions of their own, which its oracle checks.
+        if !world.changes.streams.is_empty() {
+            return;
+        }
         for (table, rows) in published {
             let Some((path, _)) = self.names.iter().find(|(_, name)| *name == table) else {
                 continue;

@@ -20,6 +20,7 @@
 
 #![forbid(unsafe_code)]
 
+mod changes;
 mod destination;
 mod env;
 mod network;
@@ -31,11 +32,14 @@ mod swarm;
 mod workload;
 mod world;
 
+pub use changes::{
+    ChangeStream, ChangeWorkload, Event, Position, SimChangeSource, SimChangeSourceConfig,
+};
 pub use destination::{
     Cells, Digest, SimDestination, SimDestinationConfig, SimSession, SimWriter, Stored, completions,
 };
 pub use env::{InlinePool, SimEnv};
-pub use oracle::{check_exactly_once, stress};
+pub use oracle::{check_changes, check_exactly_once, stress};
 pub use rng::SplitMix64;
 pub use seed::{SEED_VAR, SEEDS_FROM_VAR, SEEDS_VAR, Seed, SeedVarError, run, run_threaded, seeds};
 pub use source::{SimCursor, SimSource, SimSourceConfig, schema};

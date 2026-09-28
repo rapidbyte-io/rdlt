@@ -138,6 +138,17 @@ pub struct Row {
 }
 
 impl Workload {
+    /// A workload of no streams, for a world whose source serves changes.
+    pub(crate) fn empty(features: Features) -> Self {
+        Self {
+            salt: 0,
+            features,
+            pipeline: Level::default(),
+            pipelines: 1,
+            streams: Vec::new(),
+        }
+    }
+
     /// A workload of one to three streams drawn from `rng`, exercising `features`.
     pub fn generate(rng: &mut SplitMix64, features: Features) -> Self {
         let salt = rng.next_u64();

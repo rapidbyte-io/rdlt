@@ -224,7 +224,18 @@ impl TableWriter for SimWriter {
                 self.table, self.version.0
             ));
         }
-        for finding in unfit {
+        // A change stream's written batches carry the columns that direct its merge, which no
+        // schema change names.
+        let directs = |finding: &String| {
+            self.merge
+                .as_ref()
+                .and_then(|key| key.changes.as_ref())
+                .is_some_and(|changes| {
+                    let named = |column: &str| finding.contains(&format!("column {column},"));
+                    named(&changes.op) || changes.unchanged.as_deref().is_some_and(named)
+                })
+        };
+        for finding in unfit.into_iter().filter(|finding| !directs(finding)) {
             self.world
                 .violation(format!("table {}: {finding}", self.table));
         }
