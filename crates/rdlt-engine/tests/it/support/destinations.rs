@@ -18,15 +18,30 @@ use serde::Deserialize;
 use serde_json::json;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct NullConfig {}
+struct NullConfig {
+    /// Whether writers keep what they stage until they flush, as SQL and file writers do.
+    #[serde(default)]
+    buffers: bool,
+}
 
 /// Counts what it stages, slowly, and publishes nothing, so tests can measure the engine alone.
-struct Null;
+struct Null {
+    buffers: bool,
+}
 
 /// A destination that discards every batch.
 pub(crate) async fn null() -> Arc<dyn Destination> {
+    null_with(json!({})).await
+}
+
+/// A destination whose writers keep every batch until they flush, then discard it.
+pub(crate) async fn buffering() -> Arc<dyn Destination> {
+    null_with(json!({ "buffers": true })).await
+}
+
+async fn null_with(config: serde_json::Value) -> Arc<dyn Destination> {
     let destination = destination_factory::<Null>()
-        .connect(json!({}), ConnectContext::new())
+        .connect(config, ConnectContext::new())
         .await
         .expect("the null destination connects");
     Arc::from(destination)
@@ -42,8 +57,10 @@ impl DestinationConnector for Null {
         Capabilities::minimal()
     }
 
-    async fn connect(_config: NullConfig, _context: &ConnectContext) -> Result<Self> {
-        Ok(Self)
+    async fn connect(config: NullConfig, _context: &ConnectContext) -> Result<Self> {
+        Ok(Self {
+            buffers: config.buffers,
+        })
     }
 
     async fn check(&self) -> Result<()> {
@@ -52,16 +69,19 @@ impl DestinationConnector for Null {
 
     async fn open(&self, _context: &OpenContext) -> Result<Opened<NullSession>> {
         Ok(Opened {
-            session: NullSession::default(),
+            session: NullSession {
+                staged: Arc::default(),
+                buffers: self.buffers,
+            },
             epoch: rdlt_connector::Epoch(1),
             state: Vec::new(),
         })
     }
 }
 
-#[derive(Default)]
 struct NullSession {
     staged: Arc<parking_lot::Mutex<BTreeMap<SegmentId, u64>>>,
+    buffers: bool,
 }
 
 impl Session for NullSession {
@@ -72,7 +92,10 @@ impl Session for NullSession {
     }
 
     async fn writer(&mut self, _table: &TableRef) -> Result<NullWriter> {
-        Ok(NullWriter(Arc::clone(&self.staged)))
+        Ok(NullWriter {
+            staged: Arc::clone(&self.staged),
+            buffered: self.buffers.then(Vec::new),
+        })
     }
 
     async fn discard_staged(&mut self) -> Result<()> {
@@ -100,17 +123,27 @@ impl Session for NullSession {
     }
 }
 
-struct NullWriter(Arc<parking_lot::Mutex<BTreeMap<SegmentId, u64>>>);
+struct NullWriter {
+    staged: Arc<parking_lot::Mutex<BTreeMap<SegmentId, u64>>>,
+    /// What the writer keeps until it flushes, when it buffers.
+    buffered: Option<Vec<RecordBatch>>,
+}
 
 impl TableWriter for NullWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
         // A slow writer, so batches would pile up in memory if nothing held the source back.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        *self.0.lock().entry(segment).or_default() += batch.num_rows() as u64;
+        *self.staged.lock().entry(segment).or_default() += batch.num_rows() as u64;
+        if let Some(buffered) = &mut self.buffered {
+            buffered.push(batch);
+        }
         Ok(())
     }
 
     async fn flush(&mut self) -> Result<WriteStats> {
+        if let Some(buffered) = &mut self.buffered {
+            buffered.clear();
+        }
         Ok(WriteStats::default())
     }
 }

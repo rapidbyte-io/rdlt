@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::HEAP;
 use crate::schema::{batch, ints, text};
 use crate::support::batches::{BatchStream, batches};
-use crate::support::destinations::{limited, null};
+use crate::support::destinations::{buffering, limited, null};
 use crate::support::script::{Fault, Hang, Script, ScriptStream, id, reconnect};
 use crate::support::{
     commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_json,
@@ -379,6 +379,87 @@ async fn encoded_pushes_stay_within_the_budget_once_decoded() {
     assert!(
         u64::try_from(peak).unwrap() <= bound,
         "peak {peak} bytes; bound {bound}"
+    );
+}
+
+/// Writers that keep what they stage until they flush are flushed once charges exceed the
+/// budget: one push, whose slices no admission waits behind, decodes 100 MB into such writers.
+#[tokio::test(start_paused = true)]
+async fn one_encoded_push_stays_within_the_budget_into_writers_that_buffer() {
+    use arrow_array::types::Int32Type;
+    use arrow_array::{ArrayRef, Int32Array, Int64Array, RunArray, StringArray};
+    const BUDGET: u64 = 4 << 20;
+    const ROWS: i32 = 50_000;
+    let runs = RunArray::<Int32Type>::try_new(
+        &Int32Array::from(vec![ROWS]),
+        &StringArray::from(vec!["x".repeat(2_000)]),
+    )
+    .expect("a valid run array");
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..i64::from(ROWS)));
+    let pushed = batch(vec![("id", ids), ("runs", Arc::new(runs) as ArrayRef)]);
+    let source = batches(
+        "buffered_budget",
+        vec![BatchStream::new("blobs", vec![pushed])],
+    )
+    .await;
+    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(
+            pipeline("buffered", [stream("blobs")]),
+            source,
+            buffering().await,
+        )
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 50_000);
+    let bound = BUDGET * 12 / 10 + (32 << 20);
+    assert!(
+        u64::try_from(peak).expect("a peak within u64") <= bound,
+        "peak {peak} bytes; bound {bound}"
+    );
+}
+
+/// A push lowered in pieces is charged for the rows each piece holds, not for the buffers they
+/// share: eight megabytes of integers take about that much of the budget, however they are cut.
+#[tokio::test(start_paused = true)]
+async fn a_push_lowered_in_pieces_is_charged_for_its_rows_once() {
+    use arrow_array::{ArrayRef, Int64Array};
+    const BUDGET: u64 = 4 << 20;
+    const ROWS: i64 = 1 << 20;
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..ROWS));
+    let source = batches(
+        "pieces_budget",
+        vec![BatchStream::new("ids", vec![batch(vec![("id", ids)])])],
+    )
+    .await;
+    let config = commit_every(10_000_000).memory(BUDGET).lanes(1);
+    let outcome = engine(config)
+        .run(
+            pipeline("pieces", [stream("ids")]),
+            source,
+            buffering().await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    // The push itself, its admission and one window of pieces beside it.
+    let bound = BUDGET + 3 * (8 << 20);
+    assert!(
+        outcome.report.peak_memory <= bound,
+        "peak {}; bound {bound}",
+        outcome.report.peak_memory
     );
 }
 

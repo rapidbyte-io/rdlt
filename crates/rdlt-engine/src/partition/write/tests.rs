@@ -85,7 +85,7 @@ fn lowered_batches_are_charged_in_full_before_any_is_queued() {
         discarded_values: 0,
     });
     let sizes = [
-        u64::try_from(lowered[0].batch.get_array_memory_size()).unwrap(),
+        super::slices::held_bytes(&lowered[0].batch),
         u64::try_from(shredded[1].get_array_memory_size()).unwrap(),
     ];
     let charged: Vec<_> = lowered
@@ -131,7 +131,7 @@ fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
         .collect();
     let lowered: u64 = parts
         .iter()
-        .map(|(_, part)| u64::try_from(part.batch.get_array_memory_size()).unwrap())
+        .map(|(_, part)| super::slices::held_bytes(&part.batch))
         .sum();
     let shared = share_growth(&budget, &parts, held);
     assert_eq!(
@@ -160,16 +160,15 @@ fn normalized_parts_are_charged_before_they_wait_on_their_tables() {
         key: Vec::new(),
     };
     let parts = crate::normalize::normalize(&ids(1000), &shape).unwrap();
-    let bytes: usize = parts
+    let bytes: u64 = parts
         .iter()
         .map(|part| {
             let lineage = &part.lineage;
-            part.batch.get_array_memory_size()
-                + lineage.id.get_array_memory_size()
-                + lineage.root_row.get_array_memory_size()
+            let arrays =
+                lineage.id.get_array_memory_size() + lineage.root_row.get_array_memory_size();
+            super::slices::held_bytes(&part.batch) + u64::try_from(arrays).unwrap()
         })
         .sum();
-    let bytes = u64::try_from(bytes).unwrap();
     let held = charge_parts(&budget, &parts, held);
     assert_eq!(budget.reserved(), bytes);
     drop(held);

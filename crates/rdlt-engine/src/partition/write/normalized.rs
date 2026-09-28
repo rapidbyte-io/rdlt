@@ -253,9 +253,7 @@ pub(super) fn share_growth(
 ) -> Arc<Mutex<Vec<Permit>>> {
     let bytes: u64 = prepared
         .iter()
-        .map(|(_, prepared)| {
-            u64::try_from(prepared.batch.get_array_memory_size()).unwrap_or(u64::MAX)
-        })
+        .map(|(_, prepared)| super::slices::held_bytes(&prepared.batch))
         .sum();
     held.permits
         .push(Box::new(budget.charge(bytes.saturating_sub(held.bytes))));
@@ -269,12 +267,11 @@ fn part_bytes(part: &Part) -> u64 {
     if let Some(parent) = &lineage.parent {
         arrays.extend([&parent.id, &parent.root, &parent.idx, &parent.row]);
     }
-    let bytes = part.batch.get_array_memory_size()
-        + arrays
-            .into_iter()
-            .map(|array| array.get_array_memory_size())
-            .sum::<usize>();
-    u64::try_from(bytes).unwrap_or(u64::MAX)
+    let arrays = arrays
+        .into_iter()
+        .map(|array| array.get_array_memory_size())
+        .sum::<usize>();
+    super::slices::held_bytes(&part.batch).saturating_add(u64::try_from(arrays).unwrap_or(u64::MAX))
 }
 
 /// `held` with the growth of `parts`, a unit's normalized parts, beyond it charged.

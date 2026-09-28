@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type};
-use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, RunArray, StringArray};
+use arrow_array::{Array, ArrayRef, Int32Array, Int64Array, RecordBatch, RunArray, StringArray};
+use arrow_schema::DataType;
 use rdlt_connector::{Permit, decoded_bytes};
 
 use super::super::Held;
@@ -104,4 +105,35 @@ fn pieces_fill_a_slice_to_its_last_byte() {
     let pieces = sliced(vec![(vec![empty], held(&budget, 8))], 160);
     assert_eq!(pieces.len(), 1);
     assert_eq!(pieces[0].0[0].num_rows(), 0);
+}
+
+#[test]
+fn a_skewed_run_is_cut_by_each_row_s_own_value() {
+    // Two thousand rows over a 4 KB value, then a thousand one-row runs over one byte each.
+    let ends = Int32Array::from_iter_values((0..=1_000).map(|run| 2_000 + run));
+    let values = StringArray::from_iter_values(
+        std::iter::once("x".repeat(4_096)).chain((0..1_000).map(|_| "y".to_owned())),
+    );
+    let runs = RunArray::<Int32Type>::try_new(&ends, &values).unwrap();
+    let numbers: Vec<i64> = (0..3_000).collect();
+    let skewed = RecordBatch::try_from_iter([
+        ("id", Arc::new(Int64Array::from(numbers)) as ArrayRef),
+        ("run", Arc::new(runs) as ArrayRef),
+    ])
+    .unwrap();
+    let budget = MemoryBudget::new(1 << 30);
+    let max = 64 << 10;
+    let pieces = sliced(vec![(vec![skewed], held(&budget, 64))], max);
+    assert_eq!(ids(&pieces), (0..3_000).collect::<Vec<_>>());
+    for (parts, _) in &pieces {
+        let decoded: u64 = parts
+            .iter()
+            .map(|part| {
+                let text = arrow_cast::cast(part.column(1), &DataType::Utf8).unwrap();
+                let bytes = text.to_data().get_slice_memory_size().unwrap();
+                u64::try_from(bytes + 8 * part.num_rows()).unwrap()
+            })
+            .sum();
+        assert!(decoded <= max, "{decoded}");
+    }
 }

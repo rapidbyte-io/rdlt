@@ -14,7 +14,7 @@ use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-pub use decoded::decoded_bytes;
+pub use decoded::{decoded_bytes, decoded_rows};
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, Result};
