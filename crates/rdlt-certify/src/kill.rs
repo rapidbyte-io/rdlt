@@ -13,7 +13,8 @@ mod killing;
 mod rows;
 #[cfg(feature = "kill")]
 mod source;
-#[cfg(all(test, feature = "kill"))]
+#[cfg(feature = "kill")]
+#[cfg(test)]
 mod tests;
 
 use rdlt_connector::Role;
