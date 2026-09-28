@@ -268,3 +268,39 @@ async fn a_small_budget_never_holds_gathered_pushes_until_their_latency() {
     );
     assert_eq!(published_rows("small_budget", "events"), 200);
 }
+
+#[tokio::test(start_paused = true)]
+async fn integer_keys_beyond_64_bits_stay_distinct() {
+    // The keys differ by one, which a float nearest them would round away.
+    let pushed = "{\"id\":18446744073709551616,\"v\":1}\n{\"id\":18446744073709551617,\"v\":2}";
+    let keyed = BatchStream::json("big", &[pushed]).primary_key(&["id"]);
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline("json-huge", [stream("big").write(WriteMode::Merge)]),
+            batches("json_huge", vec![keyed]).await,
+            memory("json_huge").await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let mut ids: Vec<i128> = published("json_huge", "big")
+        .iter()
+        .flat_map(|batch| {
+            let ids = batch.column_by_name("id").expect("an id column");
+            arrow_array::cast::AsArray::as_primitive::<arrow_array::types::Decimal128Type>(
+                ids.as_ref(),
+            )
+            .values()
+            .to_vec()
+        })
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [18_446_744_073_709_551_616, 18_446_744_073_709_551_617]
+    );
+}

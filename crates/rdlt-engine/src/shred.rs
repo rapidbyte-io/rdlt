@@ -10,6 +10,7 @@ mod build;
 mod conform;
 #[cfg(test)]
 mod differential;
+mod exact;
 mod observe;
 #[cfg(test)]
 mod reference;
@@ -60,6 +61,9 @@ pub(crate) enum ShredError {
     /// A list holds more items than a column can.
     #[error("a list column holds more items than one batch can")]
     TooLarge,
+    /// A number no column type holds exactly.
+    #[error("the number {0} is beyond every type that holds it exactly")]
+    Unrepresentable(String),
     /// A bug in the shredder.
     #[error("shredding: {0}")]
     Internal(String),
@@ -75,6 +79,7 @@ impl ShredError {
                 "limit_exceeded"
             }
             Self::DuplicateKey(_) => "json_duplicate_key",
+            Self::Unrepresentable(_) => "value_unrepresentable",
             Self::Internal(_) => "shred_internal",
         }
     }
@@ -266,38 +271,70 @@ struct Parsed {
     shape: Shape,
     /// Whether a column stopped building, so the chunk must be built again.
     spoiled: bool,
+    /// Whether the chunk is parsed with exact numbers, as one holding an integer beyond 64 bits is.
+    exact: bool,
 }
 
 /// Parses `chunk`, observing its values and building them into columns as they arrive.
+///
+/// A chunk the fast parse finds a float that may be a rounded integer in is parsed again with its
+/// numbers exact.
 fn parse(chunk: Chunk) -> Result<Parsed, ShredError> {
     let mut record = Record::empty(chunk.rows);
-    let spoiled = append(&chunk, &mut record)?;
+    let mut parse = append(&chunk, &mut record, false)?;
+    if parse.imprecise {
+        record = Record::empty(chunk.rows);
+        parse = append(&chunk, &mut record, true)?;
+    }
     Ok(Parsed {
         shape: record.shape(),
         chunk,
         record,
-        spoiled,
+        spoiled: parse.spoiled,
+        exact: parse.imprecise,
     })
 }
 
-/// Appends the records of `chunk` to `record`; returns whether a column stopped building.
-fn append(chunk: &Chunk, record: &mut Record) -> Result<bool, ShredError> {
+/// How appending a chunk went.
+struct Appended {
+    /// Whether a column stopped building.
+    spoiled: bool,
+    /// Whether the parse stopped at a float that may be a rounded integer, or, parsing exactly,
+    /// whether it parsed so.
+    imprecise: bool,
+}
+
+/// Appends the records of `chunk` to `record`, with their numbers exact where `exact` says.
+///
+/// The fast parse reads an integer beyond 64 bits as the float nearest it, so it stops at the
+/// first float that may be one, leaving the chunk to be parsed again exactly.
+fn append(chunk: &Chunk, record: &mut Record, exact: bool) -> Result<Appended, ShredError> {
     let context = Context::default();
     for (index, bytes) in chunk.records().enumerate() {
-        let mut deserializer = sonic_rs::Deserializer::from_slice(bytes);
-        Row {
-            record: &mut *record,
-            context: &context,
-        }
-        .deserialize(&mut deserializer)
-        .and_then(|()| deserializer.end())
-        .map_err(|error| {
+        let appended = if exact {
+            exact::append(bytes, &mut *record, &context)
+        } else {
+            let mut deserializer = sonic_rs::Deserializer::from_slice(bytes);
+            Row {
+                record: &mut *record,
+                context: &context,
+            }
+            .deserialize(&mut deserializer)
+            .and_then(|()| deserializer.end())
+        };
+        appended.map_err(|error| {
             context
                 .fault()
                 .unwrap_or_else(|| invalid(chunk.before + index, &error))
         })?;
+        if context.imprecise() && !exact {
+            break;
+        }
     }
-    Ok(context.spoiled())
+    Ok(Appended {
+        spoiled: context.spoiled(),
+        imprecise: exact || context.imprecise(),
+    })
 }
 
 /// The error for record `index` of the pushes, which sonic-rs refused with `error`: what broke and
@@ -353,7 +390,7 @@ fn build(parsed: Parsed, shape: &Shape) -> Result<RecordBatch, ShredError> {
         // Every value fits the joined shape, so no column stops building this time; a bug that
         // broke that would fail to finish the column or to make the batch.
         let mut record = Record::new(shape, rows);
-        append(&parsed.chunk, &mut record)?;
+        append(&parsed.chunk, &mut record, parsed.exact)?;
         record.finish_columns()?
     };
     let schema = TableSchema::new(shape.logical_fields())
