@@ -288,16 +288,22 @@ fn merged_rows(
     let schema = tables::read(&location.root, name)?
         .ok_or_else(|| ConnectorError::data(format!("table {name} does not exist")))?;
     let schema = Arc::new(schema.to_arrow());
-    let read = |paths: &mut dyn Iterator<Item = &String>| -> Result<Vec<RecordBatch>> {
+    // A change stream's staged rows carry the columns that direct its merge, and a truncate's
+    // names no key.
+    let staged = match &key.changes {
+        Some(changes) => crate::merge::written_schema(&schema, changes),
+        None => Arc::clone(&schema),
+    };
+    let read = |paths: &mut dyn Iterator<Item = &String>, schema: &arrow_schema::SchemaRef| {
         let mut batches = Vec::new();
         for path in paths {
-            batches.extend(location.format.read(&location.root.join(path), &schema)?);
+            batches.extend(location.format.read(&location.root.join(path), schema)?);
         }
-        Ok(batches)
+        Ok::<_, ConnectorError>(batches)
     };
-    let published = read(&mut published.iter())?;
+    let published = read(&mut published.iter(), &schema)?;
     let held = published.iter().map(RecordBatch::num_rows).sum();
-    let incoming = read(&mut files.iter().map(|file| &file.path))?;
+    let incoming = read(&mut files.iter().map(|file| &file.path), &staged)?;
     let merged = match root {
         Some((root, root_files)) => {
             let root_schema = tables::read(&location.root, &root.table)?.ok_or_else(|| {

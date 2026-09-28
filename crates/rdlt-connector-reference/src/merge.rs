@@ -1,13 +1,17 @@
 //! Merging published rows by key, as the memory and files destinations publish a merge table.
 
+mod changes;
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, UInt32Array, new_null_array};
 use arrow_row::{RowConverter, SortField};
-use arrow_schema::{ArrowError, DataType, SchemaRef};
-use rdlt_connector::{MergeKey, RootKey};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
+use rdlt_connector::{ChangeColumns, MergeKey, RootKey};
 
 /// `batch` under `schema`: columns found by name and cast to the schema's types, missing columns
 /// null.
@@ -33,10 +37,39 @@ fn concat(batches: &[RecordBatch], schema: &SchemaRef) -> Result<RecordBatch, Ar
     arrow_select::concat::concat_batches(schema, &aligned)
 }
 
-/// The published rows once `incoming` is merged into `published` by `key`: an incoming row
-/// replaces the published row with its key, and among incoming rows of one key the greatest
-/// sequence wins.
+/// The schema a change stream's written batches have: `stored`, every column nullable since a
+/// truncate names no key, then the columns `changes` directs the merge with.
+pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> SchemaRef {
+    let mut fields: Vec<Field> = stored
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone().with_nullable(true))
+        .collect();
+    fields.push(Field::new(changes.op.as_ref(), DataType::Int8, false));
+    if let Some(unchanged) = &changes.unchanged {
+        fields.push(Field::new(unchanged.as_ref(), DataType::Binary, true));
+    }
+    Arc::new(Schema::new(fields))
+}
+
+/// The published rows once `incoming` is merged into `published` by `key`: for a change stream's
+/// table, each row applies in sequence order as its op says; otherwise an incoming row replaces
+/// the published row with its key, and among incoming rows of one key the greatest sequence wins.
 pub(crate) fn merge(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    incoming: &[RecordBatch],
+    key: &MergeKey,
+) -> Result<Vec<RecordBatch>, ArrowError> {
+    match &key.changes {
+        Some(changes) => changes::merge_changes(schema, published, incoming, key, changes),
+        None => upsert(schema, published, incoming, key),
+    }
+}
+
+/// The published rows once `incoming` upserts into `published` by `key`, the greatest sequence
+/// winning among incoming rows of one key.
+fn upsert(
     schema: &SchemaRef,
     published: &[RecordBatch],
     incoming: &[RecordBatch],
