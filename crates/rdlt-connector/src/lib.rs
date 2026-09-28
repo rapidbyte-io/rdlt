@@ -126,8 +126,8 @@ pub use source::{
 };
 pub use spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 pub use state::{
-    NameConflict, NameMap, PartitionState, PipelineState, StateChange, StateEntry, StateError,
-    StateKey, StateRecord, StreamState, TableState,
+    NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange, StateEntry,
+    StateError, StateKey, StateRecord, StreamState, TableState,
 };
 pub use types::{
     DecimalType, Field, Fields, LOGICAL_TYPE_KEY, LogicalType, MAX_DECIMAL_PRECISION, TimeUnit,

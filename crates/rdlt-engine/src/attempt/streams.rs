@@ -6,13 +6,13 @@ use std::sync::Arc;
 
 use rdlt_connector::{
     Capabilities, Catalog, Checkpointing, ColumnKey, ColumnPath, Cursor, GenerationId, Partition,
-    PartitionId, PartitionState, PipelineState, ReadMode, SchemaVersion, StreamName, StreamSpec,
-    StreamState, TablePath, TableRef,
+    PartitionId, PartitionState, PipelineState, ReadMode, SchemaVersion, StreamSpec, StreamState,
+    TablePath, TableRef,
 };
 
-use super::{Planned, RunContext};
+use super::{Planned, RunContext, sequences};
 use crate::coordinator::{Begun, Cycle, Phases, StreamRun, Template};
-use crate::error::{Error, Side};
+use crate::error::{Error, ErrorKind, Side};
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
 use crate::partition::ChangeMode;
@@ -60,6 +60,9 @@ impl Planning<'_> {
         }
         let (resolver, table, model) =
             self.table(plan, spec, generation, tables, shape.is_some())?;
+        // Refused before the table changes, and recorded by the attempt's first commit.
+        let sequences = sequences::to_record(plan, tables.recorded_table(&table.path))?
+            .map(|sequences| (table.path.clone(), sequences));
         let index = tables.add_normalized(resolver, &table, model, shape.clone());
         if let Some(declared) = spec.schema() {
             let incoming = match &shape {
@@ -77,22 +80,17 @@ impl Planning<'_> {
             tables.child(index, &child).await?;
         }
         let (cycle, partitioned) = match read {
-            Read::Incremental(state) => (None, partitions(self.context, name, &state).await?),
+            Read::Incremental(state) => (None, partitions(self.context, plan, &state).await?),
             Read::Cycle(cycle, state) => {
-                (Some(cycle), partitions(self.context, name, &state).await?)
+                (Some(cycle), partitions(self.context, plan, &state).await?)
             }
             Read::Completed => (None, Partitioned::default()),
         };
         let on_demand = spec.checkpointing() == Checkpointing::OnDemand;
         let partial_updates = self.capabilities.partial_updates;
-        Ok(planned(
-            plan,
-            index,
-            on_demand,
-            partial_updates,
-            cycle,
-            partitioned,
-        ))
+        let mut planned = planned(plan, index, on_demand, partial_updates, cycle, partitioned);
+        planned.stream.sequences = sequences;
+        Ok(planned)
     }
 
     /// The stream's table as committed, or with a free identifier when new, and the resolver of
@@ -185,6 +183,7 @@ fn planned(
             remaining: partitioned.partitions.len(),
             stopped: false,
             phases,
+            sequences: None,
         },
         on_demand,
         changes,
@@ -394,17 +393,29 @@ struct Partitioned {
     partitions: Vec<(Partition, Option<Cursor>)>,
 }
 
-/// The partitions of `name` still to read, with their committed cursors; a plan beginning a new
-/// phase starts its partitions where it says.
+/// The partitions of `plan`'s stream still to read, with their committed cursors; a plan
+/// beginning a new phase starts its partitions where it says.
+///
+/// Only a change stream reads in phases: a plan beginning one for any other stream is
+/// `phase_unexpected`, a Source error, since the stream would start over from its plan every run.
 async fn partitions(
     context: &RunContext,
-    name: &StreamName,
+    plan: &StreamPlan,
     state: &StreamState,
 ) -> Result<Partitioned, Error> {
+    let name = plan.name();
     let planned = context.source.plan(name, state).await.map_err(|error| {
         Error::connector(Side::Source, format!("planning stream {name}"), error).with_stream(name)
     })?;
     if let Some(phase) = planned.phase.filter(|phase| *phase != state.phase) {
+        if plan.read_mode() != ReadMode::Cdc {
+            return Err(Error::new(
+                ErrorKind::Source,
+                format!("stream {name}: the source planned phase {phase} of a stream not read as changes"),
+            )
+            .with_code("phase_unexpected")
+            .with_stream(name));
+        }
         let begun = Begun {
             stale: state.partitions.keys().cloned().collect(),
             starts: planned.starts.clone(),

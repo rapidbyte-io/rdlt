@@ -722,6 +722,7 @@ fn models_come_from_committed_state() {
         schema: Some((SchemaVersion(model.version), model.schema())),
         physical: Some("t".into()),
         names: model.names.clone(),
+        sequences: None,
     };
     assert_eq!(Model::from_state(Some(&state)).unwrap(), model);
     let named_only = TableState {

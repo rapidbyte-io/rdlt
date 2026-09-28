@@ -1,5 +1,6 @@
 //! One attempt of a run: open the destination, plan the streams, and load until done.
 
+mod sequences;
 mod streams;
 #[cfg(test)]
 mod tests;

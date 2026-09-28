@@ -315,6 +315,7 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
         remaining: partitions,
         stopped: false,
         phases: None,
+        sequences: None,
     }
 }
 

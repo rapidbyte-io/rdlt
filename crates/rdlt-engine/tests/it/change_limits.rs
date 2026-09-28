@@ -18,10 +18,12 @@ use crate::changes::{changes, orders};
 use crate::support::destinations::limited;
 use crate::support::{commit_every, engine, generator, memory, pipeline, stream};
 
-/// A source that pushes `push` before each partition it reads.
-struct Pushing {
-    inner: Arc<dyn Source>,
-    push: Push,
+/// A source that pushes `push`, if any, before each partition it reads, and plans a new phase
+/// every time where `phased` says.
+pub(crate) struct Pushing {
+    pub(crate) inner: Arc<dyn Source>,
+    pub(crate) push: Option<Push>,
+    pub(crate) phased: bool,
 }
 
 impl Source for Pushing {
@@ -38,12 +40,21 @@ impl Source for Pushing {
         stream: &'a StreamName,
         state: &'a StreamState,
     ) -> BoxFuture<'a, Result<PartitionPlan>> {
-        self.inner.plan(stream, state)
+        Box::pin(async move {
+            let plan = self.inner.plan(stream, state).await?;
+            Ok(if self.phased {
+                plan.phase(state.phase + 1)
+            } else {
+                plan
+            })
+        })
     }
 
     fn read(&self, request: ReadRequest, mut sink: PartitionSink) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            sink.send(SourceEvent::Push(self.push.clone())).await?;
+            if let Some(push) = &self.push {
+                sink.send(SourceEvent::Push(push.clone())).await?;
+            }
             self.inner.read(request, sink).await
         })
     }
@@ -200,7 +211,8 @@ async fn a_destination_that_cannot_keep_columns_merges_changes_that_keep_none() 
 async fn a_change_stream_pushing_rows_fails_as_the_source_s_error() {
     let source = Arc::new(Pushing {
         inner: changes(9, &orders(&[])).await,
-        push: Push::Arrow(ids()),
+        push: Some(Push::Arrow(ids())),
+        phased: false,
     });
     let plan = stream("orders").read(ReadMode::Cdc).write(WriteMode::Merge);
     let outcome = run_limited(plan, source, "changes_pushing_rows", |_| {}).await;
@@ -214,11 +226,47 @@ async fn a_change_stream_pushing_rows_fails_as_the_source_s_error() {
 async fn a_stream_not_read_as_changes_pushing_changes_fails_as_the_source_s_error() {
     let source = Arc::new(Pushing {
         inner: generator(&[("orders", 10, 1, 5)]).await,
-        push: Push::Changes(ids()),
+        push: Some(Push::Changes(ids())),
+        phased: false,
     });
     let outcome = run_limited(stream("orders"), source, "changes_pushed_changes", |_| {}).await;
     assert_eq!(outcome.report.status, RunStatus::Failed);
     let error = outcome.error.expect("the run failed");
     assert_eq!(error.kind(), ErrorKind::Source, "{error}");
     assert_eq!(error.code(), Some("push_unexpected"), "{error}");
+}
+
+#[tokio::test]
+async fn a_stream_not_read_as_changes_planned_in_phases_fails_as_the_source_s_error() {
+    // Phases belong to change streams; a source naming one elsewhere would restart the stream
+    // from its plan's starts every run.
+    let source = Arc::new(Pushing {
+        inner: generator(&[("orders", 10, 1, 5)]).await,
+        push: None,
+        phased: true,
+    });
+    let outcome = run_limited(stream("orders"), source, "changes_phased_rows", |_| {}).await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(error.kind(), ErrorKind::Source, "{error}");
+    assert_eq!(error.code(), Some("phase_unexpected"), "{error}");
+}
+
+#[tokio::test]
+async fn a_change_log_keeps_the_flags_of_a_destination_that_cannot_keep_columns() {
+    // A log stores each update's unchanged flags as data, so the destination keeps nothing.
+    let plan = stream("orders")
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Append);
+    let source = changes(9, &orders(&[])).await;
+    let outcome = run_limited(plan, source, "changes_logged_flags", |capabilities| {
+        capabilities.partial_updates = false;
+    })
+    .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
 }

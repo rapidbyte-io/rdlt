@@ -299,8 +299,9 @@ impl Tables {
         Error::connector(Side::Destination, context, error).with_stream(stream)
     }
 
-    /// Adds the metadata columns a stream's table created before the stream merged or normalized
-    /// lacks: its sequence and lineage columns, nullable, since the rows it holds have none.
+    /// Adds the metadata columns a stream's table created before the stream merged, normalized or
+    /// soft-deleted lacks: its sequence, lineage and deleted-at columns, nullable, since the rows
+    /// it holds have none.
     ///
     /// A table that already has them changes nothing, as a generation created with them does.
     pub(crate) async fn add_meta_columns(&self, table: usize) -> Result<(), Error> {
@@ -308,14 +309,19 @@ impl Tables {
         if !view.model.created() {
             return Ok(());
         }
-        let added = [&view.meta.seq, &view.meta.id];
+        let deleted_at = view
+            .meta
+            .changes
+            .as_ref()
+            .and_then(|changes| changes.deleted_at.as_deref());
+        let added = [
+            view.meta.seq.as_deref(),
+            view.meta.id.as_deref(),
+            deleted_at,
+        ];
         let changes: Vec<TableChange> = view.physical[view.model.columns.len()..]
             .iter()
-            .filter(|field| {
-                added
-                    .iter()
-                    .any(|name| name.as_deref() == Some(field.name()))
-            })
+            .filter(|field| added.contains(&Some(field.name())))
             .map(|field| TableChange::AddColumn {
                 table: view.table.clone(),
                 field: Field::new(field.name(), field.logical_type().clone(), true),
