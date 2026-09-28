@@ -8,7 +8,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field};
 
-use super::decoded_bytes;
+use super::{decoded_bytes, decoded_rows};
 
 const ROWS: usize = 10_000;
 
@@ -255,4 +255,20 @@ fn every_kind_of_value_counts_each_row_s_own_value_behind_a_key_or_a_run() {
         // The small value's row alone takes far less than the large one's.
         assert!(decoded_bytes(&runs.slice(rows, 1)) < 200, "{kind}");
     }
+}
+
+#[test]
+fn each_row_counts_its_own_value_and_a_view_its_value_once_too_long_to_inline() {
+    use arrow_array::StringViewArray;
+    // A view inlines up to twelve bytes.
+    let views = StringViewArray::from(vec!["x".repeat(12), "x".repeat(13)]);
+    assert_eq!(decoded_rows(&batch(Arc::new(views))), [16, 16 + 13]);
+    let keyed = DictionaryArray::<Int32Type>::try_new(
+        Int32Array::from(vec![0, 1]),
+        Arc::new(StringArray::from(vec![value(), "y".to_owned()])),
+    )
+    .unwrap();
+    let rows = decoded_rows(&batch(Arc::new(keyed)));
+    assert!(rows[0] >= 1_000, "{rows:?}");
+    assert!(rows[1] < 100, "{rows:?}");
 }
