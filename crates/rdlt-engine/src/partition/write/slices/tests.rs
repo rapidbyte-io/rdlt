@@ -137,3 +137,19 @@ fn a_skewed_run_is_cut_by_each_row_s_own_value() {
         assert!(decoded <= max, "{decoded}");
     }
 }
+
+#[test]
+fn rows_fill_each_slice_to_its_last_byte() {
+    // Twenty 8-byte integers over a slice of 80 bytes are two slices of ten.
+    let budget = MemoryBudget::new(1 << 30);
+    let numbers: Vec<i64> = (0..20).collect();
+    let plain =
+        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(numbers)) as ArrayRef)])
+            .unwrap();
+    let pieces = sliced(vec![(vec![plain], held(&budget, 8))], 80);
+    let rows: Vec<usize> = pieces
+        .iter()
+        .map(|(parts, _)| parts.iter().map(RecordBatch::num_rows).sum())
+        .collect();
+    assert_eq!(rows, [10, 10]);
+}
