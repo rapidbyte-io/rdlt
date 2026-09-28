@@ -13,11 +13,12 @@ use rdlt_connector::{DestinationWriter, PartitionId, Permit, SchemaVersion, Segm
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::budget::MemoryBudget;
 use crate::error::{Error, Side};
 use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment and the schema version it was lowered for; the
-/// reservation drops once it is staged.
+/// reservation drops once its writer has flushed it, since a writer may buffer what it stages.
 pub(crate) struct Write {
     pub(crate) table: usize,
     pub(crate) version: SchemaVersion,
@@ -37,13 +38,15 @@ pub(crate) struct Lanes {
     senders: Vec<mpsc::Sender<Message>>,
 }
 
-/// One lane's end: its queue, a writer for each table and schema version it has written, and
-/// which of them it wrote since its last flush.
+/// One lane's end: its queue, a writer for each table and schema version it has written, which
+/// of them it wrote since its last flush, and the reservations of those writes.
 pub(crate) struct Lane {
     receiver: mpsc::Receiver<Message>,
     tables: Arc<Tables>,
     writers: BTreeMap<(usize, SchemaVersion), Box<dyn DestinationWriter>>,
     written: BTreeSet<(usize, SchemaVersion)>,
+    held: Vec<Permit>,
+    budget: MemoryBudget,
 }
 
 impl Lanes {
@@ -55,6 +58,7 @@ impl Lanes {
         count: NonZeroUsize,
         tables: &Arc<Tables>,
         window: NonZeroUsize,
+        budget: &MemoryBudget,
     ) -> (Self, Vec<Lane>) {
         let (senders, lanes) = (0..count.get())
             .map(|_| {
@@ -64,6 +68,8 @@ impl Lanes {
                     tables: Arc::clone(tables),
                     writers: BTreeMap::new(),
                     written: BTreeSet::new(),
+                    held: Vec::new(),
+                    budget: budget.clone(),
                 };
                 (sender, lane)
             })
@@ -112,12 +118,21 @@ fn stopped() -> Error {
 
 impl Lane {
     /// Stages queued writes until every sender is dropped or `cancel` fires.
+    ///
+    /// A lane flushes its writers when the coordinator asks, and whenever a request waits for
+    /// bytes while the lane holds writes it has not flushed, which frees them.
     pub(crate) async fn run(mut self, cancel: CancellationToken) -> Result<(), Error> {
         loop {
+            let pressed = self.budget.pressed();
             let message = tokio::select! {
                 biased;
                 // Cancellation wins: the attempt is ending and its writes will be discarded.
                 () = cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
+                // Pressure comes before more writes, so the bytes it waits for are freed first.
+                () = pressed, if !self.held.is_empty() => {
+                    self.flush_written().await?;
+                    continue;
+                }
                 message = self.receiver.recv() => message,
             };
             match message {
@@ -130,24 +145,31 @@ impl Lane {
                         .map_err(|error| {
                             Error::connector(Side::Destination, "writing a batch", error)
                         })?;
-                    drop(write.reservation);
+                    self.held.push(write.reservation);
                 }
                 Some(Message::Flush(reply)) => {
-                    // A writer written before the last flush holds nothing more to flush.
-                    for key in std::mem::take(&mut self.written) {
-                        let Some(writer) = self.writers.get_mut(&key) else {
-                            continue;
-                        };
-                        writer.flush().await.map_err(|error| {
-                            Error::connector(Side::Destination, "flushing staged writes", error)
-                        })?;
-                    }
+                    self.flush_written().await?;
                     // The coordinator may have stopped waiting; the flush happened either way.
                     reply.send(()).ok();
                 }
                 None => return Ok(()),
             }
         }
+    }
+
+    /// Flushes every writer written since the last flush, then releases what their writes held.
+    async fn flush_written(&mut self) -> Result<(), Error> {
+        // A writer written before the last flush holds nothing more to flush.
+        for key in std::mem::take(&mut self.written) {
+            let Some(writer) = self.writers.get_mut(&key) else {
+                continue;
+            };
+            writer.flush().await.map_err(|error| {
+                Error::connector(Side::Destination, "flushing staged writes", error)
+            })?;
+        }
+        self.held.clear();
+        Ok(())
     }
 }
 

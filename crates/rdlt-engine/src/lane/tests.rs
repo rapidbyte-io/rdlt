@@ -105,8 +105,27 @@ fn lanes(
     count: usize,
     tables: usize,
     log: &Log,
+    fails: [bool; 3],
+    window: usize,
+) -> (Lanes, Vec<super::Lane>) {
+    budgeted(
+        count,
+        tables,
+        log,
+        fails,
+        window,
+        &MemoryBudget::new(1 << 30),
+    )
+}
+
+/// [`lanes`] under `budget`.
+fn budgeted(
+    count: usize,
+    tables: usize,
+    log: &Log,
     [fail_open, fail_write, fail_flush]: [bool; 3],
     window: usize,
+    budget: &MemoryBudget,
 ) -> (Lanes, Vec<super::Lane>) {
     let session = Session {
         log: Arc::clone(log),
@@ -130,6 +149,7 @@ fn lanes(
         NonZeroUsize::new(count).unwrap(),
         &Arc::new(all),
         NonZeroUsize::new(window).unwrap(),
+        budget,
     )
 }
 
@@ -334,6 +354,52 @@ async fn a_flush_reaches_only_the_writers_written_since_the_last() {
     write_at(&lanes, &budget, at(2), 2, 4).await.unwrap();
     lanes.flush().await.unwrap();
     assert_eq!(*log.lock(), ["t0 v2 s2 r4", "t0 v2 flush"]);
+    drop(lanes);
+    lane.await.unwrap().unwrap();
+}
+
+/// Waits until `log` holds `entry`.
+async fn logged(log: &Log, entry: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !log.lock().iter().any(|logged| logged == entry) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the entry is logged");
+}
+
+#[tokio::test]
+async fn a_write_holds_its_bytes_until_its_writer_flushes_them() {
+    // A writer may buffer what it stages until it flushes, so the bytes stay charged till then.
+    let log = Log::default();
+    let budget = MemoryBudget::new(1_000);
+    let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
+    logged(&log, "t0 v0 s1 r3").await;
+    assert_eq!(budget.reserved(), 10);
+    lanes.flush().await.unwrap();
+    assert_eq!(budget.reserved(), 0);
+    drop(lanes);
+    lane.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_lane_flushes_its_writers_once_the_budget_is_pressed() {
+    let log = Log::default();
+    let budget = MemoryBudget::new(20);
+    let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
+    write(&lanes, &budget, 0, 0, 1, 4).await.unwrap();
+    logged(&log, "t0 v0 s1 r4").await;
+    // A request that waits for the written bytes gets them once the lane flushes on its own.
+    let waiting = tokio::time::timeout(std::time::Duration::from_secs(5), budget.acquire(10))
+        .await
+        .expect("the lane releases what it flushed");
+    assert!(log.lock().iter().any(|entry| entry == "t0 v0 flush"));
+    drop(waiting);
     drop(lanes);
     lane.await.unwrap().unwrap();
 }

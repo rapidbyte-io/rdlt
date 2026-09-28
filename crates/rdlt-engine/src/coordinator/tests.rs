@@ -220,7 +220,9 @@ impl Setup {
             fail: self.fail_commit,
         }));
         let tables = self.tables(session).await;
-        let (lanes, lane_tasks) = Lanes::new(NonZeroUsize::MIN, &tables, NonZeroUsize::MIN);
+        let budget = crate::budget::MemoryBudget::new(1 << 30);
+        let (lanes, lane_tasks) =
+            Lanes::new(NonZeroUsize::MIN, &tables, NonZeroUsize::MIN, &budget);
         for lane in lane_tasks {
             tokio::spawn(lane.run(CancellationToken::new()));
         }
