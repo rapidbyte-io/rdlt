@@ -42,8 +42,8 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
     the features it does not know (§12.7), and `P-HANDSHAKE` fails one that accepts or refuses
     it.
   - The reference destinations (memory, SQLite, files) read back. The memory destination's store
-    lives in its process, so its binary, spawned for each connection, reads back nothing another
-    connection published; it is certified in process, or through its store's own probe.
+    lives in its process, so its binary, spawned for each connection, serves no read-back; it is
+    certified in process, or through its store's own probe.
   - A read-back certifies a destination against its own account of what it published. A probe
     that reads the store itself, as in-process tests use, remains the stronger check.
 - **New and stronger clauses.**

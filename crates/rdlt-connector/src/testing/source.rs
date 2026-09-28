@@ -5,7 +5,10 @@ use std::num::NonZeroUsize;
 
 use bytes::Bytes;
 
-use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
+use super::{
+    CLAUSE_TIMEOUT, Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call,
+    outcome, timed,
+};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::cursor::Cursor;
 use crate::id::StreamName;
@@ -78,13 +81,23 @@ async fn check_all(source: &dyn Source) -> Vec<ClauseResult> {
     let mut results = Vec::new();
     for clause in SOURCE_CLAUSES {
         let outcome = match (&catalog, clause.id) {
-            (_, "S-CHECK") => outcome(check_agrees_with_read(source, catalog.as_ref()).await),
-            (_, "S-DISCOVER") => outcome(discover_is_stable(source, catalog.as_ref().ok()).await),
+            (_, "S-CHECK") => {
+                outcome(timed(check_agrees_with_read(source, catalog.as_ref())).await)
+            }
+            (_, "S-DISCOVER") => {
+                outcome(timed(discover_is_stable(source, catalog.as_ref().ok())).await)
+            }
             (Err(Violation(reason)), _) => Outcome::Failed(format!("discover failed: {reason}")),
-            (Ok(catalog), "S-PLAN") => outcome(plans_are_valid(source, catalog).await),
-            (Ok(catalog), "S-RESUME") => outcome(resumes_are_exact(source, catalog).await),
-            (Ok(catalog), "S-STOP") => outcome(stops_are_prompt(source, catalog).await),
-            (Ok(catalog), _) => barriers_are_answered(source, catalog).await,
+            (Ok(catalog), "S-PLAN") => outcome(timed(plans_are_valid(source, catalog)).await),
+            (Ok(catalog), "S-RESUME") => outcome(timed(resumes_are_exact(source, catalog)).await),
+            (Ok(catalog), "S-STOP") => outcome(timed(stops_are_prompt(source, catalog)).await),
+            (Ok(catalog), _) => {
+                tokio::time::timeout(CLAUSE_TIMEOUT, barriers_are_answered(source, catalog))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Outcome::Failed(format!("the clause took longer than {CLAUSE_TIMEOUT:?}"))
+                    })
+            }
         };
         results.push(ClauseResult {
             clause: *clause,
@@ -255,8 +268,11 @@ async fn check_agrees_with_read(
     }
 }
 
-/// Reads the first partition of `catalog`'s first stream until its first event, or its end,
-/// and stops it there.
+/// Starts a read of the first partition of `catalog`'s first stream, and stops it once it has
+/// sent its first event, or had a moment to: a read of a quiet stream may have nothing to send.
+///
+/// A read that fails does so as it starts, or as it stops; one still quiet a moment after it was
+/// asked to stop started without error, and is dropped.
 async fn read_starts(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {
     let Some(stream) = catalog.iter().next() else {
         return Ok(());
@@ -270,18 +286,24 @@ async fn read_starts(source: &dyn Source, catalog: &Catalog) -> Result<(), Viola
         partition: partition.clone(),
         cursor: None,
     };
-    let first = async {
-        feed.recv().await;
+    let started = async {
+        drop(tokio::time::timeout(START_WINDOW, feed.recv()).await);
         feed.stop();
         while feed.recv().await.is_some() {}
     };
     let what = format!("reading {} partition {}", stream.name(), partition.id());
-    let (read, ()) = bounded(&what, async {
-        tokio::join!(source.read(request, sink), first)
-    })
-    .await?;
-    read.map_err(|error| Violation::from(format!("{what}: {error}")))
+    let reading = async { tokio::join!(source.read(request, sink), started) };
+    match tokio::time::timeout(START_WINDOW + STOP_WINDOW, reading).await {
+        Ok((read, ())) => read.map_err(|error| Violation::from(format!("{what}: {error}"))),
+        Err(_) => Ok(()),
+    }
 }
+
+/// How long a read has to send its first event before it is asked to stop.
+const START_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a read asked to stop has to end, or fail, before it counts as started.
+const STOP_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn stops_are_prompt(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {
     for stream in catalog.iter() {

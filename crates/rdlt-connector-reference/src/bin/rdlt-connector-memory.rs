@@ -5,12 +5,14 @@
 use std::process::ExitCode;
 
 use rdlt_connector::serve::Served;
-use rdlt_connector::{readable_destination_factory, source_factory};
+use rdlt_connector::{destination_factory, source_factory};
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 
 fn main() -> ExitCode {
     Served::new()
         .with_source(source_factory::<MemorySource>())
-        .with_destination(readable_destination_factory::<MemoryDestination>())
+        // Its store lives in this process, and each connection spawns one of its own: what one
+        // published, another cannot read back.
+        .with_destination(destination_factory::<MemoryDestination>())
         .serve()
 }
