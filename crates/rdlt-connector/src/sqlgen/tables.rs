@@ -19,21 +19,39 @@ pub const STAGING_COLUMNS: [&str; 4] = [
 /// The prefix of every table `sqlgen` keeps: the catalog, staging and generation tables.
 pub const TABLE_PREFIX: &str = "_rdlt_";
 
-/// The staging table of the table `name`.
-pub fn staging_table(name: &str) -> String {
-    format!("_rdlt_staging__{name}")
-}
-
-/// The table holding `generation` of the table `name` until it is swapped in.
-pub fn generation_table(name: &str, generation: GenerationId) -> String {
-    format!("_rdlt_generation_{generation}__{name}")
-}
-
 impl<D: SqlDialect> SqlPlanner<D> {
+    /// The staging table of the table `name`.
+    pub fn staging_table(&self, name: &str) -> String {
+        self.fitted(format!("_rdlt_staging__{name}"))
+    }
+
+    /// The table holding `generation` of the table `name` until it is swapped in.
+    pub fn generation_table(&self, name: &str, generation: GenerationId) -> String {
+        self.fitted(format!("_rdlt_generation_{generation}__{name}"))
+    }
+
+    /// `derived`, a name derived from a table's, within the dialect's longest identifier: one too
+    /// long keeps what fits of its start and ends with a hash of the whole, so two long names
+    /// sharing a start stay distinct.
+    pub(super) fn fitted(&self, derived: String) -> String {
+        let Some(max) = self.dialect.max_identifier() else {
+            return derived;
+        };
+        if derived.len() <= max {
+            return derived;
+        }
+        let hash = format!("_{:08x}", fnv1a(derived.as_bytes()));
+        let mut end = max.saturating_sub(hash.len());
+        while !derived.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}{hash}", &derived[..end])
+    }
+
     /// The table rows for `table` are published into: its generation's table, or itself.
     pub fn target(&self, table: &TableRef) -> String {
         match table.generation {
-            Some(generation) => generation_table(&table.name, generation),
+            Some(generation) => self.generation_table(&table.name, generation),
             None => table.name.to_string(),
         }
     }
@@ -65,7 +83,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         staging: &[Column],
     ) -> Result<Vec<Statement>> {
         let table = change.table();
-        let names = [self.target(table), staging_table(&table.name)];
+        let names = [self.target(table), self.staging_table(&table.name)];
         match change {
             TableChange::Create { schema, .. } => {
                 let fields: Vec<&Field> = schema.fields().iter().collect();
@@ -247,4 +265,12 @@ fn conflict(table: &str, existing: &Column, logical: &LogicalType) -> ConnectorE
         existing.name, existing.declared
     ))
     .with_code("schema_conflict")
+}
+
+/// The 32-bit FNV-1a hash of `bytes`: stable across builds and platforms, as names derived with
+/// it must be.
+fn fnv1a(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5, |hash: u32, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+    })
 }

@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
-use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite, Staged, staging_table};
+use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite, Staged};
 use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StateRecord};
 use rusqlite::Transaction;
 use rusqlite::types::Value;
@@ -77,7 +77,11 @@ impl Session for SqliteSession {
             .transaction(move |transaction| {
                 let table = change.table();
                 let target = columns(transaction, planner.dialect(), &planner.target(table))?;
-                let staging = columns(transaction, planner.dialect(), &staging_table(&table.name))?;
+                let staging = columns(
+                    transaction,
+                    planner.dialect(),
+                    &planner.staging_table(&table.name),
+                )?;
                 run_all(transaction, &planner.change(&change, &target, &staging)?)?;
                 if matches!(change, TableChange::Create { .. }) {
                     run_all(transaction, &planner.register(table))?;
@@ -245,7 +249,7 @@ fn publish(
     staged.sort_by_key(|(staged, ..)| staged.merge.as_ref().is_none_or(|key| key.root.is_none()));
     for (staged, count, size) in staged {
         let target = match staged.generation {
-            Some(generation) => sqlgen::generation_table(&staged.name, generation),
+            Some(generation) => planner.generation_table(&staged.name, generation),
             None => staged.name.clone(),
         };
         let columns = columns(transaction, planner.dialect(), &target)?;
