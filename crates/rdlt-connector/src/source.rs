@@ -114,12 +114,32 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Partition {
     id: PartitionId,
+    unbounded: bool,
 }
 
 impl Partition {
     /// A partition with `id`; the source gives the id its meaning.
     pub fn new(id: PartitionId) -> Self {
-        Self { id }
+        Self {
+            id,
+            unbounded: false,
+        }
+    }
+
+    /// The partition, as one that never ends, as a change stream's changes or a log's records
+    /// do: a read of it that ends only pauses it.
+    ///
+    /// Such a partition is never done: its next read resumes from its last checkpoint, so rows a
+    /// read pushed after that checkpoint are read again, not committed without a position.
+    #[must_use]
+    pub fn unbounded(mut self) -> Self {
+        self.unbounded = true;
+        self
+    }
+
+    /// Whether the partition never ends.
+    pub fn is_unbounded(&self) -> bool {
+        self.unbounded
     }
 
     /// The partition of a stream that is not split, with id `whole`.

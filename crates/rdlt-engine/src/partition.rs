@@ -170,7 +170,7 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
     })?;
     let ingested = read_and_ingest(&job, &context).await?;
     if !ingested.stopped
-        && let Some(state) = end_state(&ingested)
+        && let Some(state) = end_state(&ingested, job.partition.is_unbounded())
     {
         context.report(Progress::Sealed(ingested.open.seal(job.index, state, None)))?;
     }
@@ -238,10 +238,14 @@ async fn read_and_ingest(
 /// and the seal carries the discards. Otherwise the partition resumes from its last cursor, so an
 /// incremental read picks up rows the source adds later. A partition that read nothing and never
 /// checkpointed records no position, so its next read starts from the beginning again.
-fn end_state(ingested: &Ingested) -> Option<PartitionState> {
+///
+/// An unbounded partition is never done: rows it pushed after its last checkpoint are not
+/// sealed, so its next read, from that checkpoint, reads them again.
+fn end_state(ingested: &Ingested, unbounded: bool) -> Option<PartitionState> {
     match (&ingested.last_cursor, ingested.open.received) {
         (Some(cursor), 0) => Some(PartitionState::Cursor(cursor.clone())),
         (None, 0) => None,
+        _ if unbounded => None,
         _ => Some(PartitionState::Done),
     }
 }

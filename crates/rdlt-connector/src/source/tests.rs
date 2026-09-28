@@ -348,3 +348,13 @@ fn a_sources_factory_debugs_as_its_role_and_id() {
         "Source(ConnectorId(\"io.test.counter\"))"
     );
 }
+
+#[test]
+fn a_partition_is_bounded_unless_it_says_it_never_ends() {
+    let id = PartitionId::parse("changes").unwrap();
+    assert!(!Partition::new(id.clone()).is_unbounded());
+    assert!(!Partition::single().is_unbounded());
+    let unbounded = Partition::new(id.clone()).unbounded();
+    assert!(unbounded.is_unbounded());
+    assert_eq!(unbounded.id(), &id);
+}

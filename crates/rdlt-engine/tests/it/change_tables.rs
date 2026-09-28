@@ -126,15 +126,18 @@ async fn a_change_older_than_the_stored_row_is_ignored_in_a_later_run() {
         "{:?}",
         first.error
     );
-    // A key a later change set, replayed at a position before that change.
-    let table = expected(15, &stream_spec);
+    // By the next run the source holds more changes, whose checkpoints commit a replayed change
+    // at a position before a key's last one, which the key's row must keep.
+    let mut later = orders(&[]);
+    later.changes = 250;
+    let table = expected(15, &later);
     let (&id, row) = table
         .iter()
-        .find(|(_, row)| row.n > 1)
-        .expect("a key a change set");
+        .find(|(_, row)| (2..=200).contains(&row.n))
+        .expect("a key a first-run change set last");
     let stale = u64::try_from(row.n - 1).expect("a change's position");
     let replaying = Arc::new(Pushing {
-        inner: changes(15, &stream_spec).await,
+        inner: changes(15, &later).await,
         push: Some(Push::Changes(update(id, "stale", stale))),
         phased: false,
     });

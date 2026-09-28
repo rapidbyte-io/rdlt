@@ -229,6 +229,12 @@ impl Changed {
             .collect()
     }
 
+    /// The changes partition, which never ends.
+    fn changes() -> Result<Vec<Partition>> {
+        let id = PartitionId::parse(CHANGES_PARTITION).internal("partition id")?;
+        Ok(vec![Partition::new(id).unbounded()])
+    }
+
     fn partitions(ids: Vec<String>) -> Result<Vec<Partition>> {
         ids.into_iter()
             .map(|id| {
@@ -260,9 +266,7 @@ impl ReadStream<ChangesSource> for Changed {
 
     async fn plan(&self, _source: &ChangesSource, state: &StreamState) -> Result<PartitionPlan> {
         if state.phase == CHANGES {
-            return Ok(PartitionPlan::new(Self::partitions(vec![
-                CHANGES_PARTITION.into(),
-            ])?));
+            return Ok(PartitionPlan::new(Self::changes()?));
         }
         let snapshot = self.snapshot_ids();
         let finished = snapshot.iter().all(|id| {
@@ -288,11 +292,9 @@ impl ReadStream<ChangesSource> for Changed {
             },
         )?;
         let id = PartitionId::parse(CHANGES_PARTITION).internal("partition id")?;
-        Ok(
-            PartitionPlan::new(Self::partitions(vec![CHANGES_PARTITION.into()])?)
-                .phase(CHANGES)
-                .start(id, start),
-        )
+        Ok(PartitionPlan::new(Self::changes()?)
+            .phase(CHANGES)
+            .start(id, start))
     }
 
     async fn read(

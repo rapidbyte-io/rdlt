@@ -878,6 +878,9 @@ pub struct PlanResponse {
     /// Where partitions of a new phase start; each with a cursor.
     #[prost(message, repeated, tag = "3")]
     pub starts: ::prost::alloc::vec::Vec<PartitionState>,
+    /// The ids of the partitions that never end, as a change stream's changes; each one of `partitions`.
+    #[prost(string, repeated, tag = "4")]
+    pub unbounded: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// What the engine sends on a read.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

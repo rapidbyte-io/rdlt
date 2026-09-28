@@ -111,9 +111,7 @@ impl ReadStream<SimChangeSource> for Reader {
             return Err(fault);
         }
         if state.phase == CHANGES {
-            return Ok(PartitionPlan::new(partitions([
-                CHANGES_PARTITION.to_owned()
-            ])));
+            return Ok(PartitionPlan::new(changes()));
         }
         let stream = self.stream(source);
         let snapshot: Vec<String> = (0..stream.partitions)
@@ -136,11 +134,9 @@ impl ReadStream<SimChangeSource> for Reader {
         let next = u64::try_from(self.stream(source).captured).unwrap_or(u64::MAX);
         let start = Cursor::encode(1, &Position { next, done: false })?;
         let id = PartitionId::parse(CHANGES_PARTITION).expect("a valid partition id");
-        Ok(
-            PartitionPlan::new(partitions([CHANGES_PARTITION.to_owned()]))
-                .phase(CHANGES)
-                .start(id, start),
-        )
+        Ok(PartitionPlan::new(changes())
+            .phase(CHANGES)
+            .start(id, start))
     }
 
     async fn read(
@@ -214,7 +210,21 @@ async fn read_changes(
         };
         out.checkpoint(&position).await?;
     }
+    // A source reading ahead pushes changes of the next round with no checkpoint after them.
+    let ahead = (next + batch_rows).min(stream.events.len());
+    if stream.reads_ahead && next < ahead {
+        let rows: Vec<Change> = (next..ahead)
+            .map(|index| Change::of(&stream.events[index], index as u64 + 1))
+            .collect();
+        out.changes(batch(&rows)).await?;
+    }
     Ok(())
+}
+
+/// The changes partition, which never ends.
+fn changes() -> Vec<Partition> {
+    let id = PartitionId::parse(CHANGES_PARTITION).expect("a valid partition id");
+    vec![Partition::new(id).unbounded()]
 }
 
 /// Reads snapshot partition `index` from `cursor`: its keys' rows as inserts at the position the
