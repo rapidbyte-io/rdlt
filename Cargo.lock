@@ -2103,6 +2103,7 @@ name = "rdlt-sim"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-cast",
  "arrow-schema",
  "bytes",
  "parking_lot",

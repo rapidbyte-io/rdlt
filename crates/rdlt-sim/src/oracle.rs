@@ -2,6 +2,7 @@
 //! concurrent runs, and the destination must end up holding exactly what a reference model says.
 
 mod arrivals;
+mod changes;
 mod expected;
 mod names;
 mod refusals;
@@ -25,6 +26,7 @@ use crate::seed::{Seed, run, run_threaded};
 use crate::swarm::Features;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
+pub use changes::check_changes;
 use expected::Discards;
 use scenario::{Scenario, execute_all, pick};
 

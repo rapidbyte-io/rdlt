@@ -9,10 +9,12 @@ use rdlt_engine::{Engine, PipelinePlan, Report, RunHandle, RunStatus, StopMode};
 use serde_json::json;
 
 use super::refusals::Failure;
+use crate::changes::SimChangeSource;
 use crate::destination::SimDestination;
 use crate::network::Placing;
 use crate::rng::SplitMix64;
 use crate::source::SimSource;
+use crate::world::World;
 
 /// The longest a single run may take in virtual time before the oracle calls it hung.
 const RUN_LIMIT: Duration = Duration::from_secs(3600);
@@ -58,7 +60,14 @@ async fn start(
         let destination = placing.destination(&config).await;
         return engine.run(plan.clone(), source, destination);
     }
-    let source = source_factory::<SimSource>()
+    // A world serving changes has the change source serve them.
+    let changes = World::named(world).is_some_and(|world| !world.changes.streams.is_empty());
+    let factory = if changes {
+        source_factory::<SimChangeSource>()
+    } else {
+        source_factory::<SimSource>()
+    };
+    let source = factory
         .connect(config.clone(), ConnectContext::new())
         .await
         .expect("the simulated source connects");

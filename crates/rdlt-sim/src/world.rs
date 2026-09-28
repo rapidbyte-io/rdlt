@@ -14,6 +14,7 @@ use rdlt_connector::{
     SchemaChanges, TypeKind,
 };
 
+use crate::changes::ChangeWorkload;
 use crate::destination::Store;
 use crate::rng::SplitMix64;
 use crate::swarm::Features;
@@ -60,6 +61,8 @@ impl FaultPoint {
 pub struct World {
     /// What the source serves.
     pub workload: Workload,
+    /// What the change source serves; empty in a world whose source is not one.
+    pub changes: ChangeWorkload,
     /// What the destination can store, until it is granted adding columns.
     capabilities: Capabilities,
     /// Whether the destination was granted adding columns, as an operator would after its runs
@@ -80,7 +83,36 @@ impl World {
         let features = Features::draw(rng);
         let world = Arc::new(Self {
             workload: Workload::generate(rng, features),
+            changes: ChangeWorkload::default(),
             capabilities: capabilities(rng, features),
+            granted: AtomicBool::new(false),
+            phase: AtomicUsize::new(0),
+            faulty: AtomicBool::new(false),
+            rng: Mutex::new(SplitMix64::new(rng.next_u64())),
+            store: Mutex::new(Store::default()),
+            violations: Mutex::new(Vec::new()),
+        });
+        WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
+        world
+    }
+
+    /// A world whose change workload and faults derive from `rng`, registered as `name`: its
+    /// destination merges changes, removing rows or marking them deleted, and keeps columns
+    /// updates leave unchanged.
+    pub(crate) fn register_changes(name: &str, rng: &mut SplitMix64) -> Arc<Self> {
+        let features = Features::draw(rng);
+        let mut capabilities = Capabilities::minimal();
+        capabilities.write_modes.merge = true;
+        capabilities.delete_modes.hard = true;
+        capabilities.delete_modes.soft = true;
+        capabilities.partial_updates = true;
+        capabilities.max_parallel_writers =
+            std::num::NonZeroU16::new(u16::try_from(1 + rng.below(4)).unwrap_or(1))
+                .expect("writer counts are positive");
+        let world = Arc::new(Self {
+            workload: Workload::empty(features),
+            changes: ChangeWorkload::generate(rng),
+            capabilities,
             granted: AtomicBool::new(false),
             phase: AtomicUsize::new(0),
             faulty: AtomicBool::new(false),
