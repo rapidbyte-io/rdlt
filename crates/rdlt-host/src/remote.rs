@@ -3,7 +3,7 @@
 
 mod destination;
 mod read;
-mod severed;
+pub(crate) mod severed;
 mod source;
 mod write;
 

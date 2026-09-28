@@ -16,6 +16,8 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::kills::Kills;
+
 /// Bytes of a connector's standard error kept for the errors of its transport.
 pub(crate) const TAIL_BYTES: usize = 8 * 1024;
 
@@ -28,6 +30,8 @@ pub(crate) struct Launch {
     pub(crate) env_passthrough: Vec<String>,
     /// How long a stopped connector has to exit before it is killed.
     pub(crate) grace: Duration,
+    /// What kills it at once, when anything does.
+    pub(crate) kills: Option<Kills>,
 }
 
 /// The last bytes a connector wrote to its standard error, and whether it has closed it.
@@ -114,7 +118,14 @@ impl Process {
         let stdin = child.stdin.take();
         let stop = CancellationToken::new();
         let (exit_sender, exit) = watch::channel(None);
-        tokio::spawn(reap(child, stdin, launch.grace, stop.clone(), exit_sender));
+        let killed = launch.kills.as_ref().map(Kills::next);
+        tokio::spawn(reap(
+            child,
+            stdin,
+            launch.grace,
+            (stop.clone(), killed),
+            exit_sender,
+        ));
         Ok(Self {
             stop,
             exit,
@@ -256,18 +267,29 @@ fn forward(
     }
 }
 
-/// Waits for `child` to exit, reporting it through `exit`; once `stop` is
-/// cancelled, closes its standard input and sends `SIGTERM`, and after `grace`, `SIGKILL`.
+/// Waits for `child` to exit, reporting it through `exit`; once `stop` is cancelled, closes its
+/// standard input and sends `SIGTERM`, and after `grace`, `SIGKILL`; once `killed` is, `SIGKILL`
+/// at once, through the child's own handle, so no reused process id is signalled.
 async fn reap(
     mut child: Child,
     stdin: Option<ChildStdin>,
     grace: Duration,
-    stop: CancellationToken,
+    (stop, killed): (CancellationToken, Option<CancellationToken>),
     exit: watch::Sender<Option<ExitStatus>>,
 ) {
+    let killing = async {
+        match &killed {
+            Some(killed) => killed.cancelled().await,
+            None => std::future::pending().await,
+        }
+    };
     let status = tokio::select! {
         biased;
         status = child.wait() => status,
+        () = killing => {
+            child.start_kill().ok();
+            child.wait().await
+        }
         () = stop.cancelled() => {
             drop(stdin);
             terminate(&child);

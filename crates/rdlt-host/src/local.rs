@@ -12,6 +12,7 @@ use rdlt_connector::{
 };
 use sha2::Digest as _;
 
+use crate::kills::Kills;
 use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
 pub use process::{LastWords, Witness};
 use process::{Launch, Process, executable};
@@ -27,6 +28,7 @@ pub struct Local {
     grace: Duration,
     env_passthrough: Vec<String>,
     options: Options,
+    kills: Option<Kills>,
 }
 
 impl Default for Local {
@@ -36,6 +38,7 @@ impl Default for Local {
             grace: Duration::from_secs(10),
             env_passthrough: Vec::new(),
             options: Options::default(),
+            kills: None,
         }
     }
 }
@@ -65,6 +68,13 @@ impl Local {
     #[must_use]
     pub fn env_passthrough(mut self, name: impl Into<String>) -> Self {
         self.env_passthrough.push(name.into());
+        self
+    }
+
+    /// Spawns each connector so that `kills` kills it: with `SIGKILL`, and no grace.
+    #[must_use]
+    pub fn kills(mut self, kills: &Kills) -> Self {
+        self.kills = Some(kills.clone());
         self
     }
 
@@ -132,6 +142,7 @@ impl Local {
             path: path.to_owned(),
             env_passthrough: self.env_passthrough.clone(),
             grace: self.grace,
+            kills: self.kills.clone(),
         }
     }
 

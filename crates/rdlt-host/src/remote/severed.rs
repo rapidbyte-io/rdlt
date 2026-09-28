@@ -13,13 +13,13 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 /// `io`, cut once `cut` is cancelled.
-pub(super) struct Severed<IO> {
+pub(crate) struct Severed<IO> {
     io: IO,
     cut: Pin<Box<WaitForCancellationFutureOwned>>,
 }
 
 impl<IO> Severed<IO> {
-    pub(super) fn new(io: IO, cut: CancellationToken) -> Self {
+    pub(crate) fn new(io: IO, cut: CancellationToken) -> Self {
         Self {
             io,
             cut: Box::pin(cut.cancelled_owned()),
