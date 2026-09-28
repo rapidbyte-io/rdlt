@@ -1,6 +1,6 @@
 use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 
-use super::{PipelinePlan, StreamPlan, WriteMode};
+use super::{DeleteMode, OnTruncate, PipelinePlan, StreamPlan, WriteMode};
 use crate::error::ErrorKind;
 use crate::policy::{Nested, SchemaPolicy, SchemaSettings};
 
@@ -49,10 +49,6 @@ fn unsupported_plans_are_configuration_errors() {
                     .write(WriteMode::Replace),
             ],
             "plan_mode_invalid",
-        ),
-        (
-            vec![stream("a").read(ReadMode::Cdc)],
-            "plan_mode_unsupported",
         ),
         (vec![stream("a").key(["id"])], "plan_key_unused"),
         (
@@ -137,4 +133,62 @@ fn plans_carry_keys_hints_and_schema_settings() {
 #[test]
 fn normalizing_goes_eight_levels_deep_unless_told_otherwise() {
     assert_eq!(Nested::normalize(), Nested::Normalize { max_depth: 8 });
+}
+
+#[test]
+fn change_streams_append_as_a_log_or_merge_with_their_deletes_and_truncates() {
+    let plan = PipelinePlan::new(
+        PipelineId::parse("changes").unwrap(),
+        [
+            stream("log").read(ReadMode::Cdc),
+            stream("merged")
+                .read(ReadMode::Cdc)
+                .write(WriteMode::Merge)
+                .deletes(DeleteMode::Soft)
+                .on_truncate(OnTruncate::Ignore),
+            stream("defaults")
+                .read(ReadMode::Cdc)
+                .write(WriteMode::Merge),
+        ],
+    )
+    .expect("change streams plan");
+    let [log, merged, defaults] = plan.streams() else {
+        panic!("three streams");
+    };
+    assert!(!log.merges_changes());
+    assert!(merged.merges_changes());
+    assert_eq!(
+        (merged.delete_mode(), merged.truncate_mode()),
+        (DeleteMode::Soft, OnTruncate::Ignore)
+    );
+    assert_eq!(
+        (defaults.delete_mode(), defaults.truncate_mode()),
+        (DeleteMode::Hard, OnTruncate::Apply)
+    );
+}
+
+#[test]
+fn change_streams_replace_nothing_and_only_merged_ones_take_delete_modes() {
+    let cases = [
+        (
+            stream("a").read(ReadMode::Cdc).write(WriteMode::Replace),
+            "plan_mode_invalid",
+        ),
+        (
+            stream("a").read(ReadMode::Cdc).deletes(DeleteMode::Soft),
+            "plan_deletes_unused",
+        ),
+        (
+            stream("a")
+                .read(ReadMode::Incremental)
+                .write(WriteMode::Merge)
+                .on_truncate(OnTruncate::Ignore),
+            "plan_deletes_unused",
+        ),
+    ];
+    for (stream, code) in cases {
+        let error = PipelinePlan::new(PipelineId::parse("p").unwrap(), [stream]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Config);
+        assert_eq!(error.code(), Some(code));
+    }
 }

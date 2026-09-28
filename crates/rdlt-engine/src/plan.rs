@@ -22,6 +22,31 @@ pub enum WriteMode {
     Merge,
 }
 
+/// What a change stream's deletes do to its merge table (spec §9.4).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeleteMode {
+    /// Remove the row.
+    #[default]
+    Hard,
+    /// Keep the row with its last values, and record when it was deleted in `_rdlt_deleted_at`.
+    Soft,
+    /// Drop delete rows; the report counts them.
+    Ignore,
+}
+
+/// What a change stream's truncates do to its merge table (spec §9.4).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OnTruncate {
+    /// Remove every row the source truncated, as the stream's deletes remove rows (hard unless
+    /// deletes are soft), in the commit that carries the truncate.
+    #[default]
+    Apply,
+    /// Drop truncates; the report counts them.
+    Ignore,
+}
+
 /// One stream of a [`PipelinePlan`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamPlan {
@@ -29,6 +54,8 @@ pub struct StreamPlan {
     read: ReadMode,
     write: WriteMode,
     key: Option<Vec<ColumnPath>>,
+    deletes: Option<DeleteMode>,
+    truncates: Option<OnTruncate>,
     schema: SchemaSettings,
     columns: BTreeMap<ColumnPath, SchemaSettings>,
     hints: BTreeMap<ColumnPath, LogicalType>,
@@ -42,6 +69,8 @@ impl StreamPlan {
             read: ReadMode::Full,
             write: WriteMode::Append,
             key: None,
+            deletes: None,
+            truncates: None,
             schema: SchemaSettings::default(),
             columns: BTreeMap::new(),
             hints: BTreeMap::new(),
@@ -66,6 +95,24 @@ impl StreamPlan {
     #[must_use]
     pub fn key<C: Into<ColumnPath>>(mut self, columns: impl IntoIterator<Item = C>) -> Self {
         self.key = Some(columns.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Sets what a change stream's deletes do; hard by default.
+    ///
+    /// Only change streams merged by key (`cdc` read, `merge` write) take it.
+    #[must_use]
+    pub fn deletes(mut self, mode: DeleteMode) -> Self {
+        self.deletes = Some(mode);
+        self
+    }
+
+    /// Sets what a change stream's truncates do; applied by default.
+    ///
+    /// Only change streams merged by key take it.
+    #[must_use]
+    pub fn on_truncate(mut self, mode: OnTruncate) -> Self {
+        self.truncates = Some(mode);
         self
     }
 
@@ -146,6 +193,22 @@ impl StreamPlan {
     pub fn write_mode(&self) -> WriteMode {
         self.write
     }
+
+    /// What the stream's deletes do.
+    pub fn delete_mode(&self) -> DeleteMode {
+        self.deletes.unwrap_or_default()
+    }
+
+    /// What the stream's truncates do.
+    pub fn truncate_mode(&self) -> OnTruncate {
+        self.truncates.unwrap_or_default()
+    }
+
+    /// Whether the stream is read as changes and merged by key, so its deletes and truncates
+    /// change its table.
+    pub(crate) fn merges_changes(&self) -> bool {
+        self.read == ReadMode::Cdc && self.write == WriteMode::Merge
+    }
 }
 
 /// A pipeline and the streams one run of it loads.
@@ -159,8 +222,9 @@ pub struct PipelinePlan {
 impl PipelinePlan {
     /// Validates `streams` of `pipeline`: at least one stream, distinct names and tables, supported
     /// combinations of read and write modes (`full` with `append`, `replace` or `merge`,
-    /// `incremental` with `append` or `merge`), a key only on merge streams, and settings, hints
-    /// and keys naming top-level columns.
+    /// `incremental` and `cdc` with `append` or `merge`), a key only on merge streams, delete and
+    /// truncate modes only on `cdc` streams merged by key, and settings, hints and keys naming
+    /// top-level columns.
     pub fn new(
         pipeline: PipelineId,
         streams: impl IntoIterator<Item = StreamPlan>,
@@ -237,17 +301,18 @@ fn check_modes(stream: &StreamPlan) -> Result<(), Error> {
             "a key is set, but only merge streams match rows by key",
         );
     }
+    if (stream.deletes.is_some() || stream.truncates.is_some()) && !stream.merges_changes() {
+        return refuse(
+            "plan_deletes_unused",
+            "a delete or truncate mode is set, but only change streams merged by key apply them",
+        );
+    }
     match (stream.read, stream.write) {
-        (ReadMode::Full, WriteMode::Append | WriteMode::Replace | WriteMode::Merge)
-        | (ReadMode::Incremental, WriteMode::Append | WriteMode::Merge) => Ok(()),
-        (ReadMode::Incremental, WriteMode::Replace) => refuse(
+        (ReadMode::Incremental | ReadMode::Cdc, WriteMode::Replace) => refuse(
             "plan_mode_invalid",
             "replace needs a full read, since the new generation replaces every row",
         ),
-        _ => refuse(
-            "plan_mode_unsupported",
-            "change data capture is not supported yet",
-        ),
+        _ => Ok(()),
     }
 }
 
