@@ -21,6 +21,7 @@ use tokio_rustls::client::TlsStream;
 
 pub(crate) use rewound::Rewound;
 
+use crate::kills::{Kills, Severing};
 use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
 use crate::remote::Options;
 use crate::supervise::{Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
@@ -67,12 +68,13 @@ impl Network for Tcp {
 /// Places connectors a reference gives an endpoint for, over mutual TLS: the host presents
 /// `identity`, and verifies each connector's certificate against the CA bundle `ca` and the
 /// endpoint's host name.
+#[derive(Clone)]
 pub struct Remote {
     identity: Identity,
     ca: PathBuf,
     network: Arc<dyn Network>,
     options: Options,
-    fallback: Option<Box<dyn Provider>>,
+    fallback: Option<Arc<dyn Provider>>,
 }
 
 impl fmt::Debug for Remote {
@@ -108,6 +110,16 @@ impl Remote {
         self
     }
 
+    /// Reaches each connector so that `kills` cuts every connection to it.
+    #[must_use]
+    pub fn kills(mut self, kills: &Kills) -> Self {
+        self.network = Arc::new(Severing {
+            network: self.network,
+            kills: kills.clone(),
+        });
+        self
+    }
+
     /// Runs each connection with `options`.
     #[must_use]
     pub fn options(mut self, options: Options) -> Self {
@@ -118,7 +130,7 @@ impl Remote {
     /// Places connectors whose reference has no endpoint with `provider`.
     #[must_use]
     pub fn fallback(mut self, provider: impl Provider + 'static) -> Self {
-        self.fallback = Some(Box::new(provider));
+        self.fallback = Some(Arc::new(provider));
         self
     }
 

@@ -17,6 +17,7 @@ mod session;
 
 use session::SupervisedSession;
 
+use crate::connect::Open;
 use crate::local::process::{Launch, Process};
 use crate::network::Dial;
 use crate::provider::{ConnectorRef, ProviderError, accepts};
@@ -25,12 +26,15 @@ use crate::remote::{CONNECTOR_LOST, Connection, Options, RemoteDestination, Remo
 /// How long the errors of a lost connector wait for its standard error to close.
 const LAST_WORDS: Duration = Duration::from_secs(1);
 
-/// How a connector starts: spawned in a process of its own, or dialed where it listens.
+/// How a connector starts: spawned in a process of its own, dialed where it listens, or reached
+/// through a stream a function opens.
 pub(crate) enum Start {
     /// Spawned from its binary.
     Spawn(Launch),
     /// Dialed over mutual TLS.
     Dial(Dial),
+    /// Reached through a stream the function opens.
+    Connect(Open),
 }
 
 /// A connector and the connection to it: its process, when this process spawned it.
@@ -209,6 +213,16 @@ async fn begin(
 ) -> Result<Running, Spawned> {
     match start {
         Start::Spawn(launch) => spawn(launch, role, config, options).await,
+        Start::Connect(open) => {
+            let io = open().await.map_err(Spawned::Unreachable)?;
+            let connection = Connection::connect(io, role, config, options)
+                .await
+                .map_err(Spawned::Connect)?;
+            Ok(Running {
+                connection,
+                process: None,
+            })
+        }
         Start::Dial(dial) => {
             let io = crate::network::dial(dial, options.deadlines.connect).await?;
             let connection = Connection::connect(io, role, config, options)
