@@ -51,6 +51,10 @@ struct Args {
     /// The CA bundle that issued the connector's certificate, in PEM, for an endpoint.
     #[arg(long, requires = "tls_cert")]
     tls_ca: Option<PathBuf>,
+    /// Kills the connector at the points this seed draws, as a failed kill clause reports, to
+    /// reproduce the failure.
+    #[arg(long, value_name = "SEED")]
+    kill_seed: Option<u64>,
     /// How to print the reports.
     #[arg(long, value_enum, default_value_t = Output::Plain)]
     output: Output,
@@ -101,6 +105,10 @@ pub(crate) fn main() -> ExitCode {
 fn run(args: &Args) -> Result<u8, Ended> {
     let config = config(args)?;
     let target = target(args)?;
+    let target = match args.kill_seed {
+        Some(seed) => target.kill_seed(seed),
+        None => target,
+    };
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
     let mut reports = runtime.block_on(async {

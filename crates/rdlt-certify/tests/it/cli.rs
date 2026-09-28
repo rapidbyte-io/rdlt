@@ -187,11 +187,13 @@ async fn a_destination_binary_that_reads_back_is_certified_in_every_clause() {
     let clauses = report["reports"][0]["clauses"]
         .as_array()
         .expect("the clauses");
-    let committed = clauses
-        .iter()
-        .find(|clause| clause["id"] == "D-COMMIT")
-        .expect("D-COMMIT");
-    assert_eq!(committed["outcome"], "passed", "{report}");
+    for id in ["D-COMMIT", "K-DESTINATION"] {
+        let clause = clauses
+            .iter()
+            .find(|clause| clause["id"] == id)
+            .expect("the clause is reported");
+        assert_eq!(clause["outcome"], "passed", "{id}: {report}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

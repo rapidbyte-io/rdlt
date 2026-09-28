@@ -19,6 +19,7 @@ const LAST_WORDS: Duration = Duration::from_secs(1);
 pub struct Target {
     reach: Reach,
     options: Options,
+    kill_seed: Option<u64>,
 }
 
 enum Reach {
@@ -96,6 +97,7 @@ impl Target {
         Self {
             reach,
             options: Options::default(),
+            kill_seed: None,
         }
     }
 
@@ -104,6 +106,20 @@ impl Target {
     pub fn options(mut self, options: Options) -> Self {
         self.options = options;
         self
+    }
+
+    /// Kills the connector at the points `seed` draws, as a failed kill clause reports it did, to
+    /// reproduce the failure; each certification otherwise draws points of its own.
+    #[must_use]
+    pub fn kill_seed(mut self, seed: u64) -> Self {
+        self.kill_seed = Some(seed);
+        self
+    }
+
+    /// The seed the kill clauses draw their points from, when one is chosen.
+    #[cfg(feature = "kill")]
+    pub(crate) fn chosen_seed(&self) -> Option<u64> {
+        self.kill_seed
     }
 
     /// The limits this host enforces.
@@ -181,5 +197,59 @@ impl Target {
     /// A fresh client of the protocol, with no handshake yet.
     pub(crate) async fn client(&self) -> Result<Client, ConnectorError> {
         client(self.wire().await?, self.options).await
+    }
+}
+
+/// Bytes: the credit a source placed for a kill clause reads within.
+#[cfg(feature = "kill")]
+const KILL_WINDOW: u64 = 65_536;
+
+#[cfg(feature = "kill")]
+impl Target {
+    /// A provider placing the connector as an engine's placement does, supervised, so a lost one
+    /// is started or reached again, killed by `kills`; and the reference to it, as `id`, which
+    /// its handshake answered.
+    ///
+    /// A spawned connector is killed outright; one reached otherwise has its connections cut. A
+    /// source reads within [`KILL_WINDOW`] of credit, so it runs little ahead of the commits the
+    /// kills follow.
+    pub(crate) fn provider(
+        &self,
+        id: &rdlt_connector::ConnectorId,
+        kills: &rdlt_host::Kills,
+    ) -> (Box<dyn rdlt_host::Provider>, ConnectorRef) {
+        let reference = |from: Option<&ConnectorRef>| ConnectorRef {
+            id: id.clone(),
+            version_req: None,
+            path: from.and_then(|reference| reference.path.clone()),
+            endpoint: from.and_then(|reference| reference.endpoint.clone()),
+        };
+        let options = Options {
+            read_window: KILL_WINDOW,
+            ..self.options
+        };
+        match &self.reach {
+            Reach::Connected(connect) => {
+                let connect = Arc::clone(connect);
+                let provider = rdlt_host::Connect::new(move || connect())
+                    .options(options)
+                    .kills(kills);
+                (Box::new(provider), reference(None))
+            }
+            Reach::Spawned {
+                local,
+                reference: spawned,
+            } => {
+                let provider = local.clone().options(options).kills(kills);
+                (Box::new(provider), reference(Some(spawned)))
+            }
+            Reach::Listening {
+                remote,
+                reference: listening,
+            } => {
+                let provider = remote.clone().options(options).kills(kills);
+                (Box::new(provider), reference(Some(listening)))
+            }
+        }
     }
 }

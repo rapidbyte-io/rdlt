@@ -60,11 +60,28 @@ async fn the_memory_destination_served_in_process_is_certified_through_the_proto
         Some(true),
         "{report}"
     );
-    assert_eq!(
-        report.outcome("D-FENCE"),
-        Some(&Outcome::Passed),
-        "{report}"
-    );
+    for id in ["D-FENCE", "K-DESTINATION"] {
+        assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn a_destination_certified_again_in_its_store_is_killed_into_tables_of_its_own() {
+    let target =
+        Target::served(Served::new().with_destination(destination_factory::<MemoryDestination>()));
+    for _ in 0..2 {
+        let report = certify_destination(
+            &target,
+            json!({ "store": "certify_again" }),
+            &MemoryProbe("certify_again"),
+        )
+        .await;
+        assert_eq!(
+            report.outcome("K-DESTINATION"),
+            Some(&Outcome::Passed),
+            "{report}"
+        );
+    }
 }
 
 #[tokio::test]

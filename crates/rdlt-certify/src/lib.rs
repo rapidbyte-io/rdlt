@@ -17,12 +17,14 @@
 #![forbid(unsafe_code)]
 
 mod connect;
+mod kill;
 mod protocol;
 mod published;
 mod registry;
 mod report;
 mod target;
 
+pub use kill::KILL_CLAUSES;
 pub use protocol::PROTOCOL_CLAUSES;
 pub use published::{ReadBackProbe, read_back};
 pub use rdlt_connector::testing::{
@@ -32,6 +34,7 @@ pub use registry::{Family, clauses, markdown};
 pub use report::{json, plain};
 pub use target::Target;
 
+use rdlt_connector::DestinationFactory;
 use rdlt_connector::Role;
 use rdlt_connector::testing::{certify_destination_factory, certify_source_factory};
 
@@ -47,13 +50,20 @@ pub async fn certify_source(target: &Target, config: serde_json::Value) -> Repor
             report.results.splice(0..0, protocol);
             report
         }
-        Err(unmet) => unmet.report(target, &[PROTOCOL_CLAUSES, SOURCE_CLAUSES]),
+        Err(unmet) => unmet.report(
+            target,
+            &[
+                PROTOCOL_CLAUSES,
+                SOURCE_CLAUSES,
+                kill::clauses(Role::Source),
+            ],
+        ),
     }
 }
 
 /// Certifies the destination `target` reaches, with `config`, reading what it published through
-/// `probe` ([`Unprobed`] when nothing can read it): the protocol's clauses, then the destination
-/// clauses.
+/// `probe` ([`Unprobed`] when nothing can read it): the protocol's clauses, the destination
+/// clauses, then the kill clause.
 ///
 /// A connector that serves no destination has every clause skipped.
 pub async fn certify_destination(
@@ -64,10 +74,21 @@ pub async fn certify_destination(
     match connect::Factory::new(target, Role::Destination, &config).await {
         Ok(factory) => {
             let protocol = protocol::check(target, Role::Destination, &config).await;
-            let mut report = certify_destination_factory(&factory, config, probe).await;
+            let mut report = certify_destination_factory(&factory, config.clone(), probe).await;
             report.results.splice(0..0, protocol);
+            let id = &DestinationFactory::spec(&factory).id;
+            report
+                .results
+                .push(kill::destination(target, id, &config, probe).await);
             report
         }
-        Err(unmet) => unmet.report(target, &[PROTOCOL_CLAUSES, DESTINATION_CLAUSES]),
+        Err(unmet) => unmet.report(
+            target,
+            &[
+                PROTOCOL_CLAUSES,
+                DESTINATION_CLAUSES,
+                kill::clauses(Role::Destination),
+            ],
+        ),
     }
 }
