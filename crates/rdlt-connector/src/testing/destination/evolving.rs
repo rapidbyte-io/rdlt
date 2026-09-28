@@ -7,7 +7,7 @@ use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 
-use super::{Bench, commit, expect_rows, meta, rows};
+use super::{Bench, commit, expect_ids, meta, rows};
 use crate::OpenedSession;
 use crate::commit::CommitMeta;
 use crate::destination::Destination;
@@ -47,20 +47,20 @@ impl Bench<'_> {
         };
         let mut opened = self.staged(self.destination, 1, &[1]).await?;
         let mut writer = bounded_call("writer", opened.session.writer(&generation)).await?;
-        write(&mut writer, 2, rows()).await?;
-        write(&mut writer, 3, rows()).await?;
+        write(&mut writer, 2, rows(2)).await?;
+        write(&mut writer, 3, rows(3)).await?;
         self.writer_of(&mut opened.session, &other).await?;
         let mut other_writer = self
             .writer_of(&mut opened.session, &other_generation)
             .await?;
-        write(&mut other_writer, 2, rows()).await?;
+        write(&mut other_writer, 2, rows(2)).await?;
         commit(
             &mut opened.session,
             &meta(self.load_id(1), opened.epoch, &[1, 2], Vec::new()),
         )
         .await?;
-        expect_rows(self.published_rows().await?, 3)?;
-        expect_rows(self.rows_of(&other).await?, 0)?;
+        expect_ids(&self.published_ids().await?, &[1])?;
+        expect_ids(&self.ids_of(&other).await?, &[])?;
         let finish = CommitMeta {
             commit_seq: CommitSeq::FIRST.next(),
             finish_generations: vec![
@@ -70,14 +70,8 @@ impl Bench<'_> {
             ..meta(self.load_id(1), opened.epoch, &[3], Vec::new())
         };
         commit(&mut opened.session, &finish).await?;
-        expect_rows(self.published_rows().await?, 6)?;
-        expect_rows(self.rows_of(&other).await?, 3)
-    }
-
-    /// How many rows `table` holds.
-    async fn rows_of(&self, table: &TableRef) -> Result<usize, Violation> {
-        let batches = bounded_call("probe", self.probe.published(table)).await?;
-        Ok(batches.iter().map(RecordBatch::num_rows).sum())
+        expect_ids(&self.published_ids().await?, &[2, 3])?;
+        expect_ids(&self.ids_of(&other).await?, &[2])
     }
 
     /// Adds a column and widens one, each applied twice, with rows committed before and after.
@@ -113,7 +107,7 @@ impl Bench<'_> {
         };
         apply_twice(&mut opened.session, &add).await?;
         let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
-        write(&mut writer, 2, with_extra(&rows())).await?;
+        write(&mut writer, 2, with_extra(&rows(2))).await?;
         let second = CommitMeta {
             commit_seq: seq,
             ..meta(self.load_id(1), opened.epoch, &[2], Vec::new())
@@ -242,7 +236,9 @@ impl Bench<'_> {
         let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
         write(&mut writer, 1, keyed(&[(1, "a", 1), (2, "b", 2)])).await?;
         write(&mut writer, 2, keyed(&[(2, "late", 9), (3, "c", 3)])).await?;
-        write(&mut writer, 3, keyed(&[(2, "early", 4)])).await?;
+        // Key 2's newest row comes first, and key 3's last: neither the first nor the last row
+        // of a key is its newest, and only its sequence says which is.
+        write(&mut writer, 3, keyed(&[(2, "early", 4), (3, "newer", 8)])).await?;
         commit(
             &mut opened.session,
             &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
@@ -258,7 +254,7 @@ impl Bench<'_> {
         let expected = [
             (1, Some("a".to_owned())),
             (2, Some("late".to_owned())),
-            (3, Some("c".to_owned())),
+            (3, Some("newer".to_owned())),
         ];
         if published == expected {
             Ok(())

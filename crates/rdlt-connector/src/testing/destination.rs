@@ -8,12 +8,14 @@ mod evolving;
 mod fence;
 mod lanes;
 mod names;
+mod rows;
 mod tables;
 
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow_array::{Int64Array, RecordBatch, StringArray};
+use arrow_array::RecordBatch;
+use arrow_array::cast::AsArray;
+use arrow_array::types::Int64Type;
 use bytes::Bytes;
 
 pub use clauses::DESTINATION_CLAUSES;
@@ -26,10 +28,9 @@ use crate::destination::{
 };
 use crate::error::{ConnectorErrorKind, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
-use crate::schema::TableSchema;
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord};
-use crate::types::{Field, LogicalType};
+use rows::{STALE, expect_ids, rows, schema};
 
 /// Reads what a destination has published, so clauses can compare it with what was committed.
 pub trait Probe: Send + Sync {
@@ -233,7 +234,7 @@ impl Bench<'_> {
         let mut writer = self.writer(&mut opened.session).await?;
         for segment in segments {
             writer
-                .write(SegmentId(*segment), rows())
+                .write(SegmentId(*segment), rows(*segment))
                 .await
                 .map_err(|error| Violation::from(format!("write: {error}")))?;
         }
@@ -258,15 +259,10 @@ impl Bench<'_> {
         session: &mut Box<dyn DestinationSession>,
         table: &TableRef,
     ) -> Result<Box<dyn DestinationWriter>, Violation> {
-        let schema = TableSchema::new(vec![
-            Field::new("id", LogicalType::Int64, false),
-            Field::new("name", LogicalType::Utf8, true),
-        ])
-        .expect("the certification schema is valid");
         session
             .apply_schema(&TableChange::Create {
                 table: table.clone(),
-                schema,
+                schema: schema(),
             })
             .await
             .map_err(|error| Violation::from(format!("apply_schema: {error}")))?;
@@ -276,9 +272,25 @@ impl Bench<'_> {
             .map_err(|error| Violation::from(format!("writer: {error}")))
     }
 
-    async fn published_rows(&self) -> Result<usize, Violation> {
-        let batches = bounded_call("probe", self.probe.published(&self.table())).await?;
-        Ok(batches.iter().map(RecordBatch::num_rows).sum())
+    /// The ids the clause's table publishes, in order.
+    async fn published_ids(&self) -> Result<Vec<i64>, Violation> {
+        self.ids_of(&self.table()).await
+    }
+
+    /// The ids `table` publishes, in order.
+    async fn ids_of(&self, table: &TableRef) -> Result<Vec<i64>, Violation> {
+        let batches = bounded_call("probe", self.probe.published(table)).await?;
+        let mut ids = Vec::new();
+        for batch in &batches {
+            let column = batch
+                .column_by_name("id")
+                .ok_or_else(|| Violation::from("a published batch has no id column"))?;
+            let column = arrow_cast::cast(column, &arrow_schema::DataType::Int64)
+                .map_err(|error| Violation::from(format!("the ids read back as {error}")))?;
+            ids.extend(column.as_primitive::<Int64Type>().iter().flatten());
+        }
+        ids.sort_unstable();
+        Ok(ids)
     }
 
     /// Opens through both connections, so an epoch kept in one connection's memory is caught.
@@ -294,7 +306,7 @@ impl Bench<'_> {
 
     async fn staging_is_invisible(&self) -> Result<(), Violation> {
         let _staged = self.staged(self.destination, 1, &[1]).await?;
-        expect_rows(self.published_rows().await?, 0)
+        expect_ids(&self.published_ids().await?, &[])
     }
 
     /// Stages two segments and commits one: the other stays staged.
@@ -308,7 +320,7 @@ impl Bench<'_> {
         if receipt.rows != 3 {
             return Err(format!("the receipt reports {} rows, expected 3", receipt.rows).into());
         }
-        expect_rows(self.published_rows().await?, 3)
+        expect_ids(&self.published_ids().await?, &[1])
     }
 
     /// Replays a committed load the way recovery does: another worker opens the same load,
@@ -332,7 +344,7 @@ impl Bench<'_> {
             )
             .into());
         }
-        expect_rows(self.published_rows().await?, 3)
+        expect_ids(&self.published_ids().await?, &[1])
     }
 
     /// Commits through one connection and reads back through the other, so state kept in one
@@ -389,11 +401,12 @@ impl Bench<'_> {
         let mut latest = self.open(self.peer, 3).await?;
         // A fenced worker may still be running; whether its write fails or is ignored is the
         // destination's choice, but it must never be published.
-        drop(stale_writer.write(SegmentId(1), rows()).await);
+        // Other ids than the latest session's, so the stale rows are told from them.
+        drop(stale_writer.write(SegmentId(1), rows(STALE)).await);
         drop(stale_writer.flush().await);
         let mut writer = self.writer(&mut latest.session).await?;
         writer
-            .write(SegmentId(1), rows())
+            .write(SegmentId(1), rows(1))
             .await
             .map_err(|error| Violation::from(format!("write: {error}")))?;
         writer
@@ -411,15 +424,8 @@ impl Bench<'_> {
             ..meta(self.load_id(3), latest.epoch, &[2], Vec::new())
         };
         drop(bounded("commit", latest.session.commit(&orphan)).await?);
-        expect_rows(self.published_rows().await?, 3)
+        expect_ids(&self.published_ids().await?, &[1])
     }
-}
-
-fn rows() -> RecordBatch {
-    let ids: Arc<Int64Array> = Arc::new(Int64Array::from(vec![1, 2, 3]));
-    let names: Arc<StringArray> = Arc::new(StringArray::from(vec![Some("ann"), None, Some("ola")]));
-    RecordBatch::try_from_iter([("id", ids as _), ("name", names as _)])
-        .expect("the certification batch is valid")
 }
 
 /// The first commit of `load`, opened at `epoch`.
@@ -446,12 +452,4 @@ async fn commit(
     bounded("commit", session.commit(meta))
         .await?
         .map_err(|error| Violation::from(format!("commit: {error}")))
-}
-
-fn expect_rows(actual: usize, expected: usize) -> Result<(), Violation> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(format!("{actual} rows are published, expected {expected}").into())
-    }
 }

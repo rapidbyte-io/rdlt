@@ -1,6 +1,6 @@
 //! `D-FENCE`: a session opened before the latest one cannot commit.
 
-use super::{Bench, expect_rows, meta};
+use super::{Bench, expect_ids, meta};
 use crate::error::ConnectorErrorKind;
 use crate::testing::{Violation, bounded};
 
@@ -12,7 +12,7 @@ impl Bench<'_> {
         let meta = meta(self.load_id(1), stale.epoch, &[1], Vec::new());
         match bounded("commit", stale.session.commit(&meta)).await? {
             Err(error) if error.kind() == ConnectorErrorKind::Fenced => {
-                expect_rows(self.published_rows().await?, 0)
+                expect_ids(&self.published_ids().await?, &[])
             }
             Err(error) => Err(format!(
                 "the stale commit failed with {:?}, not Fenced: {error}",

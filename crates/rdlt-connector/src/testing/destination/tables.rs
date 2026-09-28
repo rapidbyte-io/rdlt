@@ -1,9 +1,9 @@
 //! `D-TABLES`: one segment holds rows for several tables.
 
-use super::{Bench, commit, meta, rows};
+use super::{Bench, commit, expect_ids, meta, rows};
 use crate::destination::TableRef;
 use crate::id::{SchemaVersion, SegmentId, TablePath};
-use crate::testing::{Violation, bounded_call};
+use crate::testing::Violation;
 
 impl Bench<'_> {
     /// Stages three rows in one segment through writers of two tables, as a stream and its child
@@ -15,7 +15,7 @@ impl Bench<'_> {
         let mut child_writer = self.writer_of(&mut opened.session, &child).await?;
         for writer in [&mut parent_writer, &mut child_writer] {
             writer
-                .write(SegmentId(1), rows())
+                .write(SegmentId(1), rows(1))
                 .await
                 .map_err(|error| Violation::from(format!("write: {error}")))?;
             writer
@@ -29,16 +29,9 @@ impl Bench<'_> {
         )
         .await?;
         for table in [self.table(), child] {
-            let published: usize = bounded_call("probe", self.probe.published(&table))
-                .await?
-                .iter()
-                .map(arrow_array::RecordBatch::num_rows)
-                .sum();
-            if published != 3 {
-                return Err(
-                    format!("table {} published {published} rows, not 3", table.name).into(),
-                );
-            }
+            expect_ids(&self.ids_of(&table).await?, &[1]).map_err(|Violation(reason)| {
+                Violation(format!("table {}: {reason}", table.name))
+            })?;
         }
         Ok(())
     }
