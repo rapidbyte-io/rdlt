@@ -30,6 +30,8 @@ pub(crate) enum Scalar<'a> {
     Int(i64),
     /// An integer above the signed 64-bit range.
     Wide(u64),
+    /// An integer beyond 64 bits, within 38 digits.
+    Huge(i128),
     Float(f64),
     Text(&'a str),
 }
@@ -41,6 +43,7 @@ impl Scalar<'_> {
             Self::Bool(_) => Observed::Bool,
             Self::Int(value) => Observed::integer(value),
             Self::Wide(_) => Observed::Wide,
+            Self::Huge(_) => Observed::Huge,
             Self::Float(_) => Observed::Float,
             Self::Text(_) => Observed::Text,
         }
@@ -58,6 +61,7 @@ pub(crate) enum Column {
         exact: bool,
     },
     Wide(Decimal128Builder),
+    Huge(Decimal128Builder),
     Float(Float64Builder),
     Text(StringBuilder),
     Json(StringBuilder),
@@ -103,7 +107,8 @@ impl Column {
                 builder: Int64Builder::with_capacity(capacity),
                 exact: *exact,
             },
-            Observed::Wide => Self::Wide(wide(capacity)),
+            Observed::Wide => Self::Wide(decimals(capacity, 20)),
+            Observed::Huge => Self::Huge(decimals(capacity, 38)),
             Observed::Float => Self::Float(Float64Builder::with_capacity(capacity)),
             Observed::Text => Self::Text(StringBuilder::with_capacity(capacity, capacity * 8)),
             Observed::Json => Self::Json(StringBuilder::with_capacity(capacity, capacity * 16)),
@@ -130,6 +135,7 @@ impl Column {
             Self::Bool(_) => Observed::Bool,
             Self::Int { exact, .. } => Observed::Int { exact: *exact },
             Self::Wide(_) => Observed::Wide,
+            Self::Huge(_) => Observed::Huge,
             Self::Float(_) => Observed::Float,
             Self::Text(_) => Observed::Text,
             Self::Struct(record) => Observed::Object(record.shape()),
@@ -144,7 +150,7 @@ impl Column {
             Self::Null(rows) => *rows += 1,
             Self::Bool(builder) => builder.append_null(),
             Self::Int { builder, .. } => builder.append_null(),
-            Self::Wide(builder) => builder.append_null(),
+            Self::Wide(builder) | Self::Huge(builder) => builder.append_null(),
             Self::Float(builder) => builder.append_null(),
             Self::Text(builder) | Self::Json(builder) => builder.append_null(),
             Self::Struct(record) => record.null(),
@@ -160,6 +166,7 @@ impl Column {
             (Self::Null(nulls), _) => *self = Self::new(&value.observed(), *nulls, capacity),
             (Self::Int { exact: true, .. }, Scalar::Float(_)) => self.widen(&Observed::Float),
             (Self::Int { .. }, Scalar::Wide(_)) => self.widen(&Observed::Wide),
+            (Self::Int { .. } | Self::Wide(_), Scalar::Huge(_)) => self.widen(&Observed::Huge),
             _ => {}
         }
         match (self, value) {
@@ -168,8 +175,13 @@ impl Column {
                 *exact &= Observed::integer(value) == Observed::Int { exact: true };
                 builder.append_value(value);
             }
-            (Self::Wide(builder), Scalar::Int(value)) => builder.append_value(i128::from(value)),
-            (Self::Wide(builder), Scalar::Wide(value)) => builder.append_value(i128::from(value)),
+            (Self::Wide(builder) | Self::Huge(builder), Scalar::Int(value)) => {
+                builder.append_value(i128::from(value));
+            }
+            (Self::Wide(builder) | Self::Huge(builder), Scalar::Wide(value)) => {
+                builder.append_value(i128::from(value));
+            }
+            (Self::Huge(builder), Scalar::Huge(value)) => builder.append_value(value),
             (Self::Float(builder), Scalar::Float(value)) => builder.append_value(value),
             #[expect(
                 clippy::cast_precision_loss,
@@ -191,29 +203,43 @@ impl Column {
         *self = Self::Spoiled;
     }
 
-    /// Converts the integers built so far to the wider `observed`, a float or a wide integer.
+    /// Converts the integers built so far to the wider `observed`: a float, or a whole decimal of
+    /// 20 or 38 digits.
     #[expect(
         clippy::cast_precision_loss,
         reason = "the integers are exact as floats"
     )]
     fn widen(&mut self, observed: &Observed) {
-        let Self::Int { builder, .. } = self else {
-            return;
+        let whole: Vec<Option<i128>> = match self {
+            Self::Int { builder, .. } => {
+                builder.finish().iter().map(|v| v.map(i128::from)).collect()
+            }
+            Self::Wide(builder) => builder.finish().iter().collect(),
+            _ => return,
         };
-        let integers = builder.finish();
-        let capacity = builder.capacity().max(integers.len());
-        *self = if *observed == Observed::Float {
-            let mut floats = Float64Builder::with_capacity(capacity);
-            integers
-                .iter()
-                .for_each(|value| floats.append_option(value.map(|v| v as f64)));
-            Self::Float(floats)
-        } else {
-            let mut wide = wide(capacity);
-            integers
-                .iter()
-                .for_each(|value| wide.append_option(value.map(i128::from)));
-            Self::Wide(wide)
+        let capacity = whole.len().max(1);
+        *self = match observed {
+            Observed::Float => {
+                let mut floats = Float64Builder::with_capacity(capacity);
+                for value in &whole {
+                    floats.append_option(value.map(|v| v as f64));
+                }
+                Self::Float(floats)
+            }
+            Observed::Huge => {
+                let mut huge = decimals(capacity, 38);
+                for value in whole {
+                    huge.append_option(value);
+                }
+                Self::Huge(huge)
+            }
+            _ => {
+                let mut wide = decimals(capacity, 20);
+                for value in whole {
+                    wide.append_option(value);
+                }
+                Self::Wide(wide)
+            }
         };
     }
 
@@ -223,7 +249,7 @@ impl Column {
             Self::Null(rows) => Arc::new(NullArray::new(rows)),
             Self::Bool(mut builder) => Arc::new(builder.finish()),
             Self::Int { mut builder, .. } => Arc::new(builder.finish()),
-            Self::Wide(mut builder) => Arc::new(builder.finish()),
+            Self::Wide(mut builder) | Self::Huge(mut builder) => Arc::new(builder.finish()),
             Self::Float(mut builder) => Arc::new(builder.finish()),
             Self::Text(mut builder) | Self::Json(mut builder) => Arc::new(builder.finish()),
             Self::Struct(record) => Arc::new(record.finish_struct()?),
@@ -243,11 +269,11 @@ pub(crate) fn within_columns(fields: usize) -> bool {
     u64::try_from(fields).is_ok_and(|fields| fields <= MAX_COLUMNS)
 }
 
-/// A builder of 20-digit integers, the unsigned 64-bit range.
-fn wide(capacity: usize) -> Decimal128Builder {
+/// A builder of whole decimals of `digits` digits, which a 128-bit decimal holds.
+fn decimals(capacity: usize, digits: u8) -> Decimal128Builder {
     Decimal128Builder::with_capacity(capacity)
-        .with_precision_and_scale(20, 0)
-        .expect("20 digits fit a 128-bit decimal")
+        .with_precision_and_scale(digits, 0)
+        .expect("at most 38 digits fit a 128-bit decimal")
 }
 
 impl Record {

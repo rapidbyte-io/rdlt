@@ -36,7 +36,15 @@ pub(crate) fn nest<T>(parse: impl FnOnce() -> T) -> T {
 pub(crate) struct Context {
     fault: Cell<Option<ShredError>>,
     spoiled: Cell<bool>,
+    imprecise: Cell<bool>,
 }
+
+/// The smallest magnitude of a float that may be an integer beyond 64 bits the fast parse
+/// rounded: 2⁶³, below which every integer parses exactly.
+const ROUNDED_FROM: f64 = 9_223_372_036_854_775_808.0;
+
+/// The integers a 38-digit decimal holds are below this in magnitude.
+pub(crate) const DECIMAL_LIMIT: u128 = 100_000_000_000_000_000_000_000_000_000_000_000_000;
 
 impl Context {
     /// Stops the parse with `error`.
@@ -54,6 +62,19 @@ impl Context {
     /// Whether a column stopped building.
     pub(crate) fn spoiled(&self) -> bool {
         self.spoiled.get()
+    }
+
+    /// Notes `value`, a float the parse read, which may be an integer beyond 64 bits rounded to
+    /// the float nearest it when it is whole and that large.
+    pub(crate) fn float(&self, value: f64) {
+        if value.abs() >= ROUNDED_FROM && value.fract() == 0.0 {
+            self.imprecise.set(true);
+        }
+    }
+
+    /// Whether the parse read a float that may be a rounded integer.
+    pub(crate) fn imprecise(&self) -> bool {
+        self.imprecise.get()
     }
 }
 
@@ -252,7 +273,18 @@ impl<'de> Visitor<'de> for Value<'_> {
     }
 
     fn visit_f64<E: de::Error>(self, value: f64) -> Result<(), E> {
+        self.context.float(value);
         self.scalar(Scalar::Float(value));
+        Ok(())
+    }
+
+    fn visit_i128<E: de::Error>(self, value: i128) -> Result<(), E> {
+        if value.unsigned_abs() >= DECIMAL_LIMIT {
+            return Err(self
+                .context
+                .fail(ShredError::Unrepresentable(value.to_string())));
+        }
+        self.scalar(Scalar::Huge(value));
         Ok(())
     }
 
@@ -342,7 +374,14 @@ impl<'de> Visitor<'de> for Skip<'_> {
         Ok(())
     }
 
-    fn visit_f64<E>(self, _: f64) -> Result<(), E> {
+    fn visit_f64<E>(self, value: f64) -> Result<(), E> {
+        // The column's values are rendered as JSON text when it is built again, exactly only
+        // once the chunk is parsed exactly.
+        self.context.float(value);
+        Ok(())
+    }
+
+    fn visit_i128<E>(self, _: i128) -> Result<(), E> {
         Ok(())
     }
 

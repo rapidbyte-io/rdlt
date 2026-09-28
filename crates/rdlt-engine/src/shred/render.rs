@@ -78,7 +78,13 @@ impl<'de> Visitor<'de> for Render<'_> {
     }
 
     fn visit_f64<E: serde::de::Error>(mut self, value: f64) -> Result<(), E> {
+        self.context.float(value);
         self.serialized(&value)
+    }
+
+    fn visit_i128<E: serde::de::Error>(self, value: i128) -> Result<(), E> {
+        self.text.push_str(&value.to_string());
+        Ok(())
     }
 
     fn visit_str<E: serde::de::Error>(mut self, value: &str) -> Result<(), E> {

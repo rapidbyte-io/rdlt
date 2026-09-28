@@ -240,19 +240,25 @@ fn integers_a_float_cannot_hold_exactly_keep_a_column_of_integers_and_floats_as_
 }
 
 #[test]
-fn integers_beyond_the_unsigned_range_read_as_floats_and_negative_zero_as_zero() {
+fn integers_beyond_the_unsigned_range_read_exactly_as_decimals_and_negative_zero_as_zero() {
+    // The two keys differ by one, which a float would round away.
     let batch = batch_of(
-        &["{\"big\":123456789012345678901234567890,\"zero\":-0.0}"],
+        &["{\"big\":18446744073709551616,\"zero\":-0.0}\n{\"big\":-18446744073709551617}"],
         1 << 20,
     );
-    assert_eq!(types(&batch)[0].1, LogicalType::Float64);
+    let huge = LogicalType::Decimal(DecimalType::new(38, 0).unwrap());
+    assert_eq!(types(&batch)[0].1, huge);
+    let values: Vec<Option<i128>> = batch
+        .column(0)
+        .as_primitive::<Decimal128Type>()
+        .iter()
+        .collect();
     assert_eq!(
-        batch
-            .column(0)
-            .as_primitive::<Float64Type>()
-            .value(0)
-            .to_bits(),
-        1.234_567_890_123_456_8e29_f64.to_bits()
+        values,
+        [
+            Some(18_446_744_073_709_551_616),
+            Some(-18_446_744_073_709_551_617)
+        ]
     );
     assert_eq!(
         batch
@@ -261,6 +267,35 @@ fn integers_beyond_the_unsigned_range_read_as_floats_and_negative_zero_as_zero()
             .value(0)
             .to_bits(),
         0.0_f64.to_bits()
+    );
+    // Beside integers of every width, across chunks, and exact among floats as JSON text.
+    let joined = batch_of(
+        &[
+            "{\"a\":1}",
+            "{\"a\":18446744073709551615}",
+            "{\"a\":123456789012345678901234567890}",
+        ],
+        1,
+    );
+    assert_eq!(types(&joined)[0].1, huge);
+    let mixed = batch_of(
+        &["{\"a\":123456789012345678901234567890}\n{\"a\":0.5}"],
+        1 << 20,
+    );
+    assert_eq!(types(&mixed)[0].1, LogicalType::Json);
+    assert_eq!(
+        texts(&mixed, 0),
+        [
+            Some("123456789012345678901234567890".to_owned()),
+            Some("0.5".to_owned())
+        ]
+    );
+    // A float as large stays a float, and an integer no decimal holds is refused.
+    let float = batch_of(&["{\"a\":1e20}"], 1 << 20);
+    assert_eq!(types(&float)[0].1, LogicalType::Float64);
+    assert_eq!(
+        refused("{\"a\":123456789012345678901234567890123456789}"),
+        "value_unrepresentable"
     );
 }
 
@@ -429,6 +464,11 @@ fn only_a_chunk_whose_columns_stopped_building_is_parsed_again() {
     assert!(!parsed("{\"a\":1}\n{\"a\":2.5}\n{\"b\":[1]}").spoiled);
     assert!(parsed("{\"a\":1}\n{\"a\":\"x\"}").spoiled);
     assert!(parsed("{\"a\":{\"b\":true}}\n{\"a\":{\"b\":[]}}").spoiled);
+    // Integers widen in place, however wide, parsed exactly once one may be beyond 64 bits.
+    let wide = parsed("{\"a\":1}\n{\"a\":18446744073709551615}\n{\"a\":18446744073709551616}");
+    assert!(!wide.spoiled && wide.exact);
+    // A chunk whose floats are small or not whole is parsed once, fast.
+    assert!(!parsed("{\"a\":1}\n{\"a\":2.0}\n{\"a\":0.5}").exact);
 }
 
 #[test]
