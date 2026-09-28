@@ -214,7 +214,16 @@ async fn begin(
     match start {
         Start::Spawn(launch) => spawn(launch, role, config, options).await,
         Start::Connect(open) => {
-            let io = open().await.map_err(Spawned::Unreachable)?;
+            let deadline = options.deadlines.connect;
+            let io = tokio::time::timeout(deadline, open())
+                .await
+                .map_err(|_| {
+                    Spawned::Unreachable(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("the connector's stream did not open within {deadline:?}"),
+                    ))
+                })?
+                .map_err(Spawned::Unreachable)?;
             let connection = Connection::connect(io, role, config, options)
                 .await
                 .map_err(Spawned::Connect)?;

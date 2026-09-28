@@ -84,3 +84,28 @@ async fn a_connector_reached_by_a_function_is_reached_again_once_its_stream_is_c
     checks_again(placed.connector.as_ref()).await;
     assert_eq!(opened.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_never_opens_is_unreachable_within_the_connect_deadline() {
+    let deadline = Duration::from_millis(50);
+    let options = rdlt_host::Options {
+        deadlines: rdlt_host::Deadlines {
+            connect: deadline,
+            ..rdlt_host::Deadlines::default()
+        },
+        ..rdlt_host::Options::default()
+    };
+    let connect = Connect::new(|| Box::pin(std::future::pending())).options(options);
+    let reference = ConnectorRef::new(ConnectorId::parse("io.rapidbyte.memory").expect("valid"));
+    let started = tokio::time::Instant::now();
+    let unreachable = connect
+        .source(&reference, &serde_json::json!({}))
+        .await
+        .err()
+        .expect("the connector is never reached");
+    assert!(
+        matches!(unreachable, rdlt_host::ProviderError::Unreachable { .. }),
+        "{unreachable}"
+    );
+    assert!(started.elapsed() < deadline * 2, "{:?}", started.elapsed());
+}
