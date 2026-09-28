@@ -4,6 +4,7 @@ mod adapter;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
 use std::future::Future;
 
 use serde::Serialize;
@@ -73,6 +74,23 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
         async { Ok(vec![Partition::single()]) }
     }
 
+    /// The phase and partitions to read this run: by default the stream's current phase, and
+    /// [`ReadStream::partitions`].
+    ///
+    /// A stream read in phases, as a CDC snapshot and then its changes, overrides this: once
+    /// every partition of a phase is done, the next plan names the next phase and its partitions.
+    fn plan(
+        &self,
+        source: &S,
+        state: &StreamState,
+    ) -> impl Future<Output = Result<PartitionPlan>> + Send {
+        async move {
+            self.partitions(source, state)
+                .await
+                .map(PartitionPlan::from)
+        }
+    }
+
     /// Reads one partition from `cursor`, pushing data and checkpoints to `out`.
     fn read(
         &self,
@@ -112,6 +130,55 @@ impl Partition {
     /// The partition's id.
     pub fn id(&self) -> &PartitionId {
         &self.id
+    }
+}
+
+/// The partitions a source plans for a stream, and the phase they belong to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartitionPlan {
+    /// The stream's phase the partitions belong to; `None` keeps the phase state records.
+    ///
+    /// A phase other than the recorded one begins the phase: the commit that first records it
+    /// forgets the previous phase's partitions.
+    pub phase: Option<u16>,
+    /// The partitions, with distinct ids.
+    pub partitions: Vec<Partition>,
+    /// Where partitions of a new phase start, as a CDC stream's changes start from the position
+    /// its snapshot captured.
+    ///
+    /// A partition without a start starts from the beginning. A plan in the recorded phase
+    /// resumes each partition from its committed position instead.
+    pub starts: BTreeMap<PartitionId, Cursor>,
+}
+
+impl PartitionPlan {
+    /// `partitions`, in the phase state records.
+    pub fn new(partitions: Vec<Partition>) -> Self {
+        Self {
+            phase: None,
+            partitions,
+            starts: BTreeMap::new(),
+        }
+    }
+
+    /// The plan with its partitions in `phase`.
+    #[must_use]
+    pub fn phase(mut self, phase: u16) -> Self {
+        self.phase = Some(phase);
+        self
+    }
+
+    /// The plan with `partition`, of a new phase, starting at `cursor`.
+    #[must_use]
+    pub fn start(mut self, partition: PartitionId, cursor: Cursor) -> Self {
+        self.starts.insert(partition, cursor);
+        self
+    }
+}
+
+impl From<Vec<Partition>> for PartitionPlan {
+    fn from(partitions: Vec<Partition>) -> Self {
+        Self::new(partitions)
     }
 }
 
@@ -174,12 +241,12 @@ pub trait Source: Send + Sync {
     /// The catalog.
     fn discover(&self) -> BoxFuture<'_, Result<Catalog>>;
 
-    /// The partitions of `stream` to read, given its committed state.
+    /// The phase and partitions of `stream` to read, given its committed state.
     fn plan<'a>(
         &'a self,
         stream: &'a StreamName,
         state: &'a StreamState,
-    ) -> BoxFuture<'a, Result<Vec<Partition>>>;
+    ) -> BoxFuture<'a, Result<PartitionPlan>>;
 
     /// Reads one partition into `sink` until it is exhausted or stopped.
     fn read(&self, request: ReadRequest, sink: PartitionSink) -> BoxFuture<'_, Result<()>>;

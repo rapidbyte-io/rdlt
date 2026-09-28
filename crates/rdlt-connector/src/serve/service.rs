@@ -180,15 +180,25 @@ impl Connector for Service {
         .map_err(|e| invalid(&e))?;
         let state =
             StreamState::try_from(request.state.unwrap_or_default()).map_err(|e| invalid(&e))?;
-        let partitions = self
+        let planned = self
             .source()?
             .plan(&stream, &state)
             .await
             .map_err(|error| status(&error))?;
         Ok(Response::new(v1::PlanResponse {
-            partitions: partitions
+            partitions: planned
+                .partitions
                 .iter()
                 .map(|partition| partition.id().as_str().to_owned())
+                .collect(),
+            phase: planned.phase.map(u32::from),
+            starts: planned
+                .starts
+                .iter()
+                .map(|(partition, cursor)| v1::PartitionState {
+                    partition: partition.as_str().to_owned(),
+                    state: Some(v1::partition_state::State::Cursor(v1::Cursor::from(cursor))),
+                })
                 .collect(),
         }))
     }

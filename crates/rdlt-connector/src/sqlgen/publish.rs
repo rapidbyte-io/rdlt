@@ -439,6 +439,7 @@ pub fn merge_key(columns: &str, seq: &str) -> Result<MergeKey> {
         columns: columns.into_iter().map(Into::into).collect(),
         seq: seq.into(),
         root,
+        changes: None,
     })
 }
 

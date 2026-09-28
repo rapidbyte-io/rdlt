@@ -18,6 +18,10 @@ message PlanRequest {
 message PlanResponse {
   // Their ids, distinct.
   repeated string partitions = 1;
+  // The stream's phase they belong to; absent, the phase state records.
+  optional uint32 phase = 2;
+  // Where partitions of a new phase start; each with a cursor.
+  repeated PartitionState starts = 3;
 }
 
 // What the engine sends on a read.

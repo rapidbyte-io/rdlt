@@ -32,6 +32,7 @@ fn family() -> (TableRef, TableRef) {
             columns: vec!["id".into()],
             seq: "seq".into(),
             root: None,
+            changes: None,
         },
     );
     let items = table(
@@ -44,6 +45,7 @@ fn family() -> (TableRef, TableRef) {
                 id: "rid".into(),
                 seq: "seq".into(),
             }),
+            changes: None,
         },
     );
     (roots, items)

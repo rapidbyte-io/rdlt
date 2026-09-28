@@ -75,6 +75,51 @@ pub struct MergeKey {
     pub seq: Arc<str>,
     /// For a child table of a merge table, the root table whose merges replace its rows.
     pub root: Option<RootKey>,
+    /// For a change stream's table, the columns that say what each row does; `None` for a table
+    /// whose rows are all upserts ordered within their commit.
+    pub changes: Option<ChangeColumns>,
+}
+
+/// How the rows of a change stream's merge table apply (spec §9.3, §9.4).
+///
+/// Each written row carries a [`ChangeOp`](crate::ChangeOp) code in `op`, and its source position
+/// in the key's `seq`, which orders rows across commits too: a row applies only when its `seq` is
+/// greater than the published row's with its key, so a replayed change changes nothing. Rows
+/// apply in `seq` order:
+///
+/// - an insert or update replaces the row with its key, keeping the published value of each
+///   column `unchanged` flags (a column with no published value is null);
+/// - a delete removes the row with its key, or marks it deleted (see [`Deletion`]);
+/// - a truncate removes, or marks deleted, every row whose `seq` is smaller than its own; it
+///   carries no key.
+///
+/// `op` and `unchanged` are in written batches only: they are never stored, and no schema change
+/// names them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChangeColumns {
+    /// The column holding each row's op code, an `Int8`.
+    pub op: Arc<str>,
+    /// The column flagging an update's unchanged columns, where rows may flag some: a nullable
+    /// `Binary` bitmap over the written batch's field ordinals, bit `i` (bit `i % 8` of byte
+    /// `i / 8`) set when field `i` keeps its published value.
+    pub unchanged: Option<Arc<str>>,
+    /// How deletes and truncates remove rows.
+    pub deletion: Deletion,
+}
+
+/// How a change stream's deletes and truncates remove rows.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Deletion {
+    /// The rows are removed.
+    Hard,
+    /// The rows stay with their published values, and the column `at` records when they were
+    /// deleted.
+    ///
+    /// A deleted row takes the deleting row's value in `at`, and its `seq`.
+    Soft {
+        /// The column recording when the row was deleted.
+        at: Arc<str>,
+    },
 }
 
 /// How a child table of a normalized merge stream follows its root table (spec §8.7): a merge

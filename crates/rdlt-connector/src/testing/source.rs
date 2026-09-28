@@ -122,6 +122,7 @@ async fn discover_is_stable(source: &dyn Source, first: Option<&Catalog>) -> Res
 async fn plan(source: &dyn Source, stream: &StreamName) -> Result<Vec<Partition>, Violation> {
     bounded_call("plan", source.plan(stream, &StreamState::default()))
         .await
+        .map(|planned| planned.partitions)
         .map_err(|Violation(reason)| Violation::from(format!("plan {stream}: {reason}")))
 }
 

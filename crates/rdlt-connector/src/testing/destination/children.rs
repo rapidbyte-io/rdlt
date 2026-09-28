@@ -80,6 +80,7 @@ impl Bench<'_> {
                 columns: vec!["id".into()],
                 seq: SEQ.into(),
                 root: None,
+                changes: None,
             }),
             ..self.other_table("roots")
         };
@@ -92,6 +93,7 @@ impl Bench<'_> {
                     id: ID.into(),
                     seq: SEQ.into(),
                 }),
+                changes: None,
             }),
             ..self.other_table(suffix)
         };

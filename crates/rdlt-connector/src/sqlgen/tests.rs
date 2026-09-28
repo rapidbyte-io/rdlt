@@ -151,6 +151,7 @@ fn keyed(name: &str) -> TableRef {
             columns: vec!["id".into()],
             seq: "seq".into(),
             root: None,
+            changes: None,
         }),
         ..table(name)
     }
@@ -882,6 +883,7 @@ fn roots_and_items() -> (TableRef, TableRef) {
                 id: "id".into(),
                 seq: "seq".into(),
             }),
+            changes: None,
         }),
         ..table("items")
     };
@@ -1088,6 +1090,7 @@ fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
             columns: vec!["id".into(), "seq".into()],
             seq: "seq".into(),
             root: None,
+            changes: None,
         }),
         ..table("keys")
     };

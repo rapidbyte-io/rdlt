@@ -11,9 +11,9 @@ use std::time::{Duration, UNIX_EPOCH};
 use parking_lot::Mutex;
 use rdlt_connector::{
     BoxFuture, Catalog, CommitMeta, ConnectorError, Cursor, DestinationSession, DestinationWriter,
-    Epoch, GenerationId, LoadId, Partition, PartitionId, PartitionSink, PartitionState,
-    ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source, StateChange, StateEntry,
-    StateKey, StreamName, StreamState, TableChange, TablePath, TableRef, TableSchema,
+    Epoch, GenerationId, LoadId, PartitionId, PartitionSink, PartitionState, ReadRequest, Receipt,
+    Result, SchemaVersion, SegmentId, Source, StateChange, StateEntry, StateKey, StreamName,
+    StreamState, TableChange, TablePath, TableRef, TableSchema,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -97,7 +97,7 @@ impl Source for Listener {
         &'a self,
         _stream: &'a StreamName,
         _state: &'a StreamState,
-    ) -> BoxFuture<'a, Result<Vec<Partition>>> {
+    ) -> BoxFuture<'a, Result<rdlt_connector::PartitionPlan>> {
         Box::pin(async { Err(ConnectorError::internal("unused")) })
     }
 

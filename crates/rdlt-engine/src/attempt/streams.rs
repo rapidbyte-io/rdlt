@@ -297,6 +297,7 @@ async fn partitions(
         Error::connector(Side::Source, format!("planning stream {name}"), error).with_stream(name)
     })?;
     Ok(planned
+        .partitions
         .into_iter()
         .filter_map(|partition| match state.partitions.get(partition.id()) {
             Some(PartitionState::Done) => None,

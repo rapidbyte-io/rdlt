@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rdlt_connector::wire::{Invalid, v1};
 use rdlt_connector::{
     BoxFuture, Catalog, ConnectorError, ConnectorErrorKind, Cursor, Partition, PartitionId,
-    PartitionSink, ReadRequest, Source, StreamName, StreamState,
+    PartitionPlan, PartitionSink, ReadRequest, Source, StreamName, StreamState,
 };
 
 use super::{Connection, read};
@@ -65,7 +65,7 @@ impl Source for RemoteSource {
         &'a self,
         stream: &'a StreamName,
         state: &'a StreamState,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Vec<Partition>>> {
+    ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
         Box::pin(async move {
             let (connection, deadline) = (&self.connection, self.connection.options.deadlines.plan);
             let mut client = connection.client.clone();
@@ -76,7 +76,13 @@ impl Source for RemoteSource {
             let planned = connection
                 .call(deadline, "the plan", client.plan(request))
                 .await?;
-            planned
+            let phase = planned
+                .phase
+                .map(|phase| {
+                    u16::try_from(phase).map_err(|_| invalid(&Invalid::OutOfRange("phase")))
+                })
+                .transpose()?;
+            let partitions = planned
                 .partitions
                 .into_iter()
                 .map(|id| {
@@ -84,7 +90,22 @@ impl Source for RemoteSource {
                         .map(Partition::new)
                         .map_err(|error| invalid(&Invalid::rejected("partition id", error)))
                 })
-                .collect()
+                .collect::<rdlt_connector::Result<Vec<_>>>()?;
+            let mut starts = std::collections::BTreeMap::new();
+            for start in planned.starts {
+                let partition = PartitionId::parse(start.partition)
+                    .map_err(|error| invalid(&Invalid::rejected("partition id", error)))?;
+                let Some(v1::partition_state::State::Cursor(cursor)) = start.state else {
+                    return Err(invalid(&Invalid::Missing("start cursor")));
+                };
+                let cursor = Cursor::try_from(cursor).map_err(|error| invalid(&error))?;
+                starts.insert(partition, cursor);
+            }
+            Ok(PartitionPlan {
+                phase,
+                partitions,
+                starts,
+            })
         })
     }
 

@@ -94,10 +94,10 @@ pub use change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, validate_cha
 pub use commit::{ChildTable, CommitMeta, Receipt, SegmentRange, SegmentSet, UnorderedRanges};
 pub use cursor::Cursor;
 pub use destination::{
-    Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
-    MergeKey, OpenContext, Opened, OpenedSession, PublishedReader, ReadBack, Reading, RootKey,
-    Session, TableChange, TableRef, TableWriter, WriteStats, destination_factory,
-    readable_destination_factory,
+    ChangeColumns, Deletion, Destination, DestinationConnector, DestinationFactory,
+    DestinationSession, DestinationWriter, MergeKey, OpenContext, Opened, OpenedSession,
+    PublishedReader, ReadBack, Reading, RootKey, Session, TableChange, TableRef, TableWriter,
+    WriteStats, destination_factory, readable_destination_factory,
 };
 pub use emitter::Emitter;
 pub use error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result, ResultExt};
@@ -107,8 +107,8 @@ pub use id::{
     SchemaVersion, SegmentId, StreamName, TablePath,
 };
 pub use meta::{
-    ID_COLUMN, IDX_COLUMN, LOAD_ID_COLUMN, LOADED_AT_COLUMN, META_PREFIX, PARENT_ID_COLUMN,
-    ROOT_ID_COLUMN,
+    DELETED_AT_COLUMN, ID_COLUMN, IDX_COLUMN, LOAD_ID_COLUMN, LOADED_AT_COLUMN, META_PREFIX,
+    PARENT_ID_COLUMN, ROOT_ID_COLUMN,
 };
 #[cfg(feature = "macros")]
 pub use rdlt_connector_macros::{destination, source};
@@ -121,8 +121,8 @@ pub use sink::{
     admitted_partition_channel, partition_channel,
 };
 pub use source::{
-    Partition, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory, Streams,
-    source_factory,
+    Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory,
+    Streams, source_factory,
 };
 pub use spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 pub use state::{
