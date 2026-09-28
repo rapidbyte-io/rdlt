@@ -73,9 +73,11 @@ impl Session for SqliteSession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let (planner, change) = (Arc::clone(&self.planner), change.clone());
+        let pipeline = self.pipeline.clone();
         self.database
             .transaction(move |transaction| {
                 let table = change.table();
+                claim(transaction, &planner, &pipeline, &table.name)?;
                 let target = columns(transaction, planner.dialect(), &planner.target(table))?;
                 let staging = columns(
                     transaction,
@@ -92,6 +94,14 @@ impl Session for SqliteSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<SqliteWriter> {
+        let (planner, pipeline, name) = (
+            Arc::clone(&self.planner),
+            self.pipeline.clone(),
+            table.name.clone(),
+        );
+        self.database
+            .transaction(move |transaction| claim(transaction, &planner, &pipeline, &name))
+            .await?;
         if table.generation.is_some() {
             let (planner, generation) = (Arc::clone(&self.planner), table.clone());
             self.database
@@ -180,6 +190,28 @@ impl Session for SqliteSession {
 
     async fn close(self) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Claims the table `name` for `pipeline` where no pipeline owns it; another pipeline's table is
+/// refused as `table_owned`.
+fn claim(
+    transaction: &Transaction<'_>,
+    planner: &SqlPlanner<Sqlite>,
+    pipeline: &PipelineId,
+    name: &str,
+) -> Result<()> {
+    run(transaction, &planner.claim(pipeline, name))?;
+    let owner = query(transaction, &planner.owner(name))?
+        .first()
+        .and_then(|row| row.first())
+        .map(text)
+        .transpose()?
+        .unwrap_or_default();
+    if owner == pipeline.as_str() {
+        Ok(())
+    } else {
+        Err(ConnectorError::table_owned(name, &owner))
     }
 }
 

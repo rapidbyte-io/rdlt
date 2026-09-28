@@ -185,13 +185,18 @@ impl Store {
             .collect()
     }
 
-    /// The table `table` refers to, recording its name for its path and how it merges.
-    fn table(&mut self, table: &TableRef) -> &mut Table {
+    /// The table `table` refers to, claimed for `pipeline` where no pipeline owns it yet,
+    /// recording its name for its path and how it merges; another pipeline's table is refused.
+    fn table(&mut self, pipeline: &PipelineId, table: &TableRef) -> Result<&mut Table> {
+        let entry = self.tables.entry(table.name.to_string()).or_default();
+        let owner = entry.owner.get_or_insert_with(|| pipeline.clone());
+        if owner != pipeline {
+            return Err(ConnectorError::table_owned(&table.name, owner.as_str()));
+        }
+        entry.merge.clone_from(&table.merge);
         self.names
             .insert(table.path.clone(), table.name.to_string());
-        let entry = self.tables.entry(table.name.to_string()).or_default();
-        entry.merge.clone_from(&table.merge);
-        entry
+        Ok(entry)
     }
 }
 
@@ -204,6 +209,8 @@ struct PipelineStore {
 
 #[derive(Debug, Default)]
 struct Table {
+    /// The pipeline the table belongs to: the first to refer to it.
+    owner: Option<PipelineId>,
     schema: Option<TableSchema>,
     /// How the table merges; `None` appends.
     merge: Option<MergeKey>,
@@ -324,13 +331,13 @@ impl Session for MemorySession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let mut store = self.store.lock();
-        let entry = store.table(change.table());
+        let entry = store.table(&self.pipeline, change.table())?;
         entry.schema = Some(changed(entry.schema.as_ref(), change)?);
         Ok(())
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
-        self.store.lock().table(table);
+        self.store.lock().table(&self.pipeline, table)?;
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),
             pipeline: self.pipeline.clone(),

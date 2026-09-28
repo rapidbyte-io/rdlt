@@ -78,6 +78,7 @@ impl DestinationConnector for FilesDestination {
         let manifest = blocking(move || next_epoch(&opening)).await?;
         let location = Location {
             root: Arc::clone(&self.root),
+            pipeline: context.pipeline.clone(),
             dir,
             format: self.format,
             epoch: manifest.epoch,

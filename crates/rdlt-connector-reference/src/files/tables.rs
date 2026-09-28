@@ -12,7 +12,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rdlt_connector::{ConnectorError, Result, TableSchema};
+use rdlt_connector::{ConnectorError, PipelineId, Result, TableSchema};
 
 use super::io;
 
@@ -46,6 +46,33 @@ pub(super) fn update(
         }
     }
 }
+
+/// Claims the table `name` for `pipeline` where no pipeline owns it yet; another pipeline's table
+/// is refused as `table_owned`.
+///
+/// The owner is the first pipeline to create the table's owner file, which no later claim
+/// replaces.
+pub(super) fn claim(root: &Path, name: &str, pipeline: &PipelineId) -> Result<()> {
+    let dir = catalog(root, name);
+    let path = dir.join(OWNER);
+    // An owner file that cannot be read is created where it is missing; the second read reports
+    // whatever else kept it from being read.
+    let owner = if let Ok(owner) = fs::read_to_string(&path) {
+        owner
+    } else {
+        io::create_dirs(&dir)?;
+        publish(&dir, OWNER, pipeline.as_str().as_bytes())?;
+        fs::read_to_string(&path).map_err(io::failed("reading", &path))?
+    };
+    if owner == pipeline.as_str() {
+        Ok(())
+    } else {
+        Err(ConnectorError::table_owned(name, &owner))
+    }
+}
+
+/// The file in a table's catalog naming the pipeline that owns it.
+const OWNER: &str = "owner";
 
 /// The newest catalog version of the table `name` and its columns.
 fn latest(root: &Path, name: &str) -> Result<Option<(u64, TableSchema)>> {
