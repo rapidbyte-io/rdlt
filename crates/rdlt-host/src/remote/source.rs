@@ -82,12 +82,29 @@ impl Source for RemoteSource {
                     u16::try_from(phase).map_err(|_| invalid(&Invalid::OutOfRange("phase")))
                 })
                 .transpose()?;
+            // An unbounded partition must be one of the plan's.
+            if planned
+                .unbounded
+                .iter()
+                .any(|id| !planned.partitions.contains(id))
+            {
+                return Err(invalid(&Invalid::Unknown("unbounded partition")));
+            }
+            let unbounded = planned.unbounded;
             let partitions = planned
                 .partitions
                 .into_iter()
                 .map(|id| {
+                    let never_ends = unbounded.contains(&id);
                     PartitionId::parse(id)
-                        .map(Partition::new)
+                        .map(|id| {
+                            let partition = Partition::new(id);
+                            if never_ends {
+                                partition.unbounded()
+                            } else {
+                                partition
+                            }
+                        })
                         .map_err(|error| invalid(&Invalid::rejected("partition id", error)))
                 })
                 .collect::<rdlt_connector::Result<Vec<_>>>()?;

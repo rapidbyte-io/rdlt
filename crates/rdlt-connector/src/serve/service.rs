@@ -192,6 +192,12 @@ impl Connector for Service {
                 .map(|partition| partition.id().as_str().to_owned())
                 .collect(),
             phase: planned.phase.map(u32::from),
+            unbounded: planned
+                .partitions
+                .iter()
+                .filter(|partition| partition.is_unbounded())
+                .map(|partition| partition.id().as_str().to_owned())
+                .collect(),
             starts: planned
                 .starts
                 .iter()

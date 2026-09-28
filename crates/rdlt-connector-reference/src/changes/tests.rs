@@ -69,6 +69,14 @@ async fn the_snapshot_is_planned_until_every_partition_is_done_then_the_changes(
     );
     let changes = source.plan(&orders(), &state).await.unwrap();
     assert_eq!(changes.phase, Some(CHANGES));
+    // The snapshot's partitions end; the changes never do.
+    assert!(
+        fresh
+            .partitions
+            .iter()
+            .all(|partition| !partition.is_unbounded())
+    );
+    assert!(changes.partitions.iter().all(Partition::is_unbounded));
     let id = PartitionId::parse("changes").unwrap();
     assert_eq!(changes.partitions.len(), 1);
     let start: Position = changes.starts[&id].decode(1).unwrap();

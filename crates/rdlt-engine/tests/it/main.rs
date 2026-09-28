@@ -19,6 +19,7 @@ mod phases;
 mod placement;
 mod schema;
 mod support;
+mod unbounded;
 
 /// Tracks the heap's peak, for the memory bound.
 #[global_allocator]

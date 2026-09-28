@@ -236,3 +236,40 @@ async fn a_read_with_no_barrier_pending_asks_for_none() {
     }
     assert!(answered.is_empty(), "{answered:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unbounded_partitions_are_planned_as_such_across_the_wire() {
+    use rdlt_connector::{PartitionState, StreamState};
+    use rdlt_connector_reference::ChangesSource;
+    let config = serde_json::json!({
+        "seed": 1,
+        "streams": [{ "name": "orders", "keys": 4, "snapshot_partitions": 2, "changes": 5 }],
+    });
+    let io = served(Served::new().with_source(source_factory::<ChangesSource>()));
+    let connection = Connection::connect(io, Role::Source, &config, Options::default())
+        .await
+        .expect("the source handshakes");
+    let source = RemoteSource::new(connection);
+    let orders = StreamName::new("orders").expect("a valid stream name");
+    let snapshot = source
+        .plan(&orders, &StreamState::default())
+        .await
+        .expect("the snapshot is planned");
+    assert!(
+        snapshot
+            .partitions
+            .iter()
+            .all(|partition| !partition.is_unbounded())
+    );
+    let mut state = StreamState::default();
+    for id in ["snapshot-0", "snapshot-1"] {
+        let id = PartitionId::parse(id).expect("a valid partition id");
+        state.partitions.insert(id, PartitionState::Done);
+    }
+    let changes = source
+        .plan(&orders, &state)
+        .await
+        .expect("the changes are planned");
+    assert!(!changes.partitions.is_empty());
+    assert!(changes.partitions.iter().all(Partition::is_unbounded));
+}

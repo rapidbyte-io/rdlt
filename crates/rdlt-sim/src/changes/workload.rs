@@ -43,6 +43,9 @@ pub struct ChangeStream {
     pub captured: usize,
     /// How many changes the source holds in each round.
     pub rounds: [usize; ROUNDS],
+    /// Whether the source reads ahead, as a live one does: it pushes changes of the next round
+    /// after its last checkpoint, which the engine must read again rather than commit.
+    pub reads_ahead: bool,
 }
 
 /// One change.
@@ -140,6 +143,7 @@ impl ChangeStream {
             .collect();
         let first = to_usize(rng.below(u64::try_from(total).unwrap_or(0) + 1));
         let captured = to_usize(rng.below(u64::try_from(first).unwrap_or(0) + 1));
+        let reads_ahead = rng.chance(500);
         Self {
             name,
             keys,
@@ -151,6 +155,7 @@ impl ChangeStream {
             events,
             captured,
             rounds: [first, total],
+            reads_ahead,
         }
     }
 

@@ -22,6 +22,8 @@ message PlanResponse {
   optional uint32 phase = 2;
   // Where partitions of a new phase start; each with a cursor.
   repeated PartitionState starts = 3;
+  // The ids of the partitions that never end, as a change stream's changes; each one of `partitions`.
+  repeated string unbounded = 4;
 }
 
 // What the engine sends on a read.

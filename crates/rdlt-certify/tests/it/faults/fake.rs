@@ -254,6 +254,7 @@ impl Connector for Fake {
             partitions: vec!["whole".to_owned()],
             phase: None,
             starts: Vec::new(),
+            unbounded: Vec::new(),
         }))
     }
 

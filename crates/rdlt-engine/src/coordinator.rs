@@ -177,6 +177,9 @@ impl Coordinator {
         } else {
             AttemptEnd::Exhausted
         };
+        // Writes of rows no commit took, as an unbounded partition's after its last checkpoint,
+        // finish before the session closes; the next session discards them.
+        self.parts.lanes.flush().await?;
         self.parts.tables.session().close().await?;
         self.parts.log.lock().end = Some(end);
         Ok(())

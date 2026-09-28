@@ -27,25 +27,46 @@ fn ingested(rows: u64, cursor: Option<u64>) -> Ingested {
 fn a_partition_ends_at_its_last_cursor_unless_rows_follow_it() {
     let cursor = Cursor::encode(1, &5u64).unwrap();
     assert_eq!(
-        end_state(&ingested(0, Some(5))),
+        end_state(&ingested(0, Some(5)), false),
         Some(PartitionState::Cursor(cursor))
     );
-    assert_eq!(end_state(&ingested(3, Some(5))), Some(PartitionState::Done));
-    assert_eq!(end_state(&ingested(3, None)), Some(PartitionState::Done));
+    assert_eq!(
+        end_state(&ingested(3, Some(5)), false),
+        Some(PartitionState::Done)
+    );
+    assert_eq!(
+        end_state(&ingested(3, None), false),
+        Some(PartitionState::Done)
+    );
 }
 
 #[test]
 fn rows_after_the_last_cursor_its_policy_discarded_all_of_end_the_partition() {
     assert_eq!(
-        end_state(&received(2, 0, Some(5))),
+        end_state(&received(2, 0, Some(5)), false),
         Some(PartitionState::Done)
     );
-    assert_eq!(end_state(&received(2, 0, None)), Some(PartitionState::Done));
+    assert_eq!(
+        end_state(&received(2, 0, None), false),
+        Some(PartitionState::Done)
+    );
+}
+
+#[test]
+fn an_unbounded_partition_ends_only_at_its_last_cursor_and_rows_after_it_are_read_again() {
+    let cursor = Cursor::encode(1, &5u64).unwrap();
+    assert_eq!(
+        end_state(&ingested(0, Some(5)), true),
+        Some(PartitionState::Cursor(cursor))
+    );
+    assert_eq!(end_state(&ingested(3, Some(5)), true), None);
+    assert_eq!(end_state(&ingested(3, None), true), None);
+    assert_eq!(end_state(&received(2, 0, Some(5)), true), None);
 }
 
 #[test]
 fn a_partition_that_read_nothing_and_never_checkpointed_records_no_position() {
-    assert_eq!(end_state(&ingested(0, None)), None);
+    assert_eq!(end_state(&ingested(0, None), false), None);
 }
 
 #[test]
