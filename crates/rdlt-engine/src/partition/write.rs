@@ -212,8 +212,8 @@ fn lower(
 /// `parts`, a change stream's batches of one schema, as one batch of data and its change
 /// columns, without the deletes and truncates the stream ignores, which `open` counts.
 ///
-/// Rows flagging columns unchanged are refused where the destination cannot keep a column's
-/// value.
+/// A merge's rows flagging columns unchanged are refused where the destination cannot keep a
+/// column's value.
 fn split_changes(
     job: &PartitionJob,
     mode: ChangeMode,
@@ -224,8 +224,13 @@ fn split_changes(
         |error: arrow_schema::ArrowError| Error::internal(format!("splitting changes: {error}"));
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
     let (data, changes) = ChangeRows::split(&batch).map_err(failed)?;
-    let flagged = changes.flagged();
-    if !flagged.is_empty() && !mode.partial_updates {
+    // A log stores each row's flags as data; only a merge keeps a column's value.
+    let flagged = if mode.merge && !mode.partial_updates {
+        changes.flagged()
+    } else {
+        Vec::new()
+    };
+    if !flagged.is_empty() {
         let schema = data.schema();
         let names: Vec<&str> = flagged
             .iter()

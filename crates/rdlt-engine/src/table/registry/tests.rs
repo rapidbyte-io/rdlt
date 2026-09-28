@@ -521,6 +521,7 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
         )),
         physical: Some("orders__items".into()),
         names,
+        sequences: None,
     };
     let state = rdlt_connector::PipelineState {
         tables: BTreeMap::from([(path, recorded)]),

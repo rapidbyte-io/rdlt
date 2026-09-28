@@ -83,6 +83,19 @@ impl Coordinator {
         }
     }
 
+    /// The state changes recording who made the sequences of each stream's table, where state
+    /// records otherwise: the next commit takes them.
+    pub(super) fn sequences_delta(&mut self) -> Vec<StateChange> {
+        self.parts
+            .streams
+            .iter_mut()
+            .filter_map(|stream| stream.sequences.take())
+            .map(|(table, sequences)| {
+                StateChange::Put(StateEntry::Sequences { table, sequences }.to_record())
+            })
+            .collect()
+    }
+
     /// The stream state changes of a commit that publishes `positions` and ends the cycles of
     /// `completing`; the tables add their own.
     pub(super) fn state_delta(

@@ -17,7 +17,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use rdlt_connector::{
     CommitMeta, CommitSeq, Cursor, Epoch, GenerationId, LoadId, PartitionId, PartitionState,
-    Source, StateChange, StateEntry, StreamName,
+    Sequences, Source, StateChange, StateEntry, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -48,6 +48,9 @@ pub(crate) struct StreamRun {
     pub(crate) stopped: bool,
     /// For a stream read in phases, its place in them.
     pub(crate) phases: Option<Phases>,
+    /// Who made the sequences of the stream's table, where state records otherwise; the next
+    /// commit records them.
+    pub(crate) sequences: Option<(TablePath, Sequences)>,
 }
 
 /// A full read of a stream, from its first partition to its last; a replace stream fills the
@@ -288,6 +291,7 @@ impl Coordinator {
         let tables = self.parts.tables.delta();
         // A new phase's stale entries go before its partitions' positions, which may reuse ids.
         let mut delta = self.phase_delta();
+        delta.extend(self.sequences_delta());
         delta.extend(self.state_delta(&collected.positions, &completing));
         delta.extend(tables.changes);
         let finish_generations = self.finish_generations(&completing);

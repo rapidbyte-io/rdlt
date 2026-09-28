@@ -67,6 +67,8 @@ pub enum StateKey {
     Schema(TablePath),
     /// A table's name map.
     Names(TablePath),
+    /// Who made a table's sequences.
+    Sequences(TablePath),
     /// The last commit's receipt.
     Receipt,
 }
@@ -150,8 +152,30 @@ pub enum StateEntry {
         /// The columns' identifiers.
         names: NameMap,
     },
+    /// Who made the sequences of the rows a table holds.
+    Sequences {
+        /// The table.
+        table: TablePath,
+        /// Who made them.
+        sequences: Sequences,
+    },
     /// The last commit's receipt.
     Receipt(Receipt),
+}
+
+/// Who made the `_rdlt_seq` values a table's rows hold, which says whether a later load may
+/// compare them.
+///
+/// A change stream's merge compares each row's sequence with the stored row's across commits, so
+/// the stored sequences must be positions of the same source; the engine's own, which only order
+/// rows within one commit, compare as nothing of the kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sequences {
+    /// The engine, as it writes every stream that does not merge changes.
+    Engine,
+    /// A change stream's source: its positions.
+    Source,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -206,6 +230,7 @@ impl StateEntry {
             Self::Completed { stream, .. } => StateKey::Completed(stream.clone()),
             Self::Schema { table, .. } => StateKey::Schema(table.clone()),
             Self::Names { table, .. } => StateKey::Names(table.clone()),
+            Self::Sequences { table, .. } => StateKey::Sequences(table.clone()),
             Self::Receipt(_) => StateKey::Receipt,
         }
     }
@@ -282,6 +307,8 @@ pub struct TableState {
     pub physical: Option<Arc<str>>,
     /// The columns' identifiers.
     pub names: NameMap,
+    /// Who made the sequences of the rows the table holds, once a load recorded it.
+    pub sequences: Option<Sequences>,
 }
 
 /// Everything a pipeline has committed: epoch, cursors, schemas, names and the last receipt.
@@ -353,6 +380,12 @@ impl PipelineState {
                     names: table.names.clone(),
                 });
             }
+            if let Some(sequences) = table.sequences {
+                entries.push(StateEntry::Sequences {
+                    table: path.clone(),
+                    sequences,
+                });
+            }
         }
         if let Some(receipt) = &self.last_receipt {
             entries.push(StateEntry::Receipt(receipt.clone()));
@@ -411,6 +444,9 @@ impl PipelineState {
                 state.physical = Some(physical);
                 state.names = names;
             }
+            StateEntry::Sequences { table, sequences } => {
+                self.tables.entry(table).or_default().sequences = Some(sequences);
+            }
             StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
         }
     }
@@ -447,6 +483,11 @@ impl PipelineState {
                 if let Some(state) = self.tables.get_mut(table) {
                     state.physical = None;
                     state.names = NameMap::default();
+                }
+            }
+            StateKey::Sequences(table) => {
+                if let Some(state) = self.tables.get_mut(table) {
+                    state.sequences = None;
                 }
             }
             StateKey::Receipt => self.last_receipt = None,

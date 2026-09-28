@@ -4,8 +4,8 @@ use bytes::Bytes;
 use proptest::prelude::*;
 
 use super::{
-    NameConflict, NameMap, PartitionState, PipelineState, StateChange, StateEntry, StateError,
-    StateKey, StateRecord, StreamState, TableState,
+    NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange, StateEntry,
+    StateError, StateKey, StateRecord, StreamState, TableState,
 };
 use crate::commit::Receipt;
 use crate::cursor::Cursor;
@@ -69,6 +69,7 @@ fn sample_state() -> PipelineState {
             schema: Some((SchemaVersion(2), schema)),
             physical: Some("orders".into()),
             names,
+            sequences: Some(Sequences::Source),
         },
     );
     state
@@ -97,6 +98,22 @@ fn deleting_a_completed_marker_clears_it() {
         state.streams[&stream("orders")].generation,
         Some(GenerationId(2))
     );
+}
+
+#[test]
+fn deleting_a_table_s_sequences_forgets_whose_they_are() {
+    let mut state = sample_state();
+    let table = TablePath::new(["orders"]).unwrap();
+    let key = StateKey::Sequences(table.clone());
+    state.apply(&StateChange::Delete(key.encode())).unwrap();
+    assert_eq!(state.tables[&table].sequences, None);
+    assert!(state.tables[&table].schema.is_some());
+    let engine = StateEntry::Sequences {
+        table: table.clone(),
+        sequences: Sequences::Engine,
+    };
+    state.apply(&StateChange::Put(engine.to_record())).unwrap();
+    assert_eq!(state.tables[&table].sequences, Some(Sequences::Engine));
 }
 
 #[test]
@@ -322,13 +339,13 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
     let columns = proptest::collection::btree_set("[a-z]{1,3}", 1..4);
     proptest::collection::btree_map(
         prop_oneof![Just("a"), Just("b.c")],
-        (1..9_u32, columns, any::<bool>()),
+        (1..9_u32, columns, any::<bool>(), 0..3_u8),
         0..3,
     )
     .prop_map(|tables| {
         tables
             .into_iter()
-            .map(|(path, (version, columns, variant))| {
+            .map(|(path, (version, columns, variant, sequences))| {
                 let mut names = NameMap::default();
                 let mut fields = Vec::new();
                 for column in &columns {
@@ -349,6 +366,8 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
                     schema: Some((SchemaVersion(version), TableSchema::new(fields).unwrap())),
                     physical: Some(path.replace('.', "_").into()),
                     names,
+                    sequences: [None, Some(Sequences::Engine), Some(Sequences::Source)]
+                        [usize::from(sequences)],
                 };
                 (TablePath::new([path]).unwrap(), state)
             })
