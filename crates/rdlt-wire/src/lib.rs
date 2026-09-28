@@ -36,7 +36,10 @@ pub use prost;
 pub use tonic;
 
 /// The protocol's major version: a peer of another major version is refused at the handshake.
-pub const PROTOCOL_MAJOR: u32 = 1;
+///
+/// Version 2 configures the connector in `Configure`, after the handshake, where version 1 sent
+/// the configuration in the handshake itself.
+pub const PROTOCOL_MAJOR: u32 = 2;
 
 /// The protocol's minor version: a peer of another minor version is served, with the features
 /// both ends know.

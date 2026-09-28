@@ -10,6 +10,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteSource};
+use rdlt_wire::tonic::transport::Channel;
+use rdlt_wire::v1::connector_client::ConnectorClient;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -27,16 +29,33 @@ fn quick() -> Options {
     }
 }
 
-fn handshake(major: u32, role: v1::Role, config: &str) -> v1::HandshakeRequest {
+fn handshake(major: u32, role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: major,
         protocol_minor: PROTOCOL_MINOR,
         features: Vec::new(),
         role: role as i32,
-        config_json: config.to_owned(),
         traceparent: String::new(),
         limits: None,
     }
+}
+
+fn configure(config: &str) -> v1::ConfigureRequest {
+    v1::ConfigureRequest {
+        config_json: config.to_owned(),
+    }
+}
+
+/// Handshakes as `role` and configures the connector with `config`.
+async fn configured(client: &mut ConnectorClient<Channel>, role: v1::Role, config: &str) {
+    client
+        .handshake(handshake(PROTOCOL_MAJOR, role))
+        .await
+        .expect("the handshake succeeds");
+    client
+        .configure(configure(config))
+        .await
+        .expect("the configuration succeeds");
 }
 
 fn memory() -> Served {
@@ -54,7 +73,7 @@ fn rows(count: usize) -> serde_json::Value {
 async fn a_host_of_another_major_version_is_refused_at_the_handshake() {
     let mut client = raw_client(served(memory())).await;
     let status = client
-        .handshake(handshake(PROTOCOL_MAJOR + 1, v1::Role::Source, "{}"))
+        .handshake(handshake(PROTOCOL_MAJOR + 1, v1::Role::Source))
         .await
         .unwrap_err();
     let error = carried(&status);
@@ -192,6 +211,18 @@ async fn a_checkpoint_answering_a_barrier_never_asked_for_is_refused_typed() {
 }
 
 #[tokio::test]
+async fn a_connector_configured_as_another_than_it_handshook_as_is_refused() {
+    let io = serve_fake(Fake(Fault::Impostor));
+    let error = Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Internal, Some("invalid_message"))
+    );
+}
+
+#[tokio::test]
 async fn a_zero_heartbeat_interval_is_refused_before_connecting() {
     let io = serve_fake(Fake(Fault::Silent));
     let options = Options {
@@ -264,14 +295,7 @@ async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
 async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
     use v1::read_control::Control;
     let mut client = raw_client(served(memory())).await;
-    client
-        .handshake(handshake(
-            PROTOCOL_MAJOR,
-            v1::Role::Source,
-            &rows(50).to_string(),
-        ))
-        .await
-        .unwrap();
+    configured(&mut client, v1::Role::Source, &rows(50).to_string()).await;
     let (controls, receiver) = tokio::sync::mpsc::channel(4);
     let control = |control| v1::ReadControl {
         control: Some(control),
@@ -355,14 +379,7 @@ async fn a_served_read_spends_its_credit_frame_by_frame_until_none_remains() {
     use rdlt_wire::prost::Message as _;
     use v1::read_control::Control;
     let mut client = raw_client(served(memory())).await;
-    client
-        .handshake(handshake(
-            PROTOCOL_MAJOR,
-            v1::Role::Source,
-            &rows(500).to_string(),
-        ))
-        .await
-        .unwrap();
+    configured(&mut client, v1::Role::Source, &rows(500).to_string()).await;
     let (controls, receiver) = tokio::sync::mpsc::channel(4);
     let control = |control| v1::ReadControl {
         control: Some(control),
@@ -412,14 +429,7 @@ async fn a_connectors_catalog_crosses_the_wire() {
 #[tokio::test]
 async fn a_call_for_the_other_role_is_refused() {
     let mut client = raw_client(served(memory())).await;
-    client
-        .handshake(handshake(
-            PROTOCOL_MAJOR,
-            v1::Role::Source,
-            &rows(1).to_string(),
-        ))
-        .await
-        .unwrap();
+    configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let open = v1::OpenRequest {
         pipeline: "p".to_owned(),
         load_id: vec![0; 16].into(),
@@ -429,32 +439,36 @@ async fn a_call_for_the_other_role_is_refused() {
 }
 
 #[tokio::test]
-async fn a_second_handshake_is_refused_before_it_connects() {
+async fn a_second_handshake_or_configuration_is_refused_before_it_connects() {
     let mut client = raw_client(served(memory())).await;
-    let config = rows(1).to_string();
-    client
-        .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source, &config))
-        .await
-        .unwrap();
-    // Refused as repeated before its configuration is read, let alone a second connector made.
+    configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let status = client
-        .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source, "not JSON"))
+        .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source))
         .await
         .unwrap_err();
     assert_eq!(carried(&status).code(), Some("handshake_repeated"));
+    // Refused as repeated before its configuration is read, let alone a second connector made.
+    let status = client.configure(configure("not JSON")).await.unwrap_err();
+    assert_eq!(carried(&status).code(), Some("configure_repeated"));
+}
+
+#[tokio::test]
+async fn a_configuration_before_the_handshake_and_a_call_before_the_configuration_are_refused() {
+    let mut client = raw_client(served(memory())).await;
+    let status = client.configure(configure("{}")).await.unwrap_err();
+    assert_eq!(carried(&status).code(), Some("no_handshake"));
+    client
+        .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source))
+        .await
+        .expect("the handshake succeeds");
+    let status = client.check(v1::CheckRequest {}).await.unwrap_err();
+    assert_eq!(carried(&status).code(), Some("not_configured"));
 }
 
 #[tokio::test]
 async fn a_message_that_does_not_decode_is_refused() {
     let mut client = raw_client(served(memory())).await;
-    client
-        .handshake(handshake(
-            PROTOCOL_MAJOR,
-            v1::Role::Source,
-            &rows(1).to_string(),
-        ))
-        .await
-        .unwrap();
+    configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let plan = v1::PlanRequest {
         stream: None,
         state: None,

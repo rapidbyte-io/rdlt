@@ -22,6 +22,7 @@ use crate::local::process::{Launch, Process};
 use crate::network::Dial;
 use crate::provider::{ConnectorRef, ProviderError, accepts};
 use crate::remote::{CONNECTOR_LOST, Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_connector::wire::v1;
 
 /// How long the errors of a lost connector wait for its standard error to close.
 const LAST_WORDS: Duration = Duration::from_secs(1);
@@ -51,26 +52,62 @@ pub(crate) struct Supervisor {
     options: Options,
     running: Mutex<Running>,
     /// The spec the connector was checked to serve: whatever is started again must serve it.
-    checked: std::sync::OnceLock<ConnectorSpec>,
+    checked: ConnectorSpec,
+}
+
+/// What a connector must be before it sees its configuration: the connector `reference` names,
+/// of a version it accepts, found at `found_at`.
+pub(crate) struct Gate<'a> {
+    pub(crate) reference: &'a ConnectorRef,
+    pub(crate) found_at: &'a str,
+}
+
+impl Gate<'_> {
+    /// Whether the handshake's `spec` is the connector the reference names, of a version it
+    /// accepts.
+    fn admit(&self, spec: &v1::ConnectorSpec) -> Result<(), ProviderError> {
+        if spec.id != self.reference.id.as_str() {
+            let message = format!("{} serves `{}`", self.found_at, spec.id);
+            return Err(self.refused(ConnectorError::config(message)));
+        }
+        accepts(self.reference, &spec.version)
+    }
+
+    fn refused(&self, source: ConnectorError) -> ProviderError {
+        ProviderError::HandshakeFailed {
+            id: self.reference.id.clone(),
+            source: Box::new(source),
+        }
+    }
 }
 
 impl Supervisor {
-    /// Starts the connector `start` describes, as `role`, with `config`.
+    /// Starts the connector `start` describes, as `role`, and configures it with `config` once
+    /// its handshake shows it is the connector `gate` admits.
     pub(crate) async fn start(
         start: Start,
         role: Role,
         config: serde_json::Value,
         options: Options,
+        gate: &Gate<'_>,
     ) -> Result<Self, Spawned> {
-        let running = begin(&start, role, &config, options).await?;
+        let admit = |spec: &v1::ConnectorSpec| gate.admit(spec).map_err(Spawned::Refused);
+        let running = begin(&start, role, &config, options, &admit).await?;
+        let checked = crate::remote::contract_spec(running.connection.spec(), role)
+            .map_err(|error| Spawned::Refused(gate.refused(error)))?;
         Ok(Self {
             start,
             role,
             config,
             options,
             running: Mutex::new(running),
-            checked: std::sync::OnceLock::new(),
+            checked,
         })
+    }
+
+    /// The spec the connector was checked to serve, for its role.
+    pub(crate) fn spec(&self) -> ConnectorSpec {
+        self.checked.clone()
     }
 
     /// The connection to the connector last started, lost or not.
@@ -82,7 +119,8 @@ impl Supervisor {
     async fn connection(&self) -> Result<Arc<Connection>, ConnectorError> {
         let mut running = self.running.lock().await;
         if running.connection.is_spent() {
-            let started = begin(&self.start, self.role, &self.config, self.options)
+            let admit = |spec: &v1::ConnectorSpec| self.same_identity(spec);
+            let started = begin(&self.start, self.role, &self.config, self.options, &admit)
                 .await
                 .map_err(Spawned::into_error)?;
             self.same(&started.connection)?;
@@ -91,20 +129,25 @@ impl Supervisor {
         Ok(Arc::clone(&running.connection))
     }
 
-    /// Whether `connection`'s connector serves the spec the first was checked to serve: a redial
-    /// may reach whatever listens at the endpoint now.
-    fn same(&self, connection: &Connection) -> Result<(), ConnectorError> {
-        let Some(checked) = self.checked.get() else {
+    /// Whether a connector started again handshook with the id and version first checked, before
+    /// it sees the configuration: a redial may reach whatever listens at the endpoint now.
+    fn same_identity(&self, spec: &v1::ConnectorSpec) -> Result<(), Spawned> {
+        let checked = &self.checked;
+        if spec.id == checked.id.as_str() && spec.version == checked.version {
             return Ok(());
-        };
+        }
+        Err(Spawned::Connect(changed(&spec.id, &spec.version, checked)))
+    }
+
+    /// Whether `connection`'s connector serves the spec the first was checked to serve, with what
+    /// its configuration declares.
+    fn same(&self, connection: &Connection) -> Result<(), ConnectorError> {
+        let checked = &self.checked;
         let spec = crate::remote::contract_spec(connection.spec(), self.role)?;
         if spec == *checked {
             return Ok(());
         }
-        Err(ConnectorError::config(format!(
-            "the connector started again serves `{}` {}, not `{}` {} as it was placed",
-            spec.id, spec.version, checked.id, checked.version
-        )))
+        Err(changed(spec.id.as_str(), &spec.version, checked))
     }
 
     /// `result`, its error carrying the connector's last words when its transport failed.
@@ -131,33 +174,21 @@ impl Supervisor {
         }
     }
 
-    /// The live connector's spec, for its role, once it is checked to be the connector
-    /// `reference` names, of a version it accepts.
-    pub(crate) async fn checked_spec(
-        &self,
-        reference: &ConnectorRef,
-        found_at: &str,
-    ) -> Result<ConnectorSpec, ProviderError> {
-        let handshake_failed = |source| ProviderError::HandshakeFailed {
-            id: reference.id.clone(),
-            source: Box::new(source),
-        };
-        let spec = crate::remote::contract_spec(self.live().await.spec(), self.role)
-            .map_err(handshake_failed)?;
-        if spec.id != reference.id {
-            let message = format!("{found_at} serves `{}`", spec.id);
-            return Err(handshake_failed(ConnectorError::config(message)));
-        }
-        accepts(reference, &spec.version)?;
-        self.checked.set(spec.clone()).ok();
-        Ok(spec)
-    }
-
     /// The capabilities the live destination declares.
     pub(crate) async fn capabilities(&self) -> Result<Capabilities, ConnectorError> {
         let destination = RemoteDestination::new(self.live().await)?;
         Ok(destination.capabilities().clone())
     }
+}
+
+/// The error of a connector started again that serves `id` `version`, not the connector
+/// `checked` as it was placed; coded `connector_changed`.
+fn changed(id: &str, version: &str, checked: &ConnectorSpec) -> ConnectorError {
+    ConnectorError::config(format!(
+        "the connector started again serves `{id}` {version}, not `{}` {} as it was placed",
+        checked.id, checked.version
+    ))
+    .with_code("connector_changed")
 }
 
 /// Why a connector did not start.
@@ -170,6 +201,9 @@ pub(crate) enum Spawned {
     Tls(std::io::Error),
     /// It did not connect: its handshake, or its own connect, failed.
     Connect(ConnectorError),
+    /// It is not the connector placed: another binary, id or version, refused before it saw its
+    /// configuration.
+    Refused(ProviderError),
 }
 
 impl Spawned {
@@ -197,6 +231,11 @@ impl Spawned {
                     .with_source(error)
             }
             Self::Connect(error) => error,
+            Self::Refused(refused) => {
+                ConnectorError::config("the connector started again is not the connector placed")
+                    .with_code("connector_changed")
+                    .with_source(refused)
+            }
         }
     }
 }
@@ -204,15 +243,20 @@ impl Spawned {
 /// The code of the error a TLS handshake with a connector fails with.
 pub const TLS: &str = "tls";
 
-/// Starts the connector as `start` says, and handshakes with it.
+/// Checks the spec a connector handshook with, before it sees its configuration.
+type Admit<'a> = dyn Fn(&v1::ConnectorSpec) -> Result<(), Spawned> + Sync + 'a;
+
+/// Starts the connector as `start` says, handshakes with it, and configures it with `config` once
+/// `admit` accepts its spec.
 async fn begin(
     start: &Start,
     role: Role,
     config: &serde_json::Value,
     options: Options,
+    admit: &Admit<'_>,
 ) -> Result<Running, Spawned> {
     match start {
-        Start::Spawn(launch) => spawn(launch, role, config, options).await,
+        Start::Spawn(launch) => spawn(launch, role, config, options, admit).await,
         Start::Connect(open) => {
             let deadline = options.deadlines.connect;
             let io = tokio::time::timeout(deadline, open())
@@ -224,9 +268,7 @@ async fn begin(
                     ))
                 })?
                 .map_err(Spawned::Unreachable)?;
-            let connection = Connection::connect(io, role, config, options)
-                .await
-                .map_err(Spawned::Connect)?;
+            let connection = configured(io, role, config, options, admit).await?;
             Ok(Running {
                 connection,
                 process: None,
@@ -234,9 +276,7 @@ async fn begin(
         }
         Start::Dial(dial) => {
             let io = crate::network::dial(dial, options.deadlines.connect).await?;
-            let connection = Connection::connect(io, role, config, options)
-                .await
-                .map_err(Spawned::Connect)?;
+            let connection = configured(io, role, config, options, admit).await?;
             Ok(Running {
                 connection,
                 process: None,
@@ -245,17 +285,36 @@ async fn begin(
     }
 }
 
+/// Handshakes over `io`, and configures the connector with `config` once `admit` accepts its spec.
+async fn configured<IO>(
+    io: IO,
+    role: Role,
+    config: &serde_json::Value,
+    options: Options,
+    admit: &Admit<'_>,
+) -> Result<Arc<Connection>, Spawned>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let handshaken = Connection::handshake(io, role, options)
+        .await
+        .map_err(Spawned::Connect)?;
+    admit(handshaken.spec())?;
+    handshaken.configure(config).await.map_err(Spawned::Connect)
+}
+
 /// Spawns the connector and handshakes with it.
 async fn spawn(
     launch: &Launch,
     role: Role,
     config: &serde_json::Value,
     options: Options,
+    admit: &Admit<'_>,
 ) -> Result<Running, Spawned> {
     let (io, process) = Process::launched(launch).map_err(Spawned::Io)?;
-    let connection = match Connection::connect(io, role, config, options).await {
+    let connection = match configured(io, role, config, options, admit).await {
         Ok(connection) => connection,
-        Err(error) => {
+        Err(Spawned::Connect(error)) => {
             let words = process.last_words(LAST_WORDS).await;
             let error = if std::error::Error::source(&error).is_none()
                 && matches!(error.code(), Some(CONNECTOR_LOST | TRANSPORT))
@@ -266,6 +325,8 @@ async fn spawn(
             };
             return Err(Spawned::Connect(error));
         }
+        // A connector refused never sees its configuration, and stops with its process.
+        Err(refused) => return Err(refused),
     };
     Ok(Running {
         connection,

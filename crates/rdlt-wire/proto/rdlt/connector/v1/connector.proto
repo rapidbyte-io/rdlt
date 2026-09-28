@@ -9,8 +9,12 @@ import "rdlt/connector/v1/source.proto";
 
 // A connector, serving every role it supports.
 service Connector {
-  // Agrees the protocol version and features, and configures the connector.
+  // Agrees the protocol version, role and features, and answers who the connector is, before
+  // it receives any configuration.
   rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  // Configures the connector for the role agreed, once the host has checked who it is; every
+  // other call needs it first.
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
   // Verifies connectivity and permissions.
   rpc Check(CheckRequest) returns (CheckResponse);
   // The source's catalog.
@@ -79,8 +83,10 @@ message HandshakeRequest {
   repeated string features = 3;
   // The role the host wants.
   Role role = 4;
-  // The connector's configuration, as JSON.
-  string config_json = 5;
+  // The configuration went in the handshake before protocol 2; it goes in `Configure` now, once
+  // the host has checked the connector's spec.
+  reserved 5;
+  reserved "config_json";
   // The host's W3C trace context.
   string traceparent = 6;
   // The limits the host enforces.
@@ -105,12 +111,24 @@ message ConnectorSpec {
 
 // The connector's answer to a handshake.
 message HandshakeResponse {
-  // The connector's spec.
+  // The connector's spec, without the capabilities its configuration decides.
   ConnectorSpec spec = 1;
   // The features, of those offered, it will use.
   repeated string accepted_features = 2;
   // The limits the connector enforces on what it receives.
   Limits limits = 3;
+}
+
+// Configures the connector.
+message ConfigureRequest {
+  // The connector's configuration, as JSON.
+  string config_json = 1;
+}
+
+// The connector's answer to its configuration.
+message ConfigureResponse {
+  // The connector's spec, with the capabilities of the role it was configured for.
+  ConnectorSpec spec = 1;
 }
 
 // Asks the connector to verify connectivity and permissions.

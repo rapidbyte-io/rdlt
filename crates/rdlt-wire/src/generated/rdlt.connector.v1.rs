@@ -1573,9 +1573,6 @@ pub struct HandshakeRequest {
     /// The role the host wants.
     #[prost(enumeration = "Role", tag = "4")]
     pub role: i32,
-    /// The connector's configuration, as JSON.
-    #[prost(string, tag = "5")]
-    pub config_json: ::prost::alloc::string::String,
     /// The host's W3C trace context.
     #[prost(string, tag = "6")]
     pub traceparent: ::prost::alloc::string::String,
@@ -1608,7 +1605,7 @@ pub struct ConnectorSpec {
 /// The connector's answer to a handshake.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeResponse {
-    /// The connector's spec.
+    /// The connector's spec, without the capabilities its configuration decides.
     #[prost(message, optional, tag = "1")]
     pub spec: ::core::option::Option<ConnectorSpec>,
     /// The features, of those offered, it will use.
@@ -1617,6 +1614,20 @@ pub struct HandshakeResponse {
     /// The limits the connector enforces on what it receives.
     #[prost(message, optional, tag = "3")]
     pub limits: ::core::option::Option<Limits>,
+}
+/// Configures the connector.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConfigureRequest {
+    /// The connector's configuration, as JSON.
+    #[prost(string, tag = "1")]
+    pub config_json: ::prost::alloc::string::String,
+}
+/// The connector's answer to its configuration.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConfigureResponse {
+    /// The connector's spec, with the capabilities of the role it was configured for.
+    #[prost(message, optional, tag = "1")]
+    pub spec: ::core::option::Option<ConnectorSpec>,
 }
 /// Asks the connector to verify connectivity and permissions.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1754,7 +1765,8 @@ pub mod connector_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Agrees the protocol version and features, and configures the connector.
+        /// Agrees the protocol version, role and features, and answers who the connector is, before
+        /// it receives any configuration.
         pub async fn handshake(
             &mut self,
             request: impl tonic::IntoRequest<super::HandshakeRequest>,
@@ -1768,6 +1780,23 @@ pub mod connector_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Handshake"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Configures the connector for the role agreed, once the host has checked who it is; every
+        /// other call needs it first.
+        pub async fn configure(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ConfigureRequest>,
+        ) -> std::result::Result<tonic::Response<super::ConfigureResponse>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Configure");
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Configure"));
             self.inner.unary(req, path, codec).await
         }
         /// Verifies connectivity and permissions.
@@ -1986,11 +2015,18 @@ pub mod connector_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ConnectorServer.
     #[async_trait]
     pub trait Connector: std::marker::Send + std::marker::Sync + 'static {
-        /// Agrees the protocol version and features, and configures the connector.
+        /// Agrees the protocol version, role and features, and answers who the connector is, before
+        /// it receives any configuration.
         async fn handshake(
             &self,
             request: tonic::Request<super::HandshakeRequest>,
         ) -> std::result::Result<tonic::Response<super::HandshakeResponse>, tonic::Status>;
+        /// Configures the connector for the role agreed, once the host has checked who it is; every
+        /// other call needs it first.
+        async fn configure(
+            &self,
+            request: tonic::Request<super::ConfigureRequest>,
+        ) -> std::result::Result<tonic::Response<super::ConfigureResponse>, tonic::Status>;
         /// Verifies connectivity and permissions.
         async fn check(
             &self,
@@ -2170,6 +2206,44 @@ pub mod connector_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = HandshakeSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/Configure" => {
+                    #[allow(non_camel_case_types)]
+                    struct ConfigureSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::ConfigureRequest> for ConfigureSvc<T> {
+                        type Response = super::ConfigureResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ConfigureRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut =
+                                async move { <T as Connector>::configure(&inner, request).await };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ConfigureSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
