@@ -192,7 +192,7 @@ fn lower(parts: &[RecordBatch], plan: &LoweringPlan, stamp: &Stamp) -> Result<Pr
     // A lone batch concatenates to itself without a copy.
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts)
         .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
-    plan.prepare(&batch, None, stamp)
+    plan.prepare(&batch, None, stamp, None)
 }
 
 /// Queues `prepared` on `table`'s lane with `reservation`, the permits holding its bytes, which

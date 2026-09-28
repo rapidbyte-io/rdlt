@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use rdlt_connector::{
-    Capabilities, Field, ID_COLUMN, IDX_COLUMN, LOAD_ID_COLUMN, LOADED_AT_COLUMN, LogicalType,
-    PARENT_ID_COLUMN, ROOT_ID_COLUMN, SEQ_COLUMN, TimeUnit, TypeKind,
+    Capabilities, DELETED_AT_COLUMN, Field, ID_COLUMN, IDX_COLUMN, LOAD_ID_COLUMN,
+    LOADED_AT_COLUMN, LogicalType, OP_COLUMN, PARENT_ID_COLUMN, ROOT_ID_COLUMN, SEQ_COLUMN,
+    TimeUnit, TypeKind, UNCHANGED_COLUMN,
 };
 
 use super::model::Model;
@@ -19,12 +20,43 @@ use crate::policy::Nested;
 pub(crate) struct MetaNames {
     pub(crate) load_id: Arc<str>,
     pub(crate) loaded_at: Arc<str>,
-    /// The sequence column, for merge tables.
+    /// The sequence column, for merge tables and change streams' tables.
     pub(crate) seq: Option<Arc<str>>,
+    /// A change stream's op, unchanged and deleted-at columns.
+    pub(crate) changes: Option<ChangeNames>,
     /// Each row's id, for the tables of normalized streams.
     pub(crate) id: Option<Arc<str>>,
     /// The parent's id, the root's id and the position in the parent's array, for child tables.
     pub(crate) parent: Option<[Arc<str>; 3]>,
+}
+
+/// How a change stream's table holds its changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChangeLayout {
+    /// As a log: every change is a row, its op and unchanged columns stored.
+    Log,
+    /// Merged by key: the op and unchanged columns only direct the merge, and a soft delete
+    /// records when it removed a row.
+    #[expect(
+        dead_code,
+        reason = "change streams reach the lowering once the engine reads them"
+    )]
+    Merge {
+        /// Whether deletes keep their rows, recording when they removed them.
+        soft: bool,
+    },
+}
+
+/// The identifiers of a change stream's op, unchanged and deleted-at columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ChangeNames {
+    pub(crate) op: Arc<str>,
+    pub(crate) unchanged: Arc<str>,
+    /// The column recording soft deletes, for a merge table whose deletes are soft.
+    pub(crate) deleted_at: Option<Arc<str>>,
+    /// Whether the op and unchanged columns are stored, as a log stores them; a merge table's
+    /// only direct the merge, written after its stored columns.
+    pub(crate) stored: bool,
 }
 
 /// Which lineage columns a table has.
@@ -46,6 +78,16 @@ impl MetaNames {
         merge: bool,
         lineage: LineageColumns,
     ) -> Result<Self, Error> {
+        Self::assign_changes(naming, merge, lineage, None)
+    }
+
+    /// [`MetaNames::assign`], and for a change stream's table the columns its `layout` has.
+    pub(crate) fn assign_changes(
+        naming: &Naming,
+        merge: bool,
+        lineage: LineageColumns,
+        layout: Option<ChangeLayout>,
+    ) -> Result<Self, Error> {
         let mut taken = BTreeSet::new();
         let mut name = |column: &str| -> Result<Arc<str>, Error> {
             let name = naming.metadata(column, &taken)?;
@@ -55,7 +97,21 @@ impl MetaNames {
         Ok(Self {
             load_id: name(LOAD_ID_COLUMN)?,
             loaded_at: name(LOADED_AT_COLUMN)?,
-            seq: merge.then(|| name(SEQ_COLUMN)).transpose()?,
+            seq: (merge || layout.is_some())
+                .then(|| name(SEQ_COLUMN))
+                .transpose()?,
+            changes: match layout {
+                None => None,
+                Some(layout) => Some(ChangeNames {
+                    op: name(OP_COLUMN)?,
+                    unchanged: name(UNCHANGED_COLUMN)?,
+                    deleted_at: match layout {
+                        ChangeLayout::Merge { soft: true } => Some(name(DELETED_AT_COLUMN)?),
+                        _ => None,
+                    },
+                    stored: layout == ChangeLayout::Log,
+                }),
+            },
             id: (lineage != LineageColumns::None)
                 .then(|| name(ID_COLUMN))
                 .transpose()?,
@@ -74,6 +130,10 @@ impl MetaNames {
     pub(crate) fn all(&self) -> Vec<&str> {
         let mut names = vec![self.load_id.as_ref(), self.loaded_at.as_ref()];
         names.extend(self.seq.as_deref());
+        if let Some(changes) = &self.changes {
+            names.extend([changes.op.as_ref(), changes.unchanged.as_ref()]);
+            names.extend(changes.deleted_at.as_deref());
+        }
         names.extend(self.id.as_deref());
         names.extend(self.parent.iter().flatten().map(AsRef::as_ref));
         names
@@ -158,6 +218,15 @@ pub(crate) fn logical_fields(model: &Model, meta: &MetaNames) -> Vec<Field> {
     if let Some(seq) = &meta.seq {
         fields.push(column(seq, LogicalType::Binary, false));
     }
+    if let Some(changes) = &meta.changes {
+        if changes.stored {
+            fields.push(column(&changes.op, LogicalType::Int8, false));
+            fields.push(column(&changes.unchanged, LogicalType::Binary, true));
+        }
+        if let Some(deleted_at) = &changes.deleted_at {
+            fields.push(column(deleted_at, loaded_at_type(), true));
+        }
+    }
     // Lineage columns are nullable: rows loaded before their stream normalized have none.
     if let Some(id) = &meta.id {
         fields.push(column(id, ID_TYPE, true));
@@ -218,6 +287,18 @@ pub(crate) fn prepared_schema(fields: &[Field], logical: &[Field], columns: usiz
         })
         .collect();
     Arc::new(Schema::new(fields))
+}
+
+/// The fields of a merge table's written batches that only direct the merge, after its stored
+/// columns: a change stream's op and unchanged columns.
+pub(crate) fn directive_fields(meta: &MetaNames) -> Vec<ArrowField> {
+    match &meta.changes {
+        Some(changes) if !changes.stored => vec![
+            ArrowField::new(changes.op.as_ref(), DataType::Int8, false),
+            ArrowField::new(changes.unchanged.as_ref(), DataType::Binary, true),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// `arrow`, a column stored as `stored`, naming `logical`, its type, where the destination stores

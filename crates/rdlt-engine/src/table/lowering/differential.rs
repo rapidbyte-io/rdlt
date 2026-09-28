@@ -195,7 +195,7 @@ fn check(
             .map(|(name, shape)| (name.clone(), shape.logical.clone()))
             .collect();
         let expected = lower(&view, policy, &columns, &drawn.1);
-        let prepared = match plan.prepare(&batch, None, &stamp()) {
+        let prepared = match plan.prepare(&batch, None, &stamp(), None) {
             Ok(prepared) => prepared,
             Err(error) if error.code() == Some("value_unrepresentable") => {
                 prop_assert!(

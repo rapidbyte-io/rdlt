@@ -55,6 +55,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
             seq: (!key.is_empty()).then(|| "_rdlt_seq".into()),
             id: None,
             parent: None,
+            changes: None,
         },
         root: None,
     }
@@ -398,7 +399,7 @@ fn prepared(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> Prepared
     let resolution = resolver.resolve(model, &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver));
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(batch, None, &stamp())
+        .prepare(batch, None, &stamp(), None)
         .unwrap()
 }
 
@@ -615,7 +616,7 @@ fn merge_batches_without_a_whole_key_are_refused() {
         let resolution = resolver.resolve(&model, &incoming).unwrap();
         let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
         let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-            .prepare(&batch, None, &stamp())
+            .prepare(&batch, None, &stamp(), None)
             .unwrap_err();
         assert_eq!(error.code(), Some(code));
     }
@@ -820,7 +821,7 @@ fn a_merge_table_created_without_its_key_column_refuses_batches() {
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
     assert!(view.key.is_empty());
     let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(&batch, None, &stamp())
+        .prepare(&batch, None, &stamp(), None)
         .unwrap_err();
     assert_eq!(error.code(), Some("merge_key_missing"));
 }
@@ -946,7 +947,7 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
     );
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
     let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
-        .prepare(&batch, None, &stamp())
+        .prepare(&batch, None, &stamp(), None)
         .unwrap_err();
     assert_eq!(
         (error.kind(), error.code()),
@@ -971,7 +972,10 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
     // The keys of the load id column, and the buffer they sit in.
     let keys = |rows: i64, stamp: &Stamp| {
-        let prepared = lowering.prepare(&ids(rows), None, stamp).unwrap().batch;
+        let prepared = lowering
+            .prepare(&ids(rows), None, stamp, None)
+            .unwrap()
+            .batch;
         let column = prepared.column(1).as_dictionary::<Int8Type>().clone();
         assert_eq!(column.len(), usize::try_from(rows).unwrap());
         assert!(column.keys().iter().all(|key| key == Some(0)));
@@ -994,7 +998,7 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     };
     let forty_one = keys(41, &stamp);
     assert_ne!(keys(41, &later), forty_one, "another load gets its own");
-    let prepared = lowering.prepare(&ids(3), None, &later).unwrap().batch;
+    let prepared = lowering.prepare(&ids(3), None, &later, None).unwrap().batch;
     let load_ids = constant(&prepared, 1, &DataType::FixedSizeBinary(16));
     assert_eq!(
         load_ids.as_fixed_size_binary().value(2),
@@ -1050,8 +1054,8 @@ proptest! {
                 ..stamp()
             };
             let batch = ids(rows);
-            let lowered = decoded(&reused.prepare(&batch, None, &stamp).unwrap().batch);
-            prop_assert_eq!(&lowered, &decoded(&fresh().prepare(&batch, None, &stamp).unwrap().batch));
+            let lowered = decoded(&reused.prepare(&batch, None, &stamp, None).unwrap().batch);
+            prop_assert_eq!(&lowered, &decoded(&fresh().prepare(&batch, None, &stamp, None).unwrap().batch));
             let load_ids = lowered.column(1).as_fixed_size_binary();
             prop_assert!(load_ids.iter().all(|id| id == Some(stamp.load_id.as_bytes().as_slice())));
             let loaded_at = lowered.column(2).as_primitive::<TimestampMicrosecondType>();

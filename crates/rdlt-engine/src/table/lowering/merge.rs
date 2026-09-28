@@ -10,7 +10,7 @@ use arrow_array::{ArrayRef, BooleanArray, RecordBatch, UInt32Array};
 use arrow_row::{RowConverter, SortField};
 use rdlt_connector::{LogicalType, StreamName};
 
-use super::{Source, Stamp, lower_array};
+use super::{ChangeRows, Source, Stamp, lower_array};
 use crate::error::Error;
 use crate::table::TableView;
 
@@ -28,10 +28,13 @@ pub(super) fn check_key(
     view: &TableView,
     batch: &RecordBatch,
     sources: &[Source],
+    changes: Option<&ChangeRows>,
 ) -> Result<(), Error> {
     if view.table.merge.is_none() {
         return Ok(());
     }
+    // A truncate names no key.
+    let keyed = |row: usize| changes.is_none_or(|changes| !changes.truncates(row));
     let refuse = |code: &str, detail: String| {
         Err(Error::schema(format!("stream {stream}: {detail}"))
             .with_code(code)
@@ -52,13 +55,23 @@ pub(super) fn check_key(
                     format!("a batch has no key column {name}"),
                 );
             }
-            Source::Incoming(index, _) if batch.column(*index).logical_null_count() > 0 => {
+            Source::Incoming(index, _) if nulls(batch.column(*index), &keyed) => {
                 return refuse("merge_key_null", format!("key column {name} holds a null"));
             }
             Source::Incoming(..) => {}
         }
     }
     Ok(())
+}
+
+/// Whether `column` holds a null in a row `keyed` says names a key.
+fn nulls(column: &ArrayRef, keyed: &impl Fn(usize) -> bool) -> bool {
+    if column.logical_null_count() == 0 {
+        return false;
+    }
+    let nulls = column.logical_nulls();
+    (0..column.len())
+        .any(|row| keyed(row) && nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)))
 }
 
 /// Each row's sequence in a merge table: its segment, then its position among the segment's rows,

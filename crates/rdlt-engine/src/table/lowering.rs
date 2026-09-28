@@ -2,6 +2,7 @@
 //! worked out once and applied to every batch — discards, exact conversions, lowering, metadata
 //! columns and, for merge tables, the sequence column and compaction.
 
+mod changes;
 #[cfg(test)]
 mod differential;
 mod merge;
@@ -26,7 +27,8 @@ use super::lower::{ID_TYPE, IDX_TYPE, LOAD_ID_TYPE, loaded_at_type};
 use super::resolve::{Incoming, Route};
 use crate::error::Error;
 use crate::normalize::Lineage;
-use merge::{check_key, compact, positions, sequence};
+pub(crate) use changes::ChangeRows;
+use merge::{check_key, positions, sequence};
 
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
@@ -149,6 +151,7 @@ impl LoweringPlan {
         batch: &RecordBatch,
         lineage: Option<&Lineage>,
         stamp: &Stamp,
+        changes: Option<&ChangeRows>,
     ) -> Result<Prepared, Error> {
         let stream = &self.stream;
         let view = &self.view;
@@ -156,6 +159,10 @@ impl LoweringPlan {
             Error::internal(format!("stream {stream}: preparing a batch: {error}"))
         };
         let (batch, kept, discarded_rows) = discard_rows(batch, &self.routes).map_err(failed)?;
+        let changes = match (changes, &kept) {
+            (Some(changes), Some(kept)) => Some(changes.filter(kept).map_err(failed)?),
+            (changes, _) => changes.cloned(),
+        };
         if batch.num_rows() == 0 {
             return Ok(Prepared {
                 batch: RecordBatch::new_empty(Arc::clone(&view.schema)),
@@ -172,8 +179,45 @@ impl LoweringPlan {
                 (column.len() - column.logical_null_count()) as u64
             })
             .sum();
-        check_key(stream, view, &batch, &self.sources)?;
+        check_key(stream, view, &batch, &self.sources, changes.as_ref())?;
         let rows = batch.num_rows();
+        let mut columns = self.model_columns(&batch)?;
+        columns.extend(self.constants(stamp, rows).map_err(failed)?);
+        if view.meta.seq.is_some() {
+            let seq = match &changes {
+                Some(changes) => self
+                    .source_sequence(changes, columns.len())
+                    .map_err(failed)?,
+                None => self.sequence(lineage, kept.as_ref(), stamp, rows)?,
+            };
+            columns.push(seq);
+        }
+        if let Some(changes) = &changes {
+            self.stored_changes(changes, stamp, &mut columns)
+                .map_err(failed)?;
+        }
+        let first = columns.len();
+        columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
+        if let (Some(names), Some(changes)) = (&view.meta.changes, &changes)
+            && !names.stored
+        {
+            columns.push(Arc::new(changes.op.clone()));
+            columns.push(changes.unchanged_over(&self.written_ordinals()));
+        }
+        let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
+        let prepared = self.compacted(prepared).map_err(failed)?;
+        Ok(Prepared {
+            batch: prepared,
+            version: view.table.version,
+            discarded_rows,
+            discarded_values,
+        })
+    }
+
+    /// The model's columns of `batch`, each from where the plan routes it, converted and lowered
+    /// as its column stores it; a column the batch lacks is null.
+    fn model_columns(&self, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Error> {
+        let view = &self.view;
         let mut columns = Vec::with_capacity(view.physical.len());
         for ((column, lowered), source) in view
             .model
@@ -184,30 +228,13 @@ impl LoweringPlan {
         {
             let array = match source {
                 Source::Incoming(index, from) => {
-                    store(stream, batch.column(*index), from, column, lowered)?
+                    store(&self.stream, batch.column(*index), from, column, lowered)?
                 }
-                Source::Nulls => new_null_array(&lowered.to_arrow(), rows),
+                Source::Nulls => new_null_array(&lowered.to_arrow(), batch.num_rows()),
             };
             columns.push(array);
         }
-        columns.extend(self.constants(stamp, rows).map_err(failed)?);
-        if view.meta.seq.is_some() {
-            columns.push(self.sequence(lineage, kept.as_ref(), stamp, rows)?);
-        }
-        let first = columns.len();
-        columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
-        let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
-        let prepared = if view.compacts() {
-            compact(&prepared, &view.key).map_err(failed)?
-        } else {
-            prepared
-        };
-        Ok(Prepared {
-            batch: prepared,
-            version: view.table.version,
-            discarded_rows,
-            discarded_values,
-        })
+        Ok(columns)
     }
 
     /// The sequence column of `rows` rows of a merge table, which the rows `kept` keeps: a row's

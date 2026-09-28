@@ -181,6 +181,7 @@ impl Setup {
                     seq: None,
                     id: None,
                     parent: None,
+                    changes: None,
                 },
                 root: None,
             };
