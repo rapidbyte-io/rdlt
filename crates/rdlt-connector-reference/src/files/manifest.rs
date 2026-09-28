@@ -180,7 +180,7 @@ pub(super) fn latest(dir: &Path) -> Result<Option<Manifest>> {
 pub(super) fn put(dir: &Path, manifest: &Manifest) -> Result<bool> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let manifests = dir.join("manifests");
-    fs::create_dir_all(&manifests).map_err(io::failed("creating a directory", &manifests))?;
+    io::create_dirs(&manifests)?;
     let temporary = manifests.join(format!(
         ".{}-{}-{}.tmp",
         manifest.version,

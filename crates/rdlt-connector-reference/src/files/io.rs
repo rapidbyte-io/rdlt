@@ -1,5 +1,8 @@
 //! Filesystem errors as connector errors, and making a directory's entries durable.
 
+#[cfg(test)]
+mod tests;
+
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
@@ -23,9 +26,51 @@ pub(super) fn failed<'a>(
     }
 }
 
+/// Classifies a filesystem error from `what` on `path`, a file the destination's manifests or
+/// staging list: one missing is lost, which no retry finds, a data error coded `file_missing`;
+/// anything else as [`failed`] does.
+pub(super) fn listed<'a>(
+    what: &'a str,
+    path: &'a Path,
+) -> impl Fn(io::Error) -> ConnectorError + 'a {
+    move |error| {
+        if error.kind() == ErrorKind::NotFound {
+            ConnectorError::data(format!("{what} {}: the file is missing", path.display()))
+                .with_code("file_missing")
+                .with_source(error)
+        } else {
+            failed(what, path)(error)
+        }
+    }
+}
+
 /// Makes the entries of `dir` durable, so a file created or linked in it survives a crash.
 pub(super) fn sync_dir(dir: &Path) -> Result<()> {
+    #[cfg(test)]
+    tests::SYNCED.with(|synced| synced.borrow_mut().push(dir.to_owned()));
     fs::File::open(dir)
         .and_then(|dir| dir.sync_all())
         .map_err(failed("syncing", dir))
+}
+
+/// Creates `dir` and whichever of its ancestors are missing, making each new directory durable
+/// in its parent: a crash never loses a directory that synced files sit in.
+pub(super) fn create_dirs(dir: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    let mut current = Some(dir);
+    while let Some(path) = current {
+        match fs::metadata(path) {
+            Ok(_) => break,
+            Err(error) if error.kind() == ErrorKind::NotFound => missing.push(path),
+            Err(error) => return Err(failed("inspecting", path)(error)),
+        }
+        current = path.parent();
+    }
+    fs::create_dir_all(dir).map_err(failed("creating a directory", dir))?;
+    for created in missing.iter().rev() {
+        if let Some(parent) = created.parent() {
+            sync_dir(parent)?;
+        }
+    }
+    Ok(())
 }

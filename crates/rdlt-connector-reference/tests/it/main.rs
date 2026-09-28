@@ -9,3 +9,4 @@ mod generator;
 mod memory;
 mod sqlite;
 mod switch;
+mod torn;
