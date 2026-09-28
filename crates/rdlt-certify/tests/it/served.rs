@@ -123,3 +123,25 @@ async fn the_memory_source_served_in_process_is_certified_through_the_protocol()
         json!({ "streams": { "users": [{"id": 1}, {"id": 2}, {"id": 3}] }, "page_size": 1 });
     certify_source(&target, config).await.assert_passed();
 }
+
+#[tokio::test]
+async fn a_kill_timeout_bounds_the_kill_clauses_alone() {
+    let target =
+        Target::served(Served::new().with_destination(destination_factory::<MemoryDestination>()))
+            .kill_timeout(std::time::Duration::ZERO);
+    let report = certify_destination(
+        &target,
+        json!({ "store": "certify_hurried" }),
+        &MemoryProbe("certify_hurried"),
+    )
+    .await;
+    assert!(
+        matches!(report.outcome("K-DESTINATION"), Some(Outcome::Failed(_))),
+        "{report}"
+    );
+    assert_eq!(
+        report.outcome("D-COMMIT"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}

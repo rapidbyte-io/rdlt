@@ -13,11 +13,10 @@ use rdlt_connector::{
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
 use serde_json::json;
 
-/// A seed whose kills land after a commit that published rows.
+/// A seed whose kills land while a source of thousands of rows still reads.
 ///
-/// They land at the first write after the second commit, before the second, and after the first,
-/// losing its answer. A connector that breaks exactly-once only across a commit's rows is caught
-/// there, whatever the timing.
+/// They land at the first write after the third commit, before the third, and after the second,
+/// losing its answer: a source read within a small window of credit is still reading then.
 pub(crate) const SETTLED_LATE: u64 = 1;
 
 /// A source that reads nothing of a partition it resumes: whatever a checkpoint left unread is
@@ -186,14 +185,14 @@ impl DestinationSession for DeferringSession {
     }
 }
 
-struct MemoryProbe(&'static str);
+struct MemoryProbe(String);
 
 impl Probe for MemoryProbe {
     fn published<'a>(
         &'a self,
         table: &'a TableRef,
     ) -> BoxFuture<'a, rdlt_connector::Result<Vec<arrow_array::RecordBatch>>> {
-        let batches = published(self.0, &table.name);
+        let batches = published(&self.0, &table.name);
         Box::pin(async move { Ok(batches) })
     }
 }
@@ -202,32 +201,65 @@ fn failed(outcome: Option<&Outcome>) -> bool {
     matches!(outcome, Some(Outcome::Failed(_)))
 }
 
-#[tokio::test]
-async fn a_source_that_loses_what_it_resumes_fails_k_source() {
-    let forgetful = Forgetful(source_factory::<GeneratorSource>());
-    let target =
-        Target::served(Served::new().with_source(Box::new(forgetful))).kill_seed(SETTLED_LATE);
-    let config = json!({
-        "seed": 3,
-        "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
-    });
-    let report = certify_source(&target, config).await;
-    assert!(failed(report.outcome("K-SOURCE")), "{report}");
+/// A seed for every schedule of kill points a certification can draw: the source's six, or,
+/// with `answers`, the destination's eighteen.
+fn every_schedule(answers: bool) -> Vec<u64> {
+    let answered = if answers { 0..3 } else { 0..1 };
+    let mut seeds = Vec::new();
+    for settled in 0..2 {
+        for commit in 0..3 {
+            for answer in answered.clone() {
+                seeds.push(settled | commit << 8 | answer << 16);
+            }
+        }
+    }
+    seeds
 }
 
-#[tokio::test]
-async fn a_destination_that_records_state_before_rows_fails_k_destination() {
-    let deferring = Deferring(destination_factory::<MemoryDestination>());
-    let target =
-        Target::served(Served::new().with_destination(Box::new(deferring))).kill_seed(SETTLED_LATE);
-    let report = certify_destination(
-        &target,
-        json!({ "store": "certify_deferring" }),
-        &MemoryProbe("certify_deferring"),
-    )
-    .await;
-    let outcome = report.outcome("K-DESTINATION");
-    assert!(failed(outcome), "{report}");
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_that_loses_what_it_resumes_fails_k_source_at_every_schedule() {
+    let mut certifying = tokio::task::JoinSet::new();
+    for seed in every_schedule(false) {
+        certifying.spawn(async move {
+            let forgetful = Forgetful(source_factory::<GeneratorSource>());
+            let target =
+                Target::served(Served::new().with_source(Box::new(forgetful))).kill_seed(seed);
+            let config = json!({
+                "seed": 3,
+                "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
+            });
+            (seed, certify_source(&target, config).await)
+        });
+    }
+    while let Some(certified) = certifying.join_next().await {
+        let (seed, report) = certified.expect("the certification ends");
+        assert!(failed(report.outcome("K-SOURCE")), "seed {seed}: {report}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_destination_that_records_state_before_rows_fails_k_destination_at_every_schedule() {
+    let mut certifying = tokio::task::JoinSet::new();
+    for seed in every_schedule(true) {
+        certifying.spawn(async move {
+            let deferring = Deferring(destination_factory::<MemoryDestination>());
+            let target =
+                Target::served(Served::new().with_destination(Box::new(deferring))).kill_seed(seed);
+            let store = format!("certify_deferring_{seed}");
+            let config = json!({ "store": store });
+            (
+                seed,
+                certify_destination(&target, config, &MemoryProbe(store)).await,
+            )
+        });
+    }
+    while let Some(certified) = certifying.join_next().await {
+        let (seed, report) = certified.expect("the certification ends");
+        assert!(
+            failed(report.outcome("K-DESTINATION")),
+            "seed {seed}: {report}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -238,7 +270,7 @@ async fn a_chosen_kill_seed_is_the_one_a_failure_reports() {
     let report = certify_destination(
         &target,
         json!({ "store": "certify_deferring_seeded" }),
-        &MemoryProbe("certify_deferring_seeded"),
+        &MemoryProbe("certify_deferring_seeded".to_owned()),
     )
     .await;
     let Some(Outcome::Failed(reason)) = report.outcome("K-DESTINATION") else {

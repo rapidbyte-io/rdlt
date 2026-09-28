@@ -20,6 +20,7 @@ pub struct Target {
     reach: Reach,
     options: Options,
     kill_seed: Option<u64>,
+    kill_timeout: Option<Duration>,
 }
 
 enum Reach {
@@ -98,6 +99,7 @@ impl Target {
             reach,
             options: Options::default(),
             kill_seed: None,
+            kill_timeout: None,
         }
     }
 
@@ -114,6 +116,20 @@ impl Target {
     pub fn kill_seed(mut self, seed: u64) -> Self {
         self.kill_seed = Some(seed);
         self
+    }
+
+    /// Gives each kill clause `bound` for all its loads, rather than 300 s: a connector slower
+    /// than about two seconds a commit needs more.
+    #[must_use]
+    pub fn kill_timeout(mut self, bound: Duration) -> Self {
+        self.kill_timeout = Some(bound);
+        self
+    }
+
+    /// How long each kill clause may take, when that is chosen.
+    #[cfg(feature = "kill")]
+    pub(crate) fn chosen_timeout(&self) -> Option<Duration> {
+        self.kill_timeout
     }
 
     /// The seed the kill clauses draw their points from, when one is chosen.

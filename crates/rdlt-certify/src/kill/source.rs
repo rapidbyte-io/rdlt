@@ -24,7 +24,7 @@ pub(crate) async fn resumed(
     config: &serde_json::Value,
 ) -> Loaded {
     let run = super::run();
-    let seed = target.chosen_seed().unwrap_or(run);
+    let seed = super::drawn(target.chosen_seed(), run);
     match compared(target, id, config, run, seed).await {
         Ok(loaded) => loaded,
         Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
