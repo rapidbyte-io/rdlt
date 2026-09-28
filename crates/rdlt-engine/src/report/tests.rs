@@ -25,6 +25,8 @@ fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
                     generations_swapped: *swapped,
                     discarded_rows: 1,
                     discarded_values: 2,
+                    deletes_ignored: 0,
+                    truncates_ignored: 0,
                 };
                 (StreamName::new(name).unwrap(), report)
             })

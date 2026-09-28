@@ -85,6 +85,10 @@ pub struct StreamReport {
     pub discarded_rows: u64,
     /// Values the schema policy nulled in committed segments.
     pub discarded_values: u64,
+    /// Deletes a change stream ignores, dropped from committed segments.
+    pub deletes_ignored: u64,
+    /// Truncates a change stream ignores, dropped from committed segments.
+    pub truncates_ignored: u64,
 }
 
 /// How an attempt that did not fail ended.
@@ -166,6 +170,8 @@ impl Report {
                     total.generations_swapped += counts.generations_swapped;
                     total.discarded_rows += counts.discarded_rows;
                     total.discarded_values += counts.discarded_values;
+                    total.deletes_ignored += counts.deletes_ignored;
+                    total.truncates_ignored += counts.truncates_ignored;
                 }
             }
             report.rows += summary.rows;

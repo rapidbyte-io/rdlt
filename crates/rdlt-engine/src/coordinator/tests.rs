@@ -241,6 +241,7 @@ impl Setup {
             stop: harness.stop.clone(),
             cancel: harness.cancel.clone(),
             log: Arc::clone(&harness.log),
+            launcher: Box::new(|_| Err(Error::internal("the tests start no phases"))),
         });
         (tokio::spawn(coordinator.run()), harness)
     }
@@ -268,6 +269,8 @@ impl Harness {
             answers,
             discarded_rows: 0,
             discarded_values: 0,
+            deletes_ignored: 0,
+            truncates_ignored: 0,
         }));
     }
 
@@ -311,6 +314,7 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
         cycle,
         remaining: partitions,
         stopped: false,
+        phases: None,
     }
 }
 
@@ -609,6 +613,8 @@ async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
         answers: None,
         discarded_rows: 2,
         discarded_values: 3,
+        deletes_ignored: 0,
+        truncates_ignored: 0,
     }));
     harness.end(0, false);
     task.await.unwrap().unwrap();

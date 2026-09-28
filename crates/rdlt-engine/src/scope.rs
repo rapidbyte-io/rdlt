@@ -53,23 +53,58 @@ impl<E: ScopeError> TaskScope<E> {
         self.tasks.spawn(task);
     }
 
+    /// Waits for every task, starting each task `spawned` sends meanwhile, until its senders are
+    /// gone and every task has ended.
+    ///
+    /// The first error cancels the scope. The result is the first error that is not a
+    /// cancellation or, when every error is a cancellation, the first cancellation.
+    pub(crate) async fn join_spawning<F>(
+        mut self,
+        mut spawned: tokio::sync::mpsc::UnboundedReceiver<F>,
+    ) -> Result<(), E>
+    where
+        F: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        let mut first: Option<E> = None;
+        let mut open = true;
+        loop {
+            tokio::select! {
+                biased;
+                // A task to start comes first, so it joins the scope before the scope can end.
+                task = spawned.recv(), if open => match task {
+                    Some(task) => self.spawn(task),
+                    None => open = false,
+                },
+                joined = self.tasks.join_next(), if !self.tasks.is_empty() => {
+                    let outcome = joined
+                        .map_or(Ok(()), |joined| {
+                            joined.unwrap_or_else(|error| Err(E::panicked(describe(error))))
+                        });
+                    if let Err(error) = outcome {
+                        self.cancel.cancel();
+                        first = Some(match first {
+                            Some(current) if !current.is_cancelled() || error.is_cancelled() => {
+                                current
+                            }
+                            _ => error,
+                        });
+                    }
+                }
+                else => break,
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+
     /// Waits for every task.
     ///
     /// The first error cancels the scope. The result is the first error that is not a
     /// cancellation or, when every error is a cancellation, the first cancellation.
-    pub(crate) async fn join(mut self) -> Result<(), E> {
-        let mut first: Option<E> = None;
-        while let Some(joined) = self.tasks.join_next().await {
-            let outcome = joined.unwrap_or_else(|error| Err(E::panicked(describe(error))));
-            if let Err(error) = outcome {
-                self.cancel.cancel();
-                first = Some(match first {
-                    Some(current) if !current.is_cancelled() || error.is_cancelled() => current,
-                    _ => error,
-                });
-            }
-        }
-        first.map_or(Ok(()), Err)
+    #[cfg(test)]
+    pub(crate) async fn join(self) -> Result<(), E> {
+        let (_, spawned) =
+            tokio::sync::mpsc::unbounded_channel::<std::future::Ready<Result<(), E>>>();
+        self.join_spawning(spawned).await
     }
 }
 

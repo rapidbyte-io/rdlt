@@ -1,0 +1,232 @@
+//! Streams read in phases, as a CDC stream reads its snapshot and then its changes (spec §9.4):
+//! once every partition of a phase has ended and its end is committed, the stream is planned
+//! again, and a plan naming a new phase starts that phase's partitions.
+
+use std::collections::BTreeMap;
+
+use rdlt_connector::{
+    BoxFuture, Cursor, Partition, PartitionId, PartitionState, StateChange, StateEntry, StateKey,
+    StreamState,
+};
+use tokio::sync::mpsc;
+
+use super::{Coordinator, PartitionRun};
+use crate::error::{Error, Side};
+use crate::partition::{self, ChangeMode, PartitionContext, PartitionJob};
+
+/// A phased stream's place in its phases.
+#[derive(Debug)]
+pub(crate) struct Phases {
+    /// The phase the stream reads.
+    pub(crate) phase: u16,
+    /// The indices of the partitions the stream reads in its phase.
+    pub(crate) reading: Vec<usize>,
+    /// The committed position of each partition of the phase, as state records it.
+    pub(crate) committed: BTreeMap<PartitionId, PartitionState>,
+    /// The phase this attempt began, which the next commit records; `None` once a commit has
+    /// taken it.
+    pub(crate) begun: Option<Begun>,
+    /// Whether planning named no new phase: the stream reads nothing more this attempt.
+    pub(crate) settled: bool,
+    /// How the stream's partitions read.
+    pub(crate) template: Template,
+}
+
+/// A phase an attempt began: the entries of the phases before it, and where its partitions
+/// start.
+#[derive(Debug, Default)]
+pub(crate) struct Begun {
+    pub(crate) stale: Vec<PartitionId>,
+    pub(crate) starts: BTreeMap<PartitionId, Cursor>,
+}
+
+/// What every partition of a stream is read with.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Template {
+    pub(crate) table: usize,
+    pub(crate) on_demand: bool,
+    pub(crate) changes: Option<ChangeMode>,
+}
+
+/// Starts the partitions the coordinator plans.
+pub(crate) type Launcher = Box<dyn Fn(PartitionJob) -> Result<(), Error> + Send + Sync>;
+
+/// A launcher whose partitions read with `context`, their tasks sent to `tasks` to join the
+/// attempt's scope.
+pub(crate) fn launcher(
+    context: PartitionContext,
+    tasks: mpsc::UnboundedSender<BoxFuture<'static, Result<(), Error>>>,
+) -> Launcher {
+    Box::new(move |job| {
+        let task = partition::run(job, context.clone());
+        tasks
+            .send(Box::pin(task))
+            .map_err(|_| Error::cancelled("the attempt's scope ended"))
+    })
+}
+
+impl Coordinator {
+    /// Plans again each phased stream whose phase has ended, starting the partitions of the new
+    /// phase a plan names.
+    ///
+    /// A stopping attempt starts nothing more. A stop the coordinator has yet to see lets a phase
+    /// begin: the load that follows sees it, stops the phase's partitions and ends the attempt
+    /// stopped, as a stream with more to read is.
+    pub(super) async fn advance_phases(&mut self) -> Result<(), Error> {
+        if self.stopping {
+            return Ok(());
+        }
+        for stream in 0..self.parts.streams.len() {
+            if self.phase_ended(stream) {
+                self.plan_again(stream).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `stream` is phased, and every partition it reads in its phase has ended with its
+    /// end committed.
+    ///
+    /// Phases advance only after a commit, which takes every seal the coordinator has seen, and a
+    /// partition seals its end before it reports it has ended: an ended partition's end is
+    /// committed.
+    fn phase_ended(&self, stream: usize) -> bool {
+        let run = &self.parts.streams[stream];
+        let Some(phases) = &run.phases else {
+            return false;
+        };
+        if phases.settled {
+            return false;
+        }
+        phases
+            .reading
+            .iter()
+            .all(|index| self.parts.partitions[*index].ended)
+    }
+
+    /// Plans `stream` again from its committed state; a plan naming a new phase starts the
+    /// phase's partitions, and any other settles the stream.
+    async fn plan_again(&mut self, stream: usize) -> Result<(), Error> {
+        let name = self.parts.streams[stream].name.clone();
+        let Some(phases) = &self.parts.streams[stream].phases else {
+            return Ok(());
+        };
+        let state = StreamState {
+            phase: phases.phase,
+            partitions: phases.committed.clone(),
+            ..StreamState::default()
+        };
+        let planned = self
+            .parts
+            .source
+            .plan(&name, &state)
+            .await
+            .map_err(|error| {
+                Error::connector(Side::Source, format!("planning stream {name}"), error)
+                    .with_stream(&name)
+            })?;
+        let Some(phases) = self.parts.streams[stream].phases.as_mut() else {
+            return Ok(());
+        };
+        let next = match planned.phase {
+            Some(next) if next != phases.phase => next,
+            _ => {
+                phases.settled = true;
+                return Ok(());
+            }
+        };
+        let mut begun = phases.begun.take().unwrap_or_default();
+        begun
+            .stale
+            .extend(std::mem::take(&mut phases.committed).into_keys());
+        begun.starts.clone_from(&planned.starts);
+        phases.begun = Some(begun);
+        phases.phase = next;
+        phases.reading.clear();
+        let template = phases.template;
+        for partition in planned.partitions {
+            let cursor = planned.starts.get(partition.id()).cloned();
+            self.launch(stream, template, partition, cursor)?;
+        }
+        Ok(())
+    }
+
+    /// Starts reading `partition` of `stream`, in its phase, from `cursor`.
+    fn launch(
+        &mut self,
+        stream: usize,
+        template: Template,
+        partition: Partition,
+        cursor: Option<Cursor>,
+    ) -> Result<(), Error> {
+        let index = self.parts.partitions.len();
+        let run = &mut self.parts.streams[stream];
+        let id = partition.id().clone();
+        let job = PartitionJob {
+            index,
+            stream: run.name.clone(),
+            table: template.table,
+            partition,
+            cursor,
+            on_demand: template.on_demand,
+            changes: template.changes,
+        };
+        run.remaining += 1;
+        if let Some(phases) = run.phases.as_mut() {
+            phases.reading.push(index);
+        }
+        let tracked = PartitionRun::new(stream, id, template.on_demand);
+        self.parts.partitions.push(tracked);
+        (self.parts.launcher)(job)
+    }
+
+    /// Records, for each phased stream, the committed positions of its phase's partitions.
+    pub(super) fn record_positions(&mut self, positions: &BTreeMap<usize, PartitionState>) {
+        for (index, state) in positions {
+            let partition = &self.parts.partitions[*index];
+            if let Some(phases) = self.parts.streams[partition.stream].phases.as_mut()
+                && phases.reading.contains(index)
+            {
+                phases.committed.insert(partition.id.clone(), state.clone());
+            }
+        }
+    }
+
+    /// The state changes recording each stream's new phase, which the next commit carries: its
+    /// stale partition entries deleted, where its partitions start, then the phase.
+    ///
+    /// A commit that fails ends the attempt, so the commit that takes a phase's changes records
+    /// it. A partition that begins its phase is recorded at its start, so an attempt that ends
+    /// before the partition's first checkpoint resumes it there.
+    pub(super) fn phase_delta(&mut self) -> Vec<StateChange> {
+        let mut delta = Vec::new();
+        for stream in &mut self.parts.streams {
+            let Some(phases) = stream.phases.as_mut() else {
+                continue;
+            };
+            let Some(begun) = phases.begun.take() else {
+                continue;
+            };
+            for partition in begun.stale {
+                let key = StateKey::Partition(stream.name.clone(), partition);
+                delta.push(StateChange::Delete(key.encode()));
+            }
+            for (partition, start) in begun.starts {
+                let state = PartitionState::Cursor(start);
+                phases.committed.insert(partition.clone(), state.clone());
+                let entry = StateEntry::Partition {
+                    stream: stream.name.clone(),
+                    partition,
+                    state,
+                };
+                delta.push(StateChange::Put(entry.to_record()));
+            }
+            let entry = StateEntry::Phase {
+                stream: stream.name.clone(),
+                phase: phases.phase,
+            };
+            delta.push(StateChange::Put(entry.to_record()));
+        }
+        delta
+    }
+}

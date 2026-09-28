@@ -5,17 +5,19 @@ mod normalized;
 #[cfg(test)]
 mod tests;
 
-use arrow_array::RecordBatch;
+use arrow_array::{BooleanArray, RecordBatch};
+use rdlt_connector::ChangeOp;
 use rdlt_connector::{Permit, TableSchema};
 
 use super::coalesce::{Flushed, Unit};
-use super::{OpenSegment, PartitionContext, PartitionJob, Progress};
+use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob, Progress};
 use crate::budget::MemoryBudget;
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Write;
+use crate::plan::{DeleteMode, OnTruncate};
 use crate::shred::{self, ShredError};
-use crate::table::{LoweringPlan, Prepared, Stamp};
+use crate::table::{ChangeRows, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -103,6 +105,13 @@ async fn write(
     }
     let mut planned = Vec::with_capacity(units.len());
     for (parts, held) in units {
+        let (parts, changes) = match job.changes {
+            Some(mode) => {
+                let (data, changes) = split_changes(job, mode, open, &parts)?;
+                (vec![data], Some(changes))
+            }
+            None => (parts, None),
+        };
         let received = parts
             .iter()
             .map(|batch| u64::try_from(batch.num_rows()).unwrap_or(u64::MAX))
@@ -113,7 +122,7 @@ async fn write(
         let incoming = schema_of(job, &parts[0])?;
         let plan = context.tables.plan(job.table, incoming).await?;
         let stamp = stamp(context, open, received);
-        planned.push((move || lower(&parts, &plan, &stamp), held));
+        planned.push((move || lower(&parts, &plan, &stamp, changes.as_ref()), held));
     }
     for window in windows(planned) {
         let (jobs, reservations): (Vec<_>, Vec<_>) = window.into_iter().unzip();
@@ -187,12 +196,73 @@ fn charge_growth(budget: &MemoryBudget, prepared: &Prepared, mut held: Held) -> 
     held
 }
 
-/// `parts`, one batch once concatenated, as `plan` lowers it.
-fn lower(parts: &[RecordBatch], plan: &LoweringPlan, stamp: &Stamp) -> Result<Prepared, Error> {
+/// `parts`, one batch once concatenated, as `plan` lowers it, with a change stream's `changes`.
+fn lower(
+    parts: &[RecordBatch],
+    plan: &LoweringPlan,
+    stamp: &Stamp,
+    changes: Option<&ChangeRows>,
+) -> Result<Prepared, Error> {
     // A lone batch concatenates to itself without a copy.
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts)
         .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
-    plan.prepare(&batch, None, stamp, None)
+    plan.prepare(&batch, None, stamp, changes)
+}
+
+/// `parts`, a change stream's batches of one schema, as one batch of data and its change
+/// columns, without the deletes and truncates the stream ignores, which `open` counts.
+///
+/// Rows flagging columns unchanged are refused where the destination cannot keep a column's
+/// value.
+fn split_changes(
+    job: &PartitionJob,
+    mode: ChangeMode,
+    open: &mut OpenSegment,
+    parts: &[RecordBatch],
+) -> Result<(RecordBatch, ChangeRows), Error> {
+    let failed =
+        |error: arrow_schema::ArrowError| Error::internal(format!("splitting changes: {error}"));
+    let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
+    let (data, changes) = ChangeRows::split(&batch).map_err(failed)?;
+    let flagged = changes.flagged();
+    if !flagged.is_empty() && !mode.partial_updates {
+        let schema = data.schema();
+        let names: Vec<&str> = flagged
+            .iter()
+            .filter_map(|ordinal| {
+                schema
+                    .fields()
+                    .get(*ordinal)
+                    .map(|field| field.name().as_str())
+            })
+            .collect();
+        return Err(Error::config(format!(
+            "stream {}: updates leave columns {} unchanged, which the destination cannot keep",
+            job.stream,
+            names.join(", ")
+        ))
+        .with_code("partial_updates_unsupported")
+        .with_stream(&job.stream));
+    }
+    let ignores = |op| match op {
+        Some(ChangeOp::Delete) => mode.merge && mode.deletes == DeleteMode::Ignore,
+        Some(ChangeOp::Truncate) => mode.merge && mode.truncates == OnTruncate::Ignore,
+        _ => false,
+    };
+    let keep: BooleanArray = (0..changes.op.len())
+        .map(|row| Some(!ignores(changes.op(row))))
+        .collect();
+    if keep.true_count() == keep.len() {
+        return Ok((data, changes));
+    }
+    for row in (0..changes.op.len()).filter(|row| !keep.value(*row)) {
+        match changes.op(row) {
+            Some(ChangeOp::Delete) => open.deletes_ignored += 1,
+            _ => open.truncates_ignored += 1,
+        }
+    }
+    let data = arrow_select::filter::filter_record_batch(&data, &keep).map_err(failed)?;
+    Ok((data, changes.filter(&keep).map_err(failed)?))
 }
 
 /// Queues `prepared` on `table`'s lane with `reservation`, the permits holding its bytes, which

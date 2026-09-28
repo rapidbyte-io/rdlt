@@ -1,23 +1,26 @@
 //! Planning an attempt's streams: checking them against the catalog and the destination,
 //! preparing their tables, and choosing the partitions to read.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rdlt_connector::{
     Capabilities, Catalog, Checkpointing, ColumnKey, ColumnPath, Cursor, GenerationId, Partition,
-    PartitionState, PipelineState, ReadMode, SchemaVersion, StreamName, StreamSpec, StreamState,
-    TablePath, TableRef,
+    PartitionId, PartitionState, PipelineState, ReadMode, SchemaVersion, StreamName, StreamSpec,
+    StreamState, TablePath, TableRef,
 };
 
 use super::{Planned, RunContext};
-use crate::coordinator::{Cycle, StreamRun};
+use crate::coordinator::{Begun, Cycle, Phases, StreamRun, Template};
 use crate::error::{Error, Side};
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
-use crate::plan::{StreamPlan, WriteMode};
+use crate::partition::ChangeMode;
+use crate::plan::{DeleteMode, OnTruncate, StreamPlan, WriteMode};
 use crate::policy::Nested;
-use crate::table::{Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables};
+use crate::table::{
+    ChangeLayout, Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables,
+};
 
 /// What planning an attempt's streams needs besides the stream itself.
 pub(super) struct Planning<'a> {
@@ -48,6 +51,13 @@ impl Planning<'_> {
             _ => None,
         };
         let shape = normalized(self.context, plan, spec);
+        if shape.is_some() && plan.read_mode() == ReadMode::Cdc {
+            return Err(Error::config(format!(
+                "stream {name}: a change stream cannot normalize yet"
+            ))
+            .with_code("normalize_changes_unsupported")
+            .with_stream(name));
+        }
         let (resolver, table, model) =
             self.table(plan, spec, generation, tables, shape.is_some())?;
         let index = tables.add_normalized(resolver, &table, model, shape.clone());
@@ -66,25 +76,23 @@ impl Planning<'_> {
         for child in tables.recorded_children(index) {
             tables.child(index, &child).await?;
         }
-        let (cycle, partitions) = match read {
+        let (cycle, partitioned) = match read {
             Read::Incremental(state) => (None, partitions(self.context, name, &state).await?),
             Read::Cycle(cycle, state) => {
                 (Some(cycle), partitions(self.context, name, &state).await?)
             }
-            Read::Completed => (None, Vec::new()),
+            Read::Completed => (None, Partitioned::default()),
         };
-        Ok(Planned {
-            stream: StreamRun {
-                name: name.clone(),
-                write: plan.write_mode(),
-                table: index,
-                cycle,
-                remaining: partitions.len(),
-                stopped: false,
-            },
-            on_demand: spec.checkpointing() == Checkpointing::OnDemand,
-            partitions,
-        })
+        let on_demand = spec.checkpointing() == Checkpointing::OnDemand;
+        let partial_updates = self.capabilities.partial_updates;
+        Ok(planned(
+            plan,
+            index,
+            on_demand,
+            partial_updates,
+            cycle,
+            partitioned,
+        ))
     }
 
     /// The stream's table as committed, or with a free identifier when new, and the resolver of
@@ -109,7 +117,7 @@ impl Planning<'_> {
         } else {
             LineageColumns::None
         };
-        let meta = MetaNames::assign(&self.naming, !key.is_empty(), lineage)?;
+        let meta = MetaNames::assign_changes(&self.naming, !key.is_empty(), lineage, layout(plan))?;
         let keys: BTreeSet<ColumnKey> = key.iter().cloned().map(ColumnKey::Source).collect();
         self.naming
             .assign_columns(&mut model.names, &keys, &meta.all())?;
@@ -134,6 +142,53 @@ impl Planning<'_> {
             root: None,
         };
         Ok((resolver, table, model))
+    }
+}
+
+/// `plan`'s stream, its table at `index`, ready to load `partitioned`: a change stream reads in
+/// phases, loading its pushes as the plan says to a destination that keeps unchanged columns
+/// where `partial_updates` says.
+fn planned(
+    plan: &StreamPlan,
+    index: usize,
+    on_demand: bool,
+    partial_updates: bool,
+    cycle: Option<Cycle>,
+    partitioned: Partitioned,
+) -> Planned {
+    let cdc = plan.read_mode() == ReadMode::Cdc;
+    let changes = cdc.then(|| ChangeMode {
+        merge: plan.write_mode() == WriteMode::Merge,
+        deletes: plan.delete_mode(),
+        truncates: plan.truncate_mode(),
+        partial_updates,
+    });
+    // Only change streams read in phases (spec §9.4).
+    let phases = cdc.then(|| Phases {
+        phase: partitioned.phase,
+        reading: Vec::new(),
+        committed: partitioned.committed,
+        begun: partitioned.begun,
+        settled: false,
+        template: Template {
+            table: index,
+            on_demand,
+            changes,
+        },
+    });
+    Planned {
+        stream: StreamRun {
+            name: plan.name().clone(),
+            write: plan.write_mode(),
+            table: index,
+            cycle,
+            remaining: partitioned.partitions.len(),
+            stopped: false,
+            phases,
+        },
+        on_demand,
+        changes,
+        partitions: partitioned.partitions,
     }
 }
 
@@ -208,7 +263,45 @@ fn check_stream<'a>(
         let detail = format!("the destination cannot write {:?}", plan.write_mode());
         return Err(refuse("write_mode_unsupported", &detail));
     }
+    if plan.merges_changes() {
+        let deletes = context.destination.capabilities().delete_modes;
+        let (hard, soft) = removals(plan);
+        // A destination declaring no delete mode merges no change stream at all.
+        let merges = deletes.hard || deletes.soft;
+        if !merges || (hard && !deletes.hard) || (soft && !deletes.soft) {
+            let detail = format!(
+                "the destination cannot remove rows as its deletes ({:?}) and truncates ({:?}) do",
+                plan.delete_mode(),
+                plan.truncate_mode()
+            );
+            return Err(refuse("delete_mode_unsupported", &detail));
+        }
+    }
     Ok(spec)
+}
+
+/// How a change stream's table holds its changes: merged by key for a merge stream, as a log
+/// otherwise; `None` for a stream not read as changes.
+fn layout(plan: &StreamPlan) -> Option<ChangeLayout> {
+    match (plan.read_mode(), plan.write_mode()) {
+        (ReadMode::Cdc, WriteMode::Merge) => Some(ChangeLayout::Merge {
+            soft: plan.delete_mode() == DeleteMode::Soft,
+        }),
+        (ReadMode::Cdc, _) => Some(ChangeLayout::Log),
+        _ => None,
+    }
+}
+
+/// Whether a change stream merged by key removes rows outright, and whether it marks them
+/// deleted: its deletes as their mode says, and its truncates as its deletes do (outright when
+/// deletes are ignored).
+fn removals(plan: &StreamPlan) -> (bool, bool) {
+    let truncates = plan.truncate_mode() == OnTruncate::Apply;
+    match plan.delete_mode() {
+        DeleteMode::Soft => (false, true),
+        DeleteMode::Ignore => (truncates, false),
+        _ => (true, false),
+    }
 }
 
 /// The columns a merge stream matches rows by: the plan's key, or else the stream's primary key;
@@ -287,16 +380,51 @@ fn read(context: &RunContext, plan: &StreamPlan, committed: Option<&StreamState>
     Read::Cycle(cycle, StreamState::default())
 }
 
-/// The partitions of `name` still to read, with their committed cursors.
+/// The partitions of a stream still to read, and its phase.
+#[derive(Debug, Default)]
+struct Partitioned {
+    /// The phase they belong to.
+    phase: u16,
+    /// The committed positions of the phase's partitions.
+    committed: BTreeMap<PartitionId, PartitionState>,
+    /// When the plan begins a new phase, the entries of the phases before it and where its
+    /// partitions start.
+    begun: Option<Begun>,
+    /// The partitions to read, each from its committed position or its start.
+    partitions: Vec<(Partition, Option<Cursor>)>,
+}
+
+/// The partitions of `name` still to read, with their committed cursors; a plan beginning a new
+/// phase starts its partitions where it says.
 async fn partitions(
     context: &RunContext,
     name: &StreamName,
     state: &StreamState,
-) -> Result<Vec<(Partition, Option<Cursor>)>, Error> {
+) -> Result<Partitioned, Error> {
     let planned = context.source.plan(name, state).await.map_err(|error| {
         Error::connector(Side::Source, format!("planning stream {name}"), error).with_stream(name)
     })?;
-    Ok(planned
+    if let Some(phase) = planned.phase.filter(|phase| *phase != state.phase) {
+        let begun = Begun {
+            stale: state.partitions.keys().cloned().collect(),
+            starts: planned.starts.clone(),
+        };
+        let partitions = planned
+            .partitions
+            .into_iter()
+            .map(|partition| {
+                let start = planned.starts.get(partition.id()).cloned();
+                (partition, start)
+            })
+            .collect();
+        return Ok(Partitioned {
+            phase,
+            committed: BTreeMap::new(),
+            begun: Some(begun),
+            partitions,
+        });
+    }
+    let partitions = planned
         .partitions
         .into_iter()
         .filter_map(|partition| match state.partitions.get(partition.id()) {
@@ -304,5 +432,11 @@ async fn partitions(
             Some(PartitionState::Cursor(cursor)) => Some((partition, Some(cursor.clone()))),
             None => Some((partition, None)),
         })
-        .collect())
+        .collect();
+    Ok(Partitioned {
+        phase: state.phase,
+        committed: state.partitions.clone(),
+        begun: None,
+        partitions,
+    })
 }

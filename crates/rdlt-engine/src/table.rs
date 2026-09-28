@@ -24,8 +24,8 @@ use rdlt_connector::{
 
 #[cfg(test)]
 pub(crate) use convert::normalize as plain;
-pub(crate) use lower::{LineageColumns, MetaNames};
-pub(crate) use lowering::{LoweringPlan, Prepared, Stamp};
+pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
+pub(crate) use lowering::{ChangeRows, LoweringPlan, Prepared, Stamp};
 pub(crate) use model::Model;
 pub(crate) use registry::{Admission, Tables};
 pub(crate) use resolve::{Incoming, Resolver, Settings};

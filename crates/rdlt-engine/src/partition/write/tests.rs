@@ -19,6 +19,7 @@ fn job() -> PartitionJob {
         partition: Partition::single(),
         cursor: None,
         on_demand: false,
+        changes: None,
     }
 }
 

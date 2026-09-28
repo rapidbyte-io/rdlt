@@ -37,13 +37,6 @@ pub(crate) struct ChangeRows {
 impl ChangeRows {
     /// `batch`, a valid change batch, as its data and its change columns: the flags of
     /// `_rdlt_unchanged` move from the batch's field ordinals to the data's.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "change streams reach the lowering once the engine reads them"
-        )
-    )]
     pub(crate) fn split(batch: &RecordBatch) -> Result<(RecordBatch, Self), ArrowError> {
         let schema = batch.schema();
         let column = |name: &str| {
@@ -92,13 +85,6 @@ impl ChangeRows {
     }
 
     /// The data fields, by ordinal, some row flags unchanged.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "change streams reach the lowering once the engine reads them"
-        )
-    )]
     pub(crate) fn flagged(&self) -> Vec<usize> {
         let Some(flags) = &self.unchanged else {
             return Vec::new();
