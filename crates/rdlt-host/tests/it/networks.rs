@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rdlt_connector::serve::{Listener, Served, serve_listener};
 use rdlt_connector::{BoxFuture, ConnectorId, source_factory};
 use rdlt_connector_reference::MemorySource;
-use rdlt_host::{ConnectorRef, Network, Provider as _, Remote, Stream};
+use rdlt_host::{ConnectorRef, Kills, Network, Provider as _, Remote, Stream};
 use rdlt_testkit::tls::Pki;
 use tokio::io::{AsyncWriteExt as _, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
@@ -201,4 +201,61 @@ async fn a_network_that_never_connects_is_unreachable_within_the_connect_deadlin
         "{refused}"
     );
     assert_eq!(started.elapsed(), std::time::Duration::from_secs(3));
+}
+
+/// A network that counts the connections it makes, through another.
+#[derive(Debug)]
+struct Counted(Pipes, Arc<std::sync::atomic::AtomicUsize>);
+
+impl Network for Counted {
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> BoxFuture<'a, std::io::Result<Box<dyn Stream>>> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.connect(host, port)
+    }
+}
+
+#[tokio::test]
+async fn a_remote_connection_a_kill_cuts_is_dialed_again() {
+    let pki = Pki::new("ca");
+    let server = pki.server("server", &["connector"]);
+    let tls = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
+        .expect("the server's configuration builds");
+    let (connections, accepted) = mpsc::unbounded_channel();
+    let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+    tokio::spawn(serve_listener(
+        memory,
+        Piped(accepted),
+        Arc::new(tls),
+        rdlt_wire::Limits::default(),
+        std::future::pending(),
+    ));
+    let id = ConnectorId::parse("io.rapidbyte.memory").expect("a valid id");
+    let reference = ConnectorRef::new(id).endpoint("grpcs://connector:7443");
+    let config = serde_json::json!({ "streams": { "rows": [] } });
+    let (kills, dialed) = (
+        Kills::new(),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    );
+    let placed = Remote::new(identity(&pki.client("host")), pki.ca())
+        .network(Counted(Pipes(connections), Arc::clone(&dialed)))
+        .kills(&kills)
+        .source(&reference, &config)
+        .await
+        .expect("the connector is placed");
+    placed.connector.check().await.expect("the check passes");
+    kills.kill();
+    let mut checked = false;
+    for _ in 0..50 {
+        if placed.connector.check().await.is_ok() {
+            checked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(checked, "the connector was never dialed again");
+    assert_eq!(dialed.load(std::sync::atomic::Ordering::SeqCst), 2);
 }

@@ -6,9 +6,10 @@ mod tests;
 
 use std::sync::{Arc, Mutex};
 
+use rdlt_connector::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use crate::network::Stream;
+use crate::network::{Network, Stream};
 use crate::remote::severed::Severed;
 
 /// Kills the connectors a host started with it, clones sharing one.
@@ -60,5 +61,25 @@ impl Kills {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// A network whose every stream a kill cuts.
+#[derive(Debug)]
+pub(crate) struct Severing {
+    pub(crate) network: Arc<dyn Network>,
+    pub(crate) kills: Kills,
+}
+
+impl Network for Severing {
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> BoxFuture<'a, std::io::Result<Box<dyn Stream>>> {
+        Box::pin(async move {
+            let stream = self.network.connect(host, port).await?;
+            Ok(self.kills.sever(stream))
+        })
     }
 }

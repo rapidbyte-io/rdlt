@@ -66,6 +66,9 @@ pub enum Placement {
         /// The binary.
         path: PathBuf,
     },
+    /// Reached through streams a function opens, as a connector served in the host's own process
+    /// for certification is.
+    Connected,
     /// Elsewhere on the network, listening at `endpoint`.
     Remote {
         /// The endpoint, `grpcs://host:port`.

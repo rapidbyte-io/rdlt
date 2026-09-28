@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod connect;
 mod kills;
 pub mod local;
 pub mod network;
@@ -15,6 +16,7 @@ mod sink;
 mod supervise;
 mod wire;
 
+pub use connect::{Connect, Open};
 pub use kills::Kills;
 pub use local::{LastWords, Local, Witness};
 pub use network::{Endpoint, Network, Remote, Stream, Tcp};
