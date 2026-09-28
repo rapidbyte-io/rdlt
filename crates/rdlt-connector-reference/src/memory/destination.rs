@@ -49,6 +49,13 @@ pub fn published(store: &str, table: &str) -> Vec<RecordBatch> {
         .unwrap_or_default()
 }
 
+/// The tables of `store`, by name.
+pub fn tables(store: &str) -> Vec<String> {
+    let store = named(store);
+    let store = store.lock();
+    store.tables.keys().cloned().collect()
+}
+
 /// The columns of `table` in `store`, once it exists.
 pub fn schema(store: &str, table: &str) -> Option<TableSchema> {
     let store = named(store);

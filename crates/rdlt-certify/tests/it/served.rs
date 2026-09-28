@@ -6,6 +6,8 @@ use rdlt_connector::{BoxFuture, TableRef, destination_factory, source_factory};
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, MemorySource, published};
 use serde_json::json;
 
+use crate::killed::SETTLED_LATE;
+
 struct MemoryProbe(&'static str);
 
 impl Probe for MemoryProbe {
@@ -63,6 +65,36 @@ async fn the_memory_destination_served_in_process_is_certified_through_the_proto
     for id in ["D-FENCE", "K-DESTINATION"] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
+}
+
+#[tokio::test]
+async fn a_source_served_in_process_killed_as_it_loads_resumes_where_it_was() {
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
+        .kill_seed(SETTLED_LATE);
+    let config = json!({
+        "seed": 5,
+        "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
+    });
+    let report = certify_source(&target, config).await;
+    assert_eq!(
+        report.outcome("K-SOURCE"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_read_before_any_kill_lands_proves_nothing_of_kills() {
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
+    let config = json!({
+        "seed": 5,
+        "streams": [{ "name": "events", "rows": 300, "partitions": 2, "batch_rows": 5 }],
+    });
+    let report = certify_source(&target, config).await;
+    assert!(
+        matches!(report.outcome("K-SOURCE"), Some(Outcome::Skipped(_))),
+        "{report}"
+    );
 }
 
 #[tokio::test]

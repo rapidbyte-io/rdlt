@@ -63,7 +63,8 @@ async fn a_connector_that_cannot_be_reached_fails_every_clause_and_is_named_as_g
         assert_eq!(report.connector, named, "{report}");
         assert_eq!(
             report.results.len(),
-            PROTOCOL_CLAUSES.len() + SOURCE_CLAUSES.len(),
+            // And `K-SOURCE`.
+            PROTOCOL_CLAUSES.len() + SOURCE_CLAUSES.len() + 1,
             "{report}"
         );
         assert!(
