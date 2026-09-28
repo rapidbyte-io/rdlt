@@ -2,7 +2,7 @@
 
 use std::process::Stdio;
 
-use rdlt_certify::{Target, certify_destination, certify_source};
+use rdlt_certify::{Outcome, Target, certify_destination, certify_source};
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Identity, Remote};
 use rdlt_testkit::tls::Pki;
@@ -69,7 +69,12 @@ async fn a_listening_connector_is_certified_over_mutual_tls() {
     certify_source(&target, config).await.assert_passed();
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("listening.db");
-    certify_destination(&target, json!({ "path": path }), &SqliteProbe(path))
-        .await
-        .assert_passed();
+    let report = certify_destination(&target, json!({ "path": path }), &SqliteProbe(path)).await;
+    report.assert_passed();
+    // Its connections cut, as a host cuts a connector it cannot kill.
+    assert_eq!(
+        report.outcome("K-DESTINATION"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
 }

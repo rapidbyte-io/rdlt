@@ -64,7 +64,13 @@ async fn a_spawned_destination_binary_is_certified_through_the_protocol() {
         certify_destination(&reference(), json!({ "path": path }), &SqliteProbe(path)).await;
     report.assert_passed();
     assert_eq!(report.connector, "io.rapidbyte.sqlite", "{report}");
-    for id in ["P-HANDSHAKE", "P-MALFORMED", "D-COMMIT", "D-FENCE"] {
+    for id in [
+        "P-HANDSHAKE",
+        "P-MALFORMED",
+        "D-COMMIT",
+        "D-FENCE",
+        "K-DESTINATION",
+    ] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
 }

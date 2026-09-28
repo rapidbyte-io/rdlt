@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use rdlt_certify::{
-    DESTINATION_CLAUSES, Family, Outcome, PROTOCOL_CLAUSES, SOURCE_CLAUSES, Target, certify_source,
-    clauses, markdown,
+    DESTINATION_CLAUSES, Family, KILL_CLAUSES, Outcome, PROTOCOL_CLAUSES, SOURCE_CLAUSES, Target,
+    certify_source, clauses, markdown,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Identity, Local, Remote};
@@ -81,7 +81,10 @@ fn every_clause_is_registered_once_under_its_family() {
     let registered: Vec<_> = clauses().collect();
     assert_eq!(
         registered.len(),
-        PROTOCOL_CLAUSES.len() + SOURCE_CLAUSES.len() + DESTINATION_CLAUSES.len()
+        PROTOCOL_CLAUSES.len()
+            + SOURCE_CLAUSES.len()
+            + DESTINATION_CLAUSES.len()
+            + KILL_CLAUSES.len()
     );
     let ids: BTreeSet<&str> = registered.iter().map(|(_, clause)| clause.id).collect();
     assert_eq!(ids.len(), registered.len(), "clause ids are distinct");
@@ -90,6 +93,7 @@ fn every_clause_is_registered_once_under_its_family() {
             Family::Protocol => "P-",
             Family::Source => "S-",
             Family::Destination => "D-",
+            Family::Kill => "K-",
         };
         assert!(clause.id.starts_with(prefix), "{family:?} {}", clause.id);
         assert!(markdown().contains(&format!("| `{}` |", clause.id)));

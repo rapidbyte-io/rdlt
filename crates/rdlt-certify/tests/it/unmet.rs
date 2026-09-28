@@ -68,7 +68,8 @@ async fn a_role_the_connector_does_not_serve_skips_every_clause() {
     let report = certify_destination(&target, json!({}), &Unprobed).await;
     assert_eq!(
         report.results.len(),
-        PROTOCOL_CLAUSES.len() + DESTINATION_CLAUSES.len()
+        // And `K-DESTINATION`.
+        PROTOCOL_CLAUSES.len() + DESTINATION_CLAUSES.len() + 1
     );
     assert!(
         report

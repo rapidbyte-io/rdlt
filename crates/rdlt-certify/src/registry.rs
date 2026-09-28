@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use rdlt_connector::testing::{Clause, DESTINATION_CLAUSES, SOURCE_CLAUSES};
 
+use crate::kill::KILL_CLAUSES;
 use crate::protocol::PROTOCOL_CLAUSES;
 
 /// A family of clauses.
@@ -16,10 +17,12 @@ pub enum Family {
     Source,
     /// A destination's (`D`).
     Destination,
+    /// A connector's killed as an engine loads through it (`K`).
+    Kill,
 }
 
 impl Family {
-    const ALL: [Self; 3] = [Self::Protocol, Self::Source, Self::Destination];
+    const ALL: [Self; 4] = [Self::Protocol, Self::Source, Self::Destination, Self::Kill];
 
     /// Its clauses, in the order they are checked.
     pub fn clauses(self) -> &'static [Clause] {
@@ -27,6 +30,7 @@ impl Family {
             Self::Protocol => PROTOCOL_CLAUSES,
             Self::Source => SOURCE_CLAUSES,
             Self::Destination => DESTINATION_CLAUSES,
+            Self::Kill => KILL_CLAUSES,
         }
     }
 
@@ -35,6 +39,7 @@ impl Family {
             Self::Protocol => "Protocol (`P`)",
             Self::Source => "Source (`S`)",
             Self::Destination => "Destination (`D`)",
+            Self::Kill => "Kill (`K`)",
         }
     }
 }

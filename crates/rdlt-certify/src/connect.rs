@@ -103,7 +103,7 @@ impl DestinationFactory for Factory<'_> {
 }
 
 /// `error`, and each error that caused it, in turn.
-fn described(error: &dyn std::error::Error) -> String {
+pub(crate) fn described(error: &dyn std::error::Error) -> String {
     let mut described = error.to_string();
     let mut cause = error.source();
     while let Some(error) = cause {
