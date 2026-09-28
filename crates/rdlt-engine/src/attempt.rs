@@ -149,7 +149,12 @@ async fn launch(
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<(), Error> {
     let count = lane_count(&context.config, context.destination.as_ref());
-    let (lanes, lane_tasks) = Lanes::new(count, &tables, context.config.lane_window());
+    let (lanes, lane_tasks) = Lanes::new(
+        count,
+        &tables,
+        context.config.lane_window(),
+        &context.budget,
+    );
     let mut scope = TaskScope::new(&CancellationToken::new());
     let cancel = scope.token().clone();
     for lane in lane_tasks {
