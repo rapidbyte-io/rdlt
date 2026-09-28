@@ -78,3 +78,25 @@ fn float_name(value: f64) -> &'static str {
         "-Infinity"
     }
 }
+
+/// `value` as JSON text: as [`rendered`] renders it, but with each whole decimal as the integer
+/// it is, which JSON holds whatever its width and a JSON value in memory may not.
+pub fn text(value: &Scalar) -> String {
+    match value {
+        Scalar::Decimal(digits) => digits
+            .parse::<i128>()
+            .map_or_else(|_| digits.clone(), |integer| integer.to_string()),
+        Scalar::Struct(fields) => {
+            let fields: Vec<String> = fields
+                .iter()
+                .map(|(name, inner)| format!("{}:{}", Value::from(name.as_str()), text(inner)))
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        Scalar::List(items) => {
+            let items: Vec<String> = items.iter().map(text).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => rendered(other).to_string(),
+    }
+}
