@@ -12,10 +12,10 @@ use rdlt_connector::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::destination::committed_next;
-use rdlt_testkit::drawn::json::rendered;
+use rdlt_testkit::drawn::json::text;
 use rdlt_testkit::drawn::{Encoding, Scalar, Shape, array, field};
 
 use crate::workload::{Row, SimStream};
@@ -277,24 +277,30 @@ fn whole(stream: &SimStream, rows: &[Row]) -> RecordBatch {
 /// `rows` of `stream` as a JSON push with the columns a batch of them has: a JSON array when
 /// `array`, else JSON lines.
 fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
+    // Each object is written as text, so an integer beyond 64 bits pushes as the integer it is.
     let objects = rows.iter().map(|row| {
-        let mut object = Map::new();
-        object.insert("id".to_owned(), json!(row.id));
-        object.insert("partition".to_owned(), json!(row.partition));
-        object.insert("offset".to_owned(), json!(row.offset));
-        object.insert("value".to_owned(), json!(row.value));
+        let mut fields = vec![
+            ("id", json!(row.id).to_string()),
+            ("partition", json!(row.partition).to_string()),
+            ("offset", json!(row.offset).to_string()),
+            ("value", json!(row.value).to_string()),
+        ];
         if stream.keys > 0 {
-            object.insert("key".to_owned(), json!(row.key.unwrap_or_default()));
+            fields.push(("key", json!(row.key.unwrap_or_default()).to_string()));
         }
         if let Some(tag) = &row.tag {
-            object.insert("tag".to_owned(), json!(tag));
+            fields.push(("tag", json!(tag).to_string()));
         }
         for (drift, extra) in stream.drift.iter().zip(&row.extras) {
             if let Some(extra) = extra {
-                object.insert(drift.name.clone(), rendered(extra));
+                fields.push((drift.name.as_str(), text(extra)));
             }
         }
-        Value::Object(object).to_string()
+        let fields: Vec<String> = fields
+            .iter()
+            .map(|(name, value)| format!("{}:{value}", Value::from(*name)))
+            .collect();
+        format!("{{{}}}", fields.join(","))
     });
     let objects: Vec<String> = objects.collect();
     Bytes::from(if array {

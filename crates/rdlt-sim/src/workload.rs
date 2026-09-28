@@ -30,6 +30,15 @@ const DRIFT_NAMES: [&str; 6] = ["d0", "D0", "extra", "Extra", "note", "a__b"];
 /// ASCII words, one that grows as it folds to upper case, and one only spaces set apart.
 const WIDE_NAMES: [&str; 5] = ["naïve", "日付", "straße", "a b", "Ünï-cöde"];
 
+/// More names drift columns draw from where a seed exercises identifiers: the engine's own
+/// metadata columns, a name its SQL uses to rank merged rows, and one its staging tables use.
+const ENGINE_NAMES: [&str; 4] = [
+    "_rdlt_seq",
+    "_rdlt_load_id",
+    "_rdlt_rank",
+    "_rdlt_staging__x",
+];
+
 /// Everything a simulated source serves.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Workload {
@@ -441,6 +450,7 @@ fn drift(rng: &mut SplitMix64, partitions: usize, features: Features, json: bool
     let mut names: Vec<&str> = DRIFT_NAMES.to_vec();
     if features.identifiers {
         names.extend(WIDE_NAMES);
+        names.extend(ENGINE_NAMES);
     }
     let fresh = |rng: &mut SplitMix64| -> Shape {
         let seed = rng.next_u64();
