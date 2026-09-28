@@ -177,7 +177,7 @@ fn batch(seed: u64, ids: &[u64]) -> Result<RecordBatch> {
 }
 
 /// The `SplitMix64` output function: a fast, well-distributed hash of `x`.
-fn mix(x: u64) -> u64 {
+pub(crate) fn mix(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);

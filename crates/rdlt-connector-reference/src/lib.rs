@@ -3,6 +3,7 @@
 //! - [`MemorySource`] reads rows given inline in its configuration.
 //! - [`MemoryDestination`] keeps published tables and pipeline state in process memory.
 //! - [`GeneratorSource`] produces seeded, partitioned Arrow data of any size.
+//! - [`ChangesSource`] produces seeded change streams: a snapshot in phases, then changes.
 //! - [`SqliteDestination`] loads into a SQLite database, through `sqlgen`.
 //! - [`FilesSource`] reads JSON lines and Arrow IPC files.
 //! - [`FilesDestination`] writes JSON lines or Arrow IPC files and publishes them with manifests.
@@ -19,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod blocking;
+pub mod changes;
 mod columns;
 pub mod files;
 mod generator;
@@ -26,6 +28,7 @@ mod memory;
 mod merge;
 pub mod sqlite;
 
+pub use changes::{ChangedStream, ChangesConfig, ChangesSource};
 pub use files::{
     FileFormat, FilesDestination, FilesDestinationConfig, FilesSource, FilesSourceConfig,
 };
