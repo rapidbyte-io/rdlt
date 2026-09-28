@@ -57,6 +57,25 @@ async fn a_spawned_source_binary_is_certified_through_the_protocol() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
+    let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
+    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")))
+        .kill_seed(crate::killed::SETTLED_LATE);
+    let config = json!({
+        "seed": 11,
+        "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
+    });
+    let report = certify_source(&target, config).await;
+    report.assert_passed();
+    assert_eq!(
+        report.outcome("K-SOURCE"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_spawned_destination_binary_is_certified_through_the_protocol() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("certify.db");

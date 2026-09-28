@@ -1,14 +1,16 @@
-//! Destinations that lose or repeat rows once killed as an engine loads through them: the kill
-//! clause fails them.
+//! Connectors that lose or repeat rows once killed as an engine loads through them: the kill
+//! clauses fail them.
 
-use rdlt_certify::{Outcome, Probe, Target, certify_destination};
+use rdlt_certify::{Outcome, Probe, Target, certify_destination, certify_source};
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
-    BoxFuture, Capabilities, CommitMeta, ConnectContext, ConnectorSpec, Destination,
-    DestinationFactory, DestinationSession, DestinationWriter, OpenContext, OpenedSession, Receipt,
-    SegmentSet, TableChange, TableRef, destination_factory,
+    BoxFuture, Capabilities, Catalog, CommitMeta, ConnectContext, ConnectorSpec, Cursor,
+    Destination, DestinationFactory, DestinationSession, DestinationWriter, OpenContext,
+    OpenedSession, Partition, PartitionId, PartitionSink, ReadRequest, Receipt, SegmentSet, Source,
+    SourceFactory, StreamName, StreamState, TableChange, TableRef, destination_factory,
+    source_factory,
 };
-use rdlt_connector_reference::{MemoryDestination, published};
+use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
 use serde_json::json;
 
 /// A seed whose kills land after a commit that published rows.
@@ -17,6 +19,66 @@ use serde_json::json;
 /// losing its answer. A connector that breaks exactly-once only across a commit's rows is caught
 /// there, whatever the timing.
 pub(crate) const SETTLED_LATE: u64 = 1;
+
+/// A source that reads nothing of a partition it resumes: whatever a checkpoint left unread is
+/// lost.
+struct Forgetful(Box<dyn SourceFactory>);
+
+struct ForgetfulSource(Box<dyn Source>);
+
+impl SourceFactory for Forgetful {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Source>>> {
+        Box::pin(async move {
+            let source = self.0.connect(config, context).await?;
+            Ok(Box::new(ForgetfulSource(source)) as Box<dyn Source>)
+        })
+    }
+}
+
+impl Source for ForgetfulSource {
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.0.check()
+    }
+
+    fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<Catalog>> {
+        self.0.discover()
+    }
+
+    fn plan<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        state: &'a StreamState,
+    ) -> BoxFuture<'a, rdlt_connector::Result<Vec<Partition>>> {
+        self.0.plan(stream, state)
+    }
+
+    fn read(
+        &self,
+        request: ReadRequest,
+        sink: PartitionSink,
+    ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        if request.cursor.is_some() {
+            return Box::pin(async { Ok(()) });
+        }
+        self.0.read(request, sink)
+    }
+
+    fn committed<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        cursors: &'a [(PartitionId, Cursor)],
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
+        self.0.committed(stream, cursors)
+    }
+}
 
 /// A destination that records each commit's state at once but publishes its rows only with the
 /// next commit, or as the session closes: a kill between them loses rows its state says it has.
@@ -138,6 +200,19 @@ impl Probe for MemoryProbe {
 
 fn failed(outcome: Option<&Outcome>) -> bool {
     matches!(outcome, Some(Outcome::Failed(_)))
+}
+
+#[tokio::test]
+async fn a_source_that_loses_what_it_resumes_fails_k_source() {
+    let forgetful = Forgetful(source_factory::<GeneratorSource>());
+    let target =
+        Target::served(Served::new().with_source(Box::new(forgetful))).kill_seed(SETTLED_LATE);
+    let config = json!({
+        "seed": 3,
+        "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
+    });
+    let report = certify_source(&target, config).await;
+    assert!(failed(report.outcome("K-SOURCE")), "{report}");
 }
 
 #[tokio::test]

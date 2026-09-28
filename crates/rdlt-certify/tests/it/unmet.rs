@@ -36,7 +36,8 @@ async fn a_connector_that_never_answers_fails_every_clause_in_time() {
     let report = certify_source(&target, json!({})).await;
     assert_eq!(
         report.results.len(),
-        PROTOCOL_CLAUSES.len() + SOURCE_CLAUSES.len()
+        // And `K-SOURCE`.
+        PROTOCOL_CLAUSES.len() + SOURCE_CLAUSES.len() + 1
     );
     assert!(
         report

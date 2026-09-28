@@ -9,6 +9,10 @@
 mod destination;
 #[cfg(feature = "kill")]
 mod killing;
+#[cfg(feature = "kill")]
+mod rows;
+#[cfg(feature = "kill")]
+mod source;
 #[cfg(all(test, feature = "kill"))]
 mod tests;
 
@@ -19,19 +23,55 @@ use rdlt_connector::testing::{Clause, ClauseResult, Probe};
 
 use crate::target::Target;
 
-/// The clause [`certify_destination`](crate::certify_destination) checks last.
-pub const KILL_CLAUSES: &[Clause] = &[Clause {
-    id: "K-DESTINATION",
-    statement: "a destination killed at random points of a load, as it writes, before a \
+/// The clauses [`certify_source`](crate::certify_source) and
+/// [`certify_destination`](crate::certify_destination) check last: the source's, then the
+/// destination's.
+pub const KILL_CLAUSES: &[Clause] = &[
+    Clause {
+        id: "K-SOURCE",
+        statement: "a source killed at random points of a load after it commits is started \
+                    again and resumes from what was committed, so the engine converges on \
+                    exactly the tables a load never killed publishes",
+    },
+    Clause {
+        id: "K-DESTINATION",
+        statement: "a destination killed at random points of a load, as it writes, before a \
                     commit, or after a commit before its answer, is started again and \
                     publishes every row exactly once when the engine converges",
-}];
+    },
+];
 
 /// The kill clauses of `role`.
 pub(crate) fn clauses(role: Role) -> &'static [Clause] {
     match role {
-        Role::Source => &[],
-        Role::Destination => KILL_CLAUSES,
+        Role::Source => &KILL_CLAUSES[..1],
+        Role::Destination => &KILL_CLAUSES[1..],
+    }
+}
+
+/// `K-SOURCE`'s result for the source `target` reaches, which answers to `id`, with `config`.
+#[cfg_attr(
+    not(feature = "kill"),
+    expect(
+        clippy::unused_async,
+        reason = "it awaits the clause in a build with it"
+    )
+)]
+pub(crate) async fn source(
+    target: &Target,
+    id: &rdlt_connector::ConnectorId,
+    config: &serde_json::Value,
+) -> ClauseResult {
+    #[cfg(feature = "kill")]
+    let outcome = within(source::resumed(target, id, config)).await;
+    #[cfg(not(feature = "kill"))]
+    let outcome = {
+        let _ = (target, id, config);
+        Outcome::Skipped(UNBUILT.to_owned())
+    };
+    ClauseResult {
+        clause: KILL_CLAUSES[0],
+        outcome,
     }
 }
 
@@ -58,7 +98,7 @@ pub(crate) async fn destination(
         Outcome::Skipped(UNBUILT.to_owned())
     };
     ClauseResult {
-        clause: KILL_CLAUSES[0],
+        clause: KILL_CLAUSES[1],
         outcome,
     }
 }

@@ -4,6 +4,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 
 use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
+use super::rows::{Parted, parted, rendered};
 use super::{Loaded, unproven};
 
 fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
@@ -65,6 +66,48 @@ fn seeds_draw_every_point_of_each_range() {
                 .any(|schedule| schedule.answer == Some(answer))
         );
     }
+}
+
+#[test]
+fn rows_render_by_column_name_without_metadata_whatever_their_batches() {
+    let names: ArrayRef = Arc::new(StringArray::from(vec![Some("b"), None]));
+    let first = batch(vec![
+        ("name", names),
+        ("id", Arc::new(Int64Array::from(vec![2, 1]))),
+        ("_rdlt_load_id", Arc::new(StringArray::from(vec!["x", "y"]))),
+    ]);
+    let second = batch(vec![
+        ("id", Arc::new(Int64Array::from(vec![2]))),
+        ("name", Arc::new(StringArray::from(vec!["b"]))),
+    ]);
+    assert_eq!(
+        rendered(&[first, second]).expect("renders"),
+        ["id=1, name=null", "id=2, name=b", "id=2, name=b"]
+    );
+}
+
+#[test]
+fn tables_with_the_same_rows_do_not_part() {
+    let rows = vec!["id=1".to_owned(), "id=2".to_owned()];
+    assert_eq!(parted(&rows, &rows), None);
+    assert_eq!(parted(&[], &[]), None);
+}
+
+#[test]
+fn tables_part_at_their_first_missing_or_extra_row() {
+    let clean = vec!["id=1".to_owned(), "id=2".to_owned(), "id=3".to_owned()];
+    let missing = vec!["id=1".to_owned(), "id=3".to_owned()];
+    let extra = vec![
+        "id=1".to_owned(),
+        "id=2".to_owned(),
+        "id=2".to_owned(),
+        "id=3".to_owned(),
+    ];
+    assert_eq!(parted(&clean, &missing), Some(Parted::Missing("id=2")));
+    assert_eq!(parted(&clean, &extra), Some(Parted::Extra("id=2")));
+    assert_eq!(parted(&clean, &clean[..2]), Some(Parted::Missing("id=3")));
+    assert_eq!(parted(&clean[..2], &clean), Some(Parted::Extra("id=3")));
+    assert_eq!(parted(&missing, &clean), Some(Parted::Extra("id=2")));
 }
 
 #[test]

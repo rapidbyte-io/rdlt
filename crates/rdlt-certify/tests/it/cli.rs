@@ -150,6 +150,10 @@ async fn the_help_and_the_reports_read_as_they_did() {
             USERS,
             "--env",
             "LLVM_PROFILE_FILE",
+            // Points a load of two rows, committed once, never reaches: after its second
+            // commit, and its fourth.
+            "--kill-seed",
+            "515",
             "--output",
             output,
         ])

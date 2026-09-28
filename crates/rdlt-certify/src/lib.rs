@@ -34,20 +34,22 @@ pub use registry::{Family, clauses, markdown};
 pub use report::{json, plain};
 pub use target::Target;
 
-use rdlt_connector::DestinationFactory;
 use rdlt_connector::Role;
 use rdlt_connector::testing::{certify_destination_factory, certify_source_factory};
+use rdlt_connector::{DestinationFactory, SourceFactory};
 
-/// Certifies the source `target` reaches, with `config`: the protocol's clauses, then the source
-/// clauses, each over connections of its own.
+/// Certifies the source `target` reaches, with `config`: the protocol's clauses, the source
+/// clauses, each over connections of its own, then the kill clause.
 ///
 /// A connector that serves no source has every clause skipped.
 pub async fn certify_source(target: &Target, config: serde_json::Value) -> Report {
     match connect::Factory::new(target, Role::Source, &config).await {
         Ok(factory) => {
             let protocol = protocol::check(target, Role::Source, &config).await;
-            let mut report = certify_source_factory(&factory, config).await;
+            let mut report = certify_source_factory(&factory, config.clone()).await;
             report.results.splice(0..0, protocol);
+            let id = &SourceFactory::spec(&factory).id;
+            report.results.push(kill::source(target, id, &config).await);
             report
         }
         Err(unmet) => unmet.report(
