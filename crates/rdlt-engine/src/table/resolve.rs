@@ -256,7 +256,10 @@ impl Resolver {
             if column.settings.policy == SchemaPolicy::Freeze {
                 return Err(self.refused(column, "schema_frozen", &cannot("cannot hold")));
             }
-            if widens {
+            // A key keeps matching its stored rows only where both types store it by value: a
+            // decimal stored as text renders 1.50 as 1.5000 once its scale grows.
+            let nested = column.settings.nested;
+            if widens && self.by_value(&current, nested) && self.by_value(&joined, nested) {
                 draft.widen(original, joined);
                 return Ok(Route::Column(original));
             }
@@ -320,6 +323,13 @@ impl Resolver {
                 .capabilities
                 .schema_changes
                 .widens(from.kind(), to.kind())
+    }
+
+    /// Whether the destination stores values of `logical` by value, as themselves or as integers
+    /// of another width, rather than rendered into another type, whose rendering the type decides.
+    fn by_value(&self, logical: &LogicalType, nested: Nested) -> bool {
+        let stored = lower(logical, nested, &self.capabilities);
+        family(stored.kind()) == family(logical.kind())
     }
 
     fn refused(&self, column: &Arriving<'_>, code: &str, detail: &str) -> Error {
@@ -428,5 +438,13 @@ impl Draft {
             routes,
             model: self.model,
         })
+    }
+}
+
+/// The kind values of `kind` keep their identity among: integers of every width are one.
+fn family(kind: TypeKind) -> TypeKind {
+    match kind {
+        TypeKind::Int8 | TypeKind::Int16 | TypeKind::Int32 => TypeKind::Int64,
+        other => other,
     }
 }

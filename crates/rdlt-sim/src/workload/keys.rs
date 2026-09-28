@@ -12,7 +12,10 @@ impl Row {
     pub fn key_value(&self, logical: &LogicalType) -> Scalar {
         let key = self.key.unwrap_or_default();
         match logical {
-            LogicalType::Decimal(..) => Scalar::Decimal(key.to_string()),
+            // A decimal's digits are unscaled: the key at scale 2 is its value times a hundred.
+            LogicalType::Decimal(decimal) => Scalar::Decimal(
+                (i128::from(key) * 10_i128.pow(u32::from(decimal.scale()))).to_string(),
+            ),
             LogicalType::Utf8 => Scalar::Utf8(key.to_string()),
             #[expect(clippy::cast_precision_loss, reason = "keys are small")]
             LogicalType::Float64 => Scalar::Float64(key as f64),
@@ -50,6 +53,12 @@ impl SimStream {
             let precision = if rng.chance(500) { 20 } else { 38 };
             somewhere(rng, whole_decimal(precision));
         }
+        // The same numbers at two scales: a destination storing decimals by value merges them
+        // as one key, and one rendering them into text must refuse the wider scale.
+        if rng.chance(150) {
+            somewhere(rng, scaled_decimal(22, 2));
+            somewhere(rng, scaled_decimal(24, 4));
+        }
         if rng.chance(100) {
             let logical = if rng.chance(500) {
                 LogicalType::Utf8
@@ -77,5 +86,10 @@ impl SimStream {
 
 /// A decimal of `precision` digits and none after the point.
 fn whole_decimal(precision: u8) -> LogicalType {
-    LogicalType::Decimal(DecimalType::new(precision, 0).expect("a valid precision"))
+    scaled_decimal(precision, 0)
+}
+
+/// A decimal of `precision` digits, `scale` of them after the point.
+fn scaled_decimal(precision: u8, scale: u8) -> LogicalType {
+    LogicalType::Decimal(DecimalType::new(precision, scale).expect("a valid precision and scale"))
 }

@@ -1,8 +1,9 @@
 //! What a merge stream's key columns may meet: a key widens where the destination can and its
 //! schema is not frozen, and is refused otherwise.
 
-use rdlt_connector::{Capabilities, LogicalType};
+use rdlt_connector::{Capabilities, LogicalType, TypeKind};
 use rdlt_engine::{Nested, SchemaPolicy};
+use rdlt_testkit::canon::storage;
 
 use super::{Arrival, FROZEN, KEY_CHANGED, Outcome, Step, outcome, widens};
 use crate::workload::{Relaxed, SimStream};
@@ -40,8 +41,8 @@ pub(super) fn key_outcome(
 }
 
 /// What a key batch column arriving as `arrival` does to a key column of `current`: a key
-/// column widens where the destination can and the schema is not `frozen`, and is refused
-/// otherwise.
+/// column widens where the destination can, the schema is not `frozen`, and the destination
+/// stores both types by value, so equal keys still match; it is refused otherwise.
 pub(super) fn key_step(
     current: Option<&LogicalType>,
     arrival: &Arrival,
@@ -53,11 +54,28 @@ pub(super) fn key_step(
         return Step::Unknown;
     };
     let joined = current.join(logical);
-    let widened =
-        !frozen && joined != LogicalType::Json && widens(current, &joined, nested, capabilities);
+    let widened = !frozen
+        && joined != LogicalType::Json
+        && widens(current, &joined, nested, capabilities)
+        && by_value(current, nested, capabilities)
+        && by_value(&joined, nested, capabilities);
     if joined == *current || widened {
         Step::To(joined)
     } else {
         Step::Refused
     }
+}
+
+/// Whether the destination stores `logical` as itself, or as an integer of another width where it
+/// is one: a type it stores rendered into another, as a decimal into text, renders equal values
+/// differently once the type changes.
+fn by_value(logical: &LogicalType, nested: Nested, capabilities: &Capabilities) -> bool {
+    let stored = storage(logical, nested == Nested::Native, capabilities);
+    let integer = |kind| {
+        matches!(
+            kind,
+            TypeKind::Int8 | TypeKind::Int16 | TypeKind::Int32 | TypeKind::Int64
+        )
+    };
+    stored.kind() == logical.kind() || (integer(stored.kind()) && integer(logical.kind()))
 }
