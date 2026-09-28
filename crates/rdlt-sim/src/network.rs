@@ -10,6 +10,7 @@ mod tests;
 use std::cell::RefCell;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::num::NonZeroU32;
 use std::panic::{self, AssertUnwindSafe};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -244,7 +245,7 @@ impl Placing {
         let healing = Healing(&self.net);
         let options = self.remote_options;
         // Faults last up to twice the host's patience, so it notices some and not others.
-        let patience = options.heartbeat.saturating_mul(options.missed);
+        let patience = options.heartbeat.saturating_mul(options.missed.get());
         let done = tokio::select! {
             biased;
             done = work => done,
@@ -302,7 +303,8 @@ fn reference(side: Side, id: rdlt_connector::ConnectorId) -> ConnectorRef {
 pub(crate) fn options(rng: &mut SplitMix64) -> Options {
     Options {
         heartbeat: Duration::from_millis(50 + rng.below(950)),
-        missed: 2 + u32::try_from(rng.below(4)).unwrap_or(0),
+        missed: NonZeroU32::new(2 + u32::try_from(rng.below(4)).unwrap_or(0))
+            .unwrap_or(NonZeroU32::MIN),
         deadlines: Deadlines {
             connect: Duration::from_millis(200 + rng.below(2800)),
             ..Deadlines::default()

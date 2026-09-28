@@ -156,14 +156,23 @@ impl PartitionSink {
     /// # Errors
     ///
     /// A [`Stopped`](crate::ConnectorErrorKind::Stopped) error once the engine has asked the read
-    /// to stop or dropped its end.
+    /// to stop or dropped its end, and an `Internal` error coded `barrier_unrequested` for a
+    /// checkpoint answering a barrier the engine never asked for.
     pub async fn send(&mut self, event: SourceEvent) -> Result<()> {
         if let SourceEvent::Checkpoint {
             answers: Some(barrier),
             ..
         } = &event
         {
-            self.answered = *barrier;
+            let requested = *self.barrier.borrow();
+            if *barrier > requested {
+                return Err(ConnectorError::internal(format!(
+                    "a checkpoint answers barrier {barrier}, past the newest the engine asked for, \
+                     {requested}"
+                ))
+                .with_code("barrier_unrequested"));
+            }
+            self.answered = self.answered.max(*barrier);
         }
         let permit = match (&self.admission, &event) {
             (Some(admission), SourceEvent::Push(push)) => Some(tokio::select! {

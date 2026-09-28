@@ -531,13 +531,38 @@ async fn a_rate_limited_attempt_waits_as_long_as_it_is_asked() {
         .connect("rate_limited")
         .await;
     let plan = pipeline("rate-limited", [stream("events")]);
-    let outcome = engine(retrying(3))
+    let retry = RetryPolicy::default().max_attempts(3);
+    let outcome = engine(commit_every(10).retry(retry))
         .run(plan, source, memory("rate_limited").await)
         .await;
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!(outcome.report.attempts.len(), 2);
     let elapsed = outcome.report.elapsed;
     assert!(elapsed >= Duration::from_secs(90), "{elapsed:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rate_limited_attempt_waits_no_longer_than_the_policy_s_longest_delay() {
+    let fault = Fault {
+        batch: 1,
+        kind: ConnectorErrorKind::RateLimited,
+        retry_after: Some(Duration::from_hours(8_760)),
+    };
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
+        .fail(fault)
+        .connect("rate_limited_long")
+        .await;
+    let plan = pipeline("rate-limited-long", [stream("events")]);
+    let retry = RetryPolicy::default()
+        .max_attempts(3)
+        .max_delay(Duration::from_secs(60));
+    let outcome = engine(commit_every(5).retry(retry))
+        .run(plan, source, memory("rate_limited_long").await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    let elapsed = outcome.report.elapsed;
+    assert!(elapsed >= Duration::from_secs(60), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(120), "{elapsed:?}");
 }
 
 #[tokio::test(start_paused = true)]

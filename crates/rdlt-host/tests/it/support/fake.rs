@@ -15,6 +15,8 @@ use tower::ServiceExt as _;
 /// How the fake breaks the protocol.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Fault {
+    /// Its reads send a checkpoint answering a barrier the host never asked for.
+    AnswersAhead,
     /// It answers each heartbeat with a sequence number the host never sent.
     EchoAhead,
     /// Its reads send a schema that is no IPC message.
@@ -110,7 +112,18 @@ impl Connector for Fake {
                 ipc_schema,
             })),
         };
-        let sent = if matches!(self.0, Fault::StaleEpoch) {
+        let sent = if matches!(self.0, Fault::AnswersAhead) {
+            let checkpoint = v1::CheckpointFrame {
+                cursor: Some(v1::Cursor {
+                    version: 1,
+                    bytes: Bytes::from_static(b"c"),
+                }),
+                barrier: Some(u64::MAX),
+            };
+            vec![Ok(v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Checkpoint(checkpoint)),
+            })]
+        } else if matches!(self.0, Fault::StaleEpoch) {
             let arrow = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
                 "id",
                 arrow_schema::DataType::Int64,

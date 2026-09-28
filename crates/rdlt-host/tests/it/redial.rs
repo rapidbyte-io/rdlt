@@ -1,6 +1,7 @@
 //! Remote connectors that are lost: stopped by their operator or dropped, then listening again,
 //! redialed, and refused when what listens again is another connector.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,7 +44,7 @@ async fn a_lost_connector_is_redialed_once_it_listens_again() {
     let endpoint = format!("grpcs://localhost:{}", port(&address));
     let options = rdlt_host::Options {
         heartbeat: Duration::from_millis(100),
-        missed: 3,
+        missed: NonZeroU32::new(3).expect("not zero"),
         ..rdlt_host::Options::default()
     };
     let remote = Remote::new(identity(&pki.client("host")), pki.ca()).options(options);

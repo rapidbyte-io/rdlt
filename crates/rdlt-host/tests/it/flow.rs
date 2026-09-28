@@ -1,7 +1,7 @@
 //! Flow control and failures on busy connections: reads the engine cannot keep up with, writes a
 //! destination does not take or refuses, and errors and frames at the limits.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ use crate::support::{served, served_within};
 fn quick() -> Options {
     Options {
         heartbeat: Duration::from_millis(50),
-        missed: 3,
+        missed: NonZeroU32::new(3).expect("not zero"),
         ..Options::default()
     }
 }

@@ -130,6 +130,12 @@ impl RetryPolicy {
         self.reset_after_progress
     }
 
+    /// The wait a failure asked for, `asked`, within the longest delay: a connector's answer is
+    /// untrusted, and one that asks for years would park the run.
+    pub(crate) fn within(&self, asked: Duration) -> Duration {
+        asked.min(self.max_delay)
+    }
+
     /// The delay after `failures` consecutive failures: exponential backoff with full jitter,
     /// drawn from `random`.
     pub(crate) fn delay(&self, failures: NonZeroU32, random: u64) -> Duration {

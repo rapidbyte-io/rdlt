@@ -161,13 +161,14 @@ impl Future for RunHandle {
     }
 }
 
-/// How long to wait before the next attempt: as long as the failure asked, or the policy's backoff
-/// after `failures` consecutive failures.
+/// How long to wait before the next attempt: as long as the failure asked, up to the policy's
+/// longest delay, or the policy's backoff after `failures` consecutive failures.
 fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> Duration {
     let failed = NonZeroU32::new(failures).unwrap_or(NonZeroU32::MIN);
-    error
-        .retry_after()
-        .unwrap_or_else(|| retry.delay(failed, env.random()))
+    error.retry_after().map_or_else(
+        || retry.delay(failed, env.random()),
+        |asked| retry.within(asked),
+    )
 }
 
 /// Credits a failed attempt's commit in flight to it once `log`'s attempt opened and found it landed,
