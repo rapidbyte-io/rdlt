@@ -50,19 +50,35 @@ data is replayed from the source.
   `FixedSizeBinary(16)` is converted to it, so a destination handles one type.
 - **`_rdlt_unchanged` is a bitmap over the pushed batch's field ordinals.** The engine rewrites it
   over the written batch's ordinals, which the destination can resolve. An unchanged column with
-  no stored row lands null. A partial update sent to a destination without `partial_updates` is a
-  typed Config error (`partial_updates_unsupported`) naming the stream and its columns.
+  no stored row lands null. A partial update merged into a destination without
+  `partial_updates` is a typed Config error (`partial_updates_unsupported`) naming the stream
+  and its columns. A source does not declare that it sends partial updates, so the error comes
+  with the first one, after earlier rows committed, and every retry meets it again: the stream
+  needs a destination that keeps columns. A change log stores the flags as data, so it needs no
+  such destination.
 - **Soft deletes.** The engine fills `_rdlt_deleted_at` with the load's `loaded_at` on delete
   rows and leaves it null on others. The destination keeps the stored values, sets the column, and
-  records the delete's seq. A destination declares the delete modes it supports; asking for one it
-  lacks is a Config error (`delete_mode_unsupported`). A destination declaring none merges no
-  change stream, even one ignoring every delete and truncate, since it would still need the seq
-  guard and the change columns.
+  records the delete's seq. A row deleted already keeps its deletion time: a later delete or
+  truncate advances only its seq. A destination declares the delete modes it supports; asking
+  for one it lacks is a Config error (`delete_mode_unsupported`). A destination declaring none
+  merges no change stream, even one ignoring every delete and truncate, since it would still need
+  the seq guard and the change columns.
 - **Defaults are `deletes: hard` and `on_truncate: apply`**, which replicate faithfully. `ignore`
   is opt-in, and the report counts every ignored delete and truncate (`deletes_ignored`,
   `truncates_ignored`). Only a change stream merged by key takes the settings
   (`plan_deletes_unused` otherwise). A `cdc` or `incremental` read written with `replace` is
   `plan_mode_invalid`.
+- **A table records who made its sequences** (`StateEntry::Sequences`: `Engine` or `Source`).
+  The first commit of each attempt records it where it changed. A change merge compares its
+  source's positions with the stored rows', which only works when the stored sequences are that
+  source's positions: the engine's, made for ordering within one commit, compare above any of
+  them. A change merge into a table whose rows the engine sequenced, or that a load created
+  before state recorded its sequences, is therefore refused before any row
+  (`table_sequences_mismatch`, a Config error): a backfill by a full merge and the CDC that
+  follows load into tables of their own.
+- **Only change streams read in phases.** A plan beginning a phase for a stream not read as
+  `cdc` is a typed Source error (`phase_unexpected`), since the stream would start over from its
+  plan's starts every run.
 - **A `cdc` stream accepts only change pushes.** Any other push is a typed Source error
   (`push_unexpected`), and so is a change push on a stream not read as `cdc`.
 - **Normalizing a `cdc` stream is refused** (`normalize_changes_unsupported`) until child tables
@@ -92,7 +108,8 @@ data is replayed from the source.
   §9.3's column-wise merging of partial updates is left to the destination, which has the stored
   row. A batch holding a truncate is not compacted.
 - **The reference CDC source** is `io.rapidbyte.changes` (`ChangesSource`). It reads a snapshot in
-  partitions at seq 0, then a `changes` partition whose seqs start at 1. The simulation's
+  partitions, taken after its first `captured` changes and carrying that position, then a
+  `changes` partition starting after it. The simulation's
   `io.rapidbyte.sim.changes` serves a seeded workload of inserts, updates, partial updates,
   deletes and truncates over two rounds, through faults, crashes, stops and racing runs. It
   captures its snapshot partway through the changes, as §9.4 says a CDC source does. Snapshot
@@ -108,6 +125,11 @@ data is replayed from the source.
   `Vec<Partition>` still compile through `From`.
 - A destination that implements change merges must honour the seq guard across commits, and a
   truncate's seq bound. M5b's clauses check this for any destination.
+- A remote destination built before M5a would drop `MergeKey.changes` as an unknown field and
+  upsert change rows as data. Nothing is published, so M5b settles it with a capability for
+  change merges when the SQL destinations learn them.
+- Switching an existing merge table to CDC needs a new table; a reset that clears a stream's
+  table and state is owed with M5d's retention reset.
 - The WAL cannot survive the loss of a worker's disk. That costs a re-read from the source, or,
   for a non-replayable source, the changes the lost WAL held. A deployment that cannot afford
   that keeps its WAL on durable storage.
