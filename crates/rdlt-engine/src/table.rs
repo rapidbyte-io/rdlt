@@ -129,11 +129,13 @@ fn merge_key(resolver: &Resolver, key_names: &[&str]) -> Option<MergeKey> {
             columns: vec![Arc::clone(root_id)],
             seq: Arc::clone(seq),
             root: Some(root.clone()),
+            changes: None,
         },
         _ => MergeKey {
             columns: key_names.iter().map(|name| (*name).into()).collect(),
             seq: Arc::clone(seq),
             root: None,
+            changes: None,
         },
     })
 }

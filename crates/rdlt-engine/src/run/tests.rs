@@ -2,8 +2,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::{
-    BoxFuture, Capabilities, Catalog, Cursor, Destination, OpenContext, OpenedSession, Partition,
-    PartitionId, PartitionSink, PipelineId, ReadRequest, Result, Source, StreamName, StreamState,
+    BoxFuture, Capabilities, Catalog, Cursor, Destination, OpenContext, OpenedSession, PartitionId,
+    PartitionSink, PipelineId, ReadRequest, Result, Source, StreamName, StreamState,
 };
 
 use super::{Engine, StopMode};
@@ -34,7 +34,7 @@ impl Source for Idle {
         &'a self,
         _: &'a StreamName,
         _: &'a StreamState,
-    ) -> BoxFuture<'a, Result<Vec<Partition>>> {
+    ) -> BoxFuture<'a, Result<rdlt_connector::PartitionPlan>> {
         unreachable!("the run is never polled")
     }
 

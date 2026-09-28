@@ -2,7 +2,9 @@
 
 use std::marker::PhantomData;
 
-use super::{Partition, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory};
+use super::{
+    Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory,
+};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::config;
 use crate::cursor::Cursor;
@@ -17,11 +19,11 @@ use crate::state::StreamState;
 pub(crate) trait ErasedStream<S>: Send + Sync {
     fn spec(&self) -> StreamSpec;
 
-    fn partitions<'a>(
+    fn plan<'a>(
         &'a self,
         source: &'a S,
         state: &'a StreamState,
-    ) -> BoxFuture<'a, Result<Vec<Partition>>>;
+    ) -> BoxFuture<'a, Result<PartitionPlan>>;
 
     fn read<'a>(
         &'a self,
@@ -43,12 +45,12 @@ impl<S: SourceConnector, R: ReadStream<S>> ErasedStream<S> for R {
         ReadStream::spec(self)
     }
 
-    fn partitions<'a>(
+    fn plan<'a>(
         &'a self,
         source: &'a S,
         state: &'a StreamState,
-    ) -> BoxFuture<'a, Result<Vec<Partition>>> {
-        Box::pin(ReadStream::partitions(self, source, state))
+    ) -> BoxFuture<'a, Result<PartitionPlan>> {
+        Box::pin(ReadStream::plan(self, source, state))
     }
 
     fn read<'a>(
@@ -124,9 +126,9 @@ impl<C: SourceConnector> Source for SourceAdapter<C> {
         &'a self,
         stream: &'a StreamName,
         state: &'a StreamState,
-    ) -> BoxFuture<'a, Result<Vec<Partition>>> {
+    ) -> BoxFuture<'a, Result<PartitionPlan>> {
         match self.stream(stream) {
-            Ok(erased) => erased.partitions(&self.connector, state),
+            Ok(erased) => erased.plan(&self.connector, state),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }

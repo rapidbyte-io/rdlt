@@ -19,5 +19,9 @@ pub const ROOT_ID_COLUMN: &str = "_rdlt_root_id";
 /// The column holding each child row's position in its parent's array: `Int64`.
 pub const IDX_COLUMN: &str = "_rdlt_idx";
 
+/// The column recording when a change stream's soft delete removed each row:
+/// `Timestamp(Microsecond, "UTC")`, null for rows not deleted.
+pub const DELETED_AT_COLUMN: &str = "_rdlt_deleted_at";
+
 /// The prefix every metadata column name starts with.
 pub const META_PREFIX: &str = "_rdlt_";

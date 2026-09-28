@@ -5,7 +5,9 @@ use std::sync::Arc;
 use super::types::{instant, system_time};
 use super::{Invalid, required, v1};
 use crate::commit::{ChildTable, CommitMeta, Receipt, SegmentRange, SegmentSet};
-use crate::destination::{MergeKey, RootKey, TableChange, TableRef, WriteStats};
+use crate::destination::{
+    ChangeColumns, Deletion, MergeKey, RootKey, TableChange, TableRef, WriteStats,
+};
 use crate::id::{CommitSeq, Epoch, GenerationId, LoadId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
 use crate::state::StateChange;
@@ -29,6 +31,14 @@ impl From<&MergeKey> for v1::MergeKey {
                 id: root.id.to_string(),
                 seq: root.seq.to_string(),
             }),
+            changes: key.changes.as_ref().map(|changes| v1::ChangeColumns {
+                op: changes.op.to_string(),
+                unchanged: changes.unchanged.as_ref().map(ToString::to_string),
+                deleted_at: match &changes.deletion {
+                    Deletion::Hard => None,
+                    Deletion::Soft { at } => Some(at.to_string()),
+                },
+            }),
         }
     }
 }
@@ -42,6 +52,14 @@ impl From<v1::MergeKey> for MergeKey {
                 table: Arc::from(root.table),
                 id: Arc::from(root.id),
                 seq: Arc::from(root.seq),
+            }),
+            changes: key.changes.map(|changes| ChangeColumns {
+                op: Arc::from(changes.op),
+                unchanged: changes.unchanged.map(Arc::from),
+                deletion: match changes.deleted_at {
+                    None => Deletion::Hard,
+                    Some(at) => Deletion::Soft { at: Arc::from(at) },
+                },
             }),
         }
     }

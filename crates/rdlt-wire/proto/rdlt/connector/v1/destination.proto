@@ -34,6 +34,18 @@ message MergeKey {
   string seq = 2;
   // For a child table, the root table's key its rows follow.
   optional RootKey root = 3;
+  // For a change stream's table, the columns saying what each row does.
+  optional ChangeColumns changes = 4;
+}
+
+// The columns of a change stream's written rows that say what each row does.
+message ChangeColumns {
+  // The column holding each row's op code.
+  string op = 1;
+  // The column flagging an update's unchanged columns, where rows may flag some.
+  optional string unchanged = 2;
+  // For soft deletes, the column recording when a row was deleted; absent, deletes remove rows.
+  optional string deleted_at = 3;
 }
 
 // How a child table's rows follow the root table's rows.

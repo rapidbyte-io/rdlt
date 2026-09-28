@@ -8,8 +8,8 @@ use std::time::Duration;
 use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{
     BoxFuture, Capabilities, Catalog, ConnectorError, ConnectorErrorKind, ConnectorSpec, Cursor,
-    Destination, OpenContext, OpenedSession, Partition, PartitionId, PartitionSink, ReadRequest,
-    Role, Source, StreamName, StreamState,
+    Destination, OpenContext, OpenedSession, PartitionId, PartitionPlan, PartitionSink,
+    ReadRequest, Role, Source, StreamName, StreamState,
 };
 use tokio::sync::Mutex;
 
@@ -301,7 +301,7 @@ impl Source for SupervisedSource {
         &'a self,
         stream: &'a StreamName,
         state: &'a StreamState,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Vec<Partition>>> {
+    ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
         Box::pin(async move {
             let result = self.source().await?.plan(stream, state).await;
             self.0.explain(result).await

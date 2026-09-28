@@ -5,7 +5,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Partition, ReadRequest, ReadStream, Source, SourceConnector, Streams, source_factory};
+use super::{
+    Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector, Streams,
+    source_factory,
+};
 use crate::catalog::StreamSpec;
 use crate::cursor::Cursor;
 use crate::emitter::Emitter;
@@ -193,7 +196,7 @@ async fn discover_and_plan_use_the_registered_streams() {
             .plan(&numbers(), &StreamState::default())
             .await
             .unwrap(),
-        vec![Partition::single()]
+        PartitionPlan::new(vec![Partition::single()])
     );
 }
 
@@ -316,7 +319,7 @@ async fn default_stream_methods_plan_one_partition_and_accept_commits() {
     let silent = StreamName::new("silent").unwrap();
     assert_eq!(
         source.plan(&silent, &StreamState::default()).await.unwrap(),
-        vec![Partition::single()]
+        PartitionPlan::new(vec![Partition::single()])
     );
     let cursors = [(
         Partition::single().id().clone(),

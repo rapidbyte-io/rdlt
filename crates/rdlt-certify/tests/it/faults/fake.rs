@@ -252,6 +252,8 @@ impl Connector for Fake {
     ) -> Result<Response<v1::PlanResponse>, Status> {
         Ok(Response::new(v1::PlanResponse {
             partitions: vec!["whole".to_owned()],
+            phase: None,
+            starts: Vec::new(),
         }))
     }
 

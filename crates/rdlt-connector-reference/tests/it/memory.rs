@@ -339,6 +339,7 @@ fn merge_table() -> TableRef {
             columns: vec!["id".into()],
             seq: "_rdlt_seq".into(),
             root: None,
+            changes: None,
         }),
         ..table_ref("m")
     }

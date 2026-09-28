@@ -14,7 +14,9 @@ use crate::capabilities::{
 use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec};
 use crate::commit::{ChildTable, CommitMeta, Receipt, SegmentSet};
 use crate::cursor::Cursor;
-use crate::destination::{MergeKey, RootKey, TableChange, TableRef, WriteStats};
+use crate::destination::{
+    ChangeColumns, Deletion, MergeKey, RootKey, TableChange, TableRef, WriteStats,
+};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 use crate::id::{
     CommitSeq, Epoch, GenerationId, LoadId, PartitionId, SchemaVersion, SegmentId, StreamName,
@@ -218,14 +220,27 @@ fn merge_key() -> impl Strategy<Value = MergeKey> {
         proptest::collection::vec(name(), 1..3),
         name(),
         proptest::option::of((name(), name(), name())),
+        proptest::option::of((
+            name(),
+            proptest::option::of(name()),
+            proptest::option::of(name()),
+        )),
     )
-        .prop_map(|(columns, seq, root)| MergeKey {
+        .prop_map(|(columns, seq, root, changes)| MergeKey {
             columns: columns.into_iter().map(Arc::from).collect(),
             seq: Arc::from(seq),
             root: root.map(|(table, id, seq)| RootKey {
                 table: Arc::from(table),
                 id: Arc::from(id),
                 seq: Arc::from(seq),
+            }),
+            changes: changes.map(|(op, unchanged, at)| ChangeColumns {
+                op: Arc::from(op),
+                unchanged: unchanged.map(Arc::from),
+                deletion: match at {
+                    Some(at) => Deletion::Soft { at: Arc::from(at) },
+                    None => Deletion::Hard,
+                },
             }),
         })
 }

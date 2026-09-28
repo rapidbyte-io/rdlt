@@ -224,6 +224,7 @@ impl Bench<'_> {
                 columns: vec!["id".into()],
                 seq: SEQ.into(),
                 root: None,
+                changes: None,
             }),
             ..self.table()
         };

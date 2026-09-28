@@ -52,7 +52,8 @@ async fn partitions_cover_every_row_exactly_once() {
     let partitions = source
         .plan(&StreamName::new("events").unwrap(), &StreamState::default())
         .await
-        .unwrap();
+        .unwrap()
+        .partitions;
     assert_eq!(partitions.len(), 4);
     let mut ids = Vec::new();
     for partition in partitions {

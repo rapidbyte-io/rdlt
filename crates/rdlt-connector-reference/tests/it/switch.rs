@@ -26,6 +26,7 @@ fn table(merging: bool) -> TableRef {
             columns: vec!["id".into()],
             seq: "seq".into(),
             root: None,
+            changes: None,
         }),
     }
 }

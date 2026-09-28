@@ -28,6 +28,9 @@ pub enum ChangeOp {
     Update,
     /// A removed row; only key columns need values.
     Delete,
+    /// Every row of the table the source truncated before this position; no column needs a
+    /// value.
+    Truncate,
 }
 
 impl ChangeOp {
@@ -37,6 +40,7 @@ impl ChangeOp {
             Self::Insert => 0,
             Self::Update => 1,
             Self::Delete => 2,
+            Self::Truncate => 3,
         }
     }
 
@@ -46,6 +50,7 @@ impl ChangeOp {
             0 => Some(Self::Insert),
             1 => Some(Self::Update),
             2 => Some(Self::Delete),
+            3 => Some(Self::Truncate),
             _ => None,
         }
     }

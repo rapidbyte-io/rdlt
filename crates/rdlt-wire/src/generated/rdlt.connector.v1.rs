@@ -867,11 +867,17 @@ pub struct PlanRequest {
     pub state: ::core::option::Option<StreamState>,
 }
 /// The partitions of a stream to read.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PlanResponse {
     /// Their ids, distinct.
     #[prost(string, repeated, tag = "1")]
     pub partitions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The stream's phase they belong to; absent, the phase state records.
+    #[prost(uint32, optional, tag = "2")]
+    pub phase: ::core::option::Option<u32>,
+    /// Where partitions of a new phase start; each with a cursor.
+    #[prost(message, repeated, tag = "3")]
+    pub starts: ::prost::alloc::vec::Vec<PartitionState>,
 }
 /// What the engine sends on a read.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1206,6 +1212,22 @@ pub struct MergeKey {
     /// For a child table, the root table's key its rows follow.
     #[prost(message, optional, tag = "3")]
     pub root: ::core::option::Option<RootKey>,
+    /// For a change stream's table, the columns saying what each row does.
+    #[prost(message, optional, tag = "4")]
+    pub changes: ::core::option::Option<ChangeColumns>,
+}
+/// The columns of a change stream's written rows that say what each row does.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ChangeColumns {
+    /// The column holding each row's op code.
+    #[prost(string, tag = "1")]
+    pub op: ::prost::alloc::string::String,
+    /// The column flagging an update's unchanged columns, where rows may flag some.
+    #[prost(string, optional, tag = "2")]
+    pub unchanged: ::core::option::Option<::prost::alloc::string::String>,
+    /// For soft deletes, the column recording when a row was deleted; absent, deletes remove rows.
+    #[prost(string, optional, tag = "3")]
+    pub deleted_at: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// How a child table's rows follow the root table's rows.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

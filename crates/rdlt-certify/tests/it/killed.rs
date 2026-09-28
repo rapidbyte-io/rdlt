@@ -6,8 +6,8 @@ use rdlt_connector::serve::Served;
 use rdlt_connector::{
     BoxFuture, Capabilities, Catalog, CommitMeta, ConnectContext, ConnectorSpec, Cursor,
     Destination, DestinationFactory, DestinationSession, DestinationWriter, OpenContext,
-    OpenedSession, Partition, PartitionId, PartitionSink, ReadRequest, Receipt, SegmentSet, Source,
-    SourceFactory, StreamName, StreamState, TableChange, TableRef, destination_factory,
+    OpenedSession, PartitionId, PartitionPlan, PartitionSink, ReadRequest, Receipt, SegmentSet,
+    Source, SourceFactory, StreamName, StreamState, TableChange, TableRef, destination_factory,
     source_factory,
 };
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
@@ -55,7 +55,7 @@ impl Source for ForgetfulSource {
         &'a self,
         stream: &'a StreamName,
         state: &'a StreamState,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Vec<Partition>>> {
+    ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
         self.0.plan(stream, state)
     }
 

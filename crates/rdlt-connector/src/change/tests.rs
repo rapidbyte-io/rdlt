@@ -18,10 +18,16 @@ fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
 
 #[test]
 fn op_codes_round_trip() {
-    for op in [ChangeOp::Insert, ChangeOp::Update, ChangeOp::Delete] {
+    for op in [
+        ChangeOp::Insert,
+        ChangeOp::Update,
+        ChangeOp::Delete,
+        ChangeOp::Truncate,
+    ] {
         assert_eq!(ChangeOp::from_code(op.code()), Some(op));
     }
-    assert_eq!(ChangeOp::from_code(3), None);
+    assert_eq!(ChangeOp::from_code(4), None);
+    assert_eq!(ChangeOp::from_code(-1), None);
 }
 
 #[test]

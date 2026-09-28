@@ -160,6 +160,7 @@ async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
         .plan(&stream, &rdlt_connector::StreamState::default())
         .await
         .expect("the source plans")
+        .partitions
         .remove(0);
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
     // Raised before the read starts, as the engine raises one for a partition yet to start.

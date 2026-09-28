@@ -41,6 +41,9 @@ pub struct WriteModes {
 }
 
 /// The delete modes a destination supports for change streams.
+///
+/// A destination declaring none merges no change stream, since merging one needs the seq guard and
+/// the change columns (`MergeKey::changes`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DeleteModes {
     /// Remove the row.
