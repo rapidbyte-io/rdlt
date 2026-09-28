@@ -80,8 +80,14 @@ fn number<'de, V: Visitor<'de>>(
         .as_raw_number()
         .map(|number| number.as_str().to_owned())
         .unwrap_or_default();
-    if text.contains(['.', 'e', 'E']) {
+    // The fast parse reads `-0` as a float, and refuses floats beyond the finite ones.
+    if text.contains(['.', 'e', 'E']) || text == "-0" {
         let float: f64 = text.parse().map_err(de::Error::custom)?;
+        if !float.is_finite() {
+            let refused =
+                ShredError::Invalid(format!("the number {text} is beyond a float's range"));
+            return Err(context.fail(refused));
+        }
         // Negative zero reads as zero, as the fast parse reads it.
         return visitor.visit_f64(if float == 0.0 { 0.0 } else { float });
     }
