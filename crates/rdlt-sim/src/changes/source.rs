@@ -193,6 +193,15 @@ async fn read_changes(
     let batch_rows = usize::try_from(stream.batch_rows).unwrap_or(1);
     let visible = stream.rounds[world.phase().min(stream.rounds.len() - 1)];
     let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
+    // Resuming past changes it sends again, the source sends them before any other, and
+    // checkpoints where it resumed, so they commit.
+    if let Some(replay) = stream.replay.clone().filter(|replay| replay.end <= next) {
+        let rows: Vec<Change> = replay
+            .map(|index| Change::of(&stream.events[index], index as u64 + 1))
+            .collect();
+        out.changes(batch(&rows)).await?;
+        out.checkpoint(&cursor).await?;
+    }
     while next < visible {
         world.latency().await;
         if let Some(fault) = world.fault(FaultPoint::Read) {
