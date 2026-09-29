@@ -23,6 +23,28 @@ fn object(x: i64, y: Value) -> Scalar {
     ])
 }
 
+/// `value`, pushed as JSON.
+fn pushed(value: Value) -> Node {
+    fn scalar(value: Value) -> Scalar {
+        match value {
+            Value::Null => Scalar::Null,
+            Value::Bool(value) => Scalar::Bool(value),
+            Value::Number(number) => number
+                .as_i64()
+                .map_or_else(|| Scalar::Float64(number.as_f64().unwrap()), Scalar::Int),
+            Value::String(text) => Scalar::Utf8(text),
+            Value::Array(items) => Scalar::List(items.into_iter().map(scalar).collect()),
+            Value::Object(members) => Scalar::Struct(
+                members
+                    .into_iter()
+                    .map(|(name, inner)| (name, scalar(inner)))
+                    .collect(),
+            ),
+        }
+    }
+    Node::Json(scalar(value), LogicalType::Json)
+}
+
 /// The tables one row holding `node` in column `a` normalizes into, to `max_depth`.
 fn normalized(node: Node, max_depth: u8) -> Tables {
     let mut pending = Pending::default();
@@ -67,7 +89,7 @@ fn containers_deeper_than_the_limit_are_stored_whole() {
 
 #[test]
 fn pushed_arrays_of_arrays_become_grandchild_tables() {
-    let tables = normalized(Node::Json(json!([[1, 2], []])), 8);
+    let tables = normalized(pushed(json!([[1, 2], []])), 8);
     let grandchildren = &tables[&vec!["s".to_owned(), "a".to_owned(), "value".to_owned()]];
     let idents: Vec<&str> = grandchildren.iter().map(|row| row.ident.as_str()).collect();
     assert_eq!(
@@ -90,23 +112,23 @@ fn a_json_null_counts_as_a_value_its_policy_discards() {
 
 #[test]
 fn an_empty_array_or_an_object_of_nulls_counts_only_where_it_is_stored_whole() {
-    let empty = || vec![("a".to_owned(), Node::Json(json!([])))];
+    let empty = || vec![("a".to_owned(), pushed(json!([])))];
     assert_eq!(counted(empty(), None), 1);
     assert_eq!(counted(empty(), Some(8)), 0, "normalized, it holds no item");
-    let nulls = || vec![("a".to_owned(), Node::Json(json!({"x": null})))];
+    let nulls = || vec![("a".to_owned(), pushed(json!({"x": null})))];
     assert_eq!(counted(nulls(), None), 1);
     assert_eq!(
         counted(nulls(), Some(8)),
         0,
         "normalized, it holds no value column"
     );
-    let items = vec![("a".to_owned(), Node::Json(json!([{"x": 1}, 2])))];
+    let items = vec![("a".to_owned(), pushed(json!([{"x": 1}, 2])))];
     assert_eq!(counted(items, Some(8)), 2, "each item counts");
 }
 
 #[test]
 fn a_value_adds_a_child_row_for_each_array_item_at_any_depth_within_the_limit() {
-    let value = || Node::Json(json!([{"x": 1}, {"x": 2, "y": [1, 2]}, 3]));
+    let value = || pushed(json!([{"x": 1}, {"x": 2, "y": [1, 2]}, 3]));
     assert_eq!(
         child_rows("a", value(), 8),
         5,
@@ -117,7 +139,7 @@ fn a_value_adds_a_child_row_for_each_array_item_at_any_depth_within_the_limit() 
         3,
         "the inner array is stored whole"
     );
-    let object = Node::Json(json!({"x": 1, "y": {"z": 2}}));
+    let object = pushed(json!({"x": 1, "y": {"z": 2}}));
     assert_eq!(
         child_rows("a", object, 8),
         0,

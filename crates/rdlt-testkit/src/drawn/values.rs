@@ -1,6 +1,8 @@
 //! Drawn types and values: every logical type, in every encoding a source may send it in, and
 //! values across each type's whole range.
 
+mod numbers;
+
 use std::sync::Arc;
 
 use proptest::prelude::*;
@@ -11,6 +13,7 @@ use super::Drawn;
 use super::Scalar;
 use super::arrays::{Encoding, Shape};
 use super::floats::{doubles, singles};
+use numbers::{decimals, integer};
 
 /// The source columns batches draw from.
 const NAMES: [&str; 3] = ["a", "b", "c"];
@@ -210,28 +213,7 @@ fn present(shape: &Shape) -> BoxedStrategy<Scalar> {
             .boxed(),
         T::Float32 => singles().prop_map(Scalar::Float32).boxed(),
         T::Float64 => doubles().prop_map(Scalar::Float64).boxed(),
-        T::Decimal(_) if unsigned => any::<u64>()
-            .prop_map(|value| Scalar::Decimal(value.to_string()))
-            .boxed(),
-        T::Decimal(decimal) => {
-            let digits = usize::from(decimal.precision());
-            (
-                any::<bool>(),
-                proptest::collection::vec(0_u8..10, 1..=digits),
-            )
-                .prop_map(|(negative, digits)| {
-                    let digits: String = digits
-                        .iter()
-                        .map(|digit| char::from(b'0' + digit))
-                        .collect();
-                    Scalar::Decimal(if negative {
-                        format!("-{digits}")
-                    } else {
-                        digits
-                    })
-                })
-                .boxed()
-        }
+        T::Decimal(decimal) => decimals(*decimal, shape.encoding),
         T::Utf8 => proptest::collection::vec(any::<char>(), 0..6)
             .prop_map(|chars| Scalar::Utf8(chars.into_iter().collect()))
             .boxed(),
@@ -251,33 +233,6 @@ fn present(shape: &Shape) -> BoxedStrategy<Scalar> {
         T::Uuid => any::<[u8; 16]>().prop_map(Scalar::Uuid).boxed(),
         T::Json => json_value(2).prop_map(Scalar::Json).boxed(),
         T::Struct(_) | T::List(_) => nested(shape),
-    }
-}
-
-/// A present integer of `logical`, within the unsigned type one size down where `unsigned`.
-fn integer(logical: &LogicalType, unsigned: bool) -> BoxedStrategy<Scalar> {
-    use LogicalType as T;
-    match logical {
-        T::Int8 => any::<i8>()
-            .prop_map(|value| Scalar::Int(value.into()))
-            .boxed(),
-        T::Int16 if unsigned => any::<u8>()
-            .prop_map(|value| Scalar::Int(value.into()))
-            .boxed(),
-        T::Int16 => any::<i16>()
-            .prop_map(|value| Scalar::Int(value.into()))
-            .boxed(),
-        T::Int32 if unsigned => any::<u16>()
-            .prop_map(|value| Scalar::Int(value.into()))
-            .boxed(),
-        T::Int32 => any::<i32>()
-            .prop_map(|value| Scalar::Int(value.into()))
-            .boxed(),
-        T::Int64 if unsigned => any::<u32>()
-            .prop_map(|value| Scalar::Int(value.into()))
-            .boxed(),
-        T::Int64 => any::<i64>().prop_map(Scalar::Int).boxed(),
-        other => unreachable!("{other} is not an integer type"),
     }
 }
 

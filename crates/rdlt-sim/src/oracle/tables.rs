@@ -352,6 +352,7 @@ impl Table<'_> {
         }
         if let Some(source) = sent.source()
             && logical.join(source) != *logical
+            && !sent.cast_exactly(logical)
         {
             return Some(format!(
                 "{physical} is {logical}, which does not hold {source}"

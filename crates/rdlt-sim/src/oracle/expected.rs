@@ -12,7 +12,7 @@ use rdlt_engine::SchemaPolicy;
 use rdlt_testkit::canon::{self, Canon};
 use rdlt_testkit::decode;
 use rdlt_testkit::drawn::Scalar;
-use rdlt_testkit::drawn::json::rendered;
+use rdlt_testkit::drawn::json::text;
 use serde_json::Value;
 
 use super::arrivals::{Arrival, all, arrival, fixed, widest};
@@ -24,8 +24,8 @@ pub(super) use discards::{Chance, Discards, discards, dropped, pruned};
 pub(super) enum Sent {
     /// A value of an Arrow batch's column, of the column's type.
     Typed(Scalar, LogicalType),
-    /// A value of a JSON push, whose type the engine infers.
-    Json(Value),
+    /// A value of a JSON push, as its JSON text, whose type the engine infers.
+    Json(String),
 }
 
 impl Sent {
@@ -33,8 +33,18 @@ impl Sent {
     pub(super) fn meaning(&self, column: &LogicalType) -> Canon {
         match self {
             Self::Typed(value, source) => canon::canonical_into(value, source, column),
-            Self::Json(value) => decode::json_as(&value.to_string(), column),
+            Self::Json(text) => decode::json_as(text, column),
         }
+    }
+
+    /// Whether a column of `column` holds the value cast, as a column of 64-bit floats holds a
+    /// 64-bit integer a float holds exactly.
+    pub(super) fn cast_exactly(&self, column: &LogicalType) -> bool {
+        matches!(
+            (self, column),
+            (Self::Typed(Scalar::Int(value), LogicalType::Int64), LogicalType::Float64)
+                if value.unsigned_abs() <= 1 << 53
+        )
     }
 
     /// The type the source sent the value as, where it says.
@@ -237,10 +247,21 @@ fn owned(stream: &SimStream, delivered: &[Row], column: usize) -> Option<Logical
             .all(|arrival| arrival.fits(declared) == Some(true))
             .then(|| declared.clone()),
         (None, SchemaPolicy::DiscardRow | SchemaPolicy::DiscardValue) => None,
-        (None, _) => match arrivals.as_slice() {
-            [Arrival::Typed(only)] => Some(only.clone()),
-            _ => None,
-        },
+        // Integers, exact or not, are one type to the column they create.
+        (None, _) => {
+            let types: Option<Vec<LogicalType>> =
+                arrivals.iter().map(|arrival| arrival.logical()).collect();
+            let mut distinct: Vec<LogicalType> = Vec::new();
+            for logical in types? {
+                if !distinct.contains(&logical) {
+                    distinct.push(logical);
+                }
+            }
+            match distinct.as_slice() {
+                [only] => Some(only.clone()),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -295,17 +316,18 @@ fn drift_type<'a>(row: &Row, drift: &'a Drift) -> &'a LogicalType {
 /// `value` of `logical` as the stream sent it.
 fn node(stream: &SimStream, logical: &LogicalType, value: &Scalar) -> Node {
     if stream.json {
-        Node::Json(rendered(value))
+        Node::Json(value.clone(), logical.clone())
     } else {
         Node::Typed(value.clone(), logical.clone())
     }
 }
 
-/// A value while it normalizes: typed, from Arrow, or JSON.
+/// A value while it normalizes: typed, from Arrow, or pushed as JSON, whose leaves the engine
+/// reads as their JSON text says.
 #[derive(Clone, Debug)]
 enum Node {
     Typed(Scalar, LogicalType),
-    Json(Value),
+    Json(Scalar, LogicalType),
 }
 
 /// What a node is to normalizing.
@@ -319,7 +341,7 @@ enum Kind {
 impl Node {
     fn kind(&self) -> Kind {
         match self {
-            Self::Typed(Scalar::Null, _) | Self::Json(Value::Null) => Kind::Null,
+            Self::Typed(Scalar::Null, _) | Self::Json(Scalar::Null, _) => Kind::Null,
             Self::Typed(Scalar::Struct(fields), LogicalType::Struct(types)) => Kind::Object(
                 fields
                     .iter()
@@ -336,18 +358,33 @@ impl Node {
                     .map(|inner| Self::Typed(inner.clone(), item.logical_type().clone()))
                     .collect(),
             ),
-            Self::Json(Value::Object(members)) => Kind::Object(
-                members
+            Self::Json(Scalar::Struct(fields), logical) => Kind::Object(
+                fields
                     .iter()
-                    .map(|(name, inner)| (name.clone(), Self::Json(inner.clone())))
+                    .map(|(name, inner)| {
+                        let inner_type = match logical {
+                            LogicalType::Struct(types) => types
+                                .iter()
+                                .find(|field| field.name() == name)
+                                .map_or(LogicalType::Json, |field| field.logical_type().clone()),
+                            _ => LogicalType::Json,
+                        };
+                        (name.clone(), Self::Json(inner.clone(), inner_type))
+                    })
                     .collect(),
             ),
-            Self::Json(Value::Array(items)) => Kind::Array(
-                items
-                    .iter()
-                    .map(|inner| Self::Json(inner.clone()))
-                    .collect(),
-            ),
+            Self::Json(Scalar::List(items), logical) => {
+                let item = match logical {
+                    LogicalType::List(item) => item.logical_type().clone(),
+                    _ => LogicalType::Json,
+                };
+                Kind::Array(
+                    items
+                        .iter()
+                        .map(|inner| Self::Json(inner.clone(), item.clone()))
+                        .collect(),
+                )
+            }
             _ => Kind::Leaf,
         }
     }
@@ -355,7 +392,7 @@ impl Node {
     fn sent(self) -> Sent {
         match self {
             Self::Typed(value, logical) => Sent::Typed(value, logical),
-            Self::Json(value) => Sent::Json(value),
+            Self::Json(value, logical) => Sent::Json(text(&value, &logical)),
         }
     }
 }

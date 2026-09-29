@@ -70,9 +70,10 @@ fn pushed_shapes_hold_only_types_json_holds() {
             TypeKind::Bool | TypeKind::Int64 | TypeKind::Float64 | TypeKind::Utf8
         );
         let nested = matches!(shape.logical.kind(), TypeKind::Struct | TypeKind::List);
-        shape.encoding == Encoding::Plain
-            && (leaf || nested)
-            && shape.children.iter().all(json_types)
+        *shape == pushed::integers()
+            || (shape.encoding == Encoding::Plain
+                && (leaf || nested)
+                && shape.children.iter().all(json_types))
     }
     let mut runner = TestRunner::deterministic();
     let strategy = pushed::shape(3);
@@ -131,4 +132,75 @@ fn a_float_column_draws_nan_infinities_and_negative_zero() {
     let every = BTreeSet::from(["NaN", "infinity", "-infinity", "-0"]);
     assert_eq!(edges(LogicalType::Float64), every);
     assert_eq!(edges(LogicalType::Float32), every);
+}
+
+#[test]
+fn a_decimal_s_json_text_has_its_scale_and_no_leading_zeros() {
+    let decimal = |precision, scale| {
+        LogicalType::Decimal(rdlt_connector::DecimalType::new(precision, scale).unwrap())
+    };
+    let text = |digits: &str, logical: &LogicalType| {
+        pushed::text(&Scalar::Decimal(digits.to_owned()), logical)
+    };
+    assert_eq!(text("12345", &decimal(10, 2)), "123.45");
+    assert_eq!(text("-5", &decimal(10, 2)), "-0.05");
+    assert_eq!(text("007", &decimal(10, 0)), "7");
+    assert_eq!(text("-000", &decimal(10, 2)), "0.00");
+    let wide = "1".repeat(90);
+    assert_eq!(
+        text(&format!("00{wide}"), &pushed::integers().logical),
+        wide
+    );
+    let nested = LogicalType::List(Box::new(rdlt_connector::Field::new(
+        "item",
+        decimal(4, 1),
+        true,
+    )));
+    let list = Scalar::List(vec![Scalar::Decimal("15".to_owned()), Scalar::Null]);
+    assert_eq!(pushed::text(&list, &nested), "[1.5,null]");
+}
+
+#[test]
+fn integers_of_64_bits_draw_both_those_a_float_holds_and_those_it_would_round() {
+    let mut runner = TestRunner::deterministic();
+    let shape = Shape {
+        logical: LogicalType::Int64,
+        encoding: Encoding::Plain,
+        children: Vec::new(),
+    };
+    let strategy = values::value(&shape, false);
+    let (mut exact, mut rounds) = (0, 0);
+    for _ in 0..1_000 {
+        match strategy.new_tree(&mut runner).expect("a value").current() {
+            Scalar::Int(value) if value.unsigned_abs() <= 1 << 53 => exact += 1,
+            Scalar::Int(_) => rounds += 1,
+            other => panic!("an integer column drew {other:?}"),
+        }
+    }
+    assert!(
+        exact > 300 && rounds > 300,
+        "{exact} exact, {rounds} rounding"
+    );
+}
+
+#[test]
+fn whole_numbers_pushed_as_json_reach_every_width() {
+    let mut runner = TestRunner::deterministic();
+    let strategy = values::value(&pushed::integers(), false);
+    let mut widths = BTreeSet::new();
+    for _ in 0..2_000 {
+        let Scalar::Decimal(digits) = strategy.new_tree(&mut runner).expect("a value").current()
+        else {
+            panic!("whole numbers are decimals");
+        };
+        let width = digits.trim_start_matches('-').len();
+        assert!(!digits.trim_start_matches('-').starts_with('0') || width == 1);
+        widths.insert(match width {
+            ..=18 => "64 bits",
+            19..=38 => "38 digits",
+            39..=76 => "76 digits",
+            _ => "beyond",
+        });
+    }
+    assert_eq!(widths.len(), 4, "{widths:?}");
 }

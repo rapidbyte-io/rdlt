@@ -36,7 +36,8 @@ pub(super) fn lower(
 ) -> Expected {
     let targets: Vec<Option<usize>> = columns
         .iter()
-        .map(|(name, logical)| holding(view, name, logical))
+        .enumerate()
+        .map(|(index, (name, logical))| holding(view, name, logical, exact(rows, index)))
         .collect();
     let mut expected = Expected {
         sources: vec![None; view.model.columns.len()],
@@ -71,9 +72,21 @@ pub(super) fn lower(
     expected
 }
 
+/// Whether every value of the batch's column `column` in `rows` is an integer a 64-bit float holds
+/// exactly.
+fn exact(rows: &[Vec<Scalar>], column: usize) -> bool {
+    rows.iter().all(|row| match &row[column] {
+        Scalar::Int(value) => value.unsigned_abs() <= crate::table::EXACT_IN_FLOAT,
+        _ => true,
+    })
+}
+
 /// The view's column holding values of `logical` for the source column `name`: its own column,
 /// else its variants in the order of their kinds, whichever first holds every value of the type.
-fn holding(view: &TableView, name: &str, logical: &LogicalType) -> Option<usize> {
+///
+/// The own column also holds 64-bit integers cast where it is one of 64-bit floats and every one
+/// is `exact`.
+fn holding(view: &TableView, name: &str, logical: &LogicalType, exact: bool) -> Option<usize> {
     let path = ColumnPath::from(name);
     let mut variants: Vec<(rdlt_connector::TypeKind, usize)> = view
         .model
@@ -94,10 +107,15 @@ fn holding(view: &TableView, name: &str, logical: &LogicalType) -> Option<usize>
         .model
         .column(&ColumnKey::Source(path.clone()))
         .map(|(index, _)| index);
-    own.into_iter()
-        .chain(variants.into_iter().map(|(_, index)| index))
-        .find(|index| {
-            let column = view.model.columns[*index].logical_type();
-            column.join(logical) == *column
-        })
+    let cast = |index: usize| {
+        exact
+            && *logical == LogicalType::Int64
+            && *view.model.columns[index].logical_type() == LogicalType::Float64
+    };
+    let fits = |index: &usize| {
+        let column = view.model.columns[*index].logical_type();
+        column.join(logical) == *column
+    };
+    own.filter(|index| fits(index) || cast(*index))
+        .or_else(|| variants.into_iter().map(|(_, index)| index).find(fits))
 }

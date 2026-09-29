@@ -116,15 +116,32 @@ struct Rules<'a> {
     capabilities: &'a Capabilities,
 }
 
-/// What one batch column does to its own column.
+/// What one batch column does to its own column, of state `S`.
 #[derive(Debug, PartialEq)]
-enum Step {
-    /// It fits, or widens the column to this type, or goes to a variant.
-    To(LogicalType),
+enum Step<S> {
+    /// It fits, or widens the column to this state, or goes to a variant.
+    To(S),
     /// It is refused.
     Refused,
     /// The model cannot say.
     Unknown,
+}
+
+/// A drift column's own column: its type, and whether a 64-bit float holds every value stored in
+/// it exactly, which only a column of 64-bit integers keeps track of.
+#[derive(Clone, Debug, PartialEq)]
+struct Own {
+    logical: LogicalType,
+    exact: bool,
+}
+
+impl Own {
+    /// A column of `logical` created with `arrival`'s values, or with none where the type is
+    /// declared.
+    fn new(logical: LogicalType, arrival: Option<&Arrival>) -> Self {
+        let exact = logical == LogicalType::Int64 && !arrival.is_some_and(Arrival::rounds);
+        Self { logical, exact }
+    }
 }
 
 impl<'a> Column<'a> {
@@ -159,7 +176,7 @@ impl<'a> Column<'a> {
         }
         // The declared schema is resolved as each run plans, before anything is read.
         if let (Some(declared), Some(hint)) = (&drift.declared, &drift.hint)
-            && hint.join(declared) != *hint
+            && Arrival::declared(declared).fits(hint) == Some(false)
         {
             return Outcome::must(rules.code());
         }
@@ -174,7 +191,7 @@ impl<'a> Column<'a> {
         let initial = drift
             .declared
             .as_ref()
-            .map(|declared| drift.hint.clone().unwrap_or_else(|| declared.clone()));
+            .map(|declared| Own::new(drift.hint.clone().unwrap_or_else(|| declared.clone()), None));
         let arrivals: Vec<Vec<Arrival>> = (0..=phase).map(|at| self.arrivals(at)).collect();
         let outcome = outcome(initial, &arrivals, rules.code(), |current, arrival| {
             rules.step(current, arrival)
@@ -210,7 +227,7 @@ impl<'a> Column<'a> {
         declared.is_none_or(scalar)
             && (0..=phase)
                 .flat_map(|at| self.arrivals(at))
-                .all(|arrival| matches!(arrival, Arrival::Typed(logical) if scalar(&logical)))
+                .all(|arrival| arrival.logical().is_some_and(|logical| scalar(&logical)))
     }
 
     /// The distinct types the column arrives as in `phase`, other than nulls: its pushes', and
@@ -250,36 +267,51 @@ impl Rules<'_> {
         }
     }
 
-    /// What a batch column arriving as `arrival` does to an own column of `current`, or to none
+    /// What a batch column arriving as `arrival` does to an own column `current`, or to none
     /// yet: the steps schema resolution takes.
-    fn step(&self, current: Option<&LogicalType>, arrival: &Arrival) -> Step {
-        let current = match (current, &self.hint, arrival) {
+    fn step(&self, current: Option<&Own>, arrival: &Arrival) -> Step<Own> {
+        let current = match (current, &self.hint, arrival.logical()) {
             (Some(current), ..) => current.clone(),
             (None, ..) if self.policy == SchemaPolicy::Freeze => return Step::Refused,
             (None, ..) if !self.capabilities.schema_changes.add_column => {
                 return Step::Refused;
             }
-            (None, Some(hint), _) => hint.clone(),
-            (None, None, Arrival::Typed(logical)) => logical.clone(),
-            (None, None, Arrival::Container) => return Step::Unknown,
+            (None, Some(hint), _) => Own::new(hint.clone(), Some(arrival)),
+            (None, None, Some(logical)) => Own::new(logical, Some(arrival)),
+            (None, None, None) => return Step::Unknown,
         };
-        match arrival.fits(&current) {
-            Some(true) => return Step::To(current),
+        match arrival.fits(&current.logical) {
+            Some(true) => {
+                // An integer a float would round ends the column's exactness.
+                let exact = current.exact && !arrival.rounds();
+                return Step::To(Own { exact, ..current });
+            }
             None => return Step::Unknown,
             Some(false) => {}
         }
-        let joined = match arrival {
-            Arrival::Typed(logical) => current.join(logical),
-            Arrival::Container => LogicalType::Json,
+        let lattice = arrival
+            .logical()
+            .map_or(LogicalType::Json, |logical| current.logical.join(&logical));
+        // Floats meeting integers every one of which they hold exactly join them as floats, which
+        // take a variant: only the lattice's joins widen a column in place.
+        let floats = matches!(
+            arrival,
+            Arrival::Typed(LogicalType::Float32 | LogicalType::Float64)
+        );
+        let joined = if current.logical == LogicalType::Int64 && current.exact && floats {
+            LogicalType::Float64
+        } else {
+            lattice.clone()
         };
         if self.policy == SchemaPolicy::Freeze {
             return Step::Refused;
         }
         if self.hint.is_none()
+            && joined == lattice
             && joined != LogicalType::Json
-            && widens(&current, &joined, self.nested, self.capabilities)
+            && widens(&current.logical, &joined, self.nested, self.capabilities)
         {
-            return Step::To(joined);
+            return Step::To(Own::new(joined, Some(arrival)));
         }
         if self.refuses {
             return Step::Refused;
@@ -291,11 +323,11 @@ impl Rules<'_> {
 /// What the batches of the last of `arrivals`, the distinct types a column arrives as in each
 /// phase so far, may meet, `step` taking its own column from `initial` through them: refused with
 /// `code` in some order of them, or in every one.
-fn outcome(
-    initial: Option<LogicalType>,
+fn outcome<S: Clone + std::fmt::Debug>(
+    initial: Option<S>,
     arrivals: &[Vec<Arrival>],
     code: &'static str,
-    step: impl Fn(Option<&LogicalType>, &Arrival) -> Step,
+    step: impl Fn(Option<&S>, &Arrival) -> Step<S>,
 ) -> Outcome {
     let Some((last, earlier)) = arrivals.split_last() else {
         return Outcome::default();
@@ -320,9 +352,9 @@ fn outcome(
 }
 
 /// Where a column's own column goes through every order of one phase's batches.
-struct Followed {
-    /// The types it may end as where no batch is refused.
-    finals: Vec<Option<LogicalType>>,
+struct Followed<S> {
+    /// The states it may end in where no batch is refused.
+    finals: Vec<Option<S>>,
     /// Whether some order meets a refusal.
     any: bool,
     /// Whether every order does.
@@ -333,12 +365,12 @@ struct Followed {
 
 /// Where an own column goes from each of `states` through every order of `arrivals`, each batch
 /// taking it a `step`.
-fn follow(
-    states: &[Option<LogicalType>],
+fn follow<S: Clone + std::fmt::Debug>(
+    states: &[Option<S>],
     arrivals: &[Arrival],
-    step: impl Fn(Option<&LogicalType>, &Arrival) -> Step,
-) -> Followed {
-    let mut finals: BTreeMap<String, Option<LogicalType>> = BTreeMap::new();
+    step: impl Fn(Option<&S>, &Arrival) -> Step<S>,
+) -> Followed<S> {
+    let mut finals: BTreeMap<String, Option<S>> = BTreeMap::new();
     let (mut any, mut all, mut unknown) = (false, true, false);
     for state in states {
         for order in orders(arrivals.len()) {
@@ -360,11 +392,7 @@ fn follow(
             any |= refused;
             all &= refused;
             if !refused {
-                let name = current
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
-                finals.insert(name, current);
+                finals.insert(format!("{current:?}"), current);
             }
         }
     }

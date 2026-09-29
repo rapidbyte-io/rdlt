@@ -291,9 +291,11 @@ fn json_push(stream: &SimStream, rows: &[Row], array: bool) -> Bytes {
         if let Some(tag) = &row.tag {
             fields.push(("tag", json!(tag).to_string()));
         }
+        let partition = usize::try_from(row.partition).unwrap_or(0);
         for (drift, extra) in stream.drift.iter().zip(&row.extras) {
-            if let Some(extra) = extra {
-                fields.push((drift.name.as_str(), text(extra)));
+            let shape = drift.shapes[partition][row.delivered].as_ref();
+            if let (Some(extra), Some(shape)) = (extra, shape) {
+                fields.push((drift.name.as_str(), text(extra, &shape.logical)));
             }
         }
         let fields: Vec<String> = fields
