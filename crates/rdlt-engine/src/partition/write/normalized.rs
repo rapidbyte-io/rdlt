@@ -209,7 +209,7 @@ fn admit(
 }
 
 /// The columns of 64-bit integers holding a value a float would round, by the path of their table.
-type Rounding = BTreeMap<Vec<Arc<str>>, BTreeSet<ColumnPath>>;
+pub(super) type Rounding = BTreeMap<Vec<Arc<str>>, BTreeSet<ColumnPath>>;
 
 /// The columns of `part`'s table holding, in its rows, a value a 64-bit float would round.
 fn rounding_of(job: &PartitionJob, part: &Part) -> Result<BTreeSet<ColumnPath>, Error> {
@@ -236,12 +236,30 @@ async fn judged(
             let (shape, stream) = (Arc::clone(shape), job.stream.clone());
             move || split(&stream, &parts, &shape)
         });
-        for parts in run_all(context.env.compute(), jobs).await {
-            for part in parts? {
-                let columns = rounding_of(job, &part)?;
-                rounding.entry(part.path).or_default().extend(columns);
-            }
+        let parts = run_all(context.env.compute(), jobs)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        for (path, columns) in judge(job, &context.budget, parts)? {
+            rounding.entry(path).or_default().extend(columns);
         }
+    }
+    Ok(rounding)
+}
+
+/// The columns of each table holding, in any of `units`' parts, a value a 64-bit float would
+/// round; the parts are charged to `budget` while they are judged.
+pub(super) fn judge(
+    job: &PartitionJob,
+    budget: &MemoryBudget,
+    units: Vec<Vec<Part>>,
+) -> Result<Rounding, Error> {
+    let bytes = units.iter().flatten().map(part_bytes).sum();
+    let _held = budget.charge(bytes);
+    let mut rounding = Rounding::new();
+    for part in units.into_iter().flatten() {
+        let columns = rounding_of(job, &part)?;
+        rounding.entry(part.path).or_default().extend(columns);
     }
     Ok(rounding)
 }
@@ -309,7 +327,7 @@ pub(super) fn share_growth(
 }
 
 /// The memory `part`'s arrays take.
-fn part_bytes(part: &Part) -> u64 {
+pub(super) fn part_bytes(part: &Part) -> u64 {
     let lineage = &part.lineage;
     let mut arrays = vec![&lineage.id, &lineage.root_row];
     if let Some(parent) = &lineage.parent {
