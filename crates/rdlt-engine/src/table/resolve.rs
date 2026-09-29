@@ -304,10 +304,9 @@ impl Resolver {
             if column.settings.policy == SchemaPolicy::Freeze {
                 return Err(self.refused(column, "schema_frozen", &cannot("cannot hold")));
             }
-            // A key keeps matching its stored rows only where both types store it by value: a
+            // A key keeps matching its stored rows only where its values are stored alike: a
             // decimal stored as text renders 1.50 as 1.5000 once its scale grows.
-            let nested = column.settings.nested;
-            if widens && self.by_value(&current, nested) && self.by_value(&joined, nested) {
+            if widens && self.keeps_matching(&current, &joined, column.settings.nested) {
                 draft.widen(original, joined, !column.rounding);
                 return Ok(Route::Column(original));
             }
@@ -373,6 +372,18 @@ impl Resolver {
                 .widens(from.kind(), to.kind())
     }
 
+    /// Whether a key column of `current`, widened to `joined`, keeps matching the rows it stored:
+    /// the destination stores both types by value, or renders both into one type alike, as whole
+    /// numbers or decimals of one scale render.
+    fn keeps_matching(&self, current: &LogicalType, joined: &LogicalType, nested: Nested) -> bool {
+        let by_value = self.by_value(current, nested) && self.by_value(joined, nested);
+        let rendered = lower(current, nested, &self.capabilities)
+            == lower(joined, nested, &self.capabilities)
+            && scale(current).is_some()
+            && scale(current) == scale(joined);
+        by_value || rendered
+    }
+
     /// Whether the destination stores values of `logical` by value, as themselves or as integers
     /// of another width, rather than rendered into another type, whose rendering the type decides.
     fn by_value(&self, logical: &LogicalType, nested: Nested) -> bool {
@@ -399,6 +410,15 @@ fn fits(current: &LogicalType, incoming: &LogicalType) -> bool {
 /// every one of which a float holds exactly.
 fn holds(current: &LogicalType, column: &Arriving<'_>) -> bool {
     *current == LogicalType::Float64 && *column.logical == LogicalType::Int64 && !column.rounding
+}
+
+/// The digits after the point every value of `logical` renders with, for integers and decimals.
+fn scale(logical: &LogicalType) -> Option<u8> {
+    match logical {
+        LogicalType::Int8 | LogicalType::Int16 | LogicalType::Int32 | LogicalType::Int64 => Some(0),
+        LogicalType::Decimal(decimal) => Some(decimal.scale()),
+        _ => None,
+    }
 }
 
 /// The kind values of `kind` keep their identity among: integers of every width are one.

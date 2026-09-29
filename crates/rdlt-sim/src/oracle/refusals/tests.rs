@@ -232,3 +232,23 @@ fn a_key_widens_where_the_destination_can_and_is_refused_otherwise() {
         "though a narrower one still fits"
     );
 }
+
+#[test]
+fn a_decimal_key_stored_as_text_widens_only_where_its_values_render_alike() {
+    let decimal = |precision, scale| {
+        LogicalType::Decimal(DecimalType::new(precision, scale).expect("a valid decimal"))
+    };
+    let mut text = capabilities(&[]);
+    text.types.remove(&TypeKind::Decimal);
+    let native = Nested::Native;
+    let current = decimal(10, 2);
+    assert_eq!(
+        key_step(Some(&current), &typed(decimal(20, 2)), false, native, &text),
+        Step::To(decimal(20, 2))
+    );
+    assert_eq!(
+        key_step(Some(&current), &typed(decimal(12, 4)), false, native, &text),
+        Step::Refused,
+        "1.50 renders as 1.5000 once the scale grows"
+    );
+}
