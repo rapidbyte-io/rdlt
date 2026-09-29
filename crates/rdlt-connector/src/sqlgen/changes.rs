@@ -116,14 +116,19 @@ impl<D: SqlDialect> SqlPlanner<D> {
         ]
         .into_iter()
         .map(|table| Statement {
-            sql: format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {} ({columns})",
-                self.quote(&self.fitted(format!("_rdlt_key__{table}"))),
-                self.quote(&table),
+            sql: self.dialect.create_index(
+                &self.quote(&self.key_index_name(&table)),
+                &self.quote(&table),
+                &columns,
             ),
             params: Vec::new(),
         })
         .collect()
+    }
+
+    /// The name of the index of the table `table` by its key.
+    pub(super) fn key_index_name(&self, table: &str) -> String {
+        self.fitted(format!("_rdlt_key__{table}"))
     }
 }
 

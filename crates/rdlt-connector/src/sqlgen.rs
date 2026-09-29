@@ -22,6 +22,7 @@ mod sqlite;
 mod tables;
 #[cfg(test)]
 mod tests;
+mod upsert;
 
 use crate::commit::SegmentSet;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
@@ -33,6 +34,7 @@ pub use changes::staged_changes;
 pub use publish::{Staged, merge_key};
 pub use sqlite::Sqlite;
 pub use tables::{STAGING_COLUMNS, TABLE_PREFIX};
+pub use upsert::Upserts;
 
 /// A value a statement binds to one of its placeholders.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +95,25 @@ pub trait SqlDialect: Send + Sync {
     /// The query listing `table`'s columns as rows of identifier and declared type, in order; it
     /// returns no rows when the table does not exist.
     fn columns(&self, table: &str) -> Statement;
+
+    /// Whether schema changes a transaction makes commit or roll back with it, as SQLite's and
+    /// PostgreSQL's do.
+    ///
+    /// Swapping a replace generation in renames tables, so the planner refuses the swap where a
+    /// failed commit would leave them half renamed.
+    fn transactional_ddl(&self) -> bool;
+
+    /// The statement creating the index `name` of `table` on `columns`, a list, all quoted,
+    /// unless it exists.
+    fn create_index(&self, name: &str, table: &str, columns: &str) -> String {
+        format!("CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})")
+    }
+
+    /// How the dialect writes a row whose key a row may already hold: in standard SQL unless it
+    /// says otherwise.
+    fn upserts(&self) -> Upserts {
+        Upserts::default()
+    }
 
     /// The most bytes an identifier may have, where the database limits them, at least
     /// [`MIN_IDENTIFIER`]; the tables and indexes the planner derives from a table's name keep

@@ -136,8 +136,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// among staged rows of one key the greatest sequence wins. It needs no key index, so a table
     /// that merged before, or never did, merges alike. A child table of a merge table replaces
     /// the children of the roots its root's staged rows publish, reading them from the root's
-    /// staging, so it publishes before its root; it is indexed by its root id first, however it
-    /// was created, as each such commit deletes its rows by it.
+    /// staging, so it publishes before its root; [`SqlPlanner::root_index`] indexes it by its
+    /// root id where its rows are staged, as each such commit deletes its rows by it.
     pub fn publish(
         &self,
         staged: &Staged,
@@ -172,7 +172,6 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 self.rows_of(&mut insert, staged, pipeline, epoch, segments);
             }
             Some(key) if key.root.is_some() => {
-                plan.push(self.root_index(&name, key)?);
                 plan.push(self.replace_children(&target, staged, key, pipeline, epoch, segments)?);
                 insert.push(&format!(
                     "INSERT INTO {target} ({names}) SELECT {names} FROM {staging} WHERE "
@@ -207,18 +206,31 @@ impl<D: SqlDialect> SqlPlanner<D> {
         Ok(plan)
     }
 
-    /// The statement indexing the child table `target` by its root id, where it is not.
-    fn root_index(&self, target: &str, key: &MergeKey) -> Result<Statement> {
+    /// The name of the index of the child table `target` by its root id.
+    pub(super) fn root_index_name(&self, target: &str) -> String {
+        self.fitted(format!("_rdlt_root__{target}"))
+    }
+
+    /// The statement indexing `table`, a child table of a merge table, by its root id, where it
+    /// is not; nothing for another table.
+    ///
+    /// It runs where the table's rows are staged, so a commit changes no table's indexes, and each
+    /// commit deleting the table's rows by its root id finds them by the index. The index's name
+    /// takes the prefix no user table has.
+    pub fn root_index(&self, table: &TableRef) -> Result<Option<Statement>> {
+        let Some(key) = table.merge.as_ref().filter(|key| key.root.is_some()) else {
+            return Ok(None);
+        };
         let (owner, _) = child_key(key)?;
-        Ok(Statement {
-            sql: format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
-                self.quote(&self.fitted(format!("{target}__rdlt_root"))),
-                self.quote(target),
-                self.quote(owner)
-            ),
+        let target = self.target(table);
+        let name = self.root_index_name(&target);
+        let sql =
+            self.dialect
+                .create_index(&self.quote(&name), &self.quote(&target), &self.quote(owner));
+        Ok(Some(Statement {
+            sql,
             params: Vec::new(),
-        })
+        }))
     }
 
     /// The statement removing the rows of the child table `target` whose roots the root table's
@@ -266,15 +278,20 @@ impl<D: SqlDialect> SqlPlanner<D> {
     ) -> Result<()> {
         let (owner, root) = child_key(key)?;
         let staging = self.quote(&self.staging_table(&root.table));
+        let children = self.quote(&self.staging_table(&staged.name));
         let id = format!("{staging}.{}", self.quote(&root.id));
         sql.push(&format!(
-            " AND ({}, {}) IN (SELECT {id}, MAX({staging}.{}) FROM {staging} WHERE ",
-            self.quote(owner),
-            self.quote(&key.seq),
+            " AND EXISTS (SELECT 1 FROM (SELECT {id} AS _rdlt_id, MAX({staging}.{}) AS _rdlt_newest \
+             FROM {staging} WHERE ",
             self.quote(&root.seq),
         ));
         self.rows_of(sql, &root_staged(root, staged), pipeline, epoch, segments);
-        sql.push(&format!(" GROUP BY {id})"));
+        sql.push(&format!(
+            " GROUP BY {id}) _rdlt_winners WHERE _rdlt_winners._rdlt_id = {children}.{} AND \
+             _rdlt_winners._rdlt_newest = {children}.{})",
+            self.quote(owner),
+            self.quote(&key.seq),
+        ));
         Ok(())
     }
 
@@ -290,14 +307,22 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// generation of it; `generations` are the base's generation tables and `base_exists` says
     /// whether the base table does.
     ///
-    /// A generation that has no table leaves the base table empty.
+    /// A generation that has no table leaves the base table empty. A dialect whose schema changes
+    /// do not commit with its transactions cannot swap atomically, which is `Unsupported`.
     pub fn swap(
         &self,
         base: &str,
         base_exists: bool,
         generation: GenerationId,
         generations: &[(String, GenerationId)],
-    ) -> Vec<Statement> {
+    ) -> Result<Vec<Statement>> {
+        if !self.dialect.transactional_ddl() {
+            return Err(ConnectorError::new(
+                crate::error::ConnectorErrorKind::Unsupported,
+                "the dialect's schema changes do not commit with its transactions, so a replace \
+                 generation cannot be swapped in atomically",
+            ));
+        }
         let statement = |sql: String| Statement {
             sql,
             params: Vec::new(),
@@ -331,7 +356,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let base = forget.bind(SqlValue::Text(base.to_owned()));
         forget.push(&format!("DELETE FROM {GENERATIONS} WHERE base = {base}"));
         plan.push(forget.finish());
-        plan
+        Ok(plan)
     }
 
     /// The statements removing what sessions of `pipeline` older than `epoch` staged in the
