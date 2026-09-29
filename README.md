@@ -48,9 +48,11 @@ the engine advances within a run. Its inserts, updates, partial updates and dele
 under the seq guard, with deletes hard, soft or ignored; a truncate, which names no key, removes or
 marks deleted every row sequenced before it. A change log appends every change instead.
 Encoded Arrow columns are admitted and lowered at their decoded size, within the memory budget;
-JSON integers of any width a decimal holds load exactly; a merge key keeps matching its stored
-rows or refuses to change type; and an unbounded partition, as a change stream's, resumes from its
-last checkpoint rather than ending.
+JSON integers load exactly at any width, as decimals within 76 digits and as JSON text beyond; a
+merge key keeps matching its stored rows or refuses to change type; and an unbounded partition, as
+a change stream's, resumes from its last checkpoint rather than ending.
+Floats arriving at a column of integers every one of which a float holds exactly land beside them
+as floats, not as JSON text.
 A table belongs to the pipeline that created it; a connector answers who it is before it receives
 its configuration, and a binary changed since it was placed is not started again; and what a
 connector sends is checked, from the barriers its checkpoints answer to the waits it asks for.
