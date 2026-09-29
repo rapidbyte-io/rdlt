@@ -401,3 +401,38 @@ proptest! {
         differ(&directory.path().join("changes.db"), &commits, &shape)?;
     }
 }
+
+#[test]
+fn sqlite_lands_a_change_at_a_truncate_s_own_sequence_as_the_reference_does() {
+    let change = |op, key, seq| Change {
+        op,
+        key,
+        region: 0,
+        value: Some("v".to_owned()),
+        n: None,
+        at: Some(1),
+        flags: 0,
+        seq,
+    };
+    let commits = vec![
+        vec![vec![
+            change(ChangeOp::Insert, 1, 1),
+            change(ChangeOp::Truncate, 0, 4),
+            change(ChangeOp::Insert, 2, 4),
+        ]],
+        vec![vec![change(ChangeOp::Insert, 3, 4)]],
+    ];
+    for deletion in [
+        Deletion::Hard,
+        Deletion::Soft {
+            at: DELETED_AT_COLUMN.into(),
+        },
+    ] {
+        let shape = Shape {
+            deletion,
+            regions: false,
+        };
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        differ(&directory.path().join("changes.db"), &commits, &shape).expect("alike");
+    }
+}

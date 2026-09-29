@@ -297,11 +297,6 @@ impl Changed<'_> {
         }
     }
 
-    /// Whether the table's column `column`, quoted, is one of its key's or its sequence.
-    fn is_key_or_seq(&self, column: &str) -> bool {
-        *column == self.seq || self.keys.iter().any(|key| key == column)
-    }
-
     /// The value of the column `column`, quoted, at `ordinal`, of the key `outer` names, as the
     /// last of the key's upserts not flagging it unchanged sets it, or else as the row `kept`
     /// holds it.

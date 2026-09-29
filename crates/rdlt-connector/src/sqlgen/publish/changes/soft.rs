@@ -85,9 +85,6 @@ fn marked(changed: &Changed<'_>, at: &str) -> String {
             if *column == changed.seq {
                 return format!("_rdlt_x.{}", changed.q);
             }
-            if changed.is_key_or_seq(column) {
-                return format!("_rdlt_x.{column}");
-            }
             if column == at {
                 return deleted_at(changed, at);
             }
