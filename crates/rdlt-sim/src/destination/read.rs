@@ -20,20 +20,23 @@ pub(crate) struct Published {
     pub(crate) names: NameMap,
     /// Its rows.
     pub(crate) rows: Vec<Stored>,
+    /// The columns of 64-bit integers state records a float holds every value of exactly.
+    pub(crate) exact: BTreeSet<std::sync::Arc<str>>,
 }
 
 /// What the table at `path` holds, if the destination has it.
 pub(crate) fn published_table(world: &World, path: &TablePath) -> Option<Published> {
     let store = world.store.lock();
-    let (physical, names) = store
-        .pipelines
-        .values()
-        .find_map(|pipeline| names(&pipeline.state, path))?;
+    let (physical, names, exact) = store.pipelines.values().find_map(|pipeline| {
+        let (physical, names) = names(&pipeline.state, path)?;
+        Some((physical, names, exact(&pipeline.state, path)))
+    })?;
     let rows = store.tables.get(physical.as_str())?.published.clone();
     Some(Published {
         physical,
         names,
         rows,
+        exact,
     })
 }
 
@@ -63,6 +66,15 @@ pub(super) fn names(
             physical, names, ..
         } => Some((physical.to_string(), names)),
         _ => None,
+    }
+}
+
+/// The columns state records exact for the table at `path`.
+fn exact(state: &BTreeMap<String, StateRecord>, path: &TablePath) -> BTreeSet<std::sync::Arc<str>> {
+    let record = state.get(&StateKey::Schema(path.clone()).encode());
+    match record.and_then(|record| StateEntry::from_record(record).ok()) {
+        Some(StateEntry::Schema { exact, .. }) => exact,
+        _ => BTreeSet::new(),
     }
 }
 

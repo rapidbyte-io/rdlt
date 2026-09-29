@@ -3,6 +3,7 @@
 //! column whose type holds the value's and is stored as the destination's capabilities say.
 
 mod cells;
+mod exact;
 mod slots;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -162,6 +163,14 @@ impl Table<'_> {
             return (ids, held);
         };
         self.check_names(&published);
+        let rounded = exact::findings(&published);
+        assert!(
+            rounded.is_empty(),
+            "seed {}: table {path}: {} findings, the first {:?}",
+            self.seed,
+            rounded.len(),
+            &rounded[..rounded.len().min(3)]
+        );
         let mut templates: BTreeMap<&str, &Expected> = BTreeMap::new();
         for row in slots.iter().flat_map(|slot| &slot.rows) {
             templates.insert(&row.ident, row);
