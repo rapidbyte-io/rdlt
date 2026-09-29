@@ -7,10 +7,11 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int8Type;
 use arrow_array::{Array, ArrayRef, RecordBatch, new_null_array};
-use arrow_row::Rows;
+use arrow_row::{RowConverter, Rows};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
+use super::tombstones::{self, Tombstones};
 use super::{align, concat, converter, key_columns};
 
 /// Where one cell of a merged row comes from.
@@ -37,6 +38,29 @@ struct Table {
 }
 
 impl Table {
+    /// The table holding `published`, its rows keyed as `converter` encodes `key`.
+    fn load(
+        published: &RecordBatch,
+        converter: &RowConverter,
+        key: &MergeKey,
+    ) -> Result<Self, ArrowError> {
+        let mut table = Self {
+            rows: Vec::new(),
+            by_key: BTreeMap::new(),
+        };
+        let keys = converter.convert_columns(&key_columns(published, key)?)?;
+        let seqs = binary(published, &key.seq)?;
+        let seqs = seqs.as_binary::<i32>();
+        for row in 0..published.num_rows() {
+            let merged = Merged {
+                seq: seqs.value(row).to_vec(),
+                cells: vec![Cell::Published(row); published.num_columns()],
+            };
+            table.put(keys.row(row).as_ref().to_vec(), merged);
+        }
+        Ok(table)
+    }
+
     fn get(&self, key: &[u8]) -> Option<&Merged> {
         self.by_key
             .get(key)
@@ -74,7 +98,7 @@ impl Table {
     }
 
     /// Applies `change` to the row with `key`, when it is sequenced past it: an insert or
-    /// update keeping the columns `flags` names, or a delete.
+    /// update keeping the columns `flags` names, or a delete; returns what it did.
     fn apply(
         &mut self,
         key: Vec<u8>,
@@ -82,15 +106,18 @@ impl Table {
         flags: &[usize],
         columns: &Columns,
         sources: &Sources<'_>,
-    ) {
+    ) -> Applied {
         let current = self.get(&key);
         if current.is_some_and(|current| current.seq >= change.seq) {
-            return;
+            return Applied::Nothing;
         }
         let cell = Cell::Incoming(change.batch, change.row);
         if change.op == ChangeOp::Delete {
-            match (columns.at, current) {
-                (None, _) => self.remove(&key),
+            return match (columns.at, current) {
+                (None, _) => {
+                    self.remove(&key);
+                    Applied::Removed
+                }
                 (Some(at), Some(current)) => {
                     let mut kept = Merged {
                         seq: current.seq.clone(),
@@ -98,10 +125,10 @@ impl Table {
                     };
                     mark_deleted(&mut kept, &change, cell, columns.seq, at, sources);
                     self.put(key, kept);
+                    Applied::Nothing
                 }
-                (Some(_), None) => {}
-            }
-            return;
+                (Some(_), None) => Applied::Nothing,
+            };
         }
         let cells = (0..columns.count)
             .map(|column| match (flags.contains(&column), current) {
@@ -117,6 +144,7 @@ impl Table {
                 cells,
             },
         );
+        Applied::Held
     }
 
     fn remove(&mut self, key: &[u8]) {
@@ -168,6 +196,17 @@ struct Columns {
     count: usize,
 }
 
+/// What applying a change did to its key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Applied {
+    /// It removed the key's row outright.
+    Removed,
+    /// A row it wrote holds the key.
+    Held,
+    /// Neither.
+    Nothing,
+}
+
 /// One incoming row, and what it does.
 struct Change {
     batch: usize,
@@ -195,32 +234,20 @@ pub(crate) fn stored(schema: &SchemaRef, changes: &ChangeColumns) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-/// The published rows of a change stream's table once `incoming` applies, row by row in
-/// sequence order.
+/// The published rows of a change stream's table, and its tombstones, once `incoming` applies,
+/// row by row in sequence order, to `published` and `buried`, its tombstones.
 pub(crate) fn merge_changes(
     schema: &SchemaRef,
     published: &[RecordBatch],
+    buried: &[RecordBatch],
     incoming: &[RecordBatch],
     key: &MergeKey,
     changes: &ChangeColumns,
-) -> Result<Vec<RecordBatch>, ArrowError> {
+) -> Result<(Vec<RecordBatch>, RecordBatch), ArrowError> {
     let schema = stored(schema, changes);
     let converter = converter(&schema, key)?;
     let published = concat(published, &schema)?;
-    let mut table = Table {
-        rows: Vec::new(),
-        by_key: BTreeMap::new(),
-    };
-    let published_keys = converter.convert_columns(&key_columns(&published, key)?)?;
-    let published_seq = binary(&published, &key.seq)?;
-    let published_seq = published_seq.as_binary::<i32>();
-    for row in 0..published.num_rows() {
-        let merged = Merged {
-            seq: published_seq.value(row).to_vec(),
-            cells: vec![Cell::Published(row); schema.fields().len()],
-        };
-        table.put(published_keys.row(row).as_ref().to_vec(), merged);
-    }
+    let mut table = Table::load(&published, &converter, key)?;
     let nullable = nullable(&schema);
     let aligned = incoming
         .iter()
@@ -246,20 +273,37 @@ pub(crate) fn merge_changes(
         published: &published,
         aligned: &aligned,
     };
+    let tombstone_schema = tombstones::schema(&schema, key)?;
+    let mut tombstones = Tombstones::load(buried, &tombstone_schema, &converter, key)?;
     for change in rows {
         if change.op == ChangeOp::Truncate {
-            table.truncate(&change, &columns, &sources);
+            if tombstones.admits(None, &change.seq) {
+                table.truncate(&change, &columns, &sources);
+                if columns.at.is_none() {
+                    tombstones.raise(change.seq);
+                }
+            }
             continue;
         }
         let row_key = keys[change.batch].row(change.row).as_ref().to_vec();
+        if !tombstones.admits(Some(&row_key), &change.seq) {
+            continue;
+        }
         let flags = unchanged(&incoming[change.batch], &schema, changes, change.row)?;
-        table.apply(row_key, change, &flags, &columns, &sources);
+        let (batch, row, seq) = (change.batch, change.row, change.seq.clone());
+        match table.apply(row_key.clone(), change, &flags, &columns, &sources) {
+            Applied::Removed => tombstones.bury(row_key, seq, batch, row),
+            Applied::Held => tombstones.lift(&row_key),
+            Applied::Nothing => {}
+        }
     }
     let merged = assemble(&schema, &published, &aligned, &table)?;
-    Ok([merged]
+    let buried = tombstones.assemble(&tombstone_schema, &aligned, key)?;
+    let merged = [merged]
         .into_iter()
         .filter(|batch| batch.num_rows() != 0)
-        .collect())
+        .collect();
+    Ok((merged, buried))
 }
 
 /// `schema` with every column nullable, as incoming rows align to it: a truncate names no key.

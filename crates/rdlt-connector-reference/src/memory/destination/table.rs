@@ -1,4 +1,4 @@
-//! A memory table: its rows, generations and staged batches, and how they merge.
+//! A memory table: its rows, tombstones, generations and staged batches, and how they merge.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use arrow_schema::SchemaRef;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Epoch, GenerationId, MergeKey, PipelineId, RootKey, SegmentId};
 
-use crate::merge::{merge, merge_children};
+use crate::merge::{Merged, merge, merge_children};
 
 #[derive(Debug, Default)]
 pub(super) struct Table {
@@ -18,6 +18,9 @@ pub(super) struct Table {
     /// How the table merges; `None` appends.
     pub(super) merge: Option<MergeKey>,
     pub(super) published: Vec<RecordBatch>,
+    /// A change stream's tombstones: the rows it removed outright, which no earlier change
+    /// brings back.
+    pub(super) tombstones: Vec<RecordBatch>,
     /// Committed rows of replace generations not yet swapped in.
     pub(super) generations: BTreeMap<GenerationId, Vec<RecordBatch>>,
     /// Staged batches by the pipeline and epoch of the session that staged them, and segment.
@@ -26,7 +29,7 @@ pub(super) struct Table {
 
 /// What a commit does to one table: its name, the batches the commit staged for it, and for a
 /// merge table its rows once merged.
-pub(super) type Plan = (String, Staged, Option<Vec<RecordBatch>>);
+pub(super) type Plan = (String, Staged, Option<Merged>);
 
 /// Batches staged under one segment, each for the table itself or for a replace generation.
 pub(super) type Staged = Vec<(Option<GenerationId>, RecordBatch)>;
@@ -43,10 +46,11 @@ impl Table {
         }
     }
 
-    /// The table's rows once `staged` is merged in by `key`.
-    pub(super) fn merged(&self, staged: &Staged, key: &MergeKey) -> Result<Vec<RecordBatch>> {
+    /// The table's rows, and tombstones, once `staged` is merged in by `key`.
+    pub(super) fn merged(&self, staged: &Staged, key: &MergeKey) -> Result<Merged> {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
-        merge(&self.merge_schema(staged)?, &self.published, &incoming, key)
+        let schema = self.merge_schema(staged)?;
+        merge(&schema, &self.published, &self.tombstones, &incoming, key)
             .map_err(|error| ConnectorError::data(format!("merging rows: {error}")))
     }
 

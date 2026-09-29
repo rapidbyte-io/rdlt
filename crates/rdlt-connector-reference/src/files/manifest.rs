@@ -60,6 +60,10 @@ pub(super) struct StoredReceipt {
 pub(super) struct TableFiles {
     pub(super) files: Vec<String>,
     pub(super) generations: BTreeMap<GenerationId, Vec<String>>,
+    /// A change stream's tombstones: the rows it removed outright, which no earlier change
+    /// brings back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) tombstones: Vec<String>,
 }
 
 impl Manifest {
@@ -135,6 +139,7 @@ impl Manifest {
                 .files
                 .iter()
                 .chain(table.generations.values().flatten())
+                .chain(&table.tombstones)
         })
     }
 }

@@ -11,4 +11,5 @@ mod memory;
 mod read_back;
 mod sqlite;
 mod switch;
+mod tombstones;
 mod torn;
