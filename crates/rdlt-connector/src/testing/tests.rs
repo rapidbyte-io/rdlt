@@ -1,3 +1,5 @@
+mod changes;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -434,6 +436,24 @@ struct VaultConfig {
     owned_as_data: bool,
     /// Refuses another pipeline's table as a configuration error with no code.
     owned_uncoded: bool,
+    /// Applies a change whatever the sequence of the row its key holds.
+    ignore_seq_guard: bool,
+    /// Keeps no tombstones, so a change sent again brings a removed row back.
+    forget_tombstones: bool,
+    /// Truncates every row, those sequenced after the truncate too.
+    truncate_everything: bool,
+    /// Removes the rows soft deletes and truncates should mark.
+    hard_on_soft: bool,
+    /// Stores null in the columns an update flags unchanged.
+    drop_unchanged: bool,
+    /// Declares it merges no change stream.
+    no_change_merges: bool,
+    /// Declares it removes rows but never marks them deleted.
+    hard_deletes_only: bool,
+    /// Declares it marks rows deleted but never removes them.
+    soft_deletes_only: bool,
+    /// Declares it keeps no column an update leaves unchanged.
+    no_partial_updates: bool,
 }
 
 #[derive(Default)]
@@ -457,6 +477,8 @@ struct VaultStore {
     owners: BTreeMap<String, PipelineId>,
     /// Tables no writer may write, under `lock_on_intrusion`.
     locked: BTreeSet<String>,
+    /// Each change stream's table's tombstones.
+    tombstones: BTreeMap<String, changes::Tombstones>,
 }
 
 impl VaultStore {
@@ -571,6 +593,10 @@ impl DestinationConnector for Vault {
             capabilities.write_modes.merge = true;
             capabilities.schema_changes = SchemaChanges::all();
             capabilities.max_parallel_writers = std::num::NonZeroU16::new(4).expect("not zero");
+            capabilities.merge_changes = true;
+            capabilities.delete_modes.hard = true;
+            capabilities.delete_modes.soft = true;
+            capabilities.partial_updates = true;
         }
         if let Some(writers) = std::num::NonZeroU16::new(self.config.writers) {
             capabilities.max_parallel_writers = writers;
@@ -581,6 +607,10 @@ impl DestinationConnector for Vault {
         if self.config.fixed_schema {
             capabilities.schema_changes = SchemaChanges::default();
         }
+        capabilities.merge_changes &= !self.config.no_change_merges;
+        capabilities.delete_modes.hard &= !self.config.soft_deletes_only;
+        capabilities.delete_modes.soft &= !self.config.hard_deletes_only;
+        capabilities.partial_updates &= !self.config.no_partial_updates;
         capabilities
     }
 
@@ -721,6 +751,7 @@ impl VaultSession {
                 .remove(&(table.clone(), *generation))
                 .unwrap_or_default();
             store.generations.retain(|(name, _), _| *name != table);
+            store.tombstones.remove(&table);
             store.published.insert(table, rows);
         }
         rows
@@ -750,8 +781,21 @@ impl VaultSession {
                 .first()
                 .map(|(key, _)| key.clone())
                 .or_else(|| listed.map(|child| child.merge.clone()));
-            let published = store.published.entry(table).or_default();
+            let published = store.published.entry(table.clone()).or_default();
             match key {
+                Some(key) if key.root.is_none() && key.changes.is_some() => {
+                    let changes = key.changes.as_ref().expect("a change stream's key");
+                    let batches: Vec<RecordBatch> =
+                        incoming.into_iter().map(|(_, batch)| batch).collect();
+                    let tombstones = store.tombstones.entry(table).or_default();
+                    changes::merge_changes(
+                        published,
+                        tombstones,
+                        &batches,
+                        (&key, changes),
+                        self.config.flaws(),
+                    );
+                }
                 Some(key) if key.root.is_some() && !self.config.children_merge_by_key => {
                     let root = key.root.clone().expect("a child table names its root");
                     let root_rows = committed.get(root.table.as_ref()).cloned();
@@ -1138,6 +1182,16 @@ enum Winner {
 }
 
 impl VaultConfig {
+    fn flaws(&self) -> changes::Flaws {
+        changes::Flaws {
+            ignore_seq_guard: self.ignore_seq_guard,
+            forget_tombstones: self.forget_tombstones,
+            truncate_everything: self.truncate_everything,
+            hard_on_soft: self.hard_on_soft,
+            drop_unchanged: self.drop_unchanged,
+        }
+    }
+
     fn winner(&self) -> Winner {
         if self.merge_keeps_first {
             Winner::First
@@ -1320,65 +1374,122 @@ async fn a_correct_destination_passes_every_clause() {
     }
 }
 
+/// Each flag that breaks one behavior, with the clauses it fails.
+const BROKEN: &[(&str, &[&str])] = &[
+    ("static_epoch", &["D-EPOCH"]),
+    ("fold_names", &["D-NAMES"]),
+    ("refuse_check", &["D-CHECK"]),
+    ("lose_lanes", &["D-LANES"]),
+    ("miscount", &["D-COMMIT"]),
+    ("republish", &["D-IDEMPOTENT"]),
+    ("forget_state", &["D-STATE"]),
+    ("ignore_deletes", &["D-STATE"]),
+    ("keep_staging", &["D-DISCARD"]),
+    ("no_fence", &["D-FENCE"]),
+    ("wrong_fence_kind", &["D-FENCE"]),
+    ("forget_receipts", &["D-IDEMPOTENT"]),
+    ("publish_all", &["D-COMMIT"]),
+    (
+        "blank_names",
+        &[
+            "D-COMMIT",
+            "D-IDEMPOTENT",
+            "D-DISCARD",
+            "D-REPLACE",
+            "D-MERGE",
+            "D-DELETE",
+            "D-PARTIAL",
+            "D-TRUNCATE",
+            "D-ENCODING",
+            "D-TABLES",
+            "D-LANES",
+            "D-OWNED",
+        ],
+    ),
+    (
+        "publish_other",
+        &["D-COMMIT", "D-REPLACE", "D-MERGE", "D-CHILDREN"],
+    ),
+    ("local_state", &["D-STATE"]),
+    ("stale_writes", &["D-DISCARD"]),
+    ("replace_early", &["D-REPLACE"]),
+    (
+        "merge_appends",
+        &[
+            "D-MERGE",
+            "D-DELETE",
+            "D-PARTIAL",
+            "D-TRUNCATE",
+            "D-CHILDREN",
+        ],
+    ),
+    ("merge_keeps_first", &["D-MERGE"]),
+    ("merge_keeps_last", &["D-MERGE"]),
+    ("refuse_repeated_changes", &["D-SCHEMA"]),
+    ("ignore_added_columns", &["D-SCHEMA"]),
+    ("accept_conflicts", &["D-SCHEMA"]),
+    ("refuse_narrower", &["D-SCHEMA"]),
+    ("uncoded_conflicts", &["D-SCHEMA"]),
+    ("refuse_widening", &["D-SCHEMA"]),
+    ("refuse_dictionaries", &["D-ENCODING"]),
+    ("decode_only_strings", &["D-ENCODING"]),
+    (
+        "one_table_per_segment",
+        &["D-REPLACE", "D-CHILDREN", "D-TABLES"],
+    ),
+    ("children_merge_by_key", &["D-CHILDREN"]),
+    ("ignore_child_tables", &["D-CHILDREN"]),
+    ("finish_one_generation", &["D-REPLACE"]),
+    ("ignore_seq_guard", &["D-MERGE", "D-DELETE", "D-TRUNCATE"]),
+    ("forget_tombstones", &["D-DELETE", "D-TRUNCATE"]),
+    ("truncate_everything", &["D-TRUNCATE"]),
+    ("hard_on_soft", &["D-DELETE", "D-TRUNCATE"]),
+    ("drop_unchanged", &["D-PARTIAL"]),
+];
+
 #[tokio::test]
 async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
-    let cases = [
-        ("static_epoch", &["D-EPOCH"][..]),
-        ("fold_names", &["D-NAMES"][..]),
-        ("refuse_check", &["D-CHECK"][..]),
-        ("lose_lanes", &["D-LANES"][..]),
-        ("miscount", &["D-COMMIT"][..]),
-        ("republish", &["D-IDEMPOTENT"][..]),
-        ("forget_state", &["D-STATE"][..]),
-        ("ignore_deletes", &["D-STATE"][..]),
-        ("keep_staging", &["D-DISCARD"][..]),
-        ("no_fence", &["D-FENCE"][..]),
-        ("wrong_fence_kind", &["D-FENCE"][..]),
-        ("forget_receipts", &["D-IDEMPOTENT"][..]),
-        ("publish_all", &["D-COMMIT"][..]),
-        (
-            "blank_names",
-            &[
-                "D-COMMIT",
-                "D-IDEMPOTENT",
-                "D-DISCARD",
-                "D-REPLACE",
-                "D-MERGE",
-                "D-ENCODING",
-                "D-TABLES",
-                "D-LANES",
-                "D-OWNED",
-            ][..],
-        ),
-        (
-            "publish_other",
-            &["D-COMMIT", "D-REPLACE", "D-MERGE", "D-CHILDREN"][..],
-        ),
-        ("local_state", &["D-STATE"][..]),
-        ("stale_writes", &["D-DISCARD"][..]),
-        ("replace_early", &["D-REPLACE"][..]),
-        ("merge_appends", &["D-MERGE", "D-CHILDREN"][..]),
-        ("merge_keeps_first", &["D-MERGE"][..]),
-        ("merge_keeps_last", &["D-MERGE"][..]),
-        ("refuse_repeated_changes", &["D-SCHEMA"][..]),
-        ("ignore_added_columns", &["D-SCHEMA"][..]),
-        ("accept_conflicts", &["D-SCHEMA"][..]),
-        ("refuse_narrower", &["D-SCHEMA"][..]),
-        ("uncoded_conflicts", &["D-SCHEMA"][..]),
-        ("refuse_widening", &["D-SCHEMA"][..]),
-        ("refuse_dictionaries", &["D-ENCODING"][..]),
-        ("decode_only_strings", &["D-ENCODING"][..]),
-        (
-            "one_table_per_segment",
-            &["D-REPLACE", "D-CHILDREN", "D-TABLES"][..],
-        ),
-        ("children_merge_by_key", &["D-CHILDREN"][..]),
-        ("ignore_child_tables", &["D-CHILDREN"][..]),
-        ("finish_one_generation", &["D-REPLACE"][..]),
-    ];
-    for (flag, clauses) in cases {
+    for (flag, clauses) in BROKEN {
         let report = certify_vault(flag, Some(flag)).await;
-        assert_eq!(failed(&report), clauses, "{flag}: {report}");
+        assert_eq!(failed(&report), *clauses, "{flag}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn change_clauses_check_only_what_a_destination_declares_it_does() {
+    // Each broken behavior goes unchecked where the destination declares it does not do it.
+    let cases: [(&[&str], &[&str]); 5] = [
+        (
+            &["no_change_merges", "ignore_seq_guard"],
+            &["D-DELETE", "D-PARTIAL", "D-TRUNCATE"],
+        ),
+        (&["hard_deletes_only", "hard_on_soft"], &[]),
+        (&["soft_deletes_only", "forget_tombstones"], &[]),
+        (&["no_partial_updates", "drop_unchanged"], &["D-PARTIAL"]),
+        (
+            &[
+                "hard_deletes_only",
+                "soft_deletes_only",
+                "truncate_everything",
+            ],
+            &["D-DELETE", "D-TRUNCATE"],
+        ),
+    ];
+    for (flags, skipped) in cases {
+        let name = flags.join("+");
+        let mut config = json!({ "store": name });
+        for flag in flags {
+            config[flag] = json!(true);
+        }
+        let report = certify_destination::<Vault>(config, &VaultProbe(vault(&name))).await;
+        report.assert_passed();
+        let actual: Vec<&str> = report
+            .results
+            .iter()
+            .filter(|result| matches!(result.outcome, Outcome::Skipped(_)))
+            .map(|result| result.clause.id)
+            .collect();
+        assert_eq!(actual, skipped, "{name}: {report}");
     }
 }
 
@@ -1443,6 +1554,10 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-DISCARD",
             "D-REPLACE",
             "D-SCHEMA",
+            "D-MERGE",
+            "D-DELETE",
+            "D-PARTIAL",
+            "D-TRUNCATE",
             "D-ENCODING",
             "D-TABLES",
             "D-NAMES",

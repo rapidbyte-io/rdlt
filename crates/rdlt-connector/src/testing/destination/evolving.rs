@@ -296,6 +296,17 @@ pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'stati
         {
             Some("the destination declares no schema change the clause checks")
         }
+        "D-DELETE" | "D-PARTIAL" | "D-TRUNCATE" if !capabilities.merge_changes => {
+            Some("the destination merges no change stream")
+        }
+        "D-DELETE" | "D-TRUNCATE"
+            if !capabilities.delete_modes.hard && !capabilities.delete_modes.soft =>
+        {
+            Some("the destination removes no rows a change stream deletes")
+        }
+        "D-PARTIAL" if !capabilities.partial_updates => {
+            Some("the destination keeps no column an update leaves unchanged")
+        }
         "D-LANES" if capabilities.max_parallel_writers.get() < 2 => {
             Some("the destination runs one writer at a time")
         }

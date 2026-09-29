@@ -87,6 +87,10 @@ async fn a_spawned_destination_binary_is_certified_through_the_protocol() {
         "P-HANDSHAKE",
         "P-MALFORMED",
         "D-COMMIT",
+        "D-MERGE",
+        "D-DELETE",
+        "D-PARTIAL",
+        "D-TRUNCATE",
         "D-FENCE",
         "K-DESTINATION",
     ] {

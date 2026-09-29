@@ -44,7 +44,24 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     Clause {
         id: "D-MERGE",
         statement: "a merge keeps one row per key: the newest commit's, and within a commit the \
-                    greatest sequence's",
+                    greatest sequence's; a change stream's change applies only past the sequence \
+                    of the row its key holds",
+    },
+    Clause {
+        id: "D-DELETE",
+        statement: "a change stream's delete removes its key's row, or marks it deleted and keeps \
+                    its values, and no change from before it, sent again, brings the row back",
+    },
+    Clause {
+        id: "D-PARTIAL",
+        statement: "a change stream's update keeps the published value of each column it flags \
+                    unchanged",
+    },
+    Clause {
+        id: "D-TRUNCATE",
+        statement: "a change stream's truncate removes, or marks deleted, every row sequenced \
+                    before it and none after, and no change from before it, sent again, brings a \
+                    row back",
     },
     Clause {
         id: "D-CHILDREN",
@@ -83,7 +100,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
 
 /// The clauses that read what the destination published, which a probe that reads nothing
 /// cannot check.
-pub(super) const PROBED: [&str; 13] = [
+pub(super) const PROBED: [&str; 16] = [
     "D-STAGING",
     "D-COMMIT",
     "D-IDEMPOTENT",
@@ -91,6 +108,9 @@ pub(super) const PROBED: [&str; 13] = [
     "D-REPLACE",
     "D-SCHEMA",
     "D-MERGE",
+    "D-DELETE",
+    "D-PARTIAL",
+    "D-TRUNCATE",
     "D-CHILDREN",
     "D-ENCODING",
     "D-TABLES",
