@@ -263,11 +263,14 @@ fn check_stream<'a>(
         return Err(refuse("write_mode_unsupported", &detail));
     }
     if plan.merges_changes() {
-        let deletes = context.destination.capabilities().delete_modes;
+        let capabilities = context.destination.capabilities();
+        if !capabilities.merge_changes {
+            let detail = "the destination does not merge change streams";
+            return Err(refuse("change_merge_unsupported", detail));
+        }
+        let deletes = capabilities.delete_modes;
         let (hard, soft) = removals(plan);
-        // A destination declaring no delete mode merges no change stream at all.
-        let merges = deletes.hard || deletes.soft;
-        if !merges || (hard && !deletes.hard) || (soft && !deletes.soft) {
+        if (hard && !deletes.hard) || (soft && !deletes.soft) {
             let detail = format!(
                 "the destination cannot remove rows as its deletes ({:?}) and truncates ({:?}) do",
                 plan.delete_mode(),

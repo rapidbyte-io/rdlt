@@ -185,6 +185,8 @@ message Capabilities {
   uint32 max_parallel_writers = 9;
   // The batch size it prefers, in bytes, if it has a preference.
   optional uint64 preferred_batch_bytes = 10;
+  // Whether it merges change streams: each row in sequence order, only past the row it holds.
+  bool merge_changes = 11;
 }
 
 // What a source declares about itself; it declares nothing yet.

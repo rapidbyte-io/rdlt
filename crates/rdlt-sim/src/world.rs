@@ -106,6 +106,7 @@ impl World {
         capabilities.delete_modes.hard = true;
         capabilities.delete_modes.soft = true;
         capabilities.partial_updates = true;
+        capabilities.merge_changes = true;
         capabilities.max_parallel_writers =
             std::num::NonZeroU16::new(u16::try_from(1 + rng.below(4)).unwrap_or(1))
                 .expect("writer counts are positive");

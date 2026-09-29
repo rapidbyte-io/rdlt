@@ -204,6 +204,7 @@ impl From<&Capabilities> for v1::Capabilities {
                 soft: capabilities.delete_modes.soft,
             }),
             partial_updates: capabilities.partial_updates,
+            merge_changes: capabilities.merge_changes,
             nested: Some(v1::NestedSupport {
                 structs: nested.structs,
                 lists: nested.lists,
@@ -267,6 +268,7 @@ impl TryFrom<v1::Capabilities> for Capabilities {
                 soft: deletes.soft,
             },
             partial_updates: capabilities.partial_updates,
+            merge_changes: capabilities.merge_changes,
             nested: NestedSupport {
                 structs: nested.structs,
                 lists: nested.lists,
