@@ -11,6 +11,9 @@ use crate::schema::TableSchema;
 use crate::testing::Violation;
 use crate::types::{Field, LogicalType};
 
+#[cfg(test)]
+mod tests;
+
 /// The certification tables' schema.
 pub(super) fn schema() -> TableSchema {
     TableSchema::new(vec![
