@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{Partition, Permit, SchemaVersion, StreamName};
 
-use super::normalized::{charge_parts, share_growth};
+use super::normalized::{charge_parts, judge, share_growth};
 use super::{LOWERING_WINDOW, charge_growth, hold, shred_failed, windows};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
@@ -173,4 +173,35 @@ fn normalized_parts_are_charged_before_they_wait_on_their_tables() {
     assert_eq!(budget.reserved(), bytes);
     drop(held);
     assert_eq!(budget.reserved(), 0);
+}
+
+#[test]
+fn judged_parts_are_charged_while_they_are_judged_and_released_after() {
+    let budget = MemoryBudget::new(1 << 30);
+    let shape = crate::normalize::Shape {
+        max_depth: 2,
+        whole: std::collections::BTreeSet::new(),
+        key: Vec::new(),
+    };
+    let integers = |values: Vec<i64>| {
+        let values: ArrayRef = Arc::new(Int64Array::from(values));
+        RecordBatch::try_from_iter([("n", values)]).unwrap()
+    };
+    let units: Vec<Vec<crate::normalize::Part>> = [vec![1_i64 << 60], vec![1, 2, 3]]
+        .into_iter()
+        .map(|values| crate::normalize::normalize(&integers(values), &shape).unwrap())
+        .collect();
+    let bytes: u64 = units
+        .iter()
+        .flatten()
+        .map(super::normalized::part_bytes)
+        .sum();
+    let rounding = judge(&job(), &budget, units).unwrap();
+    assert!(budget.peak() >= bytes, "{} of {bytes}", budget.peak());
+    assert_eq!(budget.reserved(), 0);
+    let root: Vec<String> = rounding[&Vec::new()]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(root, ["n"]);
 }
