@@ -3,6 +3,9 @@
 mod changes;
 #[cfg(test)]
 mod tests;
+mod tombstones;
+
+pub(crate) use tombstones::schema as tombstone_schema;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -58,13 +61,33 @@ pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> Sch
 pub(crate) fn merge(
     schema: &SchemaRef,
     published: &[RecordBatch],
+    buried: &[RecordBatch],
     incoming: &[RecordBatch],
     key: &MergeKey,
-) -> Result<Vec<RecordBatch>, ArrowError> {
+) -> Result<Merged, ArrowError> {
     match &key.changes {
-        Some(changes) => changes::merge_changes(schema, published, incoming, key, changes),
-        None => upsert(schema, published, incoming, key),
+        Some(changes) => {
+            let (rows, tombstones) =
+                changes::merge_changes(schema, published, buried, incoming, key, changes)?;
+            let tombstones = [tombstones]
+                .into_iter()
+                .filter(|batch| batch.num_rows() != 0)
+                .collect();
+            Ok(Merged { rows, tombstones })
+        }
+        None => Ok(Merged {
+            rows: upsert(schema, published, incoming, key)?,
+            tombstones: Vec::new(),
+        }),
     }
+}
+
+/// A merge table's rows once merged, and for a change stream's, the tombstones of the rows it
+/// removed outright.
+#[derive(Debug)]
+pub(crate) struct Merged {
+    pub(crate) rows: Vec<RecordBatch>,
+    pub(crate) tombstones: Vec<RecordBatch>,
 }
 
 /// The published rows once `incoming` upserts into `published` by `key`, the greatest sequence

@@ -1,6 +1,8 @@
 //! A files session: schema changes in the table catalog, writers that stage one file per batch,
 //! and commits that create the next manifest.
 
+mod merged;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,15 +11,14 @@ use std::time::SystemTime;
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{
-    ChildTable, Epoch, GenerationId, LoadId, MergeKey, PipelineId, RootKey, SegmentId, TablePath,
-};
+use rdlt_connector::{Epoch, GenerationId, LoadId, PipelineId, SegmentId, TablePath};
 
 use super::format::FileFormat;
 use super::manifest::{self, Manifest};
 use super::{destination, tables};
 use crate::blocking::blocking;
 use crate::columns::changed;
+use merged::{follow_root, merged_rows, written};
 
 /// Where a session writes: the root, its pipeline's directory, the format, and who it is.
 #[derive(Clone, Debug)]
@@ -162,6 +163,7 @@ fn commit(location: &Location, shared: &Mutex<Shared>, meta: &CommitMeta) -> Res
         let table = manifest.tables.entry(name).or_default();
         table.files = table.generations.remove(generation).unwrap_or_default();
         table.generations.clear();
+        table.tombstones.clear();
     }
     manifest.apply(&meta.state_delta);
     let receipt = Receipt {
@@ -209,8 +211,16 @@ fn publish(
                 let files = staged.get(&(root.table.to_string(), None));
                 (root, files.map(Vec::as_slice).unwrap_or_default())
             });
-            let merged = merged(location, name, &table.files, files, key, root, meta)?;
-            table.files = merged.into_iter().collect();
+            let merged = merged_rows(location, name, table, files, key, root)?;
+            table.files = written(location, name, "merged", &merged.rows, meta)?
+                .into_iter()
+                .collect();
+            table.tombstones = match &merged.tombstones {
+                Some(tombstones) => written(location, name, "tombstones", tombstones, meta)?
+                    .into_iter()
+                    .collect(),
+                None => Vec::new(),
+            };
         }
         (None, None) => table.files.extend(paths),
     }
@@ -239,121 +249,6 @@ fn publish_all(
         follow_root(location, manifest, child, meta, &by_table)?;
     }
     Ok(())
-}
-
-/// Replaces, in the child table `child` the commit staged nothing for, the children of the roots
-/// its root's staged files publish.
-fn follow_root(
-    location: &Location,
-    manifest: &mut Manifest,
-    child: &ChildTable,
-    meta: &CommitMeta,
-    staged: &Staging<'_>,
-) -> Result<()> {
-    let Some(root) = &child.merge.root else {
-        return Ok(());
-    };
-    let name = child.table.to_string();
-    let Some(root_files) = staged.get(&(root.table.to_string(), None)) else {
-        return Ok(());
-    };
-    if staged.contains_key(&(name.clone(), None)) {
-        return Ok(());
-    }
-    let table = manifest.tables.entry(name.clone()).or_default();
-    let root = Some((root, root_files.as_slice()));
-    let (rows, held) = merged_rows(location, &name, &table.files, &[], &child.merge, root)?;
-    // Nothing staged for the table, so it changes only where its roots' rows drop children.
-    if rows.num_rows() == held {
-        return Ok(());
-    }
-    table.files = written(location, &name, &rows, meta)?.into_iter().collect();
-    Ok(())
-}
-
-/// Writes the rows of the table `name` once `files` are merged into its `published` files by
-/// `key`, or for a child table once they replace the children of the roots its root's `files`
-/// publish; the file written, or none where no rows remain.
-fn merged(
-    location: &Location,
-    name: &str,
-    published: &[String],
-    files: &[&StagedFile],
-    key: &MergeKey,
-    root: Option<(&RootKey, &[&StagedFile])>,
-    meta: &CommitMeta,
-) -> Result<Option<String>> {
-    let (rows, _) = merged_rows(location, name, published, files, key, root)?;
-    written(location, name, &rows, meta)
-}
-
-/// The rows of the table `name` once `files` are merged into its `published` files, as
-/// [`merged`] writes them, and how many rows the published files held.
-fn merged_rows(
-    location: &Location,
-    name: &str,
-    published: &[String],
-    files: &[&StagedFile],
-    key: &MergeKey,
-    root: Option<(&RootKey, &[&StagedFile])>,
-) -> Result<(RecordBatch, usize)> {
-    let schema = tables::read(&location.root, name)?
-        .ok_or_else(|| ConnectorError::data(format!("table {name} does not exist")))?;
-    let schema = Arc::new(schema.to_arrow());
-    // A change stream's staged rows carry the columns that direct its merge, and a truncate's
-    // names no key.
-    let staged = match &key.changes {
-        Some(changes) => crate::merge::written_schema(&schema, changes),
-        None => Arc::clone(&schema),
-    };
-    let read = |paths: &mut dyn Iterator<Item = &String>, schema: &arrow_schema::SchemaRef| {
-        let mut batches = Vec::new();
-        for path in paths {
-            batches.extend(location.format.read(&location.root.join(path), schema)?);
-        }
-        Ok::<_, ConnectorError>(batches)
-    };
-    let published = read(&mut published.iter(), &schema)?;
-    let held = published.iter().map(RecordBatch::num_rows).sum();
-    let incoming = read(&mut files.iter().map(|file| &file.path), &staged)?;
-    let merged = match root {
-        Some((root, root_files)) => {
-            let root_schema = tables::read(&location.root, &root.table)?.ok_or_else(|| {
-                ConnectorError::data(format!("root table {} does not exist", root.table))
-            })?;
-            let root_schema = Arc::new(root_schema.to_arrow());
-            let mut roots = Vec::new();
-            for file in root_files {
-                roots.extend(
-                    location
-                        .format
-                        .read(&location.root.join(&file.path), &root_schema)?,
-                );
-            }
-            crate::merge::merge_children(&schema, &published, &incoming, key, root, &roots)
-        }
-        None => crate::merge::merge(&schema, &published, &incoming, key),
-    };
-    let merged = merged
-        .and_then(|batches| arrow_select::concat::concat_batches(&schema, &batches))
-        .map_err(|error| ConnectorError::data(format!("merging table {name}: {error}")))?;
-    Ok((merged, held))
-}
-
-/// Writes `rows` of the table `name` as commit `meta`'s merge; the file written, or none for no
-/// rows.
-fn written(
-    location: &Location,
-    name: &str,
-    rows: &RecordBatch,
-    meta: &CommitMeta,
-) -> Result<Option<String>> {
-    if rows.num_rows() == 0 {
-        return Ok(None);
-    }
-    let path = location.staged(&format!("merged/{}", meta.commit_seq.get()), name, None, 0);
-    location.format.write(&location.root.join(&path), rows)?;
-    Ok(Some(path))
 }
 
 impl Location {

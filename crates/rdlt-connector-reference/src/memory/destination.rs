@@ -15,6 +15,7 @@ use rdlt_connector::{
 };
 
 use crate::columns::changed;
+use crate::merge::Merged;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use table::{Plan, Staged, Table};
@@ -129,7 +130,8 @@ impl Store {
                 }
             }
             if let Some(merged) = merged {
-                table.published = merged;
+                table.published = merged.rows;
+                table.tombstones = merged.tombstones;
             }
         }
         for (path, generation) in &meta.finish_generations {
@@ -139,6 +141,7 @@ impl Store {
             let table = self.tables.entry(name).or_default();
             table.published = table.generations.remove(generation).unwrap_or_default();
             table.generations.clear();
+            table.tombstones.clear();
         }
         Ok((rows, bytes))
     }
@@ -169,7 +172,11 @@ impl Store {
                 Some(key) => match &key.root {
                     Some(root) => {
                         let roots = self.staged_rows(&root.table, pipeline, epoch, meta);
-                        Some(table.merged_children(&staged, key, root, &roots)?)
+                        let rows = table.merged_children(&staged, key, root, &roots)?;
+                        Some(Merged {
+                            rows,
+                            tombstones: Vec::new(),
+                        })
                     }
                     None => Some(table.merged(&staged, key)?),
                 },
