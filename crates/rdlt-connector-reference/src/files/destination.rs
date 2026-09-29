@@ -65,14 +65,7 @@ impl DestinationConnector for FilesDestination {
 
     async fn check(&self) -> Result<()> {
         let root = Arc::clone(&self.root);
-        blocking(move || {
-            let dir = root.join("_rdlt");
-            fs::create_dir_all(&dir).map_err(io::failed("creating a directory", &dir))?;
-            let probe = dir.join(".check");
-            fs::write(&probe, b"").map_err(io::failed("writing", &probe))?;
-            fs::remove_file(&probe).map_err(io::failed("removing", &probe))
-        })
-        .await
+        blocking(move || checked(&root)).await
     }
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<FilesSession>> {
@@ -154,6 +147,15 @@ fn remove_unlisted(path: &Path, root: &Path, listed: &BTreeSet<PathBuf>) -> Resu
     }
     fs::remove_file(path).map_err(io::failed("removing", path))?;
     Ok(true)
+}
+
+/// Checks that the destination can write under `root`, creating its catalog directory durably.
+fn checked(root: &Path) -> Result<()> {
+    let dir = root.join("_rdlt");
+    io::create_dirs(&dir)?;
+    let probe = dir.join(".check");
+    fs::write(&probe, b"").map_err(io::failed("writing", &probe))?;
+    fs::remove_file(&probe).map_err(io::failed("removing", &probe))
 }
 
 /// What the files destination stores: every type its format keeps, any schema change, and

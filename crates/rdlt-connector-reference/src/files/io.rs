@@ -1,7 +1,7 @@
 //! Filesystem errors as connector errors, and making a directory's entries durable.
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -78,6 +78,12 @@ pub(super) fn create_dirs(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).map_err(failed("creating a directory", dir))?;
     for created in missing.iter().rev() {
         if let Some(parent) = created.parent() {
+            // A relative directory of one component has the empty path as its parent.
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             sync_dir(parent)?;
         }
     }

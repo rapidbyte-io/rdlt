@@ -11,7 +11,7 @@ use super::created;
 
 thread_local! {
     /// Every directory this thread synced, in order.
-    pub(super) static SYNCED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static SYNCED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
 fn rows() -> RecordBatch {
@@ -64,4 +64,24 @@ fn a_file_another_writer_linked_first_loses_and_any_other_failure_is_an_error() 
     let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
     let error = created(Err(denied), path).expect_err("a failure");
     assert_eq!(error.kind(), ConnectorErrorKind::Config);
+}
+
+#[test]
+fn a_relative_directory_whose_parent_is_the_working_directory_is_created() {
+    let scratch = tempfile::Builder::new()
+        .tempdir_in(".")
+        .expect("a temporary directory here");
+    let name = scratch
+        .path()
+        .file_name()
+        .expect("a name")
+        .to_string_lossy()
+        .into_owned();
+    // One relative component, whose parent is the empty path.
+    let relative = std::path::PathBuf::from(format!("{name}-root"));
+    let created = super::create_dirs(&relative.join("rows"));
+    let exists = relative.join("rows").is_dir();
+    drop(std::fs::remove_dir_all(&relative));
+    created.expect("the directories are created");
+    assert!(exists);
 }
