@@ -51,6 +51,9 @@ Encoded Arrow columns are admitted and lowered at their decoded size, within the
 JSON integers of any width a decimal holds load exactly; a merge key keeps matching its stored
 rows or refuses to change type; and an unbounded partition, as a change stream's, resumes from its
 last checkpoint rather than ending.
+A table belongs to the pipeline that created it; a connector answers who it is before it receives
+its configuration, and a binary changed since it was placed is not started again; and what a
+connector sends is checked, from the barriers its checkpoints answer to the waits it asks for.
 The memory, JSON lines and Arrow IPC destinations merge them; the simulation checks every merged
 table and log against a model of a seeded change workload, through faults, crashes and racing runs.
 
