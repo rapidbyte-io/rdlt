@@ -191,9 +191,8 @@ impl Tables {
     pub(crate) async fn plan(
         &self,
         table: usize,
-        incoming: impl Into<Incoming>,
+        incoming: Incoming,
     ) -> Result<Arc<LoweringPlan>, Error> {
-        let incoming = incoming.into();
         let slot = self.slot(table);
         let view = self.view(table);
         let planned = |plans: &[Arc<LoweringPlan>], view: &Arc<TableView>| {

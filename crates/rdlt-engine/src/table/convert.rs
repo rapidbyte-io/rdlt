@@ -38,6 +38,7 @@ pub(crate) fn convert(
     if *from == LogicalType::Null {
         return Ok(new_null_array(&to.to_arrow(), array.len()));
     }
+    refuse_rounding(array, from, to)?;
     match (from, to) {
         (_, LogicalType::Json) => json(array, from),
         (LogicalType::Date, LogicalType::Timestamp(unit, zone)) => {
@@ -264,6 +265,22 @@ fn lists(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
             Arc::new(FixedSizeListArray::try_new(field, size, values, nulls)?)
         }
     })
+}
+
+/// Refuses converting `array`, of `from`, to `to` where that rounds: a plan casts 64-bit integers
+/// to 64-bit floats only for batches a float holds exactly, so any other is refused, not rounded.
+fn refuse_rounding(
+    array: &ArrayRef,
+    from: &LogicalType,
+    to: &LogicalType,
+) -> Result<(), ArrowError> {
+    let floats = (from, to) == (&LogicalType::Int64, &LogicalType::Float64);
+    if floats && super::exact::rounds(array) {
+        return Err(ArrowError::CastError(
+            "an integer a 64-bit float would round".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// `array` as `target`, failing on any value `target` cannot represent instead of nulling it.
