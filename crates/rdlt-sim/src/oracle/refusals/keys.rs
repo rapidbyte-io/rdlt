@@ -41,8 +41,9 @@ pub(super) fn key_outcome(
 }
 
 /// What a key batch column arriving as `arrival` does to a key column of `current`: a key
-/// column widens where the destination can, the schema is not `frozen`, and the destination
-/// stores both types by value, so equal keys still match; it is refused otherwise.
+/// column widens where the destination can, the schema is not `frozen`, and equal keys still
+/// match: the destination stores both types by value, or renders both into one type alike; it is
+/// refused otherwise.
 pub(super) fn key_step(
     current: Option<&LogicalType>,
     arrival: &Arrival,
@@ -54,11 +55,17 @@ pub(super) fn key_step(
         return Step::Unknown;
     };
     let joined = current.join(logical);
+    let by_values =
+        by_value(current, nested, capabilities) && by_value(&joined, nested, capabilities);
+    let native = nested == Nested::Native;
+    let rendered_alike = storage(current, native, capabilities)
+        == storage(&joined, native, capabilities)
+        && scale(current).is_some()
+        && scale(current) == scale(&joined);
     let widened = !frozen
         && joined != LogicalType::Json
         && widens(current, &joined, nested, capabilities)
-        && by_value(current, nested, capabilities)
-        && by_value(&joined, nested, capabilities);
+        && (by_values || rendered_alike);
     if joined == *current || widened {
         Step::To(joined)
     } else {
@@ -78,4 +85,13 @@ fn by_value(logical: &LogicalType, nested: Nested, capabilities: &Capabilities) 
         )
     };
     stored.kind() == logical.kind() || (integer(stored.kind()) && integer(logical.kind()))
+}
+
+/// The digits after the point every value of `logical` renders with, for integers and decimals.
+fn scale(logical: &LogicalType) -> Option<u8> {
+    match logical {
+        LogicalType::Int8 | LogicalType::Int16 | LogicalType::Int32 | LogicalType::Int64 => Some(0),
+        LogicalType::Decimal(decimal) => Some(decimal.scale()),
+        _ => None,
+    }
 }

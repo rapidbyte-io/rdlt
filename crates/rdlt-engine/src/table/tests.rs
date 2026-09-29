@@ -1518,6 +1518,62 @@ fn a_merge_key_of_exact_integers_never_widens_to_floats() {
     assert_eq!(error.code(), Some("merge_key_changed"));
 }
 
+/// Capabilities storing decimals as text, as SQLite does.
+fn decimals_as_text() -> Capabilities {
+    let mut capabilities = capabilities();
+    capabilities.types.remove(&TypeKind::Decimal);
+    capabilities
+}
+
+#[test]
+fn a_decimal_key_stored_as_text_widens_where_its_values_render_alike() {
+    let resolver = resolver(decimals_as_text(), plan(), &["id"]);
+    let model = created(&resolver, &[("id", decimal(10, 2))]);
+    let wider = resolver
+        .resolve(&model, &schema(&[("id", decimal(20, 2))]))
+        .unwrap();
+    assert_eq!(wider.routes, [Route::Column(0)]);
+    assert_eq!(columns(&wider.model)[0], ("id".to_owned(), decimal(20, 2)));
+    let finer = resolver
+        .resolve(&model, &schema(&[("id", decimal(12, 4))]))
+        .unwrap_err();
+    assert_eq!(
+        finer.code(),
+        Some("merge_key_changed"),
+        "1.50 renders as 1.5000 once the scale grows"
+    );
+}
+
+#[test]
+fn an_integer_key_stored_as_text_widens_to_whole_decimals_and_never_to_fractions() {
+    let mut capabilities = decimals_as_text();
+    capabilities.types.remove(&TypeKind::Int64);
+    let resolver = resolver(capabilities, plan(), &["id"]);
+    let model = created(&resolver, &[("id", LogicalType::Int64)]);
+    let whole = resolver
+        .resolve(&model, &schema(&[("id", decimal(20, 0))]))
+        .unwrap();
+    assert_eq!(columns(&whole.model)[0], ("id".to_owned(), decimal(20, 0)));
+    let fractions = resolver
+        .resolve(&model, &schema(&[("id", decimal(22, 2))]))
+        .unwrap_err();
+    assert_eq!(fractions.code(), Some("merge_key_changed"));
+}
+
+#[test]
+fn an_integer_key_stored_by_value_never_becomes_text() {
+    let resolver = resolver(decimals_as_text(), plan(), &["id"]);
+    let model = created(&resolver, &[("id", LogicalType::Int64)]);
+    let error = resolver
+        .resolve(&model, &schema(&[("id", decimal(20, 0))]))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        Some("merge_key_changed"),
+        "stored integers never match keys stored as text"
+    );
+}
+
 #[test]
 fn integers_a_float_variant_could_cast_take_a_variant_of_integers_instead() {
     let mut fixed = capabilities();
