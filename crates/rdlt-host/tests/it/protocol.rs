@@ -478,3 +478,25 @@ async fn a_message_that_does_not_decode_is_refused() {
     let status = client.plan(plan).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("invalid_message"));
 }
+
+#[tokio::test]
+async fn a_connection_dropped_before_its_connector_is_configured_is_cut() {
+    let (host, connector) = tokio::net::UnixStream::pair().expect("a socket pair");
+    let served = Served::new().with_source(source_factory::<MemorySource>());
+    let serving = tokio::spawn(rdlt_connector::serve::serve_connection(
+        std::sync::Arc::new(served),
+        connector,
+        Limits::default(),
+    ));
+    let handshaken = Connection::handshake(host, Role::Source, Options::default())
+        .await
+        .expect("the handshake passes");
+    drop(handshaken);
+    // However its end of the connection ends, it ends.
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), serving)
+            .await
+            .expect("the connector's end of the connection closes")
+            .expect("serving the connection ends"),
+    );
+}
