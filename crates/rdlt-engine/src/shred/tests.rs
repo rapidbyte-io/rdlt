@@ -181,6 +181,33 @@ fn a_value_nested_far_past_the_limit_is_refused_without_exhausting_the_stack() {
 }
 
 #[test]
+fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exactly() {
+    let depth = usize::try_from(MAX_NESTING_DEPTH).unwrap();
+    // Each prefix sends the record, or its chunk, through the exact parse.
+    let prefixes = [
+        format!("{{\"n\":{},\"a\":", "9".repeat(400)),
+        "{\"n\":1e400,\"a\":".to_owned(),
+        "{\"n\":1e30}\n{\"a\":".to_owned(),
+    ];
+    for prefix in &prefixes {
+        for levels in [depth + 1, 1_000_000] {
+            let deep = format!("{prefix}{}{}}}", "[".repeat(levels), "]".repeat(levels));
+            assert_eq!(refused(&deep), "limit_exceeded", "{prefix:?} at {levels}");
+        }
+    }
+    let beside = format!(
+        "{{\"n\":1e30}}\n{{\"a\":{}{}}}",
+        "[".repeat(1_000_000),
+        "]".repeat(1_000_000)
+    );
+    assert_eq!(refused(&beside), "limit_exceeded");
+    // Brackets inside strings, even escaped quotes before them, nest nothing.
+    let text = format!("\\\"{}", "[".repeat(1_000));
+    let texts = batch_of(&[&format!("{{\"n\":1e30,\"a\":\"{text}\"}}")], 1 << 20);
+    assert_eq!(texts.num_rows(), 1);
+}
+
+#[test]
 fn records_with_more_columns_than_the_limit_are_refused() {
     let columns = usize::try_from(MAX_COLUMNS).unwrap();
     let record = |count: usize| {

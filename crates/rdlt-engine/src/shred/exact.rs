@@ -8,7 +8,7 @@ use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use super::ShredError;
 use super::build::Record;
-use super::visit::{Context, DECIMAL_LIMIT, Row};
+use super::visit::{Context, DECIMAL_LIMIT, MAX_DEPTH, Row};
 
 /// Appends the record `bytes` to `record`, its numbers exact.
 pub(super) fn append(
@@ -20,6 +20,10 @@ pub(super) fn append(
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Err(de::Error::custom("the record is not valid UTF-8"));
     };
+    // Parsing builds the record whole, recursing once per level, so depth is checked first.
+    if too_deep(text) {
+        return Err(context.fail(ShredError::TooDeep));
+    }
     let mut deserializer = sonic_rs::Deserializer::from_str(text).use_rawnumber();
     let value: Value = serde::Deserialize::deserialize(&mut deserializer)?;
     deserializer.end()?;
@@ -27,6 +31,36 @@ pub(super) fn append(
         value: &value,
         context,
     })
+}
+
+/// Whether `record`'s containers nest deeper than a value may: a linear scan of its brackets,
+/// outside its strings.
+fn too_deep(record: &str) -> bool {
+    let (mut depth, mut in_string, mut escaped) = (0_u64, false, false);
+    for byte in record.bytes() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_DEPTH {
+                    return true;
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// A parsed value, walked with its numbers exact.
