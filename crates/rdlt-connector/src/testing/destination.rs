@@ -14,9 +14,9 @@ mod tables;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
+use arrow_array::{Array, RecordBatch};
 use bytes::Bytes;
 
 pub use clauses::DESTINATION_CLAUSES;
@@ -31,7 +31,7 @@ use crate::error::{ConnectorErrorKind, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord};
-use rows::{STALE, expect_ids, rows, schema};
+use rows::{Row, STALE, expect_rows, rows, schema};
 
 /// Reads what a destination has published, so clauses can compare it with what was committed.
 pub trait Probe: Send + Sync {
@@ -274,25 +274,36 @@ impl Bench<'_> {
             .map_err(|error| Violation::from(format!("writer: {error}")))
     }
 
-    /// The ids the clause's table publishes, in order.
-    async fn published_ids(&self) -> Result<Vec<i64>, Violation> {
-        self.ids_of(&self.table()).await
+    /// The rows the clause's table publishes, in order.
+    async fn published_rows(&self) -> Result<Vec<Row>, Violation> {
+        self.rows_of(&self.table()).await
     }
 
-    /// The ids `table` publishes, in order.
-    async fn ids_of(&self, table: &TableRef) -> Result<Vec<i64>, Violation> {
+    /// The `(id, name)` rows `table` publishes, in order.
+    async fn rows_of(&self, table: &TableRef) -> Result<Vec<Row>, Violation> {
         let batches = bounded_call("probe", self.probe.published(table)).await?;
-        let mut ids = Vec::new();
+        let mut rows = Vec::new();
         for batch in &batches {
-            let column = batch
-                .column_by_name("id")
-                .ok_or_else(|| Violation::from("a published batch has no id column"))?;
-            let column = arrow_cast::cast(column, &arrow_schema::DataType::Int64)
-                .map_err(|error| Violation::from(format!("the ids read back as {error}")))?;
-            ids.extend(column.as_primitive::<Int64Type>().iter().flatten());
+            let column = |name: &str, logical: &arrow_schema::DataType| {
+                let column = batch.column_by_name(name).ok_or_else(|| {
+                    Violation::from(format!("a published batch has no {name} column"))
+                })?;
+                arrow_cast::cast(column, logical)
+                    .map_err(|error| Violation::from(format!("the {name}s read back as {error}")))
+            };
+            let ids = column("id", &arrow_schema::DataType::Int64)?;
+            let names = column("name", &arrow_schema::DataType::Utf8)?;
+            let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
+            for row in 0..batch.num_rows() {
+                if ids.is_null(row) {
+                    return Err("a published row has no id".into());
+                }
+                let name = names.is_valid(row).then(|| names.value(row).to_owned());
+                rows.push((ids.value(row), name));
+            }
         }
-        ids.sort_unstable();
-        Ok(ids)
+        rows.sort_unstable();
+        Ok(rows)
     }
 
     /// Opens through both connections, so an epoch kept in one connection's memory is caught.
@@ -308,7 +319,7 @@ impl Bench<'_> {
 
     async fn staging_is_invisible(&self) -> Result<(), Violation> {
         let _staged = self.staged(self.destination, 1, &[1]).await?;
-        expect_ids(&self.published_ids().await?, &[])
+        expect_rows(&self.published_rows().await?, &[])
     }
 
     /// Stages two segments and commits one: the other stays staged.
@@ -322,7 +333,7 @@ impl Bench<'_> {
         if receipt.rows != 3 {
             return Err(format!("the receipt reports {} rows, expected 3", receipt.rows).into());
         }
-        expect_ids(&self.published_ids().await?, &[1])
+        expect_rows(&self.published_rows().await?, &[1])
     }
 
     /// Replays a committed load the way recovery does: another worker opens the same load,
@@ -346,7 +357,7 @@ impl Bench<'_> {
             )
             .into());
         }
-        expect_ids(&self.published_ids().await?, &[1])
+        expect_rows(&self.published_rows().await?, &[1])
     }
 
     /// Commits through one connection and reads back through the other, so state kept in one
@@ -426,7 +437,7 @@ impl Bench<'_> {
             ..meta(self.load_id(3), latest.epoch, &[2], Vec::new())
         };
         drop(bounded("commit", latest.session.commit(&orphan)).await?);
-        expect_ids(&self.published_ids().await?, &[1])
+        expect_rows(&self.published_rows().await?, &[1])
     }
 }
 

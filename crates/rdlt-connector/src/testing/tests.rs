@@ -375,6 +375,8 @@ struct VaultConfig {
     publish_all: bool,
     /// Publishes, for each segment a commit lists, one it staged and the commit does not list.
     publish_other: bool,
+    /// Stores every `name` value as null.
+    blank_names: bool,
     local_epoch: bool,
     local_state: bool,
     stale_writes: bool,
@@ -946,6 +948,11 @@ impl VaultConfig {
 impl VaultWriter {
     /// `batch`, as the flags that break names and lanes stage it in `store`.
     fn faulted(&self, store: &mut VaultStore, batch: RecordBatch) -> RecordBatch {
+        let batch = if self.config.blank_names {
+            blanked_names(&batch)
+        } else {
+            batch
+        };
         if self.config.lose_lanes {
             for ((pipeline, _), staged) in &mut store.staged {
                 if *pipeline == self.pipeline {
@@ -1209,6 +1216,26 @@ fn record(store: &mut VaultStore, change: &TableChange) {
     }
 }
 
+/// `batch` with its `name` column, if it has one, all nulls.
+fn blanked_names(batch: &RecordBatch) -> RecordBatch {
+    let (fields, columns): (Vec<_>, Vec<_>) = batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(batch.columns())
+        .map(|(field, column)| {
+            if field.name() == "name" {
+                let nulls = arrow_array::new_null_array(field.data_type(), column.len());
+                (field.as_ref().clone().with_nullable(true), nulls)
+            } else {
+                (field.as_ref().clone(), Arc::clone(column))
+            }
+        })
+        .unzip();
+    let schema = Arc::new(arrow_schema::Schema::new(fields));
+    RecordBatch::try_new(schema, columns).expect("nulls fit a nullable column")
+}
+
 struct VaultProbe(SharedVault);
 
 impl Probe for VaultProbe {
@@ -1280,6 +1307,20 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
         ("wrong_fence_kind", &["D-FENCE"][..]),
         ("forget_receipts", &["D-IDEMPOTENT"][..]),
         ("publish_all", &["D-COMMIT"][..]),
+        (
+            "blank_names",
+            &[
+                "D-COMMIT",
+                "D-IDEMPOTENT",
+                "D-DISCARD",
+                "D-REPLACE",
+                "D-MERGE",
+                "D-ENCODING",
+                "D-TABLES",
+                "D-LANES",
+                "D-OWNED",
+            ][..],
+        ),
         (
             "publish_other",
             &["D-COMMIT", "D-REPLACE", "D-MERGE", "D-CHILDREN"][..],

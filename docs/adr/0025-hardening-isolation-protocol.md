@@ -101,9 +101,10 @@ follows H1c.
     publishes once.
   - The simulation's destination commits atomically, as the contract requires. A fault inside
     such a commit is one before or after it, which the simulation already injects.
-  - Certification clauses compare ids: each segment's rows carry their own. A destination
-    publishing another staged segment now fails `D-COMMIT`, `D-REPLACE`, `D-MERGE` and
-    `D-CHILDREN`.
+  - Certification clauses compare whole rows, ids and values: each segment's rows carry ids of
+    their own. A destination publishing another staged segment now fails `D-COMMIT`,
+    `D-REPLACE`, `D-MERGE` and `D-CHILDREN`, and one that loses a value fails every clause that
+    reads its rows back.
   - `D-MERGE` puts one key's newest row first and another's last. A merge keeping either the
     first or the last row of a key fails it.
   - `rdlt-connector-reference` is mutated and its tests run against mutants. Its full runs left

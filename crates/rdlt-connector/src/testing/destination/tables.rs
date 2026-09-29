@@ -1,6 +1,6 @@
 //! `D-TABLES`: one segment holds rows for several tables.
 
-use super::{Bench, commit, expect_ids, meta, rows};
+use super::{Bench, commit, expect_rows, meta, rows};
 use crate::destination::TableRef;
 use crate::id::{SchemaVersion, SegmentId, TablePath};
 use crate::testing::Violation;
@@ -29,7 +29,7 @@ impl Bench<'_> {
         )
         .await?;
         for table in [self.table(), child] {
-            expect_ids(&self.ids_of(&table).await?, &[1]).map_err(|Violation(reason)| {
+            expect_rows(&self.rows_of(&table).await?, &[1]).map_err(|Violation(reason)| {
                 Violation(format!("table {}: {reason}", table.name))
             })?;
         }

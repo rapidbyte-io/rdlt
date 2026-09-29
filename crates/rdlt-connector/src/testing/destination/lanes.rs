@@ -2,7 +2,7 @@
 
 use tokio::task::JoinSet;
 
-use super::{Bench, commit, expect_ids, meta, rows};
+use super::{Bench, commit, expect_rows, meta, rows};
 use crate::id::SegmentId;
 use crate::testing::Violation;
 
@@ -55,6 +55,6 @@ impl Bench<'_> {
             &meta(self.load_id(1), opened.epoch, &segments, Vec::new()),
         )
         .await?;
-        expect_ids(&self.published_ids().await?, &segments)
+        expect_rows(&self.published_rows().await?, &segments)
     }
 }

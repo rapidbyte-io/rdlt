@@ -1,6 +1,6 @@
 //! `D-OWNED`: a table belongs to the pipeline that created it.
 
-use super::{Bench, commit, expect_ids, meta};
+use super::{Bench, commit, expect_rows, meta};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::PipelineId;
 use crate::testing::{Violation, bounded};
@@ -34,7 +34,7 @@ impl Bench<'_> {
             "writer",
             intruder.session.writer(&self.table()).await.map(drop),
         )?;
-        expect_ids(&self.published_ids().await?, &[1])?;
+        expect_rows(&self.published_rows().await?, &[1])?;
         let mut again = self.open(self.destination, 3).await?;
         bounded("apply_schema", again.session.apply_schema(&create))
             .await?
