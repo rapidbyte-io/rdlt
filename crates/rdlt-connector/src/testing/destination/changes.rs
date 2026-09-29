@@ -54,7 +54,6 @@ fn partial(id: i64, seq: u8) -> Change {
 fn delete(id: i64, seq: u8, at: i64) -> Change {
     Change {
         op: ChangeOp::Delete,
-        name: None,
         at: Some(at),
         ..upsert(id, "", seq)
     }
@@ -297,20 +296,14 @@ impl Bench<'_> {
         expect(&published, 0, &expected, "a table replaced whole")
     }
 
-    /// Whether the destination marks rows deleted but never removes them, so a change stream's
-    /// table it certifies has soft deletes.
-    fn soft_only(&self) -> bool {
-        let modes = self.destination.capabilities().delete_modes;
-        modes.soft && !modes.hard
-    }
-
     /// `D-PARTIAL`: an update flagging a column unchanged keeps its published value, or leaves it
     /// null where no row held the key.
     pub(super) async fn partial_updates_keep_columns(&self) -> Result<(), Violation> {
-        let soft = self.soft_only();
-        let table = self.changed_table("partial", soft);
+        // Every destination merging changes takes a table whose deletes remove rows, where none
+        // do: a stream ignoring its deletes and truncates writes one.
+        let table = self.changed_table("partial", false);
         let commits: [&[Change]; 2] = [&[upsert(1, "a", 1)], &[partial(1, 2), partial(5, 3)]];
-        let published = self.changed((&table, 2), soft, &commits).await?;
+        let published = self.changed((&table, 2), false, &commits).await?;
         expect(
             &published,
             1,
@@ -378,13 +371,12 @@ impl Bench<'_> {
     /// `D-MERGE`, for a change stream's table: a change applies only past the sequence of the row
     /// its key holds, across commits, and one sent twice in a commit lands once.
     pub(super) async fn changes_apply_past_their_row(&self) -> Result<(), Violation> {
-        let soft = self.soft_only();
-        let table = self.changed_table("changes", soft);
+        let table = self.changed_table("changes", false);
         let commits: [&[Change]; 2] = [
             &[upsert(1, "new", 5)],
             &[upsert(1, "old", 3), upsert(2, "b", 4), upsert(2, "b", 4)],
         ];
-        let published = self.changed((&table, 2), soft, &commits).await?;
+        let published = self.changed((&table, 2), false, &commits).await?;
         expect(&published, 1, &[live(1, "new"), live(2, "b")], "changes")
     }
 }

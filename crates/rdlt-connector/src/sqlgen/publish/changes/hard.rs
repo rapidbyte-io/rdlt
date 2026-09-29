@@ -72,7 +72,8 @@ fn merged(changed: &Changed<'_>) -> String {
         .iter()
         .enumerate()
         .map(|(ordinal, column)| {
-            if changed.is_key_or_seq(column) || changed.unchanged.is_none() {
+            // Staging refuses a flag on a key or the sequence, so theirs are set by every row.
+            if changed.unchanged.is_none() {
                 return format!("_rdlt_u.{column}");
             }
             format!(

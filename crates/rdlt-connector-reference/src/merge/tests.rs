@@ -438,3 +438,22 @@ fn tombstones_stored_before_their_key_widened_still_bury_it() {
     let schema = tombstone_schema(&stored_schema(), &key).expect("a tombstone schema");
     assert_eq!(merged.tombstones[0].schema(), schema);
 }
+
+#[test]
+fn a_change_at_a_truncate_s_own_sequence_follows_it() {
+    // A transaction's truncate and the rows it inserts after it may share one sequence.
+    let published = apply(
+        &empty(),
+        &[&[row(1, "a", 1), truncate(4, 100), row(2, "b", 4)]],
+        Deletion::Hard,
+    );
+    assert_eq!(rows(&published), [(2, Some("b".into()), 4, None)]);
+    let later = apply(&published, &[&[row(3, "c", 4)]], Deletion::Hard);
+    assert_eq!(
+        rows(&later),
+        [
+            (2, Some("b".into()), 4, None),
+            (3, Some("c".into()), 4, None)
+        ]
+    );
+}
