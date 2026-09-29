@@ -56,8 +56,10 @@ as floats, not as JSON text.
 A table belongs to the pipeline that created it; a connector answers who it is before it receives
 its configuration, and a binary changed since it was placed is not started again; and what a
 connector sends is checked, from the barriers its checkpoints answer to the waits it asks for.
-The memory, JSON lines and Arrow IPC destinations merge them; the simulation checks every merged
-table and log against a model of a seeded change workload, through faults, crashes and racing runs.
+The memory, JSON lines, Arrow IPC and SQLite destinations merge them, SQLite through `sqlgen`'s
+portable SQL; each remembers the rows a hard delete or truncate removed, so a change sent again
+never brings one back. The simulation checks every merged table and log against a model of a
+seeded change workload, through faults, crashes, racing runs and changes sent again.
 
 ## Development
 
