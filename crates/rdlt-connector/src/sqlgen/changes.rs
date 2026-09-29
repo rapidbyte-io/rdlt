@@ -39,11 +39,11 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// The statements readying a change stream's tables before it stages rows for `table`, given
     /// the columns its target, staging and tombstones tables have now: the staging table gains the
-    /// op and unchanged columns, the tombstones table is created with the target's key and
-    /// sequence columns, and each of the three is indexed by the key where it is not; nothing for
-    /// a table that merges no change stream.
+    /// op and unchanged columns, and the tombstones table is created with the target's key and
+    /// sequence columns; nothing for a table that merges no change stream.
     ///
-    /// They run where the stream stages its rows, so a commit changes no table's columns.
+    /// They run where the stream stages its rows, so a commit changes no table's columns;
+    /// [`SqlPlanner::key_indexes`] then indexes the three by the key.
     pub fn change_tables(
         &self,
         table: &TableRef,
@@ -96,34 +96,40 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 params: Vec::new(),
             });
         }
-        plan.extend(self.key_indexes(&table.name, key));
         Ok(plan)
     }
 
-    /// The statements indexing the table `name`, its staging and its tombstones by `key`'s
-    /// columns, where they are not: a commit finds each changed key's rows by them.
-    fn key_indexes(&self, name: &str, key: &MergeKey) -> Vec<Statement> {
+    /// The statements indexing `table`, a merge table, and its staging by its key's columns where
+    /// they are not, and its tombstones too where it merges a change stream; nothing for a table
+    /// that does not merge, or a child table, which [`SqlPlanner::root_index`] indexes.
+    ///
+    /// They run where the table's rows are staged, so a commit finds each staged key's rows by
+    /// them and changes no index.
+    pub fn key_indexes(&self, table: &TableRef) -> Vec<Statement> {
+        let Some(key) = table.merge.as_ref().filter(|key| key.root.is_none()) else {
+            return Vec::new();
+        };
         let columns: Vec<String> = key
             .columns
             .iter()
             .map(|column| self.quote(column))
             .collect();
         let columns = columns.join(", ");
-        [
-            name.to_owned(),
-            self.staging_table(name),
-            self.tombstone_table(name),
-        ]
-        .into_iter()
-        .map(|table| Statement {
-            sql: self.dialect.create_index(
-                &self.quote(&self.key_index_name(&table)),
-                &self.quote(&table),
-                &columns,
-            ),
-            params: Vec::new(),
-        })
-        .collect()
+        let mut tables = vec![self.target(table), self.staging_table(&table.name)];
+        if key.changes.is_some() {
+            tables.push(self.tombstone_table(&table.name));
+        }
+        tables
+            .into_iter()
+            .map(|indexed| Statement {
+                sql: self.dialect.create_index(
+                    &self.quote(&self.key_index_name(&indexed)),
+                    &self.quote(&indexed),
+                    &columns,
+                ),
+                params: Vec::new(),
+            })
+            .collect()
     }
 
     /// The name of the index of the table `table` by its key.

@@ -1,17 +1,21 @@
 //! A SQLite session: schema changes, staging writers and commits, each one transaction.
 
+#[cfg(test)]
+mod tests;
+mod writer;
+
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite, Staged};
-use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StateRecord};
+use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId, StateRecord};
 use rusqlite::Transaction;
 use rusqlite::types::Value;
 
 use super::database::{Database, columns, integer, query, run, run_all, text};
-use super::values;
+
+pub use writer::SqliteWriter;
 
 /// A [`SqliteDestination`](super::SqliteDestination) session, on its own connection.
 #[derive(Debug)]
@@ -142,9 +146,12 @@ impl Session for SqliteSession {
                 })
                 .await?;
         }
-        if let Some(index) = self.planner.root_index(table)? {
+        // A commit finds its rows by these indexes, which it never creates itself.
+        let mut indexes = self.planner.key_indexes(table);
+        indexes.extend(self.planner.root_index(table)?);
+        if !indexes.is_empty() {
             self.database
-                .transaction(move |transaction| run(transaction, &index).map(drop))
+                .transaction(move |transaction| run_all(transaction, &indexes))
                 .await?;
         }
         Ok(SqliteWriter {
@@ -382,57 +389,4 @@ fn swap(
         run(transaction, &planner.forget_tombstones(name))?;
     }
     Ok(())
-}
-
-/// Stages a table's batches: buffers them, and writes them to its staging table on flush.
-#[derive(Debug)]
-pub struct SqliteWriter {
-    database: Database,
-    planner: Arc<SqlPlanner<Sqlite>>,
-    pipeline: PipelineId,
-    epoch: Epoch,
-    table: TableRef,
-    buffered: Vec<(SegmentId, RecordBatch)>,
-}
-
-impl TableWriter for SqliteWriter {
-    async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
-        self.buffered.push((segment, batch));
-        Ok(())
-    }
-
-    async fn flush(&mut self) -> Result<WriteStats> {
-        let buffered = std::mem::take(&mut self.buffered);
-        let (planner, pipeline, epoch, table) = (
-            Arc::clone(&self.planner),
-            self.pipeline.clone(),
-            self.epoch,
-            self.table.clone(),
-        );
-        self.database
-            .transaction(move |transaction| {
-                let mut stats = WriteStats::default();
-                let target = columns(transaction, planner.dialect(), &planner.target(&table))?;
-                for (segment, batch) in &buffered {
-                    let batch = &sqlgen::staged_changes(batch, &table, &target)?;
-                    let schema = batch.schema();
-                    let names: Vec<&str> = schema
-                        .fields()
-                        .iter()
-                        .map(|field| field.name().as_str())
-                        .collect();
-                    let statement = planner.stage(&table, &pipeline, epoch, *segment, &names);
-                    values::stage(transaction, &statement, batch)?;
-                    let rows = batch.num_rows() as u64;
-                    let bytes = batch.get_array_memory_size() as u64;
-                    let record =
-                        planner.record_segment(&table, &pipeline, epoch, *segment, [rows, bytes]);
-                    run(transaction, &record)?;
-                    stats.rows += rows;
-                    stats.bytes += bytes;
-                }
-                Ok(stats)
-            })
-            .await
-    }
 }

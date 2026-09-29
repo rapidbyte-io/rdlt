@@ -215,6 +215,7 @@ fn a_commit_finds_the_rows_its_changes_touch_by_their_key() {
         .change_tables(&orders, [&tables[0], &tables[1], &tables[2]])
         .unwrap();
     run_all(&connection, &ready);
+    run_all(&connection, &planner.key_indexes(&orders));
     let columns = columns(&connection, &planner, "orders");
     let staged = Staged {
         name: "orders".into(),
@@ -282,15 +283,11 @@ fn a_change_table_its_staging_and_its_tombstones_are_indexed_by_its_key() {
             .unwrap()
     };
     run_all(&connection, &ready(&connection));
-    // Ready, the tables need no more columns, only their key indexes, which exist.
-    let again = ready(&connection);
-    assert!(
-        again
-            .iter()
-            .all(|statement| statement.sql.starts_with("CREATE INDEX IF NOT EXISTS")),
-        "{again:?}"
-    );
-    run_all(&connection, &again);
+    // Indexed again, the tables change nothing: each index is created where it is missing.
+    for _ in 0..2 {
+        run_all(&connection, &planner.key_indexes(&orders));
+    }
+    assert_eq!(ready(&connection), []);
     let listing = Statement {
         sql: "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name LIKE '_rdlt_key%' \
               ORDER BY tbl_name"

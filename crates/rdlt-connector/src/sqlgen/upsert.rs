@@ -110,8 +110,13 @@ impl<D: SqlDialect> SqlPlanner<D> {
             .map(|(_, value)| insert.bind(value.clone()))
             .collect();
         let key = matches(&mut insert);
+        let from = self
+            .dialect
+            .values_table()
+            .map_or_else(String::new, |values| format!(" FROM {values}"));
         insert.push(&format!(
-            "INSERT INTO {table} ({}) SELECT {} WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {key})",
+            "INSERT INTO {table} ({}) SELECT {}{from} WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE \
+             {key})",
             columns.join(", "),
             values.join(", "),
             table = row.table,

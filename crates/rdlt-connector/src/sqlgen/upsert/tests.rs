@@ -5,14 +5,15 @@ use rusqlite::types::Value;
 use super::super::tests::{pipeline, query, run_all, table};
 use super::super::{SqlDialect, SqlPlanner, Sqlite, Statement, Upserts};
 use crate::destination::TableRef;
+use crate::id::GenerationId;
 use crate::id::TablePath;
 use crate::state::{StateChange, StateRecord};
 use crate::types::LogicalType;
 
 /// SQLite, writing rows whose key a row may hold in standard SQL, as a dialect without
-/// `ON CONFLICT` does.
+/// `ON CONFLICT` does, selecting bound values from the table it names, as Oracle's `DUAL`.
 #[derive(Debug)]
-struct Standard;
+struct Standard(Option<&'static str>);
 
 impl SqlDialect for Standard {
     fn placeholder(&self, index: usize) -> String {
@@ -34,6 +35,10 @@ impl SqlDialect for Standard {
     fn upserts(&self) -> Upserts {
         Upserts::Guarded
     }
+
+    fn values_table(&self) -> Option<&str> {
+        self.0
+    }
 }
 
 /// What the catalog holds after two opens, two pipelines claiming one table, a state record put
@@ -41,6 +46,9 @@ impl SqlDialect for Standard {
 /// owner, the state and the registered names.
 fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
     let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch("CREATE TABLE dual (x INTEGER); INSERT INTO dual VALUES (1)")
+        .unwrap();
     let planner = SqlPlanner::try_new(dialect).unwrap();
     run_all(&connection, &planner.bootstrap());
     let orders = pipeline("orders");
@@ -59,6 +67,12 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
         &planner.state_changes(&orders, &[put(b"1"), put(b"2")]),
     );
     run_all(&connection, &planner.register(&table("events")));
+    let generation = TableRef {
+        generation: Some(GenerationId(3)),
+        ..table("events")
+    };
+    run_all(&connection, &planner.register(&generation));
+    run_all(&connection, &planner.register(&generation));
     let renamed = TableRef {
         path: TablePath::new(["events"]).unwrap(),
         name: "events_v2".into(),
@@ -70,6 +84,7 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
         query(&connection, &planner.owner("events")),
         query(&connection, &planner.state(&orders)),
         query(&connection, &planner.tables()),
+        query(&connection, &planner.generations("events")),
     ]
 }
 
@@ -83,14 +98,19 @@ fn standard_sql_writes_the_catalog_as_on_conflict_does() {
             Value::Blob(b"2".to_vec()),
         ]],
         vec![vec![Value::Text("events_v2".to_owned())]],
+        vec![vec![
+            Value::Text("_rdlt_generation_3__events".to_owned()),
+            Value::Integer(3),
+        ]],
     ];
     assert_eq!(catalog(Sqlite), expected);
-    assert_eq!(catalog(Standard), expected);
+    assert_eq!(catalog(Standard(None)), expected);
+    assert_eq!(catalog(Standard(Some("dual"))), expected);
 }
 
 #[test]
 fn only_sqlite_writes_on_conflict() {
     assert_eq!(Sqlite.upserts(), Upserts::OnConflict);
-    assert_eq!(Standard.upserts(), Upserts::Guarded);
+    assert_eq!(Standard(None).upserts(), Upserts::Guarded);
     assert_eq!(super::super::tests::Widening.upserts(), Upserts::Guarded);
 }

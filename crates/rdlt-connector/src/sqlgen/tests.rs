@@ -128,12 +128,36 @@ fn tables_whose_derived_tables_would_share_a_name_are_refused() {
 }
 
 #[test]
-fn a_dialect_whose_schema_changes_do_not_commit_with_it_swaps_no_generation() {
+fn a_dialect_whose_schema_changes_do_not_commit_with_it_swaps_no_generation_table() {
     let planner = SqlPlanner::try_new(Autocommitting).unwrap();
-    let error = planner
-        .swap("orders", true, GenerationId(1), &[])
-        .unwrap_err();
-    assert_eq!(error.kind(), ConnectorErrorKind::Unsupported);
+    assert!(!planner.swaps_atomically());
+    assert!(database().1.swaps_atomically());
+    let generation = planner.generation_table("orders", GenerationId(1));
+    for generations in [
+        vec![(generation.clone(), GenerationId(1))],
+        vec![(generation, GenerationId(2))],
+    ] {
+        let error = planner
+            .swap("orders", true, GenerationId(1), &generations)
+            .unwrap_err();
+        assert_eq!(error.kind(), ConnectorErrorKind::Unsupported);
+    }
+    // A generation without a table swaps in by emptying the table, which changes no schema.
+    let (connection, sqlite) = database();
+    let fields = [("id", LogicalType::Int64, false)];
+    apply(&connection, &sqlite, &create(&table("orders"), &fields)).unwrap();
+    connection
+        .execute("INSERT INTO orders VALUES (1)", [])
+        .unwrap();
+    run_all(
+        &connection,
+        &planner.swap("orders", true, GenerationId(1), &[]).unwrap(),
+    );
+    let count = Statement {
+        sql: "SELECT count(*) FROM orders".into(),
+        params: Vec::new(),
+    };
+    assert_eq!(query(&connection, &count), [[Value::Integer(0)]]);
 }
 
 /// SQLite, as if its schema changes committed on their own.
@@ -1443,6 +1467,52 @@ fn a_swap_replaces_the_table_with_its_generation_and_drops_the_others() {
     assert!(query(&connection, &planner.generations("orders")).is_empty());
 }
 
+#[test]
+fn a_swapped_in_generation_keeps_no_index_named_after_it() {
+    let (connection, planner) = database();
+    let fields = [
+        ("id", LogicalType::Int64, false),
+        ("seq", LogicalType::Binary, true),
+    ];
+    let base = keyed("orders");
+    apply(&connection, &planner, &create(&base, &fields)).unwrap();
+    let generation = TableRef {
+        generation: Some(GenerationId(2)),
+        ..base.clone()
+    };
+    apply(&connection, &planner, &create(&generation, &fields)).unwrap();
+    run_all(&connection, &planner.register(&generation));
+    run_all(&connection, &planner.key_indexes(&generation));
+    let name = planner.generation_table("orders", GenerationId(2));
+    run(
+        &connection,
+        &Statement {
+            sql: format!(
+                "CREATE INDEX \"{}\" ON \"{name}\" (id)",
+                planner.root_index_name(&name)
+            ),
+            params: Vec::new(),
+        },
+    );
+    let generations = generations_of(&connection, &planner, "orders");
+    run_all(
+        &connection,
+        &planner
+            .swap("orders", true, GenerationId(2), &generations)
+            .unwrap(),
+    );
+    // The next writer indexes the table under its own name; the generation's leave with it.
+    run_all(&connection, &planner.key_indexes(&base));
+    let listing = Statement {
+        sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'orders'".into(),
+        params: Vec::new(),
+    };
+    assert_eq!(
+        query(&connection, &listing),
+        [[text(&planner.key_index_name("orders"))]]
+    );
+}
+
 fn generations_of(
     connection: &Connection,
     planner: &SqlPlanner<Sqlite>,
@@ -1668,4 +1738,55 @@ fn publishing_into_a_table_that_does_not_exist_is_a_data_error() {
         )
         .unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
+}
+
+#[test]
+fn a_merge_finds_the_rows_its_keys_replace_through_the_key_s_indexes() {
+    let (connection, planner) = database();
+    let orders = TableRef {
+        merge: Some(MergeKey {
+            columns: vec!["id".into(), "region".into()],
+            seq: "seq".into(),
+            root: None,
+            changes: None,
+        }),
+        ..table("orders")
+    };
+    let fields = [
+        ("id", LogicalType::Int64, false),
+        ("region", LogicalType::Int64, false),
+        ("seq", LogicalType::Binary, false),
+    ];
+    apply(&connection, &planner, &create(&orders, &fields)).unwrap();
+    run_all(&connection, &planner.key_indexes(&orders));
+    let columns = columns(&connection, &planner, "orders");
+    let plan = planner
+        .publish(
+            &staged("orders", None, orders.merge.clone()),
+            &columns,
+            &pipeline("mine"),
+            Epoch(1),
+            &segments(&[1]),
+        )
+        .unwrap();
+    // Deleting the rows the staged keys replace reads neither the table whole nor, for each of
+    // its rows, the staging table: a commit costs what it stages.
+    let explain = Statement {
+        sql: format!("EXPLAIN QUERY PLAN {}", plan[0].sql),
+        params: plan[0].params.clone(),
+    };
+    let steps: Vec<String> = query(&connection, &explain)
+        .into_iter()
+        .map(|row| match &row[3] {
+            Value::Text(step) => step.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert!(!steps.iter().any(|step| step == "SCAN orders"), "{steps:?}");
+    for (index, step) in steps.iter().enumerate() {
+        if step.starts_with("CORRELATED") {
+            let inner = steps.get(index + 1).map_or("", String::as_str);
+            assert!(inner.starts_with("SEARCH"), "{steps:?}");
+        }
+    }
 }

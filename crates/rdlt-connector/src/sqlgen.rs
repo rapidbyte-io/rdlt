@@ -109,6 +109,18 @@ pub trait SqlDialect: Send + Sync {
         format!("CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})")
     }
 
+    /// The statement dropping the index `name` of `table`, both quoted, where it exists.
+    fn drop_index(&self, name: &str, table: &str) -> String {
+        let _ = table;
+        format!("DROP INDEX IF EXISTS {name}")
+    }
+
+    /// The table a `SELECT` of bound values alone reads, as Oracle's `DUAL`, where the database
+    /// needs one; none by default.
+    fn values_table(&self) -> Option<&str> {
+        None
+    }
+
     /// How the dialect writes a row whose key a row may already hold: in standard SQL unless it
     /// says otherwise.
     fn upserts(&self) -> Upserts {
