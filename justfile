@@ -81,19 +81,21 @@ mutants-diff base="origin/main" jobs="4":
     mkdir -p target/mutants
     git diff --src-prefix=a/ --dst-prefix=b/ "$(git merge-base {{ base }} HEAD)" > target/mutants.diff
     # The packages whose tests can catch a crate's mutants: its own, and those that drive it.
-    declare -A catching=(
-        [rdlt-engine]="rdlt-engine"
-        [rdlt-connector]="rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host"
-        [rdlt-connector-reference]="rdlt-connector-reference rdlt-engine"
-        [rdlt-wire]="rdlt-wire rdlt-host"
-        [rdlt-host]="rdlt-host rdlt-certify"
-        [rdlt-certify]="rdlt-certify"
-    )
+    # A function rather than an associative array, which the bash macOS ships lacks.
+    catching() {
+        case "$1" in
+            rdlt-connector) echo "rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host rdlt-certify" ;;
+            rdlt-connector-reference) echo "rdlt-connector-reference rdlt-engine" ;;
+            rdlt-wire) echo "rdlt-wire rdlt-host" ;;
+            rdlt-host) echo "rdlt-host rdlt-certify" ;;
+            *) echo "$1" ;;
+        esac
+    }
     failed=0
     for crate in rdlt-engine rdlt-connector rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
         tests=()
-        for package in ${catching[$crate]}; do tests+=(--test-package "$package"); done
+        for package in $(catching "$crate"); do tests+=(--test-package "$package"); done
         CARGO_INCREMENTAL=1 cargo mutants --package "$crate" "${tests[@]}" \
             --in-diff target/mutants.diff -j {{ jobs }} --output "target/mutants/$crate" || failed=1
     done
