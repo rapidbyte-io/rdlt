@@ -7,7 +7,13 @@ use super::{Arrival, pushed};
 fn pushed_scalars_are_inferred_as_json_holds_them() {
     let typed = Arrival::Typed;
     assert_eq!(pushed(&Scalar::Float64(1.5)), typed(LogicalType::Float64));
-    assert_eq!(pushed(&Scalar::Int(3)), typed(LogicalType::Int64));
+    assert_eq!(pushed(&Scalar::Int(3)), Arrival::ExactInt);
+    assert_eq!(pushed(&Scalar::Int(-(1 << 53))), Arrival::ExactInt);
+    assert_eq!(
+        pushed(&Scalar::Int((1 << 53) + 1)),
+        typed(LogicalType::Int64),
+        "an integer a float would round"
+    );
     assert_eq!(pushed(&Scalar::Bool(true)), typed(LogicalType::Bool));
     assert_eq!(
         pushed(&Scalar::Float64(f64::NAN)),
@@ -15,6 +21,20 @@ fn pushed_scalars_are_inferred_as_json_holds_them() {
         "a float JSON cannot hold is pushed as its name"
     );
     assert_eq!(pushed(&Scalar::Null), typed(LogicalType::Null));
+    let decimal = |precision| {
+        typed(LogicalType::Decimal(
+            rdlt_connector::DecimalType::new(precision, 0).unwrap(),
+        ))
+    };
+    let whole = |digits: &str| pushed(&Scalar::Decimal(digits.to_owned()));
+    assert_eq!(whole("-9223372036854775808"), typed(LogicalType::Int64));
+    assert_eq!(whole("12"), Arrival::ExactInt);
+    assert_eq!(whole("18446744073709551615"), decimal(20));
+    assert_eq!(whole("-9223372036854775809"), decimal(38));
+    assert_eq!(whole(&"9".repeat(38)), decimal(38));
+    assert_eq!(whole(&"9".repeat(39)), decimal(76));
+    assert_eq!(whole(&format!("-{}", "9".repeat(76))), decimal(76));
+    assert_eq!(whole(&"9".repeat(77)), typed(LogicalType::Json));
     assert_eq!(pushed(&Scalar::List(Vec::new())), Arrival::Container);
 }
 
@@ -80,5 +100,54 @@ fn a_push_may_arrive_as_wide_as_the_pushes_the_engine_may_shred_with_it() {
     assert!(
         mixed > 0,
         "some pushes differ in type from those around them"
+    );
+}
+
+#[test]
+fn exact_integers_join_floats_as_floats_and_other_integers_as_integers() {
+    let typed = Arrival::Typed;
+    let exact = Arrival::ExactInt;
+    assert_eq!(exact.clone().join(Arrival::ExactInt), Arrival::ExactInt);
+    assert_eq!(
+        exact.clone().join(typed(LogicalType::Null)),
+        Arrival::ExactInt
+    );
+    assert_eq!(
+        exact.clone().join(typed(LogicalType::Float64)),
+        typed(LogicalType::Float64)
+    );
+    assert_eq!(
+        typed(LogicalType::Int64).join(exact.clone()),
+        typed(LogicalType::Int64)
+    );
+    assert_eq!(
+        exact.clone().join(typed(LogicalType::Utf8)),
+        typed(LogicalType::Json)
+    );
+    assert_eq!(
+        typed(LogicalType::Int64).join(typed(LogicalType::Float64)),
+        typed(LogicalType::Json),
+        "a float would round some of the integers"
+    );
+    assert_eq!(exact.fits(&LogicalType::Float64), Some(true));
+    assert_eq!(exact.fits(&LogicalType::Int64), Some(true));
+    assert_eq!(exact.fits(&LogicalType::Int32), Some(false));
+    assert_eq!(
+        typed(LogicalType::Int64).fits(&LogicalType::Float64),
+        Some(false)
+    );
+}
+
+#[test]
+fn a_declared_schema_s_integers_are_exact_since_it_holds_no_values() {
+    assert_eq!(Arrival::declared(&LogicalType::Int64), Arrival::ExactInt);
+    assert_eq!(
+        Arrival::declared(&LogicalType::Int64).fits(&LogicalType::Float64),
+        Some(true),
+        "a hint of floats holds a declared column of integers until values say otherwise"
+    );
+    assert_eq!(
+        Arrival::declared(&LogicalType::Utf8),
+        Arrival::Typed(LogicalType::Utf8)
     );
 }

@@ -50,7 +50,7 @@ pub(super) fn key_step(
     frozen: bool,
     nested: Nested,
     capabilities: &Capabilities,
-) -> Step {
+) -> Step<LogicalType> {
     let (Some(current), Arrival::Typed(logical)) = (current, arrival) else {
         return Step::Unknown;
     };

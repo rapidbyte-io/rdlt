@@ -2,7 +2,7 @@
 //! value's type as the type it was drawn as.
 
 use proptest::prelude::*;
-use rdlt_connector::{Field, Fields, LogicalType};
+use rdlt_connector::{DecimalType, Field, Fields, LogicalType};
 use serde_json::{Map, Value, json};
 
 use super::Scalar;
@@ -16,13 +16,23 @@ fn plain(logical: LogicalType, children: Vec<Shape>) -> Shape {
     }
 }
 
+/// A shape of whole numbers of any width: within 76 digits a decimal holds them, and past that
+/// only JSON text does, so values of it are pushed as JSON and never built into Arrow.
+pub fn integers() -> Shape {
+    Shape {
+        logical: LogicalType::Decimal(DecimalType::new(76, 0).expect("76 digits fit a decimal")),
+        encoding: Encoding::Large,
+        children: Vec::new(),
+    }
+}
+
 /// A type JSON holds, nested up to `depth` levels: booleans, 64-bit integers and floats, text,
-/// and objects and arrays of them.
+/// whole numbers of any width, and objects and arrays of them.
 pub fn shape(depth: u32) -> BoxedStrategy<Shape> {
     use LogicalType as T;
-    let leaf = proptest::sample::select(vec![T::Bool, T::Int64, T::Float64, T::Utf8])
-        .prop_map(|logical| plain(logical, Vec::new()))
-        .boxed();
+    let scalar = proptest::sample::select(vec![T::Bool, T::Int64, T::Float64, T::Utf8])
+        .prop_map(|logical| plain(logical, Vec::new()));
+    let leaf = prop_oneof![4 => scalar, 1 => Just(integers())].boxed();
     if depth == 0 {
         return leaf;
     }
@@ -79,24 +89,49 @@ fn float_name(value: f64) -> &'static str {
     }
 }
 
-/// `value` as JSON text: as [`rendered`] renders it, but with each whole decimal as the integer
-/// it is, which JSON holds whatever its width and a JSON value in memory may not.
-pub fn text(value: &Scalar) -> String {
-    match value {
-        Scalar::Decimal(digits) => digits
-            .parse::<i128>()
-            .map_or_else(|_| digits.clone(), |integer| integer.to_string()),
-        Scalar::Struct(fields) => {
+/// `value`, of `logical`, as JSON text: as [`rendered`] renders it, but with each decimal as the
+/// number it is, which JSON holds whatever its width and a JSON value in memory may not.
+pub fn text(value: &Scalar, logical: &LogicalType) -> String {
+    match (value, logical) {
+        (Scalar::Decimal(digits), LogicalType::Decimal(decimal)) => number(digits, decimal.scale()),
+        (Scalar::Struct(fields), LogicalType::Struct(types)) => {
             let fields: Vec<String> = fields
                 .iter()
-                .map(|(name, inner)| format!("{}:{}", Value::from(name.as_str()), text(inner)))
+                .map(|(name, inner)| {
+                    let field = types.iter().find(|field| field.name() == name);
+                    let logical = field.map_or(&LogicalType::Null, |field| field.logical_type());
+                    format!("{}:{}", Value::from(name.as_str()), text(inner, logical))
+                })
                 .collect();
             format!("{{{}}}", fields.join(","))
         }
-        Scalar::List(items) => {
-            let items: Vec<String> = items.iter().map(text).collect();
+        (Scalar::List(items), LogicalType::List(item)) => {
+            let items: Vec<String> = items
+                .iter()
+                .map(|inner| text(inner, item.logical_type()))
+                .collect();
             format!("[{}]", items.join(","))
         }
-        other => rendered(other).to_string(),
+        (other, _) => rendered(other).to_string(),
+    }
+}
+
+/// The decimal whose unscaled value is the signed `digits`, `scale` of them after the point, as
+/// JSON writes a number: no leading zeros.
+fn number(digits: &str, scale: u8) -> String {
+    let (sign, magnitude) = digits
+        .strip_prefix('-')
+        .map_or(("", digits), |magnitude| ("-", magnitude));
+    let scale = usize::from(scale);
+    let padded = format!("{magnitude:0>width$}", width = scale + 1);
+    let (whole, fraction) = padded.split_at(padded.len() - scale);
+    let whole = whole.trim_start_matches('0');
+    let whole = if whole.is_empty() { "0" } else { whole };
+    let zero = whole == "0" && fraction.bytes().all(|digit| digit == b'0');
+    let sign = if zero { "" } else { sign };
+    if fraction.is_empty() {
+        format!("{sign}{whole}")
+    } else {
+        format!("{sign}{whole}.{fraction}")
     }
 }
