@@ -121,20 +121,35 @@ async fn a_destination_that_cannot_remove_rows_as_asked_is_refused_before_any_ro
 }
 
 #[tokio::test]
-async fn a_destination_declaring_no_delete_mode_merges_no_change_stream() {
+async fn a_destination_that_does_not_merge_changes_merges_no_change_stream() {
     // Ignoring every delete and truncate still needs the seq guard and the change columns, which
-    // a destination declaring no delete mode does not know.
+    // only a destination merging changes knows; its delete modes do not say so.
     let plan = stream("orders")
         .read(ReadMode::Cdc)
         .write(WriteMode::Merge)
         .deletes(DeleteMode::Ignore)
         .on_truncate(OnTruncate::Ignore);
-    let error = refused(plan, |capabilities| {
-        capabilities.delete_modes = rdlt_connector::DeleteModes::default();
-    })
-    .await;
-    assert_eq!(error.code(), Some("delete_mode_unsupported"), "{error}");
+    let error = refused(plan, |capabilities| capabilities.merge_changes = false).await;
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert_eq!(error.code(), Some("change_merge_unsupported"), "{error}");
     assert_eq!(published("changes_refused", "orders").len(), 0);
+    // A destination that merges changes needs no delete mode for a stream that removes nothing.
+    let plan = stream("orders")
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Merge)
+        .deletes(DeleteMode::Ignore)
+        .on_truncate(OnTruncate::Ignore);
+    let source = changes(9, &orders(&[])).await;
+    let limit = |capabilities: &mut rdlt_connector::Capabilities| {
+        capabilities.delete_modes = rdlt_connector::DeleteModes::default();
+    };
+    let outcome = run_limited(plan, source, "changes_without_removals", limit).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
 }
 
 #[tokio::test]

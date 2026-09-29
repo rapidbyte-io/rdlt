@@ -144,7 +144,7 @@ fn identifier_rules() -> impl Strategy<Value = IdentifierRules> {
 }
 
 fn capabilities() -> impl Strategy<Value = Capabilities> {
-    let flags = proptest::collection::vec(any::<bool>(), 11);
+    let flags = proptest::collection::vec(any::<bool>(), 12);
     (
         flags,
         proptest::collection::btree_set(kind(), 0..5),
@@ -171,6 +171,7 @@ fn capabilities() -> impl Strategy<Value = Capabilities> {
                     soft: flags[6],
                 },
                 partial_updates: flags[7],
+                merge_changes: flags[11],
                 nested: NestedSupport {
                     structs: flags[8],
                     lists: flags[9],

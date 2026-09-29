@@ -160,6 +160,14 @@ pub struct Capabilities {
     pub delete_modes: DeleteModes,
     /// Whether updates may leave flagged columns unchanged.
     pub partial_updates: bool,
+    /// Whether it merges change streams as [`MergeKey::changes`](crate::MergeKey::changes) says:
+    /// each row applied in sequence order only past the row it holds, as an insert, update,
+    /// delete or truncate.
+    ///
+    /// A destination that does not would upsert change rows as data, so the engine refuses to
+    /// merge a change stream into it.
+    #[serde(default)]
+    pub merge_changes: bool,
     /// Nested values stored natively.
     pub nested: NestedSupport,
     /// Logical types stored natively; others are lowered by the engine.
@@ -187,6 +195,7 @@ impl Capabilities {
             },
             delete_modes: DeleteModes::default(),
             partial_updates: false,
+            merge_changes: false,
             nested: NestedSupport::default(),
             types: BTreeSet::from([
                 K::Bool,

@@ -484,6 +484,9 @@ pub struct Capabilities {
     /// The batch size it prefers, in bytes, if it has a preference.
     #[prost(uint64, optional, tag = "10")]
     pub preferred_batch_bytes: ::core::option::Option<u64>,
+    /// Whether it merges change streams: each row in sequence order, only past the row it holds.
+    #[prost(bool, tag = "11")]
+    pub merge_changes: bool,
 }
 /// What a source declares about itself; it declares nothing yet.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

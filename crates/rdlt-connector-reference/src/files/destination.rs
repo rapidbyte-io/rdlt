@@ -175,6 +175,7 @@ fn capabilities(format: FileFormat) -> Capabilities {
         soft: true,
     };
     capabilities.partial_updates = true;
+    capabilities.merge_changes = true;
     capabilities.nested = NestedSupport {
         structs: true,
         lists: true,
