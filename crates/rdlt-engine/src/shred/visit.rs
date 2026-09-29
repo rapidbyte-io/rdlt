@@ -308,7 +308,7 @@ impl<'de> Visitor<'de> for Value<'_> {
         let vast = (digits.trim_start_matches('-').len() <= VAST_DIGITS)
             .then(|| i256::from_string(digits))
             .flatten();
-        self.scalar(vast.map_or(Scalar::Beyond(digits), Scalar::Vast));
+        self.scalar(vast.map_or(Scalar::Beyond, Scalar::Vast));
         Ok(())
     }
 

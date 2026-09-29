@@ -35,8 +35,9 @@ pub(crate) enum Scalar<'a> {
     Huge(i128),
     /// An integer beyond 38 digits, within 76.
     Vast(i256),
-    /// The digits of an integer beyond 76, which only JSON text holds.
-    Beyond(&'a str),
+    /// An integer beyond 76 digits, which only JSON text holds: its column is built again as
+    /// JSON, rendering its digits.
+    Beyond,
     Float(f64),
     Text(&'a str),
 }
@@ -50,7 +51,7 @@ impl Scalar<'_> {
             Self::Wide(_) => Observed::Wide,
             Self::Huge(_) => Observed::Huge,
             Self::Vast(_) => Observed::Vast,
-            Self::Beyond(_) => Observed::Json,
+            Self::Beyond => Observed::Json,
             Self::Float(_) => Observed::Float,
             Self::Text(_) => Observed::Text,
         }
@@ -206,7 +207,6 @@ impl Column {
                 builder.append_value(i256::from_i128(value));
             }
             (Self::Vast(builder), Scalar::Vast(value)) => builder.append_value(value),
-            (Self::Json(builder), Scalar::Beyond(digits)) => builder.append_value(digits),
             (Self::Float(builder), Scalar::Float(value)) => builder.append_value(value),
             #[expect(
                 clippy::cast_precision_loss,
