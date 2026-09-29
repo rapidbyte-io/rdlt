@@ -3,6 +3,12 @@
 Notes for coding agents. The code standard is in `CONTRIBUTING.md` and enforced by `just lint`;
 decisions and their reasons are in `docs/adr/`. Read those before changing code.
 
+## Before you start
+
+- Check the latest nightly run (`gh run list --workflow nightly.yml --limit 1`). A failing nightly
+  is fixed before other work: its gates (the simulation's seeds and coverage, fuzzing, stress and
+  mutation testing) run nowhere else.
+
 ## Before you push
 
 - Run `just ready`: lint, tests, and mutation testing of your change. CI runs the rest of the

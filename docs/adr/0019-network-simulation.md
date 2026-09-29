@@ -55,6 +55,10 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
 - **The simulation's coverage leaves out what it never runs**: generated wire code, process
   placement, and a served binary's entry points. Its floor stays 82 % of lines and 73 % of
   branches.
+  - Amended 2026-09-29: certification (M4f to M4h) added code the simulation never runs, the
+    certify crate and the host's connections, kills and raw wires for it, and the nightly gate
+    failed from 2026-09-27. That code is left out too, and the line floor is 81 %, under the
+    81.9 % measured; branches measure 74.7 % against their 73 %.
 
 ## Consequences
 
