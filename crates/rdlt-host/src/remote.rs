@@ -179,21 +179,16 @@ impl Connection {
             traceparent: String::new(),
             limits: Some(options.limits.into()),
         };
-        // Cuts the connection if the handshake fails.
-        let mut handshaken = Handshaken {
-            client: client.clone(),
-            spec: v1::ConnectorSpec::default(),
-            peer: Limits::default(),
+        let deadline = options.deadlines.connect;
+        let response = within(deadline, "the handshake", client.handshake(request)).await?;
+        Ok(Handshaken {
+            client,
+            spec: response.spec.unwrap_or_default(),
+            peer: response.limits.map(Limits::from).unwrap_or_default(),
             options,
             lost,
             spent,
-            armed: true,
-        };
-        let deadline = options.deadlines.connect;
-        let response = within(deadline, "the handshake", client.handshake(request)).await?;
-        handshaken.spec = response.spec.unwrap_or_default();
-        handshaken.peer = response.limits.map(Limits::from).unwrap_or_default();
-        Ok(handshaken)
+        })
     }
 
     /// The contract's spec of the connector, in `role`, from what its handshake answered.
@@ -237,7 +232,7 @@ impl Connection {
 /// A connection whose handshake agreed a role, before the connector is configured: its spec says
 /// who the connector is, which the host checks before the connector sees any configuration.
 ///
-/// Dropped unconfigured, it cuts the connection.
+/// Dropped unconfigured, it cuts the connection: its client is the connection's last.
 #[derive(Debug)]
 pub struct Handshaken {
     client: ConnectorClient<Channel>,
@@ -246,16 +241,6 @@ pub struct Handshaken {
     options: Options,
     lost: CancellationToken,
     spent: CancellationToken,
-    /// Whether dropping it cuts the connection: until configured.
-    armed: bool,
-}
-
-impl Drop for Handshaken {
-    fn drop(&mut self) {
-        if self.armed {
-            self.lost.cancel();
-        }
-    }
 }
 
 impl Handshaken {
@@ -273,7 +258,7 @@ impl Handshaken {
     /// `invalid_message` when it answers as another connector than it handshook as, or a transient
     /// error when the transport fails.
     pub async fn configure(
-        mut self,
+        self,
         config: &serde_json::Value,
     ) -> Result<Arc<Connection>, ConnectorError> {
         let request = v1::ConfigureRequest {
@@ -299,7 +284,6 @@ impl Handshaken {
                 .into(),
             }));
         }
-        self.armed = false;
         tokio::spawn(heartbeat(
             self.client.clone(),
             self.options,
