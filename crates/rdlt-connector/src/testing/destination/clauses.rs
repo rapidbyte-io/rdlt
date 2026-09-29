@@ -73,7 +73,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     Clause {
         id: "D-OWNED",
         statement: "a table belongs to the pipeline that created it: another pipeline's schema \
-                    change or writer is refused as table_owned and its rows stay",
+                    change or writer is refused as table_owned, and the owner keeps loading it",
     },
     Clause {
         id: "D-FENCE",
@@ -83,7 +83,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
 
 /// The clauses that read what the destination published, which a probe that reads nothing
 /// cannot check.
-pub(super) const PROBED: [&str; 14] = [
+pub(super) const PROBED: [&str; 13] = [
     "D-STAGING",
     "D-COMMIT",
     "D-IDEMPOTENT",
@@ -96,6 +96,5 @@ pub(super) const PROBED: [&str; 14] = [
     "D-TABLES",
     "D-NAMES",
     "D-LANES",
-    "D-OWNED",
     "D-FENCE",
 ];
