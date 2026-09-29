@@ -108,7 +108,8 @@ fn batch((columns, rows): &Drawn) -> (RecordBatch, Incoming) {
         .iter()
         .map(|(name, _)| ColumnPath::from(name.as_str()))
         .collect();
-    (batch, Incoming { schema, paths })
+    let incoming = Incoming::of(schema, paths, std::slice::from_ref(&batch));
+    (batch, incoming)
 }
 
 /// Each row of `prepared`, lowered into `view`, read back.

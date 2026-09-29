@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType};
 
-/// Integers whose magnitude is at most this are exact as a 64-bit float.
-const EXACT_IN_FLOAT: u64 = 1 << 53;
+use crate::table::EXACT_IN_FLOAT;
 
 /// The values a column held, as a type the lattice then names.
 #[derive(Clone, Debug, PartialEq)]

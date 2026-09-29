@@ -141,10 +141,11 @@ async fn plan_parts(
         } else {
             context.tables.child(job.table, path).await?
         };
-        let incoming = Incoming {
-            schema: schema_of(job, &pruned.part.batch)?,
-            paths: pruned.part.columns.clone(),
-        };
+        let incoming = Incoming::of(
+            schema_of(job, &pruned.part.batch)?,
+            pruned.part.columns.clone(),
+            std::slice::from_ref(&pruned.part.batch),
+        );
         let plan = context.tables.plan(table, incoming).await?;
         if plan.drops_rows() {
             let (batch, rows) = (pruned.part.batch.clone(), Arc::clone(&plan));

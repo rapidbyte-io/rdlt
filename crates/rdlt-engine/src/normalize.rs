@@ -244,7 +244,7 @@ pub(crate) fn root_columns(schema: &TableSchema, shape: &Shape) -> Result<Incomi
         })
         .collect();
     let schema = TableSchema::new(fields).map_err(|error| Error::internal(error.to_string()))?;
-    Ok(Incoming { schema, paths })
+    Ok(Incoming::of(schema, paths, &[]))
 }
 
 /// The paths below the stream's table of the arrays `schema`'s rows hold, which normalizing makes

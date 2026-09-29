@@ -4,7 +4,7 @@ mod names;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -142,6 +142,10 @@ pub enum StateEntry {
         version: SchemaVersion,
         /// The schema.
         schema: TableSchema,
+        /// The columns of 64-bit integers every stored value of which a 64-bit float holds
+        /// exactly; a record without them holds none such.
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        exact: BTreeSet<Arc<str>>,
     },
     /// A table's destination identifier and its columns' identifiers.
     Names {
@@ -309,6 +313,8 @@ pub struct TableState {
     pub names: NameMap,
     /// Who made the sequences of the rows the table holds, once a load recorded it.
     pub sequences: Option<Sequences>,
+    /// The columns of 64-bit integers every stored value of which a 64-bit float holds exactly.
+    pub exact: BTreeSet<Arc<str>>,
 }
 
 /// Everything a pipeline has committed: epoch, cursors, schemas, names and the last receipt.
@@ -371,6 +377,7 @@ impl PipelineState {
                     table: path.clone(),
                     version: *version,
                     schema: schema.clone(),
+                    exact: table.exact.clone(),
                 });
             }
             if let Some(physical) = &table.physical {
@@ -432,8 +439,11 @@ impl PipelineState {
                 table,
                 version,
                 schema,
+                exact,
             } => {
-                self.tables.entry(table).or_default().schema = Some((version, schema));
+                let state = self.tables.entry(table).or_default();
+                state.schema = Some((version, schema));
+                state.exact = exact;
             }
             StateEntry::Names {
                 table,
@@ -477,6 +487,7 @@ impl PipelineState {
             StateKey::Schema(table) => {
                 if let Some(state) = self.tables.get_mut(table) {
                     state.schema = None;
+                    state.exact.clear();
                 }
             }
             StateKey::Names(table) => {

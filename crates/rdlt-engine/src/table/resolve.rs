@@ -4,10 +4,13 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use arrow_array::RecordBatch;
+
 use rdlt_connector::{
-    Capabilities, ColumnKey, ColumnPath, Field, LogicalType, RootKey, StreamName, TableSchema,
-    TypeKind,
+    Capabilities, ColumnKey, ColumnPath, LogicalType, RootKey, StreamName, TableSchema, TypeKind,
 };
+
+mod draft;
 
 use super::lower::{LineageColumns, MetaNames, lower};
 use super::model::Model;
@@ -15,6 +18,7 @@ use crate::error::Error;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::{self, Nested, OnUnsupported, Resolved, SchemaPolicy, SchemaSettings};
+use draft::Draft;
 
 /// Where one incoming column's values go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,17 +103,43 @@ pub(crate) struct Incoming {
     pub(crate) schema: TableSchema,
     /// Each column's path, in the schema's order.
     pub(crate) paths: Vec<ColumnPath>,
+    /// The columns of 64-bit integers holding a value a 64-bit float would round.
+    pub(crate) rounding: BTreeSet<ColumnPath>,
+}
+
+impl Incoming {
+    /// The columns of `batches`, which are `schema`'s at `paths`, in order: those of 64-bit
+    /// integers noted where a value a 64-bit float would round.
+    pub(crate) fn of(schema: TableSchema, paths: Vec<ColumnPath>, batches: &[RecordBatch]) -> Self {
+        let rounding = super::exact::rounding(&schema, &paths, batches);
+        Self {
+            schema,
+            paths,
+            rounding,
+        }
+    }
+
+    /// The same columns, those at `rounding` holding a value a 64-bit float would round.
+    #[cfg(test)]
+    pub(crate) fn rounding(self, rounding: BTreeSet<ColumnPath>) -> Self {
+        Self { rounding, ..self }
+    }
 }
 
 impl From<TableSchema> for Incoming {
-    /// A batch whose columns are top-level ones named as the schema names them.
+    /// A batch whose columns are top-level ones named as the schema names them, holding no value
+    /// a float would round.
     fn from(schema: TableSchema) -> Self {
         let paths = schema
             .fields()
             .iter()
             .map(|field| ColumnPath::from(field.name()))
             .collect();
-        Self { schema, paths }
+        Self {
+            schema,
+            paths,
+            rounding: BTreeSet::new(),
+        }
     }
 }
 
@@ -120,6 +150,8 @@ struct Arriving<'a> {
     settings: Resolved,
     is_key: bool,
     hinted: bool,
+    /// Whether it holds an integer a 64-bit float would round.
+    rounding: bool,
 }
 
 impl Resolver {
@@ -168,6 +200,7 @@ impl Resolver {
                 is_key: self.settings.key.contains(&path),
                 hinted: self.settings.stream.hinted(&path).is_some(),
                 logical: field.logical_type(),
+                rounding: incoming.rounding.contains(&path),
                 path,
             };
             routes.push(self.route(&mut draft, &column, model.created())?);
@@ -177,6 +210,7 @@ impl Resolver {
         // so its first batch creates it.
         if self.meta.id.is_some() && !resolution.model.created() {
             resolution.model.version = 1;
+            resolution.model.revision += 1;
         }
         Ok(resolution)
     }
@@ -201,7 +235,7 @@ impl Resolver {
             }
             let hint = self.settings.stream.hinted(&column.path);
             let logical = hint.unwrap_or(column.logical).clone();
-            draft.add(key, logical, !column.is_key)
+            draft.add(key, logical, !column.is_key, !column.rounding)
         };
         self.place(draft, column, original)
     }
@@ -237,17 +271,31 @@ impl Resolver {
         column: &Arriving<'_>,
         original: usize,
     ) -> Result<Route, Error> {
-        let mut candidates = vec![original];
-        candidates.extend(draft.variants(&column.path));
-        if let Some(fitting) = candidates
-            .into_iter()
-            .find(|candidate| fits(&draft.column_type(*candidate), column.logical))
-        {
+        // The column's own comes first, holding the values as they are or cast, as floats hold
+        // integers every one of which they hold exactly; then a variant holding them as they are.
+        let own = draft.column_type(original);
+        let fitting = if fits(&own, column.logical) || holds(&own, column) {
+            Some(original)
+        } else {
+            draft
+                .variants(&column.path)
+                .into_iter()
+                .find(|candidate| fits(&draft.column_type(*candidate), column.logical))
+        };
+        if let Some(fitting) = fitting {
+            if column.rounding {
+                draft.round(fitting);
+            }
             return Ok(Route::Column(fitting));
         }
         let current = draft.column_type(original);
-        let joined = current.join(column.logical);
+        let lattice = current.join(column.logical);
+        let joined = draft.join(original, column);
+        // Only the lattice's joins widen a column in place: a column of integers joined to floats
+        // by its values takes a variant, since a partition's plan made before may still write it
+        // integers.
         let widens = !column.hinted
+            && joined == lattice
             && joined != LogicalType::Json
             && self.widens(&current, &joined, column.settings.nested);
         let cannot = |what: &str| format!("the column is {current} and {what} {}", column.logical);
@@ -260,7 +308,7 @@ impl Resolver {
             // decimal stored as text renders 1.50 as 1.5000 once its scale grows.
             let nested = column.settings.nested;
             if widens && self.by_value(&current, nested) && self.by_value(&joined, nested) {
-                draft.widen(original, joined);
+                draft.widen(original, joined, !column.rounding);
                 return Ok(Route::Column(original));
             }
             return Err(self.refused(column, "merge_key_changed", &cannot("the key cannot hold")));
@@ -274,7 +322,7 @@ impl Resolver {
             SchemaPolicy::Evolve => {}
         }
         if widens {
-            draft.widen(original, joined);
+            draft.widen(original, joined, !column.rounding);
             return Ok(Route::Column(original));
         }
         if column.settings.on_unsupported == OnUnsupported::Refuse
@@ -296,7 +344,7 @@ impl Resolver {
         };
         let kind = joined.kind();
         let Some(existing) = draft.find(&key(kind)) else {
-            return draft.add(key(kind), joined.clone(), true);
+            return draft.add(key(kind), joined.clone(), true, !column.rounding);
         };
         let current = draft.column_type(existing);
         let wider = current.join(column.logical);
@@ -304,13 +352,13 @@ impl Resolver {
             && wider.kind() == kind
             && self.widens(&current, &wider, column.settings.nested)
         {
-            draft.widen(existing, wider);
+            draft.widen(existing, wider, !column.rounding);
             return existing;
         }
         let json = key(TypeKind::Json);
         draft
             .find(&json)
-            .unwrap_or_else(|| draft.add(json, LogicalType::Json, true))
+            .unwrap_or_else(|| draft.add(json, LogicalType::Json, true, false))
     }
 
     /// Whether the destination can change a column of `from` to `to` in place: they are stored
@@ -347,98 +395,10 @@ fn fits(current: &LogicalType, incoming: &LogicalType) -> bool {
     current.join(incoming) == *current
 }
 
-/// A resolution in progress: the model, the columns it adds and the changes decided so far.
-struct Draft {
-    model: Model,
-    /// Added columns, before they have identifiers: key, type and nullability.
-    adds: Vec<(ColumnKey, LogicalType, bool)>,
-    changes: Vec<Change>,
-}
-
-impl Draft {
-    fn new(model: &Model) -> Self {
-        Self {
-            model: model.clone(),
-            adds: Vec::new(),
-            changes: Vec::new(),
-        }
-    }
-
-    /// The position of the table's column holding `key`.
-    ///
-    /// A batch holds each column once, so a column this resolution adds is never looked up again.
-    fn find(&self, key: &ColumnKey) -> Option<usize> {
-        self.model.column(key).map(|(index, _)| index)
-    }
-
-    /// The positions of the table's variant columns of `path`, in kind order.
-    fn variants(&self, path: &ColumnPath) -> Vec<usize> {
-        let mut kinds: Vec<(TypeKind, usize)> = self
-            .model
-            .names
-            .iter()
-            .filter_map(|(key, _)| match key {
-                ColumnKey::Variant { column, kind } if column == path => {
-                    self.find(key).map(|index| (*kind, index))
-                }
-                _ => None,
-            })
-            .collect();
-        kinds.sort_unstable();
-        kinds.into_iter().map(|(_, index)| index).collect()
-    }
-
-    fn column_type(&self, column: usize) -> LogicalType {
-        match self.model.columns.get(column) {
-            Some(field) => field.logical_type().clone(),
-            None => self.adds[column - self.model.columns.len()].1.clone(),
-        }
-    }
-
-    /// Adds the column for `key`; returns its position.
-    fn add(&mut self, key: ColumnKey, logical: LogicalType, nullable: bool) -> usize {
-        self.adds.push((key.clone(), logical, nullable));
-        self.changes.push(Change::Add { key });
-        self.model.columns.len() + self.adds.len() - 1
-    }
-
-    /// Widens the table's column at `column` to `to`.
-    ///
-    /// Only existing columns widen: a column this resolution adds takes its final type when added.
-    fn widen(&mut self, column: usize, to: LogicalType) {
-        let field = &mut self.model.columns[column];
-        let from = field.logical_type().clone();
-        *field = Field::new(field.name(), to, field.is_nullable());
-        self.changes.push(Change::Widen { column, from });
-    }
-
-    /// Names the added columns, in one sorted push, and appends them to the model.
-    fn finish(
-        mut self,
-        routes: Vec<Route>,
-        naming: &Naming,
-        reserved: &[&str],
-    ) -> Result<Resolution, Error> {
-        let keys: BTreeSet<ColumnKey> = self.adds.iter().map(|(key, ..)| key.clone()).collect();
-        naming.assign_columns(&mut self.model.names, &keys, reserved)?;
-        for (key, logical, nullable) in self.adds {
-            let name = self
-                .model
-                .names
-                .get(&key)
-                .expect("every added column was just named")
-                .to_owned();
-            self.model.columns.push(Field::new(name, logical, nullable));
-        }
-        if !self.changes.is_empty() {
-            self.model.version += 1;
-        }
-        Ok(Resolution {
-            changes: self.changes,
-            routes,
-            model: self.model,
-        })
-    }
+/// Whether a column of `current`, 64-bit floats, holds `column`'s values cast: 64-bit integers
+/// every one of which a float holds exactly.
+fn holds(current: &LogicalType, column: &Arriving<'_>) -> bool {
+    *current == LogicalType::Float64 && *column.logical == LogicalType::Int64 && !column.rounding
 }
 
 /// The kind values of `kind` keep their identity among: integers of every width are one.

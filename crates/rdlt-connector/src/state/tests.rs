@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -70,6 +71,7 @@ fn sample_state() -> PipelineState {
             physical: Some("orders".into()),
             names,
             sequences: Some(Sequences::Source),
+            exact: ["id".into()].into(),
         },
     );
     state
@@ -86,6 +88,33 @@ fn state_round_trips_through_records() {
         PipelineState::from_records(&[]).unwrap(),
         PipelineState::default()
     );
+}
+
+#[test]
+fn a_schema_recorded_without_exact_columns_has_none_and_deleting_it_forgets_them() {
+    let mut state = sample_state();
+    let table = TablePath::new(["orders"]).unwrap();
+    let key = StateKey::Schema(table.clone()).encode();
+    let record = state
+        .to_records()
+        .into_iter()
+        .find(|record| record.key == key)
+        .expect("the schema is recorded");
+    let mut json: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
+    json["entry"]["schema"]
+        .as_object_mut()
+        .expect("a schema entry")
+        .remove("exact")
+        .expect("the exact columns are recorded");
+    let older = StateRecord {
+        key: record.key.clone(),
+        value: serde_json::to_vec(&json).unwrap().into(),
+    };
+    let mut read = sample_state();
+    read.apply(&StateChange::Put(older)).unwrap();
+    assert!(read.tables[&table].exact.is_empty());
+    state.apply(&StateChange::Delete(key)).unwrap();
+    assert!(state.tables[&table].exact.is_empty());
 }
 
 #[test]
@@ -362,12 +391,19 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
                     names.insert(key, "v__json").unwrap();
                     fields.push(Field::new("v__json", LogicalType::Json, true));
                 }
+                // Every other column is exact.
+                let exact = columns
+                    .iter()
+                    .step_by(2)
+                    .map(|column| Arc::from(column.as_str()))
+                    .collect();
                 let state = TableState {
                     schema: Some((SchemaVersion(version), TableSchema::new(fields).unwrap())),
                     physical: Some(path.replace('.', "_").into()),
                     names,
                     sequences: [None, Some(Sequences::Engine), Some(Sequences::Source)]
                         [usize::from(sequences)],
+                    exact,
                 };
                 (TablePath::new([path]).unwrap(), state)
             })

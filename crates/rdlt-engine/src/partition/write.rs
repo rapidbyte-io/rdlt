@@ -8,7 +8,7 @@ mod tests;
 
 use arrow_array::{BooleanArray, RecordBatch};
 use rdlt_connector::ChangeOp;
-use rdlt_connector::{Permit, TableSchema};
+use rdlt_connector::{ColumnPath, Permit, TableSchema};
 
 use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob, Progress};
@@ -18,7 +18,7 @@ use crate::error::{Error, ErrorKind};
 use crate::lane::Write;
 use crate::plan::{DeleteMode, OnTruncate};
 use crate::shred::{self, ShredError};
-use crate::table::{ChangeRows, LoweringPlan, Prepared, Stamp};
+use crate::table::{ChangeRows, Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -122,7 +122,13 @@ async fn write(
         if received == 0 {
             continue;
         }
-        let incoming = schema_of(job, &parts[0])?;
+        let schema = schema_of(job, &parts[0])?;
+        let paths = schema
+            .fields()
+            .iter()
+            .map(|field| ColumnPath::from(field.name()))
+            .collect();
+        let incoming = Incoming::of(schema, paths, &parts);
         let plan = context.tables.plan(job.table, incoming).await?;
         let stamp = stamp(context, open, received);
         planned.push((move || lower(&parts, &plan, &stamp, changes.as_ref()), held));

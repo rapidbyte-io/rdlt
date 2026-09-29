@@ -201,7 +201,13 @@ fn changes_the_destination_cannot_apply_go_to_variant_columns() {
 #[test]
 fn incompatible_values_go_to_the_json_variant() {
     let resolver = resolver(capabilities(), plan(), &[]);
-    let model = created(&resolver, &[("amount", LogicalType::Int64)]);
+    let model = resolver
+        .resolve(
+            &Model::default(),
+            &inexact(&[("amount", LogicalType::Int64)], &["amount"]),
+        )
+        .unwrap()
+        .model;
     let resolution = resolver
         .resolve(&model, &schema(&[("amount", LogicalType::Float64)]))
         .unwrap();
@@ -723,8 +729,16 @@ fn models_come_from_committed_state() {
         physical: Some("t".into()),
         names: model.names.clone(),
         sequences: None,
+        exact: model.exact.clone(),
     };
-    assert_eq!(Model::from_state(Some(&state)).unwrap(), model);
+    // A model read from state starts this attempt's revisions afresh.
+    assert_eq!(
+        Model::from_state(Some(&state)).unwrap(),
+        Model {
+            revision: 0,
+            ..model.clone()
+        }
+    );
     let named_only = TableState {
         schema: None,
         ..state.clone()
@@ -1372,4 +1386,183 @@ fn a_metadata_column_stored_as_another_type_names_its_logical_type_too() {
         .unwrap();
     let logical: LogicalType = serde_json::from_str(named).unwrap();
     assert_eq!(logical, LogicalType::Uuid);
+}
+
+/// Columns `fields`, those named in `rounded` holding an integer a float would round.
+fn inexact(fields: &[(&str, LogicalType)], rounded: &[&str]) -> Incoming {
+    schema(fields).rounding(
+        rounded
+            .iter()
+            .map(|column| ColumnPath::from(*column))
+            .collect(),
+    )
+}
+
+/// Capabilities that widen integers of 64 bits to floats of 64 where `widens`.
+fn int_to_float(widens: bool) -> Capabilities {
+    let mut capabilities = capabilities();
+    if widens {
+        capabilities
+            .schema_changes
+            .widenings
+            .insert((TypeKind::Int64, TypeKind::Float64));
+    }
+    capabilities
+}
+
+#[test]
+fn a_float_column_takes_integers_a_float_holds_exactly_and_no_others() {
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Float64)]);
+    let exact = resolver
+        .resolve(&model, &schema(&[("amount", LogicalType::Int64)]))
+        .unwrap();
+    assert_eq!(exact.routes, [Route::Column(0)]);
+    assert!(exact.changes.is_empty(), "{:?}", exact.changes);
+    let rounded = resolver
+        .resolve(
+            &model,
+            &inexact(&[("amount", LogicalType::Int64)], &["amount"]),
+        )
+        .unwrap();
+    assert_eq!(rounded.routes, [Route::Column(1)]);
+    assert_eq!(
+        columns(&rounded.model)[1],
+        ("amount__json".to_owned(), LogicalType::Json)
+    );
+}
+
+#[test]
+fn floats_after_exact_integers_take_a_float_variant_even_where_the_column_could_widen() {
+    // A partition's plan made before may still write the column's integers, so a column of
+    // integers never becomes one of floats in place.
+    for widens in [true, false] {
+        let resolver = resolver(int_to_float(widens), plan(), &[]);
+        let model = created(&resolver, &[("amount", LogicalType::Int64)]);
+        assert!(model.exact.contains("amount"), "{:?}", model.exact);
+        let floats = resolver
+            .resolve(&model, &schema(&[("amount", LogicalType::Float64)]))
+            .unwrap();
+        assert_eq!(floats.routes, [Route::Column(1)], "widens: {widens}");
+        assert_eq!(
+            columns(&floats.model)[1],
+            ("amount__float64".to_owned(), LogicalType::Float64)
+        );
+        assert!(
+            floats.model.exact.contains("amount"),
+            "the integers' column stays exact"
+        );
+    }
+}
+
+#[test]
+fn an_integer_a_float_would_round_ends_a_column_s_exactness_and_later_floats_go_to_json() {
+    let resolver = resolver(int_to_float(true), plan(), &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Int64)]);
+    let rounded = resolver
+        .resolve(
+            &model,
+            &inexact(&[("amount", LogicalType::Int64)], &["amount"]),
+        )
+        .unwrap();
+    assert_eq!(rounded.routes, [Route::Column(0)]);
+    assert!(rounded.changes.is_empty(), "no destination change");
+    assert_eq!(
+        rounded.model.version, model.version,
+        "the schema is the same"
+    );
+    assert!(rounded.model.exact.is_empty());
+    let floats = resolver
+        .resolve(&rounded.model, &schema(&[("amount", LogicalType::Float64)]))
+        .unwrap();
+    assert_eq!(floats.routes, [Route::Column(1)]);
+    assert_eq!(
+        columns(&floats.model)[1],
+        ("amount__json".to_owned(), LogicalType::Json)
+    );
+    let again = resolver
+        .resolve(&rounded.model, &schema(&[("amount", LogicalType::Int64)]))
+        .unwrap();
+    assert!(
+        again.model.exact.is_empty(),
+        "exactness, once lost, stays lost"
+    );
+}
+
+#[test]
+fn a_column_created_from_integers_a_float_would_round_is_not_exact() {
+    let resolver = resolver(int_to_float(true), plan(), &[]);
+    let model = resolver
+        .resolve(
+            &Model::default(),
+            &inexact(
+                &[
+                    ("amount", LogicalType::Int64),
+                    ("count", LogicalType::Int64),
+                ],
+                &["amount"],
+            ),
+        )
+        .unwrap()
+        .model;
+    assert_eq!(model.exact, BTreeSet::from(["count".into()]));
+}
+
+#[test]
+fn a_merge_key_of_exact_integers_never_widens_to_floats() {
+    let resolver = resolver(int_to_float(true), plan(), &["id"]);
+    let model = created(&resolver, &[("id", LogicalType::Int64)]);
+    let error = resolver
+        .resolve(&model, &schema(&[("id", LogicalType::Float64)]))
+        .unwrap_err();
+    assert_eq!(error.code(), Some("merge_key_changed"));
+}
+
+#[test]
+fn integers_a_float_variant_could_cast_take_a_variant_of_integers_instead() {
+    let mut fixed = capabilities();
+    fixed.schema_changes.widenings.clear();
+    let resolver = resolver(fixed, plan(), &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Int32)]);
+    let floats = resolver
+        .resolve(&model, &schema(&[("amount", LogicalType::Float64)]))
+        .unwrap();
+    assert_eq!(
+        columns(&floats.model)[1],
+        ("amount__float64".to_owned(), LogicalType::Float64)
+    );
+    let integers = resolver
+        .resolve(&floats.model, &schema(&[("amount", LogicalType::Int64)]))
+        .unwrap();
+    assert_eq!(integers.routes, [Route::Column(2)]);
+    assert_eq!(
+        columns(&integers.model)[2],
+        ("amount__int64".to_owned(), LogicalType::Int64)
+    );
+}
+
+#[test]
+fn a_float_column_takes_exact_integers_before_any_variant_of_it_does() {
+    // Text makes a hinted column of floats a variant of JSON, which holds anything.
+    let stream = plan().hint("amount", LogicalType::Float64);
+    let resolver = resolver(capabilities(), stream, &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Utf8)]);
+    assert_eq!(
+        columns(&model),
+        [
+            ("amount".to_owned(), LogicalType::Float64),
+            ("amount__json".to_owned(), LogicalType::Json)
+        ]
+    );
+    let exact = resolver
+        .resolve(&model, &schema(&[("amount", LogicalType::Int64)]))
+        .unwrap();
+    assert_eq!(exact.routes, [Route::Column(0)]);
+    let rounded = resolver
+        .resolve(
+            &model,
+            &inexact(&[("amount", LogicalType::Int64)], &["amount"]),
+        )
+        .unwrap();
+    assert_eq!(rounded.routes, [Route::Column(1)]);
 }
