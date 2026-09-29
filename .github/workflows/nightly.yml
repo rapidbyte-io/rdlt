@@ -78,15 +78,15 @@ jobs:
           cache_key_prefix: mise-v1-fuzz
       - run: just fuzz ${{ matrix.target }} 1200
 
-  # The full mutation pass, every crate's tests against every mutant, in eight shards that run at
-  # once; a branch's mutation testing runs each changed crate's mutants against fewer tests.
+  # The full mutation pass, every crate's tests against every mutant, in twenty shards of about an
+  # hour and a half each, queued as runners free up; a branch's mutation testing runs each changed crate's mutants against fewer tests.
   mutants:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
@@ -97,4 +97,4 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: false
-      - run: just mutants --shard "${{ matrix.shard }}/8" -j 2
+      - run: just mutants --shard "${{ matrix.shard }}/20" -j 2
