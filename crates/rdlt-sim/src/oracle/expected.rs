@@ -47,6 +47,26 @@ impl Sent {
         )
     }
 
+    /// Whether the value, pushed as a JSON integer, is one a column of `column`, of floats, would
+    /// round: the engine never puts such a value in one.
+    pub(super) fn rounds_into(&self, column: &LogicalType) -> bool {
+        let Self::Json(text) = self else {
+            return false;
+        };
+        let digits = text.strip_prefix('-').unwrap_or(text);
+        if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+            return false;
+        }
+        let exact: u128 = match column {
+            LogicalType::Float64 => 1 << 53,
+            LogicalType::Float32 => 1 << 24,
+            _ => return false,
+        };
+        !digits
+            .parse::<u128>()
+            .is_ok_and(|magnitude| magnitude <= exact)
+    }
+
     /// The type the source sent the value as, where it says.
     pub(super) fn source(&self) -> Option<&LogicalType> {
         match self {

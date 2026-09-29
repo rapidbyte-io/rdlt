@@ -358,6 +358,11 @@ impl Table<'_> {
                 "{physical} is {logical}, which does not hold {source}"
             ));
         }
+        if sent.rounds_into(logical) {
+            return Some(format!(
+                "{physical} is {logical}, which rounds the integer the source pushed"
+            ));
+        }
         let stored = storage(logical, native, self.capabilities);
         if cell.lowered != stored {
             return Some(format!(
