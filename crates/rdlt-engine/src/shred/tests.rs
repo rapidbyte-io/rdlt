@@ -92,11 +92,13 @@ fn malformed_pushes_are_invalid_json() {
     ] {
         assert_eq!(refused(push), "json_invalid", "{push:?}");
     }
-    let invalid_utf8 = Bytes::from_static(b"{\"a\":\"\xff\"}");
-    assert_eq!(
-        shredded(&[invalid_utf8], 1 << 20),
-        Err(Code("json_invalid"))
-    );
+    // Alone, and after a float that sends its chunk through the exact parse.
+    for invalid_utf8 in [&b"{\"a\":\"\xff\"}"[..], b"{\"a\":1e30}\n{\"a\":\"\xff\"}"] {
+        assert_eq!(
+            shredded(&[Bytes::from_static(invalid_utf8)], 1 << 20),
+            Err(Code("json_invalid"))
+        );
+    }
 }
 
 #[test]

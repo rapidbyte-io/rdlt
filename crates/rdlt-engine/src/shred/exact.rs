@@ -16,7 +16,11 @@ pub(super) fn append(
     record: &mut Record,
     context: &Context,
 ) -> Result<(), sonic_rs::Error> {
-    let mut deserializer = sonic_rs::Deserializer::from_slice(bytes).use_rawnumber();
+    // Parsing numbers as their text leaves strings unchecked, so the record's text is checked first.
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Err(de::Error::custom("the record is not valid UTF-8"));
+    };
+    let mut deserializer = sonic_rs::Deserializer::from_str(text).use_rawnumber();
     let value: Value = serde::Deserialize::deserialize(&mut deserializer)?;
     deserializer.end()?;
     Row { record, context }.deserialize(Exact {
