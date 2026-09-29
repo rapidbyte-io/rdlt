@@ -65,7 +65,9 @@ async fn a_destination_whose_published_data_cannot_be_read_skips_the_clauses_tha
         certify_destination::<MemoryDestination>(json!({ "store": "certify_unprobed" }), &Unprobed)
             .await;
     report.assert_passed();
-    for id in ["D-CHECK", "D-EPOCH", "D-STATE"] {
+    // Ownership is checked by the refusals, which need nothing read back.
+    let unread = ["D-CHECK", "D-EPOCH", "D-STATE", "D-OWNED"];
+    for id in unread {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{report}");
     }
     let skipped = report
@@ -73,7 +75,7 @@ async fn a_destination_whose_published_data_cannot_be_read_skips_the_clauses_tha
         .iter()
         .filter(|result| matches!(result.outcome, Outcome::Skipped(_)))
         .count();
-    assert_eq!(skipped, report.results.len() - 3, "{report}");
+    assert_eq!(skipped, report.results.len() - unread.len(), "{report}");
 }
 
 #[tokio::test]

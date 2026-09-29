@@ -8,7 +8,8 @@ use crate::{OpenContext, TableChange};
 
 impl Bench<'_> {
     /// Another pipeline's schema change and writer for the clause's table are refused as
-    /// `table_owned`, the owner's rows stay published, and the owner may create it again.
+    /// `table_owned`, and the owner keeps loading it: it creates the table again, writes and
+    /// commits, and, where the probe reads them, both its commits' rows are published.
     pub(super) async fn tables_belong_to_their_pipeline(&self) -> Result<(), Violation> {
         let mut owner = self.staged(self.destination, 1, &[1]).await?;
         commit(
@@ -34,11 +35,16 @@ impl Bench<'_> {
             "writer",
             intruder.session.writer(&self.table()).await.map(drop),
         )?;
-        expect_rows(&self.published_rows().await?, &[1])?;
-        let mut again = self.open(self.destination, 3).await?;
-        bounded("apply_schema", again.session.apply_schema(&create))
-            .await?
-            .map_err(|error| Violation::from(format!("the owner's apply_schema: {error}")))
+        let mut again = self.staged(self.destination, 3, &[2]).await?;
+        commit(
+            &mut again.session,
+            &meta(self.load_id(3), again.epoch, &[2], Vec::new()),
+        )
+        .await?;
+        if self.probe.reads() {
+            expect_rows(&self.published_rows().await?, &[1, 2])?;
+        }
+        Ok(())
     }
 }
 

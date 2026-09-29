@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES,
+    Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, Unprobed,
     certify_destination, certify_source,
 };
 use crate::capabilities::{Capabilities, SchemaChanges};
@@ -428,6 +428,8 @@ struct VaultConfig {
     hang_flush: bool,
     /// Lets any pipeline write into any table, whichever pipeline created it.
     share_tables: bool,
+    /// Refuses every writer of a table once another pipeline's writer of it was refused.
+    lock_on_intrusion: bool,
 }
 
 #[derive(Default)]
@@ -449,6 +451,8 @@ struct VaultStore {
     columns: BTreeMap<String, BTreeMap<String, LogicalType>>,
     /// The pipeline each table belongs to: the first to refer to it.
     owners: BTreeMap<String, PipelineId>,
+    /// Tables no writer may write, under `lock_on_intrusion`.
+    locked: BTreeSet<String>,
 }
 
 impl VaultStore {
@@ -836,7 +840,14 @@ impl Session for VaultSession {
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
         {
             let mut store = self.stores.shared.lock().unwrap();
-            store.claim(&self.pipeline, &table.name, self.config.share_tables)?;
+            let claimed = store.claim(&self.pipeline, &table.name, self.config.share_tables);
+            if claimed.is_err() && self.config.lock_on_intrusion {
+                store.locked.insert(table.name.to_string());
+            }
+            claimed?;
+            if store.locked.contains(&*table.name) {
+                return Err(ConnectorError::data("the table is locked"));
+            }
             store
                 .tables
                 .insert(table.path.clone(), table.name.to_string());
@@ -1298,6 +1309,7 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
         ("refuse_check", &["D-CHECK"][..]),
         ("lose_lanes", &["D-LANES"][..]),
         ("share_tables", &["D-OWNED"][..]),
+        ("lock_on_intrusion", &["D-OWNED"][..]),
         ("miscount", &["D-COMMIT"][..]),
         ("republish", &["D-IDEMPOTENT"][..]),
         ("forget_state", &["D-STATE"][..]),
@@ -1350,6 +1362,19 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
     for (flag, clauses) in cases {
         let report = certify_vault(flag, Some(flag)).await;
         assert_eq!(failed(&report), clauses, "{flag}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn a_destination_nothing_reads_back_is_still_certified_to_refuse_other_pipelines() {
+    for (flag, outcome) in [(None, true), (Some("share_tables"), false)] {
+        let mut config = json!({ "store": format!("unprobed_{flag:?}") });
+        if let Some(flag) = flag {
+            config[flag] = json!(true);
+        }
+        let report = certify_destination::<Vault>(config, &Unprobed).await;
+        let passed = matches!(report.outcome("D-OWNED"), Some(Outcome::Passed));
+        assert_eq!(passed, outcome, "{flag:?}: {report}");
     }
 }
 
