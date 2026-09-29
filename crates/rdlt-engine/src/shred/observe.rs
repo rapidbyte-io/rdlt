@@ -24,6 +24,8 @@ pub(crate) enum Observed {
     Wide,
     /// Integers some of which are beyond 64 bits, all within 38 digits.
     Huge,
+    /// Integers some of which are beyond 38 digits, all within 76.
+    Vast,
     /// Floats, with integers exact as floats.
     Float,
     /// Strings.
@@ -132,6 +134,10 @@ impl Observed {
                 Self::Int { .. } | Self::Wide | Self::Huge,
                 Self::Int { .. } | Self::Wide | Self::Huge,
             ) => Self::Huge,
+            (
+                Self::Int { .. } | Self::Wide | Self::Huge | Self::Vast,
+                Self::Int { .. } | Self::Wide | Self::Huge | Self::Vast,
+            ) => Self::Vast,
             (current, _) if current == other => return,
             _ => Self::Json,
         };
@@ -168,6 +174,9 @@ impl Observed {
             }
             Self::Huge => {
                 LogicalType::Decimal(DecimalType::new(38, 0).expect("38 digits fit a decimal"))
+            }
+            Self::Vast => {
+                LogicalType::Decimal(DecimalType::new(76, 0).expect("76 digits fit a decimal"))
             }
             Self::Float => LogicalType::Float64,
             Self::Text => LogicalType::Utf8,

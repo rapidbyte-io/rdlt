@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Decimal128Type, Float64Type, Int64Type};
+use arrow_array::types::{Decimal128Type, Decimal256Type, Float64Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
 use bytes::Bytes;
 use rdlt_connector::limits::{MAX_COLUMNS, MAX_NESTING_DEPTH};
@@ -93,7 +93,11 @@ fn malformed_pushes_are_invalid_json() {
         assert_eq!(refused(push), "json_invalid", "{push:?}");
     }
     // Alone, and after a float that sends its chunk through the exact parse.
-    for invalid_utf8 in [&b"{\"a\":\"\xff\"}"[..], b"{\"a\":1e30}\n{\"a\":\"\xff\"}"] {
+    for invalid_utf8 in [
+        &b"{\"a\":\"\xff\"}"[..],
+        b"{\"a\":1e30}\n{\"a\":\"\xff\"}",
+        b"{\"a\":99999999999999999999999999999999999999999}\n{\"a\":\"\xff\"}",
+    ] {
         assert_eq!(
             shredded(&[Bytes::from_static(invalid_utf8)], 1 << 20),
             Err(Code("json_invalid"))
@@ -114,6 +118,10 @@ fn records_that_are_not_objects_are_refused() {
         "[{\"a\":1},[]]",
     ] {
         assert_eq!(refused(push), "json_not_object", "{push:?}");
+    }
+    // Integers beyond 38 digits, which only the exact parse reads.
+    for digits in [39, 400] {
+        assert_eq!(refused(&"9".repeat(digits)), "json_not_object", "{digits}");
     }
 }
 
@@ -292,13 +300,45 @@ fn integers_beyond_the_unsigned_range_read_exactly_as_decimals_and_negative_zero
             Some("0.5".to_owned())
         ]
     );
-    // A float as large stays a float, and an integer no decimal holds is refused.
+    // A float as large stays a float.
     let float = batch_of(&["{\"a\":1e20}"], 1 << 20);
     assert_eq!(types(&float)[0].1, LogicalType::Float64);
-    assert_eq!(
-        refused("{\"a\":123456789012345678901234567890123456789}"),
-        "value_unrepresentable"
-    );
+}
+
+#[test]
+fn integers_beyond_38_digits_read_exactly_as_76_digit_decimals_and_beyond_those_as_json_text() {
+    let digits = |count: usize| "9".repeat(count);
+    let vast = LogicalType::Decimal(DecimalType::new(76, 0).unwrap());
+    for (pushed, joined) in [
+        (vec![format!("1{}", "0".repeat(38))], vast.clone()),
+        (vec![digits(76), format!("-{}", digits(76))], vast.clone()),
+        (vec!["1".to_owned(), digits(39)], vast.clone()),
+        (vec![digits(39), "18446744073709551615".to_owned()], vast),
+        (vec![digits(77)], LogicalType::Json),
+        (vec![digits(400), "-1".to_owned()], LogicalType::Json),
+        (vec![digits(39), "0.5".to_owned()], LogicalType::Json),
+    ] {
+        let records: Vec<String> = pushed
+            .iter()
+            .map(|value| format!("{{\"a\":{value}}}"))
+            .collect();
+        for chunk_bytes in [1, 1 << 20] {
+            let batch = batch_of(&[records.join("\n").as_str()], chunk_bytes);
+            assert_eq!(types(&batch)[0].1, joined, "{pushed:?}");
+            let read: Vec<String> = if joined == LogicalType::Json {
+                texts(&batch, 0).into_iter().flatten().collect()
+            } else {
+                batch
+                    .column(0)
+                    .as_primitive::<Decimal256Type>()
+                    .iter()
+                    .flatten()
+                    .map(|value| value.to_string())
+                    .collect()
+            };
+            assert_eq!(read, pushed, "each integer reads back exactly");
+        }
+    }
 }
 
 #[test]

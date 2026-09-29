@@ -87,6 +87,17 @@ impl<'de> Visitor<'de> for Render<'_> {
         Ok(())
     }
 
+    /// An integer beyond 38 digits, as its digits: JSON text holds any integer as they are.
+    fn visit_bytes<E: serde::de::Error>(self, digits: &[u8]) -> Result<(), E> {
+        let digits = std::str::from_utf8(digits).map_err(|error| {
+            self.context.fail(ShredError::Internal(format!(
+                "an integer's digits: {error}"
+            )))
+        })?;
+        self.text.push_str(digits);
+        Ok(())
+    }
+
     fn visit_str<E: serde::de::Error>(mut self, value: &str) -> Result<(), E> {
         self.serialized(value)
     }
