@@ -8,11 +8,12 @@ use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 
+use super::evolving::GENERATION;
 use super::{Bench, commit, meta};
 use crate::change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN};
 use crate::commit::CommitMeta;
 use crate::destination::{ChangeColumns, Deletion, MergeKey, TableChange, TableRef};
-use crate::id::{CommitSeq, SegmentId};
+use crate::id::SegmentId;
 use crate::meta::DELETED_AT_COLUMN;
 use crate::schema::TableSchema;
 use crate::testing::{Violation, bounded_call};
@@ -112,6 +113,20 @@ fn written(changes: &[Change], soft: bool) -> RecordBatch {
     RecordBatch::try_from_iter(columns).expect("the certification batch is valid")
 }
 
+/// The stored columns of a change stream's table: its key, name and sequence, and where deletes
+/// are `soft`, the deletion time.
+fn stored(soft: bool) -> TableSchema {
+    let mut fields = vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("name", LogicalType::Utf8, true),
+        Field::new(SEQ_COLUMN, LogicalType::Binary, false),
+    ];
+    if soft {
+        fields.push(Field::new(DELETED_AT_COLUMN, LogicalType::Int64, true));
+    }
+    TableSchema::new(fields).expect("the certification schema is valid")
+}
+
 impl Bench<'_> {
     /// A table of this clause, called `suffix` after its own, merging a change stream whose
     /// deletes and truncates are `soft` or hard.
@@ -138,46 +153,60 @@ impl Bench<'_> {
         }
     }
 
-    /// Commits each of `commits` in turn to `table` in one session of load `load`, and returns
-    /// what the table publishes after each.
+    /// Commits each of `commits` in turn to `table`, each in a session of its own, as a load
+    /// started again after each commit is, and returns what the table publishes after each; the
+    /// sessions' loads are numbered from `load` times sixteen.
     async fn changed(
         &self,
         (table, load): (&TableRef, u8),
         soft: bool,
         commits: &[&[Change]],
     ) -> Result<Vec<Vec<Marked>>, Violation> {
-        let mut fields = vec![
-            Field::new("id", LogicalType::Int64, false),
-            Field::new("name", LogicalType::Utf8, true),
-            Field::new(SEQ_COLUMN, LogicalType::Binary, false),
-        ];
-        if soft {
-            fields.push(Field::new(DELETED_AT_COLUMN, LogicalType::Int64, true));
-        }
-        let schema = TableSchema::new(fields).expect("the certification schema is valid");
-        let mut opened = self.open(self.destination, load).await?;
-        let create = TableChange::Create {
-            table: table.clone(),
-            schema,
-        };
-        bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
-        let mut writer = bounded_call("writer", opened.session.writer(table)).await?;
         let mut published = Vec::with_capacity(commits.len());
-        let mut seq = CommitSeq::FIRST;
         for (index, changes) in commits.iter().enumerate() {
-            let segment = u64::try_from(index).unwrap_or(0) + 1;
-            let batch = written(changes, soft);
-            bounded_call("write", writer.write(SegmentId(segment), batch)).await?;
-            bounded_call("flush", writer.flush()).await?;
-            let committing = CommitMeta {
-                commit_seq: seq,
-                ..meta(self.load_id(load), opened.epoch, &[segment], Vec::new())
+            let load = load * 16 + u8::try_from(index).unwrap_or(0);
+            let mut opened = self.open(self.destination, load).await?;
+            let create = TableChange::Create {
+                table: table.clone(),
+                schema: stored(soft),
             };
+            bounded_call("apply_schema", opened.session.apply_schema(&create)).await?;
+            let mut writer = bounded_call("writer", opened.session.writer(table)).await?;
+            bounded_call("write", writer.write(SegmentId(1), written(changes, soft))).await?;
+            bounded_call("flush", writer.flush()).await?;
+            let committing = meta(self.load_id(load), opened.epoch, &[1], Vec::new());
             commit(&mut opened.session, &committing).await?;
-            seq = seq.next();
+            drop(writer);
+            bounded_call("close", opened.session.close()).await?;
             published.push(self.marked(table).await?);
         }
         Ok(published)
+    }
+
+    /// Replaces `table`'s rows whole with a generation holding `rows`, in a session of load
+    /// `load`.
+    async fn replaced(&self, table: &TableRef, load: u8, rows: &[Change]) -> Result<(), Violation> {
+        let mut opened = self.open(self.destination, load).await?;
+        let generation = TableRef {
+            generation: Some(GENERATION),
+            merge: None,
+            ..table.clone()
+        };
+        let batch = written(rows, false);
+        let batch = batch
+            .project(&[0, 1, 2])
+            .expect("the stored columns come first");
+        let mut writer = bounded_call("writer", opened.session.writer(&generation)).await?;
+        bounded_call("write", writer.write(SegmentId(1), batch)).await?;
+        bounded_call("flush", writer.flush()).await?;
+        let finishing = CommitMeta {
+            finish_generations: vec![(table.path.clone(), GENERATION)],
+            ..meta(self.load_id(load), opened.epoch, &[1], Vec::new())
+        };
+        commit(&mut opened.session, &finishing).await?;
+        drop(writer);
+        bounded_call("close", opened.session.close()).await?;
+        Ok(())
     }
 
     /// The rows `table` publishes, in order, with their deletion times.
@@ -229,6 +258,9 @@ impl Bench<'_> {
             expect(&published, 2, &[live(1, "a"), live(3, "d")], "hard deletes")?;
             let again = [live(1, "a"), live(2, "again"), live(3, "d")];
             expect(&published, 3, &again, "hard deletes")?;
+            if self.destination.capabilities().write_modes.replace {
+                self.replacing_forgets_tombstones().await?;
+            }
         }
         if modes.soft {
             let table = self.changed_table("soft", true);
@@ -252,12 +284,33 @@ impl Bench<'_> {
         Ok(())
     }
 
+    /// A table a generation replaces whole forgets the tombstones of the rows it held: a key a
+    /// hard delete removed takes a change sequenced before the delete again.
+    async fn replacing_forgets_tombstones(&self) -> Result<(), Violation> {
+        let table = self.changed_table("replaced", false);
+        let deleted: [&[Change]; 1] = [&[upsert(1, "a", 1), delete(1, 5, 50)]];
+        self.changed((&table, 4), false, &deleted).await?;
+        self.replaced(&table, 80, &[upsert(9, "i", 4)]).await?;
+        let again: [&[Change]; 1] = [&[upsert(1, "again", 2)]];
+        let published = self.changed((&table, 6), false, &again).await?;
+        let expected = [live(1, "again"), live(9, "i")];
+        expect(&published, 0, &expected, "a table replaced whole")
+    }
+
+    /// Whether the destination marks rows deleted but never removes them, so a change stream's
+    /// table it certifies has soft deletes.
+    fn soft_only(&self) -> bool {
+        let modes = self.destination.capabilities().delete_modes;
+        modes.soft && !modes.hard
+    }
+
     /// `D-PARTIAL`: an update flagging a column unchanged keeps its published value, or leaves it
     /// null where no row held the key.
     pub(super) async fn partial_updates_keep_columns(&self) -> Result<(), Violation> {
-        let table = self.changed_table("partial", false);
+        let soft = self.soft_only();
+        let table = self.changed_table("partial", soft);
         let commits: [&[Change]; 2] = [&[upsert(1, "a", 1)], &[partial(1, 2), partial(5, 3)]];
-        let published = self.changed((&table, 2), false, &commits).await?;
+        let published = self.changed((&table, 2), soft, &commits).await?;
         expect(
             &published,
             1,
@@ -277,25 +330,32 @@ impl Bench<'_> {
                 &[upsert(1, "a", 1), upsert(2, "b", 2)],
                 &[upsert(6, "f", 6)],
                 &[upsert(3, "c", 3), truncate(4, 40), upsert(5, "e", 5)],
-                &[upsert(1, "a", 1), upsert(3, "c", 3)],
+                // Changes from before the truncate stay out; one after it lands.
+                &[upsert(1, "a", 1), upsert(3, "c", 3), upsert(7, "g", 7)],
             ];
             let published = self.changed((&table, 2), false, &commits).await?;
-            let kept = [live(5, "e"), live(6, "f")];
-            expect(&published, 2, &kept, "hard truncates")?;
-            expect(&published, 3, &kept, "hard truncates")?;
+            expect(
+                &published,
+                2,
+                &[live(5, "e"), live(6, "f")],
+                "hard truncates",
+            )?;
+            let later = [live(5, "e"), live(6, "f"), live(7, "g")];
+            expect(&published, 3, &later, "hard truncates")?;
         }
         if modes.soft {
             let table = self.changed_table("soft", true);
             let commits: [&[Change]; 4] = [
                 &[upsert(1, "a", 1), upsert(2, "b", 2)],
-                &[upsert(5, "e", 5)],
-                &[truncate(3, 30), upsert(4, "d", 4)],
+                &[upsert(5, "e", 6)],
+                &[upsert(3, "c", 3), truncate(4, 40), upsert(4, "d", 5)],
                 &[upsert(1, "a", 1)],
             ];
             let published = self.changed((&table, 3), true, &commits).await?;
             let marked = [
-                (1, Some("a".to_owned()), Some(30)),
-                (2, Some("b".to_owned()), Some(30)),
+                (1, Some("a".to_owned()), Some(40)),
+                (2, Some("b".to_owned()), Some(40)),
+                (3, Some("c".to_owned()), Some(40)),
                 live(4, "d"),
                 live(5, "e"),
             ];
@@ -318,8 +378,7 @@ impl Bench<'_> {
     /// `D-MERGE`, for a change stream's table: a change applies only past the sequence of the row
     /// its key holds, across commits, and one sent twice in a commit lands once.
     pub(super) async fn changes_apply_past_their_row(&self) -> Result<(), Violation> {
-        let soft = !self.destination.capabilities().delete_modes.hard
-            && self.destination.capabilities().delete_modes.soft;
+        let soft = self.soft_only();
         let table = self.changed_table("changes", soft);
         let commits: [&[Change]; 2] = [
             &[upsert(1, "new", 5)],

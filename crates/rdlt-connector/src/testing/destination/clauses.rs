@@ -50,7 +50,9 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     Clause {
         id: "D-DELETE",
         statement: "a change stream's delete removes its key's row, or marks it deleted and keeps \
-                    its values, and no change from before it, sent again, brings the row back",
+                    its values; no change sequenced before a hard delete, even of a key no row \
+                    held, brings the row back in any later session, until the table is replaced \
+                    whole",
     },
     Clause {
         id: "D-PARTIAL",
