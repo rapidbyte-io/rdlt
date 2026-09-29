@@ -11,6 +11,8 @@ use std::time::Duration;
 
 use command_fds::{CommandFdExt as _, FdMapping};
 use rdlt_connector::ConnectorId;
+
+use crate::provider::Digest;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::watch;
@@ -26,6 +28,9 @@ pub(crate) const TAIL_BYTES: usize = 8 * 1024;
 pub(crate) struct Launch {
     pub(crate) id: ConnectorId,
     pub(crate) path: std::path::PathBuf,
+    /// The digest the binary had when placed, when supervised: a binary changed since is not
+    /// spawned again.
+    pub(crate) digest: Option<Digest>,
     /// The variables of this process's environment the connector's environment keeps.
     pub(crate) env_passthrough: Vec<String>,
     /// How long a stopped connector has to exit before it is killed.

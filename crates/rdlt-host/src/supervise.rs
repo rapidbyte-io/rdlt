@@ -303,7 +303,7 @@ where
     handshaken.configure(config).await.map_err(Spawned::Connect)
 }
 
-/// Spawns the connector and handshakes with it.
+/// Spawns the connector, once its binary is unchanged since it was placed, and handshakes with it.
 async fn spawn(
     launch: &Launch,
     role: Role,
@@ -311,6 +311,19 @@ async fn spawn(
     options: Options,
     admit: &Admit<'_>,
 ) -> Result<Running, Spawned> {
+    if let Some(expected) = launch.digest {
+        let found = crate::local::digest(&launch.path)
+            .await
+            .map_err(Spawned::Io)?;
+        if found != expected {
+            return Err(Spawned::Refused(ProviderError::DigestMismatch {
+                id: launch.id.clone(),
+                path: launch.path.clone(),
+                expected,
+                found,
+            }));
+        }
+    }
     let (io, process) = Process::launched(launch).map_err(Spawned::Io)?;
     let connection = match configured(io, role, config, options, admit).await {
         Ok(connection) => connection,

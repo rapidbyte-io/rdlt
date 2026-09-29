@@ -130,16 +130,17 @@ impl Local {
     /// [`ProviderError::SpawnFailed`] when it cannot be spawned.
     pub fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
         let path = self.resolve(reference)?;
-        let launch = self.launch(reference, &path);
+        let launch = self.launch(reference, &path, None);
         let (stream, process) =
             Process::launched(&launch).map_err(|source| spawn_failed(reference, &path, source))?;
         Ok(Wire::new(Box::new(stream), Some(process)))
     }
 
-    fn launch(&self, reference: &ConnectorRef, path: &Path) -> Launch {
+    fn launch(&self, reference: &ConnectorRef, path: &Path, digest: Option<Digest>) -> Launch {
         Launch {
             id: reference.id.clone(),
             path: path.to_owned(),
+            digest,
             env_passthrough: self.env_passthrough.clone(),
             grace: self.grace,
             kills: self.kills.clone(),
@@ -157,7 +158,15 @@ impl Local {
         let digest = digest(&path)
             .await
             .map_err(|source| spawn_failed(reference, &path, source))?;
-        let launch = self.launch(reference, &path);
+        if let Some(expected) = reference.digest.filter(|expected| *expected != digest) {
+            return Err(ProviderError::DigestMismatch {
+                id: reference.id.clone(),
+                path,
+                expected,
+                found: digest,
+            });
+        }
+        let launch = self.launch(reference, &path, Some(digest));
         let found_at = path.display().to_string();
         let gate = Gate {
             reference,
@@ -205,7 +214,7 @@ fn binary_name(id: &ConnectorId) -> String {
 }
 
 /// The SHA-256 digest of the file at `path`.
-async fn digest(path: &Path) -> std::io::Result<Digest> {
+pub(crate) async fn digest(path: &Path) -> std::io::Result<Digest> {
     let path = path.to_owned();
     tokio::task::spawn_blocking(move || {
         let mut file = std::fs::File::open(path)?;
