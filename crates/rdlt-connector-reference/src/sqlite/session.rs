@@ -102,6 +102,20 @@ impl Session for SqliteSession {
         self.database
             .transaction(move |transaction| claim(transaction, &planner, &pipeline, &name))
             .await?;
+        let (planner, changed) = (Arc::clone(&self.planner), table.clone());
+        self.database
+            .transaction(move |transaction| {
+                let dialect = planner.dialect();
+                let [target, staging, tombstones] = [
+                    planner.target(&changed),
+                    planner.staging_table(&changed.name),
+                    planner.tombstone_table(&changed.name),
+                ]
+                .map(|name| columns(transaction, dialect, &name));
+                let plan = planner.change_tables(&changed, [&target?, &staging?, &tombstones?])?;
+                run_all(transaction, &plan)
+            })
+            .await?;
         if table.generation.is_some() {
             let (planner, generation) = (Arc::clone(&self.planner), table.clone());
             self.database
@@ -343,7 +357,13 @@ fn swap(
     run_all(
         transaction,
         &planner.swap(name, exists, generation, &generations),
-    )
+    )?;
+    // The rows a change stream removed from the table swapped out never come back to its successor.
+    let tombstones = planner.tombstone_table(name);
+    if !columns(transaction, planner.dialect(), &tombstones)?.is_empty() {
+        run(transaction, &planner.forget_tombstones(name))?;
+    }
+    Ok(())
 }
 
 /// Stages a table's batches: buffers them, and writes them to its staging table on flush.
@@ -374,7 +394,9 @@ impl TableWriter for SqliteWriter {
         self.database
             .transaction(move |transaction| {
                 let mut stats = WriteStats::default();
+                let target = columns(transaction, planner.dialect(), &planner.target(&table))?;
                 for (segment, batch) in &buffered {
+                    let batch = &sqlgen::staged_changes(batch, &table, &target)?;
                     let schema = batch.schema();
                     let names: Vec<&str> = schema
                         .fields()

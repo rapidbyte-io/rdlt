@@ -53,7 +53,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
 /// `name`, or `name` followed by underscores, whichever no column of `columns` is named, compared
 /// without case as databases may compare identifiers.
-fn unused(name: &str, columns: &[Column]) -> String {
+pub(super) fn unused(name: &str, columns: &[Column]) -> String {
     let mut candidate = name.to_owned();
     while columns
         .iter()
