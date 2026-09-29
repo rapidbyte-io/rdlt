@@ -40,7 +40,7 @@ struct Slot {
     current: Mutex<Arc<TableView>>,
     /// Held while a schema change is worked out and applied, so changes to one table never race.
     evolving: tokio::sync::Mutex<()>,
-    /// The schema version state records.
+    /// The model revision state records.
     recorded: Mutex<u32>,
     /// Plans for the current view, the newest last.
     plans: Mutex<Vec<Arc<LoweringPlan>>>,
@@ -84,11 +84,11 @@ pub(crate) struct Tables {
     taken: Mutex<BTreeSet<String>>,
 }
 
-/// What a commit records about the tables, and the versions it records.
+/// What a commit records about the tables, and the model revisions it records.
 #[derive(Debug, Default)]
 pub(crate) struct TablesDelta {
     pub(crate) changes: Vec<StateChange>,
-    pub(crate) versions: Vec<(usize, u32)>,
+    pub(crate) revisions: Vec<(usize, u32)>,
 }
 
 impl Tables {
@@ -158,7 +158,7 @@ impl Tables {
         model: Model,
         shape: Option<Shape>,
     ) -> usize {
-        let recorded = model.version;
+        let recorded = model.revision;
         let view = TableView::new(table, model, &resolver);
         let mut slots = self.slots.write();
         slots.push(Arc::new(Slot {
@@ -235,7 +235,7 @@ impl Tables {
         let slot = self.slot(table);
         let view = self.view(table);
         let unchanged = |resolution: &Resolution, view: &TableView| {
-            resolution.model.version == view.model.version
+            resolution.model.revision == view.model.revision
         };
         let resolution = slot.resolver.resolve(&view.model, incoming)?;
         if unchanged(&resolution, &view) {
@@ -349,7 +349,7 @@ impl Tables {
         let slots = self.slots.read().clone();
         for (index, slot) in slots.iter().enumerate() {
             let view = self.view(index);
-            if view.model.version <= *slot.recorded.lock() {
+            if view.model.revision <= *slot.recorded.lock() {
                 continue;
             }
             let path = view.table.path.clone();
@@ -357,6 +357,7 @@ impl Tables {
                 table: path.clone(),
                 version: SchemaVersion(view.model.version),
                 schema: view.model.schema(),
+                exact: view.model.exact.clone(),
             };
             let names = StateEntry::Names {
                 table: path,
@@ -365,17 +366,17 @@ impl Tables {
             };
             delta.changes.push(StateChange::Put(schema.to_record()));
             delta.changes.push(StateChange::Put(names.to_record()));
-            delta.versions.push((index, view.model.version));
+            delta.revisions.push((index, view.model.revision));
         }
         delta
     }
 
-    /// Notes that state now records `versions`.
-    pub(crate) fn recorded(&self, versions: &[(usize, u32)]) {
-        for (index, version) in versions {
+    /// Notes that state now records the model `revisions`.
+    pub(crate) fn recorded(&self, revisions: &[(usize, u32)]) {
+        for (index, revision) in revisions {
             let slot = self.slot(*index);
             let mut recorded = slot.recorded.lock();
-            *recorded = (*recorded).max(*version);
+            *recorded = (*recorded).max(*revision);
         }
     }
 }

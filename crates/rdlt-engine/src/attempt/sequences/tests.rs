@@ -22,6 +22,7 @@ fn table(sequences: Option<Sequences>) -> TableState {
         physical: Some("orders".into()),
         names: rdlt_connector::NameMap::default(),
         sequences,
+        exact: std::collections::BTreeSet::new(),
     }
 }
 

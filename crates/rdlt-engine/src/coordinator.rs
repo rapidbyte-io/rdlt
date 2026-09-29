@@ -329,7 +329,7 @@ impl Coordinator {
             .commit(&meta)
             .await?
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
-        self.parts.tables.recorded(&tables.versions);
+        self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing);
         self.record_positions(&collected.positions);
         self.acknowledge(collected.positions).await

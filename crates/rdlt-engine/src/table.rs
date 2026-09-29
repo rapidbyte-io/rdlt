@@ -2,6 +2,7 @@
 //! batch becomes rows the destination stores.
 
 mod convert;
+mod exact;
 mod lower;
 mod lowering;
 mod model;
@@ -24,6 +25,7 @@ use rdlt_connector::{
 
 #[cfg(test)]
 pub(crate) use convert::normalize as plain;
+pub(crate) use exact::EXACT_IN_FLOAT;
 pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
 pub(crate) use lowering::{ChangeRows, LoweringPlan, Prepared, Stamp};
 pub(crate) use model::Model;

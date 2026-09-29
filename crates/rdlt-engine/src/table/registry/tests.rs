@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -14,6 +14,7 @@ use crate::error::ErrorKind;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::SchemaSettings;
+use crate::table::resolve::Route;
 use crate::table::{Incoming, LoweringPlan, MetaNames, Model, Resolver, Settings};
 
 type Changes = Arc<Mutex<Vec<TableChange>>>;
@@ -211,7 +212,7 @@ async fn the_delta_holds_tables_changed_since_state_recorded_them() {
         .await
         .unwrap();
     let delta = tables.delta();
-    assert_eq!(delta.versions, [(0, 1)]);
+    assert_eq!(delta.revisions, [(0, 1)]);
     let entries: Vec<StateEntry> = delta
         .changes
         .iter()
@@ -230,12 +231,48 @@ async fn the_delta_holds_tables_changed_since_state_recorded_them() {
     assert!(
         matches!(&entries[1], StateEntry::Names { physical, .. } if physical.as_ref() == "orders")
     );
-    tables.recorded(&delta.versions);
+    tables.recorded(&delta.revisions);
     assert!(tables.delta().changes.is_empty());
     tables.recorded(&[(0, 0)]);
     assert!(
         tables.delta().changes.is_empty(),
         "an older version never lowers the record"
+    );
+}
+
+#[tokio::test]
+async fn a_column_losing_its_exactness_changes_no_table_and_state_records_it() {
+    let (tables, changes) = tables(None, Model::default());
+    let integers = schema(&[("n", LogicalType::Int64)]);
+    tables.fit(0, &integers).await.unwrap();
+    let delta = tables.delta();
+    tables.recorded(&delta.revisions);
+    let exact = |delta: &super::TablesDelta| {
+        delta.changes.iter().find_map(|change| match change {
+            StateChange::Put(record) => match StateEntry::from_record(record).unwrap() {
+                StateEntry::Schema { exact, version, .. } => Some((exact, version)),
+                _ => None,
+            },
+            StateChange::Delete(_) => None,
+        })
+    };
+    assert_eq!(
+        exact(&delta),
+        Some((BTreeSet::from(["n".into()]), SchemaVersion(1)))
+    );
+    let rounding = integers.rounding(BTreeSet::from([ColumnPath::from("n")]));
+    let (view, routes) = tables.fit(0, &rounding).await.unwrap();
+    assert_eq!(routes, [Route::Column(0)]);
+    assert!(view.model.exact.is_empty(), "the view holds the change");
+    assert_eq!(
+        changes.lock().len(),
+        1,
+        "only the table's creation reached it"
+    );
+    assert_eq!(
+        exact(&tables.delta()),
+        Some((BTreeSet::new(), SchemaVersion(1))),
+        "state records the column no longer exact, at the same schema version"
     );
 }
 
@@ -522,6 +559,7 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
         physical: Some("orders__items".into()),
         names,
         sequences: None,
+        exact: BTreeSet::new(),
     };
     let state = rdlt_connector::PipelineState {
         tables: BTreeMap::from([(path, recorded)]),
