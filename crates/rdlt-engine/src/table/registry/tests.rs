@@ -84,7 +84,7 @@ fn resolver() -> Resolver {
 }
 
 fn schema(fields: &[(&str, LogicalType)]) -> Incoming {
-    Incoming::from(
+    Incoming::declared(
         TableSchema::new(
             fields
                 .iter()

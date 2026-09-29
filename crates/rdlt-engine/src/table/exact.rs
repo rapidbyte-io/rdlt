@@ -37,7 +37,7 @@ pub(crate) fn rounding(
 ///
 /// An encoded column is decoded first, so only the values its rows hold are read; one that cannot
 /// be decoded counts as rounding, which at worst keeps floats from the column.
-fn rounds(array: &ArrayRef) -> bool {
+pub(super) fn rounds(array: &ArrayRef) -> bool {
     let beyond = |value: i64| value.unsigned_abs() > EXACT_IN_FLOAT;
     if *array.data_type() != DataType::Int64 {
         return arrow_cast::cast(array, &DataType::Int64).map_or(true, |plain| rounds(&plain));

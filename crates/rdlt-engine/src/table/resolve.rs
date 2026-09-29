@@ -108,6 +108,21 @@ pub(crate) struct Incoming {
 }
 
 impl Incoming {
+    /// The columns of a declared schema, top-level ones named as it names them, which hold no
+    /// values: a batch with values is read with [`Incoming::of`], which judges them.
+    pub(crate) fn declared(schema: TableSchema) -> Self {
+        let paths = schema
+            .fields()
+            .iter()
+            .map(|field| ColumnPath::from(field.name()))
+            .collect();
+        Self {
+            schema,
+            paths,
+            rounding: BTreeSet::new(),
+        }
+    }
+
     /// The columns of `batches`, which are `schema`'s at `paths`, in order: those of 64-bit
     /// integers noted where a value a 64-bit float would round.
     pub(crate) fn of(schema: TableSchema, paths: Vec<ColumnPath>, batches: &[RecordBatch]) -> Self {
@@ -123,23 +138,6 @@ impl Incoming {
     #[cfg(test)]
     pub(crate) fn rounding(self, rounding: BTreeSet<ColumnPath>) -> Self {
         Self { rounding, ..self }
-    }
-}
-
-impl From<TableSchema> for Incoming {
-    /// A batch whose columns are top-level ones named as the schema names them, holding no value
-    /// a float would round.
-    fn from(schema: TableSchema) -> Self {
-        let paths = schema
-            .fields()
-            .iter()
-            .map(|field| ColumnPath::from(field.name()))
-            .collect();
-        Self {
-            schema,
-            paths,
-            rounding: BTreeSet::new(),
-        }
     }
 }
 

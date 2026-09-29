@@ -1,0 +1,63 @@
+//! Values as the source sent them, and what each must mean once stored.
+
+use rdlt_connector::LogicalType;
+use rdlt_testkit::canon::{self, Canon};
+use rdlt_testkit::decode;
+use rdlt_testkit::drawn::Scalar;
+
+/// A value the source sent, which its cell must mean exactly.
+#[derive(Clone, Debug)]
+pub(in crate::oracle) enum Sent {
+    /// A value of an Arrow batch's column, of the column's type.
+    Typed(Scalar, LogicalType),
+    /// A value of a JSON push, as its JSON text, whose type the engine infers.
+    Json(String),
+}
+
+impl Sent {
+    /// What the value means once held by a column of `column`.
+    pub(in crate::oracle) fn meaning(&self, column: &LogicalType) -> Canon {
+        match self {
+            Self::Typed(value, source) => canon::canonical_into(value, source, column),
+            Self::Json(text) => decode::json_as(text, column),
+        }
+    }
+
+    /// Whether a column of `column` holds the value cast, as a column of 64-bit floats holds a
+    /// 64-bit integer a float holds exactly.
+    pub(in crate::oracle) fn cast_exactly(&self, column: &LogicalType) -> bool {
+        matches!(
+            (self, column),
+            (Self::Typed(Scalar::Int(value), LogicalType::Int64), LogicalType::Float64)
+                if value.unsigned_abs() <= 1 << 53
+        )
+    }
+
+    /// Whether the value, pushed as a JSON integer, is one a column of `column`, of floats, would
+    /// round: the engine never puts such a value in one.
+    pub(in crate::oracle) fn rounds_into(&self, column: &LogicalType) -> bool {
+        let Self::Json(text) = self else {
+            return false;
+        };
+        let digits = text.strip_prefix('-').unwrap_or(text);
+        if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+            return false;
+        }
+        let exact: u128 = match column {
+            LogicalType::Float64 => 1 << 53,
+            LogicalType::Float32 => 1 << 24,
+            _ => return false,
+        };
+        !digits
+            .parse::<u128>()
+            .is_ok_and(|magnitude| magnitude <= exact)
+    }
+
+    /// The type the source sent the value as, where it says.
+    pub(in crate::oracle) fn source(&self) -> Option<&LogicalType> {
+        match self {
+            Self::Typed(_, source) => Some(source),
+            Self::Json(_) => None,
+        }
+    }
+}

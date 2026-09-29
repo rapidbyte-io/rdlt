@@ -62,7 +62,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
 }
 
 fn schema(fields: &[(&str, LogicalType)]) -> Incoming {
-    Incoming::from(
+    Incoming::declared(
         TableSchema::new(
             fields
                 .iter()
@@ -401,7 +401,7 @@ fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
 
 /// Resolves and prepares `batch` for `model`, as a partition does.
 fn prepared(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> Prepared {
-    let incoming = Incoming::from(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let resolution = resolver.resolve(model, &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver));
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
@@ -618,7 +618,7 @@ fn merge_batches_without_a_whole_key_are_refused() {
         ),
     ];
     for (batch, code) in cases {
-        let incoming = Incoming::from(TableSchema::from_arrow(&batch.schema()).unwrap());
+        let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
         let resolution = resolver.resolve(&model, &incoming).unwrap();
         let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
         let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
@@ -831,7 +831,7 @@ fn a_merge_table_created_without_its_key_column_refuses_batches() {
     let resolver = resolver(capabilities(), plan(), &["id"]);
     let model = created(&resolver, &[("v", LogicalType::Utf8)]);
     let batch = batch(vec![("v", Arc::new(StringArray::from(vec!["a"])) as _)]);
-    let incoming = Incoming::from(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let resolution = resolver.resolve(&model, &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
     assert!(view.key.is_empty());
@@ -954,7 +954,7 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
     let model = created(&resolver, &[("at", nanos)]);
     let year_3000 = TimestampSecondArray::from(vec![32_503_680_000]);
     let batch = batch(vec![("at", Arc::new(year_3000) as _)]);
-    let incoming = Incoming::from(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let resolution = resolver.resolve(&model, &incoming).unwrap();
     assert!(
         resolution.changes.is_empty(),
@@ -981,7 +981,7 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
             Arc::new(Int64Array::from_iter_values(0..rows)) as _,
         )])
     };
-    let incoming = Incoming::from(TableSchema::from_arrow(&ids(1).schema()).unwrap());
+    let incoming = Incoming::declared(TableSchema::from_arrow(&ids(1).schema()).unwrap());
     let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
     let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
@@ -1054,7 +1054,7 @@ proptest! {
         let ids = |rows: i64| {
             batch(vec![("id", Arc::new(Int64Array::from_iter_values(0..rows)) as _)])
         };
-        let incoming = Incoming::from(TableSchema::from_arrow(&ids(1).schema()).unwrap());
+        let incoming = Incoming::declared(TableSchema::from_arrow(&ids(1).schema()).unwrap());
         let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
         let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
         let fresh = || {
@@ -1126,7 +1126,7 @@ fn a_map_column_lowers_as_a_list_of_key_and_value_structs() {
     builder.append(false).unwrap();
     let map: ArrayRef = Arc::new(builder.finish());
     let batch = batch(vec![("m", map)]);
-    let incoming = Incoming::from(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let mut native = capabilities();
     native.nested.structs = true;
     native.nested.lists = true;
@@ -1621,4 +1621,14 @@ fn a_float_column_takes_exact_integers_before_any_variant_of_it_does() {
         )
         .unwrap();
     assert_eq!(rounded.routes, [Route::Column(1)]);
+}
+
+#[test]
+fn integers_convert_to_floats_only_where_a_float_holds_every_one_exactly() {
+    let edge = 1_i64 << 53;
+    let exact: ArrayRef = Arc::new(Int64Array::from(vec![edge, -edge, 7]));
+    let floats = convert(&exact, &LogicalType::Int64, &LogicalType::Float64).unwrap();
+    assert_eq!(floats.data_type(), &DataType::Float64);
+    let rounding: ArrayRef = Arc::new(Int64Array::from(vec![1, edge + 1]));
+    assert!(convert(&rounding, &LogicalType::Int64, &LogicalType::Float64).is_err());
 }

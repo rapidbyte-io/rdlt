@@ -70,7 +70,7 @@ impl Planning<'_> {
                     tables.declare_children(index, normalize::declared_arrays(declared, shape));
                     normalize::root_columns(declared, shape)?
                 }
-                None => Incoming::from(declared.clone()),
+                None => Incoming::declared(declared.clone()),
             };
             tables.fit(index, &incoming).await?;
         }
