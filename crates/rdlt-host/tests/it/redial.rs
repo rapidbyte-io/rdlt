@@ -124,10 +124,11 @@ async fn a_stopping_connector_finishes_calls_in_flight_and_frees_its_address() {
     assert!(status.success(), "{status}");
 }
 
-/// The memory source, under another spec.
+/// The memory source, under another spec, noting whether it was ever configured.
 struct Posing {
     spec: ConnectorSpec,
     inner: Box<dyn SourceFactory>,
+    configured: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SourceFactory for Posing {
@@ -140,19 +141,35 @@ impl SourceFactory for Posing {
         config: serde_json::Value,
         context: ConnectContext,
     ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Source>>> {
+        self.configured
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.inner.connect(config, context)
     }
 }
 
 /// The memory source, posing as `id` at `version`.
 fn posing(id: &str, version: &str) -> Served {
+    posing_noted(id, version, &Arc::default())
+}
+
+/// The memory source, posing as `id` at `version`, setting `configured` once configured.
+fn posing_noted(
+    id: &str,
+    version: &str,
+    configured: &Arc<std::sync::atomic::AtomicBool>,
+) -> Served {
     let inner = source_factory::<MemorySource>();
     let spec = ConnectorSpec {
         id: ConnectorId::parse(id).expect("a valid id"),
         version: version.to_owned(),
         ..inner.spec().clone()
     };
-    Served::new().with_source(Box::new(Posing { spec, inner }))
+    let configured = Arc::clone(configured);
+    Served::new().with_source(Box::new(Posing {
+        spec,
+        inner,
+        configured,
+    }))
 }
 
 /// Listens in this process over mutual TLS with `pki`'s certificates, on the port it returns.
@@ -221,5 +238,84 @@ async fn a_redialed_endpoint_serving_another_connector_is_refused() {
             }
         };
         assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{refused}");
+    }
+}
+
+/// The memory source, posing as itself but with another configuration schema.
+fn reshaped() -> Served {
+    let inner = source_factory::<MemorySource>();
+    let spec = ConnectorSpec {
+        config_schema: serde_json::json!({ "type": "object", "title": "another" }),
+        ..inner.spec().clone()
+    };
+    let configured = Arc::default();
+    Served::new().with_source(Box::new(Posing {
+        spec,
+        inner,
+        configured,
+    }))
+}
+
+#[tokio::test]
+async fn a_function_reaching_another_connector_once_cut_is_refused() {
+    let memory = "io.rapidbyte.memory";
+    let version = source_factory::<MemorySource>().spec().version.clone();
+    // Another id or version is refused before it sees the configuration; the same identity with
+    // another configuration schema once it answers its configuration.
+    let successors: [(Option<(&str, &str)>, bool); 3] = [
+        (Some(("io.rapidbyte.other", version.as_str())), false),
+        (Some((memory, "9.9.9")), false),
+        (None, true),
+    ];
+    for (index, (successor, configures)) in successors.into_iter().enumerate() {
+        let configured = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let successor = successor.map(|(id, version)| (id.to_owned(), version.to_owned()));
+        let kills = rdlt_host::Kills::new();
+        let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let connect = rdlt_host::Connect::new({
+            let (opened, version) = (Arc::clone(&opened), version.clone());
+            let configured = Arc::clone(&configured);
+            move || {
+                let first = opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                let served = match (&successor, first) {
+                    (_, true) => posing(memory, &version),
+                    (Some((id, version)), false) => posing_noted(id, version, &configured),
+                    (None, false) => reshaped(),
+                };
+                let stream = crate::support::served(served);
+                Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+            }
+        })
+        .kills(&kills);
+        let reference = ConnectorRef::new(ConnectorId::parse(memory).expect("a valid id"));
+        let config = serde_json::json!({ "streams": { "rows": [{ "id": 1 }] } });
+        let placed = connect
+            .source(&reference, &config)
+            .await
+            .expect("the connector is reached");
+        placed.connector.check().await.expect("the check passes");
+        kills.kill();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let refused = loop {
+            match placed.connector.check().await {
+                Ok(()) => panic!("successor {index} was taken for {memory} {version}"),
+                Err(error) if error.kind() == ConnectorErrorKind::Transient => {
+                    assert!(tokio::time::Instant::now() < deadline, "{error}");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (ConnectorErrorKind::Config, Some("connector_changed")),
+            "successor {index}: {refused}"
+        );
+        if !configures {
+            assert!(
+                !configured.load(std::sync::atomic::Ordering::SeqCst),
+                "successor {index} saw the configuration"
+            );
+        }
     }
 }
