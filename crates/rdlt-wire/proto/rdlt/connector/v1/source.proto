@@ -55,6 +55,8 @@ message ReadStart {
   // The newest barrier pending when the read starts, which the source answers as one requested
   // during the read; 0 for none.
   uint64 barrier = 5;
+  // Whether the partition never ends, as the plan said.
+  bool unbounded = 6;
 }
 
 // Asks for a checkpoint answering a barrier.

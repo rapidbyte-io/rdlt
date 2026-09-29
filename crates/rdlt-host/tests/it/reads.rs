@@ -10,7 +10,7 @@ use rdlt_connector_reference::{GeneratorSource, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 
-use crate::support::connectors::{COMMITTED, Ticks};
+use crate::support::connectors::{COMMITTED, Ticks, UNBOUNDED};
 use crate::support::{Fake, Fault, engine, memory_destination, serve_fake, served};
 
 /// The ticks source, served, with `config`.
@@ -70,6 +70,23 @@ async fn arrow_batches_whose_schema_changes_mid_read_load_across_the_wire() {
             .any(|batch| batch.schema().column_with_name("note").is_some()),
         "the second schema's column arrived"
     );
+}
+
+#[tokio::test]
+async fn a_served_read_learns_whether_its_partition_ends() {
+    let source = ticks(serde_json::json!({ "rows": 1 })).await;
+    for partition in [Partition::single(), Partition::single().unbounded()] {
+        let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+        let request = ReadRequest {
+            partition,
+            ..request()
+        };
+        let read = source.read(request, sink).await;
+        while feed.recv().await.is_some() {}
+        read.expect("the read ends");
+    }
+    let seen = UNBOUNDED.lock().expect("the lock is not poisoned").clone();
+    assert_eq!(seen, [false, true]);
 }
 
 #[tokio::test]

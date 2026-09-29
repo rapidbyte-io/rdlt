@@ -113,6 +113,7 @@ async fn cursor(
             bytes: Bytes::from(vec![b'x'; over]),
         }),
         barrier: 0,
+        unbounded: false,
     });
     // Credit, so a source that took the cursor answers at once rather than wait for it.
     let credit = v1::read_control::Control::Credit(v1::Credit { bytes: 1 << 20 });
