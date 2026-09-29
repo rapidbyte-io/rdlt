@@ -151,8 +151,14 @@ async fn a_commit_failing_before_its_manifest_leaves_the_table_and_its_retry_pub
     set_mode(&manifests, 0o755);
     failed.expect_err("the manifest cannot be written");
     assert_eq!(values(root.path()), ["a"]);
-    let mut retried = staged(destination.as_ref(), 3, row("b", 2)).await;
-    let meta_retried = meta(&retried, 3);
+    // The retry commits under the torn commit's own key, whose receipt the torn commit must not
+    // have recorded.
+    let mut retried = staged(destination.as_ref(), 2, row("b", 2)).await;
+    let meta_retried = meta(&retried, 2);
+    assert_eq!(
+        (meta_retried.load_id, meta_retried.commit_seq),
+        (meta_torn.load_id, meta_torn.commit_seq)
+    );
     retried
         .session
         .commit(&meta_retried)
