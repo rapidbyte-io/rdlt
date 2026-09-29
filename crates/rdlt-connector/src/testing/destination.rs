@@ -1,5 +1,6 @@
 //! Destination clauses.
 
+mod changes;
 mod checks;
 mod children;
 mod clauses;
@@ -160,7 +161,10 @@ impl Bench<'_> {
             "D-DISCARD" => self.earlier_staging_is_discarded().await,
             "D-REPLACE" => self.generations_swap_in_atomically().await,
             "D-SCHEMA" => self.schema_changes_apply().await,
-            "D-MERGE" => self.merges_keep_the_newest_row().await,
+            "D-MERGE" => self.merges_keep_newest_rows().await,
+            "D-DELETE" => self.deletes_remove_rows().await,
+            "D-PARTIAL" => self.partial_updates_keep_columns().await,
+            "D-TRUNCATE" => self.truncates_remove_earlier_rows().await,
             "D-CHILDREN" => self.children_follow_their_roots().await,
             "D-ENCODING" => self.dictionaries_publish_their_values().await,
             "D-TABLES" => self.segments_span_tables().await,

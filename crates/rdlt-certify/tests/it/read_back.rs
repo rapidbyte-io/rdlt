@@ -43,6 +43,9 @@ async fn a_destination_that_reads_back_is_certified_in_every_clause_that_reads_i
         "D-IDEMPOTENT",
         "D-DISCARD",
         "D-MERGE",
+        "D-DELETE",
+        "D-PARTIAL",
+        "D-TRUNCATE",
         "D-FENCE",
     ] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
