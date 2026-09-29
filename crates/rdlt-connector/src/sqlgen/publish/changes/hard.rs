@@ -14,12 +14,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// key's row, each key removed, and the bound the commit's last truncate raised.
     pub(super) fn hard<'a>(&'a self, changed: &Changed<'_>) -> Sql<'a, D> {
         let Changed {
-            op,
-            seq,
-            q,
-            target,
-            keys,
-            ..
+            op, seq, q, keys, ..
         } = changed;
         let keys = keys.join(", ");
         let mut sql = self.computing(changed);
@@ -32,12 +27,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
              _rdlt_upserts AS (SELECT _rdlt_l.* FROM _rdlt_live _rdlt_l WHERE _rdlt_l.{op} IN (0, 1) \
              AND NOT EXISTS (SELECT 1 FROM _rdlt_deleted _rdlt_d WHERE {on_dl} AND \
              _rdlt_l.{seq} < _rdlt_d.{q})), \
-             _rdlt_last AS (SELECT {keys}, MAX({seq}) AS {q} FROM _rdlt_upserts GROUP BY {keys}), \
-             _rdlt_kept AS (SELECT _rdlt_p.* FROM {target} _rdlt_p WHERE NOT EXISTS (SELECT 1 FROM \
-             _rdlt_deleted _rdlt_d WHERE {on_dp}) AND NOT EXISTS (SELECT 1 FROM _rdlt_cut _rdlt_c \
-             WHERE _rdlt_p.{seq} < _rdlt_c.{q})) SELECT ",
+             _rdlt_last AS (SELECT {keys}, MAX({seq}) AS {q} FROM _rdlt_upserts GROUP BY {keys}) \
+             SELECT ",
             on_dl = changed.on("_rdlt_d", "_rdlt_l"),
-            on_dp = changed.on("_rdlt_d", "_rdlt_p"),
         ));
         let staged = changed.staged_by(&mut sql);
         sql.push(&format!(
@@ -66,6 +58,15 @@ impl<D: SqlDialect> SqlPlanner<D> {
 /// sets it, or where it flags the column unchanged, as the key's upserts before it or its row
 /// left it.
 fn merged(changed: &Changed<'_>) -> String {
+    // The row the table holds counts unless the commit deleted its key or truncated it; it is
+    // found by its key, never by reading the table whole.
+    let kept = format!(
+        " AND NOT EXISTS (SELECT 1 FROM _rdlt_deleted _rdlt_d WHERE {}) AND NOT EXISTS (SELECT 1 \
+         FROM _rdlt_cut _rdlt_c WHERE _rdlt_k.{} < _rdlt_c.{})",
+        changed.on("_rdlt_d", "_rdlt_k"),
+        changed.seq,
+        changed.q,
+    );
     let columns: Vec<String> = changed
         .columns
         .iter()
@@ -77,7 +78,7 @@ fn merged(changed: &Changed<'_>) -> String {
             format!(
                 "CASE WHEN {} THEN {} ELSE _rdlt_u.{column} END",
                 changed.flagged("_rdlt_u", ordinal),
-                changed.chained(column, ordinal, "_rdlt_m", "_rdlt_kept"),
+                changed.chained_past(column, ordinal, "_rdlt_m", (&changed.target, &kept)),
             )
         })
         .collect();

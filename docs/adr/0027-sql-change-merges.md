@@ -53,16 +53,28 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     move those rows. Staged duplicates of one key and sequence land once. The SQL uses common table
     expressions, window functions and correlated subqueries: no `ON CONFLICT`, no row values, no
     `LIMIT`, no DDL, so it runs on any SQL database the planner targets.
+  - A change table, its staging and its tombstones are indexed by the key, where rows are
+    staged, and a commit finds every row its changes touch by the key: it reads the table whole
+    only to apply a truncate. A commit of a thousand changes to a table of a million rows takes
+    about 50 ms in SQLite, as it does at a hundred thousand rows; without the indexes it took 28 s
+    at a hundred thousand.
+  - A staged row whose op is none of a change stream's is refused where it is staged: the codes
+    past a truncate's are those the commit computes its rows under.
   - A change stream merges into its table, never a generation, and a generation swapped in clears
     the base's tombstones.
   - A differential property test commits the same random written batches to SQLite and to the
     reference merge, comparing rows and tombstones after each commit, with soft and hard deletes.
   - Two rows of one key and one sequence with different values, which no source sends, land as
     either in SQL; the reference takes the first written.
+  - A soft delete of a key no row holds marks nothing, and leaves nothing a change sequenced before
+    it would meet: soft deletes keep no tombstones.
 - **Certification** gains `D-DELETE`, `D-PARTIAL` and `D-TRUNCATE`, each sending changes again
-  from before the removal they check, and `D-MERGE` checks the seq guard across commits where the
-  destination merges changes. Each is skipped where the destination declares it does not do what
-  it checks. `D-TRUNCATE` is added to spec §19's clause list.
+  from before the removal they check, each commit in a session of its own as a load started again
+  is, and `D-MERGE` checks the seq guard across commits where the destination merges changes.
+  `D-DELETE` also checks that a table replaced whole forgets its tombstones, where the destination
+  replaces. Each is skipped where the destination declares it does not do what it checks, and runs
+  with soft deletes where the destination removes no rows. `D-TRUNCATE` is added to spec §19's
+  clause list.
 - **The simulation's change source sends a window of earlier changes again** whenever it resumes
   past them, for merged streams; the model expects the table unchanged. Without tombstones the
   simulation fails.
