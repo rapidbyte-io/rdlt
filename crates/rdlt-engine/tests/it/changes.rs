@@ -236,6 +236,11 @@ async fn ignored_deletes_and_truncates_are_counted_and_leave_their_rows() {
 
 #[tokio::test]
 async fn soft_deletes_keep_their_rows_and_record_when() {
+    each(Target::IN_PROCESS, soft_deletes).await;
+}
+
+/// Soft deletes in `target`'s table: every row stays, those the source deleted with when.
+async fn soft_deletes(target: Target) {
     let stream_spec = orders(&[]);
     let store = "changes_soft";
     let plan = pipeline(
@@ -246,15 +251,19 @@ async fn soft_deletes_keep_their_rows_and_record_when() {
             .deletes(DeleteMode::Soft)],
     );
     let outcome = engine(commit_every(16))
-        .run(plan, changes(6, &stream_spec).await, memory(store).await)
+        .run(
+            plan,
+            changes(6, &stream_spec).await,
+            target.destination(store).await,
+        )
         .await;
     assert_eq!(
         outcome.report.status,
         RunStatus::Succeeded,
-        "{:?}",
+        "{target:?}: {:?}",
         outcome.error
     );
-    let batches: Vec<RecordBatch> = published(store, "orders");
+    let batches: Vec<RecordBatch> = target.published(store, "orders");
     let live = expected(6, &stream_spec);
     let mut deleted = 0;
     for batch in &batches {
@@ -270,15 +279,22 @@ async fn soft_deletes_keep_their_rows_and_record_when() {
             .expect("a loaded-at column");
         for row in 0..batch.num_rows() {
             let id = ids.value(row);
-            assert_eq!(at.is_null(row), live.contains_key(&id), "key {id}");
+            assert_eq!(
+                at.is_null(row),
+                live.contains_key(&id),
+                "{target:?}: key {id}"
+            );
             if !at.is_null(row) {
                 // One run loads every row, so a row is deleted when its load started.
-                assert!(*at.slice(row, 1) == *loaded.slice(row, 1), "key {id}");
+                assert!(
+                    *at.slice(row, 1) == *loaded.slice(row, 1),
+                    "{target:?}: key {id}"
+                );
                 deleted += 1;
             }
         }
     }
-    assert!(deleted > 0);
+    assert!(deleted > 0, "{target:?}");
 }
 
 #[tokio::test]
@@ -312,10 +328,9 @@ async fn a_change_log_appends_every_change_with_its_op() {
 
 #[tokio::test]
 async fn every_destination_that_merges_changes_holds_the_table_the_source_holds() {
-    each(
-        [Target::Memory, Target::Jsonl, Target::Arrow],
-        |target| async move { merges_changes(target, changes(8, &orders(&[90])).await).await },
-    )
+    each(Target::IN_PROCESS, |target| async move {
+        merges_changes(target, changes(8, &orders(&[90])).await).await;
+    })
     .await;
 }
 
