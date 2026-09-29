@@ -430,6 +430,10 @@ struct VaultConfig {
     share_tables: bool,
     /// Refuses every writer of a table once another pipeline's writer of it was refused.
     lock_on_intrusion: bool,
+    /// Refuses another pipeline's table as a data error, though coded `table_owned`.
+    owned_as_data: bool,
+    /// Refuses another pipeline's table as a configuration error with no code.
+    owned_uncoded: bool,
 }
 
 #[derive(Default)]
@@ -500,6 +504,17 @@ struct VaultStores {
 }
 
 impl VaultConfig {
+    /// `refusal`, of another pipeline's table, as `owned_as_data` or `owned_uncoded` shape it.
+    fn refused_as(&self, refusal: ConnectorError) -> ConnectorError {
+        if self.owned_as_data {
+            ConnectorError::data(refusal.to_string()).with_code("table_owned")
+        } else if self.owned_uncoded {
+            ConnectorError::config(refusal.to_string())
+        } else {
+            refusal
+        }
+    }
+
     /// The pipeline's current epoch, from the store this configuration keeps epochs in.
     fn epoch(&self, shared: &VaultStore, stores: &VaultStores, pipeline: &PipelineId) -> u64 {
         let epochs = |store: &VaultStore| store.epochs.get(pipeline).copied().unwrap_or_default();
@@ -803,11 +818,13 @@ impl Session for VaultSession {
             return Err(ConnectorError::data(message));
         }
         let mut store = self.stores.shared.lock().unwrap();
-        store.claim(
-            &self.pipeline,
-            &change.table().name,
-            self.config.share_tables,
-        )?;
+        store
+            .claim(
+                &self.pipeline,
+                &change.table().name,
+                self.config.share_tables,
+            )
+            .map_err(|error| self.config.refused_as(error))?;
         let first = store.changes.insert(format!("{change:?}"));
         let alters = !matches!(change, TableChange::Create { .. });
         if self.config.refuse_repeated_changes && alters && !first {
@@ -840,7 +857,9 @@ impl Session for VaultSession {
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
         {
             let mut store = self.stores.shared.lock().unwrap();
-            let claimed = store.claim(&self.pipeline, &table.name, self.config.share_tables);
+            let claimed = store
+                .claim(&self.pipeline, &table.name, self.config.share_tables)
+                .map_err(|error| self.config.refused_as(error));
             if claimed.is_err() && self.config.lock_on_intrusion {
                 store.locked.insert(table.name.to_string());
             }
@@ -1308,8 +1327,6 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
         ("fold_names", &["D-NAMES"][..]),
         ("refuse_check", &["D-CHECK"][..]),
         ("lose_lanes", &["D-LANES"][..]),
-        ("share_tables", &["D-OWNED"][..]),
-        ("lock_on_intrusion", &["D-OWNED"][..]),
         ("miscount", &["D-COMMIT"][..]),
         ("republish", &["D-IDEMPOTENT"][..]),
         ("forget_state", &["D-STATE"][..]),
@@ -1362,6 +1379,19 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
     for (flag, clauses) in cases {
         let report = certify_vault(flag, Some(flag)).await;
         assert_eq!(failed(&report), clauses, "{flag}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn each_way_of_letting_pipelines_meet_at_a_table_fails_d_owned() {
+    for flag in [
+        "share_tables",
+        "lock_on_intrusion",
+        "owned_as_data",
+        "owned_uncoded",
+    ] {
+        let report = certify_vault(flag, Some(flag)).await;
+        assert_eq!(failed(&report), ["D-OWNED"], "{flag}: {report}");
     }
 }
 
