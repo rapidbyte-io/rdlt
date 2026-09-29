@@ -27,20 +27,34 @@ Status: accepted, 2026-09-29.
   keys are written by one pipeline's latest session, so the race is rare. A parameter selected without a table has no
   column to take its type from, which a database inferring parameter types may read as text; a
   dialect whose database has `ON CONFLICT`, PostgreSQL's too, declares it. Both styles write the
-  catalog alike, which a test checks by running each against SQLite.
+  catalog alike, which a test checks by running each against SQLite. A dialect whose database
+  selects nothing without a table names the one it reads, as Oracle's `DUAL`
+  (`SqlDialect::values_table`).
 - **Keys are compared a column at a time**, in correlated `EXISTS`: a merge's delete of the
   published rows its staged keys replace, and a child table's children of each root's winning row.
-  Derived tables take their alias without `AS`, which Oracle refuses.
-- **No commit changes a table's indexes.** A child table is indexed by its root id where its rows
-  are staged (`SqlPlanner::root_index`, run by the SQLite writer), in an index named
-  `_rdlt_root__{target}`, the prefix no user table takes, through the dialect's `create_index`,
-  whose default is `CREATE INDEX IF NOT EXISTS`, as a change table's key indexes are (ADR 0027). A
-  database indexed by an older engine keeps its old index beside the new one.
+  The merge's delete also takes the rows whose first key column is among the staged rows', which
+  lets the database find them by the key's index rather than test every row of the table; a test
+  checks SQLite's plan for it. Derived tables take their alias without `AS`, which Oracle refuses.
+- **No commit changes a table's indexes.** Where a table's rows are staged, its writer indexes
+  what a commit finds rows in (the SQLite writer runs both, and a test checks that a commit then
+  changes no table or index):
+  - every merge table, its staging and, for a change stream, its tombstones, by the key
+    (`SqlPlanner::key_indexes`, `_rdlt_key__{table}`), where ADR 0027 indexed change tables only;
+  - a child table by its root id (`SqlPlanner::root_index`, `_rdlt_root__{target}`).
+
+  The prefix is one no user table takes, and each index is created through the dialect's
+  `create_index`, whose default is `CREATE INDEX IF NOT EXISTS`. A database indexed by an older
+  engine keeps its old index beside the new one.
 - **A replace generation swaps in only where schema changes commit with their transaction.**
-  Every dialect declares `transactional_ddl`, which has no default, and the planner refuses a
-  swap for one that does not, as `Unsupported`: its destination does not declare replace. Renaming
-  within the commit is what makes the swap atomic, and a copy instead would change the table's
-  columns inside the commit too.
+  Every dialect declares `transactional_ddl`, which has no default. The planner refuses a swap
+  that renames or drops a generation table for one that does not, as `Unsupported`; a generation
+  that wrote no table swaps in by emptying the base, which changes no schema, and is planned.
+  `SqlPlanner::swaps_atomically` says which, so a destination leaves replace out of what it
+  declares rather than fail at the commit. Renaming within the commit is what makes the swap
+  atomic, and a copy instead would change the table's columns inside the commit too.
+  - The renamed generation keeps its indexes' names, which derive from the generation table's;
+    the swap drops them (the dialect's `drop_index`), and the next writer indexes the table under
+    its own name, so a table never holds two indexes on one key.
 - **A change stream's tombstones widen with its key.** A widen applies to the table, its staging
   and its tombstones, each that has the column, as ADR 0027 left for this milestone; a dialect
   widening in place would otherwise fail the commit that buries a widened key.
@@ -51,9 +65,11 @@ Status: accepted, 2026-09-29.
 
 ## Consequences
 
-- A dialect for a database without `ON CONFLICT` or row values plans every statement `sqlgen`
-  writes, change merges included; one without transactional schema changes loads every write
-  mode but replace.
+- A dialect for a database without `ON CONFLICT` or row values plans the writes, merges and
+  change merges `sqlgen` makes; one without transactional schema changes loads every write mode
+  but replace. Statements still written in one form for every dialect, as a swap's
+  `ALTER TABLE … RENAME TO` and `DROP TABLE IF EXISTS`, are standard SQL that some databases
+  spell otherwise; a dialect for one of those needs a hook for them.
 - Implementing `SqlDialect` requires `transactional_ddl`.
 - `SqlPlanner::claim` returns statements, as a guarded write takes two.
 - A second table whose derived tables would take a first's name fails its first load, where it

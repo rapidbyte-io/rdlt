@@ -23,7 +23,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// the `columns` named `names`: the published rows of their keys deleted, then the row of
     /// each key with the greatest sequence inserted.
     ///
-    /// Keys are compared a column at a time, as every database does, rather than as row values.
+    /// Keys are compared a column at a time, as every database does, rather than as row values,
+    /// and the rows a merge replaces are found through [`SqlPlanner::key_indexes`].
     pub(super) fn merged<'a>(
         &'a self,
         [target, staging, names]: [&str; 3],
@@ -36,10 +37,18 @@ impl<D: SqlDialect> SqlPlanner<D> {
             .iter()
             .map(|key| format!("_rdlt_s.{key} = {target}.{key}"))
             .collect();
+        // The staged keys' first column finds the rows through the key's index, then every
+        // column is matched.
+        let first = &keys[0];
         let keys = keys.join(", ");
         let mut replaced = self.sql();
         replaced.push(&format!(
-            "DELETE FROM {target} WHERE EXISTS (SELECT 1 FROM {staging} _rdlt_s WHERE "
+            "DELETE FROM {target} WHERE {target}.{first} IN (SELECT _rdlt_s.{first} FROM {staging} \
+             _rdlt_s WHERE "
+        ));
+        self.rows_of(&mut replaced, of.staged, of.pipeline, of.epoch, of.segments);
+        replaced.push(&format!(
+            ") AND EXISTS (SELECT 1 FROM {staging} _rdlt_s WHERE "
         ));
         self.rows_of(&mut replaced, of.staged, of.pipeline, of.epoch, of.segments);
         replaced.push(&format!(" AND {})", same.join(" AND ")));
