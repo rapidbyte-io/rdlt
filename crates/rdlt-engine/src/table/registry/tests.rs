@@ -625,3 +625,40 @@ async fn a_merge_streams_table_created_before_it_merged_gains_only_its_sequence_
         ("_rdlt_seq", &LogicalType::Binary, true)
     );
 }
+
+#[tokio::test]
+async fn a_rounding_batch_planned_beside_floats_leaves_no_column_exact_whichever_plans_first() {
+    for rounding_first in [true, false] {
+        let (tables, _) = tables(None, Model::default());
+        let integers = schema(&[("n", LogicalType::Int64)]);
+        tables.fit(0, &integers).await.unwrap();
+        let rounding = integers.rounding(BTreeSet::from([ColumnPath::from("n")]));
+        let floats = schema(&[("n", LogicalType::Float64)]);
+        let (rounded, floated) = if rounding_first {
+            tokio::join!(tables.plan(0, rounding), tables.plan(0, floats))
+        } else {
+            let (floated, rounded) = tokio::join!(tables.plan(0, floats), tables.plan(0, rounding));
+            (rounded, floated)
+        };
+        let (rounded, floated) = (rounded.unwrap(), floated.unwrap());
+        assert!(tables.view(0).model.exact.is_empty(), "{rounding_first}");
+        let recorded = tables
+            .delta()
+            .changes
+            .iter()
+            .find_map(|change| match change {
+                StateChange::Put(record) => match StateEntry::from_record(record).unwrap() {
+                    StateEntry::Schema { exact, .. } => Some(exact),
+                    _ => None,
+                },
+                StateChange::Delete(_) => None,
+            });
+        assert_eq!(recorded, Some(BTreeSet::new()), "{rounding_first}");
+        // The integers stay integers; the floats take a variant.
+        assert_eq!(
+            rounded.view().model.columns[0].logical_type(),
+            &LogicalType::Int64
+        );
+        assert!(floated.view().model.columns.len() > 1, "{rounding_first}");
+    }
+}
