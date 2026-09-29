@@ -3,9 +3,12 @@ use std::num::NonZeroUsize;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, RecordBatch};
+use std::collections::BTreeSet;
+
 use rdlt_connector::{
-    ConnectContext, Cursor, Partition, PartitionId, PartitionState, Push, ReadRequest, SEQ_COLUMN,
-    Source, SourceEvent, StreamName, StreamState, partition_channel, source_factory,
+    ConnectContext, ConnectorErrorKind, Cursor, Partition, PartitionId, PartitionState, Push,
+    ReadRequest, SEQ_COLUMN, Source, SourceEvent, StreamName, StreamState, partition_channel,
+    source_factory,
 };
 
 use super::{CHANGES, Change, ChangedStream, ChangesSource, Position, change, expected, snapshot};
@@ -180,4 +183,129 @@ async fn a_snapshot_captured_after_some_changes_holds_them_and_the_changes_follo
     assert_eq!(positions, (11..=40).collect::<Vec<_>>());
     let everything = keyed(&read(source.as_ref(), "changes", None).await);
     assert_eq!(everything.len(), 40);
+}
+
+#[tokio::test]
+async fn a_stream_without_snapshot_partitions_or_rows_per_batch_is_refused() {
+    for (partitions, batch_rows) in [(0, 4), (2, 0)] {
+        let config = serde_json::json!({
+            "seed": 3,
+            "streams": [{ "name": "orders", "keys": 6, "snapshot_partitions": partitions,
+                          "changes": 1, "batch_rows": batch_rows }],
+        });
+        let refused = source_factory::<ChangesSource>()
+            .connect(config, ConnectContext::new())
+            .await
+            .err()
+            .expect("the stream is refused");
+        assert_eq!(
+            refused.kind(),
+            ConnectorErrorKind::Config,
+            "{partitions} {batch_rows}"
+        );
+    }
+}
+
+#[test]
+fn changes_touch_the_snapshot_s_keys_and_half_as_many_again() {
+    let stream = ChangedStream {
+        keys: 100,
+        changes: 4_000,
+        truncates: Vec::new(),
+        ..stream()
+    };
+    let ids: BTreeSet<i64> = (1..=stream.changes)
+        .filter_map(|position| match change(3, &stream, position) {
+            Change::Upsert { id, .. } | Change::Delete { id } => Some(id),
+            Change::Truncate => None,
+        })
+        .collect();
+    assert_eq!(ids.first(), Some(&0));
+    assert_eq!(ids.last(), Some(&150));
+}
+
+/// Where each checkpoint `source` sends reading `partition` of `orders` from its start resumes.
+async fn checkpoints(source: &dyn Source, partition: &str) -> Vec<Position> {
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+    let request = ReadRequest {
+        stream: orders(),
+        partition: Partition::new(PartitionId::parse(partition).unwrap()),
+        cursor: None,
+    };
+    let collect = async {
+        let mut positions = Vec::new();
+        while let Some(event) = feed.recv().await {
+            if let SourceEvent::Checkpoint { cursor, .. } = event {
+                positions.push(cursor.decode::<Position>(1).unwrap());
+            }
+        }
+        positions
+    };
+    let (read, positions) = tokio::join!(source.read(request, sink), collect);
+    read.unwrap();
+    positions
+}
+
+#[tokio::test]
+async fn a_snapshot_partition_ends_at_its_last_row_and_an_empty_one_at_once() {
+    // One key over two partitions: the second holds none.
+    let config = serde_json::json!({
+        "seed": 3,
+        "streams": [{ "name": "orders", "keys": 1, "snapshot_partitions": 2, "changes": 0,
+                      "batch_rows": 4 }],
+    });
+    let source = source_factory::<ChangesSource>()
+        .connect(config, ConnectContext::new())
+        .await
+        .unwrap();
+    let last = |next| Position { next, done: true };
+    assert_eq!(checkpoints(source.as_ref(), "snapshot-0").await, [last(1)]);
+    assert_eq!(checkpoints(source.as_ref(), "snapshot-1").await, [last(0)]);
+}
+
+#[tokio::test]
+async fn changes_are_pushed_in_batches_of_the_rows_per_batch() {
+    let source = source().await;
+    let batches = read(source.as_ref(), "changes", None).await;
+    let rows: Vec<usize> = batches.iter().map(RecordBatch::num_rows).collect();
+    assert_eq!(rows, [4; 10]);
+}
+
+#[test]
+fn a_stream_reads_in_one_snapshot_partition_and_batches_of_ten_by_default() {
+    let stream: ChangedStream =
+        serde_json::from_value(serde_json::json!({ "name": "orders", "keys": 1, "changes": 1 }))
+            .unwrap();
+    assert_eq!((stream.snapshot_partitions, stream.batch_rows), (1, 10));
+}
+
+#[test]
+fn the_changes_a_seed_draws_stay_the_same() {
+    // A seed's changes are part of the source's contract: a workload replays as it was.
+    let drawn: Vec<(i64, bool)> = (1..=8)
+        .map(|position| match change(3, &stream(), position) {
+            Change::Upsert { id, value, .. } => (id, value.is_some()),
+            other => panic!("position {position} drew {other:?}"),
+        })
+        .collect();
+    let ids: Vec<i64> = drawn.iter().map(|(id, _)| *id).collect();
+    let valued: Vec<bool> = drawn.iter().map(|(_, valued)| *valued).collect();
+    assert_eq!(ids, [1, 0, 4, 8, 7, 7, 4, 8]);
+    assert_eq!(valued, [true, true, true, false, true, true, false, true]);
+}
+
+#[tokio::test]
+async fn a_snapshot_partition_the_stream_does_not_have_is_refused() {
+    let source = source().await;
+    let (sink, _feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+    let request = ReadRequest {
+        stream: orders(),
+        partition: Partition::new(PartitionId::parse("snapshot-2").unwrap()),
+        cursor: None,
+    };
+    let refused = source
+        .read(request, sink)
+        .await
+        .expect_err("no such partition");
+    assert_eq!(refused.kind(), ConnectorErrorKind::Data);
 }

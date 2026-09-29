@@ -1,5 +1,8 @@
 //! A source that generates seeded, partitioned Arrow data.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};

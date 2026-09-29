@@ -254,3 +254,135 @@ async fn a_partition_the_source_does_not_list_is_never_opened() {
     let error = source.read(request, sink).await.unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
 }
+
+#[tokio::test]
+async fn a_files_writer_s_flush_counts_the_bytes_of_the_files_it_staged() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let destination = connect(root.path(), "jsonl").await;
+    let mut opened = open(destination.as_ref(), 1).await;
+    let (schema, batch) = ids(&[1, 2, 3]);
+    let create = TableChange::Create {
+        table: table(),
+        schema,
+    };
+    opened
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("the table is created");
+    let mut writer = opened.session.writer(&table()).await.expect("a writer");
+    for segment in [1, 2] {
+        writer
+            .write(SegmentId(segment), batch.clone())
+            .await
+            .expect("the write buffers");
+    }
+    let stats = writer.flush().await.expect("the flush stages");
+    let written: u64 = files_under(root.path())
+        .iter()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .map(|path| std::fs::metadata(path).expect("the file exists").len())
+        .sum();
+    assert_eq!((stats.rows, stats.bytes), (6, written));
+    assert!(written > 0);
+}
+
+#[test]
+fn a_files_source_pushes_1024_rows_a_batch_by_default() {
+    let config: rdlt_connector_reference::FilesSourceConfig =
+        serde_json::from_value(json!({ "root": "anywhere" })).expect("a valid configuration");
+    assert_eq!(config.batch_rows.get(), 1024);
+}
+
+#[tokio::test]
+async fn the_files_destination_reads_back_what_it_published() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let (destination, reader) = rdlt_connector::readable_destination_factory::<FilesDestination>()
+        .connect_reading(json!({ "root": root.path() }), ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let mut opened = open(destination.as_ref(), 1).await;
+    let (schema, batch) = ids(&[4, 5, 6]);
+    stage(&mut opened, &schema, batch, 1).await;
+    let meta = meta(&opened, 1, CommitSeq::FIRST, &[1]);
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    let rows: usize = reader
+        .published(&table())
+        .await
+        .expect("the table reads back")
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum();
+    assert_eq!(rows, 3);
+}
+
+#[tokio::test]
+async fn the_files_source_reads_every_row_of_both_formats() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(
+        root.path().join("lines.jsonl"),
+        "{\"id\": 1}\n{\"id\": 2}\n",
+    )
+    .expect("the file is written");
+    let schema = Arc::new(arrow_schema::Schema::new(vec![ArrowField::new(
+        "id",
+        DataType::Int64,
+        false,
+    )]));
+    let file = std::fs::File::create(root.path().join("ipc.arrow")).expect("the file is created");
+    let mut writer =
+        arrow_ipc::writer::FileWriter::try_new(file, &schema).expect("the writer starts");
+    for ids in [vec![1, 2], vec![3]] {
+        let column = Arc::new(Int64Array::from(ids)) as ArrayRef;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![column]).expect("a batch");
+        writer.write(&batch).expect("the batch is written");
+    }
+    writer.finish().expect("the file is finished");
+    let source = source_factory::<FilesSource>()
+        .connect(json!({ "root": root.path() }), ConnectContext::new())
+        .await
+        .expect("the source connects");
+    for (stream, expected) in [("lines", 2), ("ipc", 3)] {
+        let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+        let partitions = source
+            .plan(
+                &StreamName::new(stream).expect("a valid name"),
+                &rdlt_connector::StreamState::default(),
+            )
+            .await
+            .expect("the stream plans")
+            .partitions;
+        let request = ReadRequest {
+            stream: StreamName::new(stream).expect("a valid name"),
+            partition: partitions[0].clone(),
+            cursor: None,
+        };
+        let reading = source.read(request, sink);
+        let counting = async {
+            let mut rows = 0;
+            while let Some(event) = feed.recv().await {
+                rows += match event {
+                    rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Arrow(batch)) => {
+                        batch.num_rows()
+                    }
+                    rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Json(lines)) => lines
+                        .split(|byte| *byte == b'\n')
+                        .filter(|line| !line.is_empty())
+                        .count(),
+                    _ => 0,
+                };
+            }
+            rows
+        };
+        let (read, rows) = tokio::join!(reading, counting);
+        read.expect("the read ends");
+        assert_eq!(rows, expected, "{stream}");
+    }
+}

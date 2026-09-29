@@ -197,10 +197,8 @@ pub(super) fn put(dir: &Path, manifest: &Manifest) -> Result<bool> {
     let path = manifest_path(dir, manifest.version);
     let linked = fs::hard_link(&temporary, &path);
     drop(fs::remove_file(&temporary));
-    match linked {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => return Ok(false),
-        Err(error) => return Err(io::failed("publishing a manifest", &path)(error)),
+    if !io::created(linked, &path)? {
+        return Ok(false);
     }
     io::sync_dir(&manifests)?;
     let versions = versions(&manifests)?;

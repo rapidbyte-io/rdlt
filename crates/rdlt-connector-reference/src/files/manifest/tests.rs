@@ -105,3 +105,10 @@ fn a_version_older_than_the_latest_is_never_created_again() {
         Some(20)
     );
 }
+
+#[test]
+fn manifests_that_cannot_be_listed_are_an_error_not_an_empty_table() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("manifests"), b"not a directory").unwrap();
+    latest(dir.path()).expect_err("the manifests cannot be listed");
+}

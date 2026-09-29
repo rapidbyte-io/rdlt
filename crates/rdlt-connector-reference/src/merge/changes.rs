@@ -258,7 +258,7 @@ pub(crate) fn merge_changes(
     let merged = assemble(&schema, &published, &aligned, &table)?;
     Ok([merged]
         .into_iter()
-        .filter(|batch| batch.num_rows() > 0)
+        .filter(|batch| batch.num_rows() != 0)
         .collect())
 }
 

@@ -7,6 +7,7 @@ use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::ConnectorErrorKind;
 
 use super::super::FileFormat;
+use super::created;
 
 thread_local! {
     /// Every directory this thread synced, in order.
@@ -52,4 +53,15 @@ fn a_listed_file_that_is_missing_is_lost_for_good() {
         .expect_err("the file is missing");
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
     assert_eq!(error.code(), Some("file_missing"));
+}
+
+#[test]
+fn a_file_another_writer_linked_first_loses_and_any_other_failure_is_an_error() {
+    let path = std::path::Path::new("manifests/1.json");
+    assert!(created(Ok(()), path).expect("created"));
+    let lost = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+    assert!(!created(Err(lost), path).expect("lost to another writer"));
+    let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    let error = created(Err(denied), path).expect_err("a failure");
+    assert_eq!(error.kind(), ConnectorErrorKind::Config);
 }

@@ -44,3 +44,21 @@ fn a_change_that_changes_nothing_writes_nothing() {
     update(root.path(), "t", |_| Ok(None)).unwrap();
     assert_eq!(names(root.path()), ["a"]);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_catalog_that_cannot_be_listed_is_an_error_not_a_missing_table() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().unwrap();
+    update(root.path(), "t", |current| Ok(Some(with(current, "a")))).unwrap();
+    let catalog = root.path().join("_rdlt").join("tables").join("t");
+    let mode = |mode| std::fs::set_permissions(&catalog, std::fs::Permissions::from_mode(mode));
+    mode(0o000).unwrap();
+    // Where permissions bind nothing, as for root, the fault cannot be made.
+    let listable = std::fs::read_dir(&catalog).is_ok();
+    let read = read(root.path(), "t");
+    mode(0o755).unwrap();
+    if !listable {
+        read.expect_err("the catalog cannot be listed");
+    }
+}

@@ -12,8 +12,8 @@ wins and the code is fixed.
   `fix(engine): release reservations on lane errors`. Subjects are imperative, lowercase, at most
   72 characters. Details go in the body.
 - Keep commits small and focused. Every fixed defect gets a regression test in the same change.
-- Run `just ready` before pushing: the pull-request gate plus mutation testing of your change,
-  which CI does not repeat.
+- Run `just ready` before pushing: lint, tests, and mutation testing of your change, which CI does
+  not repeat; CI runs the rest of the pull-request gate.
 
 ## Vocabulary
 

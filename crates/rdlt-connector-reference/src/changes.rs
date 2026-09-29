@@ -180,7 +180,8 @@ pub struct Row {
 /// removing rows.
 pub fn expected(seed: u64, stream: &ChangedStream) -> BTreeMap<i64, Row> {
     let mut table = snapshot(seed, stream);
-    for position in stream.captured + 1..=stream.changes {
+    let captured = usize::try_from(stream.captured).unwrap_or(usize::MAX);
+    for position in (1..=stream.changes).skip(captured) {
         apply(&mut table, change(seed, stream, position));
     }
     table

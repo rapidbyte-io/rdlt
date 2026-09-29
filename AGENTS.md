@@ -5,10 +5,16 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 
 ## Before you push
 
-- Run `just ready`: the pull-request gate plus mutation testing of your change. CI does not run
-  mutation testing on pull requests (ADR 0003), so a missed mutant is caught here or not at all.
-- Run full mutation passes with `just mutants -j 4`. Mutation builds carry no debug info, so
-  four jobs' build directories (about 2 GB each) fit a 16 GB `/tmp`. Do not set
+- Run `just ready`: lint, tests, and mutation testing of your change. CI runs the rest of the
+  pull-request gate (coverage, Miri, the simulation, macOS) but not mutation testing (ADR 0003), so
+  a missed mutant is caught here or by the nightly pass.
+- `just mutants-diff` tests each changed crate's mutants against the packages whose tests can
+  catch them; the nightly workflow runs the full pass, every crate's tests against every mutant
+  (ADR 0025). Fix a mutant the nightly finds the next day, and when the crate's packages in
+  `mutants-diff` missed it, add the package that caught it.
+- Test mutants on an otherwise idle machine: a test that times out counts its mutant as caught, so
+  load hides survivors. Mutation builds carry no debug info, and four jobs' build directories
+  (about 2 GB each) fit a 16 GB `/tmp`; use fewer jobs when memory is short. Do not set
   `CARGO_INCREMENTAL=0`: incremental builds make a run about a third faster.
 - `main` is protected: changes land through pull requests, rebase-merged, with every review thread
   resolved. Commit messages follow Conventional Commits with body lines of at most 72 characters

@@ -44,6 +44,16 @@ pub(super) fn listed<'a>(
     }
 }
 
+/// Whether linking a new file at `path` created it: one that exists already is another writer's,
+/// which won.
+pub(super) fn created(link: io::Result<()>, path: &Path) -> Result<bool> {
+    match link {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(failed("publishing", path)(error)),
+    }
+}
+
 /// Makes the entries of `dir` durable, so a file created or linked in it survives a crash.
 pub(super) fn sync_dir(dir: &Path) -> Result<()> {
     #[cfg(test)]
@@ -59,11 +69,10 @@ pub(super) fn create_dirs(dir: &Path) -> Result<()> {
     let mut missing = Vec::new();
     let mut current = Some(dir);
     while let Some(path) = current {
-        match fs::metadata(path) {
-            Ok(_) => break,
-            Err(error) if error.kind() == ErrorKind::NotFound => missing.push(path),
-            Err(error) => return Err(failed("inspecting", path)(error)),
+        if path.try_exists().map_err(failed("inspecting", path))? {
+            break;
         }
+        missing.push(path);
         current = path.parent();
     }
     fs::create_dir_all(dir).map_err(failed("creating a directory", dir))?;

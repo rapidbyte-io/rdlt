@@ -3,8 +3,9 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 nightly := "nightly-2026-09-20"
 
 # The crates mutation testing mutates, and the crates whose tests may catch a mutant: the
-# protocol's served end is tested from the host, where a client exists
-mutated := "--package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --package rdlt-certify --test-package rdlt-engine --test-package rdlt-connector --test-package rdlt-wire --test-package rdlt-host --test-package rdlt-certify"
+# protocol's served end is tested from the host, where a client exists, and the reference
+# connectors from the engine and certification too
+mutated := "--package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --package rdlt-certify --package rdlt-connector-reference --test-package rdlt-engine --test-package rdlt-connector --test-package rdlt-wire --test-package rdlt-host --test-package rdlt-certify --test-package rdlt-connector-reference"
 
 # List the recipes
 default:
@@ -71,11 +72,32 @@ mutants *args:
     cargo mutants {{ mutated }} {{ args }}
 
 # Mutation testing over this branch's changes, including uncommitted ones, against `base`, in
-# `jobs` parallel builds; incremental builds are what make rebuilding per mutant cheap
+# `jobs` parallel builds; incremental builds are what make rebuilding per mutant cheap. Each changed
+# crate's mutants run the tests that can catch them, and the nightly full pass runs every crate's
+# tests against every mutant (ADR 0025)
 mutants-diff base="origin/main" jobs="4":
-    mkdir -p target
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/mutants
     git diff --src-prefix=a/ --dst-prefix=b/ "$(git merge-base {{ base }} HEAD)" > target/mutants.diff
-    CARGO_INCREMENTAL=1 cargo mutants {{ mutated }} --in-diff target/mutants.diff -j {{ jobs }}
+    # The packages whose tests can catch a crate's mutants: its own, and those that drive it.
+    declare -A catching=(
+        [rdlt-engine]="rdlt-engine"
+        [rdlt-connector]="rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host"
+        [rdlt-connector-reference]="rdlt-connector-reference rdlt-engine"
+        [rdlt-wire]="rdlt-wire rdlt-host"
+        [rdlt-host]="rdlt-host rdlt-certify"
+        [rdlt-certify]="rdlt-certify"
+    )
+    failed=0
+    for crate in rdlt-engine rdlt-connector rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
+        grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
+        tests=()
+        for package in ${catching[$crate]}; do tests+=(--test-package "$package"); done
+        CARGO_INCREMENTAL=1 cargo mutants --package "$crate" "${tests[@]}" \
+            --in-diff target/mutants.diff -j {{ jobs }} --output "target/mutants/$crate" || failed=1
+    done
+    exit "$failed"
 
 # Fuzz one target for a number of seconds, for example `just fuzz state_record 60`
 fuzz target seconds="60":
@@ -85,5 +107,6 @@ fuzz target seconds="60":
 # Everything the pull-request gate runs
 ci: lint test coverage miri (sim "" "10000")
 
-# Everything to run before pushing: the pull-request gate and mutation testing of the change
-ready: ci mutants-diff
+# Everything to run before pushing: the quick checks of the pull-request gate and mutation testing
+# of the change; CI runs the rest of the gate (coverage, Miri, the simulation, macOS)
+ready base="origin/main": lint test (mutants-diff base)
