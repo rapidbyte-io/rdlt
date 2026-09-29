@@ -61,9 +61,6 @@ pub(crate) enum ShredError {
     /// A list holds more items than a column can.
     #[error("a list column holds more items than one batch can")]
     TooLarge,
-    /// A number no column type holds exactly.
-    #[error("the number {0} is beyond every type that holds it exactly")]
-    Unrepresentable(String),
     /// A bug in the shredder.
     #[error("shredding: {0}")]
     Internal(String),
@@ -79,7 +76,6 @@ impl ShredError {
                 "limit_exceeded"
             }
             Self::DuplicateKey(_) => "json_duplicate_key",
-            Self::Unrepresentable(_) => "value_unrepresentable",
             Self::Internal(_) => "shred_internal",
         }
     }
@@ -306,8 +302,9 @@ struct Appended {
 
 /// Appends the records of `chunk` to `record`, with their numbers exact where `exact` says.
 ///
-/// The fast parse reads an integer beyond 64 bits as the float nearest it, so it stops at the
-/// first float that may be one, leaving the chunk to be parsed again exactly.
+/// The fast parse reads an integer beyond 64 bits as the float nearest it, and refuses one beyond a
+/// float's range, so it stops at the first float that may be one, or at the first refusal, leaving
+/// the chunk to be parsed again exactly.
 fn append(chunk: &Chunk, record: &mut Record, exact: bool) -> Result<Appended, ShredError> {
     let context = Context::default();
     for (index, bytes) in chunk.records().enumerate() {
@@ -322,11 +319,17 @@ fn append(chunk: &Chunk, record: &mut Record, exact: bool) -> Result<Appended, S
             .deserialize(&mut deserializer)
             .and_then(|()| deserializer.end())
         };
-        appended.map_err(|error| {
-            context
-                .fault()
-                .unwrap_or_else(|| invalid(chunk.before + index, &error))
-        })?;
+        if let Err(error) = appended {
+            if let Some(fault) = context.fault() {
+                return Err(fault);
+            }
+            // The fast parse refuses an integer beyond a float's range as it refuses invalid JSON;
+            // the exact parse tells them apart.
+            if exact {
+                return Err(invalid(chunk.before + index, &error));
+            }
+            context.reparse();
+        }
         if context.imprecise() && !exact {
             break;
         }

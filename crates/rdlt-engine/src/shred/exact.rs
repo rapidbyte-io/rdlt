@@ -8,7 +8,7 @@ use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use super::ShredError;
 use super::build::Record;
-use super::visit::{Context, Row};
+use super::visit::{Context, DECIMAL_LIMIT, Row};
 
 /// Appends the record `bytes` to `record`, its numbers exact.
 pub(super) fn append(
@@ -73,8 +73,8 @@ impl<'de> Deserializer<'de> for Exact<'_> {
     }
 }
 
-/// Visits the number `value` as the narrowest of a 64-bit integer, a 128-bit integer and a
-/// float that holds its text exactly; an integer beyond 128 bits is refused.
+/// Visits the number `value` as the narrowest of a 64-bit integer, a 38-digit integer and a
+/// float that holds its text exactly, or else, an integer, as its digits.
 fn number<'de, V: Visitor<'de>>(
     value: &Value,
     context: &Context,
@@ -101,9 +101,10 @@ fn number<'de, V: Visitor<'de>>(
     if let Ok(integer) = text.parse::<u64>() {
         return visitor.visit_u64(integer);
     }
+    // An integer beyond 38 digits visits as its digits, which no integer visit holds.
     match text.parse::<i128>() {
-        Ok(integer) => visitor.visit_i128(integer),
-        Err(_) => Err(context.fail(ShredError::Unrepresentable(text))),
+        Ok(integer) if integer.unsigned_abs() < DECIMAL_LIMIT => visitor.visit_i128(integer),
+        _ => visitor.visit_bytes(text.as_bytes()),
     }
 }
 

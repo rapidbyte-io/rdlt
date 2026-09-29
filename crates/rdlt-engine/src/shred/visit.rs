@@ -7,6 +7,7 @@ mod tests;
 use std::cell::Cell;
 use std::fmt;
 
+use arrow_buffer::i256;
 use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
@@ -46,6 +47,9 @@ const ROUNDED_FROM: f64 = 9_223_372_036_854_775_808.0;
 /// The integers a 38-digit decimal holds are below this in magnitude.
 pub(crate) const DECIMAL_LIMIT: u128 = 100_000_000_000_000_000_000_000_000_000_000_000_000;
 
+/// The most digits of an integer a decimal holds.
+const VAST_DIGITS: usize = 76;
+
 impl Context {
     /// Stops the parse with `error`.
     pub(crate) fn fail<E: de::Error>(&self, error: ShredError) -> E {
@@ -72,7 +76,12 @@ impl Context {
         }
     }
 
-    /// Whether the parse read a float that may be a rounded integer.
+    /// Notes that the chunk must be parsed again exactly.
+    pub(crate) fn reparse(&self) {
+        self.imprecise.set(true);
+    }
+
+    /// Whether the parse read a float that may be a rounded integer, or must parse again exactly.
     pub(crate) fn imprecise(&self) -> bool {
         self.imprecise.get()
     }
@@ -153,6 +162,11 @@ impl<'de> Visitor<'de> for Row<'_> {
     }
 
     fn visit_str<E: de::Error>(self, _: &str) -> Result<(), E> {
+        Err(self.context.fail(ShredError::NotObject))
+    }
+
+    /// An integer beyond 38 digits, which the exact parse visits as its digits.
+    fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<(), E> {
         Err(self.context.fail(ShredError::NotObject))
     }
 
@@ -279,12 +293,22 @@ impl<'de> Visitor<'de> for Value<'_> {
     }
 
     fn visit_i128<E: de::Error>(self, value: i128) -> Result<(), E> {
-        if value.unsigned_abs() >= DECIMAL_LIMIT {
-            return Err(self
-                .context
-                .fail(ShredError::Unrepresentable(value.to_string())));
-        }
         self.scalar(Scalar::Huge(value));
+        Ok(())
+    }
+
+    /// An integer beyond 38 digits, as its digits: the exact parse visits such integers so, since
+    /// no other visit holds them and no JSON value visits bytes otherwise.
+    fn visit_bytes<E: de::Error>(self, digits: &[u8]) -> Result<(), E> {
+        let digits = std::str::from_utf8(digits).map_err(|error| {
+            self.context.fail(ShredError::Internal(format!(
+                "an integer's digits: {error}"
+            )))
+        })?;
+        let vast = (digits.trim_start_matches('-').len() <= VAST_DIGITS)
+            .then(|| i256::from_string(digits))
+            .flatten();
+        self.scalar(vast.map_or(Scalar::Beyond(digits), Scalar::Vast));
         Ok(())
     }
 
@@ -382,6 +406,10 @@ impl<'de> Visitor<'de> for Skip<'_> {
     }
 
     fn visit_i128<E>(self, _: i128) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_bytes<E>(self, _: &[u8]) -> Result<(), E> {
         Ok(())
     }
 

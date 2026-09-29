@@ -13,10 +13,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{
-    BooleanBuilder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
+    BooleanBuilder, Decimal128Builder, Decimal256Builder, Float64Builder, Int64Builder,
+    StringBuilder,
 };
 use arrow_array::{ArrayRef, ListArray, NullArray, StructArray};
-use arrow_buffer::{NullBufferBuilder, OffsetBuffer};
+use arrow_buffer::{NullBufferBuilder, OffsetBuffer, i256};
 use arrow_schema::Fields;
 use rdlt_connector::limits::MAX_COLUMNS;
 
@@ -32,6 +33,10 @@ pub(crate) enum Scalar<'a> {
     Wide(u64),
     /// An integer beyond 64 bits, within 38 digits.
     Huge(i128),
+    /// An integer beyond 38 digits, within 76.
+    Vast(i256),
+    /// The digits of an integer beyond 76, which only JSON text holds.
+    Beyond(&'a str),
     Float(f64),
     Text(&'a str),
 }
@@ -44,6 +49,8 @@ impl Scalar<'_> {
             Self::Int(value) => Observed::integer(value),
             Self::Wide(_) => Observed::Wide,
             Self::Huge(_) => Observed::Huge,
+            Self::Vast(_) => Observed::Vast,
+            Self::Beyond(_) => Observed::Json,
             Self::Float(_) => Observed::Float,
             Self::Text(_) => Observed::Text,
         }
@@ -62,6 +69,7 @@ pub(crate) enum Column {
     },
     Wide(Decimal128Builder),
     Huge(Decimal128Builder),
+    Vast(Decimal256Builder),
     Float(Float64Builder),
     Text(StringBuilder),
     Json(StringBuilder),
@@ -109,6 +117,7 @@ impl Column {
             },
             Observed::Wide => Self::Wide(decimals(capacity, 20)),
             Observed::Huge => Self::Huge(decimals(capacity, 38)),
+            Observed::Vast => Self::Vast(vast(capacity)),
             Observed::Float => Self::Float(Float64Builder::with_capacity(capacity)),
             Observed::Text => Self::Text(StringBuilder::with_capacity(capacity, capacity * 8)),
             Observed::Json => Self::Json(StringBuilder::with_capacity(capacity, capacity * 16)),
@@ -136,6 +145,7 @@ impl Column {
             Self::Int { exact, .. } => Observed::Int { exact: *exact },
             Self::Wide(_) => Observed::Wide,
             Self::Huge(_) => Observed::Huge,
+            Self::Vast(_) => Observed::Vast,
             Self::Float(_) => Observed::Float,
             Self::Text(_) => Observed::Text,
             Self::Struct(record) => Observed::Object(record.shape()),
@@ -151,6 +161,7 @@ impl Column {
             Self::Bool(builder) => builder.append_null(),
             Self::Int { builder, .. } => builder.append_null(),
             Self::Wide(builder) | Self::Huge(builder) => builder.append_null(),
+            Self::Vast(builder) => builder.append_null(),
             Self::Float(builder) => builder.append_null(),
             Self::Text(builder) | Self::Json(builder) => builder.append_null(),
             Self::Struct(record) => record.null(),
@@ -167,6 +178,9 @@ impl Column {
             (Self::Int { exact: true, .. }, Scalar::Float(_)) => self.widen(&Observed::Float),
             (Self::Int { .. }, Scalar::Wide(_)) => self.widen(&Observed::Wide),
             (Self::Int { .. } | Self::Wide(_), Scalar::Huge(_)) => self.widen(&Observed::Huge),
+            (Self::Int { .. } | Self::Wide(_) | Self::Huge(_), Scalar::Vast(_)) => {
+                self.widen(&Observed::Vast);
+            }
             _ => {}
         }
         match (self, value) {
@@ -182,6 +196,17 @@ impl Column {
                 builder.append_value(i128::from(value));
             }
             (Self::Huge(builder), Scalar::Huge(value)) => builder.append_value(value),
+            (Self::Vast(builder), Scalar::Int(value)) => {
+                builder.append_value(i256::from_i128(i128::from(value)));
+            }
+            (Self::Vast(builder), Scalar::Wide(value)) => {
+                builder.append_value(i256::from_i128(i128::from(value)));
+            }
+            (Self::Vast(builder), Scalar::Huge(value)) => {
+                builder.append_value(i256::from_i128(value));
+            }
+            (Self::Vast(builder), Scalar::Vast(value)) => builder.append_value(value),
+            (Self::Json(builder), Scalar::Beyond(digits)) => builder.append_value(digits),
             (Self::Float(builder), Scalar::Float(value)) => builder.append_value(value),
             #[expect(
                 clippy::cast_precision_loss,
@@ -204,7 +229,7 @@ impl Column {
     }
 
     /// Converts the integers built so far to the wider `observed`: a float, or a whole decimal of
-    /// 20 or 38 digits.
+    /// 20, 38 or 76 digits.
     #[expect(
         clippy::cast_precision_loss,
         reason = "the integers are exact as floats"
@@ -214,7 +239,7 @@ impl Column {
             Self::Int { builder, .. } => {
                 builder.finish().iter().map(|v| v.map(i128::from)).collect()
             }
-            Self::Wide(builder) => builder.finish().iter().collect(),
+            Self::Wide(builder) | Self::Huge(builder) => builder.finish().iter().collect(),
             _ => return,
         };
         let capacity = whole.len().max(1);
@@ -233,6 +258,13 @@ impl Column {
                 }
                 Self::Huge(huge)
             }
+            Observed::Vast => {
+                let mut vast = vast(capacity);
+                for value in whole {
+                    vast.append_option(value.map(i256::from_i128));
+                }
+                Self::Vast(vast)
+            }
             _ => {
                 let mut wide = decimals(capacity, 20);
                 for value in whole {
@@ -250,6 +282,7 @@ impl Column {
             Self::Bool(mut builder) => Arc::new(builder.finish()),
             Self::Int { mut builder, .. } => Arc::new(builder.finish()),
             Self::Wide(mut builder) | Self::Huge(mut builder) => Arc::new(builder.finish()),
+            Self::Vast(mut builder) => Arc::new(builder.finish()),
             Self::Float(mut builder) => Arc::new(builder.finish()),
             Self::Text(mut builder) | Self::Json(mut builder) => Arc::new(builder.finish()),
             Self::Struct(record) => Arc::new(record.finish_struct()?),
@@ -274,6 +307,13 @@ fn decimals(capacity: usize, digits: u8) -> Decimal128Builder {
     Decimal128Builder::with_capacity(capacity)
         .with_precision_and_scale(digits, 0)
         .expect("at most 38 digits fit a 128-bit decimal")
+}
+
+/// A builder of whole decimals of 76 digits, which a 256-bit decimal holds.
+fn vast(capacity: usize) -> Decimal256Builder {
+    Decimal256Builder::with_capacity(capacity)
+        .with_precision_and_scale(76, 0)
+        .expect("76 digits fit a 256-bit decimal")
 }
 
 impl Record {
