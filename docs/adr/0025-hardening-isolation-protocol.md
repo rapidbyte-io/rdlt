@@ -158,8 +158,11 @@ follows H1c.
     get thirty seconds before the mutants profile counts them hung.
   - Rejected: a RAM disk for mutation runs, which the development machine's memory cannot spare.
 - **Dialects' identifiers hold at least 30 bytes.** That is the shortest limit a supported
-  database has, and it keeps a derived name's reserved prefix, its hash and part of the table's
-  name. `SqlPlanner::try_new` refuses a dialect below it as `Unsupported`.
+  database has, and it keeps a staging table's reserved prefix, its hash and part of the table's
+  name. A generation table's name, whose generation id takes most of it at that limit, keeps its
+  prefix, part of the id and the hash, so its distinctness rests on the 32-bit hash; widening
+  that hash waits for a dialect that limits identifiers. `SqlPlanner::try_new` refuses a dialect
+  below 30 bytes as `Unsupported`.
 
 ## Consequences
 
