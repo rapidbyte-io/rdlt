@@ -188,8 +188,10 @@ async fn a_spawned_source_loads_every_row_once() {
 async fn merges_changes_read_from_a_spawned_source() {
     each(
         [
+            Target::SpawnedSqlite,
             Target::SpawnedJsonl,
             Target::SpawnedArrow,
+            Target::RemoteSqlite,
             Target::RemoteJsonl,
             Target::RemoteArrow,
         ],
