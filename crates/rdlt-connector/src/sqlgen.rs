@@ -92,8 +92,9 @@ pub trait SqlDialect: Send + Sync {
     /// returns no rows when the table does not exist.
     fn columns(&self, table: &str) -> Statement;
 
-    /// The most bytes an identifier may have, where the database limits them; the tables and
-    /// indexes the planner derives from a table's name keep within it.
+    /// The most bytes an identifier may have, where the database limits them, at least
+    /// [`MIN_IDENTIFIER`]; the tables and indexes the planner derives from a table's name keep
+    /// within it.
     fn max_identifier(&self) -> Option<usize> {
         None
     }
@@ -108,9 +109,23 @@ pub struct SqlPlanner<D> {
     blob: String,
 }
 
+/// The fewest bytes a dialect's identifiers may hold: the shortest limit of a supported database,
+/// which fits the reserved prefix of a derived name with its hash and part of the table's name.
+pub const MIN_IDENTIFIER: usize = 30;
+
 impl<D: SqlDialect> SqlPlanner<D> {
-    /// A planner for `dialect`, which must store text, 64-bit integers and bytes.
+    /// A planner for `dialect`, which must store text, 64-bit integers and bytes, and whose
+    /// identifiers, where it limits them, hold at least [`MIN_IDENTIFIER`] bytes.
     pub fn try_new(dialect: D) -> Result<Self> {
+        if let Some(max) = dialect.max_identifier().filter(|max| *max < MIN_IDENTIFIER) {
+            return Err(ConnectorError::new(
+                ConnectorErrorKind::Unsupported,
+                format!(
+                    "the SQL dialect's identifiers hold {max} bytes; derived names need \
+                     {MIN_IDENTIFIER}"
+                ),
+            ));
+        }
         let declared = |logical: LogicalType| {
             dialect.column_type(&logical).ok_or_else(|| {
                 ConnectorError::new(

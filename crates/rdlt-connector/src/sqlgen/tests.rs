@@ -67,11 +67,11 @@ impl SqlDialect for Bytesless {
     }
 }
 
-/// SQLite whose identifiers are at most 24 bytes.
+/// SQLite whose identifiers are at most `MAX` bytes.
 #[derive(Debug)]
-struct Short;
+struct Short<const MAX: usize>;
 
-impl SqlDialect for Short {
+impl<const MAX: usize> SqlDialect for Short<MAX> {
     fn placeholder(&self, index: usize) -> String {
         Sqlite.placeholder(index)
     }
@@ -85,30 +85,37 @@ impl SqlDialect for Short {
     }
 
     fn max_identifier(&self) -> Option<usize> {
-        Some(24)
+        Some(MAX)
     }
 }
 
 #[test]
+fn a_dialect_whose_identifiers_cannot_hold_a_derived_name_is_refused() {
+    let refused = SqlPlanner::try_new(Short::<29>).unwrap_err();
+    assert_eq!(refused.kind(), ConnectorErrorKind::Unsupported);
+    assert!(SqlPlanner::try_new(Short::<30>).is_ok());
+}
+
+#[test]
 fn derived_tables_fit_the_dialect_s_identifiers_and_stay_distinct() {
-    let planner = SqlPlanner::try_new(Short).unwrap();
+    let planner = SqlPlanner::try_new(Short::<30>).unwrap();
     let long = ["orders_by_region_north", "orders_by_region_south"];
     let staging = long.map(|name| planner.staging_table(name));
     let generations = long.map(|name| planner.generation_table(name, GenerationId(12_345)));
     for name in staging.iter().chain(&generations) {
-        assert!(name.len() <= 24, "{name}");
+        assert!(name.len() <= 30, "{name}");
         assert!(name.starts_with("_rdlt_"), "{name}");
     }
     assert_ne!(staging[0], staging[1]);
     assert_ne!(generations[0], generations[1]);
     // The hash is FNV-1a of the whole name, so a name derives alike in every build.
-    assert_eq!(staging[0], "_rdlt_staging___5ee09790");
+    assert_eq!(staging[0], "_rdlt_staging__orders_5ee09790");
     // A cut inside a character keeps the whole character out.
     let index = planner.fitted("ßßßßßßßßßßßß__rdlt_root".to_owned());
-    assert!(index.len() <= 24, "{index}");
-    assert!(index.starts_with("ßßßßßßß_"), "{index}");
+    assert!(index.len() <= 30, "{index}");
+    assert!(index.starts_with("ßßßßßßßßßß_"), "{index}");
     let accented = planner.staging_table("ßßßßßßßßßßßßßßßßßß");
-    assert!(accented.len() <= 24, "{accented}");
+    assert!(accented.len() <= 30, "{accented}");
     assert!(accented.starts_with("_rdlt_staging__"), "{accented}");
     // Names that fit are derived as always.
     assert_eq!(planner.staging_table("t"), "_rdlt_staging__t");
