@@ -2,6 +2,8 @@
 
 mod database;
 mod session;
+#[cfg(test)]
+mod tests;
 mod values;
 
 use std::collections::BTreeSet;
@@ -13,7 +15,8 @@ use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{STAGING_COLUMNS, SqlPlanner, Sqlite, TABLE_PREFIX};
 use rdlt_connector::{
-    IdentifierCase, IdentifierChars, IdentifierRules, SchemaChanges, TypeKind, WriteModes,
+    DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules, SchemaChanges, TypeKind,
+    WriteModes,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -108,6 +111,12 @@ fn capabilities() -> Capabilities {
         add_column: true,
         widenings,
     };
+    capabilities.delete_modes = DeleteModes {
+        hard: true,
+        soft: true,
+    };
+    capabilities.partial_updates = true;
+    capabilities.merge_changes = true;
     capabilities.identifiers = IdentifierRules {
         case: IdentifierCase::Lower,
         max_len: NonZeroU16::new(128).expect("128 is non-zero"),

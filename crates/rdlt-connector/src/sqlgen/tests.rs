@@ -125,7 +125,7 @@ fn derived_tables_fit_the_dialect_s_identifiers_and_stay_distinct() {
     );
 }
 
-fn database() -> (Connection, SqlPlanner<Sqlite>) {
+pub(super) fn database() -> (Connection, SqlPlanner<Sqlite>) {
     let connection = Connection::open_in_memory().unwrap();
     let planner = SqlPlanner::try_new(Sqlite).unwrap();
     for statement in planner.bootstrap() {
@@ -144,20 +144,20 @@ fn value(value: &SqlValue) -> Value {
 }
 
 /// Runs `statement`; returns the rows it changed.
-fn run(connection: &Connection, statement: &Statement) -> usize {
+pub(super) fn run(connection: &Connection, statement: &Statement) -> usize {
     let params = rusqlite::params_from_iter(statement.params.iter().map(value));
     connection
         .execute(&statement.sql, params)
         .unwrap_or_else(|error| panic!("{}: {error}", statement.sql))
 }
 
-fn run_all(connection: &Connection, statements: &[Statement]) {
+pub(super) fn run_all(connection: &Connection, statements: &[Statement]) {
     for statement in statements {
         run(connection, statement);
     }
 }
 
-fn query(connection: &Connection, statement: &Statement) -> Vec<Vec<Value>> {
+pub(super) fn query(connection: &Connection, statement: &Statement) -> Vec<Vec<Value>> {
     let mut prepared = connection
         .prepare(&statement.sql)
         .unwrap_or_else(|error| panic!("{}: {error}", statement.sql));
@@ -172,7 +172,11 @@ fn query(connection: &Connection, statement: &Statement) -> Vec<Vec<Value>> {
         .collect()
 }
 
-fn columns(connection: &Connection, planner: &SqlPlanner<Sqlite>, table: &str) -> Vec<Column> {
+pub(super) fn columns(
+    connection: &Connection,
+    planner: &SqlPlanner<Sqlite>,
+    table: &str,
+) -> Vec<Column> {
     query(connection, &planner.dialect().columns(table))
         .into_iter()
         .map(|row| match &row[..] {
@@ -189,11 +193,11 @@ fn text(value: &str) -> Value {
     Value::Text(value.to_owned())
 }
 
-fn pipeline(name: &str) -> PipelineId {
+pub(super) fn pipeline(name: &str) -> PipelineId {
     PipelineId::parse(name).unwrap()
 }
 
-fn table(name: &str) -> TableRef {
+pub(super) fn table(name: &str) -> TableRef {
     TableRef {
         path: TablePath::new([name]).unwrap(),
         name: name.into(),
@@ -225,7 +229,7 @@ fn schema(fields: &[(&str, LogicalType, bool)]) -> TableSchema {
     .unwrap()
 }
 
-fn create(table: &TableRef, fields: &[(&str, LogicalType, bool)]) -> TableChange {
+pub(super) fn create(table: &TableRef, fields: &[(&str, LogicalType, bool)]) -> TableChange {
     TableChange::Create {
         table: table.clone(),
         schema: schema(fields),
@@ -233,7 +237,7 @@ fn create(table: &TableRef, fields: &[(&str, LogicalType, bool)]) -> TableChange
 }
 
 /// Applies `change` to the database's current tables, as a destination does.
-fn apply(
+pub(super) fn apply(
     connection: &Connection,
     planner: &SqlPlanner<Sqlite>,
     change: &TableChange,
@@ -249,7 +253,7 @@ fn apply(
     Ok(plan)
 }
 
-fn segments(ids: &[u64]) -> SegmentSet {
+pub(super) fn segments(ids: &[u64]) -> SegmentSet {
     ids.iter().copied().map(SegmentId).collect()
 }
 
@@ -721,6 +725,44 @@ fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
         rows_of(&connection, "orders"),
         [(1, "c".to_owned()), (2, "kept".to_owned())]
     );
+}
+
+#[test]
+fn a_recorded_merge_key_keeps_a_change_stream_s_columns_and_earlier_records_read_as_before() {
+    let (connection, planner) = database();
+    let mine = pipeline("mine");
+    let changes = crate::destination::ChangeColumns {
+        op: "op".into(),
+        unchanged: None,
+        deletion: crate::destination::Deletion::Soft { at: "at".into() },
+    };
+    let mut orders = keyed("orders");
+    if let Some(key) = orders.merge.as_mut() {
+        key.changes = Some(changes);
+    }
+    run(
+        &connection,
+        &planner.record_segment(&orders, &mine, Epoch(1), SegmentId(1), [1, 10]),
+    );
+    let rows = query(
+        &connection,
+        &planner.staged(&mine, Epoch(1), &segments(&[1])),
+    );
+    let [row] = &rows[..] else { panic!("{rows:?}") };
+    let [_, _, Value::Text(key), Value::Text(seq), ..] = &row[..] else {
+        panic!("{row:?}")
+    };
+    assert_eq!(super::merge_key(key, seq).ok(), orders.merge);
+    // Keys recorded before change streams merged read as they did.
+    let plain = super::merge_key(r#"["id"]"#, "seq").unwrap();
+    assert_eq!(Some(plain), keyed("orders").merge);
+    let child = super::merge_key(
+        r#"{"columns":["rid"],"root":{"table":"roots","id":"id","seq":"seq"}}"#,
+        "seq",
+    )
+    .unwrap();
+    assert_eq!(child.root.map(|root| root.table), Some("roots".into()));
+    assert_eq!(child.changes, None);
 }
 
 #[test]

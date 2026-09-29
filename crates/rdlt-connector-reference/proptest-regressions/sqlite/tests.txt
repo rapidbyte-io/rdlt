@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9de912b703329dab4d822cd833a62530be2d620715cde2a516b06f8263a5cb94 # shrinks to commits = [[Change { op: Delete, key: 3, value: None, n: None, at: None, flags: 0, seq: 6400 }], [Change { op: Insert, key: 3, value: None, n: None, at: None, flags: 0, seq: 1 }]], soft_deletes = false
+cc 992a74f80735005bbcb7ed2382d4cfe096e5d640882adfa975c8f0ad87685e88 # shrinks to commits = [[], [Change { op: Insert, key: 2, value: None, n: None, at: None, flags: 1, seq: 2112 }, Change { op: Insert, key: 2, value: Some("a"), n: None, at: None, flags: 2, seq: 1 }]], soft_deletes = false
+cc 67e9a729219ece1ba39a0e737e9571c3e197206330d90eae110caa9557b212fd # shrinks to commits = [[Change { op: Truncate, key: 0, value: None, n: None, at: Some(0), flags: 0, seq: 3456 }], [Change { op: Truncate, key: 0, value: None, n: None, at: Some(0), flags: 0, seq: 3456 }, Change { op: Insert, key: 0, value: None, n: None, at: None, flags: 0, seq: 1 }]], soft_deletes = true
