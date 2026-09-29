@@ -924,6 +924,9 @@ pub struct ReadStart {
     /// during the read; 0 for none.
     #[prost(uint64, tag = "5")]
     pub barrier: u64,
+    /// Whether the partition never ends, as the plan said.
+    #[prost(bool, tag = "6")]
+    pub unbounded: bool,
 }
 /// Asks for a checkpoint answering a barrier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

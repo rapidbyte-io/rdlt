@@ -52,9 +52,14 @@ fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
     let stream = StreamName::try_from(start.stream.ok_or(Invalid::Missing("stream"))?)?;
     let partition = PartitionId::parse(start.partition)
         .map_err(|error| Invalid::rejected("partition id", error))?;
+    let partition = if start.unbounded {
+        Partition::new(partition).unbounded()
+    } else {
+        Partition::new(partition)
+    };
     Ok(ReadRequest {
         stream,
-        partition: Partition::new(partition),
+        partition,
         cursor: start.cursor.map(Cursor::try_from).transpose()?,
     })
 }

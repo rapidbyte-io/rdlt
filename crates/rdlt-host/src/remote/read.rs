@@ -102,6 +102,7 @@ async fn start(
         partition: request.partition.id().as_str().to_owned(),
         cursor: request.cursor.as_ref().map(v1::Cursor::from),
         barrier,
+        unbounded: request.partition.is_unbounded(),
     };
     let control = |control| v1::ReadControl {
         control: Some(control),

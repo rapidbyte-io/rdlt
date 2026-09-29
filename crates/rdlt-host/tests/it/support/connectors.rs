@@ -67,6 +67,9 @@ pub(crate) struct Ticks {
     config: TicksConfig,
 }
 
+/// Whether each read of [`Ticks`] was of a partition that never ends, in order.
+pub(crate) static UNBOUNDED: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+
 /// The next ticks each committed report said were committed, in order.
 pub(crate) static COMMITTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
@@ -120,10 +123,14 @@ impl ReadStream<Ticks> for TickStream {
     async fn read(
         &self,
         source: &Ticks,
-        _partition: &Partition,
+        partition: &Partition,
         cursor: Tick,
         out: &mut Emitter<Tick>,
     ) -> Result<()> {
+        UNBOUNDED
+            .lock()
+            .expect("the lock is not poisoned")
+            .push(partition.is_unbounded());
         let config = &source.config;
         if config.chatty {
             out.log(rdlt_connector::LogLevel::Warn, "ticking").await?;
