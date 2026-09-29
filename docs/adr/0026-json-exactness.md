@@ -29,6 +29,9 @@ process; H1b fixed it (ADR 0025).
     refusal sends the chunk through the exact parse, which tells them apart. The exact parse hands
     an integer beyond 38 digits to the shredder as its digits, through the one visit JSON never
     makes otherwise, `visit_bytes`.
+  - The exact parse builds a record whole, so it first scans the record's brackets, outside its
+    strings, and refuses one nested past the limit as `limit_exceeded`: a record the fast parse
+    refused or found imprecise can no longer exhaust the stack.
 - **A column of 64-bit integers is exact while a 64-bit float holds every value it stored.**
   - Exactness is judged from values, whatever the source: a batch's column of 64-bit integers
     rounds when a value its rows hold is beyond 2⁵³ either way. An encoded column is decoded first,
@@ -42,6 +45,8 @@ process; H1b fixed it (ADR 0025).
     rounding batch is written, and each commit records the table's current model, so no commit
     records a column exact after a rounding batch was planned.
   - A column of 64-bit floats takes a batch of exact integers cast, as it takes narrower floats.
+    The conversion checks again, and refuses a batch whose integers a float would round as
+    `value_unrepresentable`, so a plan used on other batches than it judged never rounds.
     So a declared column of 64-bit integers hinted as floats is no longer refused as a run plans:
     its batches are judged by their values, and one that rounds is incompatible with the hint.
   - Floats arriving at an exact column join its integers as 64-bit floats: they take a variant of
