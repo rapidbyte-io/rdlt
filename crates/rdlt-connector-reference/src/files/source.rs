@@ -214,12 +214,6 @@ enum Batches {
     Read,
 }
 
-impl std::fmt::Debug for Batches {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Batches")
-    }
-}
-
 impl Batches {
     /// The batches of the file at `path` after the first `read` records or batches.
     fn open(path: &Path, format: FileFormat, read: u64, batch_rows: usize) -> Result<Self> {

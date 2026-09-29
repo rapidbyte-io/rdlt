@@ -34,3 +34,10 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 [[profile.mutants.overrides]]
 filter = "package(rdlt-host) & test(/^process::/)"
 slow-timeout = { period = "10s", terminate-after = 2 }
+
+# The reference connectors' tests sync files and SQLite to disk, and four mutants tested at once
+# contend for the disk: a test that takes a second alone can take ten. A timeout there would count a
+# mutant as caught by no assertion, so these wait long enough that only a hang times out.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-connector-reference)"
+slow-timeout = { period = "30s", terminate-after = 2 }

@@ -1,5 +1,8 @@
 //! A destination that writes files under a root directory and publishes them with manifests.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::num::NonZeroU16;

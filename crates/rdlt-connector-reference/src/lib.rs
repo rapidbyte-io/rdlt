@@ -35,6 +35,6 @@ pub use files::{
 pub use generator::{GeneratedStream, GeneratorConfig, GeneratorSource};
 pub use memory::{
     MemoryDestination, MemoryDestinationConfig, MemorySource, MemorySourceConfig, published,
-    schema, tables,
+    schema, staged, tables,
 };
 pub use sqlite::{SqliteDestination, SqliteDestinationConfig};

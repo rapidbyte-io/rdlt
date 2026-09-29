@@ -10,7 +10,7 @@ use rdlt_connector::{
     TableRef, TableSchema, TableWriter,
 };
 use rdlt_connector_reference::{
-    FilesDestination, MemoryDestination, SqliteDestination, files, published, sqlite,
+    FilesDestination, MemoryDestination, SqliteDestination, files, published, sqlite, staged,
 };
 use serde_json::json;
 
@@ -119,4 +119,35 @@ async fn a_late_discard_never_removes_a_newer_sessions_staging() {
         3
     );
     assert_eq!(rows(&files::published(&root, "late").unwrap()), 3, "files");
+}
+
+#[tokio::test]
+async fn a_newer_memory_session_discards_what_older_ones_staged() {
+    let destination = MemoryDestination::connect(
+        serde_json::from_value(json!({ "store": "abandoned" }))
+            .expect("the configuration is valid"),
+        &ConnectContext::new(),
+    )
+    .await
+    .expect("the destination connects");
+    let context = OpenContext {
+        pipeline: PipelineId::parse("abandoned").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+    };
+    let mut older = destination
+        .open(&context)
+        .await
+        .expect("the older session opens");
+    stage(&mut older.session).await;
+    assert_eq!(staged("abandoned", "late"), 3);
+    let mut newer = destination
+        .open(&context)
+        .await
+        .expect("the newer session opens");
+    newer
+        .session
+        .discard_staged()
+        .await
+        .expect("the discard runs");
+    assert_eq!(staged("abandoned", "late"), 0);
 }

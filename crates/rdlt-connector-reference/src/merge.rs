@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, UInt32Array, new_null_array};
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch, UInt32Array, new_null_array};
 use arrow_row::{RowConverter, SortField};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, MergeKey, RootKey};
@@ -19,8 +19,8 @@ pub(crate) fn align(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBat
     let columns = schema
         .fields()
         .iter()
+        // A cast to the type a column already has returns the column itself.
         .map(|field| match batch.column_by_name(field.name()) {
-            Some(column) if column.data_type() == field.data_type() => Ok(Arc::clone(column)),
             Some(column) => arrow_cast::cast(column, field.data_type()),
             None => Ok(new_null_array(field.data_type(), batch.num_rows())),
         })
@@ -107,7 +107,7 @@ fn upsert(
     let published = arrow_select::filter::filter_record_batch(&published, &kept)?;
     Ok([published, incoming]
         .into_iter()
-        .filter(|batch| batch.num_rows() > 0)
+        .filter(|batch| batch.num_rows() != 0)
         .collect())
 }
 
@@ -128,9 +128,8 @@ pub(crate) fn merge_children(
         let (ids, seqs) = (ids.as_binary::<i32>(), seqs.as_binary::<i32>());
         for row in 0..batch.num_rows() {
             let (id, seq) = (ids.value(row), seqs.value(row));
-            if winners.get(id).is_none_or(|best| best.as_slice() < seq) {
-                winners.insert(id.to_vec(), seq.to_vec());
-            }
+            let best = winners.entry(id.to_vec()).or_default();
+            *best = std::cmp::max(std::mem::take(best), seq.to_vec());
         }
     }
     let column = key
@@ -153,7 +152,7 @@ pub(crate) fn merge_children(
     let incoming = arrow_select::filter::filter_record_batch(&incoming, &winning)?;
     Ok([published, incoming]
         .into_iter()
-        .filter(|batch| batch.num_rows() > 0)
+        .filter(|batch| batch.num_rows() != 0)
         .collect())
 }
 

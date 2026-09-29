@@ -6,7 +6,8 @@ use arrow_array::{Array, ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBat
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
-use super::merge;
+use super::changes::stored;
+use super::{merge, written_schema};
 
 /// One change: its key, value, sequence, op, and the fields it flags unchanged.
 struct Row {
@@ -276,4 +277,22 @@ fn a_table_without_changes_upserts_as_before() {
     )
     .unwrap();
     assert_eq!(rows(&merged), [(1, Some("older".into()), 1, None)]);
+}
+
+#[test]
+fn a_change_stream_stores_neither_its_ops_nor_its_unchanged_flags() {
+    for unchanged in [Some("unchanged"), None] {
+        let changes = ChangeColumns {
+            op: "op".into(),
+            unchanged: unchanged.map(Into::into),
+            deletion: Deletion::Hard,
+        };
+        let written = written_schema(&stored_schema(), &changes);
+        let kept: Vec<String> = stored(&written, &changes)
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
+        assert_eq!(kept, ["id", "value", "seq", "at"], "{unchanged:?}");
+    }
 }

@@ -80,13 +80,21 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
         generation: None,
         merge: None,
     };
+    // The other pipeline's epochs run ahead of this one's, so only the pipeline tells whose
+    // staging an open discards.
+    for load in [2, 3] {
+        destination
+            .open(&open_context("second", load))
+            .await
+            .unwrap();
+    }
     let mut first = destination.open(&open_context("first", 1)).await.unwrap();
     let mut writer = first.session.writer(&table).await.unwrap();
     let batch =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2])) as _)]).unwrap();
     writer.write(SegmentId(1), batch).await.unwrap();
     writer.flush().await.unwrap();
-    destination.open(&open_context("second", 2)).await.unwrap();
+    destination.open(&open_context("second", 4)).await.unwrap();
     let meta = CommitMeta {
         load_id: LoadId::from_parts(UNIX_EPOCH, 1),
         commit_seq: CommitSeq::FIRST,
@@ -450,4 +458,65 @@ async fn a_merge_matches_rows_published_before_the_table_changed() {
     .unwrap();
     merge_commit(&mut opened, 2, second, CommitSeq::FIRST.next()).await;
     assert_eq!(merged_rows(), [(1, None), (2, Some("new".to_owned()))]);
+}
+
+#[tokio::test]
+async fn the_memory_source_pushes_a_hundred_rows_a_page_by_default() {
+    let rows: Vec<serde_json::Value> = (0..250).map(|id| json!({ "id": id })).collect();
+    let source = source_factory::<MemorySource>()
+        .connect(json!({ "streams": { "a": rows } }), ConnectContext::new())
+        .await
+        .expect("the source connects");
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+    let request = ReadRequest {
+        stream: StreamName::new("a").expect("a valid name"),
+        partition: Partition::single(),
+        cursor: None,
+    };
+    source.read(request, sink).await.expect("the read ends");
+    let mut pages = 0;
+    while let Some(event) = feed.recv().await {
+        pages += usize::from(matches!(event, SourceEvent::Push(_)));
+    }
+    assert_eq!(pages, 3);
+}
+
+#[tokio::test]
+async fn a_memory_writer_s_flush_and_its_commit_count_the_bytes_it_staged() {
+    let destination = destination_factory::<MemoryDestination>()
+        .connect(json!({ "store": "flush_bytes" }), ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let mut session = destination
+        .open(&open_context("flush_bytes", 1))
+        .await
+        .expect("the session opens");
+    let table = table_ref("flushed");
+    let mut writer = session.session.writer(&table).await.expect("a writer");
+    let batch = RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1, 2])) as _)])
+        .expect("a batch");
+    let bytes = batch.get_array_memory_size() as u64;
+    for segment in [1, 2] {
+        writer
+            .write(SegmentId(segment), batch.clone())
+            .await
+            .expect("the write buffers");
+    }
+    let stats = writer.flush().await.expect("the flush stages");
+    assert_eq!((stats.rows, stats.bytes), (4, 2 * bytes));
+    let meta = CommitMeta {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+        commit_seq: CommitSeq::FIRST,
+        epoch: session.epoch,
+        segments: SegmentSet::from_iter([SegmentId(1), SegmentId(2)]),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+    };
+    let receipt = session
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    assert_eq!((receipt.rows, receipt.bytes), (4, 2 * bytes));
 }

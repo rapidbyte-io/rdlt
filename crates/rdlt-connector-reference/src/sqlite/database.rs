@@ -1,5 +1,8 @@
 //! A SQLite connection used off the async runtime, and running `sqlgen`'s statements on it.
 
+#[cfg(test)]
+mod tests;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

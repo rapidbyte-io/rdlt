@@ -209,3 +209,118 @@ async fn a_database_that_cannot_be_opened_is_a_configuration_error() {
     let error = destination.open(&context()).await.unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Config);
 }
+
+#[tokio::test]
+async fn a_replace_that_staged_nothing_empties_the_table_it_finishes() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = committed(&directory).await;
+    let destination = connect(&path).await;
+    let mut opened = open(destination.as_ref()).await;
+    let finish = CommitMeta {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+        segments: SegmentSet::default(),
+        finish_generations: vec![(table().path, rdlt_connector::GenerationId(1))],
+        ..commit(&opened)
+    };
+    opened
+        .session
+        .commit(&finish)
+        .await
+        .expect("the finishing commit lands");
+    let rows: usize = sqlite::published(&path, "values")
+        .expect("the table reads")
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum();
+    assert_eq!(rows, 0);
+}
+
+#[tokio::test]
+async fn an_open_discards_what_older_sessions_staged_and_never_committed() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("values.db");
+    let destination = connect(&path).await;
+    let mut abandoned = open(destination.as_ref()).await;
+    let schema = TableSchema::new(vec![Field::new("flag", LogicalType::Bool, true)])
+        .expect("the schema is valid");
+    let create = TableChange::Create {
+        table: table(),
+        schema,
+    };
+    abandoned
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("the table is created");
+    let flags = BooleanArray::from(vec![true, false]);
+    let batch = RecordBatch::try_from_iter([("flag", Arc::new(flags) as _)]).expect("a batch");
+    let mut writer = abandoned
+        .session
+        .writer(&table())
+        .await
+        .expect("a writer opens");
+    writer
+        .write(SegmentId(1), batch)
+        .await
+        .expect("the write stages");
+    writer.flush().await.expect("the flush stages");
+    let staged = || {
+        let connection = rusqlite::Connection::open(&path).expect("the database opens");
+        connection
+            .query_row(
+                "SELECT count(*) FROM \"_rdlt_staging__values\"",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("the staging table counts")
+    };
+    assert_eq!(staged(), 2);
+    drop(abandoned);
+    let _latest = open(destination.as_ref()).await;
+    assert_eq!(staged(), 0);
+}
+
+#[tokio::test]
+async fn an_integral_float_reads_back_as_the_float() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("values.db");
+    let destination = connect(&path).await;
+    let mut opened = open(destination.as_ref()).await;
+    let schema = TableSchema::new(vec![Field::new("ratio", LogicalType::Float64, true)])
+        .expect("the schema is valid");
+    let create = TableChange::Create {
+        table: table(),
+        schema,
+    };
+    opened
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("the table is created");
+    // SQLite stores an integral real as an integer, and reads it back as a real.
+    let ratios = arrow_array::Float64Array::from(vec![2.0, 0.5]);
+    let batch = RecordBatch::try_from_iter([("ratio", Arc::new(ratios) as _)]).expect("a batch");
+    let mut writer = opened
+        .session
+        .writer(&table())
+        .await
+        .expect("a writer opens");
+    writer
+        .write(SegmentId(1), batch)
+        .await
+        .expect("the write stages");
+    writer.flush().await.expect("the flush stages");
+    opened
+        .session
+        .commit(&commit(&opened))
+        .await
+        .expect("the commit lands");
+    let [published] = &sqlite::published(&path, "values").expect("the table reads")[..] else {
+        panic!("one batch");
+    };
+    let ratios = published
+        .column_by_name("ratio")
+        .expect("the column")
+        .as_primitive::<Float64Type>();
+    assert_eq!(ratios.iter().collect::<Vec<_>>(), [Some(2.0), Some(0.5)]);
+}

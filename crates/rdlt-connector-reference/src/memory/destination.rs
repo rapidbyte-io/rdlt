@@ -56,6 +56,20 @@ pub fn tables(store: &str) -> Vec<String> {
     store.tables.keys().cloned().collect()
 }
 
+/// The rows staged in `table` of `store` and not yet published, whichever session staged them.
+pub fn staged(store: &str, table: &str) -> usize {
+    let store = named(store);
+    let store = store.lock();
+    store.tables.get(table).map_or(0, |table| {
+        table
+            .staged
+            .values()
+            .flatten()
+            .map(|(_, batch)| batch.num_rows())
+            .sum()
+    })
+}
+
 /// The columns of `table` in `store`, once it exists.
 pub fn schema(store: &str, table: &str) -> Option<TableSchema> {
     let store = named(store);

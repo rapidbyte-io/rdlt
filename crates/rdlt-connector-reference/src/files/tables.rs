@@ -130,9 +130,9 @@ fn publish(dir: &Path, file: &str, bytes: &[u8]) -> Result<bool> {
     let path = dir.join(file);
     let linked = fs::hard_link(&temporary, &path);
     drop(fs::remove_file(&temporary));
-    match linked {
-        Ok(()) => io::sync_dir(dir).map(|()| true),
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(io::failed("publishing", &path)(error)),
+    if !io::created(linked, &path)? {
+        return Ok(false);
     }
+    io::sync_dir(dir)?;
+    Ok(true)
 }

@@ -215,12 +215,8 @@ fn integer(value: &Value) -> Option<i64> {
 
 fn real(value: &Value) -> Option<f64> {
     match value {
+        // A column of real type reads back as reals, integral values too.
         Value::Real(real) => Some(*real),
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "SQLite keeps integral reals as integers"
-        )]
-        Value::Integer(integer) => Some(*integer as f64),
         _ => None,
     }
 }

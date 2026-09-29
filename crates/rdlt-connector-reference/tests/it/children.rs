@@ -1,17 +1,18 @@
-//! The files destination's child tables of merge tables: rewritten only where their roots' rows
-//! change what they hold.
+//! Child tables of merge tables: they follow their roots in the SQLite destination, and the files
+//! destination rewrites them only where their roots' rows change what they hold.
 
 use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{
     ChildTable, CommitMeta, CommitSeq, ConnectContext, Destination, LoadId, MergeKey, OpenContext,
     OpenedSession, PipelineId, RootKey, SchemaVersion, SegmentId, TableChange, TablePath, TableRef,
     TableSchema, destination_factory,
 };
-use rdlt_connector_reference::FilesDestination;
+use rdlt_connector_reference::{FilesDestination, SqliteDestination, sqlite};
 use serde_json::json;
 
 fn table(name: &str, merge: MergeKey) -> TableRef {
@@ -135,6 +136,13 @@ fn meta(opened: &OpenedSession, seq: CommitSeq, segment: u64, items: &TableRef) 
     }
 }
 
+fn context() -> OpenContext {
+    OpenContext {
+        pipeline: PipelineId::parse("children").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+    }
+}
+
 /// The paths of the files under `dir` a commit `seq` wrote for `table` by merging.
 fn merged_files(dir: &Path, seq: u64, table: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -165,11 +173,7 @@ async fn a_child_table_none_of_whose_roots_changed_is_not_rewritten() {
         )
         .await
         .expect("the files destination connects");
-    let context = OpenContext {
-        pipeline: PipelineId::parse("files").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
-    };
-    let mut opened = destination.open(&context).await.expect("the root opens");
+    let mut opened = destination.open(&context()).await.expect("the root opens");
     let (root_table, item_table) = family();
     write(&mut opened, &root_table, 1, roots(&[(1, 1, 1), (2, 2, 2)])).await;
     write(&mut opened, &item_table, 1, items(&[("a", 2, 2)])).await;
@@ -194,4 +198,57 @@ async fn a_child_table_none_of_whose_roots_changed_is_not_rewritten() {
         !merged_files(dir.path(), 2, "roots").is_empty(),
         "the roots merged"
     );
+}
+
+#[tokio::test]
+async fn a_sqlite_child_table_follows_a_root_that_merged_where_the_child_staged_nothing() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("children.db");
+    let destination: Box<dyn Destination> = destination_factory::<SqliteDestination>()
+        .connect(json!({ "path": path }), ConnectContext::new())
+        .await
+        .expect("the sqlite destination connects");
+    let mut opened = destination
+        .open(&context())
+        .await
+        .expect("the database opens");
+    let (root_table, item_table) = family();
+    write(&mut opened, &root_table, 1, roots(&[(1, 1, 1), (2, 2, 2)])).await;
+    write(
+        &mut opened,
+        &item_table,
+        1,
+        items(&[("a", 1, 1), ("b", 2, 2)]),
+    )
+    .await;
+    let first = meta(&opened, CommitSeq::FIRST, 1, &item_table);
+    opened
+        .session
+        .commit(&first)
+        .await
+        .expect("the first commit");
+    write(&mut opened, &root_table, 2, roots(&[(1, 1, 3)])).await;
+    let second = meta(&opened, CommitSeq::FIRST.next(), 2, &item_table);
+    opened
+        .session
+        .commit(&second)
+        .await
+        .expect("the second commit");
+    let mut values: Vec<String> = sqlite::published(&path, "items")
+        .expect("the child table reads")
+        .iter()
+        .flat_map(|batch| {
+            let values = batch
+                .column_by_name("value")
+                .expect("a value column")
+                .as_string::<i32>();
+            values
+                .iter()
+                .flatten()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    values.sort();
+    assert_eq!(values, ["b"], "root 1 now has no children");
 }
