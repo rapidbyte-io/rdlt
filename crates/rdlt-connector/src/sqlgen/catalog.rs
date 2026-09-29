@@ -2,6 +2,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::upsert::Row;
 use super::{SqlDialect, SqlPlanner, SqlValue, Statement, integer};
 use crate::commit::Receipt;
 use crate::destination::TableRef;
@@ -66,18 +67,21 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// Increments `pipeline`'s epoch, starting it at 1; read it back with [`SqlPlanner::epoch`].
     pub fn open(&self, pipeline: &PipelineId) -> Vec<Statement> {
-        let mut insert = self.sql();
-        let name = insert.bind(SqlValue::Text(pipeline.to_string()));
-        insert.push(&format!(
-            "INSERT INTO {EPOCHS} (pipeline, epoch) VALUES ({name}, 0) \
-             ON CONFLICT (pipeline) DO NOTHING"
-        ));
+        let key = [("pipeline", SqlValue::Text(pipeline.to_string()))];
+        let values = [("epoch", integer(0))];
+        let row = Row {
+            table: EPOCHS,
+            key: &key,
+            values: &values,
+        };
+        let mut plan = self.upsert(&row, false);
         let mut bump = self.sql();
         let name = bump.bind(SqlValue::Text(pipeline.to_string()));
         bump.push(&format!(
             "UPDATE {EPOCHS} SET epoch = epoch + 1 WHERE pipeline = {name}"
         ));
-        vec![insert.finish(), bump.finish()]
+        plan.push(bump.finish());
+        plan
     }
 
     /// The query returning `pipeline`'s epoch.
@@ -116,26 +120,29 @@ impl<D: SqlDialect> SqlPlanner<D> {
     pub fn state_changes(&self, pipeline: &PipelineId, changes: &[StateChange]) -> Vec<Statement> {
         changes
             .iter()
-            .map(|change| {
-                let mut sql = self.sql();
-                let name = sql.bind(SqlValue::Text(pipeline.to_string()));
-                match change {
-                    StateChange::Put(record) => {
-                        let key = sql.bind(SqlValue::Text(record.key.clone()));
-                        let value = sql.bind(SqlValue::Blob(record.value.to_vec()));
-                        sql.push(&format!(
-                            "INSERT INTO {STATE} (pipeline, key, value) VALUES ({name}, {key}, \
-                             {value}) ON CONFLICT (pipeline, key) DO UPDATE SET value = excluded.value"
-                        ));
-                    }
-                    StateChange::Delete(key) => {
-                        let key = sql.bind(SqlValue::Text(key.clone()));
-                        sql.push(&format!(
-                            "DELETE FROM {STATE} WHERE pipeline = {name} AND key = {key}"
-                        ));
-                    }
+            .flat_map(|change| match change {
+                StateChange::Put(record) => {
+                    let key = [
+                        ("pipeline", SqlValue::Text(pipeline.to_string())),
+                        ("key", SqlValue::Text(record.key.clone())),
+                    ];
+                    let values = [("value", SqlValue::Blob(record.value.to_vec()))];
+                    let row = Row {
+                        table: STATE,
+                        key: &key,
+                        values: &values,
+                    };
+                    self.upsert(&row, true)
                 }
-                sql.finish()
+                StateChange::Delete(key) => {
+                    let mut sql = self.sql();
+                    let name = sql.bind(SqlValue::Text(pipeline.to_string()));
+                    let key = sql.bind(SqlValue::Text(key.clone()));
+                    sql.push(&format!(
+                        "DELETE FROM {STATE} WHERE pipeline = {name} AND key = {key}"
+                    ));
+                    vec![sql.finish()]
+                }
             })
             .collect()
     }
@@ -183,50 +190,41 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// The statements recording that `table` exists, and for a generation the base table it
     /// replaces.
     pub fn register(&self, table: &TableRef) -> Vec<Statement> {
-        let mut register = self.sql();
-        let values = [
-            SqlValue::Text(path_key(&table.path)),
-            SqlValue::Text(table.name.to_string()),
-        ]
-        .map(|value| register.bind(value));
-        register.push(&format!(
-            "INSERT INTO {TABLES} (path, name) VALUES ({}) \
-             ON CONFLICT (path) DO UPDATE SET name = excluded.name",
-            values.join(", ")
-        ));
-        let mut statements = vec![register.finish()];
+        let key = [("path", SqlValue::Text(path_key(&table.path)))];
+        let values = [("name", SqlValue::Text(table.name.to_string()))];
+        let row = Row {
+            table: TABLES,
+            key: &key,
+            values: &values,
+        };
+        let mut statements = self.upsert(&row, true);
         if let Some(generation) = table.generation {
-            let mut sql = self.sql();
+            let key = [("name", SqlValue::Text(self.target(table)))];
             let values = [
-                SqlValue::Text(self.target(table)),
-                SqlValue::Text(table.name.to_string()),
-                integer(generation.0),
-            ]
-            .map(|value| sql.bind(value));
-            sql.push(&format!(
-                "INSERT INTO {GENERATIONS} (name, base, generation) VALUES ({}) \
-                 ON CONFLICT (name) DO NOTHING",
-                values.join(", ")
-            ));
-            statements.push(sql.finish());
+                ("base", SqlValue::Text(table.name.to_string())),
+                ("generation", integer(generation.0)),
+            ];
+            let row = Row {
+                table: GENERATIONS,
+                key: &key,
+                values: &values,
+            };
+            statements.extend(self.upsert(&row, false));
         }
         statements
     }
 
     /// The statement claiming the table `name` for `pipeline` where no pipeline owns it yet;
     /// [`SqlPlanner::owner`] then reads who does.
-    pub fn claim(&self, pipeline: &PipelineId, name: &str) -> Statement {
-        let mut sql = self.sql();
-        let values = [
-            SqlValue::Text(name.to_owned()),
-            SqlValue::Text(pipeline.to_string()),
-        ]
-        .map(|value| sql.bind(value));
-        sql.push(&format!(
-            "INSERT INTO {OWNERS} (name, pipeline) VALUES ({}) ON CONFLICT (name) DO NOTHING",
-            values.join(", ")
-        ));
-        sql.finish()
+    pub fn claim(&self, pipeline: &PipelineId, name: &str) -> Vec<Statement> {
+        let key = [("name", SqlValue::Text(name.to_owned()))];
+        let values = [("pipeline", SqlValue::Text(pipeline.to_string()))];
+        let row = Row {
+            table: OWNERS,
+            key: &key,
+            values: &values,
+        };
+        self.upsert(&row, false)
     }
 
     /// The query returning the pipeline that owns the table `name`: the first to claim it.

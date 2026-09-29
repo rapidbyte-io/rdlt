@@ -1,6 +1,6 @@
 //! The SQLite dialect.
 
-use super::{SqlDialect, SqlValue, Statement};
+use super::{SqlDialect, SqlValue, Statement, Upserts};
 use crate::types::LogicalType;
 
 /// SQLite: numbered `?` placeholders and one declared type per storage class.
@@ -27,6 +27,14 @@ impl SqlDialect for Sqlite {
             _ => return None,
         };
         Some(declared.to_owned())
+    }
+
+    fn transactional_ddl(&self) -> bool {
+        true
+    }
+
+    fn upserts(&self) -> Upserts {
+        Upserts::OnConflict
     }
 
     fn columns(&self, table: &str) -> Statement {

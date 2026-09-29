@@ -48,6 +48,40 @@ impl<D: SqlDialect> SqlPlanner<D> {
         format!("{}{hash}", &derived[..end])
     }
 
+    /// Refuses the table `name` where one of `registered`, the tables already registered, would
+    /// share one of its derived tables or indexes: its staging, tombstones, root index and key
+    /// indexes, whose names are cut to the dialect's longest identifier and end in a hash of the
+    /// whole.
+    ///
+    /// Two such tables would publish each other's rows, so the clash is a `Config` error, coded
+    /// `table_name_clash`, which renaming either table resolves.
+    pub fn distinct(&self, name: &str, registered: &[String]) -> Result<()> {
+        let derived = |table: &str| {
+            let (staging, tombstones) = (self.staging_table(table), self.tombstone_table(table));
+            [
+                self.key_index_name(table),
+                self.key_index_name(&staging),
+                self.key_index_name(&tombstones),
+                staging,
+                tombstones,
+                self.root_index_name(table),
+            ]
+        };
+        let own = derived(name);
+        let clash = registered
+            .iter()
+            .filter(|other| other.as_str() != name)
+            .find(|other| derived(other).iter().any(|table| own.contains(table)));
+        match clash {
+            Some(other) => Err(ConnectorError::config(format!(
+                "tables {name} and {other} would share the tables derived from their names, which \
+                 the destination cuts to its longest identifier"
+            ))
+            .with_code("table_name_clash")),
+            None => Ok(()),
+        }
+    }
+
     /// The table rows for `table` are published into: its generation's table, or itself.
     pub fn target(&self, table: &TableRef) -> String {
         match table.generation {
@@ -70,8 +104,11 @@ impl<D: SqlDialect> SqlPlanner<D> {
         plan
     }
 
-    /// The statements applying `change`, given the columns its target and staging tables have
-    /// now, empty where a table is missing.
+    /// The statements applying `change`, given the columns its target, staging and tombstones
+    /// tables have now, empty where a table is missing.
+    ///
+    /// A widen applies to each of them that has the column: a change stream's tombstones hold
+    /// its key.
     ///
     /// A column the change declares at a type the existing column does not hold is a `Data` error
     /// coded `schema_conflict`, and so is a widen the dialect cannot apply; nothing is planned
@@ -79,15 +116,18 @@ impl<D: SqlDialect> SqlPlanner<D> {
     pub fn change(
         &self,
         change: &TableChange,
-        target: &[Column],
-        staging: &[Column],
+        [target, staging, tombstones]: [&[Column]; 3],
     ) -> Result<Vec<Statement>> {
         let table = change.table();
-        let names = [self.target(table), self.staging_table(&table.name)];
+        let names = [
+            self.target(table),
+            self.staging_table(&table.name),
+            self.tombstone_table(&table.name),
+        ];
         match change {
             TableChange::Create { schema, .. } => {
                 let fields: Vec<&Field> = schema.fields().iter().collect();
-                self.fields(&names, [target, staging], &fields)
+                self.fields([&names[0], &names[1]], [target, staging], &fields)
             }
             TableChange::AddColumn { field, .. } => {
                 if target.is_empty() {
@@ -96,7 +136,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                         names[0]
                     )));
                 }
-                self.fields(&names, [target, staging], &[field])
+                self.fields([&names[0], &names[1]], [target, staging], &[field])
             }
             TableChange::Widen { column, to, .. } => {
                 if !target
@@ -110,7 +150,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 }
                 let declared = self.declared(to)?;
                 let mut plan = Vec::new();
-                for (name, columns) in names.iter().zip([target, staging]) {
+                // A change stream's tombstones hold the key, so they widen with it.
+                for (name, columns) in names.iter().zip([target, staging, tombstones]) {
                     let Some(existing) = columns.iter().find(|existing| existing.name == **column)
                     else {
                         continue;
@@ -135,7 +176,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// existing one lacks.
     fn fields(
         &self,
-        [target_name, staging_name]: &[String; 2],
+        [target_name, staging_name]: [&String; 2],
         [target, staging]: [&[Column]; 2],
         fields: &[&Field],
     ) -> Result<Vec<Statement>> {

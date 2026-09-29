@@ -21,7 +21,7 @@ use crate::types::{Field, LogicalType};
 /// SQLite with declared types that name each integer width, and a statement that redeclares a
 /// column, so widening in place can be planned.
 #[derive(Debug)]
-struct Widening;
+pub(super) struct Widening;
 
 impl SqlDialect for Widening {
     fn placeholder(&self, index: usize) -> String {
@@ -44,6 +44,10 @@ impl SqlDialect for Widening {
     fn columns(&self, table: &str) -> Statement {
         Sqlite.columns(table)
     }
+
+    fn transactional_ddl(&self) -> bool {
+        Sqlite.transactional_ddl()
+    }
 }
 
 /// SQLite without bytes.
@@ -65,6 +69,10 @@ impl SqlDialect for Bytesless {
     fn columns(&self, table: &str) -> Statement {
         Sqlite.columns(table)
     }
+
+    fn transactional_ddl(&self) -> bool {
+        Sqlite.transactional_ddl()
+    }
 }
 
 /// SQLite whose identifiers are at most `MAX` bytes.
@@ -84,8 +92,69 @@ impl<const MAX: usize> SqlDialect for Short<MAX> {
         Sqlite.columns(table)
     }
 
+    fn transactional_ddl(&self) -> bool {
+        Sqlite.transactional_ddl()
+    }
+
     fn max_identifier(&self) -> Option<usize> {
         Some(MAX)
+    }
+}
+
+#[test]
+fn tables_whose_derived_tables_would_share_a_name_are_refused() {
+    let planner = SqlPlanner::try_new(Short::<30>).unwrap();
+    // Cut to 30 bytes, both staging tables end in the same hash of their whole names.
+    let clashing = ["orders_0775246_by_region", "orders_1034780_by_region"];
+    assert_eq!(
+        planner.staging_table(clashing[0]),
+        planner.staging_table(clashing[1])
+    );
+    let error = planner
+        .distinct(clashing[1], &[clashing[0].to_owned()])
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Config, Some("table_name_clash"))
+    );
+    // Names whose derived tables differ, and a table registered again, are not refused.
+    let distinct = ["orders_by_region_north", "orders_by_region_south"];
+    planner
+        .distinct(distinct[0], &[distinct[1].to_owned()])
+        .unwrap();
+    planner
+        .distinct(clashing[0], &[clashing[0].to_owned()])
+        .unwrap();
+}
+
+#[test]
+fn a_dialect_whose_schema_changes_do_not_commit_with_it_swaps_no_generation() {
+    let planner = SqlPlanner::try_new(Autocommitting).unwrap();
+    let error = planner
+        .swap("orders", true, GenerationId(1), &[])
+        .unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Unsupported);
+}
+
+/// SQLite, as if its schema changes committed on their own.
+#[derive(Debug)]
+struct Autocommitting;
+
+impl SqlDialect for Autocommitting {
+    fn placeholder(&self, index: usize) -> String {
+        Sqlite.placeholder(index)
+    }
+
+    fn column_type(&self, logical: &LogicalType) -> Option<String> {
+        Sqlite.column_type(logical)
+    }
+
+    fn columns(&self, table: &str) -> Statement {
+        Sqlite.columns(table)
+    }
+
+    fn transactional_ddl(&self) -> bool {
+        false
     }
 }
 
@@ -248,7 +317,12 @@ pub(super) fn apply(
         planner,
         &planner.staging_table(&change.table().name),
     );
-    let plan = planner.change(change, &target, &staging)?;
+    let tombstones = columns(
+        connection,
+        planner,
+        &planner.tombstone_table(&change.table().name),
+    );
+    let plan = planner.change(change, [&target, &staging, &tombstones])?;
     run_all(connection, &plan);
     Ok(plan)
 }
@@ -590,7 +664,10 @@ fn a_widen_the_column_holds_plans_nothing_and_a_dialect_that_can_redeclares_it()
         name: "n".to_owned(),
         declared: "INT32".to_owned(),
     }];
-    let plan = widening.change(&widen, &existing, &existing).unwrap();
+    // A change stream's tombstones hold the key, so they widen with it.
+    let plan = widening
+        .change(&widen, [&existing, &existing, &existing])
+        .unwrap();
     let sql: Vec<&str> = plan
         .iter()
         .map(|statement| statement.sql.as_str())
@@ -600,14 +677,11 @@ fn a_widen_the_column_holds_plans_nothing_and_a_dialect_that_can_redeclares_it()
         [
             "ALTER TABLE orders ALTER COLUMN n TYPE INTEGER",
             "ALTER TABLE _rdlt_staging__orders ALTER COLUMN n TYPE INTEGER",
+            "ALTER TABLE _rdlt_tombstones__orders ALTER COLUMN n TYPE INTEGER",
         ]
     );
-    let lacking = widening.change(&widen, &existing, &[]).unwrap();
-    assert_eq!(
-        lacking.len(),
-        1,
-        "a staging table without the column is left alone"
-    );
+    let lacking = widening.change(&widen, [&existing, &[], &[]]).unwrap();
+    assert_eq!(lacking.len(), 1, "tables without the column are left alone");
 }
 
 #[test]
@@ -1141,7 +1215,7 @@ fn a_child_tables_root_columns_are_read_from_the_root_staging_only() {
 }
 
 #[test]
-fn a_child_table_is_indexed_by_its_root_when_it_merges_however_it_was_created() {
+fn a_child_table_is_indexed_by_its_root_where_its_rows_are_staged_however_it_was_created() {
     let (connection, planner) = database();
     let (roots, items) = roots_and_items();
     let root_fields = [
@@ -1169,26 +1243,36 @@ fn a_child_table_is_indexed_by_its_root_when_it_merges_however_it_was_created() 
         query(&connection, &statement)
     };
     assert!(indexes().is_empty());
-    let columns = columns(&connection, &planner, "items");
-    let merge = staged("items", None, items.merge.clone());
+    // Indexed where its rows are staged, however often; a table merging by no root never is.
+    assert_eq!(planner.root_index(&table("items")).unwrap(), None);
     for _ in 0..2 {
-        let plan = planner
-            .publish(
-                &merge,
-                &columns,
-                &pipeline("mine"),
-                Epoch(1),
-                &segments(&[1]),
-            )
-            .unwrap();
-        run_all(&connection, &plan);
+        let index = planner
+            .root_index(&items)
+            .unwrap()
+            .expect("a child table's index");
+        run_all(&connection, &[index]);
         let indexes = indexes();
         assert_eq!(indexes.len(), 1, "{indexes:?}");
-        assert!(
-            format!("{:?}", indexes[0]).contains("(\\\"root\\\")"),
-            "{indexes:?}"
-        );
+        let rendered = format!("{:?}", indexes[0]);
+        assert!(rendered.contains("(\\\"root\\\")"), "{indexes:?}");
+        assert!(rendered.contains("_rdlt_root__items"), "{indexes:?}");
     }
+    // A commit changes no table's indexes.
+    let columns = columns(&connection, &planner, "items");
+    let merge = staged("items", None, items.merge.clone());
+    let plan = planner
+        .publish(
+            &merge,
+            &columns,
+            &pipeline("mine"),
+            Epoch(1),
+            &segments(&[1]),
+        )
+        .unwrap();
+    assert!(
+        plan.iter()
+            .all(|statement| !statement.sql.starts_with("CREATE"))
+    );
 }
 
 #[test]
@@ -1347,7 +1431,9 @@ fn a_swap_replaces_the_table_with_its_generation_and_drops_the_others() {
     let generations = generations_of(&connection, &planner, "orders");
     run_all(
         &connection,
-        &planner.swap("orders", true, GenerationId(2), &generations),
+        &planner
+            .swap("orders", true, GenerationId(2), &generations)
+            .unwrap(),
     );
     assert_eq!(rows_of(&connection, "orders"), [(2, "new".to_owned())]);
     for generation in [1, 2] {
@@ -1387,10 +1473,12 @@ fn a_swap_of_a_generation_without_a_table_empties_the_table() {
         .unwrap();
     run_all(
         &connection,
-        &planner.swap("orders", true, GenerationId(7), &[]),
+        &planner.swap("orders", true, GenerationId(7), &[]).unwrap(),
     );
     assert!(rows_of(&connection, "orders").is_empty());
-    let nothing = planner.swap("missing", false, GenerationId(7), &[]);
+    let nothing = planner
+        .swap("missing", false, GenerationId(7), &[])
+        .unwrap();
     assert_eq!(
         nothing.len(),
         1,

@@ -22,6 +22,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// The statements merging the rows `of` names into `target` by `key`, from `staging`, both of
     /// the `columns` named `names`: the published rows of their keys deleted, then the row of
     /// each key with the greatest sequence inserted.
+    ///
+    /// Keys are compared a column at a time, as every database does, rather than as row values.
     pub(super) fn merged<'a>(
         &'a self,
         [target, staging, names]: [&str; 3],
@@ -30,13 +32,17 @@ impl<D: SqlDialect> SqlPlanner<D> {
         of: &Of<'_>,
     ) -> [Sql<'a, D>; 2] {
         let keys: Vec<String> = key.columns.iter().map(|c| self.quote(c)).collect();
+        let same: Vec<String> = keys
+            .iter()
+            .map(|key| format!("_rdlt_s.{key} = {target}.{key}"))
+            .collect();
         let keys = keys.join(", ");
         let mut replaced = self.sql();
         replaced.push(&format!(
-            "DELETE FROM {target} WHERE ({keys}) IN (SELECT {keys} FROM {staging} WHERE "
+            "DELETE FROM {target} WHERE EXISTS (SELECT 1 FROM {staging} _rdlt_s WHERE "
         ));
         self.rows_of(&mut replaced, of.staged, of.pipeline, of.epoch, of.segments);
-        replaced.push(")");
+        replaced.push(&format!(" AND {})", same.join(" AND ")));
         let rank = self.quote(&unused("_rdlt_rank", columns));
         let mut insert = self.sql();
         insert.push(&format!(
@@ -46,7 +52,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             self.quote(&key.seq)
         ));
         self.rows_of(&mut insert, of.staged, of.pipeline, of.epoch, of.segments);
-        insert.push(&format!(") AS _rdlt_ranked WHERE {rank} = 1"));
+        insert.push(&format!(") _rdlt_ranked WHERE {rank} = 1"));
         [replaced, insert]
     }
 }

@@ -77,6 +77,13 @@ impl Session for SqliteSession {
         self.database
             .transaction(move |transaction| {
                 let table = change.table();
+                if matches!(change, TableChange::Create { .. }) {
+                    let registered = query(transaction, &planner.tables())?
+                        .iter()
+                        .map(|row| row.first().map_or(Ok(String::new()), text))
+                        .collect::<Result<Vec<_>>>()?;
+                    planner.distinct(&table.name, &registered)?;
+                }
                 claim(transaction, &planner, &pipeline, &table.name)?;
                 let target = columns(transaction, planner.dialect(), &planner.target(table))?;
                 let staging = columns(
@@ -84,7 +91,13 @@ impl Session for SqliteSession {
                     planner.dialect(),
                     &planner.staging_table(&table.name),
                 )?;
-                run_all(transaction, &planner.change(&change, &target, &staging)?)?;
+                let tombstones = columns(
+                    transaction,
+                    planner.dialect(),
+                    &planner.tombstone_table(&table.name),
+                )?;
+                let plan = planner.change(&change, [&target, &staging, &tombstones])?;
+                run_all(transaction, &plan)?;
                 if matches!(change, TableChange::Create { .. }) {
                     run_all(transaction, &planner.register(table))?;
                 }
@@ -127,6 +140,11 @@ impl Session for SqliteSession {
                     let base = columns(transaction, dialect, &generation.name)?;
                     run_all(transaction, &planner.generation(&generation, &base))
                 })
+                .await?;
+        }
+        if let Some(index) = self.planner.root_index(table)? {
+            self.database
+                .transaction(move |transaction| run(transaction, &index).map(drop))
                 .await?;
         }
         Ok(SqliteWriter {
@@ -215,7 +233,7 @@ fn claim(
     pipeline: &PipelineId,
     name: &str,
 ) -> Result<()> {
-    run(transaction, &planner.claim(pipeline, name))?;
+    run_all(transaction, &planner.claim(pipeline, name))?;
     let owner = query(transaction, &planner.owner(name))?
         .first()
         .and_then(|row| row.first())
@@ -356,7 +374,7 @@ fn swap(
     let exists = !columns(transaction, planner.dialect(), name)?.is_empty();
     run_all(
         transaction,
-        &planner.swap(name, exists, generation, &generations),
+        &planner.swap(name, exists, generation, &generations)?,
     )?;
     // The rows a change stream removed from the table swapped out never come back to its successor.
     let tombstones = planner.tombstone_table(name);
