@@ -6,6 +6,8 @@ mod slices;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
+
 use arrow_array::{BooleanArray, RecordBatch};
 use rdlt_connector::ChangeOp;
 use rdlt_connector::{ColumnPath, Permit, TableSchema};
@@ -95,6 +97,9 @@ struct Held {
 ///
 /// Each unit's plan is found in order, since finding it may change the table. Then the units are
 /// concatenated and lowered on the compute pool a window at a time, and queued in order.
+///
+/// The units are one flush, which chunks and slices cut however their sizes fall, so its integers
+/// are judged together: where it was cut decides no column's type.
 async fn write(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -106,30 +111,25 @@ async fn write(
     if let Some(shape) = context.tables.shape(job.table) {
         return normalized::write_normalized(job, context, open, units, &shape).await;
     }
-    let mut planned = Vec::with_capacity(units.len());
-    for (parts, held) in units {
-        let (parts, changes) = match job.changes {
-            Some(mode) => {
-                let (data, changes) = split_changes(job, mode, open, &parts)?;
-                (vec![data], Some(changes))
-            }
-            None => (parts, None),
-        };
+    let judged = judged(job, open, units)?;
+    let rounding: BTreeSet<ColumnPath> = judged
+        .iter()
+        .flat_map(|unit| unit.incoming.rounding.iter().cloned())
+        .collect();
+    let mut planned = Vec::with_capacity(judged.len());
+    for Judged {
+        parts,
+        changes,
+        mut incoming,
+        held,
+    } in judged
+    {
+        incoming.rounding.clone_from(&rounding);
+        let plan = context.tables.plan(job.table, incoming).await?;
         let received = parts
             .iter()
             .map(|batch| u64::try_from(batch.num_rows()).unwrap_or(u64::MAX))
             .sum::<u64>();
-        if received == 0 {
-            continue;
-        }
-        let schema = schema_of(job, &parts[0])?;
-        let paths = schema
-            .fields()
-            .iter()
-            .map(|field| ColumnPath::from(field.name()))
-            .collect();
-        let incoming = Incoming::of(schema, paths, &parts);
-        let plan = context.tables.plan(job.table, incoming).await?;
         let stamp = stamp(context, open, received);
         planned.push((move || lower(&parts, &plan, &stamp, changes.as_ref()), held));
     }
@@ -155,6 +155,50 @@ async fn write(
         }
     }
     Ok(())
+}
+
+/// A unit with rows, its change columns and its columns as they arrive.
+struct Judged {
+    parts: Vec<RecordBatch>,
+    changes: Option<ChangeRows>,
+    incoming: Incoming,
+    held: Held,
+}
+
+/// `units` with rows, a change stream's split into data and change columns, each with its
+/// columns as they arrive, its own integers judged.
+fn judged(
+    job: &PartitionJob,
+    open: &mut OpenSegment,
+    units: Vec<(Vec<RecordBatch>, Held)>,
+) -> Result<Vec<Judged>, Error> {
+    let mut judged = Vec::with_capacity(units.len());
+    for (parts, held) in units {
+        let (parts, changes) = match job.changes {
+            Some(mode) => {
+                let (data, changes) = split_changes(job, mode, open, &parts)?;
+                (vec![data], Some(changes))
+            }
+            None => (parts, None),
+        };
+        if parts.iter().all(|batch| batch.num_rows() == 0) {
+            continue;
+        }
+        let schema = schema_of(job, &parts[0])?;
+        let paths = schema
+            .fields()
+            .iter()
+            .map(|field| ColumnPath::from(field.name()))
+            .collect();
+        let incoming = Incoming::of(schema, paths, &parts);
+        judged.push(Judged {
+            parts,
+            changes,
+            incoming,
+            held,
+        });
+    }
+    Ok(judged)
 }
 
 /// The table schema of `batch`'s columns.

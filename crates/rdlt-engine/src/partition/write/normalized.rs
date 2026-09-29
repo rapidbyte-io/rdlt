@@ -1,13 +1,13 @@
 //! Writing the units of a normalized stream: each normalized into its table's and child tables'
 //! parts, planned parents first so dropped rows change no schema, and lowered on the pool.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
 use parking_lot::Mutex;
-use rdlt_connector::{Permit, StreamName};
+use rdlt_connector::{ColumnPath, Permit, StreamName};
 
 use super::{Held, OpenSegment, PartitionContext, PartitionJob, queue, schema_of, stamp, windows};
 use crate::budget::MemoryBudget;
@@ -23,6 +23,9 @@ use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp};
 /// then found in order, since finding them may add child tables or change tables, and the parts
 /// are lowered on the pool. A unit's parts share the permits holding its memory, charged with its
 /// growth before any part waits on its lane.
+///
+/// The units are one flush, so each table's integers are judged over all of them, as the rows
+/// arrive: where the flush was cut decides no column's type.
 pub(super) async fn write_normalized(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -30,6 +33,8 @@ pub(super) async fn write_normalized(
     units: Vec<(Vec<RecordBatch>, Held)>,
     shape: &Arc<Shape>,
 ) -> Result<(), Error> {
+    let batches: Vec<Vec<RecordBatch>> = units.iter().map(|(parts, _)| parts.clone()).collect();
+    let rounding = judged(job, context, batches, shape).await?;
     for window in windows(units) {
         let (batches, reservations): (Vec<_>, Vec<_>) = window.into_iter().unzip();
         let jobs = batches.into_iter().map(|parts| {
@@ -47,7 +52,7 @@ pub(super) async fn write_normalized(
                 continue;
             }
             let stamp = stamp(context, open, received);
-            let (unit, discarded) = plan_parts(job, context, parts).await?;
+            let (unit, discarded) = plan_parts(job, context, parts, &rounding).await?;
             open.discarded_values += discarded.values;
             open.discarded_rows += discarded.rows;
             let lower_unit = move || lower_unit(unit, &stamp);
@@ -108,11 +113,14 @@ async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
     parts: Vec<Part>,
+    judged: &Rounding,
 ) -> Result<(PlannedParts, Discarded), Error> {
     let (admitted, mut dropped) = admit(job, context, parts);
     let mut discarded = Discarded::default();
     let mut planned = Vec::with_capacity(admitted.len());
     for (part, fate) in admitted {
+        let mut rounding = rounding_of(job, &part)?;
+        rounding.extend(judged.get(&part.path).into_iter().flatten().cloned());
         let pruned = if dropped.is_empty() {
             Pruned::whole(part)
         } else {
@@ -141,11 +149,12 @@ async fn plan_parts(
         } else {
             context.tables.child(job.table, path).await?
         };
-        let incoming = Incoming::of(
+        let mut incoming = Incoming::of(
             schema_of(job, &pruned.part.batch)?,
             pruned.part.columns.clone(),
-            std::slice::from_ref(&pruned.part.batch),
+            &[],
         );
+        incoming.rounding = rounding;
         let plan = context.tables.plan(table, incoming).await?;
         if plan.drops_rows() {
             let (batch, rows) = (pruned.part.batch.clone(), Arc::clone(&plan));
@@ -197,6 +206,44 @@ fn admit(
         admitted.push((part, fate));
     }
     (admitted, dropped)
+}
+
+/// The columns of 64-bit integers holding a value a float would round, by the path of their table.
+type Rounding = BTreeMap<Vec<Arc<str>>, BTreeSet<ColumnPath>>;
+
+/// The columns of `part`'s table holding, in its rows, a value a 64-bit float would round.
+fn rounding_of(job: &PartitionJob, part: &Part) -> Result<BTreeSet<ColumnPath>, Error> {
+    let schema = schema_of(job, &part.batch)?;
+    let paths = part.columns.clone();
+    Ok(Incoming::of(schema, paths, std::slice::from_ref(&part.batch)).rounding)
+}
+
+/// Where a flush was cut into several units, the columns of each table holding, in any unit's
+/// rows, a value a 64-bit float would round; the units are normalized a window at a time to judge
+/// them, and their parts dropped.
+async fn judged(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    units: Vec<Vec<RecordBatch>>,
+    shape: &Arc<Shape>,
+) -> Result<Rounding, Error> {
+    let mut rounding = Rounding::new();
+    if units.len() < 2 {
+        return Ok(rounding);
+    }
+    for window in windows(units) {
+        let jobs = window.into_iter().map(|parts| {
+            let (shape, stream) = (Arc::clone(shape), job.stream.clone());
+            move || split(&stream, &parts, &shape)
+        });
+        for parts in run_all(context.env.compute(), jobs).await {
+            for part in parts? {
+                let columns = rounding_of(job, &part)?;
+                rounding.entry(part.path).or_default().extend(columns);
+            }
+        }
+    }
+    Ok(rounding)
 }
 
 /// Runs `work` on the compute pool.
