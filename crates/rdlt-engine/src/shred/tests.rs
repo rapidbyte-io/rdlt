@@ -156,8 +156,9 @@ fn nested(levels: u64, open: &str, close: &str) -> String {
 
 #[test]
 fn values_nest_up_to_the_limit_and_no_deeper() {
-    // After an integer, the column stops building and only checks the deep values' nesting.
-    for before in ["", "{\"a\":1}\n"] {
+    // After an integer, the column stops building and only checks the deep values' nesting;
+    // after a float that may be a rounded integer, the chunk is parsed exactly.
+    for before in ["", "{\"a\":1}\n", "{\"a\":1e30}\n"] {
         for (open, close) in [("[", "]"), ("{\"b\":", "}")] {
             let deepest = format!("{before}{}", nested(MAX_NESTING_DEPTH, open, close));
             assert_eq!(
@@ -201,6 +202,17 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
         "]".repeat(1_000_000)
     );
     assert_eq!(refused(&beside), "limit_exceeded");
+    // An empty container at the limit is a value at the limit.
+    let levels = depth - 1;
+    let at_limit = format!(
+        "{{\"n\":1e30,\"a\":{}{}}}",
+        "[".repeat(levels),
+        "]".repeat(levels)
+    );
+    assert_eq!(batch_of(&[&at_limit], 1 << 20).num_rows(), 1);
+    // Containers side by side nest no deeper than one.
+    let siblings = format!("{{\"n\":1e30,\"a\":[{}]}}", vec!["[]"; 1_000].join(","));
+    assert_eq!(batch_of(&[&siblings], 1 << 20).num_rows(), 1);
     // Brackets inside strings, even escaped quotes before them, nest nothing.
     let text = format!("\\\"{}", "[".repeat(1_000));
     let texts = batch_of(&[&format!("{{\"n\":1e30,\"a\":\"{text}\"}}")], 1 << 20);
@@ -340,7 +352,11 @@ fn integers_beyond_38_digits_read_exactly_as_76_digit_decimals_and_beyond_those_
         (vec![format!("1{}", "0".repeat(38))], vast.clone()),
         (vec![digits(76), format!("-{}", digits(76))], vast.clone()),
         (vec!["1".to_owned(), digits(39)], vast.clone()),
-        (vec![digits(39), "18446744073709551615".to_owned()], vast),
+        (
+            vec![digits(39), "18446744073709551615".to_owned()],
+            vast.clone(),
+        ),
+        (vec![digits(39), digits(30)], vast),
         (vec![digits(77)], LogicalType::Json),
         (vec![digits(400), "-1".to_owned()], LogicalType::Json),
         (vec![digits(39), "0.5".to_owned()], LogicalType::Json),

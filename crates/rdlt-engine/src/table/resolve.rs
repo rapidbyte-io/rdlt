@@ -349,7 +349,8 @@ impl Resolver {
             && wider.kind() == kind
             && self.widens(&current, &wider, column.settings.nested)
         {
-            draft.widen(existing, wider, !column.rounding);
+            // A variant's kind is its type's, so it never widens to 64-bit integers.
+            draft.widen(existing, wider, false);
             return existing;
         }
         let json = key(TypeKind::Json);

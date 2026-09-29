@@ -1562,7 +1562,13 @@ fn an_integer_key_stored_as_text_widens_to_whole_decimals_and_never_to_fractions
 
 #[test]
 fn an_integer_key_stored_by_value_never_becomes_text() {
-    let resolver = resolver(decimals_as_text(), plan(), &["id"]);
+    // Even where the destination could change the column to text.
+    let mut to_text = decimals_as_text();
+    to_text
+        .schema_changes
+        .widenings
+        .insert((TypeKind::Int64, TypeKind::Utf8));
+    let resolver = resolver(to_text, plan(), &["id"]);
     let model = created(&resolver, &[("id", LogicalType::Int64)]);
     let error = resolver
         .resolve(&model, &schema(&[("id", decimal(20, 0))]))
@@ -1631,4 +1637,59 @@ fn integers_convert_to_floats_only_where_a_float_holds_every_one_exactly() {
     assert_eq!(floats.data_type(), &DataType::Float64);
     let rounding: ArrayRef = Arc::new(Int64Array::from(vec![1, edge + 1]));
     assert!(convert(&rounding, &LogicalType::Int64, &LogicalType::Float64).is_err());
+}
+
+#[test]
+fn a_column_widened_to_64_bit_integers_is_exact_only_where_its_integers_are() {
+    for (rounding, exact) in [(false, true), (true, false)] {
+        for key in [&[][..], &["n"][..]] {
+            let resolver = resolver(capabilities(), plan(), key);
+            let model = created(&resolver, &[("n", LogicalType::Int32)]);
+            let incoming = if rounding {
+                inexact(&[("n", LogicalType::Int64)], &["n"])
+            } else {
+                schema(&[("n", LogicalType::Int64)])
+            };
+            let widened = resolver.resolve(&model, &incoming).unwrap();
+            assert_eq!(columns(&widened.model)[0].1, LogicalType::Int64);
+            assert_eq!(
+                widened.model.exact.contains("n"),
+                exact,
+                "{rounding} {key:?}"
+            );
+        }
+    }
+    // A column widened to decimals holds no 64-bit integers to be exact.
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let model = created(&resolver, &[("n", LogicalType::Int32)]);
+    let decimals = resolver
+        .resolve(&model, &schema(&[("n", decimal(20, 2))]))
+        .unwrap();
+    assert_eq!(columns(&decimals.model)[0].1, decimal(20, 2));
+    assert!(decimals.model.exact.is_empty());
+}
+
+#[test]
+fn a_variant_of_64_bit_integers_is_exact_only_where_its_integers_are() {
+    let mut fixed = capabilities();
+    fixed.schema_changes.widenings.clear();
+    for (rounding, exact) in [(false, true), (true, false)] {
+        let resolver = resolver(fixed.clone(), plan(), &[]);
+        let model = created(&resolver, &[("n", LogicalType::Int32)]);
+        let incoming = if rounding {
+            inexact(&[("n", LogicalType::Int64)], &["n"])
+        } else {
+            schema(&[("n", LogicalType::Int64)])
+        };
+        let variant = resolver.resolve(&model, &incoming).unwrap();
+        assert_eq!(
+            columns(&variant.model)[1],
+            ("n__int64".to_owned(), LogicalType::Int64)
+        );
+        assert_eq!(
+            variant.model.exact.contains("n__int64"),
+            exact,
+            "{rounding}"
+        );
+    }
 }

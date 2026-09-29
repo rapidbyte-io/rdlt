@@ -33,14 +33,15 @@ impl Draft {
         }
     }
 
-    /// Whether every value of the column at `column` is exact as a 64-bit float.
+    /// Whether every value of the table's column at `column` is exact as a 64-bit float.
+    ///
+    /// A column this resolution adds takes its values from the batch, whose column never meets
+    /// another type in it, so only the table's columns are asked.
     pub(super) fn is_exact(&self, column: usize) -> bool {
-        match self.model.columns.get(column) {
-            Some(field) => self.model.exact.contains(field.name()),
-            None => self
-                .exact_adds
-                .contains(&self.adds[column - self.model.columns.len()].0),
-        }
+        self.model
+            .columns
+            .get(column)
+            .is_some_and(|field| self.model.exact.contains(field.name()))
     }
 
     /// The type a column at `column` takes to hold `arriving`'s values too: the lattice's join,
