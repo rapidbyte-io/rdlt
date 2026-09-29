@@ -21,6 +21,8 @@ pub struct ConnectorRef {
     pub path: Option<PathBuf>,
     /// The connector's address, for a remote placement.
     pub endpoint: Option<String>,
+    /// The digest its binary must have, for a process placement; any binary when absent.
+    pub digest: Option<Digest>,
 }
 
 impl ConnectorRef {
@@ -31,7 +33,15 @@ impl ConnectorRef {
             version_req: None,
             path: None,
             endpoint: None,
+            digest: None,
         }
+    }
+
+    /// Accepts only a binary of digest `digest`, for a process placement.
+    #[must_use]
+    pub fn digest(mut self, digest: Digest) -> Self {
+        self.digest = Some(digest);
+        self
     }
 
     /// Accepts only the versions `version_req` matches.
@@ -163,6 +173,19 @@ pub enum ProviderError {
         /// Why.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// The connector's binary has another digest than the reference requires, or changed since
+    /// it was placed.
+    #[error("connector `{id}` at {} has digest {found}, not {expected}", path.display())]
+    DigestMismatch {
+        /// The connector's id.
+        id: ConnectorId,
+        /// The binary.
+        path: PathBuf,
+        /// The digest required.
+        expected: Digest,
+        /// The digest found.
+        found: Digest,
     },
     /// The connector started, but did not connect: its handshake, or its own connect, failed.
     #[error("connector `{id}` did not connect")]

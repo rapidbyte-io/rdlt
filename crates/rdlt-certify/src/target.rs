@@ -239,6 +239,7 @@ impl Target {
             version_req: None,
             path: from.and_then(|reference| reference.path.clone()),
             endpoint: from.and_then(|reference| reference.endpoint.clone()),
+            digest: from.and_then(|reference| reference.digest),
         };
         let options = Options {
             read_window: KILL_WINDOW,
