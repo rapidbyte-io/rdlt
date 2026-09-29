@@ -78,7 +78,7 @@ fn a_relative_directory_whose_parent_is_the_working_directory_is_created() {
         .to_string_lossy()
         .into_owned();
     // One relative component, whose parent is the empty path.
-    let relative = std::path::PathBuf::from(format!("{name}-root"));
+    let relative = PathBuf::from(format!("{name}-root"));
     let created = super::create_dirs(&relative.join("rows"));
     let exists = relative.join("rows").is_dir();
     drop(std::fs::remove_dir_all(&relative));

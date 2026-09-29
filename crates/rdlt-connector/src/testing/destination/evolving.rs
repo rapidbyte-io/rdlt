@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
-use arrow_array::{Array, ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, BinaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::DataType;
 
-use super::{Bench, commit, expect_ids, meta, rows};
+use super::{Bench, commit, expect_rows, meta, rows};
 use crate::OpenedSession;
 use crate::commit::CommitMeta;
 use crate::destination::Destination;
@@ -59,8 +59,8 @@ impl Bench<'_> {
             &meta(self.load_id(1), opened.epoch, &[1, 2], Vec::new()),
         )
         .await?;
-        expect_ids(&self.published_ids().await?, &[1])?;
-        expect_ids(&self.ids_of(&other).await?, &[])?;
+        expect_rows(&self.published_rows().await?, &[1])?;
+        expect_rows(&self.rows_of(&other).await?, &[])?;
         let finish = CommitMeta {
             commit_seq: CommitSeq::FIRST.next(),
             finish_generations: vec![
@@ -70,8 +70,8 @@ impl Bench<'_> {
             ..meta(self.load_id(1), opened.epoch, &[3], Vec::new())
         };
         commit(&mut opened.session, &finish).await?;
-        expect_ids(&self.published_ids().await?, &[2, 3])?;
-        expect_ids(&self.ids_of(&other).await?, &[2])
+        expect_rows(&self.published_rows().await?, &[2, 3])?;
+        expect_rows(&self.rows_of(&other).await?, &[2])
     }
 
     /// Adds a column and widens one, each applied twice, with rows committed before and after.
@@ -249,8 +249,7 @@ impl Bench<'_> {
             ..meta(self.load_id(1), opened.epoch, &[2, 3], Vec::new())
         };
         commit(&mut opened.session, &second).await?;
-        let mut published = self.keyed_rows(&table).await?;
-        published.sort_unstable();
+        let published = self.rows_of(&table).await?;
         let expected = [
             (1, Some("a".to_owned())),
             (2, Some("late".to_owned())),
@@ -278,28 +277,6 @@ impl Bench<'_> {
             }
         }
         Ok(values)
-    }
-
-    /// The published `(id, name)` rows of `table`.
-    async fn keyed_rows(&self, table: &TableRef) -> Result<Vec<(i64, Option<String>)>, Violation> {
-        let batches = bounded_call("probe", self.probe.published(table)).await?;
-        let mut rows = Vec::new();
-        for batch in &batches {
-            let (Some(ids), Some(names)) =
-                (batch.column_by_name("id"), batch.column_by_name("name"))
-            else {
-                return Err("a published batch lacks id or name".into());
-            };
-            let ids = ids.as_primitive::<Int64Type>();
-            let names = names.as_string::<i32>();
-            for row in 0..batch.num_rows() {
-                rows.push((
-                    ids.value(row),
-                    names.is_valid(row).then(|| names.value(row).to_owned()),
-                ));
-            }
-        }
-        Ok(rows)
     }
 }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
-use arrow_array::{Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 
 use crate::schema::TableSchema;
 use crate::testing::Violation;
@@ -32,23 +32,29 @@ pub(super) fn rows(segment: u64) -> RecordBatch {
         .expect("the certification batch is valid")
 }
 
-/// Whether `actual` holds exactly the ids of `segments`' rows, each once.
-pub(super) fn expect_ids(actual: &[i64], segments: &[u64]) -> Result<(), Violation> {
-    let mut expected: Vec<i64> = segments
+/// A published row: its id and name.
+pub(super) type Row = (i64, Option<String>);
+
+/// Whether `actual`, in order, holds exactly `segments`' rows, each once.
+pub(super) fn expect_rows(actual: &[Row], segments: &[u64]) -> Result<(), Violation> {
+    let mut expected: Vec<Row> = segments
         .iter()
         .flat_map(|segment| {
             let batch = rows(*segment);
-            batch
-                .column(0)
-                .as_primitive::<Int64Type>()
-                .values()
-                .to_vec()
+            let ids = batch.column(0).as_primitive::<Int64Type>().clone();
+            let names = batch.column(1).as_string::<i32>().clone();
+            (0..batch.num_rows()).map(move |row| {
+                (
+                    ids.value(row),
+                    names.is_valid(row).then(|| names.value(row).to_owned()),
+                )
+            })
         })
         .collect();
     expected.sort_unstable();
     if actual == expected.as_slice() {
         Ok(())
     } else {
-        Err(format!("the published ids are {actual:?}, not those of segments {segments:?}").into())
+        Err(format!("the published rows are {actual:?}, not those of segments {segments:?}").into())
     }
 }
