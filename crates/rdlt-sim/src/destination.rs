@@ -7,6 +7,7 @@ mod read;
 mod store;
 #[cfg(test)]
 mod tests;
+mod tombstones;
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;

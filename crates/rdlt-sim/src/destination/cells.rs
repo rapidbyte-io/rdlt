@@ -16,6 +16,8 @@ use rdlt_connector::{
 use rdlt_testkit::canon::Canon;
 use rdlt_testkit::decode;
 
+use super::tombstones::Tombstones;
+
 /// One stored row's cells by identifier, each read as the type its column is stored as.
 pub type Cells = BTreeMap<String, Canon>;
 
@@ -80,10 +82,12 @@ pub(crate) fn merge(published: &mut Vec<Stored>, incoming: Vec<Stored>, key: &Me
 }
 
 /// Merges a change stream's `incoming` rows into `published` by `key`, as `changes` directs:
-/// each row applies in sequence order, only past the published row's sequence, as an insert,
-/// update, delete or truncate; the columns that direct the merge are never stored.
+/// each row applies in sequence order, only past the published row's sequence and the
+/// `tombstones` of rows removed outright, as an insert, update, delete or truncate; the columns
+/// that direct the merge are never stored.
 pub(crate) fn merge_changes(
     published: &mut Vec<Stored>,
+    tombstones: &mut Tombstones,
     mut incoming: Vec<Stored>,
     key: &MergeKey,
     changes: &ChangeColumns,
@@ -106,19 +110,15 @@ pub(crate) fn merge_changes(
             .and_then(|ops| ChangeOp::from_code(ops.as_primitive::<Int8Type>().value(0)));
         let seq = text(&row, &key.seq);
         if op == Some(ChangeOp::Truncate) {
-            match at {
-                None => published.retain(|stored| text(stored, &key.seq) >= seq),
-                Some(at) => {
-                    for stored in published.iter_mut() {
-                        if text(stored, &key.seq) < seq {
-                            *stored = deleted(stored, &row, &key.seq, at, changes);
-                        }
-                    }
-                }
+            if tombstones.admits(None, &seq) {
+                truncate(published, tombstones, &row, seq, &key.seq, at, changes);
             }
             continue;
         }
         let row_key = key_of(&row);
+        if !tombstones.admits(Some(&row_key), &seq) {
+            continue;
+        }
         let current = published
             .iter()
             .position(|stored| key_of(stored) == row_key);
@@ -126,18 +126,48 @@ pub(crate) fn merge_changes(
             continue;
         }
         match (op, at, current) {
-            (Some(ChangeOp::Delete), None, Some(index)) => {
-                published.remove(index);
+            (Some(ChangeOp::Delete), None, current) => {
+                if let Some(index) = current {
+                    published.remove(index);
+                }
+                tombstones.bury(row_key, seq);
             }
             (Some(ChangeOp::Delete), Some(at), Some(index)) => {
                 published[index] = deleted(&published[index], &row, &key.seq, at, changes);
             }
-            (Some(ChangeOp::Delete), _, None) => {}
+            (Some(ChangeOp::Delete), Some(_), None) => {}
             _ => {
                 let merged = upserted(current.map(|index| &published[index]), &row, changes);
                 match current {
                     Some(index) => published[index] = merged,
                     None => published.push(merged),
+                }
+                tombstones.lift(&row_key);
+            }
+        }
+    }
+}
+
+/// Applies `row`, a truncate at `seq`: every row of `published` sequenced before it is removed,
+/// raising the `tombstones`' bound, or with a deletion time column `at`, marked deleted.
+fn truncate(
+    published: &mut Vec<Stored>,
+    tombstones: &mut Tombstones,
+    row: &Stored,
+    seq: String,
+    seq_column: &str,
+    at: Option<&str>,
+    changes: &ChangeColumns,
+) {
+    match at {
+        None => {
+            published.retain(|stored| text(stored, seq_column) >= seq);
+            tombstones.raise(seq);
+        }
+        Some(at) => {
+            for stored in published.iter_mut() {
+                if text(stored, seq_column) < seq {
+                    *stored = deleted(stored, row, seq_column, at, changes);
                 }
             }
         }

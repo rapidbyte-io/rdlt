@@ -2,6 +2,7 @@
 //! the tables and logs their changes leave.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use rdlt_connector::ChangeOp;
 use rdlt_engine::{DeleteMode, OnTruncate, WriteMode};
@@ -46,6 +47,10 @@ pub struct ChangeStream {
     /// Whether the source reads ahead, as a live one does: it pushes changes of the next round
     /// after its last checkpoint, which the engine must read again rather than commit.
     pub reads_ahead: bool,
+    /// The changes, by index, the source sends again whenever it resumes past them, as a source
+    /// delivering at least once may; a merged stream's only, since a log keeps whatever it is
+    /// sent.
+    pub replay: Option<Range<usize>>,
 }
 
 /// One change.
@@ -144,6 +149,15 @@ impl ChangeStream {
         let first = to_usize(rng.below(u64::try_from(total).unwrap_or(0) + 1));
         let captured = to_usize(rng.below(u64::try_from(first).unwrap_or(0) + 1));
         let reads_ahead = rng.chance(500);
+        // Changes the snapshot holds are never sent again: the source resumes past its position.
+        let replay =
+            (write == WriteMode::Merge && first > captured && rng.chance(500)).then(|| {
+                let start =
+                    captured + to_usize(rng.below(u64::try_from(first - captured).unwrap_or(0)));
+                let end =
+                    start + 1 + to_usize(rng.below(u64::try_from(first - start).unwrap_or(0)));
+                start..end
+            });
         Self {
             name,
             keys,
@@ -156,6 +170,7 @@ impl ChangeStream {
             captured,
             rounds: [first, total],
             reads_ahead,
+            replay,
         }
     }
 

@@ -11,6 +11,7 @@ use rdlt_connector::{
 };
 
 use super::read::{names, next_offset};
+use super::tombstones::Tombstones;
 use super::{Stored, cells, columns};
 use crate::world::World;
 
@@ -52,6 +53,8 @@ pub(super) struct Table {
     pub(super) columns: columns::Columns,
     pub(super) published: Vec<Stored>,
     pub(super) generations: BTreeMap<GenerationId, Vec<Stored>>,
+    /// A change stream's tombstones.
+    pub(super) tombstones: Tombstones,
 }
 
 /// A digest of everything a destination holds: its tables' columns and rows, and each pipeline's
@@ -175,9 +178,12 @@ impl Store {
             .map(|(name, (_, rows))| (name.clone(), rows.clone()))
             .collect();
         for (name, (key, rows)) in merging {
-            let published = &mut self.tables.entry(name).or_default().published;
+            let table = self.tables.entry(name).or_default();
+            let published = &mut table.published;
             match (&key.root, &key.changes) {
-                (None, Some(changes)) => cells::merge_changes(published, rows, &key, changes),
+                (None, Some(changes)) => {
+                    cells::merge_changes(published, &mut table.tombstones, rows, &key, changes);
+                }
                 (None, None) => cells::merge(published, rows, &key),
                 (Some(root), _) => {
                     let roots = roots
@@ -187,6 +193,12 @@ impl Store {
                 }
             }
         }
+        self.finish(meta);
+        published
+    }
+
+    /// Swaps in the generations `meta` finishes, each table's rows replaced whole.
+    fn finish(&mut self, meta: &CommitMeta) {
         for (path, generation) in &meta.finish_generations {
             let Some(name) = self.names.get(path).cloned() else {
                 continue;
@@ -194,8 +206,8 @@ impl Store {
             let table = self.tables.entry(name).or_default();
             table.published = table.generations.remove(generation).unwrap_or_default();
             table.generations.clear();
+            table.tombstones = Tombstones::default();
         }
-        published
     }
 
     /// Applies the state changes of `meta` to `pipeline`'s state, checking that no partition's
