@@ -142,7 +142,7 @@ follows H1c.
     | Mutated crate | Tests it runs |
     |---|---|
     | `rdlt-engine` | `rdlt-engine` |
-    | `rdlt-connector` | `rdlt-connector`, `rdlt-connector-reference`, `rdlt-engine`, `rdlt-host` |
+    | `rdlt-connector` | `rdlt-connector`, `rdlt-connector-reference`, `rdlt-engine`, `rdlt-host`, `rdlt-certify` |
     | `rdlt-connector-reference` | `rdlt-connector-reference`, `rdlt-engine` |
     | `rdlt-wire` | `rdlt-wire`, `rdlt-host` |
     | `rdlt-host` | `rdlt-host`, `rdlt-certify` |
