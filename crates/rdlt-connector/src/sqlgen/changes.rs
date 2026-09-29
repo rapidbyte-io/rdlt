@@ -14,10 +14,12 @@ use std::sync::Arc;
 
 use arrow_array::builder::StringBuilder;
 use arrow_array::cast::AsArray;
+use arrow_array::types::Int8Type;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
 use super::{Column, SqlDialect, SqlPlanner, Statement};
+use crate::change::ChangeOp;
 use crate::destination::{ChangeColumns, MergeKey, TableRef};
 use crate::error::{ConnectorError, Result};
 
@@ -37,8 +39,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// The statements readying a change stream's tables before it stages rows for `table`, given
     /// the columns its target, staging and tombstones tables have now: the staging table gains the
-    /// op and unchanged columns, and the tombstones table is created with the target's key and
-    /// sequence columns; nothing for a table that merges no change stream.
+    /// op and unchanged columns, the tombstones table is created with the target's key and
+    /// sequence columns, and each of the three is indexed by the key where it is not; nothing for
+    /// a table that merges no change stream.
     ///
     /// They run where the stream stages its rows, so a commit changes no table's columns.
     pub fn change_tables(
@@ -93,7 +96,34 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 params: Vec::new(),
             });
         }
+        plan.extend(self.key_indexes(&table.name, key));
         Ok(plan)
+    }
+
+    /// The statements indexing the table `name`, its staging and its tombstones by `key`'s
+    /// columns, where they are not: a commit finds each changed key's rows by them.
+    fn key_indexes(&self, name: &str, key: &MergeKey) -> Vec<Statement> {
+        let columns: Vec<String> = key
+            .columns
+            .iter()
+            .map(|column| self.quote(column))
+            .collect();
+        let columns = columns.join(", ");
+        [
+            name.to_owned(),
+            self.staging_table(name),
+            self.tombstone_table(name),
+        ]
+        .into_iter()
+        .map(|table| Statement {
+            sql: format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {} ({columns})",
+                self.quote(&self.fitted(format!("_rdlt_key__{table}"))),
+                self.quote(&table),
+            ),
+            params: Vec::new(),
+        })
+        .collect()
     }
 }
 
@@ -117,6 +147,7 @@ pub fn staged_changes(
     let Some((key, changes)) = changed(table) else {
         return Ok(batch.clone());
     };
+    ops(batch, changes)?;
     let Some((index, _)) = changes
         .unchanged
         .as_deref()
@@ -158,6 +189,24 @@ pub fn staged_changes(
     columns[index] = Arc::new(texts.finish());
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
         .map_err(|error| ConnectorError::internal(format!("restaging unchanged flags: {error}")))
+}
+
+/// Refuses `batch` unless each of its rows holds a change stream's op in the column `changes`
+/// names: the codes past them are those a commit computes its rows under.
+fn ops(batch: &RecordBatch, changes: &ChangeColumns) -> Result<()> {
+    let ops = batch
+        .column_by_name(&changes.op)
+        .and_then(|ops| ops.as_primitive_opt::<Int8Type>())
+        .ok_or_else(|| ConnectorError::data("a change stream's batch has no op column of bytes"))?;
+    match ops
+        .iter()
+        .find(|op| op.and_then(ChangeOp::from_code).is_none())
+    {
+        Some(op) => Err(ConnectorError::data(format!(
+            "{op:?} is no change stream's op"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// The ordinal of the `target` column `name`, which a row flags unchanged.

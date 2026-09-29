@@ -80,14 +80,16 @@ impl<D: SqlDialect> SqlPlanner<D> {
         };
         Ok(vec![
             computed.finish(),
-            self.replaced(&merging),
+            self.keyed(&merging, &merging.target, &[MERGED, MARKED, BURIED]),
+            self.bounded(&merging, &merging.target, false),
             self.moved(
                 &merging,
                 &merging.target,
                 &merging.names(""),
                 &[MERGED, MARKED],
             ),
-            self.lifted(&merging),
+            self.keyed(&merging, &merging.tombstones, &[MERGED, BURIED]),
+            self.bounded(&merging, &merging.tombstones, true),
             self.moved(
                 &merging,
                 &merging.tombstones,
@@ -144,52 +146,58 @@ impl<D: SqlDialect> SqlPlanner<D> {
         sql
     }
 
-    /// The statement deleting the table's rows the commit replaces: of each key it computed a
-    /// row for or removed, and those before the bound it raised.
-    fn replaced(&self, changed: &Changed<'_>) -> Statement {
-        let (target, op, seq) = (&changed.target, &changed.op, &changed.seq);
+    /// The statement deleting from `table` the rows of each key the commit computed a row coded
+    /// `codes` for: found by their first key column among the computed rows', through the key's
+    /// index, then matched on every key column.
+    fn keyed(&self, changed: &Changed<'_>, table: &str, codes: &[i8]) -> Statement {
+        let op = &changed.op;
+        let codes: Vec<String> = codes.iter().map(ToString::to_string).collect();
+        let codes = codes.join(", ");
+        let first = &changed.keys[0];
         let mut sql = self.sql();
         sql.push(&format!(
-            "DELETE FROM {target} WHERE EXISTS (SELECT 1 FROM {} _rdlt_s WHERE ",
+            "DELETE FROM {table} WHERE {table}.{first} IN (SELECT _rdlt_s.{first} FROM {} _rdlt_s \
+             WHERE ",
             changed.staging
         ));
         self.computed_rows(&mut sql, changed);
         sql.push(&format!(
-            " AND _rdlt_s.{op} IN ({MERGED}, {MARKED}, {BURIED}) AND {}) OR EXISTS (SELECT 1 FROM {} \
-             _rdlt_s WHERE ",
-            changed.on("_rdlt_s", target),
-            changed.staging,
+            " AND _rdlt_s.{op} IN ({codes})) AND EXISTS (SELECT 1 FROM {} _rdlt_s WHERE ",
+            changed.staging
         ));
         self.computed_rows(&mut sql, changed);
         sql.push(&format!(
-            " AND _rdlt_s.{op} = {BOUND} AND {target}.{seq} < _rdlt_s.{seq})"
+            " AND _rdlt_s.{op} IN ({codes}) AND {})",
+            changed.on("_rdlt_s", table)
         ));
         sql.finish()
     }
 
-    /// The statement deleting the tombstones the commit replaces: of each key it computed an
-    /// inserted or updated row for or removed, and, where it raised the bound, those before it and
-    /// the bound itself.
-    fn lifted(&self, changed: &Changed<'_>) -> Statement {
-        let (tombstones, op, seq) = (&changed.tombstones, &changed.op, &changed.seq);
+    /// The statement deleting from `table`, where the commit raised the bound, its rows sequenced
+    /// before it, and with `bound_too`, the rows naming no key: the old bound, never above a new
+    /// one.
+    ///
+    /// Without a new bound, the table is not read.
+    fn bounded(&self, changed: &Changed<'_>, table: &str, bound_too: bool) -> Statement {
+        let (op, seq) = (&changed.op, &changed.seq);
         let mut sql = self.sql();
         sql.push(&format!(
-            "DELETE FROM {tombstones} WHERE EXISTS (SELECT 1 FROM {} _rdlt_s WHERE ",
+            "DELETE FROM {table} WHERE EXISTS (SELECT 1 FROM {} _rdlt_s WHERE ",
             changed.staging
         ));
         self.computed_rows(&mut sql, changed);
         sql.push(&format!(
-            " AND _rdlt_s.{op} IN ({MERGED}, {BURIED}) AND {}) OR EXISTS (SELECT 1 FROM {} _rdlt_s \
-             WHERE ",
-            changed.on("_rdlt_s", tombstones),
-            changed.staging,
+            " AND _rdlt_s.{op} = {BOUND}) AND ({table}.{seq} < (SELECT MAX(_rdlt_s.{seq}) FROM {} \
+             _rdlt_s WHERE ",
+            changed.staging
         ));
         self.computed_rows(&mut sql, changed);
-        sql.push(&format!(
-            " AND _rdlt_s.{op} = {BOUND} AND ({tombstones}.{seq} < _rdlt_s.{seq} OR \
-             {tombstones}.{} IS NULL))",
-            changed.keys[0]
-        ));
+        let old = if bound_too {
+            format!(" OR {table}.{} IS NULL", changed.keys[0])
+        } else {
+            String::new()
+        };
+        sql.push(&format!(" AND _rdlt_s.{op} = {BOUND}){old})"));
         sql.finish()
     }
 
@@ -298,12 +306,25 @@ impl Changed<'_> {
     /// last of the key's upserts not flagging it unchanged sets it, or else as the row `kept`
     /// holds it.
     fn chained(&self, column: &str, ordinal: usize, outer: &str, kept: &str) -> String {
+        self.chained_past(column, ordinal, outer, (kept, ""))
+    }
+
+    /// As [`Changed::chained`], the row `kept` holds counting only where `condition`, on it as
+    /// `_rdlt_k`, holds.
+    fn chained_past(
+        &self,
+        column: &str,
+        ordinal: usize,
+        outer: &str,
+        (kept, condition): (&str, &str),
+    ) -> String {
         let seq = &self.seq;
         format!(
             "CASE WHEN EXISTS (SELECT 1 FROM _rdlt_upserts _rdlt_v WHERE {on_v} AND NOT {flag_v}) \
              THEN (SELECT _rdlt_v.{column} FROM _rdlt_upserts _rdlt_v WHERE {on_v} AND \
              _rdlt_v.{seq} = (SELECT MAX(_rdlt_w.{seq}) FROM _rdlt_upserts _rdlt_w WHERE {on_w} \
-             AND NOT {flag_w})) ELSE (SELECT _rdlt_k.{column} FROM {kept} _rdlt_k WHERE {on_k}) END",
+             AND NOT {flag_w})) ELSE (SELECT _rdlt_k.{column} FROM {kept} _rdlt_k WHERE {on_k}\
+             {condition}) END",
             on_v = self.on("_rdlt_v", outer),
             flag_v = self.flagged("_rdlt_v", ordinal),
             on_w = self.on("_rdlt_w", outer),

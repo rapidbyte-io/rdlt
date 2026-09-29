@@ -37,8 +37,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
              _rdlt_assigned AS (SELECT {keys}, MAX({seq}) AS {q} FROM _rdlt_upserts _rdlt_v WHERE \
              NOT {flag} GROUP BY {keys}), \
              _rdlt_keys AS (SELECT {keys} FROM _rdlt_admitted WHERE {op} IN (0, 1, 2) UNION SELECT \
-             {kept_keys} FROM {target} _rdlt_p WHERE EXISTS (SELECT 1 FROM _rdlt_truncates _rdlt_t \
-             WHERE _rdlt_p.{seq} < _rdlt_t.{seq})), \
+             {kept_keys} FROM {target} _rdlt_p WHERE EXISTS (SELECT 1 FROM _rdlt_truncates) AND \
+             _rdlt_p.{seq} < (SELECT MAX(_rdlt_t.{seq}) FROM _rdlt_truncates _rdlt_t)), \
              _rdlt_deletions AS (SELECT {marked_keys}, _rdlt_a.{seq}, _rdlt_a.{at} FROM _rdlt_keys \
              _rdlt_k JOIN _rdlt_admitted _rdlt_a ON {on_ak} AND _rdlt_a.{op} = 2 WHERE EXISTS \
              (SELECT 1 FROM {target} _rdlt_p WHERE {on_pk}) OR EXISTS (SELECT 1 FROM _rdlt_first \
