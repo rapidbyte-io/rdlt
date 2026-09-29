@@ -146,3 +146,19 @@ fn a_value_adds_a_child_row_for_each_array_item_at_any_depth_within_the_limit() 
         "objects flatten into columns"
     );
 }
+
+#[test]
+fn a_pushed_integer_a_float_column_would_round_is_told_apart() {
+    let json = |text: &str| super::Sent::Json(text.to_owned());
+    let edge = 1_i64 << 53;
+    assert!(!json(&edge.to_string()).rounds_into(&LogicalType::Float64));
+    assert!(!json(&(-edge).to_string()).rounds_into(&LogicalType::Float64));
+    assert!(json(&(edge + 1).to_string()).rounds_into(&LogicalType::Float64));
+    assert!(json(&"9".repeat(40)).rounds_into(&LogicalType::Float64));
+    assert!(json(&((1 << 24) + 1).to_string()).rounds_into(&LogicalType::Float32));
+    assert!(
+        !json("9007199254740993.5").rounds_into(&LogicalType::Float64),
+        "a float is no integer"
+    );
+    assert!(!json(&(edge + 1).to_string()).rounds_into(&LogicalType::Int64));
+}
