@@ -446,8 +446,14 @@ struct VaultConfig {
     hard_on_soft: bool,
     /// Stores null in the columns an update flags unchanged.
     drop_unchanged: bool,
+    /// Keeps a change stream's tombstones only as long as the session that made them.
+    session_tombstones: bool,
+    /// Keeps a table's tombstones when a generation replaces its rows.
+    keep_replaced_tombstones: bool,
     /// Declares it merges no change stream.
     no_change_merges: bool,
+    /// Declares it cannot replace a table's rows with a generation.
+    no_replace: bool,
     /// Declares it removes rows but never marks them deleted.
     hard_deletes_only: bool,
     /// Declares it marks rows deleted but never removes them.
@@ -566,6 +572,8 @@ struct VaultSession {
     stores: VaultStores,
     pipeline: PipelineId,
     epoch: u64,
+    /// The tombstones this session made, under `session_tombstones`.
+    tombstones: Mutex<BTreeMap<String, changes::Tombstones>>,
 }
 
 struct VaultWriter {
@@ -608,6 +616,7 @@ impl DestinationConnector for Vault {
             capabilities.schema_changes = SchemaChanges::default();
         }
         capabilities.merge_changes &= !self.config.no_change_merges;
+        capabilities.write_modes.replace &= !self.config.no_replace;
         capabilities.delete_modes.hard &= !self.config.soft_deletes_only;
         capabilities.delete_modes.soft &= !self.config.hard_deletes_only;
         capabilities.partial_updates &= !self.config.no_partial_updates;
@@ -670,6 +679,7 @@ impl DestinationConnector for Vault {
             stores: self.stores.clone(),
             pipeline: context.pipeline.clone(),
             epoch,
+            tombstones: Mutex::default(),
         };
         Ok(Opened {
             session,
@@ -751,7 +761,9 @@ impl VaultSession {
                 .remove(&(table.clone(), *generation))
                 .unwrap_or_default();
             store.generations.retain(|(name, _), _| *name != table);
-            store.tombstones.remove(&table);
+            if !self.config.keep_replaced_tombstones {
+                store.tombstones.remove(&table);
+            }
             store.published.insert(table, rows);
         }
         rows
@@ -787,7 +799,12 @@ impl VaultSession {
                     let changes = key.changes.as_ref().expect("a change stream's key");
                     let batches: Vec<RecordBatch> =
                         incoming.into_iter().map(|(_, batch)| batch).collect();
-                    let tombstones = store.tombstones.entry(table).or_default();
+                    let mut own = self.tombstones.lock().unwrap();
+                    let tombstones = if self.config.session_tombstones {
+                        own.entry(table).or_default()
+                    } else {
+                        store.tombstones.entry(table).or_default()
+                    };
                     changes::merge_changes(
                         published,
                         tombstones,
@@ -1412,7 +1429,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ),
     ("local_state", &["D-STATE"]),
     ("stale_writes", &["D-DISCARD"]),
-    ("replace_early", &["D-REPLACE"]),
+    ("replace_early", &["D-REPLACE", "D-DELETE"]),
     (
         "merge_appends",
         &[
@@ -1445,6 +1462,8 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("truncate_everything", &["D-TRUNCATE"]),
     ("hard_on_soft", &["D-DELETE", "D-TRUNCATE"]),
     ("drop_unchanged", &["D-PARTIAL"]),
+    ("session_tombstones", &["D-DELETE", "D-TRUNCATE"]),
+    ("keep_replaced_tombstones", &["D-DELETE"]),
 ];
 
 #[tokio::test]
@@ -1458,7 +1477,8 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
 #[tokio::test]
 async fn change_clauses_check_only_what_a_destination_declares_it_does() {
     // Each broken behavior goes unchecked where the destination declares it does not do it.
-    let cases: [(&[&str], &[&str]); 5] = [
+    let cases: [(&[&str], &[&str]); 6] = [
+        (&["no_replace", "keep_replaced_tombstones"], &["D-REPLACE"]),
         (
             &["no_change_merges", "ignore_seq_guard"],
             &["D-DELETE", "D-PARTIAL", "D-TRUNCATE"],

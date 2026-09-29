@@ -319,7 +319,7 @@ pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'stati
 
 /// The generation the replace clause fills: beyond the signed range, as the engine's often are,
 /// so a destination that narrows ids is caught.
-const GENERATION: GenerationId = GenerationId(18_000_000_000_000_000_000);
+pub(super) const GENERATION: GenerationId = GenerationId(18_000_000_000_000_000_000);
 
 /// The sequence column of the merge clause's table.
 const SEQ: &str = "_rdlt_seq";
