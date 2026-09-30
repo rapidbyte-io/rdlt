@@ -8,6 +8,7 @@
 mod acks;
 mod delta;
 mod phases;
+mod replan;
 #[cfg(test)]
 mod tests;
 
@@ -96,10 +97,17 @@ pub(crate) struct PartitionRun {
     started: bool,
     ended: bool,
     answered: u64,
+    /// Stops this partition alone.
+    stop: CancellationToken,
 }
 
 impl PartitionRun {
-    pub(crate) fn new(stream: usize, id: PartitionId, on_demand: bool) -> Self {
+    pub(crate) fn new(
+        stream: usize,
+        id: PartitionId,
+        on_demand: bool,
+        stop: CancellationToken,
+    ) -> Self {
         Self {
             stream,
             id,
@@ -107,6 +115,7 @@ impl PartitionRun {
             started: false,
             ended: false,
             answered: 0,
+            stop,
         }
     }
 
@@ -144,6 +153,10 @@ pub(crate) struct CoordinatorParts {
     pub(crate) wal: Option<LoadLog>,
     /// The partitions' positions as the destination holds them, through the commits that landed.
     pub(crate) positions: Positions,
+    /// Whether the run follows its source: it reads until stopped, and plans its streams again
+    /// every `replan`.
+    pub(crate) follow: bool,
+    pub(crate) replan: Duration,
 }
 
 pub(crate) struct Coordinator {
@@ -177,7 +190,7 @@ impl Coordinator {
             self.load().await?;
             self.commit().await?;
             self.advance_phases().await?;
-            if self.all_ended() {
+            if self.done() {
                 break;
             }
         }
@@ -199,10 +212,12 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Commits as the policy says until every partition has ended.
+    /// Commits as the policy says until every partition has ended, and in a following run the
+    /// attempt stops; a following run plans its streams again as it reads.
     async fn load(&mut self) -> Result<(), Error> {
         let mut timer = self.timer();
-        while !self.all_ended() {
+        let mut replan = self.replan_timer();
+        while !self.done() {
             tokio::select! {
                 biased;
                 // Cancellation wins: the attempt is ending and nothing more may commit.
@@ -212,6 +227,12 @@ impl Coordinator {
                     self.stopping = true;
                     self.raise_barrier().await?;
                     self.parts.stop_reads.cancel();
+                }
+                // Planning again starts from the positions the last commit made durable: a
+                // partition whose end is not yet committed waits for a later plan.
+                () = &mut replan => {
+                    self.replan().await?;
+                    replan = self.replan_timer();
                 }
                 // The interval comes before data, so a busy source still commits on time.
                 () = &mut timer => {
@@ -239,6 +260,20 @@ impl Coordinator {
             Some(every) => self.parts.env.sleep(every),
             None => Box::pin(std::future::pending()),
         }
+    }
+
+    fn replan_timer(&self) -> Sleep {
+        if self.parts.follow {
+            self.parts.env.sleep(self.parts.replan)
+        } else {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// Whether the attempt has read all it will: every partition ended, and a following run
+    /// asked to stop.
+    fn done(&self) -> bool {
+        self.all_ended() && (!self.parts.follow || self.stopping)
     }
 
     fn all_ended(&self) -> bool {
@@ -385,7 +420,7 @@ impl Coordinator {
         }
         let mut log = self.parts.log.lock();
         log.pending = None;
-        log.commits.push(CommitRecord { receipt, streams });
+        log.committed.add(CommitRecord { receipt, streams });
     }
 }
 

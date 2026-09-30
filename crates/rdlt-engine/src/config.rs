@@ -1,6 +1,7 @@
 //! Engine configuration: resources, the batch, commit and retry policies, validated at build.
 
 mod batch;
+mod commit;
 #[cfg(test)]
 mod tests;
 
@@ -10,77 +11,7 @@ use std::time::Duration;
 use crate::error::Error;
 
 pub use batch::BatchPolicy;
-
-/// When the engine commits: whichever threshold is reached first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommitPolicy {
-    every: Option<Duration>,
-    rows: Option<NonZeroU64>,
-    bytes: Option<NonZeroU64>,
-}
-
-impl CommitPolicy {
-    /// A policy that commits after `every` elapses, after `rows` rows or after `bytes` bytes;
-    /// at least one threshold must be set, and none may be zero.
-    pub fn new(
-        every: Option<Duration>,
-        rows: Option<u64>,
-        bytes: Option<u64>,
-    ) -> Result<Self, Error> {
-        let invalid = |what: &str| {
-            Error::config(format!("commit policy: {what}")).with_code("commit_policy_invalid")
-        };
-        if every.is_none() && rows.is_none() && bytes.is_none() {
-            return Err(invalid("set at least one of every, rows and bytes"));
-        }
-        if every == Some(Duration::ZERO) {
-            return Err(invalid("every must be longer than zero"));
-        }
-        let nonzero = |value: Option<u64>, name: &str| match value {
-            Some(value) => NonZeroU64::new(value)
-                .map(Some)
-                .ok_or_else(|| invalid(&format!("{name} must be more than zero"))),
-            None => Ok(None),
-        };
-        Ok(Self {
-            every,
-            rows: nonzero(rows, "rows")?,
-            bytes: nonzero(bytes, "bytes")?,
-        })
-    }
-
-    /// The commit interval.
-    pub fn every(&self) -> Option<Duration> {
-        self.every
-    }
-
-    /// The row threshold.
-    pub fn rows(&self) -> Option<NonZeroU64> {
-        self.rows
-    }
-
-    /// The byte threshold.
-    pub fn bytes(&self) -> Option<NonZeroU64> {
-        self.bytes
-    }
-
-    /// Whether `rows` and `bytes` written since the last commit reach a threshold.
-    pub(crate) fn is_due(&self, rows: u64, bytes: u64) -> bool {
-        self.rows.is_some_and(|limit| rows >= limit.get())
-            || self.bytes.is_some_and(|limit| bytes >= limit.get())
-    }
-}
-
-impl Default for CommitPolicy {
-    /// Every 60 seconds or 1 GiB, whichever comes first.
-    fn default() -> Self {
-        Self {
-            every: Some(Duration::from_secs(60)),
-            rows: None,
-            bytes: NonZeroU64::new(1 << 30),
-        }
-    }
-}
+pub use commit::CommitPolicy;
 
 /// How many attempts a run makes and how long it waits between them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,7 +102,9 @@ pub struct EngineConfig {
     partition_buffer: NonZeroUsize,
     barrier_wait: Duration,
     batch: BatchPolicy,
-    commit: CommitPolicy,
+    /// The commit policy set, where one is; each run resolves an unset one for what it reads.
+    commit: Option<CommitPolicy>,
+    replan: Duration,
     retry: RetryPolicy,
 }
 
@@ -187,6 +120,7 @@ impl EngineConfig {
             barrier_wait: None,
             batch: None,
             commit: None,
+            replan: None,
             retry: None,
         }
     }
@@ -226,9 +160,25 @@ impl EngineConfig {
         &self.batch
     }
 
-    /// When the engine commits.
-    pub fn commit(&self) -> &CommitPolicy {
-        &self.commit
+    /// When the engine commits, where a policy was set; an unset one resolves per run
+    /// ([`CommitPolicy::default`], or [`CommitPolicy::streaming`] where the run follows its
+    /// source or reads changes).
+    pub fn commit(&self) -> Option<&CommitPolicy> {
+        self.commit.as_ref()
+    }
+
+    /// The commit policy of a run that follows its source or reads changes where `streaming`.
+    pub(crate) fn commit_for(&self, streaming: bool) -> CommitPolicy {
+        match (self.commit, streaming) {
+            (Some(policy), _) => policy,
+            (None, true) => CommitPolicy::streaming(),
+            (None, false) => CommitPolicy::default(),
+        }
+    }
+
+    /// How often a following run plans its streams again.
+    pub fn replan(&self) -> Duration {
+        self.replan
     }
 
     /// How the engine retries failed attempts.
@@ -247,7 +197,8 @@ impl Default for EngineConfig {
             partition_buffer: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             barrier_wait: Duration::from_secs(5),
             batch: BatchPolicy::default(),
-            commit: CommitPolicy::default(),
+            commit: None,
+            replan: Duration::from_secs(60),
             retry: RetryPolicy::default(),
         }
     }
@@ -264,6 +215,7 @@ pub struct EngineConfigBuilder {
     barrier_wait: Option<Duration>,
     batch: Option<BatchPolicy>,
     commit: Option<CommitPolicy>,
+    replan: Option<Duration>,
     retry: Option<RetryPolicy>,
 }
 
@@ -317,10 +269,18 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// When to commit (default: every 60 s or 1 GiB).
+    /// When to commit (default: every 60 s or 1 GiB, or every 10 s where a run follows its source
+    /// or reads changes).
     #[must_use]
     pub fn commit(mut self, policy: CommitPolicy) -> Self {
         self.commit = Some(policy);
+        self
+    }
+
+    /// How often a following run plans its streams again (default 60 s); more than zero.
+    #[must_use]
+    pub fn replan(mut self, every: Duration) -> Self {
+        self.replan = Some(every);
         self
     }
 
@@ -363,7 +323,11 @@ impl EngineConfigBuilder {
             .ok_or_else(|| invalid("partition_buffer"))?,
             barrier_wait: self.barrier_wait.unwrap_or(defaults.barrier_wait),
             batch: self.batch.unwrap_or(defaults.batch),
-            commit: self.commit.unwrap_or(defaults.commit),
+            commit: self.commit,
+            replan: match self.replan {
+                Some(Duration::ZERO) => return Err(invalid("replan")),
+                replan => replan.unwrap_or(defaults.replan),
+            },
             retry,
         })
     }

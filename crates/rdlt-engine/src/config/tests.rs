@@ -104,7 +104,7 @@ fn the_builder_applies_defaults_and_settings() {
     assert_eq!(config.partition_buffer().get(), 6);
     assert_eq!(config.barrier_wait(), Duration::from_millis(7));
     assert_eq!(config.batch(), &batch);
-    assert_eq!(config.commit(), &policy);
+    assert_eq!(config.commit(), Some(&policy));
     assert_eq!(config.retry(), &retry);
 }
 
@@ -150,4 +150,32 @@ fn the_default_batch_policy_is_eight_mebibytes_a_mebirow_or_a_second() {
     assert_eq!(policy.max_latency(), Duration::from_secs(1));
     assert_eq!(policy.chunk_bytes().get(), 1 << 20);
     assert_eq!(EngineConfig::default().batch(), &policy);
+}
+
+#[test]
+fn an_unset_commit_policy_commits_every_ten_seconds_where_the_run_streams() {
+    let config = EngineConfig::default();
+    assert_eq!(config.commit(), None);
+    assert_eq!(config.commit_for(false), CommitPolicy::default());
+    let streaming = config.commit_for(true);
+    assert_eq!(streaming.every(), Some(Duration::from_secs(10)));
+    assert_eq!(streaming.bytes(), CommitPolicy::default().bytes());
+    let set = CommitPolicy::new(Some(Duration::from_secs(3)), None, None).unwrap();
+    let config = EngineConfig::builder().commit(set).build().unwrap();
+    assert_eq!(config.commit_for(true), set);
+    assert_eq!(config.commit_for(false), set);
+}
+
+#[test]
+fn a_following_run_plans_again_every_minute_unless_told_otherwise_and_never_every_instant() {
+    assert_eq!(EngineConfig::default().replan(), Duration::from_secs(60));
+    let every = Duration::from_millis(250);
+    let config = EngineConfig::builder().replan(every).build().unwrap();
+    assert_eq!(config.replan(), every);
+    let refused = EngineConfig::builder().replan(Duration::ZERO).build();
+    assert_eq!(
+        refused.unwrap_err().code(),
+        Some("config_invalid"),
+        "a zero interval would plan without end"
+    );
 }

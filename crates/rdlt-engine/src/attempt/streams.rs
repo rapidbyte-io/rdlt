@@ -89,7 +89,14 @@ impl Planning<'_> {
         };
         let on_demand = spec.checkpointing() == Checkpointing::OnDemand;
         let partial_updates = self.capabilities.partial_updates;
-        let mut planned = planned(plan, index, on_demand, partial_updates, cycle, partitioned);
+        let follow = self.context.plan.until().follows();
+        let mut planned = planned(
+            plan,
+            index,
+            (on_demand, partial_updates, follow),
+            cycle,
+            partitioned,
+        );
         planned.stream.sequences = sequences;
         planned.stream.replayable = spec.is_replayable();
         Ok(planned)
@@ -145,14 +152,16 @@ impl Planning<'_> {
     }
 }
 
-/// `plan`'s stream, its table at `index`, ready to load `partitioned`: a change stream reads in
-/// phases, loading its pushes as the plan says to a destination that keeps unchanged columns
-/// where `partial_updates` says.
+/// `plan`'s stream, its table at `index`, ready to load `partitioned`, checkpointing on demand,
+/// changing unchanged columns and following its source as `(on_demand, partial_updates,
+/// follow)` say.
+///
+/// A change stream reads in phases, and an incremental stream of a following run tracks its
+/// partitions as one does, so it is planned again as it reads.
 fn planned(
     plan: &StreamPlan,
     index: usize,
-    on_demand: bool,
-    partial_updates: bool,
+    (on_demand, partial_updates, follow): (bool, bool, bool),
     cycle: Option<Cycle>,
     partitioned: Partitioned,
 ) -> Planned {
@@ -164,7 +173,8 @@ fn planned(
         partial_updates,
     });
     // Only change streams read in phases (spec §9.4).
-    let phases = cdc.then(|| Phases {
+    let tracked = cdc || (follow && plan.read_mode() == ReadMode::Incremental);
+    let phases = tracked.then(|| Phases {
         phase: partitioned.phase,
         reading: Vec::new(),
         committed: partitioned.committed,

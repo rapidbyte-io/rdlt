@@ -8,6 +8,7 @@
 mod change_limits;
 mod change_tables;
 mod changes;
+mod continuous;
 mod destinations;
 mod engine;
 mod exactness;

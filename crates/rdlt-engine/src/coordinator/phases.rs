@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 
 use rdlt_connector::{
-    BoxFuture, Cursor, Partition, PartitionId, PartitionState, StateChange, StateEntry, StateKey,
-    StreamState,
+    BoxFuture, Cursor, Partition, PartitionId, PartitionPlan, PartitionState, StateChange,
+    StateEntry, StateKey, StreamState,
 };
 use tokio::sync::mpsc;
 
 use super::{Coordinator, PartitionRun};
-use crate::error::{Error, Side};
+use crate::error::{Error, ErrorKind, Side};
 use crate::partition::{self, ChangeMode, PartitionContext, PartitionJob};
 
 /// A phased stream's place in its phases.
@@ -90,7 +90,7 @@ impl Coordinator {
     /// Phases advance only after a commit, which takes every seal the coordinator has seen, and a
     /// partition seals its end before it reports it has ended: an ended partition's end is
     /// committed.
-    fn phase_ended(&self, stream: usize) -> bool {
+    pub(super) fn phase_ended(&self, stream: usize) -> bool {
         let run = &self.parts.streams[stream];
         let Some(phases) = &run.phases else {
             return false;
@@ -107,34 +107,61 @@ impl Coordinator {
     /// Plans `stream` again from its committed state; a plan naming a new phase starts the
     /// phase's partitions, and any other settles the stream.
     async fn plan_again(&mut self, stream: usize) -> Result<(), Error> {
-        let name = self.parts.streams[stream].name.clone();
-        let Some(phases) = &self.parts.streams[stream].phases else {
-            return Ok(());
-        };
-        let state = StreamState {
-            phase: phases.phase,
-            partitions: phases.committed.clone(),
-            ..StreamState::default()
-        };
-        let planned = self
-            .parts
-            .source
-            .plan(&name, &state)
-            .await
-            .map_err(|error| {
-                Error::connector(Side::Source, format!("planning stream {name}"), error)
-                    .with_stream(&name)
-            })?;
+        let planned = self.plan_stream(stream).await?;
         let Some(phases) = self.parts.streams[stream].phases.as_mut() else {
             return Ok(());
         };
-        let next = match planned.phase {
-            Some(next) if next != phases.phase => next,
+        match planned.phase {
+            Some(next) if next != phases.phase => self.begin(stream, next, planned),
             _ => {
                 phases.settled = true;
-                return Ok(());
+                Ok(())
             }
+        }
+    }
+
+    /// What the source plans for `stream` from the state of its phase the destination holds.
+    pub(super) async fn plan_stream(&self, stream: usize) -> Result<PartitionPlan, Error> {
+        let name = &self.parts.streams[stream].name;
+        let state = self.parts.streams[stream]
+            .phases
+            .as_ref()
+            .map(|phases| StreamState {
+                phase: phases.phase,
+                partitions: phases.committed.clone(),
+                ..StreamState::default()
+            })
+            .unwrap_or_default();
+        self.parts.source.plan(name, &state).await.map_err(|error| {
+            Error::connector(Side::Source, format!("planning stream {name}"), error)
+                .with_stream(name)
+        })
+    }
+
+    /// Begins `stream`'s phase `next`, starting its partitions where `planned` says.
+    ///
+    /// Only a change stream reads in phases: `phase_unexpected` for any other.
+    pub(super) fn begin(
+        &mut self,
+        stream: usize,
+        next: u16,
+        planned: PartitionPlan,
+    ) -> Result<(), Error> {
+        let run = &mut self.parts.streams[stream];
+        let Some(phases) = run.phases.as_mut() else {
+            return Ok(());
         };
+        if phases.template.changes.is_none() {
+            return Err(Error::new(
+                ErrorKind::Source,
+                format!(
+                    "stream {}: the source planned phase {next} of a stream not read as changes",
+                    run.name
+                ),
+            )
+            .with_code("phase_unexpected")
+            .with_stream(&run.name));
+        }
         let mut begun = phases.begun.take().unwrap_or_default();
         begun
             .stale
@@ -152,16 +179,39 @@ impl Coordinator {
     }
 
     /// Starts reading `partition` of `stream`, in its phase, from `cursor`.
-    fn launch(
+    ///
+    /// A partition read again takes the place its ended read had, so a run that reads for ever
+    /// tracks each partition once.
+    pub(super) fn launch(
         &mut self,
         stream: usize,
         template: Template,
         partition: Partition,
         cursor: Option<Cursor>,
     ) -> Result<(), Error> {
-        let index = self.parts.partitions.len();
-        let run = &mut self.parts.streams[stream];
         let id = partition.id().clone();
+        let stop = self.parts.stop_reads.child_token();
+        let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, stop.clone());
+        let partitions = &mut self.parts.partitions;
+        let run = &mut self.parts.streams[stream];
+        let ended = run.phases.as_ref().and_then(|phases| {
+            phases
+                .reading
+                .iter()
+                .copied()
+                .find(|index| partitions[*index].id == id && partitions[*index].ended)
+        });
+        let index = if let Some(index) = ended {
+            partitions[index] = tracked;
+            index
+        } else {
+            partitions.push(tracked);
+            if let Some(phases) = run.phases.as_mut() {
+                phases.reading.push(partitions.len() - 1);
+            }
+            partitions.len() - 1
+        };
+        run.remaining += 1;
         let job = PartitionJob {
             index,
             stream: run.name.clone(),
@@ -170,13 +220,8 @@ impl Coordinator {
             cursor,
             on_demand: template.on_demand,
             changes: template.changes,
+            stop,
         };
-        run.remaining += 1;
-        if let Some(phases) = run.phases.as_mut() {
-            phases.reading.push(index);
-        }
-        let tracked = PartitionRun::new(stream, id, template.on_demand);
-        self.parts.partitions.push(tracked);
         (self.parts.launcher)(job)
     }
 

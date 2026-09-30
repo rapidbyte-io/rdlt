@@ -20,6 +20,7 @@ fn job() -> PartitionJob {
         cursor: None,
         on_demand: false,
         changes: None,
+        stop: tokio_util::sync::CancellationToken::new(),
     }
 }
 

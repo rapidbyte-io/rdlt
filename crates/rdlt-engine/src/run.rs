@@ -9,11 +9,12 @@ use std::future::Future;
 use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rdlt_connector::{Destination, LoadId, Source};
+use rdlt_connector::{Destination, LoadId, PipelineId, Source};
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{self, RunContext};
@@ -78,7 +79,7 @@ impl Engine {
             cycles: Mutex::new(BTreeMap::new()),
         };
         RunHandle {
-            future: Box::pin(drive(context, control.clone())),
+            future: Box::pin(deadlined(context, control.clone())),
             control,
         }
     }
@@ -161,6 +162,10 @@ impl Future for RunHandle {
     }
 }
 
+/// How many of the latest attempts a run keeps unfolded: a failed attempt's commit in flight is
+/// credited to it once the next one opens.
+const UNFOLDED: usize = 2;
+
 /// How long to wait before the next attempt: as long as the failure asked, up to the policy's
 /// longest delay, or the policy's backoff after `failures` consecutive failures.
 fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> Duration {
@@ -171,24 +176,62 @@ fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> 
     )
 }
 
-/// Credits a failed attempt's commit in flight to it once `log`'s attempt opened and found it landed,
-/// and keeps `log`'s own commit in flight when its attempt `failed`.
-///
-/// An attempt that never opened read nothing back, so the commit stays in flight for the next one.
-fn credit(
-    attempts: &mut [AttemptRecord],
-    unresolved: &mut Option<(usize, CommitRecord)>,
-    log: &mut AttemptLog,
-    failed: bool,
-) {
-    if let Some(opened) = log.opened
-        && let Some((index, pending)) = unresolved.take()
-        && opened == (pending.receipt.load_id, pending.receipt.commit_seq)
-    {
-        attempts[index].log.commits.push(pending);
+/// A run's attempts as it makes them: the latest, which a later one may still credit a commit
+/// to, and the report the earlier ones are folded into, so a run that retries for ever stays
+/// bounded.
+struct Ledger {
+    attempts: Vec<AttemptRecord>,
+    report: Report,
+    /// A failed attempt's commit in flight, credited to it once a later attempt reads it back.
+    unresolved: Option<CommitRecord>,
+}
+
+impl Ledger {
+    fn new(pipeline: PipelineId) -> Self {
+        Self {
+            attempts: Vec::new(),
+            report: Report::new(pipeline),
+            unresolved: None,
+        }
     }
-    if failed && let Some(pending) = log.pending.take() {
-        *unresolved = Some((attempts.len(), pending));
+
+    /// Records `attempt`, which `failed` or not, and whether it committed anything.
+    ///
+    /// A failed attempt's commit in flight is credited once a later attempt opened and found it
+    /// landed: to the attempt whose load its receipt names, among the latest or already folded.
+    /// An attempt that never opened read nothing back, so the commit stays in flight for the next.
+    fn record(&mut self, mut attempt: AttemptRecord, failed: bool) -> bool {
+        let log = &mut attempt.log;
+        if let Some(opened) = log.opened
+            && let Some(pending) = self.unresolved.take()
+            && opened == (pending.receipt.load_id, pending.receipt.commit_seq)
+        {
+            let owner = self
+                .attempts
+                .iter_mut()
+                .find(|earlier| earlier.load_id == pending.receipt.load_id);
+            match owner {
+                Some(earlier) => earlier.log.committed.add(pending),
+                None => self.report.credit(pending),
+            }
+        }
+        if failed && let Some(pending) = log.pending.take() {
+            self.unresolved = Some(pending);
+        }
+        let progressed = log.committed.commits > 0;
+        self.attempts.push(attempt);
+        if self.attempts.len() > UNFOLDED {
+            self.report.absorb(self.attempts.remove(0));
+        }
+        progressed
+    }
+
+    /// The run's report, every attempt folded in.
+    fn report(mut self) -> Report {
+        for attempt in self.attempts {
+            self.report.absorb(attempt);
+        }
+        self.report
     }
 }
 
@@ -211,29 +254,64 @@ async fn attempted(
     }
 }
 
+/// Runs attempts as `drive` does, and at the plan's deadline, where it has one, stops the run as
+/// a stop after a commit does.
+///
+/// A run the deadline stops read for as long as it was asked, so it succeeded; where its last
+/// attempt had failed and was waiting to be retried, it failed.
+async fn deadlined(context: RunContext, control: RunControl) -> RunOutcome {
+    let Some(deadline) = context.plan.until().deadline() else {
+        return drive(context, control).await;
+    };
+    let reached = AtomicBool::new(false);
+    let ended = CancellationToken::new();
+    let sleep = context.env.sleep(deadline);
+    let timer = async {
+        tokio::select! {
+            biased;
+            () = ended.cancelled() => {}
+            () = sleep => {
+                reached.store(true, Ordering::SeqCst);
+                control.after_commit.cancel();
+            }
+        }
+    };
+    let run = async {
+        let outcome = drive(context, control.clone()).await;
+        ended.cancel();
+        outcome
+    };
+    let (mut outcome, ()) = tokio::join!(run, timer);
+    if reached.load(Ordering::SeqCst) && outcome.report.status == RunStatus::Stopped {
+        outcome.report.status = if outcome.error.is_some() {
+            RunStatus::Failed
+        } else {
+            RunStatus::Succeeded
+        };
+    }
+    outcome
+}
+
 /// Runs attempts until one finishes, the retry policy gives up, or the run is stopped.
 async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
     let started = context.env.instant();
     let retry = *context.config.retry();
-    let mut attempts: Vec<AttemptRecord> = Vec::new();
-    // A failed attempt's commit in flight, credited to it once a later attempt reads it back.
-    let mut unresolved: Option<(usize, CommitRecord)> = None;
+    let mut ledger = Ledger::new(context.plan.pipeline().clone());
     let mut failures = 0;
     let (status, error) = loop {
         let load_id = context.env.load_id();
         let log = Arc::new(Mutex::new(AttemptLog::default()));
         let started_at = context.env.now();
         let result = attempted(&context, &control, load_id, Arc::clone(&log)).await;
-        let mut log = std::mem::take(&mut *log.lock());
-        credit(&mut attempts, &mut unresolved, &mut log, result.is_err());
-        let progressed = !log.commits.is_empty();
-        attempts.push(AttemptRecord {
+        let log = std::mem::take(&mut *log.lock());
+        let attempt = AttemptRecord {
             load_id,
             started_at,
             ended_at: context.env.now(),
             log,
             error: result.as_ref().err().map(Error::report),
-        });
+        };
+        let progressed = ledger.record(attempt, result.is_err());
         let error = match result {
             Ok(AttemptEnd::Exhausted) => break (RunStatus::Succeeded, None),
             Ok(AttemptEnd::Stopped) => break (RunStatus::Stopped, None),
@@ -257,13 +335,9 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
             () = context.env.sleep(delay) => {}
         }
     };
-    let elapsed = context.env.instant().saturating_duration_since(started);
-    let report = Report::fold(
-        context.plan.pipeline().clone(),
-        status,
-        attempts,
-        elapsed,
-        context.budget.peak(),
-    );
+    let mut report = ledger.report();
+    report.status = status;
+    report.elapsed = context.env.instant().saturating_duration_since(started);
+    report.peak_memory = context.budget.peak();
     RunOutcome { report, error }
 }
