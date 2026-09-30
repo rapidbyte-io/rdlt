@@ -119,12 +119,22 @@ async fn claims_exclude_one_another(wal: &dyn WalStore) {
     wal.append(&orders, chunk(1, 0), Bytes::from_static(b"frame"))
         .await
         .expect("appends");
-    assert_eq!(wal.loads(&orders).await.expect("loads list"), [load]);
+    assert!(
+        wal.loads(&orders)
+            .await
+            .expect("loads list")
+            .contains(&load)
+    );
     drop(held);
     let again = wal.claim(&orders, load).await.expect("claims");
     assert!(again.is_some(), "a claim is free once let go");
     wal.remove_log(&orders, load).await.expect("removes");
-    assert_eq!(wal.loads(&orders).await.expect("loads list"), []);
+    assert!(
+        !wal.loads(&orders)
+            .await
+            .expect("loads list")
+            .contains(&load)
+    );
     assert_eq!(wal.chunks(&orders, load).await.expect("chunks"), []);
     wal.remove_log(&orders, load)
         .await
@@ -151,4 +161,45 @@ async fn a_local_log_has_one_claimant_at_a_time() {
 #[tokio::test]
 async fn a_log_in_memory_has_one_claimant_at_a_time() {
     claims_exclude_one_another(&super::super::memory::MemoryWal::default()).await;
+}
+
+#[tokio::test]
+async fn a_log_that_never_wrote_a_frame_is_still_listed_so_replay_removes_its_claim() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let load = chunk(3, 0).load;
+    // A load that claimed its log and failed before its first frame leaves only the claim's mark.
+    drop(wal.claim(&orders, load).await.expect("claims"));
+    assert_eq!(wal.loads(&orders).await.expect("loads list"), [load]);
+    assert_eq!(wal.chunks(&orders, load).await.expect("chunks"), []);
+    wal.remove_log(&orders, load).await.expect("removes");
+    assert_eq!(wal.loads(&orders).await.expect("loads list"), []);
+    let left = std::fs::read_dir(wal.pipeline_dir(&orders))
+        .expect("the pipeline's directory stays")
+        .count();
+    assert_eq!(left, 0, "nothing of the log is left");
+}
+
+#[tokio::test]
+async fn a_synced_chunk_lets_its_file_go_and_reopens_where_appended_again() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    for number in 0..3 {
+        wal.append(&orders, chunk(1, number), Bytes::from_static(b"frame"))
+            .await
+            .expect("appends");
+        wal.sync(&orders, chunk(1, number)).await.expect("syncs");
+    }
+    assert_eq!(
+        wal.open.lock().len(),
+        0,
+        "no finished chunk holds a file open"
+    );
+    wal.append(&orders, chunk(1, 2), Bytes::from_static(b"more"))
+        .await
+        .expect("appends");
+    let read = wal.read(&orders, chunk(1, 2), 0, 100).await.expect("reads");
+    assert_eq!(&read[..], b"framemore");
 }

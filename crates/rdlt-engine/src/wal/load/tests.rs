@@ -200,3 +200,57 @@ async fn a_load_holds_its_log_until_it_ends() {
     let replayer = wal.claim(&pipeline(), load()).await.expect("claims");
     assert!(replayer.is_some(), "an ended load's log is free");
 }
+
+/// A seal of `segment` of partition `p0`, which cannot read again.
+fn sealed_at(segment: u64) -> Sealed {
+    Sealed {
+        segment: SegmentId(segment),
+        stream: StreamName::new("orders").expect("a valid stream"),
+        partition: PartitionId::parse("p0").expect("a valid partition"),
+        replayable: false,
+        from: None,
+        state: PartitionState::Done,
+    }
+}
+
+#[tokio::test]
+async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segments_or_not() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
+        .await
+        .expect("the log starts");
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let observed = Arc::clone(&store);
+    let written = async {
+        let mut seq = CommitSeq::FIRST;
+        for round in 0..5_u64 {
+            let (full, empty) = (10 * round + 1, 10 * round + 2);
+            log.batch(&Inline, &budget, 0, &orders, SegmentId(full), &ids(0))
+                .await
+                .expect("the batch is logged");
+            // An idle partition seals an empty segment, which no commit publishes.
+            let mut commit = meta(&[full]);
+            commit.commit_seq = seq;
+            log.commit(vec![sealed_at(full), sealed_at(empty)], &commit)
+                .await
+                .expect("durable");
+            let receipt = Receipt {
+                load_id: load(),
+                commit_seq: seq,
+                committed_at: UNIX_EPOCH,
+                rows: 3,
+                bytes: 24,
+            };
+            log.committed(&receipt).await.expect("logged");
+            seq = seq.next();
+        }
+        // Every commit has its receipt: at most the chunk the last receipt went to is left.
+        let kept = observed.stored(&pipeline()).len();
+        assert!(kept <= 1, "{kept} chunks kept");
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}

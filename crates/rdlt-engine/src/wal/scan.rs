@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use arrow_array::RecordBatch;
 use rdlt_connector::{CommitMeta, CommitSeq, LoadId, PipelineId, SegmentId};
 
-use super::frame::{self, Frame, Frames, HEAD, Header, Seal, Table};
+use super::frame::{self, Frame, Frames, HEAD, Header, Seal, Skimmed, Table};
 use super::store::{Chunk, WalStore};
 use crate::error::Error;
 
@@ -76,6 +76,7 @@ pub(crate) async fn scan(
         .chunks(pipeline, load)
         .await
         .map_err(Error::from_wal)?;
+    let last = chunks.last().map(|(number, _)| *number);
     for (number, len) in chunks {
         let chunk = Chunk { load, number };
         let mut offset = 0;
@@ -92,6 +93,11 @@ pub(crate) async fn scan(
             )?;
             offset = next;
         }
+        // Only the last chunk can end torn: every other ends with a commit's frame, durable.
+        if offset < len && Some(number) != last {
+            let detail = format!("chunk {number} is damaged at byte {offset}");
+            return Err(unreadable(pipeline, load, &detail));
+        }
     }
     Ok(scanned)
 }
@@ -104,7 +110,7 @@ async fn read_frame(
     chunk: Chunk,
     offset: u64,
     len: u64,
-) -> Result<Option<(Result<Frame, Error>, u64)>, Error> {
+) -> Result<Option<(Result<Skimmed, Error>, u64)>, Error> {
     let head_len = HEAD as u64;
     if offset + head_len > len {
         return Ok(None);
@@ -124,21 +130,32 @@ async fn read_frame(
         .read(pipeline, chunk, offset, end - offset)
         .await
         .map_err(Error::from_wal)?;
-    Ok(Frames::new(&bytes)
-        .next()
-        .map(|frame| (frame.map(|(_, frame)| frame), end)))
+    Ok(frame::skim(&bytes).map(|frame| (frame, end)))
 }
 
 /// Adds `frame`, `len` bytes at `offset` of `chunk`, to what `scanned` holds.
 fn note(
     scanned: &mut Scanned,
-    frame: Frame,
+    frame: Skimmed,
     chunk: Chunk,
     offset: u64,
     len: u64,
     pipeline: &PipelineId,
     load: LoadId,
 ) -> Result<(), Error> {
+    let frame = match frame {
+        Skimmed::Batch { segment, table } => {
+            let located = Located {
+                chunk,
+                offset,
+                len,
+                table,
+            };
+            scanned.batches.entry(segment).or_default().push(located);
+            return Ok(());
+        }
+        Skimmed::Other(frame) => *frame,
+    };
     match frame {
         Frame::Header(header) => {
             if header.version != frame::VERSION || header.load != load {
@@ -150,19 +167,8 @@ fn note(
         Frame::Schema(table) => {
             scanned.tables.entry(table.index).or_insert(table);
         }
-        Frame::Batch(batch) => {
-            let located = Located {
-                chunk,
-                offset,
-                len,
-                table: batch.table,
-            };
-            scanned
-                .batches
-                .entry(batch.segment)
-                .or_default()
-                .push(located);
-        }
+        // A skim leaves batches to the arm above.
+        Frame::Batch(_) => {}
         Frame::Seal(seal) => scanned.sealing.push(seal),
         Frame::Commit(meta) => {
             let seals = std::mem::take(&mut scanned.sealing);

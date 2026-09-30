@@ -139,6 +139,12 @@ impl LoadLog {
 
     /// Logs `sealed`, then `meta`'s commit, and returns once the commit's frame is durable.
     pub(crate) async fn commit(&self, sealed: Vec<Sealed>, meta: &CommitMeta) -> Result<(), Error> {
+        // The commit settles every segment it sealed, those it publishes nothing of included, so
+        // its receipt lets their chunks go.
+        let mut segments = meta.segments.clone();
+        for seal in &sealed {
+            segments.insert(seal.segment);
+        }
         for seal in sealed {
             let segment = seal.segment;
             let frame = Frame::Seal(frame::Seal {
@@ -156,7 +162,7 @@ impl LoadLog {
         self.writer
             .send(Command::Commit {
                 seq: meta.commit_seq,
-                segments: meta.segments.clone(),
+                segments,
                 frame: Frame::Commit(Box::new(meta.clone())).encode()?,
                 durable,
             })

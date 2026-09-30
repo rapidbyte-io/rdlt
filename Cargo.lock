@@ -2066,6 +2066,7 @@ dependencies = [
  "rdlt-connector-reference",
  "rdlt-host",
  "rdlt-testkit",
+ "rdlt-wire",
  "schemars",
  "serde",
  "serde_json",

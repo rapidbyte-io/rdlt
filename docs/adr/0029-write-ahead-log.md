@@ -28,7 +28,11 @@ its data from the source again, so an object store backend is not built.
   local directory: `<base>/<sanitized pipeline>-<hash8>/<load>/<chunk:08>.wal`, directories created
   0700 and refused where another user owns them. The embedder chooses the base.
 - **Frames** are spec §15.6's, `[kind u8][len u32 LE][crc32c u32 LE][payload]`: metadata as JSON,
-  a batch as a JSON header then an Arrow IPC stream. Beyond the spec:
+  a batch as a JSON header then its Arrow data in the wire's framing (`rdlt_wire::codec`), whose
+  decoder checks each message against its body and contains Arrow's panics. A raw Arrow reader
+  panicked on data a garbled log held (the fuzz target found it), so the engine depends on
+  `rdlt-wire` for its codec, which every binary shipping the engine links already. Beyond the
+  spec:
   - the header names the last commit the destination had received when the load opened;
   - a schema frame holds the table's reference and schema, which replay creates the table from;
   - a seal frame names where the destination held its partition just before the segment's
@@ -76,7 +80,12 @@ its data from the source again, so an object store backend is not built.
   phase replayed as the rows the load had read. So the simulation never replays a log across a
   phase's end, where the source's rows change. With replay disabled, seed 61
   fails: its rows were only in the log.
-- **Fuzzing.** `wal_log` reads any bytes, and valid logs cut and garbled, as replay does.
+- **Fuzzing.** `wal_log` reads any bytes, and valid logs cut and garbled, their checksums
+  rewritten or not, as replay does.
+- **Damage.** Only a log's last chunk can end torn: every other ends with a commit's frame, made
+  durable, so a chunk before the last that ends early or garbled makes the log unreadable rather
+  than losing the commits past the damage. A load that claimed its log and failed before its first
+  frame leaves only the claim's mark, which replay lists and removes.
 
 ## Deviations from spec §15.6
 

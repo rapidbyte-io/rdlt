@@ -124,7 +124,7 @@ struct Log {
     committed: BTreeSet<SegmentId>,
     /// The first failure, which every later command answers with: after a failed append or sync,
     /// what the chunk holds is unknown, and no later frame may be trusted to follow it.
-    failed: Option<String>,
+    failed: Option<(String, bool)>,
     /// The claim on the log, held while the writer runs: its drop lets the log go.
     _claim: Claim,
 }
@@ -186,7 +186,7 @@ impl Log {
     /// Keeps the first failure.
     fn note(&mut self, result: &Result<(), Error>) {
         if let (Err(error), None) = (result, &self.failed) {
-            self.failed = Some(error.to_string());
+            self.failed = Some((error.to_string(), error.is_retryable()));
         }
     }
 
@@ -195,10 +195,8 @@ impl Log {
     }
 
     async fn append(&mut self, frame: Bytes) -> Result<(), Error> {
-        if let Some(failed) = &self.failed {
-            return Err(Error::wal(format!(
-                "the write-ahead log failed before: {failed}"
-            )));
+        if let Some((failed, retryable)) = &self.failed {
+            return Err(Error::wal_failed_before(failed, *retryable));
         }
         if self.headed != Some(self.chunk.number) {
             self.current();

@@ -16,7 +16,7 @@ const RULES: &[(&str, &[&str])] = &[
     ("rdlt-connector-macros", &[]),
     ("rdlt-wire", &[]),
     ("rdlt-host", &["rdlt-connector", "rdlt-wire"]),
-    ("rdlt-engine", &["rdlt-connector"]),
+    ("rdlt-engine", &["rdlt-connector", "rdlt-wire"]),
     ("rdlt-sql", &["rdlt-engine", "rdlt-connector"]),
     (
         "rdlt",

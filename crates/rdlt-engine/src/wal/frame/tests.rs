@@ -176,3 +176,16 @@ fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error(
     frame[0] = 99;
     assert!(Frames::new(&frame).next().expect("a frame").is_err());
 }
+
+/// A log the `wal_log` fuzz target garbled: its batch frame's checksum matches, but its Arrow data
+/// does not hold together, as when it made a raw Arrow reader panic.
+const GARBLED: &[u8] = include_bytes!("garbled_batch.wal");
+
+#[test]
+fn a_batch_whose_arrow_data_does_not_hold_together_is_an_error_not_a_panic() {
+    let read: Vec<_> = Frames::new(GARBLED).collect();
+    assert!(
+        read.iter().any(Result::is_err),
+        "the garbled batch does not decode"
+    );
+}

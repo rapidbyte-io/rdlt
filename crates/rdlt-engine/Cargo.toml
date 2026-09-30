@@ -9,13 +9,13 @@ repository.workspace = true
 
 [features]
 # Internals for the benchmarks and fuzz targets (spec §21.2); not a public API.
-bench = ["dep:schemars"]
+bench = ["dep:arrow-ipc", "dep:schemars"]
 
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
-arrow-ipc.workspace = true
+arrow-ipc = { workspace = true, optional = true }
 arrow-json.workspace = true
 arrow-row.workspace = true
 arrow-schema.workspace = true
@@ -28,6 +28,7 @@ memchr.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
 rdlt-connector.workspace = true
+rdlt-wire.workspace = true
 schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

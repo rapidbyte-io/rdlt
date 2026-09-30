@@ -190,7 +190,9 @@ impl Coordinator {
         // finish before the session closes; the next session discards them.
         self.parts.lanes.flush().await?;
         if let Some(log) = &self.parts.wal {
-            log.close().await?;
+            // Every commit landed: a log that fails to close stays, and a replay finds each of its
+            // commits received, which the destination answers with its stored receipt.
+            drop(log.close().await);
         }
         self.parts.tables.session().close().await?;
         self.parts.log.lock().end = Some(end);
@@ -349,8 +351,8 @@ impl Coordinator {
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
         if let Some(log) = &self.parts.wal {
             log.committed(&receipt).await?;
+            self.parts.positions.apply(&meta.state_delta);
         }
-        self.parts.positions.apply(&meta.state_delta);
         self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing);
         self.record_positions(&collected.positions);
