@@ -20,7 +20,8 @@ its data from the source again, so an object store backend is not built.
   is refused as `wal_required`, and a pipeline asking for a log as `wal_store_missing`. Such a
   stream is read incrementally: a full read starts again from the beginning, which its source no
   longer holds (`full_read_unreplayable`), and a change stream's phases drop the positions replay
-  goes by (`change_read_unreplayable`; M5d's streaming sources take this up).
+  goes by (`change_read_unreplayable`; M5d's streaming sources take this up). Amended 2026-09-30:
+  ADR 0034 logs phase transitions and lifts `change_read_unreplayable`.
 - **Source contract.** A source that cannot read again serves each row to at most one reader: two
   loads of one pipeline must not both be served, and acknowledged for, the same rows, which no
   log could tell apart (`StreamSpec::with_replayable` says so).
