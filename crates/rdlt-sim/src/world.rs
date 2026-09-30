@@ -133,7 +133,7 @@ impl World {
                 .expect("writer counts are positive");
         let world = Arc::new(Self {
             workload: Workload::empty(features),
-            changes: ChangeWorkload::generate(rng),
+            changes: ChangeWorkload::generate(rng, features),
             capabilities,
             granted: AtomicBool::new(false),
             phase: AtomicUsize::new(0),

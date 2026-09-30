@@ -4,6 +4,7 @@
 mod source;
 mod workload;
 
+pub(crate) use source::{CHANGES as CHANGES_PHASE, CHANGES_PARTITION};
 pub use source::{Position, SimChangeSource, SimChangeSourceConfig};
 pub use workload::{ChangeStream, ChangeWorkload, Event};
 pub(crate) use workload::{Logged, Merged, ROUNDS};

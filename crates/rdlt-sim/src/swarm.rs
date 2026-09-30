@@ -61,8 +61,8 @@ pub struct Features {
     /// mutual TLS rather than run in the engine's process; with faults, the network partitions
     /// and holds messages, and the connectors crash and stop.
     pub network: bool,
-    /// Pipelines that keep write-ahead logs, whose incremental streams, every other one, cannot
-    /// read again what they acknowledged; crashes tear the logs' unsynced tails.
+    /// Pipelines that keep write-ahead logs, whose incremental and change streams, every other
+    /// one, cannot read again what they acknowledged; crashes tear the logs' unsynced tails.
     pub wal: bool,
     /// Incremental streams whose rows arrive as simulated time passes, which runs follow for a
     /// while before a run reads them to their end; every other one's partitions never end, and

@@ -8,10 +8,10 @@ use arrow_array::{
     ArrayRef, FixedSizeBinaryArray, Int8Array, Int64Array, RecordBatch, StringArray,
 };
 use rdlt_connector::{
-    ChangeOp, Checkpointing, ConnectContext, ConnectorError, Cursor, Emitter, Field, LogicalType,
-    OP_COLUMN, Partition, PartitionId, PartitionPlan, PartitionState, Partitioning, ReadMode,
-    ReadStream, Result, SEQ_COLUMN, SourceConnector, StateEntry, StreamName, StreamSpec,
-    StreamState, Streams, TableSchema, UNCHANGED_COLUMN,
+    ChangeOp, Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, Emitter,
+    Field, LogicalType, OP_COLUMN, Partition, PartitionId, PartitionPlan, PartitionState,
+    Partitioning, ReadMode, ReadStream, Result, SEQ_COLUMN, SourceConnector, StateEntry,
+    StreamName, StreamSpec, StreamState, Streams, TableSchema, UNCHANGED_COLUMN,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ use crate::world::{FaultPoint, World};
 pub(crate) const CHANGES: u16 = 1;
 
 /// The partition a stream's changes are read in.
-const CHANGES_PARTITION: &str = "changes";
+pub(crate) const CHANGES_PARTITION: &str = "changes";
 
 /// Configuration of [`SimChangeSource`]: the world to serve.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -64,16 +64,30 @@ impl SourceConnector for SimChangeSource {
     }
 
     fn streams(&self) -> Streams<Self> {
-        (0..self.world.changes.streams.len())
-            .fold(Streams::new(), |streams, index| streams.with(Reader(index)))
+        let streams = self.world.changes.streams.iter().enumerate();
+        streams.fold(Streams::new(), |streams, (index, stream)| {
+            streams.with(Reader {
+                index,
+                replayable: stream.replayable,
+            })
+        })
     }
 }
 
-struct Reader(usize);
+/// Reads the change stream at `index`.
+struct Reader {
+    index: usize,
+    /// Whether its source can read again what it acknowledged, which its spec says.
+    replayable: bool,
+}
 
 impl Reader {
     fn stream<'a>(&self, source: &'a SimChangeSource) -> &'a ChangeStream {
-        &source.world.changes.streams[self.0]
+        &source.world.changes.streams[self.index]
+    }
+
+    fn name(&self) -> StreamName {
+        StreamName::new(format!("c{}", self.index)).expect("a valid stream name")
     }
 }
 
@@ -98,12 +112,13 @@ impl ReadStream<SimChangeSource> for Reader {
 
     fn spec(&self) -> StreamSpec {
         // The spec names the stream without the workload, so it stays what the catalog says.
-        StreamSpec::new(StreamName::new(format!("c{}", self.0)).expect("a valid stream name"))
+        StreamSpec::new(self.name())
             .with_schema(schema())
             .with_primary_key(["id"])
             .with_read_modes([ReadMode::Cdc])
             .with_partitioning(Partitioning::Planned)
             .with_checkpointing(Checkpointing::Natural)
+            .with_replayable(self.replayable)
     }
 
     async fn plan(&self, source: &SimChangeSource, state: &StreamState) -> Result<PartitionPlan> {
@@ -147,6 +162,17 @@ impl ReadStream<SimChangeSource> for Reader {
         out: &mut Emitter<Position>,
     ) -> Result<()> {
         let (world, stream) = (&source.world, self.stream(source));
+        if !stream.replayable {
+            let key = (stream.name.clone(), partition.id().to_string());
+            let forgotten = world.acknowledged.lock().get(&key).copied();
+            // What it acknowledged is gone; a read from before it waits for it to land.
+            if forgotten.is_some_and(|forgotten| cursor.next < forgotten) {
+                return Err(ConnectorError::new(
+                    ConnectorErrorKind::Transient,
+                    "the changes before the acknowledged position are gone",
+                ));
+            }
+        }
         if partition.id().as_str() == CHANGES_PARTITION {
             return read_changes(world, stream, cursor, out).await;
         }
@@ -164,9 +190,18 @@ impl ReadStream<SimChangeSource> for Reader {
         source: &SimChangeSource,
         cursors: &[(PartitionId, Position)],
     ) -> Result<()> {
-        let world = &source.world;
-        let name = StreamName::new(format!("c{}", self.0)).expect("a valid stream name");
+        let (world, stream) = (&source.world, self.stream(source));
+        let name = self.name();
         for (partition, cursor) in cursors {
+            if !stream.replayable {
+                // It hears once the engine's log holds the changes, before they land; the oracle
+                // checks they did once the round is over.
+                let key = (stream.name.clone(), partition.to_string());
+                let mut acknowledged = world.acknowledged.lock();
+                let furthest = acknowledged.entry(key).or_default();
+                *furthest = (*furthest).max(cursor.next);
+                continue;
+            }
             let committed = committed_position(world, &name, partition);
             if committed.is_none_or(|committed| cursor.next > committed.next) {
                 world.violation(format!(
