@@ -8,9 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use super::{Recording, record};
+use super::{Recording, placed, record};
 use crate::catalog::{Catalog, StreamSpec};
-use crate::cursor::Cursor;
 use crate::sink::Push;
 use crate::source::{Partition, PartitionPlan, Source};
 use crate::state::{PartitionState, StreamState};
@@ -76,24 +75,6 @@ async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<bool, Viola
             stream.name()
         ))),
     }
-}
-
-/// The partitions of `plan`, each from where the engine would read it from `state`, which records
-/// no partition done: a plan beginning a new phase places them at its starts, and any other
-/// resumes each from its recorded cursor, or else its beginning.
-fn placed(plan: &PartitionPlan, state: &StreamState) -> Vec<(Partition, Option<Cursor>)> {
-    let begins = plan.phase.is_some_and(|phase| phase != state.phase);
-    plan.partitions
-        .iter()
-        .map(|partition| {
-            let cursor = match state.partitions.get(partition.id()) {
-                _ if begins => plan.starts.get(partition.id()).cloned(),
-                Some(PartitionState::Cursor(cursor)) => Some(cursor.clone()),
-                Some(PartitionState::Done) | None => None,
-            };
-            (partition.clone(), cursor)
-        })
-        .collect()
 }
 
 async fn planned(

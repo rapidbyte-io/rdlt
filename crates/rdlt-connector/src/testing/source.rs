@@ -20,11 +20,11 @@ use crate::cursor::Cursor;
 use crate::id::StreamName;
 use crate::sink::{Push, SourceEvent, partition_channel};
 use crate::source::{
-    ACKNOWLEDGED_CODE, AcknowledgedReader, Partition, ReadRequest, Source, SourceConnector,
-    SourceFactory, source_factory,
+    ACKNOWLEDGED_CODE, AcknowledgedReader, Partition, PartitionPlan, ReadRequest, Source,
+    SourceConnector, SourceFactory, source_factory,
 };
 use crate::spec::ConnectContext;
-use crate::state::StreamState;
+use crate::state::{PartitionState, StreamState};
 
 /// Resumes are checked from at most this many checkpoints per partition.
 const RESUME_SAMPLES: usize = 5;
@@ -200,16 +200,43 @@ async fn discover_is_stable(source: &dyn Source, first: Option<&Catalog>) -> Res
     Ok(())
 }
 
-async fn plan(source: &dyn Source, stream: &StreamName) -> Result<Vec<Partition>, Violation> {
-    bounded_call("plan", source.plan(stream, &StreamState::default()))
+/// The partitions `stream`'s first plan names, each from where the engine starts it.
+async fn plan(
+    source: &dyn Source,
+    stream: &StreamName,
+) -> Result<Vec<(Partition, Option<Cursor>)>, Violation> {
+    let fresh = StreamState::default();
+    bounded_call("plan", source.plan(stream, &fresh))
         .await
-        .map(|planned| planned.partitions)
+        .map(|planned| placed(&planned, &fresh))
         .map_err(|Violation(reason)| Violation::from(format!("plan {stream}: {reason}")))
+}
+
+/// The partitions of `plan`, each from where the engine would read it from `state`, which records
+/// no partition done: a plan beginning a new phase places them at its starts, and any other
+/// resumes each from its recorded cursor, or else its beginning.
+fn placed(plan: &PartitionPlan, state: &StreamState) -> Vec<(Partition, Option<Cursor>)> {
+    let begins = plan.phase.is_some_and(|phase| phase != state.phase);
+    plan.partitions
+        .iter()
+        .map(|partition| {
+            let cursor = match state.partitions.get(partition.id()) {
+                _ if begins => plan.starts.get(partition.id()).cloned(),
+                Some(PartitionState::Cursor(cursor)) => Some(cursor.clone()),
+                Some(PartitionState::Done) | None => None,
+            };
+            (partition.clone(), cursor)
+        })
+        .collect()
 }
 
 async fn plans_are_valid(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {
     for stream in catalog.iter() {
-        let partitions = plan(source, stream.name()).await?;
+        let partitions: Vec<Partition> = plan(source, stream.name())
+            .await?
+            .into_iter()
+            .map(|(partition, _)| partition)
+            .collect();
         if partitions.is_empty() {
             return Err(format!("stream {} planned no partitions", stream.name()).into());
         }
@@ -295,8 +322,8 @@ pub(super) fn normalize(push: Push) -> Push {
 
 async fn resumes_are_exact(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {
     for stream in catalog.iter() {
-        for partition in plan(source, stream.name()).await? {
-            let full = record(source, stream, &partition, None, None).await?;
+        for (partition, start) in plan(source, stream.name()).await? {
+            let full = record(source, stream, &partition, start, None).await?;
             for (index, cursor) in full.checkpoints.iter().enumerate().take(RESUME_SAMPLES) {
                 let resumed =
                     record(source, stream, &partition, Some(cursor.clone()), None).await?;
@@ -358,11 +385,11 @@ async fn read_starts(source: &dyn Source, catalog: &Catalog) -> Result<(), Viola
     let Some(stream) = catalog.iter().next() else {
         return Ok(());
     };
-    let Some(partition) = plan(source, stream.name()).await?.into_iter().next() else {
+    let Some((partition, start)) = plan(source, stream.name()).await?.into_iter().next() else {
         return Ok(());
     };
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("64 is non-zero"));
-    let request = ReadRequest::new(stream.name().clone(), partition.clone(), None);
+    let request = ReadRequest::new(stream.name().clone(), partition.clone(), start);
     let started = async {
         drop(tokio::time::timeout(START_WINDOW, feed.recv()).await);
         feed.stop();
@@ -392,8 +419,8 @@ async fn barriers_are_answered(source: &dyn Source, catalog: &Catalog) -> Outcom
     }
     let check = async {
         for stream in on_demand {
-            for partition in plan(source, stream.name()).await? {
-                let recording = record(source, stream, &partition, None, Some(1)).await?;
+            for (partition, start) in plan(source, stream.name()).await? {
+                let recording = record(source, stream, &partition, start, Some(1)).await?;
                 let pushed = recording
                     .segments
                     .iter()
