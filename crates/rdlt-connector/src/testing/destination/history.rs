@@ -19,7 +19,7 @@ use crate::meta::{
 };
 use crate::testing::{Violation, bounded_call};
 use rows::{
-    Kind, Row, Version, closed, current, delete, deleted, stored, truncate, upsert, written,
+    Kind, Row, Version, closed, current, delete, deleted, hash, stored, truncate, upsert, written,
 };
 
 impl Bench<'_> {
@@ -100,6 +100,7 @@ impl Bench<'_> {
                     .map_err(|error| Violation::from(format!("the {name}s read back as {error}")))
             };
             let int = |name: &str| column(name, &DataType::Int64);
+            let bytes = |name: &str| column(name, &DataType::Binary);
             let (Some(ids), Some(names), Some(from), Some(to), Some(current)) = (
                 int("id")?,
                 column("name", &DataType::Utf8)?,
@@ -109,6 +110,10 @@ impl Bench<'_> {
             ) else {
                 return Err("a published batch lacks its key, name or history columns".into());
             };
+            let (Some(seqs), Some(hashes)) = (bytes(SEQ_COLUMN)?, bytes(ROW_HASH_COLUMN)?) else {
+                return Err("a published batch lacks its sequence or hash column".into());
+            };
+            let (seqs, hashes) = (seqs.as_binary::<i32>(), hashes.as_binary::<i32>());
             let at = int(DELETED_AT_COLUMN)?;
             let at = at.as_ref().map(AsArray::as_primitive::<Int64Type>);
             let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
@@ -119,14 +124,18 @@ impl Bench<'_> {
             let current = current.as_boolean();
             for row in 0..batch.num_rows() {
                 let valid = |array: &dyn Array| array.is_valid(row);
-                versions.push((
-                    ids.value(row),
-                    valid(names).then(|| names.value(row).to_owned()),
-                    at.and_then(|at| valid(at).then(|| at.value(row))),
-                    from.value(row),
-                    valid(to).then(|| to.value(row)),
-                    current.value(row),
-                ));
+                let name = valid(names).then(|| names.value(row).to_owned());
+                let written = name.as_deref().map(hash);
+                versions.push(Version {
+                    id: ids.value(row),
+                    from: from.value(row),
+                    deleted: at.and_then(|at| valid(at).then(|| at.value(row))),
+                    to: valid(to).then(|| to.value(row)),
+                    current: current.value(row),
+                    seq: seqs.value(row).last().copied().unwrap_or_default(),
+                    hashed: valid(hashes) && written.is_some_and(|hash| hashes.value(row) == hash),
+                    name,
+                });
             }
         }
         versions.sort_unstable();
@@ -164,25 +173,27 @@ impl Bench<'_> {
             ],
         ];
         let published = self.versioned(("plain", 2), Kind::Plain, &commits).await?;
-        let first = [
-            closed(1, "x", 10, 11),
-            current(1, "y", 11),
-            current(2, "b", 12),
-        ];
-        expect(&published, 0, &first, "a history of upserts")?;
+        let (x, y) = (closed(1, "x", 10, 11, 1), current(1, "y", 11, 2));
+        expect(
+            &published,
+            0,
+            &[x.clone(), y.clone(), current(2, "b", 12, 3)],
+            "a history of upserts",
+        )?;
         let second = [
-            closed(1, "x", 10, 11),
-            current(1, "y", 11),
-            closed(2, "b", 12, 21),
-            current(2, "c", 21),
-            current(3, "d", 22),
+            x,
+            y,
+            closed(2, "b", 12, 21, 3),
+            current(2, "c", 21, 2),
+            current(3, "d", 22, 3),
         ];
         expect(&published, 1, &second, "a history of upserts")
     }
 
     /// A change stream's history: equal changes change nothing, deletes close their key's version
     /// and a later insert opens another, a change applies only past its key's newest version, its
-    /// tombstone and the bound, and a truncate closes every version sequenced before it.
+    /// tombstone and the bound, and a truncate closes every version sequenced before it, those its
+    /// own commit opened too.
     async fn changed_histories_chain(&self) -> Result<(), Violation> {
         let commits: [&[Row]; 5] = [
             &[
@@ -207,80 +218,93 @@ impl Bench<'_> {
                 upsert(9, "i", 9, 94),
                 upsert(2, "back", 11, 100),
             ],
-            &[truncate(12, 110), upsert(4, "d", 13, 120)],
-            &[upsert(1, "a2", 11, 105), upsert(1, "a3", 14, 130)],
+            &[
+                upsert(5, "e", 12, 105),
+                truncate(13, 110),
+                upsert(4, "d", 14, 120),
+            ],
+            &[upsert(1, "a2", 11, 105), upsert(1, "a3", 15, 130)],
         ];
         let published = self
             .versioned(("changes", 3), Kind::Changes { soft: false }, &commits)
             .await?;
-        let first = [
-            closed(1, "a", 10, 40),
-            current(1, "a2", 40),
-            current(2, "b", 20),
-        ];
-        expect(&published, 0, &first, "a change stream's history")?;
+        let what = "a change stream's history";
+        let a = closed(1, "a", 10, 40, 1);
+        expect(
+            &published,
+            0,
+            &[a.clone(), current(1, "a2", 40, 4), current(2, "b", 20, 2)],
+            what,
+        )?;
+        let (b, c) = (closed(2, "b", 20, 60, 2), closed(3, "c", 70, 80, 7));
         let second = [
-            closed(1, "a", 10, 40),
-            current(1, "a2", 40),
-            closed(2, "b", 20, 60),
-            closed(3, "c", 70, 80),
-            current(3, "c", 90),
+            a.clone(),
+            current(1, "a2", 40, 4),
+            b.clone(),
+            c.clone(),
+            current(3, "c", 90, 9),
         ];
-        expect(&published, 1, &second, "a change stream's history")?;
+        expect(&published, 1, &second, what)?;
         let mut third = second.to_vec();
-        third.push(current(2, "back", 100));
-        expect(&published, 2, &third, "a change stream's history")?;
+        third.push(current(2, "back", 100, 11));
+        expect(&published, 2, &third, what)?;
         let fourth = [
-            closed(1, "a", 10, 40),
-            closed(1, "a2", 40, 110),
-            closed(2, "b", 20, 60),
-            closed(2, "back", 100, 110),
-            closed(3, "c", 70, 80),
-            closed(3, "c", 90, 110),
-            current(4, "d", 120),
+            a,
+            closed(1, "a2", 40, 110, 4),
+            b,
+            closed(2, "back", 100, 110, 11),
+            c,
+            closed(3, "c", 90, 110, 9),
+            current(4, "d", 120, 14),
+            closed(5, "e", 105, 110, 12),
         ];
-        expect(&published, 3, &fourth, "a change stream's history")?;
+        expect(&published, 3, &fourth, what)?;
         let mut fifth = fourth.to_vec();
-        fifth.push(current(1, "a3", 130));
-        expect(&published, 4, &fifth, "a change stream's history")
+        fifth.push(current(1, "a3", 130, 15));
+        expect(&published, 4, &fifth, what)
     }
 
     /// A change stream's history with soft deletes: a delete closes its key's version and opens a
-    /// deleted one keeping its data, which an equal insert closes again; a delete of a deleted or
-    /// missing key changes nothing, and a truncate deletes every version sequenced before it.
+    /// deleted one keeping its data, at the delete's sequence, so no change sent again from before
+    /// the delete applies; an equal insert closes it again; a delete of a deleted or missing key
+    /// changes nothing, and a truncate deletes every version sequenced before it.
     async fn soft_histories_chain(&self) -> Result<(), Violation> {
-        let commits: [&[Row]; 4] = [
+        let commits: [&[Row]; 5] = [
             &[upsert(1, "a", 1, 10), upsert(2, "b", 2, 20)],
             &[delete(1, 3, 30), delete(1, 4, 40), delete(9, 5, 50)],
+            &[upsert(1, "mid", 2, 25)],
             &[upsert(1, "a", 6, 60)],
             &[truncate(7, 70), upsert(3, "c", 8, 80)],
         ];
         let published = self
             .versioned(("soft", 4), Kind::Changes { soft: true }, &commits)
             .await?;
+        let what = "a history with soft deletes";
+        let a = closed(1, "a", 10, 30, 1);
         let second = [
-            closed(1, "a", 10, 30),
-            deleted(1, "a", 30, None),
-            current(2, "b", 20),
+            a.clone(),
+            deleted(1, "a", 30, None, 3),
+            current(2, "b", 20, 2),
         ];
-        expect(&published, 1, &second, "a history with soft deletes")?;
-        let third = [
-            closed(1, "a", 10, 30),
-            current(1, "a", 60),
-            deleted(1, "a", 30, Some(60)),
-            current(2, "b", 20),
-        ];
-        expect(&published, 2, &third, "a history with soft deletes")?;
+        expect(&published, 1, &second, what)?;
+        expect(&published, 2, &second, what)?;
         let fourth = [
-            closed(1, "a", 10, 30),
-            closed(1, "a", 60, 70),
-            deleted(1, "a", 30, Some(60)),
-            deleted(1, "a", 70, None),
-            closed(2, "b", 20, 70),
-            deleted(2, "b", 70, None),
-            current(3, "c", 80),
+            a.clone(),
+            current(1, "a", 60, 6),
+            deleted(1, "a", 30, Some(60), 3),
+            current(2, "b", 20, 2),
         ];
-        expect(&published, 3, &fourth, "a history with soft deletes")
+        expect(&published, 3, &fourth, what)?;
+        let fifth = [
+            a,
+            closed(1, "a", 60, 70, 6),
+            deleted(1, "a", 30, Some(60), 3),
+            deleted(1, "a", 70, None, 7),
+            closed(2, "b", 20, 70, 2),
+            deleted(2, "b", 70, None, 7),
+            current(3, "c", 80, 8),
+        ];
+        expect(&published, 4, &fifth, what)
     }
 }
 

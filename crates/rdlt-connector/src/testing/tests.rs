@@ -493,6 +493,12 @@ struct VaultConfig {
     history_keeps_deleted: bool,
     /// Closes nothing on a truncate.
     history_ignores_truncates: bool,
+    /// Keeps the closed version's sequence in the version a soft delete opens.
+    history_soft_keeps_seq: bool,
+    /// Spares, on a truncate, the versions its own commit opened.
+    history_truncate_spares_commit: bool,
+    /// Stores versions without their hash.
+    history_drops_hash: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
@@ -1377,6 +1383,9 @@ impl VaultConfig {
             ignore_seq: self.history_ignores_seq,
             keep_deleted: self.history_keeps_deleted,
             ignore_truncates: self.history_ignores_truncates,
+            soft_keeps_seq: self.history_soft_keeps_seq,
+            spare_commit: self.history_truncate_spares_commit,
+            drop_hash: self.history_drops_hash,
         }
     }
 
@@ -1570,6 +1579,9 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("history_ignores_seq", &["D-HIST"]),
     ("history_keeps_deleted", &["D-HIST"]),
     ("history_ignores_truncates", &["D-HIST"]),
+    ("history_soft_keeps_seq", &["D-HIST"]),
+    ("history_truncate_spares_commit", &["D-HIST"]),
+    ("history_drops_hash", &["D-HIST"]),
     ("static_epoch", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
     ("refuse_check", &["D-CHECK"]),

@@ -49,30 +49,56 @@ pub(super) fn truncate(seq: u8, at: i64) -> Row {
     }
 }
 
-/// A version a history table publishes: its key, name, deletion time, when it began, when it
-/// was closed, and whether it is current.
-pub(super) type Version = (i64, Option<String>, Option<i64>, i64, Option<i64>, bool);
-
-/// The current version of `id` holding `name` since `from`.
-pub(super) fn current(id: i64, name: &str, from: i64) -> Version {
-    (id, Some(name.to_owned()), None, from, None, true)
+/// A version a history table publishes, as the clause compares them.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Version {
+    pub(super) id: i64,
+    /// When it began.
+    pub(super) from: i64,
+    pub(super) name: Option<String>,
+    /// When a soft delete opened it, if one did.
+    pub(super) deleted: Option<i64>,
+    /// When a later change closed it.
+    pub(super) to: Option<i64>,
+    pub(super) current: bool,
+    /// The last byte of the sequence of the row that opened it.
+    pub(super) seq: u8,
+    /// Whether its hash is the one its data's writer gave.
+    pub(super) hashed: bool,
 }
 
-/// A version of `id` holding `name` from `from` until `to`.
-pub(super) fn closed(id: i64, name: &str, from: i64, to: i64) -> Version {
-    (id, Some(name.to_owned()), None, from, Some(to), false)
-}
-
-/// A version of `id` holding `name`, deleted at `from`, current or closed at `to`.
-pub(super) fn deleted(id: i64, name: &str, from: i64, to: Option<i64>) -> Version {
-    (
+/// The current version of `id` holding `name` since `from`, opened at `seq`.
+pub(super) fn current(id: i64, name: &str, from: i64, seq: u8) -> Version {
+    Version {
         id,
-        Some(name.to_owned()),
-        Some(from),
         from,
+        name: Some(name.to_owned()),
+        deleted: None,
+        to: None,
+        current: true,
+        seq,
+        hashed: true,
+    }
+}
+
+/// A version of `id` holding `name` from `from` until `to`, opened at `seq`.
+pub(super) fn closed(id: i64, name: &str, from: i64, to: i64, seq: u8) -> Version {
+    Version {
+        to: Some(to),
+        current: false,
+        ..current(id, name, from, seq)
+    }
+}
+
+/// A version of `id` keeping `name`, which a soft delete at `seq` opened at `from`, current or
+/// closed at `to`.
+pub(super) fn deleted(id: i64, name: &str, from: i64, to: Option<i64>, seq: u8) -> Version {
+    Version {
+        deleted: Some(from),
         to,
-        to.is_none(),
-    )
+        current: to.is_none(),
+        ..current(id, name, from, seq)
+    }
 }
 
 /// The hash a writer gives `name`: its bytes, zero-padded to 16.
