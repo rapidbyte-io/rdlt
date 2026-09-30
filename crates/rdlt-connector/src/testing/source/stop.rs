@@ -4,6 +4,8 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
+use tokio_util::sync::CancellationToken;
+
 use super::{START_WINDOW, STOP_WINDOW, plan, record};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::cursor::Cursor;
@@ -113,25 +115,36 @@ async fn stops_following(
         stream.name(),
         partition.id()
     );
+    // Where the read outlives the stop window, it is given up on: dropped, and the clause failed.
+    let gave_up = CancellationToken::new();
     let watch = async {
         let until = tokio::time::Instant::now() + FOLLOWED;
         for _ in 0..DRAINED {
             let deadline = until.min(tokio::time::Instant::now() + START_WINDOW);
             match tokio::time::timeout_at(deadline, feed.recv()).await {
                 Ok(Some(_)) => {}
-                Ok(None) => return,
+                Ok(None) => return true,
                 Err(_) => break,
             }
         }
         feed.stop();
-        tokio::time::timeout(STOP_WINDOW, async { while feed.recv().await.is_some() {} })
-            .await
-            .ok();
+        let drained = async { while feed.recv().await.is_some() {} };
+        let ended = tokio::time::timeout(STOP_WINDOW, drained).await.is_ok();
+        if !ended {
+            gave_up.cancel();
+        }
+        ended
     };
-    let reading = async { tokio::join!(source.read(request, sink), watch).0 };
-    match tokio::time::timeout(FOLLOWED + START_WINDOW + STOP_WINDOW, reading).await {
-        Ok(read) => read.map_err(|error| Violation::from(format!("{what}: {error}"))),
-        Err(_) => Err(Violation::from(format!(
+    let read = async {
+        tokio::select! {
+            biased;
+            () = gave_up.cancelled() => None,
+            read = source.read(request, sink) => Some(read),
+        }
+    };
+    match tokio::join!(read, watch) {
+        (Some(read), true) => read.map_err(|error| Violation::from(format!("{what}: {error}"))),
+        _ => Err(Violation::from(format!(
             "{what} did not end within {STOP_WINDOW:?} of the stop"
         ))),
     }
