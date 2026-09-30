@@ -2,8 +2,8 @@ use arrow_array::RecordBatch;
 use rdlt_connector::testing::{Outcome, Probe, Unprobed, certify_destination, certify_source};
 use rdlt_connector::{BoxFuture, Result, TableRef};
 use rdlt_connector_reference::{
-    ChangesSource, FilesDestination, FilesSource, GeneratorSource, MemoryDestination, MemorySource,
-    SqliteDestination, files, published, sqlite,
+    ChangesSource, FilesDestination, FilesSource, GeneratorSource, LogSource, MemoryDestination,
+    MemorySource, SqliteDestination, files, published, sqlite,
 };
 use serde_json::json;
 
@@ -188,5 +188,25 @@ async fn the_change_source_is_certified_again_against_the_slot_an_earlier_run_mo
             Some(&Outcome::Passed),
             "run {run}: {report}"
         );
+    }
+}
+
+#[tokio::test]
+async fn the_log_source_is_certified_and_commits_offsets_only_when_told() {
+    for replayable in [true, false] {
+        let config = json!({
+            "seed": 17,
+            "group": format!("certified_{replayable}"),
+            "streams": [{
+                "name": "events",
+                "partitions": 3,
+                "messages": 12,
+                "batch_rows": 4,
+                "replayable": replayable,
+            }],
+        });
+        let report = certify_source::<LogSource>(config).await;
+        report.assert_passed();
+        assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
     }
 }
