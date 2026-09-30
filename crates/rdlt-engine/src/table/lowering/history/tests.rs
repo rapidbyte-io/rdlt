@@ -117,3 +117,13 @@ fn a_change_time_that_is_no_time_is_refused() {
     assert_eq!(refused.kind(), ErrorKind::Schema);
     assert_eq!(refused.code(), Some("change_time_invalid"));
 }
+
+#[test]
+fn a_change_time_beyond_what_microseconds_hold_is_refused() {
+    let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
+    let far: ArrayRef = Arc::new(arrow_array::TimestampSecondArray::from(vec![i64::MAX]));
+    let refused =
+        history_columns(&stream(), &data, Some(&far), UNIX_EPOCH, &|_| false).unwrap_err();
+    assert_eq!(refused.kind(), ErrorKind::Schema);
+    assert_eq!(refused.code(), Some("change_time_invalid"));
+}

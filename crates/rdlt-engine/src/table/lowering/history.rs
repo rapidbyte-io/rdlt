@@ -133,8 +133,9 @@ impl LoweringPlan {
 ///
 /// # Errors
 ///
-/// A change time of another type than a date or timestamp is `change_time_invalid`, and a row
-/// without one `change_time_null`, Schema errors: no version can begin at an unknown time.
+/// A change time of another type than a date or timestamp, or beyond what microseconds since the
+/// epoch hold, is `change_time_invalid`, and a row without one `change_time_null`, Schema errors:
+/// no version can begin at an unknown time.
 pub(super) fn history_columns(
     stream: &StreamName,
     data: &RecordBatch,
@@ -189,7 +190,15 @@ fn begins(stream: &StreamName, from: &ArrayRef, micros: &DataType) -> Result<Arr
         let detail = "a change has no change time, when its version begins".to_owned();
         return refuse("change_time_null", detail);
     }
-    arrow_cast::cast(from, micros).map_err(|error| {
-        Error::internal(format!("stream {stream}: reading its change time: {error}"))
+    // A strict cast: a time microseconds cannot hold fails rather than turning null.
+    let strict = arrow_cast::CastOptions {
+        safe: false,
+        ..arrow_cast::CastOptions::default()
+    };
+    arrow_cast::cast_with_options(from, micros, &strict).or_else(|error| {
+        refuse(
+            "change_time_invalid",
+            format!("its change time holds a time out of range: {error}"),
+        )
     })
 }
