@@ -61,6 +61,14 @@ pub struct ChangedStream {
     /// that position, and the changes after it are read.
     #[serde(default)]
     pub captured: u64,
+    /// Whether the source serves again the changes its slot acknowledged; one that does not
+    /// forgets them, as a replication slot does, and a read from before them waits.
+    #[serde(default = "replayable")]
+    pub replayable: bool,
+}
+
+fn replayable() -> bool {
+    true
 }
 
 fn one() -> u64 {
@@ -273,6 +281,7 @@ impl ReadStream<ChangesSource> for Changed {
             .with_read_modes([ReadMode::Cdc])
             .with_partitioning(Partitioning::Planned)
             .with_checkpointing(Checkpointing::Natural)
+            .with_replayable(self.0.replayable)
     }
 
     async fn plan(&self, _source: &ChangesSource, state: &StreamState) -> Result<PartitionPlan> {
@@ -337,6 +346,15 @@ impl ReadStream<ChangesSource> for Changed {
     ) -> Result<()> {
         let id = partition.id().as_str();
         if id == CHANGES_PARTITION {
+            let forgotten = source.slot.position(&self.0.name, partition.id());
+            // The changes it acknowledged are gone; a read from before them waits for them to land.
+            if !self.0.replayable && forgotten.is_some_and(|forgotten| cursor.next < forgotten.next)
+            {
+                return Err(ConnectorError::new(
+                    ConnectorErrorKind::Transient,
+                    "the changes before the acknowledged position are gone",
+                ));
+            }
             return self.read_changes(source.seed, cursor, out).await;
         }
         let index = id

@@ -6,9 +6,9 @@ use arrow_array::{Array, RecordBatch};
 use std::collections::BTreeSet;
 
 use rdlt_connector::{
-    ConnectContext, ConnectorErrorKind, Cursor, Partition, PartitionId, PartitionState, Push,
-    ReadRequest, SEQ_COLUMN, Source, SourceEvent, StreamName, StreamState, partition_channel,
-    source_factory,
+    ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, Partition, PartitionId,
+    PartitionState, Push, ReadRequest, SEQ_COLUMN, Source, SourceEvent, StreamName, StreamState,
+    partition_channel, source_factory,
 };
 
 use super::{CHANGES, Change, ChangedStream, ChangesSource, Position, change, expected, snapshot};
@@ -22,6 +22,7 @@ fn stream() -> ChangedStream {
         batch_rows: 4,
         truncates: vec![30],
         captured: 0,
+        replayable: true,
     }
 }
 
@@ -308,4 +309,41 @@ async fn a_snapshot_partition_the_stream_does_not_have_is_refused() {
         .await
         .expect_err("no such partition");
     assert_eq!(refused.kind(), ConnectorErrorKind::Data);
+}
+
+#[tokio::test]
+async fn a_source_that_forgets_refuses_the_changes_before_what_it_acknowledged() {
+    let at = |next| Cursor::encode(1, &Position { next, done: false }).unwrap();
+    // A stream that does not say it forgets can be read again.
+    let catalog = source().await.discover().await.unwrap();
+    assert!(catalog.get(&orders()).unwrap().is_replayable());
+    for replayable in [true, false] {
+        let config = serde_json::json!({
+            "seed": 3, "slot": format!("forgets_{replayable}"),
+            "streams": [{ "name": "orders", "keys": 6, "changes": 40,
+                          "replayable": replayable }],
+        });
+        let source = source_factory::<ChangesSource>()
+            .connect(config, ConnectContext::new())
+            .await
+            .unwrap();
+        let catalog = source.discover().await.unwrap();
+        assert_eq!(catalog.get(&orders()).unwrap().is_replayable(), replayable);
+        let changes = PartitionId::parse("changes").unwrap();
+        source
+            .committed(&orders(), &[(changes.clone(), at(9))])
+            .await
+            .unwrap();
+        // What it acknowledged it serves again only where it is replayable; from there on it
+        // serves either way.
+        let (sink, _feed) = partition_channel(NonZeroUsize::new(64).unwrap());
+        let before = ReadRequest::new(orders(), Partition::new(changes.clone()), Some(at(8)));
+        let early = source.read(before, sink).await;
+        assert_eq!(
+            early.as_ref().err().map(ConnectorError::kind),
+            (!replayable).then_some(ConnectorErrorKind::Transient),
+            "replayable: {replayable}"
+        );
+        assert!(!read(&*source, "changes", Some(at(9))).await.is_empty());
+    }
 }
