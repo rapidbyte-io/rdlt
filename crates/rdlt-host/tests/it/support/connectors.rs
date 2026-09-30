@@ -73,22 +73,24 @@ pub(crate) struct Ticks {
 /// Whether each read of [`Ticks`] was of a partition that never ends, in order.
 pub(crate) static UNBOUNDED: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
 
-/// How many reads of [`Ticks`] are running.
-pub(crate) static READING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// How many idle reads of [`Ticks`] are running: only those, so other tests' reads in the same
+/// process never count.
+pub(crate) static IDLE_READING: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
-/// Counts a read of [`Ticks`] as running until it is dropped.
+/// Counts an idle read of [`Ticks`] as running until it is dropped.
 struct Running;
 
 impl Running {
     fn start() -> Self {
-        READING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        IDLE_READING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self
     }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        READING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        IDLE_READING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -149,7 +151,7 @@ impl ReadStream<Ticks> for TickStream {
         cursor: Tick,
         out: &mut Emitter<Tick>,
     ) -> Result<()> {
-        let _running = Running::start();
+        let _running = source.config.idle.then(Running::start);
         UNBOUNDED
             .lock()
             .expect("the lock is not poisoned")
