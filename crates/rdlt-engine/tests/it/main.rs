@@ -12,6 +12,7 @@ mod continuous;
 mod destinations;
 mod engine;
 mod exactness;
+mod following_changes;
 mod json;
 mod ledger;
 mod merge;

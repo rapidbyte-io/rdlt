@@ -23,8 +23,12 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Plans `stream` again: a new phase begins once the current one has ended, and a plan of the
-    /// same phase is read as it now says.
+    /// Plans `stream` again: a plan of the same phase is read as it now says, and one naming a new
+    /// phase waits for the next commit to begin it.
+    ///
+    /// Phases begin only after a commit, which takes every seal the coordinator has seen: a phase
+    /// begun here could leave a seal of the last one to commit after it, recording a position of
+    /// the phase before.
     async fn replan_stream(&mut self, stream: usize) -> Result<(), Error> {
         let planned = self.plan_stream(stream).await?;
         let Some(phases) = self.parts.streams[stream].phases.as_mut() else {
@@ -32,12 +36,7 @@ impl Coordinator {
         };
         phases.settled = false;
         match planned.phase {
-            Some(next) if next != phases.phase => {
-                if self.phase_ended(stream) {
-                    self.begin(stream, next, planned)?;
-                }
-                Ok(())
-            }
+            Some(next) if next != phases.phase => Ok(()),
             _ => self.rebalance(stream, &planned),
         }
     }
