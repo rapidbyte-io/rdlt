@@ -39,6 +39,8 @@ struct LogConfig {
     name: String,
     /// Moves the slot as the changes are read, before any commit.
     ack_on_read: bool,
+    /// Moves the slot as it hands out every change of a read but the first, a second apart.
+    late_ack: bool,
     /// Never moves the slot for the changes.
     stuck: bool,
     /// Waits for changes that never come after the first it reads.
@@ -99,10 +101,15 @@ impl Log {
 
     /// Reads the changes from `next` for as long as the read runs.
     async fn changes(&self, mut next: u64, out: &mut Emitter<u64>) -> Result<()> {
+        let mut handed = 0;
         loop {
+            if self.config.late_ack && handed > 0 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
             out.rows(&[json!({ "row": next })]).await?;
             next += 1;
-            if self.config.ack_on_read {
+            handed += 1;
+            if self.config.ack_on_read || (self.config.late_ack && handed > 1) {
                 keep(&self.config.name, &changes(), next);
             }
             if !self.config.on_demand || out.checkpoint_due() {
@@ -210,6 +217,8 @@ async fn a_change_log_whose_slot_moves_only_when_committed_passes_s_ack() {
 async fn a_change_log_whose_slot_moves_but_where_it_was_told_fails_s_ack() {
     let flawed = [
         json!({ "name": "log_acks_on_read", "ack_on_read": true }),
+        // Its checkpoints come a second apart, well within the clause's patience.
+        json!({ "name": "log_acks_late", "late_ack": true }),
         json!({ "name": "log_stuck", "stuck": true }),
         json!({ "name": "log_stuck_behind_a_kept_snapshot", "stuck": true, "snapshot_keeps": true }),
         json!({ "name": "log_stuck_behind_a_whole_snapshot", "stuck": true, "uncheckpointed": true }),

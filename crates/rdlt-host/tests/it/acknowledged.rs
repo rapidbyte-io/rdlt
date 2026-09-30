@@ -2,14 +2,33 @@
 //! by a source that tells, and only when offered; then, and only then, it serves
 //! `ReadAcknowledged`, which moves only with what the source is told is committed.
 
-use rdlt_connector::ConnectorErrorKind;
 use rdlt_connector::serve::Served;
-use rdlt_connector::source_factory;
 use rdlt_connector::wire::{error as carried, v1};
+use rdlt_connector::{
+    BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorSpec, Source, SourceFactory,
+    source_factory,
+};
 use rdlt_connector_reference::{ChangesSource, GeneratorSource};
 use rdlt_wire::{ACKNOWLEDGED, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 
 use crate::support::{raw_client, served};
+
+/// A factory written by hand, which says nothing of where its source stands.
+struct Plain(Box<dyn SourceFactory>);
+
+impl SourceFactory for Plain {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Source>>> {
+        self.0.connect(config, context)
+    }
+}
 
 fn handshake(features: &[&str]) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
@@ -97,6 +116,10 @@ async fn asking_a_source_the_handshake_did_not_accept_is_refused_as_unsupported(
         (source_factory::<ChangesSource>(), &[][..]),
         (source_factory::<ChangesSource>(), &["another"][..]),
         (source_factory::<GeneratorSource>(), &[ACKNOWLEDGED][..]),
+        (
+            Box::new(Plain(source_factory::<GeneratorSource>())) as Box<dyn SourceFactory>,
+            &[ACKNOWLEDGED][..],
+        ),
     ];
     for (factory, offered) in cases {
         let generator = factory.spec().id.as_str() == "io.rapidbyte.generator";

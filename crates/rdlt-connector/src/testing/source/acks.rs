@@ -222,7 +222,7 @@ impl<'a> Probed<'a> {
         self.seen.insert(id.clone(), before.clone());
         let from = before.clone().or_else(|| start.clone());
         let read = self.watched(partition, from.clone()).await?;
-        let end = read.end(partition, from.as_ref());
+        let end = read.end(from.as_ref());
         if read.checkpoints.is_empty() {
             // Nothing lies ahead: a read from where the phase starts must still move nothing,
             // where the stream can read it again.
@@ -242,17 +242,17 @@ impl<'a> Probed<'a> {
             // A partition that keeps no position may keep none still; one that keeps one stands
             // where it was told.
             let now = self.position(id).await?;
-            let kept = now.as_ref() == Some(cursor);
-            let keeps_none = now.is_none() && self.seen.get(id).is_none_or(Option::is_none);
-            if !(kept || keeps_none) {
-                return Err(self.violation(
-                    id,
-                    &format!(
+            let kept = match (&now, self.seen.get(id).cloned().flatten()) {
+                (Some(now), _) if now == cursor => true,
+                (None, None) => false,
+                _ => {
+                    let what = format!(
                         "told checkpoint {} is committed, it stands elsewhere",
                         index + 1
-                    ),
-                ));
-            }
+                    );
+                    return Err(self.violation(id, &what));
+                }
+            };
             self.seen.insert(id.clone(), now);
             // No other partition moved with it, and reading on without committing moves nothing.
             self.unmoved().await?;
