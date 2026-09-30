@@ -89,6 +89,9 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     ///
     /// A stream read in phases, as a CDC snapshot and then its changes, overrides this: once
     /// every partition of a phase is done, the next plan names the next phase and its partitions.
+    /// Where a phase's partitions start comes from `state` alone, never from what the source
+    /// acknowledged: a load that begins the phase again begins it where a failed one did, whose
+    /// logged rows must still land.
     fn plan(
         &self,
         source: &S,

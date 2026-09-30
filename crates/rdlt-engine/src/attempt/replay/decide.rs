@@ -131,6 +131,13 @@ pub(super) fn decide(
 /// Whether `begun`, a phase a logged commit began, applies where the destination holds
 /// `positions`: the destination stands before the phase, with every entry of the phase before it
 /// the commit deletes.
+///
+/// A phase begins only once every end of the phase before it is committed, and a newer load that
+/// finds them begins the phase in its first commit, so a destination before the phase holds those
+/// entries unless a reset or another load's reading of the phase moved it on. Such a destination
+/// keeps its own: the phase and its seals are skipped, and a source that cannot read again refuses
+/// the read from before what it acknowledged that follows, failing the run rather than losing
+/// changes.
 fn begins(positions: &Positions, begun: &BegunPhase) -> bool {
     let stale = begun.changes.iter().all(|change| match change {
         StateChange::Delete(key) => match StateKey::parse(key) {

@@ -21,7 +21,8 @@ its data from the source again, so an object store backend is not built.
   stream is read incrementally: a full read starts again from the beginning, which its source no
   longer holds (`full_read_unreplayable`), and a change stream's phases drop the positions replay
   goes by (`change_read_unreplayable`; M5d's streaming sources take this up). Amended 2026-09-30:
-  ADR 0034 logs phase transitions and lifts `change_read_unreplayable`.
+  ADR 0034 logs phase transitions and lifts `change_read_unreplayable`, so such a stream is read
+  incrementally or as changes.
 - **Source contract.** A source that cannot read again serves each row to at most one reader: two
   loads of one pipeline must not both be served, and acknowledged for, the same rows, which no
   log could tell apart (`StreamSpec::with_replayable` says so).
@@ -69,7 +70,8 @@ its data from the source again, so an object store backend is not built.
     answers the commit's idempotence key with its stored receipt. A stream that reads again is left
     to the next load: its positions cannot tell whether its segments landed, as a completed full
     read leaves every partition without one. Positions of a stream that cannot read again only move
-    forward, since its full reads are refused;
+    forward, since its full reads are refused, but for a change stream's phase transitions, which
+    ADR 0034 logs and replays (amended 2026-09-30);
   - the staged segments' batch frames are written again through writers of the logged tables,
     created first, and the log is removed.
 - **The simulation** keeps logs in a store of the world that outlives runs; a run's crash keeps

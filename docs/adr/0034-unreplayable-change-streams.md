@@ -38,6 +38,16 @@ and sources that cannot read again.
   lands only where its phase is the stream's phase after the transitions applied and its `from`
   is where the destination stands. A reset stream's transitions from before the reset are skipped,
   as its seals are (ADR 0033).
+- **The source contract grows two clauses** (`StreamSpec::with_replayable`, `ReadStream::plan`).
+  - A phase's start cursors come from the stream's state alone, never from what the source
+    acknowledged: a load that begins the phase again after a fenced or failed one begins it where
+    that one did, so the seals it logged still match. A start taken from the acknowledged position
+    would move past them, and their changes would be lost.
+  - A source that cannot read again refuses, as transient, a read from before a position it
+    acknowledged, rather than starting after it: the engine reads from there only while a logged
+    commit waits to be replayed, or where the destination moved on without the log's transition
+    (another load read the phase before it), and a refusal fails the run where starting later
+    would lose the changes between.
 - **`change_read_unreplayable` is lifted.** A change stream from a source that cannot read again
   loads through the log. It needs a log store (`wal_required`); a full read stays refused
   (`full_read_unreplayable`).
