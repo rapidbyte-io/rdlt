@@ -56,7 +56,7 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "S-ACK",
-        statement: "a change stream's position outside the engine moves only when the engine \
+        statement: "a stream's position outside the engine moves only when the engine \
                     tells it a cursor is committed, and then to that cursor",
     },
 ];

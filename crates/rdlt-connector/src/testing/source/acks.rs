@@ -33,9 +33,11 @@ const TOLD: usize = 2;
 /// Where each partition of a change stream's first phase stands.
 pub(super) type Standing = Vec<(PartitionId, Option<Cursor>)>;
 
-/// The stream `S-ACK` reads: the first `catalog` reads as changes.
+/// The stream `S-ACK` reads: the first `catalog` reads as changes, else the first it reads
+/// incrementally, as an offset log is.
 fn changes(catalog: &Catalog) -> Option<&StreamSpec> {
-    catalog.iter().find(|stream| stream.supports(ReadMode::Cdc))
+    let reads = |mode| catalog.iter().find(move |stream| stream.supports(mode));
+    reads(ReadMode::Cdc).or_else(|| reads(ReadMode::Incremental))
 }
 
 /// Where the partitions of `catalog`'s change stream stand before any clause reads them, as
@@ -74,7 +76,9 @@ pub(super) async fn acknowledged_only_when_committed(
         Err(violation) => return outcome(Err(violation)),
     };
     let Some(stream) = changes(catalog) else {
-        return Outcome::Skipped("the source reads no stream as changes".to_owned());
+        return Outcome::Skipped(
+            "the source reads no stream as changes or incrementally".to_owned(),
+        );
     };
     let mut probed = Probed::new(source, reader.as_ref(), stream);
     let checked = async {

@@ -22,7 +22,7 @@ rusqlite.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 xxhash-rust.workspace = true
 
 [dev-dependencies]
@@ -31,7 +31,7 @@ rdlt-testkit.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen", "testing"] }
 rdlt-host.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 
 [lints]
 workspace = true

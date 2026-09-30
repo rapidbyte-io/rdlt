@@ -110,7 +110,7 @@ impl SourceConnector for ChangesSource {
         Ok(Self {
             seed: config.seed,
             streams: config.streams,
-            slot: Slot::named(config.slot.as_deref()),
+            slot: slot::named(config.slot.as_deref()),
         })
     }
 

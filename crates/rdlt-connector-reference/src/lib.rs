@@ -24,6 +24,8 @@ pub mod changes;
 mod columns;
 pub mod files;
 mod generator;
+mod kept;
+pub mod log;
 mod memory;
 mod merge;
 pub mod sqlite;
@@ -33,6 +35,7 @@ pub use files::{
     FileFormat, FilesDestination, FilesDestinationConfig, FilesSource, FilesSourceConfig,
 };
 pub use generator::{GeneratedStream, GeneratorConfig, GeneratorSource};
+pub use log::{LogConfig, LogSource, LoggedStream};
 pub use memory::{
     MemoryDestination, MemoryDestinationConfig, MemorySource, MemorySourceConfig, published,
     schema, staged, tables,
