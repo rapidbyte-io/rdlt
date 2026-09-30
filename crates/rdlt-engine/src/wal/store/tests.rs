@@ -119,6 +119,9 @@ async fn claims_exclude_one_another(wal: &dyn WalStore) {
     wal.append(&orders, chunk(1, 0), Bytes::from_static(b"frame"))
         .await
         .expect("appends");
+    wal.append(&orders, chunk(2, 0), Bytes::from_static(b"other"))
+        .await
+        .expect("appends");
     assert!(
         wal.loads(&orders)
             .await
@@ -136,6 +139,8 @@ async fn claims_exclude_one_another(wal: &dyn WalStore) {
             .contains(&load)
     );
     assert_eq!(wal.chunks(&orders, load).await.expect("chunks"), []);
+    let other = wal.chunks(&orders, chunk(2, 0).load).await.expect("chunks");
+    assert_eq!(other, [(0, 5)], "another log stays");
     wal.remove_log(&orders, load)
         .await
         .expect("removing again changes nothing");
@@ -147,14 +152,22 @@ async fn a_local_log_has_one_claimant_at_a_time() {
     let wal = LocalWal::new(base.path());
     claims_exclude_one_another(&wal).await;
     let dir = wal.pipeline_dir(&pipeline("orders"));
-    let left: Vec<_> = std::fs::read_dir(&dir)
+    let mut left: Vec<String> = std::fs::read_dir(&dir)
         .expect("the pipeline's directory stays")
-        .map(|entry| entry.expect("an entry").file_name())
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
+    left.sort();
+    let other = chunk(2, 0).load.to_string();
     assert_eq!(
-        left.len(),
-        1,
-        "only the other load's lock is left: {left:?}"
+        left,
+        [other.clone(), format!("{other}.lock")],
+        "only the other log is left"
     );
 }
 
@@ -202,4 +215,81 @@ async fn a_synced_chunk_lets_its_file_go_and_reopens_where_appended_again() {
         .expect("appends");
     let read = wal.read(&orders, chunk(1, 2), 0, 100).await.expect("reads");
     assert_eq!(&read[..], b"framemore");
+}
+
+#[test]
+fn a_private_directory_names_what_it_created_and_nothing_that_was_there() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let deep = base.path().join("a").join("b").join("c");
+    let created = super::private_dir(&deep).expect("creates");
+    assert_eq!(
+        created,
+        [
+            deep.clone(),
+            base.path().join("a").join("b"),
+            base.path().join("a")
+        ]
+    );
+    assert_eq!(
+        super::private_dir(&deep).expect("exists"),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+#[test]
+fn a_pipeline_s_directory_keeps_the_characters_paths_take_and_a_short_hash() {
+    let wal = LocalWal::new("/base");
+    let dir = wal.pipeline_dir(&pipeline("orders-eu_1.v2"));
+    let name = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("a name");
+    let (safe, hash) = name.rsplit_once('-').expect("a hash after the name");
+    assert_eq!(safe, "orders-eu_1_v2");
+    assert_eq!(hash.len(), 8, "{hash}");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{hash}");
+}
+
+#[tokio::test]
+async fn a_log_s_paths_taken_by_what_the_store_does_not_expect_are_errors_not_absences() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let load = chunk(1, 0).load;
+    // The pipeline's directory is a file: nothing can be listed in it.
+    std::fs::write(wal.pipeline_dir(&orders), b"").expect("writes");
+    assert!(wal.loads(&orders).await.is_err());
+    assert!(wal.chunks(&orders, load).await.is_err());
+    std::fs::remove_file(wal.pipeline_dir(&orders)).expect("removes");
+    // The load's directory is a file, and its claim's mark a directory.
+    let dir = wal.pipeline_dir(&orders);
+    std::fs::create_dir_all(dir.join(format!("{load}.lock"))).expect("creates");
+    std::fs::write(dir.join(load.to_string()), b"").expect("writes");
+    assert!(wal.remove_log(&orders, load).await.is_err());
+    std::fs::remove_file(dir.join(load.to_string())).expect("removes");
+    assert!(
+        wal.remove_log(&orders, load).await.is_err(),
+        "the mark cannot go"
+    );
+    // A chunk that is a directory cannot be removed as a file.
+    std::fs::create_dir_all(dir.join(load.to_string()).join("00000000.wal")).expect("creates");
+    assert!(wal.remove(&orders, chunk(1, 0)).await.is_err());
+}
+
+#[tokio::test]
+async fn removing_a_log_lets_its_files_go_and_keeps_every_other_log_s() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    for load in [1, 2] {
+        wal.append(&orders, chunk(load, 0), Bytes::from_static(b"frame"))
+            .await
+            .expect("appends");
+    }
+    wal.remove_log(&orders, chunk(1, 0).load)
+        .await
+        .expect("removes");
+    let open: Vec<_> = wal.open.lock().keys().cloned().collect();
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert!(open[0].starts_with(wal.pipeline_dir(&orders).join(chunk(2, 0).load.to_string())));
 }

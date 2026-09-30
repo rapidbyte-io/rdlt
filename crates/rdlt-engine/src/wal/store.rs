@@ -153,8 +153,8 @@ fn blocking<T: Send + 'static>(
 }
 
 /// Creates `dir` and its parents where missing, readable by their owner only on Unix, and refuses
-/// one another user owns.
-fn private_dir(dir: &Path) -> io::Result<()> {
+/// one another user owns; the directories it created, deepest first.
+fn private_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -186,7 +186,7 @@ fn private_dir(dir: &Path) -> io::Result<()> {
             ));
         }
     }
-    Ok(())
+    Ok(missing)
 }
 
 impl WalStore for LocalWal {

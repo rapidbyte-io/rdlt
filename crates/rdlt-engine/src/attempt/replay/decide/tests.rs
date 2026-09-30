@@ -165,3 +165,42 @@ fn a_stream_that_reads_again_is_left_to_the_next_load_where_a_newer_one_committe
     assert!(!moved.whole);
     assert_eq!(moved.staged, segments(&[6]));
 }
+
+#[test]
+fn a_whole_replay_commits_the_logged_commit_under_the_replaying_epoch() {
+    let mut logged = logged();
+    logged.meta.finish_generations = vec![(
+        rdlt_connector::TablePath::new(["orders"]).expect("a valid path"),
+        rdlt_connector::GenerationId(4),
+    )];
+    let decision = decide(&standing(10, 5), Some((load(2), 1)), None, &logged);
+    let replayed = decision.replayed(&logged.meta, Epoch(9));
+    assert_eq!(
+        replayed,
+        CommitMeta {
+            epoch: Epoch(9),
+            ..logged.meta.clone()
+        }
+    );
+}
+
+#[test]
+fn a_partial_replay_commits_only_what_it_staged_and_the_positions_it_moves() {
+    let mut logged = logged();
+    logged.meta.finish_generations = vec![(
+        rdlt_connector::TablePath::new(["orders"]).expect("a valid path"),
+        rdlt_connector::GenerationId(4),
+    )];
+    let decision = decide(&standing(25, 5), Some((load(3), 1)), None, &logged);
+    let replayed = decision.replayed(&logged.meta, Epoch(9));
+    assert_eq!(
+        replayed,
+        CommitMeta {
+            epoch: Epoch(9),
+            segments: segments(&[6]),
+            state_delta: vec![position("p1", 6), position("p2", 1)],
+            finish_generations: Vec::new(),
+            ..logged.meta.clone()
+        }
+    );
+}
