@@ -80,6 +80,10 @@ once, and how far behind its newest data each read is, which the report totals p
 whose place the source's retention dropped fails the run as `retention_lost`, or, where the stream
 says so, reads again from the earliest data kept and is counted. `S-PARTITION` certifies that a
 stream's partitions, planned again from where they stood, cover what is left exactly once.
+A stream can be reset between runs, to be read again from its beginning, or with its tables
+dropped and released to any pipeline, so a merge table can become a change table and a table can
+change hands; a load the reset fenced lands nothing of the stream after it, and `D-DROP`
+certifies a destination's drops.
 
 ## Development
 
