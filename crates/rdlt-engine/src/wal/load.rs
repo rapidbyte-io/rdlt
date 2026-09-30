@@ -183,6 +183,12 @@ impl LoadLog {
             .await
     }
 
+    /// Tells the log `segment`'s partition ended without sealing it: no commit takes it, so it
+    /// holds no chunk back.
+    pub(crate) async fn abandon(&self, segment: SegmentId) -> Result<(), Error> {
+        self.writer.send(Command::Abandon { segment }).await
+    }
+
     /// Closes the log: no frame follows, and the log is removed where every commit in it has its
     /// receipt.
     pub(crate) async fn close(&self) -> Result<(), Error> {

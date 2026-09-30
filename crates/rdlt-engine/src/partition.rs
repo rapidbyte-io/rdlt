@@ -182,10 +182,16 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
         partition: job.index,
     })?;
     let ingested = read_and_ingest(&job, &context).await?;
-    if !ingested.stopped
-        && let Some(state) = end_state(&ingested, job.partition.is_unbounded())
-    {
-        context.report(Progress::Sealed(ingested.open.seal(job.index, state, None)))?;
+    let end = (!ingested.stopped)
+        .then(|| end_state(&ingested, job.partition.is_unbounded()))
+        .flatten();
+    match (end, &context.wal) {
+        (Some(state), _) => {
+            context.report(Progress::Sealed(ingested.open.seal(job.index, state, None)))?;
+        }
+        // The open segment is never committed: the log may drop what it holds of it.
+        (None, Some(log)) => log.abandon(ingested.open.id).await?,
+        (None, None) => {}
     }
     context.report(Progress::Ended {
         partition: job.index,
