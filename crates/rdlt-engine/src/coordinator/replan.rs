@@ -42,8 +42,9 @@ impl Coordinator {
     }
 
     /// Reads `stream`'s phase as `planned` says: running partitions it no longer names stop, and
-    /// each it names that is neither running nor done starts, from its committed position or its
-    /// start.
+    /// each it names that is neither running nor done starts from its committed position, or
+    /// from the beginning, as initial planning starts it: a plan's starts place only a new
+    /// phase's partitions.
     ///
     /// A partition whose end is not yet committed waits for the next plan: read again from its
     /// committed position, it would read again what its end seals.
@@ -81,10 +82,7 @@ impl Coordinator {
                 Some(PartitionState::Cursor(cursor)) => {
                     Some((partition.clone(), Some(cursor.clone())))
                 }
-                None => Some((
-                    partition.clone(),
-                    planned.starts.get(partition.id()).cloned(),
-                )),
+                None => Some((partition.clone(), None)),
             })
             .collect();
         for (partition, cursor) in starts {
