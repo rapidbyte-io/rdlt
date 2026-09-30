@@ -29,6 +29,12 @@ pub(super) struct Flaws {
     pub(super) keep_deleted: bool,
     /// Closes nothing on a truncate.
     pub(super) ignore_truncates: bool,
+    /// Keeps the closed version's sequence in the version a soft delete opens.
+    pub(super) soft_keeps_seq: bool,
+    /// Spares, on a truncate, the versions its own commit opened.
+    pub(super) spare_commit: bool,
+    /// Stores versions without their hash.
+    pub(super) drop_hash: bool,
 }
 
 /// One history table's merge: its key and history columns, and the flaws it has.
@@ -36,6 +42,8 @@ struct Versioning<'a> {
     key: &'a MergeKey,
     history: &'a HistoryColumns,
     flaws: Flaws,
+    /// How many versions the table held before the commit.
+    earlier: usize,
 }
 
 /// Merges `incoming`, a history stream's written batches, into `published` and `tombstones`, as
@@ -51,6 +59,7 @@ pub(super) fn merge_history(
         key,
         history,
         flaws,
+        earlier: published.iter().map(RecordBatch::num_rows).sum(),
     };
     let mut rows: Vec<RecordBatch> = incoming
         .iter()
@@ -133,6 +142,7 @@ impl Versioning<'_> {
             }
             let closing: Vec<usize> = (0..stored.len())
                 .filter(|index| self.current(&stored[*index]) && self.seq(&stored[*index]) < seq)
+                .filter(|index| !self.flaws.spare_commit || *index < self.earlier)
                 .filter(|_| !self.flaws.ignore_truncates)
                 .collect();
             for index in closing {
@@ -227,17 +237,23 @@ impl Versioning<'_> {
             .fields()
             .iter()
             .filter(|field| Some(field.name().as_str()) != op)
-            .cloned()
+            .map(|field| std::sync::Arc::new(field.as_ref().clone().with_nullable(true)))
             .collect();
         let columns: Vec<ArrayRef> = fields
             .iter()
             .map(|field| {
                 let name = field.name().as_str();
                 let opening = [&*self.key.seq, &*self.history.valid_from];
+                let opening = if self.flaws.soft_keeps_seq {
+                    &opening[1..]
+                } else {
+                    &opening[..]
+                };
                 let taken = deleting
                     .filter(|(_, at)| opening.contains(&name) || name == *at)
                     .and_then(|(deleting, _)| deleting.column_by_name(name));
-                if name == &*self.history.valid_to {
+                let dropped = self.flaws.drop_hash && name == &*self.history.row_hash;
+                if name == &*self.history.valid_to || dropped {
                     arrow_array::new_null_array(field.data_type(), 1)
                 } else if name == &*self.history.is_current {
                     std::sync::Arc::new(BooleanArray::from(vec![true])) as ArrayRef
