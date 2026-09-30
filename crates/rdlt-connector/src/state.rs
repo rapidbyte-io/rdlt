@@ -1,5 +1,6 @@
 //! Pipeline state and how it is stored: as keyed records the destination keeps opaque.
 
+mod error;
 mod names;
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,7 @@ use crate::cursor::Cursor;
 use crate::id::{Epoch, GenerationId, PartitionId, SchemaVersion, StreamName, TablePath};
 use crate::schema::TableSchema;
 
+pub use error::StateError;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
@@ -63,6 +65,8 @@ pub enum StateKey {
     Generation(StreamName),
     /// A stream's recently completed full reads.
     Completed(StreamName),
+    /// The epoch of a stream's last reset.
+    Reset(StreamName),
     /// A table's schema.
     Schema(TablePath),
     /// A table's name map.
@@ -134,6 +138,13 @@ pub enum StateEntry {
         /// The generations of the completed reads, oldest first.
         generations: Vec<GenerationId>,
     },
+    /// A stream's last reset: nothing logged by a session older than it applies to the stream.
+    Reset {
+        /// The stream.
+        stream: StreamName,
+        /// The epoch of the session that reset it.
+        epoch: Epoch,
+    },
     /// A table's schema.
     Schema {
         /// The table.
@@ -188,39 +199,6 @@ struct VersionedEntry {
     entry: StateEntry,
 }
 
-/// A state record that cannot be read.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum StateError {
-    /// The key is not a state key.
-    #[error("state key {key:?} is malformed")]
-    MalformedKey {
-        /// The key.
-        key: String,
-    },
-    /// The value is not a state value.
-    #[error("state value for {key:?} is malformed: {reason}")]
-    MalformedValue {
-        /// The key.
-        key: String,
-        /// What is wrong.
-        reason: String,
-    },
-    /// The value was written by a newer format.
-    #[error("state value for {key:?} is format {version}; this build reads format 1")]
-    UnsupportedVersion {
-        /// The key.
-        key: String,
-        /// The format found.
-        version: u16,
-    },
-    /// The value belongs to a different key.
-    #[error("state value stored under {key:?} belongs to another key")]
-    KeyMismatch {
-        /// The key.
-        key: String,
-    },
-}
-
 impl StateEntry {
     /// The key this entry is stored under.
     pub fn key(&self) -> StateKey {
@@ -232,6 +210,7 @@ impl StateEntry {
             } => StateKey::Partition(stream.clone(), partition.clone()),
             Self::Generation { stream, .. } => StateKey::Generation(stream.clone()),
             Self::Completed { stream, .. } => StateKey::Completed(stream.clone()),
+            Self::Reset { stream, .. } => StateKey::Reset(stream.clone()),
             Self::Schema { table, .. } => StateKey::Schema(table.clone()),
             Self::Names { table, .. } => StateKey::Names(table.clone()),
             Self::Sequences { table, .. } => StateKey::Sequences(table.clone()),
@@ -329,6 +308,9 @@ pub struct PipelineState {
     pub streams: BTreeMap<StreamName, StreamState>,
     /// Each table's schema and names.
     pub tables: BTreeMap<TablePath, TableState>,
+    /// The epoch of the session that last reset each stream reset: what a session older than it
+    /// logged never applies to the stream.
+    pub resets: BTreeMap<StreamName, Epoch>,
     /// The last commit's receipt.
     pub last_receipt: Option<Receipt>,
 }
@@ -370,6 +352,12 @@ impl PipelineState {
                     generations: stream.completed.clone(),
                 });
             }
+        }
+        for (stream, epoch) in &self.resets {
+            entries.push(StateEntry::Reset {
+                stream: stream.clone(),
+                epoch: *epoch,
+            });
         }
         for (path, table) in &self.tables {
             if let Some((version, schema)) = &table.schema {
@@ -435,6 +423,9 @@ impl PipelineState {
             } => {
                 self.streams.entry(stream).or_default().completed = generations;
             }
+            StateEntry::Reset { stream, epoch } => {
+                self.resets.insert(stream, epoch);
+            }
             StateEntry::Schema {
                 table,
                 version,
@@ -483,6 +474,9 @@ impl PipelineState {
                 if let Some(state) = self.streams.get_mut(stream) {
                     state.completed.clear();
                 }
+            }
+            StateKey::Reset(stream) => {
+                self.resets.remove(stream);
             }
             StateKey::Schema(table) => {
                 if let Some(state) = self.tables.get_mut(table) {

@@ -52,6 +52,7 @@ fn sample_state() -> PipelineState {
         .insert(partition("p1"), PartitionState::Done);
     orders.generation = Some(GenerationId(2));
     orders.completed = vec![GenerationId(0), GenerationId(1)];
+    state.resets.insert(stream("orders"), Epoch(3));
     let mut names = NameMap::default();
     names.insert(ColumnPath::from("id"), "id").unwrap();
     let variant = ColumnKey::Variant {
@@ -127,6 +128,23 @@ fn deleting_a_completed_marker_clears_it() {
         state.streams[&stream("orders")].generation,
         Some(GenerationId(2))
     );
+}
+
+#[test]
+fn a_stream_s_reset_marker_is_kept_apart_from_its_position_and_deleting_it_forgets_it() {
+    let mut state = sample_state();
+    let key = StateKey::Reset(stream("orders"));
+    assert_eq!(state.resets[&stream("orders")], Epoch(3));
+    state.apply(&StateChange::Delete(key.encode())).unwrap();
+    assert!(state.resets.is_empty());
+    assert_eq!(state.streams[&stream("orders")].phase, 1);
+    let marker = StateEntry::Reset {
+        stream: stream("events"),
+        epoch: Epoch(9),
+    };
+    state.apply(&StateChange::Put(marker.to_record())).unwrap();
+    assert_eq!(state.resets[&stream("events")], Epoch(9));
+    assert!(!state.streams.contains_key(&stream("events")));
 }
 
 #[test]
@@ -333,8 +351,13 @@ fn states() -> impl Strategy<Value = PipelineState> {
         ),
         0..3,
     );
-    (any::<u64>(), streams, any::<bool>())
-        .prop_map(|(epoch, streams, with_receipt)| PipelineState {
+    let resets = proptest::collection::btree_map(
+        prop_oneof![Just("a"), Just("b"), Just("e")],
+        any::<u64>(),
+        0..3,
+    );
+    (any::<u64>(), streams, any::<bool>(), resets)
+        .prop_map(|(epoch, streams, with_receipt, resets)| PipelineState {
             epoch: Epoch(epoch),
             streams: streams
                 .into_iter()
@@ -355,6 +378,10 @@ fn states() -> impl Strategy<Value = PipelineState> {
                 })
                 .collect(),
             tables: std::collections::BTreeMap::default(),
+            resets: resets
+                .into_iter()
+                .map(|(name, epoch)| (stream(name), Epoch(epoch)))
+                .collect(),
             last_receipt: with_receipt.then(receipt),
         })
         .prop_flat_map(|state| (Just(state), tables()))

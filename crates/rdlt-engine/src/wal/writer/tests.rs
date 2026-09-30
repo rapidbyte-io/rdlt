@@ -98,6 +98,7 @@ fn commit(number: u64, ids: &[u64]) -> (Command, oneshot::Receiver<Result<(), Er
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     };
     let (durable, answer) = oneshot::channel();
     let command = Command::Commit {

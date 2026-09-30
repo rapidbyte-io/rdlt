@@ -205,6 +205,7 @@ impl From<&Capabilities> for v1::Capabilities {
             }),
             partial_updates: capabilities.partial_updates,
             merge_changes: capabilities.merge_changes,
+            drop_tables: capabilities.drop_tables,
             nested: Some(v1::NestedSupport {
                 structs: nested.structs,
                 lists: nested.lists,
@@ -269,6 +270,7 @@ impl TryFrom<v1::Capabilities> for Capabilities {
             },
             partial_updates: capabilities.partial_updates,
             merge_changes: capabilities.merge_changes,
+            drop_tables: capabilities.drop_tables,
             nested: NestedSupport {
                 structs: nested.structs,
                 lists: nested.lists,

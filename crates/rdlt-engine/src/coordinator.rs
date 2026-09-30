@@ -385,6 +385,7 @@ impl Coordinator {
             state_delta: delta,
             finish_generations,
             child_tables: self.parts.tables.child_tables(),
+            drop_tables: Vec::new(),
         };
         if let Some(log) = &self.parts.wal {
             // Every batch of the commit's segments was queued for the log before its partition

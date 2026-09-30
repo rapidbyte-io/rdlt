@@ -50,6 +50,7 @@ fn logged() -> Logged {
             state_delta: vec![position("p0", 30), position("p1", 6), position("p2", 1)],
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
+            drop_tables: Vec::new(),
         },
         seals: vec![
             seal(3, "p0", Some(10), 20),

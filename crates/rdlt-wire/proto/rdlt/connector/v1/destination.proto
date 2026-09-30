@@ -226,6 +226,16 @@ message CommitMeta {
   repeated FinishGeneration finish_generations = 6;
   // The child tables it replaces rows of.
   repeated ChildTable child_tables = 7;
+  // The tables it drops.
+  repeated DroppedTable drop_tables = 8;
+}
+
+// A table a commit drops.
+message DroppedTable {
+  // Its path, as the pipeline's state names it.
+  TablePath path = 1;
+  // Its identifier in the destination.
+  string name = 2;
 }
 
 // Commits in a session.

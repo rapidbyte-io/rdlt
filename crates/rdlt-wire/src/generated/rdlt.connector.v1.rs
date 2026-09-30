@@ -487,6 +487,9 @@ pub struct Capabilities {
     /// Whether it merges change streams: each row in sequence order, only past the row it holds.
     #[prost(bool, tag = "11")]
     pub merge_changes: bool,
+    /// Whether it drops the tables a commit names, atomically with the commit.
+    #[prost(bool, tag = "12")]
+    pub drop_tables: bool,
 }
 /// What a source declares about itself; it declares nothing yet.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1525,6 +1528,19 @@ pub struct CommitMeta {
     /// The child tables it replaces rows of.
     #[prost(message, repeated, tag = "7")]
     pub child_tables: ::prost::alloc::vec::Vec<ChildTable>,
+    /// The tables it drops.
+    #[prost(message, repeated, tag = "8")]
+    pub drop_tables: ::prost::alloc::vec::Vec<DroppedTable>,
+}
+/// A table a commit drops.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DroppedTable {
+    /// Its path, as the pipeline's state names it.
+    #[prost(message, optional, tag = "1")]
+    pub path: ::core::option::Option<TablePath>,
+    /// Its identifier in the destination.
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
 }
 /// Commits in a session.
 #[derive(Clone, PartialEq, ::prost::Message)]
