@@ -21,6 +21,7 @@ mod normalized;
 mod owned;
 mod phases;
 mod placement;
+mod replanning;
 mod schema;
 mod support;
 mod unbounded;
