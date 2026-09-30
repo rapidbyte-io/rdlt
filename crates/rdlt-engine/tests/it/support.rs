@@ -3,6 +3,7 @@
 pub(crate) mod batches;
 pub(crate) mod destinations;
 pub(crate) mod listening;
+pub(crate) mod logs;
 pub(crate) mod script;
 pub(crate) mod targets;
 
@@ -22,7 +23,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
 use rdlt_engine::{
     CommitPolicy, ComputePool, Engine, EngineConfig, EngineConfigBuilder, Env, Job, PipelinePlan,
-    RayonPool, RunControl, RunOutcome, Sleep, StreamPlan, SystemEnv,
+    RayonPool, RunControl, RunOutcome, Sleep, StreamPlan, SystemEnv, WalStore,
 };
 use serde_json::{Value, json};
 
@@ -57,9 +58,19 @@ pub(crate) fn engine(config: EngineConfigBuilder) -> TestEngine {
 /// An engine as [`engine`] makes it, and how many compute jobs it has run.
 pub(crate) fn counting_engine(config: EngineConfigBuilder) -> (TestEngine, Arc<AtomicUsize>) {
     let pool = RayonPool::new(NonZeroUsize::MIN).expect("a one-thread pool starts");
+    engine_on(config, SystemEnv::new(pool))
+}
+
+/// An engine as [`engine`] makes it, keeping write-ahead logs in `store`.
+pub(crate) fn logging_engine(config: EngineConfigBuilder, store: Arc<dyn WalStore>) -> TestEngine {
+    let pool = RayonPool::new(NonZeroUsize::MIN).expect("a one-thread pool starts");
+    engine_on(config, SystemEnv::new(pool).with_wal(store)).0
+}
+
+fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc<AtomicUsize>) {
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
-    let env = InlineEnv(SystemEnv::new(pool), Inline(Arc::clone(&jobs)));
+    let env = InlineEnv(system, Inline(Arc::clone(&jobs)));
     (TestEngine(Engine::new(config, Arc::new(env))), jobs)
 }
 
@@ -86,6 +97,10 @@ impl Env for InlineEnv {
 
     fn compute(&self) -> &dyn ComputePool {
         &self.1
+    }
+
+    fn wal(&self) -> Option<Arc<dyn WalStore>> {
+        self.0.wal()
     }
 }
 

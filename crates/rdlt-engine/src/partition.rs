@@ -24,6 +24,7 @@ use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
 use crate::table::Tables;
+use crate::wal::LoadLog;
 use crate::watch;
 
 use coalesce::{Coalescer, Pushed};
@@ -135,6 +136,8 @@ pub(crate) struct PartitionContext {
     pub(crate) env: Arc<dyn Env>,
     /// How pushes are coalesced and JSON is shredded.
     pub(crate) batch: BatchPolicy,
+    /// The load's write-ahead log, where it keeps one.
+    pub(crate) wal: Option<LoadLog>,
 }
 
 impl PartitionContext {

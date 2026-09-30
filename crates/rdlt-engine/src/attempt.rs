@@ -1,5 +1,7 @@
 //! One attempt of a run: open the destination, plan the streams, and load until done.
 
+mod check;
+mod replay;
 mod sequences;
 mod streams;
 #[cfg(test)]
@@ -30,6 +32,7 @@ use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
 use crate::table::{SharedSession, Tables};
+use crate::wal::{LoadLog, Positions};
 use crate::watch;
 
 use streams::Planning;
@@ -71,6 +74,15 @@ pub(crate) async fn run(
     load_id: LoadId,
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
+    if context.plan.logs_ahead() && context.env.wal().is_none() {
+        return Err(Error::config(format!(
+            "pipeline {} keeps a write-ahead log, and the engine has nowhere to keep one",
+            context.plan.pipeline()
+        ))
+        .with_code("wal_store_missing"));
+    }
+    // What earlier loads logged and never saw committed lands before this one plans.
+    replay::replay(context, load_id).await?;
     let opened = open(context, load_id).await?;
     log.lock().opened = opened
         .state
@@ -148,18 +160,10 @@ async fn launch(
     tables: Arc<Tables>,
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<(), Error> {
-    let count = lane_count(&context.config, context.destination.as_ref());
-    let (lanes, lane_tasks) = Lanes::new(
-        count,
-        &tables,
-        context.config.lane_window(),
-        &context.budget,
-    );
     let mut scope = TaskScope::new(&CancellationToken::new());
     let cancel = scope.token().clone();
-    for lane in lane_tasks {
-        scope.spawn(lane.run(cancel.clone()));
-    }
+    let lanes = start_lanes(context, &tables, &mut scope);
+    let wal = start_log(context, load_id, &opened.state, &planned, &mut scope).await?;
     let (progress, progress_feed) = mpsc::unbounded_channel();
     let (barrier, barrier_feed) = watch::channel(0);
     let stop_reads = CancellationToken::new();
@@ -179,6 +183,7 @@ async fn launch(
         loaded_at: context.env.now(),
         env: Arc::clone(&context.env),
         batch: *context.config.batch(),
+        wal: wal.clone(),
     };
     let (tasks, spawned) = mpsc::unbounded_channel();
     let launcher = launcher(partition_context.clone(), tasks);
@@ -203,10 +208,47 @@ async fn launch(
         cancel,
         log,
         launcher,
+        wal,
+        positions: Positions::of(&opened.state),
     });
     scope.spawn(coordinator.run());
     // The coordinator starts the partitions of streams' next phases as it runs.
     scope.join_spawning(spawned).await
+}
+
+/// The attempt's lanes, their tasks started in `scope`.
+fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope<Error>) -> Lanes {
+    let count = lane_count(&context.config, context.destination.as_ref());
+    let (lanes, tasks) = Lanes::new(count, tables, context.config.lane_window(), &context.budget);
+    let cancel = scope.token().clone();
+    for lane in tasks {
+        scope.spawn(lane.run(cancel.clone()));
+    }
+    lanes
+}
+
+/// The load's write-ahead log, started in `scope`, where the pipeline asks for one or a stream's
+/// source cannot read again what it acknowledged; `state` is what the attempt opened on.
+async fn start_log(
+    context: &RunContext,
+    load_id: LoadId,
+    state: &PipelineState,
+    planned: &[Planned],
+    scope: &mut TaskScope<Error>,
+) -> Result<Option<LoadLog>, Error> {
+    let opened = state
+        .last_receipt
+        .as_ref()
+        .map(|receipt| (receipt.load_id, receipt.commit_seq));
+    let needed =
+        context.plan.logs_ahead() || planned.iter().any(|stream| !stream.stream.replayable);
+    let Some(store) = context.env.wal().filter(|_| needed) else {
+        return Ok(None);
+    };
+    let pipeline = context.plan.pipeline().clone();
+    let (log, task) = LoadLog::start(store, pipeline, load_id, opened).await?;
+    scope.spawn(task);
+    Ok(Some(log))
 }
 
 /// Starts a task per partition to read, and returns the streams and partitions as the

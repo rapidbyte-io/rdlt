@@ -22,6 +22,7 @@ mod placement;
 mod schema;
 mod support;
 mod unbounded;
+mod wal;
 
 /// Tracks the heap's peak, for the memory bound.
 #[global_allocator]

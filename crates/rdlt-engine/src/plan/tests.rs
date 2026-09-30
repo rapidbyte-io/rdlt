@@ -192,3 +192,11 @@ fn change_streams_replace_nothing_and_only_merged_ones_take_delete_modes() {
         assert_eq!(error.code(), Some(code));
     }
 }
+
+#[test]
+fn a_pipeline_keeps_a_write_ahead_log_only_when_asked() {
+    let plan = PipelinePlan::new(pipeline(), [stream("a")]).unwrap();
+    assert!(!plan.logs_ahead());
+    assert!(plan.clone().with_wal(true).logs_ahead());
+    assert!(!plan.with_wal(true).with_wal(false).logs_ahead());
+}
