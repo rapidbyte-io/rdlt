@@ -10,7 +10,7 @@ use rdlt_connector_reference::{GeneratorSource, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 
-use crate::support::connectors::{COMMITTED, READING, Ticks, UNBOUNDED};
+use crate::support::connectors::{COMMITTED, IDLE_READING, Ticks, UNBOUNDED};
 use crate::support::{Fake, Fault, engine, memory_destination, serve_fake, served};
 
 /// The ticks source, served, with `config`.
@@ -132,12 +132,12 @@ async fn a_read_the_host_abandons_ends_on_the_connector() {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
     let reading = tokio::spawn(async move { source.read(request(), sink).await });
     feed.recv().await.expect("the read sends");
-    assert_eq!(READING.load(Ordering::SeqCst), 1);
+    assert_eq!(IDLE_READING.load(Ordering::SeqCst), 1);
     // The host gives up on a read that waits for data, as S-ACK does, and drops its connection.
     reading.abort();
     drop(feed);
     let ended = async {
-        while READING.load(Ordering::SeqCst) > 0 {
+        while IDLE_READING.load(Ordering::SeqCst) > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     };
