@@ -25,7 +25,8 @@ data is replayed from the source.
   - **M5c**, the WAL: `WalStore`, `LocalWal`, replay, and acknowledging non-replayable sources
     once their seal is durable. There is no `ObjectStoreWal` (see below).
   - **M5d**, continuous runs (`until`) and the owner's streaming items 1–4, and `S-PARTITION`.
-  - **M5e**, history (SCD2) and `D-HIST`.
+  - **M5e**, history (SCD2) and `D-HIST`. Amended 2026-09-30: ADR 0035 leaves history for
+    normalized streams and updates leaving columns unchanged to M5e2.
   - **M5f**, the failpoint sweep, the kill matrix with spawned connectors, and M5's exit
     criterion.
 - **The WAL has one store, `LocalWal`** (owner, 2026-09-28). §15.6's `ObjectStoreWal` is dropped:

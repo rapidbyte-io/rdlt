@@ -86,6 +86,10 @@ A stream can be reset between runs, to be read again from its beginning, or with
 dropped and released to any pipeline, so a merge table can become a change table and a table can
 change hands; a load the reset fenced lands nothing of the stream after it, and `D-DROP`
 certifies a destination's drops.
+A stream can keep every version of each key (SCD2): a change closes its key's version where the
+next begins, at the source's change time or the load's start, a change equal to the current
+version opens none, deletes close versions or open deleted ones, and replays change nothing;
+`D-HIST` certifies a destination's history against versions worked out by hand.
 
 ## Development
 
