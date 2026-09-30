@@ -261,12 +261,16 @@ async fn a_log_s_paths_taken_by_what_the_store_does_not_expect_are_errors_not_ab
     assert!(wal.loads(&orders).await.is_err());
     assert!(wal.chunks(&orders, load).await.is_err());
     std::fs::remove_file(wal.pipeline_dir(&orders)).expect("removes");
-    // The load's directory is a file, and its claim's mark a directory.
+    // The load's directory is a file; then its claim's mark is a directory.
     let dir = wal.pipeline_dir(&orders);
-    std::fs::create_dir_all(dir.join(format!("{load}.lock"))).expect("creates");
+    std::fs::create_dir_all(&dir).expect("creates");
     std::fs::write(dir.join(load.to_string()), b"").expect("writes");
-    assert!(wal.remove_log(&orders, load).await.is_err());
+    assert!(
+        wal.remove_log(&orders, load).await.is_err(),
+        "the log cannot go"
+    );
     std::fs::remove_file(dir.join(load.to_string())).expect("removes");
+    std::fs::create_dir_all(dir.join(format!("{load}.lock"))).expect("creates");
     assert!(
         wal.remove_log(&orders, load).await.is_err(),
         "the mark cannot go"
