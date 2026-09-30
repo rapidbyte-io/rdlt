@@ -172,9 +172,14 @@ fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error(
     frame.extend_from_slice(&crc32c::crc32c(payload).to_le_bytes());
     frame.extend_from_slice(payload);
     assert!(Frames::new(&frame).next().expect("a frame").is_err());
-    // An unknown kind is refused too.
-    frame[0] = 99;
-    assert!(Frames::new(&frame).next().expect("a frame").is_err());
+    // An unknown kind is refused too, and a closing frame that holds anything.
+    for kind in [99, 7] {
+        frame[0] = kind;
+        assert!(
+            Frames::new(&frame).next().expect("a frame").is_err(),
+            "kind {kind}"
+        );
+    }
 }
 
 /// A log the `wal_log` fuzz target garbled: its batch frame's checksum matches, but its Arrow data
@@ -188,4 +193,55 @@ fn a_batch_whose_arrow_data_does_not_hold_together_is_an_error_not_a_panic() {
         read.iter().any(Result::is_err),
         "the garbled batch does not decode"
     );
+}
+
+/// `batch` in a batch frame, and the frames the frame's bytes decode to.
+fn round_trip(batch: RecordBatch) -> (Frame, Vec<Frame>) {
+    let frame = Frame::Batch(Batch {
+        segment: SegmentId(1),
+        table: 0,
+        batch,
+    });
+    let bytes = frame.encode().expect("the frame encodes");
+    let read = decoded(&bytes);
+    (frame, read)
+}
+
+#[test]
+fn a_batch_beyond_what_a_connector_may_send_reads_back_as_the_engine_logged_it() {
+    use arrow_array::{BinaryArray, NullArray};
+    // The engine logs what it lowered, which may hold more columns and rows, and more bytes, than
+    // the wire lets a connector send in one frame.
+    let columns = 10_001;
+    let wide = RecordBatch::try_new(
+        Arc::new(Schema::new(
+            (0..columns)
+                .map(|column| {
+                    arrow_schema::Field::new(
+                        format!("c{column}"),
+                        arrow_schema::DataType::Null,
+                        true,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )),
+        (0..columns)
+            .map(|_| Arc::new(NullArray::new(1)) as arrow_array::ArrayRef)
+            .collect(),
+    )
+    .expect("a wide batch");
+    let long = RecordBatch::try_from_iter([(
+        "n",
+        Arc::new(NullArray::new(1_048_577)) as arrow_array::ArrayRef,
+    )])
+    .expect("a long batch");
+    let large = RecordBatch::try_from_iter([(
+        "blob",
+        Arc::new(BinaryArray::from_iter_values([vec![7_u8; 65 << 20]])) as arrow_array::ArrayRef,
+    )])
+    .expect("a large batch");
+    for batch in [wide, long, large] {
+        let (frame, read) = round_trip(batch);
+        assert_eq!(read, [frame]);
+    }
 }

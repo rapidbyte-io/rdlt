@@ -11,14 +11,14 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
-use rdlt_connector::{CommitMeta, DestinationWriter, LoadId, PipelineId, SegmentSet, TableChange};
+use rdlt_connector::{DestinationWriter, LoadId, PipelineId, SegmentSet, TableChange};
 
 use super::{RunContext, open};
 use crate::error::{Error, Side};
 use crate::table::SharedSession;
 use crate::wal::scan::{self, Logged, Scanned};
 use crate::wal::{Positions, WalStore};
-use decide::{Decision, decide};
+use decide::decide;
 
 /// The session replay commits through, and where the destination stands as it goes.
 struct Replaying {
@@ -90,29 +90,11 @@ impl Replaying {
     ) -> Result<(), Error> {
         let meta = &logged.meta;
         let opened = scanned.header.as_ref().and_then(|header| header.opened);
-        let Decision {
-            staged,
-            moved,
-            whole,
-        } = decide(&self.positions, self.last, opened, logged);
-        self.stage(store, pipeline, scanned, &staged).await?;
-        let replayed = CommitMeta {
-            epoch: self.epoch,
-            segments: staged,
-            // Where another load committed since, only the partitions this commit still moves
-            // change: the rest of its state is older than the destination's.
-            state_delta: if whole {
-                meta.state_delta.clone()
-            } else {
-                moved
-            },
-            finish_generations: if whole {
-                meta.finish_generations.clone()
-            } else {
-                Vec::new()
-            },
-            ..meta.clone()
-        };
+        let decision = decide(&self.positions, self.last, opened, logged);
+        self.stage(store, pipeline, scanned, &decision.staged)
+            .await?;
+        let whole = decision.whole;
+        let replayed = decision.replayed(meta, self.epoch);
         self.session
             .commit(&replayed)
             .await?

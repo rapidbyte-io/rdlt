@@ -175,7 +175,6 @@ impl<'a> Frames<'a> {
     }
 
     /// Where the frames read so far end: past it, the log is torn or ends.
-    #[cfg(test)]
     pub(crate) fn end(&self) -> usize {
         self.offset
     }

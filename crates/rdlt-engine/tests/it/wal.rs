@@ -161,3 +161,23 @@ async fn a_commit_the_destination_missed_lands_from_the_log_before_the_source_is
     let pipeline = PipelineId::parse("wal-replayed").expect("a valid pipeline");
     assert_eq!(store.loads(&pipeline).await.expect("loads list"), []);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_load_that_needs_no_log_keeps_none_though_the_engine_has_a_store() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let counted = Arc::new(Counted::new(LocalWal::new(base.path())));
+    let store: Arc<dyn WalStore> = Arc::clone(&counted) as Arc<dyn WalStore>;
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 2, 30, 7)])
+        .connect("wal_unneeded")
+        .await;
+    let plan = pipeline(
+        "wal-unneeded",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let outcome = logging_engine(commit_every(10), store)
+        .run(plan, source, memory("wal_unneeded").await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!(published_ids("wal_unneeded", "events"), ids(2, 30));
+    assert_eq!((counted.appends(), counted.syncs()), (0, 0));
+}

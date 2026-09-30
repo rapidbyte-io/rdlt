@@ -119,3 +119,37 @@ fn normalizing_a_shredded_batch_names_each_table_by_its_path() {
     );
     assert!(parts.iter().all(|(_, batch)| batch.num_rows() == 1));
 }
+
+#[test]
+fn a_sample_log_reads_back_with_its_one_commit_and_a_garbled_one_is_refused() {
+    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
+    let batch = RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch");
+    let log = super::sample_log(batch);
+    assert_eq!(super::scan_log(&log), Ok(1));
+    // Garble the commit frame's payload, then make its checksum match, as a bug would.
+    let mut garbled = log.clone();
+    let mut offset = 0;
+    let mut frames = Vec::new();
+    while offset + 9 <= garbled.len() {
+        let len = u32::from_le_bytes(
+            garbled[offset + 1..offset + 5]
+                .try_into()
+                .expect("four bytes"),
+        );
+        frames.push((
+            garbled[offset],
+            offset,
+            usize::try_from(len).expect("a length"),
+        ));
+        offset += 9 + usize::try_from(len).expect("a length");
+    }
+    let (_, at, len) = *frames
+        .iter()
+        .find(|(kind, _, _)| *kind == 5)
+        .expect("a commit frame");
+    garbled[at + 9] = b'!';
+    let crc = crc32c::crc32c(&garbled[at + 9..at + 9 + len]);
+    garbled[at + 5..at + 9].copy_from_slice(&crc.to_le_bytes());
+    let refused = super::scan_log(&garbled).expect_err("the commit does not decode");
+    assert_eq!(refused.code, "wal_unreadable");
+}

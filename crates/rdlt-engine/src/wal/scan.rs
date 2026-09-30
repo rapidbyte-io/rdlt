@@ -193,9 +193,14 @@ pub(crate) async fn batch(
         .read(pipeline, located.chunk, located.offset, located.len)
         .await
         .map_err(Error::from_wal)?;
-    match Frames::new(&bytes).next() {
-        Some(Ok((_, Frame::Batch(batch)))) => Ok(batch.batch),
-        Some(Err(error)) => Err(unreadable(pipeline, load, &error)),
+    let mut frames = Frames::new(&bytes);
+    let frame = frames
+        .next()
+        .transpose()
+        .map_err(|error| unreadable(pipeline, load, &error))?;
+    // Exactly the frame the scan found, and nothing past it.
+    match frame {
+        Some((_, Frame::Batch(batch))) if frames.end() == bytes.len() => Ok(batch.batch),
         _ => Err(unreadable(
             pipeline,
             load,

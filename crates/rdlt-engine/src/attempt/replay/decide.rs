@@ -5,7 +5,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::{CommitSeq, LoadId, SegmentSet, StateChange, StateEntry};
+use rdlt_connector::{CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry};
 
 use crate::wal::Positions;
 use crate::wal::scan::Logged;
@@ -20,6 +20,27 @@ pub(super) struct Decision {
     /// Whether the destination stands exactly where the commit's load left it, so the commit's
     /// whole state applies.
     pub(super) whole: bool,
+}
+
+impl Decision {
+    /// The commit that replays `meta`, as it decided, under the replaying session's `epoch`.
+    ///
+    /// Where another load committed since, only the partitions the commit still moves change,
+    /// and no generation swaps in: the rest of its state is older than the destination's.
+    pub(super) fn replayed(self, meta: &CommitMeta, epoch: Epoch) -> CommitMeta {
+        let (state_delta, finish_generations) = if self.whole {
+            (meta.state_delta.clone(), meta.finish_generations.clone())
+        } else {
+            (self.moved, Vec::new())
+        };
+        CommitMeta {
+            epoch,
+            segments: self.staged,
+            state_delta,
+            finish_generations,
+            ..meta.clone()
+        }
+    }
 }
 
 /// What replaying `logged` does where the destination holds `positions` and last received
