@@ -11,9 +11,9 @@ use crate::state::{StateChange, StateRecord};
 use crate::types::LogicalType;
 
 /// SQLite, writing rows whose key a row may hold in standard SQL, as a dialect without
-/// `ON CONFLICT` does, selecting bound values from the table it names, as Oracle's `DUAL`.
+/// `ON CONFLICT` does.
 #[derive(Debug)]
-struct Standard(Option<&'static str>);
+struct Standard;
 
 impl SqlDialect for Standard {
     fn placeholder(&self, index: usize) -> String {
@@ -35,9 +35,35 @@ impl SqlDialect for Standard {
     fn upserts(&self) -> Upserts {
         Upserts::Guarded
     }
+}
+
+/// [`Standard`], selecting bound values from the table `dual`, as Oracle does.
+#[derive(Debug)]
+struct Dual;
+
+impl SqlDialect for Dual {
+    fn placeholder(&self, index: usize) -> String {
+        Standard.placeholder(index)
+    }
+
+    fn column_type(&self, logical: &LogicalType) -> Option<String> {
+        Standard.column_type(logical)
+    }
+
+    fn columns(&self, table: &str) -> Statement {
+        Standard.columns(table)
+    }
+
+    fn transactional_ddl(&self) -> bool {
+        Standard.transactional_ddl()
+    }
+
+    fn upserts(&self) -> Upserts {
+        Standard.upserts()
+    }
 
     fn values_table(&self) -> Option<&str> {
-        self.0
+        Some("dual")
     }
 }
 
@@ -104,13 +130,13 @@ fn standard_sql_writes_the_catalog_as_on_conflict_does() {
         ]],
     ];
     assert_eq!(catalog(Sqlite), expected);
-    assert_eq!(catalog(Standard(None)), expected);
-    assert_eq!(catalog(Standard(Some("dual"))), expected);
+    assert_eq!(catalog(Standard), expected);
+    assert_eq!(catalog(Dual), expected);
 }
 
 #[test]
 fn only_sqlite_writes_on_conflict() {
     assert_eq!(Sqlite.upserts(), Upserts::OnConflict);
-    assert_eq!(Standard(None).upserts(), Upserts::Guarded);
+    assert_eq!(Standard.upserts(), Upserts::Guarded);
     assert_eq!(super::super::tests::Widening.upserts(), Upserts::Guarded);
 }
