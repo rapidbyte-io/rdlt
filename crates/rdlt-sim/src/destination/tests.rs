@@ -199,6 +199,7 @@ fn a_child_table_keeps_only_the_children_of_each_merged_roots_winning_row() {
             seq: "seq".into(),
         }),
         changes: None,
+        history: None,
     };
     let root = key.root.clone().unwrap();
     let mut published = vec![

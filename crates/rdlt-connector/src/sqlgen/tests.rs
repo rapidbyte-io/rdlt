@@ -227,7 +227,7 @@ pub(super) fn database() -> (Connection, SqlPlanner<Sqlite>) {
     (connection, planner)
 }
 
-fn value(value: &SqlValue) -> Value {
+pub(super) fn value(value: &SqlValue) -> Value {
     match value {
         SqlValue::Null => Value::Null,
         SqlValue::Integer(integer) => Value::Integer(*integer),
@@ -307,6 +307,7 @@ fn keyed(name: &str) -> TableRef {
             seq: "seq".into(),
             root: None,
             changes: None,
+            history: None,
         }),
         ..table(name)
     }
@@ -864,6 +865,54 @@ fn a_recorded_merge_key_keeps_a_change_stream_s_columns_and_earlier_records_read
 }
 
 #[test]
+fn a_recorded_merge_key_keeps_a_history_table_s_columns() {
+    let (connection, planner) = database();
+    let mine = pipeline("mine");
+    let history = crate::destination::HistoryColumns {
+        valid_from: "from".into(),
+        valid_to: "to".into(),
+        is_current: "current".into(),
+        row_hash: "hash".into(),
+    };
+    for changes in [
+        None,
+        Some(crate::destination::ChangeColumns {
+            op: "op".into(),
+            unchanged: None,
+            deletion: crate::destination::Deletion::Hard,
+        }),
+    ] {
+        let mut orders = keyed("orders");
+        if let Some(key) = orders.merge.as_mut() {
+            key.changes = changes;
+            key.history = Some(history.clone());
+        }
+        let segment = if orders
+            .merge
+            .as_ref()
+            .is_some_and(|key| key.changes.is_some())
+        {
+            2
+        } else {
+            1
+        };
+        run(
+            &connection,
+            &planner.record_segment(&orders, &mine, Epoch(1), SegmentId(segment), [1, 10]),
+        );
+        let rows = query(
+            &connection,
+            &planner.staged(&mine, Epoch(1), &segments(&[segment])),
+        );
+        let [row] = &rows[..] else { panic!("{rows:?}") };
+        let [_, _, Value::Text(key), Value::Text(seq), ..] = &row[..] else {
+            panic!("{row:?}")
+        };
+        assert_eq!(super::merge_key(key, seq).ok(), orders.merge);
+    }
+}
+
+#[test]
 fn a_recorded_merge_key_that_is_not_json_is_a_bug() {
     let error = super::merge_key("not json", "seq").unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Internal);
@@ -1091,6 +1140,7 @@ fn roots_and_items() -> (TableRef, TableRef) {
                 seq: "seq".into(),
             }),
             changes: None,
+            history: None,
         }),
         ..table("items")
     };
@@ -1098,14 +1148,14 @@ fn roots_and_items() -> (TableRef, TableRef) {
 }
 
 /// A 16-byte sequence whose last byte is `byte`.
-fn seq(byte: u8) -> Value {
+pub(super) fn seq(byte: u8) -> Value {
     let mut bytes = vec![0; 16];
     bytes[15] = byte;
     Value::Blob(bytes)
 }
 
 /// Stages `rows` of `columns` for `table` as pipeline `mine` at epoch 1 in segment 1.
-fn stage_values(
+pub(super) fn stage_values(
     connection: &Connection,
     planner: &SqlPlanner<Sqlite>,
     table: &TableRef,
@@ -1308,6 +1358,7 @@ fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
             seq: "seq".into(),
             root: None,
             changes: None,
+            history: None,
         }),
         ..table("keys")
     };
@@ -1355,6 +1406,7 @@ fn a_merge_ranks_rows_under_a_name_no_column_of_the_table_has() {
             seq: "seq".into(),
             root: None,
             changes: None,
+            history: None,
         }),
         ..table("ranked")
     };
@@ -1749,6 +1801,7 @@ fn a_merge_finds_the_rows_its_keys_replace_through_the_key_s_indexes() {
             seq: "seq".into(),
             root: None,
             changes: None,
+            history: None,
         }),
         ..table("orders")
     };

@@ -32,6 +32,7 @@ fn table() -> TableRef {
                 unchanged: None,
                 deletion: Deletion::Hard,
             }),
+            history: None,
         }),
     }
 }

@@ -24,6 +24,7 @@ fn changed(name: &str) -> TableRef {
                 unchanged: Some("unchanged".into()),
                 deletion: Deletion::Hard,
             }),
+            history: None,
         }),
         ..table(name)
     }

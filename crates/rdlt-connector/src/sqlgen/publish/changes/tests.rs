@@ -15,6 +15,7 @@ fn key(deletion: Deletion) -> MergeKey {
             unchanged: None,
             deletion,
         }),
+        history: None,
     }
 }
 

@@ -15,6 +15,7 @@ pub mod tls;
 /// `proto/` by `cargo xtask codegen`.
 #[expect(
     clippy::doc_markdown,
+    clippy::large_enum_variant,
     clippy::struct_excessive_bools,
     reason = "generated code keeps the .proto files' comments and messages as written"
 )]

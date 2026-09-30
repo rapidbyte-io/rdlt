@@ -6,7 +6,7 @@ use super::types::{instant, system_time};
 use super::{Invalid, required, v1};
 use crate::commit::{ChildTable, CommitMeta, DroppedTable, Receipt, SegmentRange, SegmentSet};
 use crate::destination::{
-    ChangeColumns, Deletion, MergeKey, RootKey, TableChange, TableRef, WriteStats,
+    ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey, TableChange, TableRef, WriteStats,
 };
 use crate::id::{CommitSeq, Epoch, GenerationId, LoadId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
@@ -39,6 +39,12 @@ impl From<&MergeKey> for v1::MergeKey {
                     Deletion::Soft { at } => Some(at.to_string()),
                 },
             }),
+            history: key.history.as_ref().map(|history| v1::HistoryColumns {
+                valid_from: history.valid_from.to_string(),
+                valid_to: history.valid_to.to_string(),
+                is_current: history.is_current.to_string(),
+                row_hash: history.row_hash.to_string(),
+            }),
         }
     }
 }
@@ -60,6 +66,12 @@ impl From<v1::MergeKey> for MergeKey {
                     None => Deletion::Hard,
                     Some(at) => Deletion::Soft { at: Arc::from(at) },
                 },
+            }),
+            history: key.history.map(|history| HistoryColumns {
+                valid_from: Arc::from(history.valid_from),
+                valid_to: Arc::from(history.valid_to),
+                is_current: Arc::from(history.is_current),
+                row_hash: Arc::from(history.row_hash),
             }),
         }
     }

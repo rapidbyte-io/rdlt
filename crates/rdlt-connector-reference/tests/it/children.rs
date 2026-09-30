@@ -34,6 +34,7 @@ fn family() -> (TableRef, TableRef) {
             seq: "seq".into(),
             root: None,
             changes: None,
+            history: None,
         },
     );
     let items = table(
@@ -47,6 +48,7 @@ fn family() -> (TableRef, TableRef) {
                 seq: "seq".into(),
             }),
             changes: None,
+            history: None,
         },
     );
     (roots, items)

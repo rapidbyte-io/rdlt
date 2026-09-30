@@ -15,7 +15,7 @@ use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec}
 use crate::commit::{ChildTable, CommitMeta, DroppedTable, Receipt, SegmentSet};
 use crate::cursor::Cursor;
 use crate::destination::{
-    ChangeColumns, Deletion, MergeKey, RootKey, TableChange, TableRef, WriteStats,
+    ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey, TableChange, TableRef, WriteStats,
 };
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 use crate::id::{
@@ -227,8 +227,9 @@ fn merge_key() -> impl Strategy<Value = MergeKey> {
             proptest::option::of(name()),
             proptest::option::of(name()),
         )),
+        proptest::option::of((name(), name(), name(), name())),
     )
-        .prop_map(|(columns, seq, root, changes)| MergeKey {
+        .prop_map(|(columns, seq, root, changes, history)| MergeKey {
             columns: columns.into_iter().map(Arc::from).collect(),
             seq: Arc::from(seq),
             root: root.map(|(table, id, seq)| RootKey {
@@ -244,6 +245,14 @@ fn merge_key() -> impl Strategy<Value = MergeKey> {
                     None => Deletion::Hard,
                 },
             }),
+            history: history.map(
+                |(valid_from, valid_to, is_current, row_hash)| HistoryColumns {
+                    valid_from: Arc::from(valid_from),
+                    valid_to: Arc::from(valid_to),
+                    is_current: Arc::from(is_current),
+                    row_hash: Arc::from(row_hash),
+                },
+            ),
         })
 }
 

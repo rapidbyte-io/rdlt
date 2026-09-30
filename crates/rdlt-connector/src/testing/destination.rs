@@ -8,6 +8,7 @@ mod dropped;
 mod encoding;
 mod evolving;
 mod fence;
+mod history;
 mod lanes;
 mod names;
 mod owned;
@@ -164,6 +165,7 @@ impl Bench<'_> {
             "D-DELETE" => self.deletes_remove_rows().await,
             "D-PARTIAL" => self.partial_updates_keep_columns().await,
             "D-TRUNCATE" => self.truncates_remove_earlier_rows().await,
+            "D-HIST" => self.histories_chain_versions().await,
             "D-CHILDREN" => self.children_follow_their_roots().await,
             "D-ENCODING" => self.dictionaries_publish_their_values().await,
             "D-TABLES" => self.segments_span_tables().await,

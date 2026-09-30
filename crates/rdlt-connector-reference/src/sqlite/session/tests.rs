@@ -33,6 +33,7 @@ fn roots_and_items() -> (TableRef, TableRef) {
         seq: SEQ_COLUMN.into(),
         root: None,
         changes: None,
+        history: None,
     };
     let items = MergeKey {
         columns: vec!["root".into()],
@@ -43,6 +44,7 @@ fn roots_and_items() -> (TableRef, TableRef) {
             seq: SEQ_COLUMN.into(),
         }),
         changes: None,
+        history: None,
     };
     (table("roots", roots), table("items", items))
 }

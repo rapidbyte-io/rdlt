@@ -1264,6 +1264,25 @@ pub struct MergeKey {
     /// For a change stream's table, the columns saying what each row does.
     #[prost(message, optional, tag = "4")]
     pub changes: ::core::option::Option<ChangeColumns>,
+    /// For a history table, the columns recording each version's life.
+    #[prost(message, optional, tag = "5")]
+    pub history: ::core::option::Option<HistoryColumns>,
+}
+/// The columns a history table records each version's life in.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct HistoryColumns {
+    /// When the version begins.
+    #[prost(string, tag = "1")]
+    pub valid_from: ::prost::alloc::string::String,
+    /// When a later change closed it; null while current.
+    #[prost(string, tag = "2")]
+    pub valid_to: ::prost::alloc::string::String,
+    /// Whether it is its key's current version.
+    #[prost(string, tag = "3")]
+    pub is_current: ::prost::alloc::string::String,
+    /// The hash of its data columns.
+    #[prost(string, tag = "4")]
+    pub row_hash: ::prost::alloc::string::String,
 }
 /// The columns of a change stream's written rows that say what each row does.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

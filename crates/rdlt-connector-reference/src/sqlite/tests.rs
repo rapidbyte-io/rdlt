@@ -128,6 +128,7 @@ fn key(shape: &Shape) -> MergeKey {
             unchanged: Some(UNCHANGED_COLUMN.into()),
             deletion,
         }),
+        history: None,
     }
 }
 
