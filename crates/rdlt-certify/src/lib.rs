@@ -16,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+mod acknowledged;
 mod connect;
 mod kill;
 mod protocol;

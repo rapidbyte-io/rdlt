@@ -15,7 +15,7 @@ use rdlt_wire::Limits;
 const LAST_WORDS: Duration = Duration::from_secs(1);
 
 /// A connector to certify, and how to reach it.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Target {
     reach: Reach,
     options: Options,
@@ -23,6 +23,7 @@ pub struct Target {
     kill_timeout: Option<Duration>,
 }
 
+#[derive(Clone)]
 enum Reach {
     /// Opened by a function, each connection a stream of its own.
     Connected(Arc<Connect>),
