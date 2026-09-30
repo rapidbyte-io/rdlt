@@ -1,6 +1,7 @@
 //! The simulated source: serves the world's workload, with faults.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchOptions, StringArray};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
@@ -137,10 +138,15 @@ impl ReadStream<SimSource> for SimStreamReader {
         if let Some(fault) = source.world.fault(FaultPoint::Partitions) {
             return Err(fault);
         }
-        let count = self.stream(source).partitions.len();
-        Ok((0..count)
+        let stream = self.stream(source);
+        Ok((0..stream.partitions.len())
             .map(|index| {
-                Partition::new(PartitionId::parse(format!("p{index}")).expect("valid partition id"))
+                let id = PartitionId::parse(format!("p{index}")).expect("valid partition id");
+                if stream.unbounded {
+                    Partition::new(id).unbounded()
+                } else {
+                    Partition::new(id)
+                }
             })
             .collect())
     }
@@ -169,26 +175,18 @@ impl ReadStream<SimSource> for SimStreamReader {
         let rows = stream.rows(index, world.phase());
         let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
         let mut batches = 0;
-        while next < rows.len() {
-            world.latency().await;
-            if let Some(fault) = world.fault(FaultPoint::Read) {
-                return Err(fault);
+        loop {
+            let arrived = world.available(self.index, index, rows.len());
+            let available = stream.servable(index, world.phase(), arrived);
+            self.serve(source, out, rows, &mut next, available, &mut batches)
+                .await?;
+            // A read that follows a partition that never ends waits for its next rows.
+            if !(out.follows() && partition.is_unbounded()) {
+                break;
             }
-            let end = (next + usize::try_from(stream.batch_rows).unwrap_or(1)).min(rows.len());
-            if stream.json {
-                out.json(json_push(stream, &rows[next..end], batches % 2 == 1))
-                    .await?;
-            } else {
-                out.batch(batch(stream, &rows[next..end])).await?;
-            }
-            next = end;
-            batches += 1;
-            let due = match stream.checkpointing {
-                Checkpointing::OnDemand => out.checkpoint_due(),
-                Checkpointing::Natural => batches % stream.checkpoint_every == 0,
-            };
-            if due {
-                out.checkpoint(&SimCursor { next: next as u64 }).await?;
+            out.checkpoint(&SimCursor { next: next as u64 }).await?;
+            if !self.arrival(source, out, index, rows.len(), next).await? {
+                return Ok(());
             }
         }
         if stream.final_checkpoint {
@@ -202,32 +200,116 @@ impl ReadStream<SimSource> for SimStreamReader {
         source: &SimSource,
         cursors: &[(PartitionId, SimCursor)],
     ) -> Result<()> {
+        committed(self.stream(source), &source.world, cursors)
+    }
+}
+
+impl SimStreamReader {
+    /// Serves `rows` from `next` up to `available`, counting `batches`.
+    async fn serve(
+        &self,
+        source: &SimSource,
+        out: &mut Emitter<SimCursor>,
+        rows: &[Row],
+        next: &mut usize,
+        available: usize,
+        batches: &mut u64,
+    ) -> Result<()> {
         let world = &source.world;
-        let name = StreamName::new(&self.stream(source).name).expect("valid stream name");
         let stream = self.stream(source);
-        for (partition, cursor) in cursors {
-            if !stream.replayable {
-                // It hears once the engine's log holds the rows, before they land; the oracle
-                // checks they did once the phase is over.
-                let key = (stream.name.clone(), partition.to_string());
-                let mut acknowledged = world.acknowledged.lock();
-                let furthest = acknowledged.entry(key).or_default();
-                *furthest = (*furthest).max(cursor.next);
-                continue;
+        while *next < available {
+            world.latency().await;
+            if let Some(fault) = world.fault(FaultPoint::Read) {
+                return Err(fault);
             }
-            let committed = committed_next(world, &name, partition);
-            if committed.is_none_or(|committed| cursor.next > committed) {
-                world.violation(format!(
-                    "stream {name} partition {partition}: acknowledged offset {} beyond the \
-                     committed {committed:?}",
-                    cursor.next
-                ));
+            let end = (*next + usize::try_from(stream.batch_rows).unwrap_or(1)).min(available);
+            if stream.json {
+                out.json(json_push(stream, &rows[*next..end], *batches % 2 == 1))
+                    .await?;
+            } else {
+                out.batch(batch(stream, &rows[*next..end])).await?;
+            }
+            *next = end;
+            *batches += 1;
+            let due = match stream.checkpointing {
+                Checkpointing::OnDemand => out.checkpoint_due(),
+                Checkpointing::Natural => (*batches).is_multiple_of(stream.checkpoint_every),
+            };
+            if due {
+                out.checkpoint(&SimCursor { next: *next as u64 }).await?;
             }
         }
-        match world.fault(FaultPoint::Acknowledge) {
-            Some(fault) => Err(fault),
-            None => Ok(()),
+        Ok(())
+    }
+
+    /// Waits until more of partition `partition`'s `rows` rows than `next` have arrived: false
+    /// once the read is asked to stop instead.
+    ///
+    /// It wakes now and then to answer a barrier, as a source waiting for data does.
+    async fn arrival(
+        &self,
+        source: &SimSource,
+        out: &mut Emitter<SimCursor>,
+        partition: usize,
+        rows: usize,
+        next: usize,
+    ) -> Result<bool> {
+        let world = &source.world;
+        loop {
+            let arrived = world.arrived.notified();
+            tokio::pin!(arrived);
+            arrived.as_mut().enable();
+            let count = world.available(self.index, partition, rows);
+            let stream = self.stream(source);
+            if stream.servable(partition, world.phase(), count) > next {
+                return Ok(true);
+            }
+            tokio::select! {
+                biased;
+                () = out.stopped() => return Ok(false),
+                () = &mut arrived => {}
+                () = tokio::time::sleep(WAKE) => {
+                    if out.checkpoint_due() {
+                        out.checkpoint(&SimCursor { next: next as u64 }).await?;
+                    }
+                }
+            }
         }
+    }
+}
+
+/// How long a read waiting for rows sleeps before it looks for a barrier to answer.
+const WAKE: Duration = Duration::from_millis(50);
+
+/// Hears `stream`'s `cursors` are committed, in `world`.
+fn committed(
+    stream: &SimStream,
+    world: &World,
+    cursors: &[(PartitionId, SimCursor)],
+) -> Result<()> {
+    let name = StreamName::new(&stream.name).expect("valid stream name");
+    for (partition, cursor) in cursors {
+        if !stream.replayable {
+            // It hears once the engine's log holds the rows, before they land; the oracle
+            // checks they did once the phase is over.
+            let key = (stream.name.clone(), partition.to_string());
+            let mut acknowledged = world.acknowledged.lock();
+            let furthest = acknowledged.entry(key).or_default();
+            *furthest = (*furthest).max(cursor.next);
+            continue;
+        }
+        let committed = committed_next(world, &name, partition);
+        if committed.is_none_or(|committed| cursor.next > committed) {
+            world.violation(format!(
+                "stream {name} partition {partition}: acknowledged offset {} beyond the \
+                 committed {committed:?}",
+                cursor.next
+            ));
+        }
+    }
+    match world.fault(FaultPoint::Acknowledge) {
+        Some(fault) => Err(fault),
+        None => Ok(()),
     }
 }
 

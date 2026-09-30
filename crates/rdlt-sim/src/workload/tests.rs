@@ -498,6 +498,7 @@ const NONE: Features = Features {
     perturb: false,
     network: false,
     wal: false,
+    streaming: false,
 };
 
 #[test]
@@ -581,4 +582,33 @@ fn a_span_holds_the_batches_between_the_checkpoints_around_a_row() {
         batches[0].start..batches.last().unwrap().end,
         "anywhere in the read"
     );
+}
+
+#[test]
+fn a_streaming_read_serves_whole_checkpoint_groups_until_every_row_has_arrived() {
+    for stream in streams() {
+        let every = match stream.checkpointing {
+            rdlt_connector::Checkpointing::Natural => stream.checkpoint_every,
+            rdlt_connector::Checkpointing::OnDemand => 1,
+        };
+        let group = usize::try_from(stream.batch_rows * every).unwrap();
+        for phase in 0..PHASES {
+            let rows = stream.rows(0, phase).len();
+            let start = if phase == 0 || stream.read != ReadMode::Incremental {
+                0
+            } else {
+                stream.rows(0, phase - 1).len()
+            };
+            for arrived in start..=rows + 1 {
+                let served = stream.servable(0, phase, arrived);
+                assert!(served <= arrived.max(start) && served <= rows);
+                if arrived >= rows {
+                    assert_eq!(served, rows, "every row once all have arrived");
+                } else {
+                    assert_eq!((served - start) % group, 0, "a whole group");
+                    assert!(arrived - served < group, "every whole group that arrived");
+                }
+            }
+        }
+    }
 }

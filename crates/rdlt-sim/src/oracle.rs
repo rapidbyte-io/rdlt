@@ -9,6 +9,7 @@ mod names;
 mod refusals;
 mod rows;
 mod scenario;
+mod streaming;
 mod tables;
 
 use std::sync::Arc;
@@ -16,7 +17,8 @@ use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, StreamPlan, WalStore,
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, StreamPlan, Until,
+    WalStore,
 };
 
 use crate::destination::{Digest, committed_next, completions, reads_in_progress};
@@ -69,7 +71,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
     let world = World::register(&name, &mut rng);
     env.perturb(world.workload.features.perturb);
     env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
-    let engine = Engine::new(config(&mut rng), env);
+    let streaming = world.workload.features.streaming;
+    let engine = Engine::new(config(&mut rng, streaming), env);
     let placing = net.map(|net| Placing::new(net, network::options(&mut rng)));
     let mut simulation = Simulation {
         seed,
@@ -124,6 +127,9 @@ impl Simulation {
         let (mut runs, mut failure) = (0, None);
         let mut succeeded = vec![false; self.world.workload.pipelines];
         let mut reports = Vec::new();
+        if self.stream(phase, &mut reports).await {
+            return (reports, true);
+        }
         while succeeded.contains(&false)
             || reads_in_progress(&self.world)
             || self.world.wal.holds_logs()
@@ -172,11 +178,29 @@ impl Simulation {
         network: Option<SplitMix64>,
         reports: &mut Vec<Report>,
     ) -> Ran {
+        self.attempt_until(phase, scenario, clean, network, reports, Until::Exhausted)
+            .await
+    }
+
+    /// Runs `scenario` as [`attempt`](Self::attempt) does, each run reading as `until` says.
+    async fn attempt_until(
+        &mut self,
+        phase: usize,
+        scenario: Scenario,
+        clean: bool,
+        network: Option<SplitMix64>,
+        reports: &mut Vec<Report>,
+        until: Until,
+    ) -> Ran {
         let seed = self.seed;
-        let prediction = refusals::predict(&self.world, &self.relaxed, phase);
+        let mut prediction = refusals::predict(&self.world, &self.relaxed, phase);
+        if until.follows() {
+            // A run that follows the source may end before the rows a refusal needs arrive.
+            prediction.must.clear();
+        }
         let workload = &self.world.workload;
         let plans: Vec<PipelinePlan> = (0..workload.pipelines)
-            .map(|pipeline| plan(workload, &self.relaxed, pipeline))
+            .map(|pipeline| plan(workload, &self.relaxed, pipeline).with_until(until))
             .collect();
         let placing = self.placing.as_ref();
         let executing = execute_all(&self.engine, &plans, &self.name, placing, scenario);
@@ -249,7 +273,9 @@ struct Ran {
     stopped: bool,
 }
 
-fn config(rng: &mut SplitMix64) -> EngineConfig {
+/// The engine's configuration, drawn from `rng`; a streaming world plans again every quarter
+/// second, so its runs meet the partitions and rows that arrive.
+fn config(rng: &mut SplitMix64, streaming: bool) -> EngineConfig {
     let every = rng
         .chance(700)
         .then(|| Duration::from_millis(100 + rng.below(3000)));
@@ -260,7 +286,13 @@ fn config(rng: &mut SplitMix64) -> EngineConfig {
         .initial(Duration::from_millis(1))
         .max_delay(Duration::from_millis(100));
     let lanes = u16::try_from(1 + rng.below(3)).unwrap_or(1);
-    EngineConfig::builder()
+    let builder = EngineConfig::builder();
+    let builder = if streaming {
+        builder.replan(Duration::from_millis(250))
+    } else {
+        builder
+    };
+    builder
         .memory(512 + rng.below(8192))
         .lanes(lanes)
         .lane_window(to_usize(1 + rng.below(3)))

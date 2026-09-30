@@ -13,6 +13,7 @@ use rdlt_connector::{
     Capabilities, CommitKind, ConnectorError, ConnectorErrorKind, IdentifierCase, IdentifierChars,
     SchemaChanges, TypeKind,
 };
+use tokio::sync::Notify;
 
 use crate::changes::ChangeWorkload;
 use crate::destination::Store;
@@ -79,6 +80,11 @@ pub struct World {
     /// The furthest offset acknowledged to each partition of a stream that cannot read again,
     /// by stream and partition: what it no longer holds.
     pub(crate) acknowledged: Mutex<BTreeMap<(String, String), u64>>,
+    /// How many rows of each followed partition have arrived, by stream and partition index,
+    /// while a streaming phase produces them; every row has arrived when there is none.
+    produced: Mutex<Option<BTreeMap<(usize, usize), usize>>>,
+    /// Wakes reads that follow a partition when more of its rows arrive.
+    pub(crate) arrived: Notify,
 }
 
 static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mutex::default);
@@ -99,6 +105,8 @@ impl World {
             violations: Mutex::new(Vec::new()),
             wal: Arc::default(),
             acknowledged: Mutex::default(),
+            produced: Mutex::new(None),
+            arrived: Notify::new(),
         });
         WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
         world
@@ -130,6 +138,8 @@ impl World {
             violations: Mutex::new(Vec::new()),
             wal: Arc::default(),
             acknowledged: Mutex::default(),
+            produced: Mutex::new(None),
+            arrived: Notify::new(),
         });
         WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
         world
@@ -155,6 +165,23 @@ impl World {
     /// Lets the destination add columns from now on.
     pub fn grant_add_column(&self) {
         self.granted.store(true, Ordering::SeqCst);
+    }
+
+    /// How many of the `rows` rows of partition `partition` of stream `stream` have arrived.
+    pub(crate) fn available(&self, stream: usize, partition: usize, rows: usize) -> usize {
+        match &*self.produced.lock() {
+            Some(produced) => produced
+                .get(&(stream, partition))
+                .map_or(rows, |arrived| (*arrived).min(rows)),
+            None => rows,
+        }
+    }
+
+    /// Sets how many rows of each followed partition have arrived, or none for every row, and
+    /// wakes the reads that follow them.
+    pub(crate) fn produce(&self, produced: Option<BTreeMap<(usize, usize), usize>>) {
+        *self.produced.lock() = produced;
+        self.arrived.notify_waiters();
     }
 
     /// The phase the source serves.

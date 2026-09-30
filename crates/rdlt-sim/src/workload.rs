@@ -109,6 +109,14 @@ pub struct SimStream {
     ///
     /// Chosen by the stream's place, not drawn, so logging leaves a seed's workload as it was.
     pub replayable: bool,
+    /// Whether the stream's rows arrive as simulated time passes, so runs follow it for a while.
+    pub follows: bool,
+    /// Whether its partitions never end, as a log's; a followed stream's others are read again as
+    /// they grow.
+    ///
+    /// Both chosen by the stream's read and place, not drawn, so streaming leaves a seed's
+    /// workload as it was.
+    pub unbounded: bool,
     /// Each partition's rows in each phase.
     rows: Vec<[Vec<Row>; PHASES]>,
 }
@@ -188,6 +196,21 @@ impl Workload {
     }
 }
 
+/// How many rows each of a stream's partitions holds in each phase: an incremental stream's grow
+/// from one phase to the next, a full read's are drawn anew.
+fn partition_rows(rng: &mut SplitMix64, read: ReadMode) -> Vec<[u64; PHASES]> {
+    (0..=rng.below(4))
+        .map(|_| {
+            let first = rng.below(40);
+            let second = match read {
+                ReadMode::Incremental => first + rng.below(20),
+                _ => rng.below(40),
+            };
+            [first, second]
+        })
+        .collect()
+}
+
 impl SimStream {
     fn generate(
         index: u64,
@@ -197,16 +220,7 @@ impl SimStream {
         pipeline: Level,
     ) -> Self {
         let (read, write) = modes(rng);
-        let partitions: Vec<[u64; PHASES]> = (0..=rng.below(4))
-            .map(|_| {
-                let first = rng.below(40);
-                let second = match read {
-                    ReadMode::Incremental => first + rng.below(20),
-                    _ => rng.below(40),
-                };
-                [first, second]
-            })
-            .collect();
+        let partitions = partition_rows(rng, read);
         let json = features.json && rng.chance(500);
         let schema = schema::level(rng, features);
         let drift = if features.drift {
@@ -241,6 +255,10 @@ impl SimStream {
             sliced: features.sliced && rng.chance(500),
             named_floats: json && rng.chance(250),
             replayable: !(features.wal && read == ReadMode::Incremental && index.is_multiple_of(2)),
+            follows: features.streaming && read == ReadMode::Incremental,
+            unbounded: features.streaming
+                && read == ReadMode::Incremental
+                && index.is_multiple_of(2),
             drift,
             partitions,
             rows: Vec::new(),
@@ -319,6 +337,27 @@ impl SimStream {
             .step_by(size)
             .map(|start| start..(start + size).min(end))
             .collect()
+    }
+
+    /// How many rows of `partition` a read in `phase` serves once `arrived` of them have arrived:
+    /// whole checkpoint groups (whole batches where the stream checkpoints on demand), so every
+    /// read sends the batches and checkpoints [`span`](Self::span) models, and every row once
+    /// they all have.
+    pub fn servable(&self, partition: usize, phase: usize, arrived: usize) -> usize {
+        let rows = self.rows(partition, phase).len();
+        if arrived >= rows {
+            return rows;
+        }
+        let batches = match self.checkpointing {
+            Checkpointing::Natural => self.checkpoint_every,
+            Checkpointing::OnDemand => 1,
+        };
+        let group = usize::try_from(self.batch_rows.saturating_mul(batches)).unwrap_or(usize::MAX);
+        let start = self.start(partition, phase);
+        if arrived <= start {
+            return start.min(arrived);
+        }
+        start + (arrived - start) / group * group
     }
 
     /// The offsets of the rows whose pushes the engine may shred together with the push holding

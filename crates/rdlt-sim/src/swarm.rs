@@ -12,6 +12,9 @@ const NETWORK: u64 = 0x006e_6574_776f_726b;
 /// What the write-ahead log's draw mixes into the seed's generator: "wal" in ASCII.
 const WAL: u64 = 0x0077_616c;
 
+/// What streaming's draw mixes into the seed's generator: "stream" in ASCII.
+const STREAMING: u64 = 0x7374_7265_616d;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -58,6 +61,10 @@ pub struct Features {
     /// Pipelines that keep write-ahead logs, whose incremental streams, every other one, cannot
     /// read again what they acknowledged; crashes tear the logs' unsynced tails.
     pub wal: bool,
+    /// Incremental streams whose rows arrive as simulated time passes, which runs follow for a
+    /// while before a run reads them to their end; every other one's partitions never end, and
+    /// the rest are read again as they grow.
+    pub streaming: bool,
 }
 
 impl Features {
@@ -79,23 +86,26 @@ impl Features {
         perturb: true,
         network: true,
         wal: true,
+        streaming: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
-    /// a coin, drift more often than not, and the network and the write-ahead log one time in
-    /// four each.
+    /// a coin, drift more often than not, and the network, the write-ahead log and streaming one
+    /// time in four each.
     ///
-    /// The network and the log are drawn apart from the rest, from the value the next draw takes
-    /// but without taking it, so a seed's workload is the same over either transport, logged or
-    /// not.
+    /// The network, the log and streaming are drawn apart from the rest, from the value the next
+    /// draw takes but without taking it, so a seed's workload is the same over either transport,
+    /// logged or not, streamed or not.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
         let wal = SplitMix64::new(next ^ WAL).chance(250);
+        let streaming = SplitMix64::new(next ^ STREAMING).chance(250);
         if rng.chance(125) {
             return Self {
                 network,
                 wal,
+                streaming,
                 ..Self::ALL
             };
         }
@@ -116,6 +126,7 @@ impl Features {
             perturb: rng.chance(500),
             network,
             wal,
+            streaming,
         }
     }
 
