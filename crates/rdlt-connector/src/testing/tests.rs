@@ -1,5 +1,6 @@
 mod acks;
 mod changes;
+mod history;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -478,6 +479,20 @@ struct VaultConfig {
     /// Replaces child rows only in the child tables a commit stages rows for, not in every one
     /// it lists.
     ignore_child_tables: bool,
+    /// Keeps no history.
+    no_history: bool,
+    /// Replaces a history key's current version instead of closing it.
+    history_overwrites: bool,
+    /// Opens a version for a change equal to its key's current one.
+    history_duplicates: bool,
+    /// Closes versions without clearing their current flag.
+    history_stays_current: bool,
+    /// Versions a change whatever its key's newest version's sequence.
+    history_ignores_seq: bool,
+    /// Leaves the version a hard delete should close current.
+    history_keeps_deleted: bool,
+    /// Closes nothing on a truncate.
+    history_ignores_truncates: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
@@ -675,6 +690,7 @@ impl DestinationConnector for Vault {
         if !self.config.minimal {
             capabilities.write_modes.replace = true;
             capabilities.write_modes.merge = true;
+            capabilities.write_modes.history = !self.config.no_history;
             capabilities.schema_changes = SchemaChanges::all();
             capabilities.max_parallel_writers = std::num::NonZeroU16::new(4).expect("not zero");
             capabilities.merge_changes = true;
@@ -927,6 +943,19 @@ impl VaultSession {
                 .or_else(|| listed.map(|child| child.merge.clone()));
             let published = store.published.entry(table.clone()).or_default();
             match key {
+                Some(key) if key.root.is_none() && key.history.is_some() => {
+                    let history = key.history.as_ref().expect("a history table's key");
+                    let batches: Vec<RecordBatch> =
+                        incoming.into_iter().map(|(_, batch)| batch).collect();
+                    let tombstones = store.tombstones.entry(table).or_default();
+                    history::merge_history(
+                        published,
+                        tombstones,
+                        &batches,
+                        (&key, history),
+                        self.config.history_flaws(),
+                    );
+                }
                 Some(key) if key.root.is_none() && key.changes.is_some() => {
                     let changes = key.changes.as_ref().expect("a change stream's key");
                     let batches: Vec<RecordBatch> =
@@ -1340,6 +1369,17 @@ impl VaultConfig {
         }
     }
 
+    fn history_flaws(&self) -> history::Flaws {
+        history::Flaws {
+            overwrite: self.history_overwrites,
+            duplicate: self.history_duplicates,
+            stay_current: self.history_stays_current,
+            ignore_seq: self.history_ignores_seq,
+            keep_deleted: self.history_keeps_deleted,
+            ignore_truncates: self.history_ignores_truncates,
+        }
+    }
+
     fn winner(&self) -> Winner {
         if self.merge_keeps_first {
             Winner::First
@@ -1517,13 +1557,19 @@ async fn the_lanes_and_names_clauses_skip_only_what_a_destination_declares_it_ca
 async fn a_correct_destination_passes_every_clause() {
     let report = certify_vault("correct", None).await;
     report.assert_passed();
-    for id in ["D-NAMES", "D-LANES"] {
+    for id in ["D-NAMES", "D-LANES", "D-HIST"] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
 }
 
 /// Each flag that breaks one behavior, with the clauses it fails.
 const BROKEN: &[(&str, &[&str])] = &[
+    ("history_overwrites", &["D-HIST"]),
+    ("history_duplicates", &["D-HIST"]),
+    ("history_stays_current", &["D-HIST"]),
+    ("history_ignores_seq", &["D-HIST"]),
+    ("history_keeps_deleted", &["D-HIST"]),
+    ("history_ignores_truncates", &["D-HIST"]),
     ("static_epoch", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
     ("refuse_check", &["D-CHECK"]),
@@ -1553,6 +1599,7 @@ const BROKEN: &[(&str, &[&str])] = &[
             "D-DELETE",
             "D-PARTIAL",
             "D-TRUNCATE",
+            "D-HIST",
             "D-ENCODING",
             "D-TABLES",
             "D-LANES",
@@ -1574,6 +1621,7 @@ const BROKEN: &[(&str, &[&str])] = &[
             "D-DELETE",
             "D-PARTIAL",
             "D-TRUNCATE",
+            "D-HIST",
             "D-CHILDREN",
         ],
     ),
@@ -1719,6 +1767,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-DELETE",
             "D-PARTIAL",
             "D-TRUNCATE",
+            "D-HIST",
             "D-ENCODING",
             "D-TABLES",
             "D-NAMES",
@@ -1741,7 +1790,7 @@ async fn a_destination_that_cannot_connect_fails_every_clause() {
 async fn clauses_for_capabilities_a_destination_lacks_are_skipped() {
     let report = certify_vault("minimal", Some("minimal")).await;
     report.assert_passed();
-    for clause in ["D-REPLACE", "D-MERGE"] {
+    for clause in ["D-REPLACE", "D-MERGE", "D-HIST"] {
         assert!(
             matches!(report.outcome(clause), Some(Outcome::Skipped(_))),
             "{clause}: {report}"

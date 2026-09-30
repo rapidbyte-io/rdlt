@@ -36,6 +36,20 @@ message MergeKey {
   optional RootKey root = 3;
   // For a change stream's table, the columns saying what each row does.
   optional ChangeColumns changes = 4;
+  // For a history table, the columns recording each version's life.
+  optional HistoryColumns history = 5;
+}
+
+// The columns a history table records each version's life in.
+message HistoryColumns {
+  // When the version begins.
+  string valid_from = 1;
+  // When a later change closed it; null while current.
+  string valid_to = 2;
+  // Whether it is its key's current version.
+  string is_current = 3;
+  // The hash of its data columns.
+  string row_hash = 4;
 }
 
 // The columns of a change stream's written rows that say what each row does.

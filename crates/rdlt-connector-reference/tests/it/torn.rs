@@ -29,6 +29,7 @@ fn table() -> TableRef {
             seq: "seq".into(),
             root: None,
             changes: None,
+            history: None,
         }),
     }
 }

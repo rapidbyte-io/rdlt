@@ -147,6 +147,7 @@ impl Bench<'_> {
                     unchanged: Some(UNCHANGED_COLUMN.into()),
                     deletion,
                 }),
+                history: None,
             }),
             ..self.other_table(suffix)
         }

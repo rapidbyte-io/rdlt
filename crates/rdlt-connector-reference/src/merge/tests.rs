@@ -118,6 +118,7 @@ fn key(deletion: Deletion) -> MergeKey {
             unchanged: Some("unchanged".into()),
             deletion,
         }),
+        history: None,
     }
 }
 

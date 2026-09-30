@@ -27,6 +27,7 @@ fn table(merging: bool) -> TableRef {
             seq: "seq".into(),
             root: None,
             changes: None,
+            history: None,
         }),
     }
 }

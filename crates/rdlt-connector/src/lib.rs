@@ -97,9 +97,9 @@ pub use commit::{
 pub use cursor::Cursor;
 pub use destination::{
     ChangeColumns, Deletion, Destination, DestinationConnector, DestinationFactory,
-    DestinationSession, DestinationWriter, MergeKey, OpenContext, Opened, OpenedSession,
-    PublishedReader, ReadBack, Reading, RootKey, Session, TableChange, TableRef, TableWriter,
-    WriteStats, destination_factory, readable_destination_factory,
+    DestinationSession, DestinationWriter, HistoryColumns, MergeKey, OpenContext, Opened,
+    OpenedSession, PublishedReader, ReadBack, Reading, RootKey, Session, TableChange, TableRef,
+    TableWriter, WriteStats, destination_factory, readable_destination_factory,
 };
 pub use emitter::Emitter;
 pub use error::{
@@ -111,8 +111,9 @@ pub use id::{
     SchemaVersion, SegmentId, StreamName, TablePath,
 };
 pub use meta::{
-    DELETED_AT_COLUMN, ID_COLUMN, IDX_COLUMN, LOAD_ID_COLUMN, LOADED_AT_COLUMN, META_PREFIX,
-    PARENT_ID_COLUMN, ROOT_ID_COLUMN,
+    DELETED_AT_COLUMN, ID_COLUMN, IDX_COLUMN, IS_CURRENT_COLUMN, LOAD_ID_COLUMN, LOADED_AT_COLUMN,
+    META_PREFIX, PARENT_ID_COLUMN, ROOT_ID_COLUMN, ROW_HASH_COLUMN, VALID_FROM_COLUMN,
+    VALID_TO_COLUMN,
 };
 #[cfg(feature = "macros")]
 pub use rdlt_connector_macros::{destination, source};

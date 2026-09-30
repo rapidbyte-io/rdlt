@@ -78,6 +78,46 @@ pub struct MergeKey {
     /// For a change stream's table, the columns that say what each row does; `None` for a table
     /// whose rows are all upserts ordered within their commit.
     pub changes: Option<ChangeColumns>,
+    /// For a history table, the columns recording each version's life; `None` for a table that
+    /// keeps one row per key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryColumns>,
+}
+
+/// How a history table keeps every version of each key (spec §9.5, SCD2).
+///
+/// Written rows carry, besides their data, `valid_from` (when the version begins), `row_hash` (16
+/// bytes of `Binary`, equal for rows whose data columns are equal, null on a delete), a null
+/// `valid_to` and a true `is_current`. The key's rows apply in `seq` order, each past the key's
+/// newest version's `seq`, its tombstone and the table's bound where the table is a change
+/// stream's (as [`ChangeColumns`] says), and only within their commit otherwise:
+///
+/// - an upsert whose hash equals the key's current version's, where that version is not deleted,
+///   changes nothing;
+/// - any other upsert closes the key's current version, setting its `valid_to` to the upsert's
+///   `valid_from` and its `is_current` to false, and publishes the upsert as the key's current
+///   version;
+/// - a hard delete closes the key's current version and records its tombstone; a soft delete
+///   closes a current version that is not deleted and publishes, as current, a version keeping
+///   its data and hash with the delete's `seq`, `valid_from` and deletion time;
+/// - a truncate does to each key's current version sequenced before it what a delete does, and
+///   raises the bound as a merge's truncate does.
+///
+/// A version's `seq` stays the row's that published it; closing changes only `valid_to` and
+/// `is_current`. A change stream's source sends each key's changes in `seq` order, sending some
+/// again at most, so a change equal to the current version leaves the key's guard where it was:
+/// a change sent again from before it is either behind the guard or equal to the version still
+/// current. `unchanged` flags have no place in a history table: its hashes need whole rows.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct HistoryColumns {
+    /// When each version begins, a timestamp.
+    pub valid_from: Arc<str>,
+    /// When a later change closed the version, a timestamp; null while it is current.
+    pub valid_to: Arc<str>,
+    /// Whether the version is its key's current one, a boolean.
+    pub is_current: Arc<str>,
+    /// The hash of the version's data columns.
+    pub row_hash: Arc<str>,
 }
 
 /// How the rows of a change stream's merge table apply (spec §9.3, §9.4).

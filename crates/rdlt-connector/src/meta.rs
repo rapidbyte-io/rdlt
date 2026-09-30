@@ -23,5 +23,20 @@ pub const IDX_COLUMN: &str = "_rdlt_idx";
 /// `Timestamp(Microsecond, "UTC")`, null for rows not deleted.
 pub const DELETED_AT_COLUMN: &str = "_rdlt_deleted_at";
 
+/// The column holding when each version of a history table's key begins:
+/// `Timestamp(Microsecond, "UTC")`.
+pub const VALID_FROM_COLUMN: &str = "_rdlt_valid_from";
+
+/// The column holding when a later change closed each version of a history table's key:
+/// `Timestamp(Microsecond, "UTC")`, null while it is current.
+pub const VALID_TO_COLUMN: &str = "_rdlt_valid_to";
+
+/// The column holding whether each version of a history table's key is current: `Boolean`.
+pub const IS_CURRENT_COLUMN: &str = "_rdlt_is_current";
+
+/// The column holding the hash of each version's data columns in a history table: 16 bytes of
+/// `Binary`, the xxh3-128 of their values.
+pub const ROW_HASH_COLUMN: &str = "_rdlt_row_hash";
+
 /// The prefix every metadata column name starts with.
 pub const META_PREFIX: &str = "_rdlt_";

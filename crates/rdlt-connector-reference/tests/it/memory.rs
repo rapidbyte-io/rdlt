@@ -351,6 +351,7 @@ fn merge_table() -> TableRef {
             seq: "_rdlt_seq".into(),
             root: None,
             changes: None,
+            history: None,
         }),
         ..table_ref("m")
     }

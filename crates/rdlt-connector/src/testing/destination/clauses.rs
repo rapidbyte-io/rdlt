@@ -66,6 +66,14 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
                     row back",
     },
     Clause {
+        id: "D-HIST",
+        statement: "a history table keeps every version of each key: a change equal to the \
+                    current version changes nothing, any other closes it where the next begins, \
+                    a delete closes it, or opens a deleted version keeping its data, and a \
+                    truncate does so to every version sequenced before it; a change stream's \
+                    change applies only past its key's newest version, tombstone and bound",
+    },
+    Clause {
         id: "D-CHILDREN",
         statement: "a child table of a merge table holds the children of each root's winning row \
                     only, whatever it held before",
@@ -110,7 +118,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
 
 /// The clauses that read what the destination published, which a probe that reads nothing
 /// cannot check.
-pub(super) const PROBED: [&str; 16] = [
+pub(super) const PROBED: [&str; 17] = [
     "D-STAGING",
     "D-COMMIT",
     "D-IDEMPOTENT",
@@ -121,6 +129,7 @@ pub(super) const PROBED: [&str; 16] = [
     "D-DELETE",
     "D-PARTIAL",
     "D-TRUNCATE",
+    "D-HIST",
     "D-CHILDREN",
     "D-ENCODING",
     "D-TABLES",

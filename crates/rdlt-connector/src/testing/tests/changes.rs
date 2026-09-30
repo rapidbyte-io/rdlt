@@ -38,7 +38,7 @@ pub(super) struct Tombstones {
 }
 
 impl Tombstones {
-    fn admits(&self, key: Option<&str>, seq: &[u8]) -> bool {
+    pub(super) fn admits(&self, key: Option<&str>, seq: &[u8]) -> bool {
         let bounded = self.bound.as_deref().is_some_and(|bound| seq < bound);
         let buried = key
             .and_then(|key| self.by_key.get(key))
@@ -46,7 +46,12 @@ impl Tombstones {
         !bounded && !buried
     }
 
-    fn raise(&mut self, seq: &[u8]) {
+    /// Buries `key` at `seq`: no change sequenced at or before it applies to the key.
+    pub(super) fn bury(&mut self, key: &str, seq: &[u8]) {
+        self.by_key.insert(key.to_owned(), seq.to_vec());
+    }
+
+    pub(super) fn raise(&mut self, seq: &[u8]) {
         if self.bound.as_deref().is_none_or(|bound| bound < seq) {
             self.by_key.retain(|_, stone| stone.as_slice() >= seq);
             self.bound = Some(seq.to_vec());

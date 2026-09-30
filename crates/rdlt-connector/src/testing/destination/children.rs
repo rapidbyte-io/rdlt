@@ -81,6 +81,7 @@ impl Bench<'_> {
                 seq: SEQ.into(),
                 root: None,
                 changes: None,
+                history: None,
             }),
             ..self.other_table("roots")
         };
@@ -94,6 +95,7 @@ impl Bench<'_> {
                     seq: SEQ.into(),
                 }),
                 changes: None,
+                history: None,
             }),
             ..self.other_table(suffix)
         };
