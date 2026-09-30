@@ -6,10 +6,12 @@ type Flag = fn(&Features) -> bool;
 
 #[test]
 fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
-    let drawn: Vec<Features> = (0..400)
+    // Every feature at once is one seed in 512: the network, the log and streaming are drawn
+    // apart, one time in four each, beside every other feature's one time in eight.
+    let drawn: Vec<Features> = (0..4000)
         .map(|seed| Features::draw(&mut SplitMix64::new(seed)))
         .collect();
-    let flags: [(&str, Flag); 14] = [
+    let flags: [(&str, Flag); 16] = [
         ("drift", |features| features.drift),
         ("encodings", |features| features.encodings),
         ("json", |features| features.json),
@@ -24,6 +26,8 @@ fn every_feature_is_drawn_on_and_off_and_now_and_then_all_at_once() {
         ("shared", |features| features.shared),
         ("perturb", |features| features.perturb),
         ("network", |features| features.network),
+        ("wal", |features| features.wal),
+        ("streaming", |features| features.streaming),
     ];
     for (name, flag) in flags {
         assert!(drawn.iter().any(flag), "{name} is never on");
