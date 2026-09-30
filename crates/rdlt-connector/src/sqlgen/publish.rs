@@ -2,6 +2,7 @@
 //! staging.
 
 mod changes;
+mod history;
 mod keyed;
 mod recorded;
 
@@ -186,7 +187,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
                     epoch,
                     segments,
                 };
-                if let Some(changes) = &key.changes {
+                if let Some(history) = &key.history {
+                    plan.extend(self.versioned(&name, (key, history), columns, &of)?);
+                } else if let Some(changes) = &key.changes {
                     plan.extend(self.changed(&name, key, changes, columns, &of)?);
                 } else {
                     let [replaced, merged] =
