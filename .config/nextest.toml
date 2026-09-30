@@ -24,6 +24,9 @@ slow-timeout = { period = "60s" }
 [profile.mutants]
 slow-timeout = { period = "5s", terminate-after = 2 }
 leak-timeout = "500ms"
+# A mutant is caught by its first failing test: the tests still running then, which a mutant can
+# slow past cargo-mutants' timeout, are terminated at once.
+fail-fast = { max-fail = 1, terminate = "immediate" }
 
 # The placement matrix runs on the real clock, and a scenario sleeps for seconds; the host's process
 # tests spawn connectors, each within seconds.
