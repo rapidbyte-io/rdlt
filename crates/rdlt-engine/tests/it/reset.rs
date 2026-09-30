@@ -2,9 +2,13 @@
 //! tables, handed to any pipeline.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rdlt_connector::{ConnectContext, ReadMode, Source, source_factory};
+use rdlt_connector::{
+    BoxFuture, Capabilities, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
+    Destination, DestinationSession, DestinationWriter, OpenContext, OpenedSession, ReadMode,
+    Receipt, Source, TableChange, TableRef, source_factory,
+};
 use rdlt_connector_reference::LogSource;
 use rdlt_connector_reference::changes::expected;
 use rdlt_engine::{
@@ -19,8 +23,8 @@ use crate::support::destinations::{Step, failing, limited};
 use crate::support::script::{Script, ScriptStream, id};
 use crate::support::targets::Target;
 use crate::support::{
-    commit_every, each, engine, generator, logging_engine, memory, pipeline, published_ids,
-    published_json, retrying, stream,
+    commit_every, each, engine, every_id, generator, logging_engine, memory, pipeline,
+    published_ids, published_json, retrying, stream,
 };
 
 /// A log of four messages in one partition, read by `group`.
@@ -378,4 +382,171 @@ async fn a_normalized_stream_reset_with_its_tables_drops_its_child_tables_too() 
     load().await;
     assert_eq!(published_json(store, "events__items"), skus);
     assert_eq!(published_json(store, "events"), [json!({"id": 1})]);
+}
+
+/// A destination whose `at`th commit, its first attempt at it, runs `reset` and then fails as a
+/// lost connection would, so the run retries.
+struct Racing {
+    inner: Arc<dyn Destination>,
+    commits: Arc<AtomicUsize>,
+    at: usize,
+    reset: Resetting,
+}
+
+/// What a racing destination runs before it fails a commit.
+type Resetting = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
+
+impl Destination for Racing {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.inner.check()
+    }
+
+    fn open<'a>(
+        &'a self,
+        context: &'a OpenContext,
+    ) -> BoxFuture<'a, rdlt_connector::Result<OpenedSession>> {
+        Box::pin(async move {
+            let opened = self.inner.open(context).await?;
+            Ok(OpenedSession {
+                session: Box::new(RacingSession {
+                    inner: opened.session,
+                    commits: Arc::clone(&self.commits),
+                    at: self.at,
+                    reset: Arc::clone(&self.reset),
+                }),
+                ..opened
+            })
+        })
+    }
+}
+
+struct RacingSession {
+    inner: Box<dyn DestinationSession>,
+    commits: Arc<AtomicUsize>,
+    at: usize,
+    reset: Resetting,
+}
+
+impl DestinationSession for RacingSession {
+    fn apply_schema<'a>(
+        &'a mut self,
+        change: &'a TableChange,
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
+        self.inner.apply_schema(change)
+    }
+
+    fn writer<'a>(
+        &'a mut self,
+        table: &'a TableRef,
+    ) -> BoxFuture<'a, rdlt_connector::Result<Box<dyn DestinationWriter>>> {
+        self.inner.writer(table)
+    }
+
+    fn commit<'a>(
+        &'a mut self,
+        meta: &'a CommitMeta,
+    ) -> BoxFuture<'a, rdlt_connector::Result<Receipt>> {
+        Box::pin(async move {
+            if self.commits.fetch_add(1, Ordering::SeqCst) + 1 == self.at {
+                (self.reset)().await;
+                return Err(ConnectorError::new(ConnectorErrorKind::Transient, "lost"));
+            }
+            self.inner.commit(meta).await
+        })
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, rdlt_connector::Result<()>> {
+        self.inner.close()
+    }
+}
+
+/// Loads 400 rows of a replace stream into `store` at `target`, the load's second commit racing a
+/// reset of the stream as `scope` says and then failing, so a retry reads the stream again.
+async fn raced(target: Target, store: &'static str, scope: ResetScope) {
+    let reset: Resetting = Arc::new(move || {
+        Box::pin(async move {
+            engine(commit_every(16))
+                .reset(
+                    "raced",
+                    &["orders"],
+                    scope,
+                    generator(&[("orders", 400, 1, 8)]).await,
+                    target.destination(store).await,
+                )
+                .await
+                .expect("the reset commits");
+        })
+    });
+    let destination: Arc<dyn Destination> = Arc::new(Racing {
+        inner: target.destination(store).await,
+        commits: Arc::new(AtomicUsize::new(0)),
+        at: 2,
+        reset,
+    });
+    let plan = pipeline("raced", [stream("orders").write(WriteMode::Replace)]);
+    let outcome = engine(retrying(3))
+        .run(plan, generator(&[("orders", 400, 1, 8)]).await, destination)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{target:?} {scope:?}: {:?}",
+        outcome.error
+    );
+    assert_eq!(
+        target.ids(store, "orders"),
+        every_id(400),
+        "{target:?} {scope:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_replace_run_retried_after_a_reset_it_raced_fills_a_new_generation() {
+    each(Target::IN_PROCESS, |target| async move {
+        raced(target, "raced_positions", ResetScope::Positions).await;
+        raced(target, "raced_tables", ResetScope::Tables).await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_reset_of_no_streams_is_refused_before_it_fences_anything() {
+    let destination = memory("reset_nothing").await;
+    let context = OpenContext {
+        pipeline: rdlt_connector::PipelineId::parse("nothing").expect("a valid id"),
+        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let mut running = destination.open(&context).await.expect("a session opens");
+    let refused = engine(commit_every(16))
+        .reset(
+            "nothing",
+            &[],
+            ResetScope::Positions,
+            log("nothing").await,
+            Arc::clone(&destination),
+        )
+        .await
+        .expect_err("a reset of no streams is refused");
+    assert_eq!(refused.kind(), ErrorKind::Config);
+    assert_eq!(refused.code(), Some("no_streams"));
+    // The session opened before it still commits: nothing fenced it.
+    let meta = CommitMeta {
+        load_id: context.load_id,
+        commit_seq: rdlt_connector::CommitSeq::FIRST,
+        epoch: running.epoch,
+        segments: rdlt_connector::SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    running
+        .session
+        .commit(&meta)
+        .await
+        .expect("the running session commits");
 }

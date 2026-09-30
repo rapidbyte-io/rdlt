@@ -48,8 +48,9 @@ pub(crate) struct RunContext {
     /// Fires when the run is asked to stop after committing.
     pub(crate) stop: CancellationToken,
     /// The generation of each full read this run started or resumed, so a retry after the read
-    /// completed does not read the stream again.
-    pub(crate) cycles: Mutex<BTreeMap<StreamName, GenerationId>>,
+    /// completed does not read the stream again, with the epoch of the stream's last reset when
+    /// the read began: a reset since ends the read, and a retry starts a new one.
+    pub(crate) cycles: Mutex<BTreeMap<StreamName, (GenerationId, Option<Epoch>)>>,
 }
 
 /// A stream ready to load, and the partitions to read.
